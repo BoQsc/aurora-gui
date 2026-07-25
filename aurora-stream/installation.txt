@@ -1,0 +1,13 @@
+Aurora Stream dependencies
+
+1. FFmpeg
+
+Install FFmpeg on Windows:
+
+winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements
+
+2. D language toolchain with DUB
+
+https://dlang.org/
+
+These dependencies are not installed automatically. Install them before running BUILD-WINDOWS.bat or RUN-WINDOWS.bat.

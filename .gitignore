@@ -1,0 +1,10 @@
+/.dub/
+/build/
+/aurora-cut
+/aurora-cut.exe
+*.o
+*.obj
+*.pdb
+*.ilk
+
+*.auroracut

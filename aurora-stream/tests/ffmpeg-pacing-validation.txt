@@ -1,0 +1,97 @@
+Aurora Stream 0.4.8 A/V redesign validation
+================================================
+
+Reason for redesign
+-------------------
+The 0.3.3 Windows diagnostic did not pass:
+
+- Phase A: 53.601 effective unique images/s.
+- Phase B: 45.668 effective unique images/s with no WASAPI capture.
+- Phase C: 53.068 effective unique images/s, but zero WASAPI packets and
+  100% generated silence.
+- Phase C maximum writer completion: 40.106 ms.
+
+The active 0.3.3 GUI-process PCM writer was therefore retired completely.
+
+Current desktop-audio boundary
+------------------------------
+
+Main process:
+- Aurora UI.
+- FFmpeg Desktop Duplication input.
+- Video encoding, AAC encoding, muxing, and destinations.
+- No desktop-audio capture, PCM queue, output pacing, silence generation, or
+  transport sends.
+
+Isolated helper process:
+- Same executable launched with --audio-rtp-helper.
+- Event-driven WASAPI shared-loopback capture.
+- Windows automatic conversion to PCM16 48 kHz stereo.
+- Preallocated 9,600-frame queue (200 ms).
+- Overflow drops oldest frames; late scheduling recovers near 1,920 frames.
+- One 960-frame / 20 ms output interval.
+- One nonblocking RTP L16/48000/2 localhost datagram per interval.
+- RTP timestamp advances in the 48 kHz sample domain.
+- Late intervals re-anchor and advance the RTP timestamp; no catch-up burst.
+
+FFmpeg input model
+------------------
+
+-protocol_whitelist file,udp,rtp
+-thread_queue_size 64
+-f sdp -i <private temporary SDP>
+
+The SDP declares:
+
+m=audio <port> RTP/AVP 96
+a=rtpmap:96 L16/48000/2
+a=ptime:20
+
+Desktop audio does not use -use_wallclock_as_timestamps. RTP sample timestamps
+are normalized with aresample and PTS-STARTPTS. Microphone DirectShow remains a
+separate wall-clock input.
+
+Local diagnostic isolation
+--------------------------
+
+Phase A: FFmpeg anullsrc.
+Phase B: isolated synthetic-RTP helper, no WASAPI endpoint.
+Phase C: event-driven WASAPI through the same isolated RTP helper.
+
+The local diagnostic writes direct FLV, not the reconnecting FIFO network
+wrapper. Phase C fails when packets_captured is zero. The report also includes
+captured/queued frames, silence, maximum queue depth, overflow/stale drops,
+pacing skips, event wakes/timeouts, discontinuities, send failures, capture
+duration, queue warnings, and decoded unique-image rate.
+
+Static validation
+-----------------
+
+python tests/verify-audio-transport.py
+
+This verifies the process boundary, event-driven capture, preallocated queue,
+20 ms single-send output, nonblocking RTP, no raw PCM side channel, no desktop
+wall-clock timestamps, direct diagnostic FLV, zero-packet rejection, and direct
+D3D11/NVENC selection for a matching single destination.
+
+RTP/SDP integration validation
+------------------------------
+
+python tests/verify-rtp-sdp.py
+
+Using only Python's standard library plus FFmpeg/ffprobe, this sends one 3,852
+byte L16 packet every 20 ms into FFmpeg. The validated result contains audio and
+exactly 180 video frames at 60/1 over three seconds.
+
+The former max_interleave_delta=100000 setting reproduced a FLV mux failure at
+AAC startup due to the encoder's negative initial delay. The current direct FLV
+and live FLV options use max_interleave_delta=0; the integration run then exits
+cleanly without a buffers-queued warning.
+
+Environment boundary
+--------------------
+
+The Linux validation environment has no D compiler, Windows WASAPI, Desktop
+Duplication, NVENC, or Twitch ingest. Windows A/B/C runs remain mandatory and
+the release is not accepted as fixed until repeated unique-image and audible
+sync criteria pass.

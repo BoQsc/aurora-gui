@@ -1,0 +1,69 @@
+AURORA CUT 0.11.2 — WINDOWS RUNNING INSTRUCTIONS
+================================================
+
+1. Extract the ZIP into a new folder. Do not merge it over an older build.
+
+2. Open Command Prompt in the inner aurora-cut folder containing dub.json.
+
+3. Check the required commands:
+
+   dmd --version
+   dub --version
+   ffmpeg -version
+   ffprobe -version
+   ffplay -version
+
+   ffmpeg and ffprobe are required. ffplay is optional, but audible Preview
+   output is unavailable without it.
+
+4. First clean build and run:
+
+   BUILD-WINDOWS.bat
+
+5. Later runs, without cleaning the DUB build cache:
+
+   RUN-WINDOWS.bat
+
+6. Display-driver fallback:
+
+   RUN-WINDOWS-SOFTWARE.bat
+
+   This disables Vulkan only for that run. Use it if automatic renderer startup
+   fails because of a Vulkan runtime or display-driver problem.
+
+Manual commands:
+
+   dub clean
+   dub run
+
+Check the packaged version:
+
+   dub run -- --version
+
+Expected output:
+
+   Aurora Cut 0.11.2
+
+The console stays open while Aurora Cut runs and prints startup stages. If
+startup throws a normal D exception, the application also writes:
+
+   aurora-cut-startup.log
+
+Composition Preview behavior:
+
+   Composition Preview always represents the current sequence. Project Media
+   selection cannot replace or lock it to an isolated source item. Space or P
+   controls timeline playback; Esc stops playback or cancels an active drag.
+
+Direct Windows File Explorer drop:
+
+   Drag supported video, audio, image, or GIF media directly onto the desired timeline track. Aurora Cut
+   imports/probes it in the background and inserts it at the requested track
+   and sequence time when ready.
+
+Editing during playback:
+
+   Moving, resizing, splitting, or changing a timeline item does not stop the
+   active sequence video/audio. The currently playing composition snapshot
+   continues uninterrupted. Pause/Resume or start Play again to adopt the
+   edited timeline at the same sequence position.

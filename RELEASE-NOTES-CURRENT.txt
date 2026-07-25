@@ -1,0 +1,138 @@
+Aurora Stream 0.4.9
+Deterministic quality diagnostic
+--------------------------------
+
+- Added a deterministic one-click 1080p60 and desktop-audio quality diagnostic.
+- Run `RUN-AURORA-STREAM-QUALITY-DIAGNOSTIC.bat` from the main Aurora Cut folder or `RUN-QUALITY-DIAGNOSTIC.bat` inside `aurora-stream`.
+- The test creates its own synchronized full-screen moving source and tone, checks multiple video/audio paths, repeats the best 1080p candidate, and writes one `aurora-stream-quality-diagnostic.txt` report.
+- Measurements include decoded unique-image FPS, duplicate runs, audio dropouts/cracks, A/V sync drift, helper pacing loss, FFmpeg warnings, and CPU/GPU efficiency.
+- No live streaming architecture changed in this diagnostic-only release.
+
+Aurora Stream 0.4.8
+Compile correction
+------------------
+Windows DMD 2.112 rejected the 0.4.7 `SetHandleInformation` call because a local declared with `const` became `const(void*)`, while the Windows API requires mutable `HANDLE` (`void*`). 0.4.8 removes that accidental deep const qualification and passes an explicit unsigned zero flag. No runtime architecture changed.
+
+
+- Fixed the demonstrated Windows UDP `-10048` failure where FFmpeg could not bind its RTP/RTCP input after the audio helper started.
+- Reservation sockets are now explicitly non-inheritable before the helper process is spawned.
+- Aurora Stream closes and reacquires the exact destination pair after helper readiness, proving no child handle still owns it.
+- The verified pair remains reserved until immediately before FFmpeg launch.
+- Live streaming, pacing diagnostics, and one-click bridge self-tests all use the same handoff proof.
+- A failed proof is written to `aurora-stream-startup.log` and aborts before launching FFmpeg.
+- Stream keys are never written to diagnostic or startup logs.
+
+Aurora Cut 0.13.5
+
+- Pressing O or choosing Set export Out before setting In now automatically creates an In marker at 00:00:00.000.
+- The timeline immediately shows a complete export zone from the sequence start to the chosen Out point.
+- Older projects containing only an Out marker are normalized to the same visible start-to-Out range when opened.
+- Added an editor regression requiring Out-first marking to create both markers and preserve the requested Out time.
+
+Aurora Cut 0.13.4
+
+- Added a compact horizontal scrollbar directly below the sequence timeline.
+- The scrollbar thumb represents the currently visible part of the complete sequence.
+- Dragging the thumb pans timeline time without changing zoom or moving clips.
+- Clicking elsewhere on the scrollbar jumps toward that section and begins a drag.
+- Mouse wheel over the scrollbar pans horizontally; Home, End, Left, Right, Page Up, and Page Down are supported after focusing it.
+- The scrollbar stays synchronized with wheel scrolling, zoom, Fit, playhead auto-follow, timeline resizing, track-label resizing, drag-edge auto-scroll, and project duration changes.
+
+Aurora Cut 0.13.3
+
+- Reworked title opacity as a final layer property rather than separately fading only individual paint colors.
+- Layer opacity now affects title fill, stroke, shadow, underline, and background box together.
+- Normalized multi-pass stroke and blurred-shadow alpha so repeated glyph draws cannot accumulate back toward opaque.
+- Renamed the inspector control to Layer opacity to make its scope explicit.
+- Export keeps the Aurora title raster fully authored and applies animated layer opacity once to the complete RGBA layer.
+- Added a regression for repeated-pass alpha composition.
+
+Aurora Cut 0.13.2
+
+- Fixed stale character-selection highlights remaining on a live title after focus left the editor or direct editing ended.
+- The direct title editor now collapses its logical selection on focus loss, before switching to read-only display, and when the preview background is clicked outside the title.
+- Read-only title synchronization defensively clears any retained selection so cached state cannot repaint it later.
+- Added a regression asserting that the initially selected title has no character selection after editing ends.
+
+Aurora Cut 0.13.1
+
+- Fixed the live-title renderer build failure by importing `std.algorithm.comparison.max` in `aurora.text.titlepaint`.
+- The 0.13.0 live-title architecture and behavior are otherwise unchanged.
+
+Aurora Cut 0.13.0
+
+- Removed the preview/editor frame-swap architecture. Preview RGB frames now contain video and image layers only; title glyphs are never burned into interactive preview frames.
+- Every active title is one persistent `PreviewTitleEditor` object. The same object paints the title while idle and, when activated, adds caret, grapheme-aware selection, hit testing, keyboard input, clipboard operations, and undo without creating an overlapping input copy.
+- Title text, selected font face, size, color/opacity, underline, box, stroke, and shadow are all painted from one Aurora `TextLayout`.
+- Text editing no longer waits for, replaces, or coordinates a special title-free FFmpeg frame. Starting and ending editing changes only the title layer's editing state, so there is no double-title transition.
+- Final export no longer uses FFmpeg `drawtext`. Aurora shapes and rasterizes each title to a transparent RGBA PAM using the same title-paint code as Composition Preview; FFmpeg only positions, animates, rotates, fades, and overlays that raster onto the video.
+- Exact selected font files are used by both the live title layer and the export raster, and the selected family remains authoritative in the timeline model and both font controls.
+- Added regressions requiring the title layer object to remain identical before, during, and after editing; interactive compositor commands to contain no title input; and two selected fonts to produce different Aurora-rasterized output.
+
+Aurora Cut 0.12.0
+
+- Replaced the previous mixed preview/editor transition with explicit normal-frame and title-free-editing-frame roles. Late or cached normal frames are rejected while direct title editing is active.
+- The editing compositor now omits every FFmpeg text layer. Aurora's direct title editor is therefore the only text renderer visible during text editing; an old or mismatched title cannot remain underneath it.
+- Replaced the Preview text-field subclass with a bare PreviewTitleEditor built directly on Aurora's grapheme-aware TextEditor layout. Its glyph layout is also the caret, selection, hit-test, clipboard, and undo layout.
+- Rewired PreviewService, frame caching, Editor dispatch, editing entry, and final commit around the explicit frame roles instead of inferring state from one shared frame.
+- The direct editable title now paints its selected font, size, opacity, text color, underline, background box, stroke, and shadow through the same glyph layout rather than displaying a plain input rendering.
+- Added a frame-routing regression that proves a normal composition frame cannot reveal the editor and an editing-background frame cannot complete the final title commit.
+
+Aurora Cut 0.11.9
+
+- Reworked direct title editing as a strict single-surface transition.
+- The editable title is never shown until a matching FFmpeg background frame with that title omitted has arrived.
+- Title-free editing frames use a separate composition cache identity, preventing the old title-containing frame from being reused underneath the editor.
+- Text changes are painted directly and no longer launch a background FFmpeg render for every keystroke.
+- After Done, the direct title remains as a read-only display layer until the final composed frame is ready, then both are swapped atomically without a missing or duplicated title.
+- Added an explicit no-caret display mode to Aurora-D TextEditor for the commit transition.
+
+Aurora Cut 0.11.8
+
+- Fixed the direct-title editor compilation failure: selectedPixelSize now accepts the integer UI font scale required by Aurora-D fontPixelSize.
+- Retains the 0.11.7 single-surface title editing implementation without changing its model, preview, or FFmpeg behavior.
+
+Aurora Cut 0.11.7
+
+- Reworked Composition Preview title editing into one visible editable title layer.
+- The selected title is omitted from the FFmpeg background frame during editing, eliminating double text.
+- The visible title itself now provides grapheme-aware caret placement, per-letter selection, drag selection, double-click word selection, clipboard operations, and keyboard navigation.
+- Direct editing uses the selected title font, authored size scaled to the preview, and title color.
+- Ending direct editing restores the normal composed FFmpeg title frame.
+
+Aurora Cut 0.11.6
+
+- Reworked both font dropdowns around the actual root cause: D delegates captured the reused foreach variable, so every font row invoked the final `Sans` action. This made the selected family reset and all titles render with the same face.
+- Each font menu command is now produced by a separate callback factory with an independent captured family.
+- The inspector font button now displays the authoritative selected family instead of the generic `Fonts` label.
+- Font-menu checkmarks are read from the selected text clip in the model, not from temporary field text.
+- Inspector and Composition Preview font controls now synchronize from the model after every change.
+- Added a UI regression that selects Arial, verifies it remains checked, then selects Impact and verifies the model and button both change.
+
+Aurora Cut 0.11.5
+
+- Fixed the remaining on-video font fallback: built-in Windows font choices are now passed to FFmpeg as deterministic exact files instead of silently falling back to family-name lookup.
+- Added per-user Windows font-folder lookup and regular-face fallback when a bold/italic face is unavailable.
+- The inline Composition Preview editor now opens the resolved font directly instead of silently returning to the UI face after a second file-existence check.
+- Explicit .ttf, .otf, and .ttc paths entered in the Inspector are supported when the file exists.
+- Font selections now write the exact resolved path to aurora-cut.log and show a status confirmation.
+- Inspector font selection no longer automatically opens a transparent inline editor over the rendered title, avoiding an old-font frame being visually stacked beneath the new face.
+- Added a graph-level regression check requiring Arial and Consolas to produce distinct exact fontfile arguments on Windows.
+
+Aurora Cut 0.11.4
+
+- Fixed the 0.11.3 Windows build failure caused by a const FontFace assignment in the vendored Aurora-D text editor.
+- Playback transport now uses compact symbol labels: "▶" when idle and "❚❚" while playing.
+- Timeline header buttons are wider and clearer: Snap On/Off, In×, Out×, and a wider Fit button.
+- Moved the timeline usage hint onto its own row so it no longer squeezes the header buttons.
+- Widened small action buttons such as Fonts and Reset so labels are less likely to truncate.
+
+Aurora Cut 0.11.3
+
+- Space and other bare editor shortcuts no longer activate while any text field is focused, so title text accepts normal spaces during inline editing.
+- Fixed generated-title shadow compositing; the colored, blurred, offset shadow is now rendered underneath the title instead of being overlaid onto itself.
+- Text shadows on media layers now honor the selected shadow color and color alpha.
+- Font choices now resolve to exact installed Windows font files for preview and FFmpeg composition, preventing multiple choices from silently using one fallback face.
+- Added a real checked font dropdown to the Composition Preview inline text toolbar.
+- The inline title editor now uses the selected font face and a transparent editing surface, keeping the composed shadow and styling visible while typing.
+- Added compositor regression checks proving that shadows and font changes alter rendered output.

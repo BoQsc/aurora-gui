@@ -1,0 +1,283 @@
+{
+  "name": "aurora-d",
+  "description": "Cross-platform Vulkan/software GUI library for D with an Aurora-rendered retained compositor and pure-D Unicode/OpenType text",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "sourcePaths": [
+    "source"
+  ],
+  "targetName": "aurora",
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "notepad",
+      "targetType": "executable",
+      "targetName": "aurora-notepad",
+      "mainSourceFile": "demos/notepad.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "file-explorer",
+      "targetType": "executable",
+      "targetName": "aurora-file-explorer",
+      "mainSourceFile": "demos/file_explorer.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "desktop",
+      "targetType": "executable",
+      "targetName": "aurora-desktop",
+      "mainSourceFile": "demos/desktop_environment.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "taskbar",
+      "targetType": "executable",
+      "targetName": "aurora-taskbar",
+      "mainSourceFile": "demos/taskbar.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "font-gallery",
+      "targetType": "executable",
+      "targetName": "aurora-font-gallery",
+      "mainSourceFile": "demos/font_gallery.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "headless-test",
+      "targetType": "executable",
+      "targetName": "aurora-headless-test",
+      "mainSourceFile": "tests/headless.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-linux": [
+        "dl"
+      ]
+    },
+    {
+      "name": "unicode-conformance",
+      "targetType": "executable",
+      "targetName": "aurora-unicode-conformance",
+      "mainSourceFile": "tests/unicode_conformance.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "text-system-test",
+      "targetType": "executable",
+      "targetName": "aurora-text-system-test",
+      "mainSourceFile": "tests/text_system.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "text-boundaries",
+      "targetType": "executable",
+      "targetName": "aurora-text-boundaries",
+      "mainSourceFile": "tests/text_boundaries.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "public-api-test",
+      "targetType": "executable",
+      "targetName": "aurora-public-api-test",
+      "mainSourceFile": "tests/public_api.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "dpi-rendering-test",
+      "targetType": "executable",
+      "targetName": "aurora-dpi-rendering-test",
+      "mainSourceFile": "tests/dpi_rendering.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "compositor-test",
+      "targetType": "executable",
+      "targetName": "aurora-compositor-test",
+      "mainSourceFile": "tests/compositor.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "latency-test",
+      "targetType": "executable",
+      "targetName": "aurora-latency-test",
+      "mainSourceFile": "tests/latency.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "desktop-shell-test",
+      "targetType": "executable",
+      "targetName": "aurora-desktop-shell-test",
+      "mainSourceFile": "tests/desktop_shell.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "shell-visual-test",
+      "targetType": "executable",
+      "targetName": "aurora-shell-visual-test",
+      "mainSourceFile": "tests/shell_visual.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "vulkan-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-vulkan-smoke",
+      "mainSourceFile": "tests/vulkan_smoke.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    }
+  ],
+  "version": "0.4.5"
+}

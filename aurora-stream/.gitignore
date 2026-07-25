@@ -1,0 +1,14 @@
+/.dub/
+/build/
+/aurora-stream
+/aurora-stream.exe
+/aurora-stream-startup.log
+/aurora-stream-settings.json
+/aurora-stream-settings.json.tmp
+/aurora-stream-settings.json.bak
+*.o
+*.obj
+*.pdb
+*.ilk
+/audio-device-diagnostic.txt
+/stream-pacing-diagnostic/
