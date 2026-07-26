@@ -970,7 +970,7 @@ int runStreamPacingDiagnostic(string executablePath)
         writeln(settingsMessage);
 
         const encoder = detectEncoder();
-        const capture = detectCaptureBackend();
+        const capture = detectCaptureBackend(encoder);
         auto diagnosticSettings = settings;
         diagnosticSettings.twitchEnabled = true;
         diagnosticSettings.youtubeEnabled = false;

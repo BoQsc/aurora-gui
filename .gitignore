@@ -1,10 +1,25 @@
 /.dub/
 /build/
+/dist/
+/release/
+/releases/
 /aurora-cut
 /aurora-cut.exe
 *.o
 *.obj
 *.pdb
 *.ilk
+*.log
+*.zip
+*.7z
+*.rar
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.flv
+*.wav
+*.mp3
+*.aac
 
 *.auroracut

@@ -10,5 +10,8 @@
 *.obj
 *.pdb
 *.ilk
+*.log
 /audio-device-diagnostic.txt
+/aurora-stream-*diagnostic*.txt
+/quality-diagnostic-artifacts/
 /stream-pacing-diagnostic/

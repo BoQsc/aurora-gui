@@ -73,7 +73,7 @@ final class StreamRoot : VBox
         _worker = new BroadcastWorker(executablePath);
         _audioScanner = new AudioDeviceScanner();
         _encoder = detectEncoder();
-        _capture = detectCaptureBackend();
+        _capture = detectCaptureBackend(_encoder);
 
         bool settingsLoaded;
         string settingsLoadMessage;

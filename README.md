@@ -175,6 +175,16 @@ dub build --compiler=ldc2 --build=debug
 
 See `VALIDATION.md` for tested paths and the Windows validation boundary. Aurora-D 0.4.5 is vendored under `vendor/aurora-d-0.4.5`; no separate Aurora package is required.
 
+## Release zip
+
+Run the root releaser from this folder:
+
+```bat
+MAKE-RELEASE-ZIP.bat
+```
+
+It writes `dist\aurora-gui-<version>-<commit>-<timestamp>.zip` and includes the current working tree while excluding `.git`, DUB/build caches, compiled binaries, debug symbols, logs, local settings, diagnostics, generated media, and prior archives.
+
 
 ## 0.11.0 workflow additions
 

@@ -79,12 +79,11 @@ def ffmpeg_command(ffmpeg: str, url: str, fifo: bool) -> list[str]:
     if fifo:
         command += [
             "-f", "fifo", "-fifo_format", "flv",
-            "-queue_size", "360",
+            "-queue_size", "1200",
             "-format_opts",
             "max_interleave_delta=0:flush_packets=1:flvflags=no_duration_filesize",
             "-attempt_recovery", "1",
             "-recovery_wait_time", "1",
-            "-drop_pkts_on_overflow", "1",
             "-restart_with_keyframe", "1",
             url,
         ]

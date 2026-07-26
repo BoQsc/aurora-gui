@@ -4,6 +4,9 @@
 
 - Fixed **Unhide streaming servers** reserving only a sliver of spacing: the Twitch and YouTube server groups now receive their full label-plus-input height when restored to the settings layout.
 - Shortened the YouTube 4K toggle to **4K / 2160p60 highest-quality** to reduce horizontal crowding in the settings panel.
+- Changed live RTMP/RTMPS FIFO output from drop-on-overflow to a larger non-dropping queue plus a post-startup watchdog, so a sustained Twitch/network stall stops with `Live output stalled` instead of feeding Twitch a damaged stream that can become a black buffering player.
+- Avoided Desktop Duplication readback on CPU-only `libx264` machines by selecting the GDI compatibility capture path when no hardware H.264 encoder is available.
+- Added immediate detection for Desktop Duplication `AcquireNextFrame failed` plus a frozen-video-frame watchdog, so audio-only progress cannot hide a dead video capture path.
 - Stopped assigning the isolated audio helper below-normal process priority and registered its capture/pacing thread with Windows MMCSS `Audio` at high multimedia priority.
 - Stopped converting ordinary Windows wake-up jitter and short scheduler stalls into explicit RTP timestamp gaps; the helper now preserves every sample and catches up locally for delays below 100 ms, skipping only longer unrecoverable delays.
 - Added `mmcss_enabled` to helper metrics and made quality acceptance require that real-time scheduling was active.

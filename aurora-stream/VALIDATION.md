@@ -51,11 +51,14 @@ A direct RTMP/RTMPS output performs network connection and handshake work synchr
 Version 0.4.6 changes the live boundary:
 
 1. Every Twitch or YouTube network destination uses a separate bounded FIFO output worker.
-2. The queue is capped at 360 packets with recovery, drop-on-overflow, and keyframe restart enabled.
+2. The queue is capped at 1200 packets with recovery and keyframe restart enabled, without drop-on-overflow.
 3. Local diagnostics remain direct FLV so local timing is still measured without a network queue.
 4. The helper reports `transport-ready` separately from `capturing` real WASAPI packets.
 5. The monitor records the first real packet transition or a three-second silent-endpoint notice without stopping video.
 6. The 12-second first-frame deadline and sanitized `aurora-stream-startup.log` remain active.
+7. After startup, a live watchdog stops the attempt if progress reports, output time, or speed prove the live output is stalled.
+8. CPU-only `libx264` systems use GDI capture by default instead of Desktop Duplication readback.
+9. Desktop Duplication `AcquireNextFrame failed` and frozen encoded-video frame counters are treated as capture failures, even if audio output time continues.
 
 ## Validation completed in this environment
 
@@ -74,9 +77,10 @@ Version 0.4.6 changes the live boundary:
 3. Keep audible desktop playback active. The startup log must record `Desktop audio capture became active`, and final metrics must show nonzero `packets_captured` and `captured_frames_queued`. Initial silence is acceptable only before playback begins or across a genuine endpoint gap.
 4. Confirm Twitch receives video and audible synchronized desktop audio for at least five minutes.
 5. Confirm there is no long output-time freeze followed by catch-up processing.
-6. If the network destination is unavailable, capture/encoding should continue behind the bounded FIFO and the log should show output recovery warnings instead of an encoder-start timeout.
-7. Upload only `aurora-stream-startup.log` if the live attempt still fails; stream keys remain sanitized.
-8. Do not call the original smoothness issue fixed until the local 15-second A/B/C pacing diagnostic also passes three times with equivalent continuous motion.
+6. If the network destination is unavailable before startup, capture/encoding should continue behind the bounded FIFO and the log should show output recovery warnings instead of an encoder-start timeout.
+7. If the connection or computer cannot keep up after startup, Aurora Stream should stop with `Live output stalled` and the startup log should contain a `LIVE OUTPUT FAILURE` line instead of leaving Twitch on a black buffering player.
+8. Upload only `aurora-stream-startup.log` if the live attempt still fails; stream keys remain sanitized.
+9. Do not call the original smoothness issue fixed until the local 15-second A/B/C pacing diagnostic also passes three times with equivalent continuous motion.
 
 ## Environment limitation
 

@@ -67,7 +67,7 @@ Isolated helper-first WASAPI capture
 → RTMP/RTMPS network connection
 ```
 
-The output queue is limited to 360 packets. It retries failed destinations, drops stale packets on overflow, and restarts from a keyframe so a reconnect returns near real time rather than replaying a long backlog. Local pacing diagnostics still write direct FLV files because no network handshake exists there.
+The output queue is limited to 1200 packets. It retries failed destinations and restarts from a keyframe after recovery, but it does not drop arbitrary packets into a live destination. If the queue fills because the encoder, computer, or upload path cannot keep up, FFmpeg back-pressures and Aurora Stream stops the attempt with a live-output stall message instead of feeding Twitch a damaged stream that can turn into a black buffering player. Local pacing diagnostics still write direct FLV files because no network handshake exists there.
 
 A new localhost-only test deliberately accepts TCP but withholds the RTMP handshake. It verifies that direct RTMP emits no frame progress while the FIFO-isolated encoder continues. This reproduces the exact startup class without using Twitch, YouTube, a stream key, or the public network.
 
@@ -162,13 +162,15 @@ Common source canvas: 1920×1080 at 60 FPS
         └─ YouTube: 2560×1440 at 60 FPS, 24000 kbps
 ```
 
-Twitch and YouTube never share one encoded video stream. Each enabled destination receives its own scaling filter, H.264 encoder instance, bitrate control, AAC encoder, FLV muxer, and network output. Every enabled live destination receives its own bounded FIFO recovery wrapper so network setup and reconnects cannot own the capture/encode thread.
+Twitch and YouTube never share one encoded video stream. Each enabled destination receives its own scaling filter, H.264 encoder instance, bitrate control, AAC encoder, FLV muxer, and network output. Every enabled live destination receives its own bounded non-dropping FIFO recovery wrapper so network setup and reconnects cannot own the capture/encode thread, plus a live watchdog that fails visibly when sustained output stalls would make viewers buffer.
 
 This means a 1080p source can remain normal 1080p60 for Twitch while being upscaled to 1440p60 for YouTube. Upscaling does not invent genuine source detail, but it gives YouTube the requested higher-resolution ingest profile rather than forcing both platforms to use Twitch's constrained output.
 
 ## Windows desktop capture and cursor stability
 
 Aurora Stream probes FFmpeg's **Desktop Duplication** source when the program starts. Desktop Duplication returns D3D11 hardware frames and captures the hardware cursor without using FFmpeg's older GDI cursor handling.
+
+When FFmpeg cannot use a hardware H.264 encoder and falls back to CPU `libx264`, Aurora Stream uses the GDI compatibility capture path by default. That avoids the fragile Desktop Duplication readback path on CPU-only machines, where FFmpeg can report `AcquireNextFrame failed` and then continue sending audio while the video frame counter is frozen. Live streaming now stops immediately on that error, and a watchdog also stops any run where encoded video frames stop advancing while output time continues.
 
 For one matching NVENC destination, Aurora Stream keeps those frames on the GPU:
 

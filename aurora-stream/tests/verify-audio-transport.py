@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WASAPI = (ROOT / "source/aurorastream/wasapi.d").read_text(encoding="utf-8")
 BRIDGE = (ROOT / "source/aurorastream/audiobridge.d").read_text(encoding="utf-8")
 BROADCAST = (ROOT / "source/aurorastream/broadcast.d").read_text(encoding="utf-8")
+ROOT_UI = (ROOT / "source/aurorastream/root.d").read_text(encoding="utf-8")
 DIAGNOSTIC = (ROOT / "source/aurorastream/pacingdiagnostic.d").read_text(encoding="utf-8")
 APP = (ROOT / "source/app.d").read_text(encoding="utf-8")
 FULL_DIAGNOSTIC = (ROOT / "tests/run-all-diagnostics.py").read_text(encoding="utf-8")
@@ -223,12 +224,17 @@ require("capture.nativeWidth == qualityWidth" in zero_copy and
 require("CPU compatibility path" in BROADCAST and
         'if (!keepVideoOnGpu) source ~= ",hwdownload,format=bgra"' in capture_inputs,
         "a failed direct-input probe does not select the CPU compatibility path")
+require("CaptureSelection detectCaptureBackend(const EncoderSelection encoder)" in BROADCAST and
+        "if (!encoder.hardware) return result;" in BROADCAST and
+        "detectCaptureBackend(_encoder)" in ROOT_UI and
+        "detectCaptureBackend(encoder)" in DIAGNOSTIC,
+        "CPU-only encoders must avoid Desktop Duplication readback by default")
 
 require('"-f", "fifo", "-fifo_format", "flv"' in BROADCAST and
-        '"-queue_size", "360"' in BROADCAST and
-        '"-drop_pkts_on_overflow", "1"' in BROADCAST and
-        "Network output must never own the capture/encode thread" in BROADCAST,
-        "live RTMP output is not isolated behind a bounded FIFO worker")
+        '"-queue_size", "1200"' in BROADCAST and
+        '"-drop_pkts_on_overflow"' not in BROADCAST and
+        "Live watchdog: stops on sustained post-startup network/output stalls" in BROADCAST,
+        "live RTMP output is not isolated behind a non-dropping FIFO plus watchdog")
 require('"-f", "flv", outputPath' in diagnostic_args,
         "local file diagnostics must remain direct FLV")
 require("captureActive()" in BRIDGE and
@@ -243,6 +249,14 @@ require("startupDeadlineTicks" in BROADCAST and
         "monitorProcess" in BROADCAST and
         "FFmpeg startup timed out" in BROADCAST,
         "live FFmpeg startup is not independently bounded")
+require("liveProgressDeadlineTicks" in BROADCAST and
+        "Encoded output time stopped advancing" in BROADCAST and
+        "Live output stalled" in BROADCAST,
+        "post-startup live output stalls are not detected")
+require("AcquireNextFrame failed" in BROADCAST and
+        "Encoded video frame count stopped advancing" in BROADCAST and
+        "Desktop capture failed" in BROADCAST,
+        "Desktop Duplication loss or frozen video frames are not detected")
 require("inspectDesktopAudio(bridge)" in BROADCAST,
         "audio-helper failure monitoring still depends only on FFmpeg progress")
 require("aurora-stream-startup.log" in BROADCAST and

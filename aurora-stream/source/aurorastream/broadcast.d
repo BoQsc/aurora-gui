@@ -298,9 +298,10 @@ private void readDesktopDuplicationSize(out int width, out int height)
     }
 }
 
-CaptureSelection detectCaptureBackend()
+CaptureSelection detectCaptureBackend(const EncoderSelection encoder)
 {
     CaptureSelection result;
+    if (!encoder.hardware) return result;
     if (desktopDuplicationWorks())
     {
         result.backend = DesktopCaptureBackend.desktopDuplication;
@@ -309,6 +310,13 @@ CaptureSelection detectCaptureBackend()
         readDesktopDuplicationSize(result.nativeWidth, result.nativeHeight);
     }
     return result;
+}
+
+CaptureSelection detectCaptureBackend()
+{
+    EncoderSelection encoder;
+    encoder.hardware = true;
+    return detectCaptureBackend(encoder);
 }
 
 bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
@@ -426,6 +434,41 @@ private string appendPath(string server, string key)
     while (base.length > 0 && base[$ - 1] == '/') base = base[0 .. $ - 1];
     while (secret.length > 0 && secret[0] == '/') secret = secret[1 .. $];
     return base ~ "/" ~ secret;
+}
+
+private double parseProgressClock(string value)
+{
+    const parts = value.strip().split(":");
+    if (parts.length != 3) return 0.0;
+    try
+    {
+        return parts[0].to!double * 3600.0 +
+            parts[1].to!double * 60.0 +
+            parts[2].to!double;
+    }
+    catch (Exception)
+    {
+        return 0.0;
+    }
+}
+
+private double parseProgressSpeed(string value)
+{
+    auto text = value.strip();
+    if (text.length > 0 && text[$ - 1] == 'x') text = text[0 .. $ - 1];
+    try return text.to!double;
+    catch (Exception) return 0.0;
+}
+
+private long parseProgressInteger(string value)
+{
+    try return value.strip().to!long;
+    catch (Exception) return -1;
+}
+
+private bool isDesktopDuplicationFailureLine(string line)
+{
+    return line.indexOf("AcquireNextFrame failed") >= 0;
 }
 
 private void appendEncoderArguments(ref string[] arguments,
@@ -690,17 +733,19 @@ private void appendIndependentFlvOutput(ref string[] arguments,
     // muxer performs its socket/TLS/RTMP handshake synchronously before FFmpeg
     // begins processing frames. If that handshake stalls, the UI sees no frame
     // or timestamp even though local capture and audio are healthy. The FIFO
-    // muxer moves network open/write/recovery into its own worker and keeps the
-    // encoder running. Its bounded packet queue drops stale packets on overflow
-    // so a reconnect returns near live time instead of replaying a long backlog.
+    // muxer moves network open/write/recovery into its own worker. Its bounded
+    // queue absorbs short RTMP stalls, but it must not drop arbitrary live
+    // packets: Twitch can buffer indefinitely after receiving a damaged stream.
+    // If the queue fills, FFmpeg back-pressures and the live watchdog stops the
+    // stream with an explicit network/output health failure.
     arguments ~= [
         "-f", "fifo", "-fifo_format", "flv",
-        "-queue_size", "360",
+        "-queue_size", "1200",
         "-format_opts",
             "max_interleave_delta=0:flush_packets=1:" ~
             "flvflags=no_duration_filesize",
         "-attempt_recovery", "1", "-recovery_wait_time", "1",
-        "-drop_pkts_on_overflow", "1", "-restart_with_keyframe", "1",
+        "-restart_with_keyframe", "1",
         destination
     ];
 }
@@ -986,16 +1031,31 @@ unittest
     const arguments = broadcastArguments(settings, encoder, capture);
     bool foundFifo;
     bool foundBoundedQueue;
+    bool foundDropOnOverflow;
     foreach (index, argument; arguments)
     {
         if (argument == "-fifo_format") foundFifo = true;
+        if (argument.indexOf("drop_pkts") >= 0) foundDropOnOverflow = true;
         if (argument == "-queue_size" && index + 1 < arguments.length &&
-            arguments[index + 1] == "360")
+            arguments[index + 1] == "1200")
             foundBoundedQueue = true;
     }
     assert(foundFifo);
     assert(foundBoundedQueue);
+    assert(!foundDropOnOverflow);
 }
+
+unittest
+{
+    EncoderSelection cpuEncoder;
+    cpuEncoder.ffmpegAvailable = true;
+    cpuEncoder.name = "libx264";
+    cpuEncoder.hardware = false;
+
+    const capture = detectCaptureBackend(cpuEncoder);
+    assert(capture.backend == DesktopCaptureBackend.gdiWithoutCursor);
+}
+
 unittest
 {
     BroadcastSettings settings;
@@ -1042,6 +1102,14 @@ final class BroadcastWorker
     private bool _startupComplete;
     private bool _startupFailed;
     private string _startupFailureReason;
+    private bool _liveOutputFailed;
+    private string _liveOutputFailureReason;
+    private size_t _progressSerial;
+    private long _progressVideoFrame;
+    private double _progressOutputSeconds;
+    private double _progressSpeed;
+    private bool _videoCaptureFailed;
+    private string _videoCaptureFailureReason;
     private string _startupLogPath;
     private string _status = "Ready";
     private string _diagnostics;
@@ -1093,6 +1161,14 @@ final class BroadcastWorker
         _startupComplete = false;
         _startupFailed = false;
         _startupFailureReason = "";
+        _liveOutputFailed = false;
+        _liveOutputFailureReason = "";
+        _progressSerial = 0;
+        _progressVideoFrame = 0;
+        _progressOutputSeconds = 0.0;
+        _progressSpeed = 0.0;
+        _videoCaptureFailed = false;
+        _videoCaptureFailureReason = "";
         _status = "Starting FFmpeg…";
         _diagnostics = "";
         _frame = "";
@@ -1206,7 +1282,8 @@ final class BroadcastWorker
             format("Capture: %s\r\n", capture.label) ~
             format("Video path: %s\r\n",
                 videoPipelineLabel(settings, encoder, capture)) ~
-            "Output wrapper: bounded FIFO isolation per destination\r\n" ~
+            "Output wrapper: bounded non-dropping FIFO isolation per destination\r\n" ~
+            "Live watchdog: stops on sustained post-startup network/output stalls\r\n" ~
             "Stream keys are never written to this file.\r\n\r\n";
         try write(_startupLogPath, header);
         catch (Exception) {}
@@ -1274,8 +1351,23 @@ final class BroadcastWorker
     private void monitorProcess(Pid process, AudioBridgeSession bridge)
     {
         enum startupDeadlineTicks = 120; // 12 seconds at 100 ms per tick.
-        size_t ticks;
+        enum liveProgressDeadlineTicks = 120;
+        enum liveOutputDeadlineTicks = 120;
+        enum liveVideoFrameDeadlineTicks = 120;
+        enum slowSpeedDeadlineTicks = 120;
+        enum minimumLiveSpeed = 0.95;
+        enum liveWarmupSeconds = 4.0;
+        size_t startupTicks;
         size_t audioTicks;
+        size_t progressQuietTicks;
+        size_t outputFrozenTicks;
+        size_t videoFrameFrozenTicks;
+        size_t slowSpeedTicks;
+        size_t lastProgressSerial;
+        long lastVideoFrame = -1;
+        double lastOutputSeconds = -1.0;
+        bool outputAdvancedOnce;
+        bool videoAdvancedOnce;
         while (true)
         {
             Thread.sleep(100.msecs);
@@ -1313,6 +1405,8 @@ final class BroadcastWorker
                     "Desktop audio notice: no WASAPI packets after three seconds; continuing with bounded RTP silence.");
 
             bool terminate;
+            bool startupTermination;
+            bool videoCaptureTermination;
             string failureReason;
             _mutex.lock();
             const sameProcess = _process is process && _processRunning;
@@ -1325,13 +1419,14 @@ final class BroadcastWorker
 
             if (!_startupComplete)
             {
-                ++ticks;
-                if (ticks >= startupDeadlineTicks)
+                ++startupTicks;
+                if (startupTicks >= startupDeadlineTicks)
                 {
                     failureReason =
                         "No encoded frame or valid output timestamp arrived " ~
                         "within 12 seconds. FFmpeg was terminated instead of " ~
                         "remaining on Connecting indefinitely.";
+                    startupTermination = true;
                     _startupFailed = true;
                     _startupFailureReason = failureReason;
                     _failed = true;
@@ -1341,16 +1436,115 @@ final class BroadcastWorker
                     terminate = true;
                 }
             }
+            else
+            {
+                const progressSerial = _progressSerial;
+                const videoFrame = _progressVideoFrame;
+                const outputSeconds = _progressOutputSeconds;
+                const speed = _progressSpeed;
+
+                if (progressSerial != lastProgressSerial)
+                {
+                    lastProgressSerial = progressSerial;
+                    progressQuietTicks = 0;
+                }
+                else
+                    ++progressQuietTicks;
+
+                if (outputSeconds > lastOutputSeconds + 0.05)
+                {
+                    lastOutputSeconds = outputSeconds;
+                    outputFrozenTicks = 0;
+                    outputAdvancedOnce = true;
+                }
+                else if (outputSeconds >= liveWarmupSeconds ||
+                    outputAdvancedOnce)
+                    ++outputFrozenTicks;
+
+                if (videoFrame > lastVideoFrame)
+                {
+                    lastVideoFrame = videoFrame;
+                    videoFrameFrozenTicks = 0;
+                    videoAdvancedOnce = true;
+                }
+                else if (outputSeconds >= liveWarmupSeconds ||
+                    videoAdvancedOnce)
+                    ++videoFrameFrozenTicks;
+
+                if (outputSeconds >= liveWarmupSeconds && speed > 0.0 &&
+                    speed < minimumLiveSpeed)
+                    ++slowSpeedTicks;
+                else
+                    slowSpeedTicks = 0;
+
+                if (progressQuietTicks >= liveProgressDeadlineTicks)
+                {
+                    failureReason =
+                        "FFmpeg stopped reporting live progress for 12 seconds " ~
+                        "after startup. This usually means the encoder, muxer, " ~
+                        "or RTMP connection stalled.";
+                    _liveOutputFailed = true;
+                }
+                else if (outputFrozenTicks >= liveOutputDeadlineTicks)
+                {
+                    failureReason =
+                        "Encoded output time stopped advancing for 12 seconds " ~
+                        "after startup. Twitch will buffer when live output is " ~
+                        "starved.";
+                    _liveOutputFailed = true;
+                }
+                else if (videoFrameFrozenTicks >= liveVideoFrameDeadlineTicks)
+                {
+                    failureReason =
+                        "Encoded video frame count stopped advancing for 12 " ~
+                        "seconds while output time continued. Desktop capture " ~
+                        "or video encoding stalled, so Twitch may receive " ~
+                        "audio-only output with a frozen or black frame.";
+                    videoCaptureTermination = true;
+                    _videoCaptureFailed = true;
+                    _videoCaptureFailureReason = failureReason;
+                }
+                else if (slowSpeedTicks >= slowSpeedDeadlineTicks)
+                {
+                    failureReason = format(
+                        "Live output speed stayed below %.2fx for 12 seconds " ~
+                        "after startup. The second computer, encoder, or upload " ~
+                        "path is not keeping up.",
+                        minimumLiveSpeed);
+                    _liveOutputFailed = true;
+                }
+
+                if (_liveOutputFailed)
+                {
+                    _liveOutputFailureReason = failureReason;
+                    _failed = true;
+                    _requestedRunning = false;
+                    _status = "Live output stalled";
+                    appendDiagnostic(failureReason);
+                    terminate = true;
+                }
+                else if (_videoCaptureFailed)
+                {
+                    _failed = true;
+                    _requestedRunning = false;
+                    _status = "Desktop capture stalled";
+                    appendDiagnostic(failureReason);
+                    terminate = true;
+                }
+            }
             _mutex.unlock();
 
             if (terminate)
             {
-                appendPersistentLog("STARTUP FAILURE: " ~ failureReason);
+                appendPersistentLog((startupTermination ?
+                    "STARTUP FAILURE: " : videoCaptureTermination ?
+                    "VIDEO CAPTURE FAILURE: " : "LIVE OUTPUT FAILURE: ") ~
+                    failureReason);
                 try kill(process);
                 catch (Exception error)
                 {
                     appendPersistentLog(
-                        "Could not terminate timed-out FFmpeg: " ~ error.msg);
+                        "Could not terminate stalled FFmpeg: " ~ error.msg);
                 }
                 return;
             }
@@ -1363,6 +1557,39 @@ final class BroadcastWorker
         const line = sanitize(source.strip(), secrets);
         if (line.length == 0) return;
         appendPersistentLog("FFmpeg: " ~ line);
+        if (isDesktopDuplicationFailureLine(line))
+        {
+            const reason =
+                "Desktop Duplication capture failed: " ~ line ~
+                ". FFmpeg cannot continue sending valid video after this, " ~
+                "so the stream was stopped instead of leaving Twitch on a " ~
+                "frozen or black buffering frame.";
+            Pid process;
+            _mutex.lock();
+            if (!_videoCaptureFailed)
+            {
+                _videoCaptureFailed = true;
+                _videoCaptureFailureReason = reason;
+                _failed = true;
+                _requestedRunning = false;
+                _status = "Desktop capture failed";
+                appendDiagnostic(reason);
+                process = _process;
+            }
+            _mutex.unlock();
+            appendPersistentLog("VIDEO CAPTURE FAILURE: " ~ reason);
+            if (process !is null)
+            {
+                try kill(process);
+                catch (Exception error)
+                {
+                    appendPersistentLog(
+                        "Could not terminate FFmpeg after video capture failure: " ~
+                        error.msg);
+                }
+            }
+            return;
+        }
         const separator = line.indexOf('=');
         if (separator > 0)
         {
@@ -1374,23 +1601,31 @@ final class BroadcastWorker
             {
                 case "frame":
                     _frame = value;
+                    _progressVideoFrame = parseProgressInteger(value);
                     if (value.length > 0 && value != "0")
                         _startupComplete = true;
                     break;
                 case "fps": _fps = value; break;
                 case "bitrate": _bitrate = value; break;
-                case "speed": _speed = value; break;
+                case "speed":
+                    _speed = value;
+                    _progressSpeed = parseProgressSpeed(value);
+                    break;
                 case "dup_frames": _duplicatedFrames = value; break;
                 case "drop_frames": _droppedFrames = value; break;
                 case "out_time":
                     _outputTime = value;
+                    _progressOutputSeconds = parseProgressClock(value);
                     if (value.length > 0 && value != "N/A" &&
                         value != "00:00:00.000000")
                         _startupComplete = true;
                     break;
                 case "progress":
                     if (_processRunning && _startupComplete)
-                        _status = "LIVE encoder active — network output isolated";
+                    {
+                        ++_progressSerial;
+                        _status = "LIVE encoder active — network output monitored";
+                    }
                     inspectAudio = true;
                     break;
                 default:
@@ -1472,7 +1707,7 @@ final class BroadcastWorker
             appendDiagnostic(
                 "A/V architecture: FFmpeg owns video/encode/mux • separate MMCSS audio process • timestamped RTP • no GUI-process PCM pacing thread");
             appendDiagnostic(
-                "Output transport: bounded FIFO isolation from RTMP/TLS/network stalls");
+                "Output transport: bounded non-dropping FIFO + live output watchdog");
             appendDiagnostic("Full startup log: aurora-stream-startup.log");
             _mutex.unlock();
 
@@ -1547,6 +1782,10 @@ final class BroadcastWorker
         const helperFailed = _audioBridgeFailed;
         const startupFailed = _startupFailed;
         const startupFailureReason = _startupFailureReason;
+        const liveOutputFailed = _liveOutputFailed;
+        const liveOutputFailureReason = _liveOutputFailureReason;
+        const videoCaptureFailed = _videoCaptureFailed;
+        const videoCaptureFailureReason = _videoCaptureFailureReason;
         _process = null;
         _processRunning = false;
         _requestedRunning = false;
@@ -1556,6 +1795,20 @@ final class BroadcastWorker
             _status = "FFmpeg startup failed — see aurora-stream-startup.log";
             if (startupFailureReason.length > 0)
                 appendDiagnostic(startupFailureReason);
+        }
+        else if (liveOutputFailed)
+        {
+            _failed = true;
+            _status = "Live output stalled — see aurora-stream-startup.log";
+            if (liveOutputFailureReason.length > 0)
+                appendDiagnostic(liveOutputFailureReason);
+        }
+        else if (videoCaptureFailed)
+        {
+            _failed = true;
+            _status = "Desktop capture failed — see aurora-stream-startup.log";
+            if (videoCaptureFailureReason.length > 0)
+                appendDiagnostic(videoCaptureFailureReason);
         }
         else if (userStopped && !helperFailed)
         {

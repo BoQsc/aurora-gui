@@ -414,11 +414,11 @@ def output_args(output: Path, fifo: bool, encoder: str = "h264_nvenc") -> list[s
         ]
     else:
         mux = [
-            "-f", "fifo", "-fifo_format", "flv", "-queue_size", "120",
+            "-f", "fifo", "-fifo_format", "flv", "-queue_size", "1200",
             "-format_opts",
             "max_interleave_delta=0:flush_packets=1:flvflags=no_duration_filesize",
             "-attempt_recovery", "1", "-recovery_wait_time", "1",
-            "-drop_pkts_on_overflow", "1", "-restart_with_keyframe", "1",
+            "-restart_with_keyframe", "1",
             str(output),
         ]
     return video + audio + mux
@@ -823,8 +823,10 @@ def source_audit(root: Path, report: Report) -> None:
         (
             "Live RTMP/TLS output is isolated from capture and encoding",
             '"-f", "fifo", "-fifo_format", "flv"' in broadcast and
-            '"-drop_pkts_on_overflow", "1"' in broadcast,
-            "A stalled RTMP/TLS handshake must not prevent FFmpeg from capturing and encoding frames.",
+            '"-queue_size", "1200"' in broadcast and
+            '"-drop_pkts_on_overflow"' not in broadcast and
+            "Live watchdog: stops on sustained post-startup network/output stalls" in broadcast,
+            "A stalled RTMP/TLS handshake must not prevent FFmpeg from capturing and encoding frames, while sustained post-startup stalls must fail visibly.",
         ),
         (
             "RTP and RTCP are explicitly paired",
