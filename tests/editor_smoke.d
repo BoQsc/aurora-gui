@@ -188,8 +188,11 @@ int main(string[] arguments)
     auto preview = requireWidget!PreviewWidget(editor, "preview");
     auto playSource = requireWidget!Button(editor, "play-preview");
     auto qualityButton = requireWidget!Button(editor, "preview-quality");
+    auto revealExport = requireWidget!Button(editor, "reveal-export-output");
     assert(playSource.text() == "▶"d,
         "Preview transport button must show the play symbol while idle");
+    assert(!revealExport.enabled() && !editor.revealExportEnabledForTesting(),
+        "Export output button must stay disabled until an export completes");
     assert(findById(editor, "stop-playback") is null,
         "A separate Stop button returned to the transport");
     assert(findById(editor, "import-media") is null,

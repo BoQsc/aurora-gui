@@ -612,6 +612,7 @@ final class EditorRoot : VBox
     private Button _sourcePlayButton;
     private Button _sequencePreviewButton;
     private ExportButton _exportButton;
+    private Button _revealExportButton;
     private Button _saveProjectButton;
     private Button _qualityButton;
 
@@ -733,6 +734,7 @@ final class EditorRoot : VBox
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
+    private bool _playbackAwaitingFirstFrame;
     private bool _seekPending;
     private bool _seekGesture;
     private bool _seekResumePlayback;
@@ -747,6 +749,7 @@ final class EditorRoot : VBox
     private int _lastProgressPercent = -1;
     private string _lastProgressLabel;
     private string _lastJobStatus;
+    private string _lastExportPath;
     private bool _sourceAudioRefreshPending;
     private double _sourceAudioRefreshDelay;
     private bool _sequenceRefreshPending;
@@ -872,6 +875,11 @@ final class EditorRoot : VBox
     double scrubMinimumForTesting() const { return _scrub.minimum(); }
     double scrubMaximumForTesting() const { return _scrub.maximum(); }
     double scrubValueForTesting() const { return _scrub.value(); }
+    string lastExportPathForTesting() const { return _lastExportPath; }
+    bool revealExportEnabledForTesting() const
+    {
+        return _revealExportButton !is null && _revealExportButton.enabled();
+    }
     double nextTimelineAudioStartForTesting(double value)
     {
         return nextTimelineAudioStart(value);
@@ -900,6 +908,11 @@ final class EditorRoot : VBox
         _exportButton.onContextRequested = delegate(Point point) {
             showExportContextMenu(point);
         };
+        _revealExportButton = toolbar.add(new Button("Output", IconKind.folder));
+        _revealExportButton.setId("reveal-export-output");
+        _revealExportButton.layoutHints().preferredHeight = 26;
+        _revealExportButton.setEnabled(false);
+        _revealExportButton.onClick = delegate() { revealExportOutput(); };
     }
 
     private Widget buildWorkspace()
@@ -3888,10 +3901,9 @@ final class EditorRoot : VBox
         _playbackSourceMuted = muted;
         _playbackRunning = true;
         _playbackClockValid = false;
-        _seekPending = false;
-        _seekGesture = false;
+        _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
-        _seekStillTarget = -1.0;
+        clearPendingSeekState();
         _transportPaintAccumulator = 1.0;
         _lastTimeLabelPlaybackPosition = -1.0;
         _lastPreviewClockPaint = -1.0;
@@ -3933,6 +3945,13 @@ final class EditorRoot : VBox
         const elapsed = MonoTime.currTime - _playbackClockStarted;
         return _playbackClockBase +
             cast(double) elapsed.total!"hnsecs" / 10_000_000.0;
+    }
+
+    private double playbackTimeForFrame(const PreviewFrame frame)
+    {
+        const value = _sequencePlaybackDirect ?
+            frame.sourceTime - _playbackMediaOffset : frame.sourceTime;
+        return clampValue(value, _playbackStart, _playbackEnd);
     }
 
     private int liveDecodeHeight() const
@@ -4080,11 +4099,13 @@ final class EditorRoot : VBox
         _videoStream.stop();
         _audioPlayer.stop();
         _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
         const remaining = _playbackEnd - _playbackPosition;
         if (remaining <= 0.001) return;
 
         const decode = _preview.recommendedDecodeSize(liveDecodeHeight());
         const fps = livePlaybackFps(decode);
+        bool videoStarted;
         if (_sequencePlaybackLive)
         {
             const renderHeight = liveDecodeHeight();
@@ -4094,8 +4115,10 @@ final class EditorRoot : VBox
             scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
             auto arguments = compositeStreamArguments(request, _playbackPosition,
                 _playbackEnd, decode.width, decode.height, fps);
-            if (!_videoStream.startCommand(arguments, _playbackPosition, remaining,
-                decode.width, decode.height, fps, "Sequence 01 • live composition"))
+            videoStarted = _videoStream.startCommand(arguments, _playbackPosition,
+                remaining, decode.width, decode.height, fps,
+                "Sequence 01 • live composition");
+            if (!videoStarted)
                 setStatus("The live timeline compositor could not be started.");
             startLiveTimelineAudio();
         }
@@ -4105,7 +4128,7 @@ final class EditorRoot : VBox
                 0.0, _playbackAsset.duration);
             if (_playbackAsset.hasVideo)
             {
-                const videoStarted = _videoStream.start(_playbackAsset.path, mediaPosition,
+                videoStarted = _videoStream.start(_playbackAsset.path, mediaPosition,
                     remaining, decode.width, decode.height, fps, _playbackAsset.name);
                 if (!videoStarted)
                     setStatus("The embedded video decoder could not be started.");
@@ -4123,6 +4146,7 @@ final class EditorRoot : VBox
             }
         }
 
+        _playbackAwaitingFirstFrame = videoStarted;
         resetPlaybackClock();
         _transportPaintAccumulator = 1.0;
     }
@@ -4135,9 +4159,9 @@ final class EditorRoot : VBox
                 _playbackStart, _playbackEnd);
         _playbackRunning = false;
         _seekResumePlayback = false;
-        _seekPending = false;
-        _seekGesture = false;
+        clearPendingSeekState();
         _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -4182,7 +4206,7 @@ final class EditorRoot : VBox
         if (_seekPending)
         {
             _playbackPosition = _seekTarget;
-            _seekPending = false;
+            clearPendingSeekState();
         }
         if (_playbackPosition >= _playbackEnd - 0.001)
             _playbackPosition = _playbackStart;
@@ -4288,16 +4312,15 @@ final class EditorRoot : VBox
     {
         if (!_seekPending || _playbackKind == PlaybackKind.none ||
             _playbackAsset is null) return;
-        _seekPending = false;
-        _seekDelay = 0.0;
-        _seekStillTarget = -1.0;
         _playbackPosition = clampValue(_seekTarget, _playbackStart, _playbackEnd);
+        clearPendingSeekState();
 
         if (_playbackPosition >= _playbackEnd - 0.001)
         {
             _playbackRunning = false;
             _seekResumePlayback = false;
             _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
             _preview.setPlaying(false);
             requestPlaybackStill();
         }
@@ -4309,6 +4332,7 @@ final class EditorRoot : VBox
         else
         {
             _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
             _preview.setPlaying(false);
             requestPlaybackStill();
         }
@@ -4321,6 +4345,14 @@ final class EditorRoot : VBox
         }
         updatePlaybackButtons();
         updateTimeLabel();
+    }
+
+    private void clearPendingSeekState()
+    {
+        _seekPending = false;
+        _seekGesture = false;
+        _seekDelay = 0.0;
+        _seekStillTarget = -1.0;
     }
 
     private void queueSourceAudioRefresh()
@@ -4395,11 +4427,9 @@ final class EditorRoot : VBox
         _liveAudioClipId = 0;
         _playbackModelRevision = 0;
         _playbackClockValid = false;
-        _seekPending = false;
-        _seekGesture = false;
+        _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
-        _seekDelay = 0.0;
-        _seekStillTarget = -1.0;
+        clearPendingSeekState();
         _transportPaintAccumulator = 0.0;
         _sourceAudioRefreshPending = false;
         _sourceAudioRefreshDelay = 0.0;
@@ -4420,9 +4450,9 @@ final class EditorRoot : VBox
         _playbackPosition = _playbackEnd;
         _playbackRunning = false;
         _playbackClockValid = false;
-        _seekPending = false;
-        _seekGesture = false;
+        _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
+        clearPendingSeekState();
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -4825,6 +4855,11 @@ final class EditorRoot : VBox
         }
         _jobPurpose = purpose;
         _jobCompletionHandled = false;
+        if (purpose == JobPurpose.exportFile)
+        {
+            _lastExportPath = "";
+            if (_revealExportButton !is null) _revealExportButton.setEnabled(false);
+        }
         _lastProgressValue = 0.0;
         _lastProgressPercent = -1;
         _lastProgressLabel = purpose == JobPurpose.previewTimeline ? "Preview" : "Export";
@@ -4834,7 +4869,7 @@ final class EditorRoot : VBox
         setStatus(purpose == JobPurpose.previewTimeline
             ? format("Rendering the actual %dp multi-track composition in the background…",
                 _previewQualityHeight)
-            : "Export started in the background…");
+            : exportStartedStatus(request));
     }
 
     private void cancelBackgroundRender()
@@ -4843,6 +4878,15 @@ final class EditorRoot : VBox
             setStatus("Cancelling the background render; editing and playback remain responsive.");
         else
             setStatus("No background render is running.");
+    }
+
+    private string exportStartedStatus(const ExportRequest request) const
+    {
+        if (request.hasRange())
+            return "Export started in the background for " ~
+                formatTimecode(request.rangeStart) ~ " to " ~
+                formatTimecode(request.rangeEnd) ~ ".";
+        return "Export started in the background for the full sequence.";
     }
 
     private void setTransitionRequested(TrackAddress track, int index,
@@ -5431,6 +5475,29 @@ final class EditorRoot : VBox
     {
         if (index >= _model.assets.length) return;
         const path = _model.assets[index].path;
+        if (revealPathInFileManager(path, "source location"))
+            setStatus("Opened the source location for " ~ _model.assets[index].name ~ ".");
+    }
+
+    private void revealExportOutput()
+    {
+        if (_lastExportPath.length == 0)
+        {
+            setStatus("No completed export is available yet.");
+            return;
+        }
+        if (!exists(_lastExportPath))
+        {
+            setStatus("The last export is no longer at " ~ _lastExportPath);
+            if (_revealExportButton !is null) _revealExportButton.setEnabled(false);
+            return;
+        }
+        if (revealPathInFileManager(_lastExportPath, "export output"))
+            setStatus("Opened the export output folder.");
+    }
+
+    private bool revealPathInFileManager(string path, string description)
+    {
         try
         {
             string[] arguments;
@@ -5442,11 +5509,13 @@ final class EditorRoot : VBox
                 arguments = ["xdg-open", dirName(path)];
             spawnProcess(arguments, cast(const string[string]) null,
                 Config.detached | Config.suppressConsole);
-            setStatus("Opened the source location for " ~ _model.assets[index].name ~ ".");
+            return true;
         }
         catch (Exception error)
         {
-            setStatus("Could not open the source location: " ~ outputTail(error.msg, 500));
+            setStatus("Could not open the " ~ description ~ ": " ~
+                outputTail(error.msg, 500));
+            return false;
         }
     }
 
@@ -5641,6 +5710,12 @@ final class EditorRoot : VBox
             if (_videoStream.takeReady(frame))
             {
                 receivedFrame = true;
+                if (_playbackAwaitingFirstFrame && frame.valid())
+                {
+                    _playbackAwaitingFirstFrame = false;
+                    _playbackPosition = playbackTimeForFrame(frame);
+                    resetPlaybackClock();
+                }
                 _preview.setFrame(frame);
                 _preview.setPlaying(true);
             }
@@ -5783,7 +5858,12 @@ final class EditorRoot : VBox
                     }
                 }
                 else
+                {
+                    _lastExportPath = state.outputPath;
+                    if (_revealExportButton !is null)
+                        _revealExportButton.setEnabled(exists(_lastExportPath));
                     setStatus("Export complete: " ~ state.outputPath);
+                }
             }
             else if (state.cancelled)
                 setStatus("Background render cancelled. Editing and playback were not interrupted.");

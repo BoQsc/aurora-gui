@@ -581,7 +581,7 @@ private ExportRequest normalizeExportRange(ExportRequest request)
 {
     if (!request.hasRange()) return request;
 
-    double contentEnd;
+    double contentEnd = 0.0;
     foreach (clip; request.video)
         if (!clip.trackDisabled && clip.end() > contentEnd) contentEnd = clip.end();
     foreach (clip; request.audio)
@@ -597,6 +597,11 @@ private ExportRequest normalizeExportRange(ExportRequest request)
     request.rangeStart = 0.0;
     request.rangeEnd = rangeEnd - rangeStart;
     return request;
+}
+
+ExportRequest normalizedExportRequestForTesting(ExportRequest request)
+{
+    return normalizeExportRange(request);
 }
 
 private ExportClip[] clipsWithinRange(ExportClip[] source,

@@ -2,7 +2,8 @@ module tests.export_smoke;
 
 import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     ExportRequest, ExportState, compositeFrameArguments,
-    compositeStreamArguments, renderCompositeFrame;
+    compositeStreamArguments, normalizedExportRequestForTesting,
+    renderCompositeFrame;
 import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation;
 import std.algorithm.searching : canFind;
 import std.array : join;
@@ -35,6 +36,11 @@ private ExportPreset smokePreset()
     preset.videoPreset = "ultrafast";
     preset.previewOptimized = true;
     return preset;
+}
+
+private bool near(double left, double right, double epsilon = 0.000_1)
+{
+    return left >= right - epsilon && left <= right + epsilon;
 }
 
 private bool whitespace(ubyte value)
@@ -199,6 +205,22 @@ int main(string[] arguments)
     composed.audio = [extraAudio];
     composed.preset = smokePreset();
     assert(composed.sequenceDuration() == 1.0);
+
+    auto ranged = composed;
+    ranged.rangeStart = 0.20;
+    ranged.rangeEnd = 0.55;
+    auto normalizedRange = normalizedExportRequestForTesting(ranged);
+    assert(normalizedRange.hasRange() &&
+        near(normalizedRange.sequenceDuration(), 0.35),
+        "Export Out was not preserved while normalizing the work range");
+    assert(normalizedRange.video.length == 3);
+    assert(near(normalizedRange.video[0].start, 0.0) &&
+        near(normalizedRange.video[0].inPoint, 0.20) &&
+        near(normalizedRange.video[0].outPoint, 0.55),
+        "Work-range trimming did not clamp the base clip to In/Out");
+    assert(near(normalizedRange.video[1].start, 0.0) &&
+        near(normalizedRange.video[1].outPoint, 0.35),
+        "Work-range trimming did not clamp an overlapping overlay to Out");
 
     // Interactive preview frames are permanently title-free. The live Aurora
     // title layer is painted by PreviewWidget and must never be burned into the
