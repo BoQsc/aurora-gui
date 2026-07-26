@@ -219,6 +219,10 @@ int main(string[] arguments)
     const recentPath = buildPath(tempDir(), "aurora-cut-editor-smoke-recent.json");
     const savedProject = buildPath(tempDir(),
         "aurora-cut-editor-smoke-recent.auroracut");
+    const recentOpenA = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent-open-a.auroracut");
+    const recentOpenB = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent-open-b.auroracut");
     const recentDuplicateA = buildPath(tempDir(),
         "aurora-cut-editor-smoke-recent-a");
     const recentDuplicateB = buildPath(tempDir(),
@@ -229,6 +233,8 @@ int main(string[] arguments)
         "aurora-cut-editor-smoke-clipboard.bmp");
     if (exists(recentPath)) remove(recentPath);
     if (exists(savedProject)) remove(savedProject);
+    if (exists(recentOpenA)) remove(recentOpenA);
+    if (exists(recentOpenB)) remove(recentOpenB);
     if (exists(recentDuplicateA)) rmdirRecurse(recentDuplicateA);
     if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
     if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
@@ -245,6 +251,8 @@ int main(string[] arguments)
         setRecentProjectsFilePathForTesting("");
         if (exists(recentPath)) remove(recentPath);
         if (exists(savedProject)) remove(savedProject);
+        if (exists(recentOpenA)) remove(recentOpenA);
+        if (exists(recentOpenB)) remove(recentOpenB);
         if (exists(recentDuplicateA)) rmdirRecurse(recentDuplicateA);
         if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
         if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
@@ -372,6 +380,34 @@ int main(string[] arguments)
             (baseName(savedProject) ~ " — " ~ dirName(savedProject)).to!dstring),
             "Recent Projects dropdown did not mark the current project");
         driver.pressKey(Key.escape);
+
+        editor.saveProjectForTesting(recentOpenA);
+        editor.saveProjectForTesting(recentOpenB);
+        auto openedRecents = loadRecentProjects(true);
+        assert(openedRecents.length >= 2 && openedRecents[0] == recentOpenB &&
+            openedRecents[1] == recentOpenA,
+            "Saving multiple projects did not put the newest project first");
+        rememberRecentProject(recentOpenA);
+        openedRecents = loadRecentProjects(true);
+        assert(openedRecents.length >= 2 && openedRecents[0] == recentOpenA &&
+            editor.projectPathForTesting() == recentOpenB,
+            "Recent action test could not create a stale stored order");
+        driver.click(globalCenter(recentProjects));
+        recentMenu = findOpenContextMenu(editor);
+        assert(recentMenu !is null,
+            "Recent Projects dropdown did not open for action binding test");
+        const expectedCurrentRecentLabel =
+            (baseName(recentOpenB) ~ " — " ~ dirName(recentOpenB)).to!dstring;
+        assert(recentMenu.items().length > 0 &&
+            recentMenu.items()[0].label == expectedCurrentRecentLabel,
+            "Recent Projects menu did not promote the current project before clicking");
+        assert(recentMenu.items()[0].checked,
+            "Recent Projects menu did not mark the promoted current project");
+        auto menuRect = recentMenu.menuRect();
+        driver.click(Point(menuRect.x + 40,
+            menuRect.y + 3 + recentMenu.rowHeightForTesting() / 2));
+        assert(editor.projectPathForTesting() == recentOpenB,
+            "Clicking the first Recent Projects item opened a different project");
 
         rememberRecentProject(buildPath(tempDir(), "missing-recent.auroracut"));
         driver.click(globalCenter(recentProjects));

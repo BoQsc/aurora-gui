@@ -74,6 +74,7 @@ private enum int mp4CompressionMinCrf = 18;
 private enum int mp4CompressionMaxCrf = 32;
 private enum int mp4CompressionDefaultCrf = 20;
 private enum double defaultClipTransitionDuration = 0.5;
+private enum size_t recentProjectMenuLimit = 12;
 
 private double gainToDb(double gain)
 {
@@ -912,6 +913,7 @@ final class EditorRoot : VBox
     int previewQualityHeightForTesting() const { return _previewQualityHeight; }
     void setPreviewQualityForTesting(int height) { setPreviewQuality(height); }
     int mp4CompressionCrfForTesting() const { return _mp4CompressionCrf; }
+    string projectPathForTesting() const { return _projectPath; }
     bool hasWorkInForTesting() const { return _hasWorkIn; }
     bool hasWorkOutForTesting() const { return _hasWorkOut; }
     double workInForTesting() const { return _workIn; }
@@ -1861,21 +1863,49 @@ final class EditorRoot : VBox
         return name ~ " — " ~ folder;
     }
 
+    private ContextMenuItem recentProjectMenuItem(string path,
+        const string[] projects)
+    {
+        const actionPath = path;
+        const current = _projectPath.length > 0 &&
+            filenameCmp(_projectPath, actionPath) == 0;
+        return ContextMenuItem.check(recentProjectMenuLabel(actionPath,
+                duplicateRecentProjectName(projects, actionPath)), current,
+            delegate() { openProject(actionPath); });
+    }
+
+    private string[] recentProjectsForMenu()
+    {
+        const storedProjects = loadRecentProjects(true);
+        string currentPath;
+        if (_projectPath.length > 0)
+        {
+            try currentPath = absoluteNormalized(_projectPath);
+            catch (Exception) currentPath = _projectPath;
+        }
+
+        string[] projects;
+        if (currentPath.length > 0 && exists(currentPath))
+            projects ~= currentPath;
+
+        foreach (path; storedProjects)
+        {
+            if (currentPath.length > 0 && filenameCmp(path, currentPath) == 0)
+                continue;
+            projects ~= path;
+            if (projects.length >= recentProjectMenuLimit) break;
+        }
+        return projects;
+    }
+
     private void showRecentProjectsMenu()
     {
         ContextMenuItem[] items;
-        const projects = loadRecentProjects(true);
+        const projects = recentProjectsForMenu();
         const foundUnavailable = hasUnavailableRecentProjects();
 
         foreach (path; projects)
-        {
-            const captured = path;
-            const current = _projectPath.length > 0 &&
-                filenameCmp(_projectPath, captured) == 0;
-            items ~= ContextMenuItem.check(recentProjectMenuLabel(captured,
-                    duplicateRecentProjectName(projects, captured)), current,
-                delegate() { openProject(captured); });
-        }
+            items ~= recentProjectMenuItem(path, projects);
 
         if (projects.length == 0)
             items ~= ContextMenuItem.command("No recent projects", delegate() {},
