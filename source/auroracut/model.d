@@ -139,6 +139,14 @@ struct TimelineClip
     double playbackRate = 1.0;
     bool reversed;
 
+    // Source crop/cutout, normalized to the referenced media frame.
+    // (0,0,1,1) means the full source image.
+    bool cropEnabled;
+    double cropX = 0.0;
+    double cropY = 0.0;
+    double cropWidth = 1.0;
+    double cropHeight = 1.0;
+
     // Composition transform/effects.
     double scale = 1.0;
     double positionX = 0.0; // normalized canvas offset, -2..2
@@ -954,6 +962,58 @@ final class EditorModel
         return true;
     }
 
+    bool insertCutoutClip(TrackAddress source, int index,
+        double cropX, double cropY, double cropWidth, double cropHeight,
+        double positionX, double positionY, double scale,
+        double rotation, double opacity,
+        out TrackAddress destination, out int cutoutIndex)
+    {
+        endContinuousEdit();
+        cutoutIndex = -1;
+        destination = TrackAddress(TrackKind.video, 0);
+        if (source.kind != TrackKind.video || !validTrack(source)) return false;
+        const clips = trackValue(source).clips;
+        if (index < 0 || index >= cast(int) clips.length) return false;
+        const original = clips[cast(size_t) index];
+        if (!original.usesMedia()) return false;
+        const asset = assetForClip(original);
+        if (asset is null || !asset.hasVideo) return false;
+
+        cropX = clampValue(cropX, 0.0, 1.0);
+        cropY = clampValue(cropY, 0.0, 1.0);
+        cropWidth = clampValue(cropWidth, 0.0, 1.0 - cropX);
+        cropHeight = clampValue(cropHeight, 0.0, 1.0 - cropY);
+        if (cropWidth < 0.005 || cropHeight < 0.005) return false;
+
+        const baseX = original.cropEnabled ? original.cropX : 0.0;
+        const baseY = original.cropEnabled ? original.cropY : 0.0;
+        const baseWidth = original.cropEnabled ? original.cropWidth : 1.0;
+        const baseHeight = original.cropEnabled ? original.cropHeight : 1.0;
+
+        TimelineClip cutout = cloneClip(original);
+        cutout.id = _nextClipId++;
+        cutout.cropEnabled = true;
+        cutout.cropX = clampValue(baseX + cropX * baseWidth, 0.0, 1.0);
+        cutout.cropY = clampValue(baseY + cropY * baseHeight, 0.0, 1.0);
+        cutout.cropWidth = clampValue(cropWidth * baseWidth, 0.005,
+            1.0 - cutout.cropX);
+        cutout.cropHeight = clampValue(cropHeight * baseHeight, 0.005,
+            1.0 - cutout.cropY);
+        cutout.positionX = clampValue(positionX, -2.0, 2.0);
+        cutout.positionY = clampValue(positionY, -2.0, 2.0);
+        cutout.scale = clampValue(scale, 0.1, 4.0);
+        cutout.rotation = clampValue(rotation, -360.0, 360.0);
+        cutout.opacity = clampValue(opacity, 0.0, 1.0);
+        cutout.muted = true;
+        cutout.audioProxyVisible = false;
+        cutout.keyframes.length = 0;
+
+        destination = TrackAddress(TrackKind.video, addTrack(TrackKind.video));
+        detachTrackClips(destination);
+        cutoutIndex = insertSorted(track(destination).clips, cutout);
+        return true;
+    }
+
     bool resetTrim(TrackAddress address, int index)
     {
         if (!validTrack(address)) return false;
@@ -1011,9 +1071,15 @@ final class EditorModel
         if (current.scale == 1.0 && current.positionX == 0.0 &&
             current.positionY == 0.0 && current.opacity == 1.0 &&
             current.rotation == 0.0 && current.blur == 0.0 &&
-            current.shadowOpacity == 0.0 && current.strokeWidth == 0.0 && !animated) return false;
+            current.shadowOpacity == 0.0 && current.strokeWidth == 0.0 &&
+            !current.cropEnabled && !animated) return false;
         detachTrackClips(address);
         auto clip = &track(address).clips[cast(size_t) index];
+        clip.cropEnabled = false;
+        clip.cropX = 0.0;
+        clip.cropY = 0.0;
+        clip.cropWidth = 1.0;
+        clip.cropHeight = 1.0;
         clip.scale = 1.0;
         clip.positionX = 0.0;
         clip.positionY = 0.0;
@@ -1049,6 +1115,9 @@ final class EditorModel
             current.shadowBlur != 12.0 || current.shadowOffsetX != 12.0 ||
             current.shadowOffsetY != 12.0 || current.shadowColor != 0xff000000 ||
             current.strokeWidth != 0.0 || current.strokeColor != 0xffffffff ||
+            current.cropEnabled || current.cropX != 0.0 ||
+            current.cropY != 0.0 || current.cropWidth != 1.0 ||
+            current.cropHeight != 1.0 ||
             current.fontName != "Sans" || current.textBold ||
             current.textItalic || current.textUnderline ||
             current.textAlignment != TextAlignment.left ||
@@ -1060,6 +1129,11 @@ final class EditorModel
         clip.volume = 1.0;
         clip.muted = false;
         clip.audioProxyVisible = false;
+        clip.cropEnabled = false;
+        clip.cropX = 0.0;
+        clip.cropY = 0.0;
+        clip.cropWidth = 1.0;
+        clip.cropHeight = 1.0;
         clip.scale = 1.0;
         clip.positionX = 0.0;
         clip.positionY = 0.0;
@@ -1764,6 +1838,11 @@ final class EditorModel
         result.audioProxyVisible = source.audioProxyVisible;
         result.playbackRate = source.playbackRate;
         result.reversed = source.reversed;
+        result.cropEnabled = source.cropEnabled;
+        result.cropX = source.cropX;
+        result.cropY = source.cropY;
+        result.cropWidth = source.cropWidth;
+        result.cropHeight = source.cropHeight;
         result.scale = source.scale;
         result.positionX = source.positionX;
         result.positionY = source.positionY;

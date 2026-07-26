@@ -213,6 +213,22 @@ int main()
         const pasted = featureModel.pasteClip(featureV1, copied, 4.0);
         assert(pasted >= 0 && featureModel.trackValue(featureV1).clips.length == 2);
 
+        TrackAddress cutoutTrack;
+        int cutoutIndex;
+        assert(featureModel.insertCutoutClip(featureV1, originalIndex,
+            0.20, 0.10, 0.35, 0.45, 0.12, -0.08, 0.72, 0.0, 0.85,
+            cutoutTrack, cutoutIndex));
+        TimelineClip cutout;
+        assert(featureModel.copyClip(cutoutTrack, cutoutIndex, cutout));
+        assert(cutoutTrack.kind == TrackKind.video &&
+            cutoutTrack.lane > featureV1.lane && cutout.cropEnabled);
+        assert(near(cutout.cropX, 0.20) && near(cutout.cropY, 0.10) &&
+            near(cutout.cropWidth, 0.35) && near(cutout.cropHeight, 0.45));
+        assert(cutout.muted && !cutout.audioProxyVisible &&
+            cutout.keyframes.length == 0);
+        assert(near(cutout.positionX, 0.12) && near(cutout.positionY, -0.08) &&
+            near(cutout.scale, 0.72) && near(cutout.opacity, 0.85));
+
         const textTrack = TrackAddress(TrackKind.video,
             featureModel.addTrack(TrackKind.video));
         const textIndex = featureModel.insertTextClip(textTrack, 1.0, 5.0, "Text");
@@ -276,6 +292,11 @@ int main()
         const assetIndex = projectModel.addAsset(videoAsset("saved-video.mp4", 6.0));
         const savedV1 = TrackAddress(TrackKind.video, 0);
         assert(projectModel.insertClip(assetIndex, savedV1, 0.0) == 0);
+        TrackAddress savedCutoutTrack;
+        int savedCutoutIndex;
+        assert(projectModel.insertCutoutClip(savedV1, 0, 0.25, 0.15,
+            0.40, 0.35, 0.10, -0.20, 0.80, 0.0, 0.90,
+            savedCutoutTrack, savedCutoutIndex));
         const titleLane = projectModel.addTrack(TrackKind.video);
         const titleTrack = TrackAddress(TrackKind.video, titleLane);
         const titleIndex = projectModel.insertTextClip(titleTrack, 1.5, 3.0,
@@ -299,17 +320,23 @@ int main()
         saveProjectFile(projectPath, projectModel, 2.25, true, 1.0,
             true, 4.5, 1440);
         const loaded = loadProjectFile(projectPath);
-        assert(loaded.assets.length == 1 && loaded.videoTracks.length == 2);
+        assert(loaded.assets.length == 1 && loaded.videoTracks.length == 3);
         assert(near(loaded.playhead, 2.25) && loaded.hasWorkIn &&
             loaded.hasWorkOut && near(loaded.workIn, 1.0) &&
             near(loaded.workOut, 4.5) && loaded.previewQualityHeight == 1440);
-        const savedTitle = loaded.videoTracks[1].clips[0];
+        const savedCutout = loaded.videoTracks[savedCutoutTrack.lane]
+            .clips[cast(size_t) savedCutoutIndex];
+        assert(savedCutout.cropEnabled && near(savedCutout.cropX, 0.25) &&
+            near(savedCutout.cropY, 0.15) &&
+            near(savedCutout.cropWidth, 0.40) &&
+            near(savedCutout.cropHeight, 0.35) && savedCutout.muted);
+        const savedTitle = loaded.videoTracks[2].clips[0];
         assert(savedTitle.text == "Saved title" && savedTitle.fontName == "Arial");
         assert(savedTitle.textBold && savedTitle.textItalic &&
             savedTitle.textUnderline &&
             savedTitle.textAlignment == TextAlignment.right &&
             savedTitle.textColor == 0xffffcc00);
-        assert(loaded.videoTracks[1].height == 36 &&
+        assert(loaded.videoTracks[2].height == 36 &&
             savedTitle.keyframes.length == 1 &&
             savedTitle.keyframes[0].interpolation == KeyframeInterpolation.hold);
 
@@ -319,7 +346,7 @@ int main()
         projectModel.assets[0].frameRate = double.nan;
         auto invalidVideo = projectModel.cloneTracks(TrackKind.video);
         invalidVideo[0].clips[0].positionX = double.nan;
-        invalidVideo[1].clips[0].keyframes[0].value = double.infinity;
+        invalidVideo[2].clips[0].keyframes[0].value = double.infinity;
         projectModel.restoreTimeline(invalidVideo,
             projectModel.cloneTracks(TrackKind.audio));
 
@@ -333,7 +360,7 @@ int main()
             isFinite(sanitized.workOut));
         assert(isFinite(sanitized.assets[0].frameRate));
         assert(isFinite(sanitized.videoTracks[0].clips[0].positionX));
-        assert(isFinite(sanitized.videoTracks[1].clips[0].keyframes[0].value));
+        assert(isFinite(sanitized.videoTracks[2].clips[0].keyframes[0].value));
     }
 
     // Restore a large sorted track and exercise logarithmic hit-testing. This

@@ -12,7 +12,7 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.conv : ConvException, parse, to;
 import std.format : format;
-import std.math : PI, cos, sin;
+import std.math : PI, cos, sin, sqrt;
 import std.process : Config, Pid, ProcessPipes, Redirect, kill, pipeProcess, wait;
 import std.utf : toUTF32;
 
@@ -807,6 +807,12 @@ final class PreviewWidget : Widget
     private long _displayedTimeTenths = long.min;
     private bool _playing;
     private bool _dragging;
+    private bool _scaleDragging;
+    private double _lastScaleDistance = 1.0;
+    private bool _cutoutArmed;
+    private bool _cutoutDragging;
+    private Point _cutoutStart;
+    private Point _cutoutCurrent;
     private Point _lastDragPosition;
     private bool _selectionVisible;
     private bool _selectionIsText;
@@ -871,7 +877,10 @@ final class PreviewWidget : Widget
         onCanvasPointerDown;
     void delegate() onTransformDragStarted;
     void delegate(double normalizedDx, double normalizedDy) onTransformDragRequested;
+    void delegate(double scaleFactor) onTransformScaleRequested;
     void delegate() onTransformDragEnded;
+    void delegate(double normalizedX1, double normalizedY1,
+        double normalizedX2, double normalizedY2) onCutoutSelectionCompleted;
 
     this()
     {
@@ -1567,6 +1576,24 @@ final class PreviewWidget : Widget
 
     bool playing() const @safe pure nothrow @nogc { return _playing; }
     bool hasFrame() const @safe pure nothrow @nogc { return _frame.valid(); }
+    bool cutoutSelectionArmedForTesting() const @safe pure nothrow @nogc
+    {
+        return _cutoutArmed;
+    }
+    void beginCutoutSelection()
+    {
+        _cutoutArmed = true;
+        _cutoutDragging = false;
+        setCursor(CursorKind.resizeDiagonalNESW);
+    }
+    void cancelCutoutSelection()
+    {
+        if (!_cutoutArmed && !_cutoutDragging) return;
+        _cutoutArmed = false;
+        _cutoutDragging = false;
+        setCursor(CursorKind.arrow);
+        invalidate();
+    }
     bool hasCompositionFrame() const
     {
         return _frame.valid() &&
@@ -1641,6 +1668,80 @@ final class PreviewWidget : Widget
         x = cast(double) (point.x - destination.x) / destination.width * 2.0 - 1.0;
         y = cast(double) (point.y - destination.y) / destination.height * 2.0 - 1.0;
         return true;
+    }
+
+    private bool normalizedPointClamped(Point point, out double x, out double y) const
+    {
+        const destination = displayedImageRect();
+        if (destination.empty()) return false;
+        const px = clampValue(cast(double) point.x, cast(double) destination.x,
+            cast(double) destination.x + destination.width);
+        const py = clampValue(cast(double) point.y, cast(double) destination.y,
+            cast(double) destination.y + destination.height);
+        x = (px - destination.x) / destination.width * 2.0 - 1.0;
+        y = (py - destination.y) / destination.height * 2.0 - 1.0;
+        return true;
+    }
+
+    private bool selectionCorners(out Point[4] corners) const
+    {
+        const destination = displayedImageRect();
+        if (!_selectionVisible || _playing || destination.width <= 0 ||
+            destination.height <= 0) return false;
+        const centerX = destination.x + cast(int)
+            ((_selectionCenterX + 1.0) * 0.5 * destination.width);
+        const centerY = destination.y + cast(int)
+            ((_selectionCenterY + 1.0) * 0.5 * destination.height);
+        const halfWidth = _selectionWidth * 0.25 * destination.width;
+        const halfHeight = _selectionHeight * 0.25 * destination.height;
+        const radians = _selectionRotation * PI / 180.0;
+        const c = cos(radians);
+        const sn = sin(radians);
+        immutable double[4] xs = [-halfWidth, halfWidth, halfWidth, -halfWidth];
+        immutable double[4] ys = [-halfHeight, -halfHeight, halfHeight, halfHeight];
+        foreach (index; 0 .. 4)
+        {
+            corners[index] = Point(
+                centerX + cast(int) (xs[index] * c - ys[index] * sn),
+                centerY + cast(int) (xs[index] * sn + ys[index] * c));
+        }
+        return true;
+    }
+
+    private bool selectionCornerAt(Point point, out int cornerIndex) const
+    {
+        Point[4] corners;
+        if (!selectionCorners(corners)) return false;
+        long bestDistance = long.max;
+        int bestIndex = -1;
+        foreach (index, corner; corners)
+        {
+            const dx = point.x - corner.x;
+            const dy = point.y - corner.y;
+            const distance = cast(long) dx * dx + cast(long) dy * dy;
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestIndex = cast(int) index;
+            }
+        }
+        if (bestIndex < 0 || bestDistance > 144) return false;
+        cornerIndex = bestIndex;
+        return true;
+    }
+
+    private double selectionScaleDistance(Point point) const
+    {
+        const destination = displayedImageRect();
+        if (destination.empty()) return 1.0;
+        const centerX = destination.x +
+            ((_selectionCenterX + 1.0) * 0.5 * destination.width);
+        const centerY = destination.y +
+            ((_selectionCenterY + 1.0) * 0.5 * destination.height);
+        const dx = cast(double) point.x - centerX;
+        const dy = cast(double) point.y - centerY;
+        const distance = sqrt(dx * dx + dy * dy);
+        return distance > 1.0 ? distance : 1.0;
     }
 
     /** Efficient decode size matched to the visible surface, capped by quality. */
@@ -1725,34 +1826,32 @@ final class PreviewWidget : Widget
                 HorizontalAlign.center, VerticalAlign.middle, true);
         }
 
-        if (_selectionVisible && !_playing && destination.width > 0 &&
-            destination.height > 0)
+        Point[4] corners;
+        if (selectionCorners(corners))
         {
-            const centerX = destination.x + cast(int)
-                ((_selectionCenterX + 1.0) * 0.5 * destination.width);
-            const centerY = destination.y + cast(int)
-                ((_selectionCenterY + 1.0) * 0.5 * destination.height);
-            const halfWidth = _selectionWidth * 0.25 * destination.width;
-            const halfHeight = _selectionHeight * 0.25 * destination.height;
-            const radians = _selectionRotation * PI / 180.0;
-            const c = cos(radians);
-            const sn = sin(radians);
-            Point[4] corners;
-            immutable double[4] xs = [-halfWidth, halfWidth, halfWidth, -halfWidth];
-            immutable double[4] ys = [-halfHeight, -halfHeight, halfHeight, halfHeight];
-            foreach (index; 0 .. 4)
-            {
-                corners[index] = Point(
-                    centerX + cast(int) (xs[index] * c - ys[index] * sn),
-                    centerY + cast(int) (xs[index] * sn + ys[index] * c));
-            }
             const outline = _selectionIsText ? Color.fromHex(0x58a6ff) :
                 Color.fromHex(0xffcc66);
             foreach (index; 0 .. 4)
                 canvas.drawLine(corners[index], corners[(index + 1) % 4], outline, 2);
             foreach (corner; corners)
-                canvas.fillCircle(corner, 3, outline);
-            canvas.fillCircle(Point(centerX, centerY), 3, outline);
+                canvas.fillCircle(corner, 5, outline);
+            canvas.fillCircle(Point((corners[0].x + corners[2].x) / 2,
+                (corners[0].y + corners[2].y) / 2), 3, outline);
+        }
+
+        if (_cutoutDragging)
+        {
+            const left = _cutoutStart.x < _cutoutCurrent.x ?
+                _cutoutStart.x : _cutoutCurrent.x;
+            const top = _cutoutStart.y < _cutoutCurrent.y ?
+                _cutoutStart.y : _cutoutCurrent.y;
+            const right = _cutoutStart.x > _cutoutCurrent.x ?
+                _cutoutStart.x : _cutoutCurrent.x;
+            const bottom = _cutoutStart.y > _cutoutCurrent.y ?
+                _cutoutStart.y : _cutoutCurrent.y;
+            canvas.drawRoundedRect(Rect(left, top, right - left, bottom - top),
+                2, Color.fromHex(0x58a6ff).withAlpha(42),
+                Color.fromHex(0x58a6ff), 2);
         }
     }
 
@@ -1773,7 +1872,29 @@ final class PreviewWidget : Widget
             _inlineText.clearTextSelection();
         double normalizedX;
         double normalizedY;
+        if (_cutoutArmed)
+        {
+            if (!normalizedPointClamped(event.position, normalizedX, normalizedY))
+                return true;
+            _cutoutDragging = true;
+            _cutoutStart = event.position;
+            _cutoutCurrent = event.position;
+            captureMouse();
+            setCursor(CursorKind.resizeDiagonalNESW);
+            invalidate();
+            return true;
+        }
         if (!normalizedPoint(event.position, normalizedX, normalizedY)) return true;
+        int cornerIndex;
+        if (selectionCornerAt(event.position, cornerIndex))
+        {
+            _scaleDragging = true;
+            _lastScaleDistance = selectionScaleDistance(event.position);
+            if (onTransformDragStarted !is null) onTransformDragStarted();
+            captureMouse();
+            setCursor(CursorKind.resizeDiagonalNESW);
+            return true;
+        }
         const movable = onCanvasPointerDown !is null &&
             onCanvasPointerDown(normalizedX, normalizedY, event.clickCount);
         if (event.clickCount >= 2 || !movable) return true;
@@ -1787,6 +1908,24 @@ final class PreviewWidget : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_cutoutDragging)
+        {
+            _cutoutCurrent = event.position;
+            invalidate();
+            return true;
+        }
+        if (_scaleDragging)
+        {
+            const distance = selectionScaleDistance(event.position);
+            if (distance > 1.0 && _lastScaleDistance > 1.0)
+            {
+                const factor = distance / _lastScaleDistance;
+                _lastScaleDistance = distance;
+                if (onTransformScaleRequested !is null)
+                    onTransformScaleRequested(factor);
+            }
+            return true;
+        }
         if (!_dragging) return super.onMouseMove(event);
         const dx = event.position.x - _lastDragPosition.x;
         const dy = event.position.y - _lastDragPosition.y;
@@ -1807,7 +1946,31 @@ final class PreviewWidget : Widget
 
     override bool onMouseUp(ref Event event)
     {
-        if (event.button != MouseButton.left || !_dragging) return false;
+        if (event.button != MouseButton.left)
+            return _dragging || _scaleDragging || _cutoutDragging;
+        if (_cutoutDragging)
+        {
+            double x1; double y1; double x2; double y2;
+            normalizedPointClamped(_cutoutStart, x1, y1);
+            normalizedPointClamped(event.position, x2, y2);
+            _cutoutDragging = false;
+            _cutoutArmed = false;
+            releaseMouse();
+            setCursor(CursorKind.arrow);
+            invalidate();
+            if (onCutoutSelectionCompleted !is null)
+                onCutoutSelectionCompleted(x1, y1, x2, y2);
+            return true;
+        }
+        if (_scaleDragging)
+        {
+            _scaleDragging = false;
+            releaseMouse();
+            setCursor(CursorKind.arrow);
+            if (onTransformDragEnded !is null) onTransformDragEnded();
+            return true;
+        }
+        if (!_dragging) return false;
         _dragging = false;
         releaseMouse();
         setCursor(CursorKind.arrow);
@@ -1817,12 +1980,16 @@ final class PreviewWidget : Widget
 
     protected override void onFocusChanged(bool value)
     {
-        if (!value && _dragging)
+        if (!value && (_dragging || _scaleDragging || _cutoutDragging))
         {
             _dragging = false;
+            _scaleDragging = false;
+            _cutoutDragging = false;
+            _cutoutArmed = false;
             releaseMouse();
             setCursor(CursorKind.arrow);
             if (onTransformDragEnded !is null) onTransformDragEnded();
+            invalidate();
         }
     }
 }

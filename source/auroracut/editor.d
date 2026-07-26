@@ -1089,7 +1089,14 @@ final class EditorRoot : VBox
         _preview.onTransformDragRequested = delegate(double normalizedDx, double normalizedDy) {
             nudgeSelectedClipOnCanvas(normalizedDx, normalizedDy);
         };
+        _preview.onTransformScaleRequested = delegate(double scaleFactor) {
+            scaleSelectedClipOnCanvas(scaleFactor);
+        };
         _preview.onTransformDragEnded = delegate() { endCanvasTransformDrag(); };
+        _preview.onCutoutSelectionCompleted = delegate(double x1, double y1,
+            double x2, double y2) {
+            createCutoutFromPreviewSelection(x1, y1, x2, y2);
+        };
         _preview.onInlineTextChanged = delegate(string value) {
             inlineTextChanged(value);
         };
@@ -2972,6 +2979,13 @@ final class EditorRoot : VBox
             pixelHeight = preset.height;
             pixelWidth = pixelHeight * sourceAspect;
         }
+        if (clip.cropEnabled)
+        {
+            const cropX = clampValue(clip.cropX, 0.0, 0.995);
+            const cropY = clampValue(clip.cropY, 0.0, 0.995);
+            pixelWidth *= clampValue(clip.cropWidth, 0.005, 1.0 - cropX);
+            pixelHeight *= clampValue(clip.cropHeight, 0.005, 1.0 - cropY);
+        }
         width = pixelWidth / preset.width * 2.0 * scale;
         height = pixelHeight / preset.height * 2.0 * scale;
         return true;
@@ -3118,6 +3132,131 @@ final class EditorRoot : VBox
         syncInspector();
         updatePreviewSelectionOverlay();
         if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
+    }
+
+    private void scaleSelectedClipOnCanvas(double factor)
+    {
+        const track = _timeline.selectedTrack();
+        const index = _timeline.selectedIndex();
+        if (track.kind != TrackKind.video || factor <= 0.0) return;
+        TimelineClip clip;
+        MediaAsset asset;
+        TrackAddress ignoredTrack;
+        int ignoredIndex;
+        if (!selectedClip(ignoredTrack, ignoredIndex, clip, asset)) return;
+        const newScale = clampValue(clip.scale * factor, 0.1, 4.0);
+        if (!_model.setScale(track, index, newScale)) return;
+        if (_canvasDragEditing)
+        {
+            _canvasDragChanged = true;
+            _scale.setValue(newScale, false);
+            _scaleValue.setText(format("%.2fx", newScale));
+            updatePreviewSelectionOverlay();
+            return;
+        }
+        markTimelineChanged();
+        _timeline.visualChanged();
+        syncInspector();
+        updatePreviewSelectionOverlay();
+        if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
+    }
+
+    private bool beginCutoutSelection()
+    {
+        TrackAddress track;
+        int index;
+        TimelineClip clip;
+        MediaAsset asset;
+        if (!selectedClip(track, index, clip, asset) ||
+            track.kind != TrackKind.video || clip.isText() ||
+            asset is null || !asset.hasVideo)
+        {
+            setStatus("Select a video or image clip, then create a rectangular cutout.");
+            return false;
+        }
+        if (_preview is null) return false;
+        _preview.beginCutoutSelection();
+        setStatus("Drag a rectangle in Composition Preview to create a cropped cutout layer.");
+        return true;
+    }
+
+    bool beginCutoutSelectionForTesting()
+    {
+        return beginCutoutSelection();
+    }
+
+    private void createCutoutFromPreviewSelection(double x1, double y1,
+        double x2, double y2)
+    {
+        TrackAddress track;
+        int index;
+        TimelineClip clip;
+        MediaAsset asset;
+        if (!selectedClip(track, index, clip, asset) ||
+            track.kind != TrackKind.video || clip.isText() ||
+            asset is null || !asset.hasVideo)
+        {
+            setStatus("Select a video or image clip before drawing a cutout.");
+            return;
+        }
+
+        const sequenceTime = _timeline.playhead();
+        const localTime = clampValue(sequenceTime - clip.start, 0.0, clip.duration());
+        const evaluatedRotation = clip.evaluatedValue(EffectProperty.rotation, localTime);
+        if (fabs(evaluatedRotation) > 0.000_5)
+        {
+            setStatus("Rectangular cutout currently supports unrotated clips. Reset rotation or create the cutout before rotating.");
+            return;
+        }
+
+        double centerX; double centerY; double width; double height; double rotation;
+        if (!compositionBounds(clip, asset, sequenceTime, centerX, centerY,
+            width, height, rotation))
+        {
+            setStatus("Move the playhead over the selected clip before creating a cutout.");
+            return;
+        }
+
+        double left = x1 < x2 ? x1 : x2;
+        double right = x1 > x2 ? x1 : x2;
+        double top = y1 < y2 ? y1 : y2;
+        double bottom = y1 > y2 ? y1 : y2;
+        const clipLeft = centerX - width * 0.5;
+        const clipRight = centerX + width * 0.5;
+        const clipTop = centerY - height * 0.5;
+        const clipBottom = centerY + height * 0.5;
+        left = clampValue(left, clipLeft, clipRight);
+        right = clampValue(right, clipLeft, clipRight);
+        top = clampValue(top, clipTop, clipBottom);
+        bottom = clampValue(bottom, clipTop, clipBottom);
+        if (right - left < 0.01 || bottom - top < 0.01)
+        {
+            setStatus("Cutout rectangle was too small or outside the selected clip.");
+            return;
+        }
+
+        const cropX = (left - clipLeft) / width;
+        const cropY = (top - clipTop) / height;
+        const cropWidth = (right - left) / width;
+        const cropHeight = (bottom - top) / height;
+        const cutoutCenterX = (left + right) * 0.5;
+        const cutoutCenterY = (top + bottom) * 0.5;
+        const cutoutScale = clip.evaluatedValue(EffectProperty.scale, localTime);
+        const cutoutOpacity = clip.evaluatedValue(EffectProperty.opacity, localTime);
+
+        auto before = captureTimelineSnapshot("Create rectangular cutout");
+        TrackAddress destination;
+        int cutoutIndex;
+        if (!_model.insertCutoutClip(track, index, cropX, cropY, cropWidth,
+            cropHeight, cutoutCenterX, cutoutCenterY, cutoutScale,
+            evaluatedRotation, cutoutOpacity, destination, cutoutIndex))
+        {
+            setStatus("Could not create a cutout from the selected clip.");
+            return;
+        }
+        commitHistory(before);
+        afterTimelineMutation("Rectangular cutout layer created. Drag or keyframe it like any other clip.",
+            destination, cutoutIndex, false, true);
     }
 
     private void setWorkIn(double value)
@@ -4911,6 +5050,7 @@ final class EditorRoot : VBox
             fabs(clip.positionY) > 0.000_001 ||
             fabs(clip.opacity - 1.0) > 0.000_001 ||
             fabs(clip.rotation) > 0.000_001 ||
+            clip.cropEnabled ||
             clip.fadeIn > 0.000_001 || clip.fadeOut > 0.000_001 ||
             clip.blur > 0.000_001 || clip.shadowOpacity > 0.000_001 ||
             clip.strokeWidth > 0.000_001 || clip.reversed ||
@@ -5186,6 +5326,11 @@ final class EditorRoot : VBox
         result.muted = clip.muted;
         result.playbackRate = clip.playbackRate;
         result.reversed = clip.reversed;
+        result.cropEnabled = clip.cropEnabled;
+        result.cropX = clip.cropX;
+        result.cropY = clip.cropY;
+        result.cropWidth = clip.cropWidth;
+        result.cropHeight = clip.cropHeight;
         result.hasVideo = asset.hasVideo;
         result.hasAudio = asset.hasAudio;
         result.sourceWidth = asset.width;
@@ -5785,6 +5930,12 @@ final class EditorRoot : VBox
                     syncInspector();
                     focusSelectedTextField();
                 });
+            if (track.kind == TrackKind.video && asset !is null && asset.hasVideo)
+                items ~= ContextMenuItem.command("Create rectangular cutout", delegate() {
+                    _timeline.setSelection(track, index, false);
+                    syncInspector();
+                    beginCutoutSelection();
+                });
             items ~= ContextMenuItem.command("Reset transform", delegate() {
                 _timeline.setSelection(track, index, false);
                 resetSelectedTransform();
@@ -5857,6 +6008,15 @@ final class EditorRoot : VBox
         // selection never changes this surface into a separate source player.
         const canPlayCurrent = _model.sequenceDuration() > 0.0 ||
             _playbackKind != PlaybackKind.none;
+        TrackAddress selectedTrack;
+        int selectedIndex;
+        TimelineClip selectedClipValue;
+        MediaAsset selectedAsset;
+        const canCreateCutout = selectedClip(selectedTrack, selectedIndex,
+            selectedClipValue, selectedAsset) &&
+            selectedTrack.kind == TrackKind.video &&
+            !selectedClipValue.isText() &&
+            selectedAsset !is null && selectedAsset.hasVideo;
 
         ContextMenuItem[] items;
         string playLabel = "Play";
@@ -5870,6 +6030,9 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.command("Add text", delegate() {
             addTextAtPlayheadFromPreview();
         });
+        items ~= ContextMenuItem.command("Create rectangular cutout", delegate() {
+            beginCutoutSelection();
+        }, "", canCreateCutout);
         items ~= ContextMenuItem.command("Stop", delegate() {
             stopPlayback(true);
             setStatus("Playback stopped.");

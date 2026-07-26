@@ -3,7 +3,7 @@ module auroracut.project;
 import auroracut.model : ClipKind, EditorModel, EffectKeyframe, EffectProperty,
     KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
     TimelineTrack, TrackKind, textAlignmentFromName, textAlignmentName;
-import auroracut.util : appLog;
+import auroracut.util : appLog, clampValue;
 import std.file : readText, write;
 import std.format : format;
 import std.json : JSONException, JSONType, JSONValue, parseJSON;
@@ -81,6 +81,11 @@ private JSONValue clipJson(const TimelineClip value)
         "audioProxyVisible": JSONValue(value.audioProxyVisible),
         "playbackRate": jsonNumber(value.playbackRate, 1.0, path ~ ".playbackRate"),
         "reversed": JSONValue(value.reversed),
+        "cropEnabled": JSONValue(value.cropEnabled),
+        "cropX": jsonNumber(value.cropX, 0.0, path ~ ".cropX"),
+        "cropY": jsonNumber(value.cropY, 0.0, path ~ ".cropY"),
+        "cropWidth": jsonNumber(value.cropWidth, 1.0, path ~ ".cropWidth"),
+        "cropHeight": jsonNumber(value.cropHeight, 1.0, path ~ ".cropHeight"),
         "scale": jsonNumber(value.scale, 1.0, path ~ ".scale"),
         "positionX": jsonNumber(value.positionX, 0.0, path ~ ".positionX"),
         "positionY": jsonNumber(value.positionY, 0.0, path ~ ".positionY"),
@@ -269,6 +274,21 @@ private TimelineClip parseClip(const JSONValue value)
     clip.audioProxyVisible = boolValue(value, "audioProxyVisible");
     clip.playbackRate = numberValue(value, "playbackRate", 1.0);
     clip.reversed = boolValue(value, "reversed");
+    clip.cropEnabled = boolValue(value, "cropEnabled");
+    clip.cropX = clampValue(numberValue(value, "cropX"), 0.0, 1.0);
+    clip.cropY = clampValue(numberValue(value, "cropY"), 0.0, 1.0);
+    clip.cropWidth = clampValue(numberValue(value, "cropWidth", 1.0),
+        0.0, 1.0 - clip.cropX);
+    clip.cropHeight = clampValue(numberValue(value, "cropHeight", 1.0),
+        0.0, 1.0 - clip.cropY);
+    if (clip.cropWidth <= 0.0 || clip.cropHeight <= 0.0)
+    {
+        clip.cropEnabled = false;
+        clip.cropX = 0.0;
+        clip.cropY = 0.0;
+        clip.cropWidth = 1.0;
+        clip.cropHeight = 1.0;
+    }
     clip.scale = numberValue(value, "scale", 1.0);
     clip.positionX = numberValue(value, "positionX");
     clip.positionY = numberValue(value, "positionY");

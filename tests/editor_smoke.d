@@ -1070,6 +1070,40 @@ int main(string[] arguments)
     assert(model.trackValue(textTrack).clips.length == 2,
         "Canvas dragging created an extra text item");
 
+    // A rectangular preview drag should create a real cropped upper-layer clip,
+    // not a one-off mask. The new cutout remains a normal timeline item and
+    // can be corner-scaled immediately.
+    timeline.setSelection(v1, 0, false);
+    timeline.setPlayhead(0.30, false);
+    foreach (_; 0 .. 30) editor.tickTree(0.02);
+    const cutoutLane = model.trackCount(TrackKind.video);
+    assert(editor.beginCutoutSelectionForTesting(),
+        "Cutout selection did not arm for a selected media clip");
+    assert(preview.cutoutSelectionArmedForTesting(),
+        "Preview did not enter cutout rectangle mode");
+    const cutoutDragStart = Point(previewCenter.x - 70, previewCenter.y - 42);
+    const cutoutDragEnd = Point(previewCenter.x + 34, previewCenter.y + 46);
+    driver.drag(cutoutDragStart, cutoutDragEnd, 12);
+    assert(model.trackCount(TrackKind.video) == cutoutLane + 1,
+        "Cutout creation did not add an upper video track");
+    const cutoutTrack = TrackAddress(TrackKind.video, cutoutLane);
+    assert(model.trackValue(cutoutTrack).clips.length == 1,
+        "Cutout creation did not place a timeline clip");
+    TimelineClip cutoutClip;
+    assert(model.copyClip(cutoutTrack, 0, cutoutClip));
+    assert(cutoutClip.cropEnabled && cutoutClip.cropWidth < 0.98 &&
+        cutoutClip.cropHeight < 0.98,
+        "Cutout clip did not store a smaller source crop");
+    assert(cutoutClip.muted,
+        "Cutout duplicate must be muted so it cannot double embedded audio");
+    foreach (_; 0 .. 20) editor.tickTree(0.02);
+    const cutoutScaleBefore = cutoutClip.scale;
+    const cutoutCorner = Point(cutoutDragEnd.x, cutoutDragStart.y);
+    driver.drag(cutoutCorner, Point(cutoutCorner.x + 52, cutoutCorner.y - 32), 10);
+    assert(model.copyClip(cutoutTrack, 0, cutoutClip));
+    assert(cutoutClip.scale > cutoutScaleBefore + 0.01,
+        "Dragging a Composition Preview corner handle did not scale the cutout");
+
     // A split item moved after a silent gap must remain discoverable as future
     // audible media. The mixed PCM preview graph uses this same timeline shape.
     const gapTrack = TrackAddress(TrackKind.video,

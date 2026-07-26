@@ -41,6 +41,11 @@ struct ExportClip
     bool muted;
     double playbackRate = 1.0;
     bool reversed;
+    bool cropEnabled;
+    double cropX = 0.0;
+    double cropY = 0.0;
+    double cropWidth = 1.0;
+    double cropHeight = 1.0;
     bool hasVideo;
     bool hasAudio;
     int sourceWidth;
@@ -706,6 +711,11 @@ private ExportClip cloneExportClip(const ref ExportClip source)
     result.muted = source.muted;
     result.playbackRate = source.playbackRate;
     result.reversed = source.reversed;
+    result.cropEnabled = source.cropEnabled;
+    result.cropX = source.cropX;
+    result.cropY = source.cropY;
+    result.cropWidth = source.cropWidth;
+    result.cropHeight = source.cropHeight;
     result.hasVideo = source.hasVideo;
     result.hasAudio = source.hasAudio;
     result.sourceWidth = source.sourceWidth;
@@ -1270,9 +1280,28 @@ private void appendMediaVideoLayer(ref string graph, const InputClip input,
 
     graph ~= format("[%d:v:0]", input.inputIndex);
     if (clip.reversed) graph ~= "reverse,";
-    graph ~= format("setpts=(PTS-STARTPTS)/%s+%s/TB," ~
-        "scale=w='%s':h='%s':eval=frame:flags=bicubic,format=rgba",
-        formatSeconds(clip.playbackRate, 6), formatSeconds(clip.start),
+    graph ~= format("setpts=(PTS-STARTPTS)/%s+%s/TB,",
+        formatSeconds(clip.playbackRate, 6), formatSeconds(clip.start));
+    if (clip.cropEnabled)
+    {
+        const sourceWidth = clip.sourceWidth > 0 ? clip.sourceWidth : preset.width;
+        const sourceHeight = clip.sourceHeight > 0 ? clip.sourceHeight : preset.height;
+        const cropX = min(0.995, max(0.0, clip.cropX));
+        const cropY = min(0.995, max(0.0, clip.cropY));
+        const cropWidth = max(0.005, min(1.0 - cropX, clip.cropWidth));
+        const cropHeight = max(0.005, min(1.0 - cropY, clip.cropHeight));
+        const cropPixelWidth = max(2, min(sourceWidth,
+            cast(int) (cast(double) sourceWidth * cropWidth + 0.5)));
+        const cropPixelHeight = max(2, min(sourceHeight,
+            cast(int) (cast(double) sourceHeight * cropHeight + 0.5)));
+        const cropPixelX = max(0, min(sourceWidth - cropPixelWidth,
+            cast(int) (cast(double) sourceWidth * cropX + 0.5)));
+        const cropPixelY = max(0, min(sourceHeight - cropPixelHeight,
+            cast(int) (cast(double) sourceHeight * cropY + 0.5)));
+        graph ~= format("crop=w=%d:h=%d:x=%d:y=%d,",
+            cropPixelWidth, cropPixelHeight, cropPixelX, cropPixelY);
+    }
+    graph ~= format("scale=w='%s':h='%s':eval=frame:flags=bicubic,format=rgba",
         widthExpression, heightExpression);
 
     if (clip.strokeWidth > 0.000_001)
@@ -1463,12 +1492,21 @@ private string colorLiteral(uint argb, bool includeAlpha)
 private void fittedBaseSize(const ExportClip clip, const ExportPreset preset,
     out int width, out int height)
 {
-    const sourceWidth = clip.sourceWidth > 0 ? clip.sourceWidth : preset.width;
-    const sourceHeight = clip.sourceHeight > 0 ? clip.sourceHeight : preset.height;
+    auto sourceWidth = cast(double) (clip.sourceWidth > 0 ? clip.sourceWidth : preset.width);
+    auto sourceHeight = cast(double) (clip.sourceHeight > 0 ? clip.sourceHeight : preset.height);
     const fit = min(cast(double) preset.width / sourceWidth,
         cast(double) preset.height / sourceHeight);
-    width = evenDimension(cast(int) (sourceWidth * fit + 0.5));
-    height = evenDimension(cast(int) (sourceHeight * fit + 0.5));
+    sourceWidth *= fit;
+    sourceHeight *= fit;
+    if (clip.cropEnabled)
+    {
+        const cropX = min(0.995, max(0.0, clip.cropX));
+        const cropY = min(0.995, max(0.0, clip.cropY));
+        sourceWidth *= max(0.005, min(1.0 - cropX, clip.cropWidth));
+        sourceHeight *= max(0.005, min(1.0 - cropY, clip.cropHeight));
+    }
+    width = evenDimension(cast(int) (sourceWidth + 0.5));
+    height = evenDimension(cast(int) (sourceHeight + 0.5));
     width = max(2, min(width, preset.width * 4));
     height = max(2, min(height, preset.height * 4));
 }
