@@ -7,7 +7,8 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath, extension, filenameCmp;
 import std.string : strip, toLower;
 
-private enum size_t recentProjectLimit = 12;
+private enum size_t recentProjectDisplayLimit = 12;
+private enum size_t recentProjectStorageLimit = 48;
 private string _recentProjectsPathOverride;
 
 void setRecentProjectsFilePathForTesting(string path)
@@ -44,7 +45,30 @@ private bool containsPath(const string[] paths, string path)
     return false;
 }
 
-private string[] sanitizeRecentProjects(string[] paths, bool existingOnly)
+private string[] readRecentProjectEntries()
+{
+    const path = recentProjectsFilePath();
+    if (!exists(path)) return [];
+
+    const root = parseJSON(readText(path));
+    string[] raw;
+    if (root.type == JSONType.array)
+    {
+        foreach (entry; root.array)
+            if (entry.type == JSONType.string) raw ~= entry.str;
+    }
+    else
+    {
+        auto projects = member(root, "projects");
+        if (projects !is null && projects.type == JSONType.array)
+            foreach (entry; projects.array)
+                if (entry.type == JSONType.string) raw ~= entry.str;
+    }
+    return raw;
+}
+
+private string[] sanitizeRecentProjects(string[] paths, bool existingOnly,
+    size_t limit)
 {
     string[] result;
     foreach (path; paths)
@@ -54,7 +78,7 @@ private string[] sanitizeRecentProjects(string[] paths, bool existingOnly)
         if (existingOnly && !exists(normalized)) continue;
         if (containsPath(result, normalized)) continue;
         result ~= normalized;
-        if (result.length >= recentProjectLimit) break;
+        if (result.length >= limit) break;
     }
     return result;
 }
@@ -63,24 +87,8 @@ string[] loadRecentProjects(bool existingOnly = false)
 {
     try
     {
-        const path = recentProjectsFilePath();
-        if (!exists(path)) return [];
-
-        const root = parseJSON(readText(path));
-        string[] raw;
-        if (root.type == JSONType.array)
-        {
-            foreach (entry; root.array)
-                if (entry.type == JSONType.string) raw ~= entry.str;
-        }
-        else
-        {
-            auto projects = member(root, "projects");
-            if (projects !is null && projects.type == JSONType.array)
-                foreach (entry; projects.array)
-                    if (entry.type == JSONType.string) raw ~= entry.str;
-        }
-        return sanitizeRecentProjects(raw, existingOnly);
+        return sanitizeRecentProjects(readRecentProjectEntries(), existingOnly,
+            recentProjectDisplayLimit);
     }
     catch (Exception error)
     {
@@ -89,9 +97,45 @@ string[] loadRecentProjects(bool existingOnly = false)
     }
 }
 
+private string[] loadStoredRecentProjects()
+{
+    try
+    {
+        return sanitizeRecentProjects(readRecentProjectEntries(), false,
+            recentProjectStorageLimit);
+    }
+    catch (Exception error)
+    {
+        appLog("Could not read stored recent projects: " ~ error.toString());
+        return [];
+    }
+}
+
+bool hasUnavailableRecentProjects()
+{
+    try
+    {
+        string[] seen;
+        foreach (path; readRecentProjectEntries())
+        {
+            const normalized = normalizedProjectPath(path);
+            if (normalized.length == 0) continue;
+            if (containsPath(seen, normalized)) continue;
+            seen ~= normalized;
+            if (!exists(normalized)) return true;
+        }
+    }
+    catch (Exception error)
+    {
+        appLog("Could not inspect recent projects: " ~ error.toString());
+    }
+    return false;
+}
+
 private void writeRecentProjects(string[] paths)
 {
-    const sanitized = sanitizeRecentProjects(paths, false);
+    const sanitized = sanitizeRecentProjects(paths, false,
+        recentProjectStorageLimit);
     JSONValue[] projects;
     foreach (path; sanitized) projects ~= JSONValue(path);
     JSONValue root = JSONValue([
@@ -114,11 +158,11 @@ void rememberRecentProject(string path)
 
         string[] next;
         next ~= normalized;
-        foreach (existing; loadRecentProjects(false))
+        foreach (existing; loadStoredRecentProjects())
         {
             if (filenameCmp(existing, normalized) == 0) continue;
             next ~= existing;
-            if (next.length >= recentProjectLimit) break;
+            if (next.length >= recentProjectStorageLimit) break;
         }
         writeRecentProjects(next);
     }

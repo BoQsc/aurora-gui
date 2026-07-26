@@ -17,7 +17,8 @@ import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
 import auroracut.project : loadProjectFile, saveProjectFile;
 import auroracut.recentprojects : clearRecentProjects,
-    clearUnavailableRecentProjects, loadRecentProjects, rememberRecentProject;
+    clearUnavailableRecentProjects, hasUnavailableRecentProjects,
+    loadRecentProjects, rememberRecentProject;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import auroracut.titlelayer : TitleVisual;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
@@ -1723,14 +1724,15 @@ final class EditorRoot : VBox
     {
         try
         {
+            const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
-            _projectPath = path;
+            _projectPath = normalizedPath;
             _projectDirty = false;
-            rememberRecentProject(path);
+            rememberRecentProject(normalizedPath);
             updateProjectTitle();
-            setStatus("Project saved: " ~ path);
+            setStatus("Project saved: " ~ normalizedPath);
         }
         catch (Exception error)
         {
@@ -1745,14 +1747,15 @@ final class EditorRoot : VBox
             unnamedProjectAutosavePath();
         try
         {
+            const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
-            _projectPath = path;
+            _projectPath = normalizedPath;
             _projectDirty = false;
-            rememberRecentProject(path);
+            rememberRecentProject(normalizedPath);
             updateProjectTitle();
-            appLog("Project autosaved on exit: " ~ path);
+            appLog("Project autosaved on exit: " ~ normalizedPath);
         }
         catch (Exception error)
         {
@@ -1771,6 +1774,7 @@ final class EditorRoot : VBox
     {
         try
         {
+            const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             stopPlayback(false);
             auto data = loadProjectFile(path);
@@ -1799,9 +1803,9 @@ final class EditorRoot : VBox
             _timeline.setSelection(TrackAddress(TrackKind.video, 0), -1, false);
             _timeline.setPlayhead(clampValue(data.playhead, 0.0,
                 _model.sequenceDuration()), false);
-            _projectPath = path;
+            _projectPath = normalizedPath;
             _projectDirty = false;
-            rememberRecentProject(path);
+            rememberRecentProject(normalizedPath);
             ++_modelRevision;
             if (_modelRevision == 0) _modelRevision = 1;
             syncMediaList();
@@ -1811,7 +1815,7 @@ final class EditorRoot : VBox
             updateQualityUi();
             updateProjectTitle();
             scheduleTimelineFrame();
-            setStatus("Project opened: " ~ path);
+            setStatus("Project opened: " ~ normalizedPath);
         }
         catch (Exception error)
         {
@@ -1820,38 +1824,50 @@ final class EditorRoot : VBox
         }
     }
 
-    private static string recentProjectMenuLabel(string path)
+    private static bool duplicateRecentProjectName(const string[] paths, string path)
+    {
+        const requested = baseName(path);
+        size_t count;
+        foreach (candidate; paths)
+        {
+            if (filenameCmp(baseName(candidate), requested) != 0) continue;
+            ++count;
+            if (count > 1) return true;
+        }
+        return false;
+    }
+
+    private static string recentProjectMenuLabel(string path, bool duplicateName)
     {
         const folder = dirName(path);
         const name = baseName(path);
         if (folder.length == 0 || folder == ".") return name;
+        if (duplicateName)
+        {
+            const parent = baseName(folder);
+            if (parent.length > 0 && parent != "." && parent != folder)
+                return name ~ " (" ~ parent ~ ") — " ~ folder;
+        }
         return name ~ " — " ~ folder;
     }
 
     private void showRecentProjectsMenu()
     {
         ContextMenuItem[] items;
-        const projects = loadRecentProjects(false);
-        bool foundAvailable;
-        bool foundUnavailable;
+        const projects = loadRecentProjects(true);
+        const foundUnavailable = hasUnavailableRecentProjects();
 
         foreach (path; projects)
         {
-            if (!exists(path))
-            {
-                foundUnavailable = true;
-                continue;
-            }
-
-            foundAvailable = true;
             const captured = path;
             const current = _projectPath.length > 0 &&
                 filenameCmp(_projectPath, captured) == 0;
-            items ~= ContextMenuItem.check(recentProjectMenuLabel(captured),
-                current, delegate() { openProject(captured); });
+            items ~= ContextMenuItem.check(recentProjectMenuLabel(captured,
+                    duplicateRecentProjectName(projects, captured)), current,
+                delegate() { openProject(captured); });
         }
 
-        if (!foundAvailable)
+        if (projects.length == 0)
             items ~= ContextMenuItem.command("No recent projects", delegate() {},
                 "", false);
 
@@ -1859,7 +1875,7 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.command("Browse project…", IconKind.open,
             delegate() { openProjectDialog(); });
 
-        if (foundAvailable || foundUnavailable)
+        if (projects.length > 0 || foundUnavailable)
         {
             if (foundUnavailable)
                 items ~= ContextMenuItem.command("Clear unavailable projects",

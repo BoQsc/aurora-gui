@@ -16,7 +16,7 @@ import core.time : msecs;
 import std.algorithm.searching : canFind;
 import std.conv : to;
 import std.datetime.stopwatch : AutoStart, StopWatch;
-import std.file : exists, remove, tempDir;
+import std.file : exists, mkdirRecurse, remove, rmdirRecurse, tempDir, write;
 import std.math : fabs;
 import std.path : baseName, buildPath, dirName;
 import std.stdio : writeln;
@@ -219,10 +219,19 @@ int main(string[] arguments)
     const recentPath = buildPath(tempDir(), "aurora-cut-editor-smoke-recent.json");
     const savedProject = buildPath(tempDir(),
         "aurora-cut-editor-smoke-recent.auroracut");
+    const recentDuplicateA = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent-a");
+    const recentDuplicateB = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent-b");
+    const recentOverflowRoot = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent-overflow");
     const screenshotPath = buildPath(tempDir(),
         "aurora-cut-editor-smoke-clipboard.bmp");
     if (exists(recentPath)) remove(recentPath);
     if (exists(savedProject)) remove(savedProject);
+    if (exists(recentDuplicateA)) rmdirRecurse(recentDuplicateA);
+    if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
+    if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
     if (exists(screenshotPath)) remove(screenshotPath);
     bool fakeClipboardHasImage;
     ulong fakeClipboardSequence = 1;
@@ -236,6 +245,9 @@ int main(string[] arguments)
         setRecentProjectsFilePathForTesting("");
         if (exists(recentPath)) remove(recentPath);
         if (exists(savedProject)) remove(savedProject);
+        if (exists(recentDuplicateA)) rmdirRecurse(recentDuplicateA);
+        if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
+        if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
         if (exists(screenshotPath)) remove(screenshotPath);
     }
     setRecentProjectsFilePathForTesting(recentPath);
@@ -365,6 +377,56 @@ int main(string[] arguments)
         recentMenu = findOpenContextMenu(editor);
         assert(menuHasLabel(recentMenu, "Clear unavailable projects"d),
             "Recent Projects dropdown did not offer cleanup for missing projects");
+        driver.pressKey(Key.escape);
+
+        mkdirRecurse(recentDuplicateA);
+        mkdirRecurse(recentDuplicateB);
+        const duplicatePathA = buildPath(recentDuplicateA,
+            "same-name.auroracut");
+        const duplicatePathB = buildPath(recentDuplicateB,
+            "same-name.auroracut");
+        write(duplicatePathA, "{}");
+        write(duplicatePathB, "{}");
+        clearRecentProjects();
+        rememberRecentProject(duplicatePathA);
+        rememberRecentProject(duplicatePathB);
+        driver.click(globalCenter(recentProjects));
+        recentMenu = findOpenContextMenu(editor);
+        assert(menuHasLabel(recentMenu, ("same-name.auroracut (" ~
+                baseName(recentDuplicateB) ~ ") — " ~ recentDuplicateB).to!dstring),
+            "Recent Projects dropdown did not disambiguate the newest duplicate filename");
+        assert(menuHasLabel(recentMenu, ("same-name.auroracut (" ~
+                baseName(recentDuplicateA) ~ ") — " ~ recentDuplicateA).to!dstring),
+            "Recent Projects dropdown did not disambiguate the older duplicate filename");
+        driver.pressKey(Key.escape);
+
+        mkdirRecurse(recentOverflowRoot);
+        string[] availableOverflowProjects;
+        foreach (index; 0 .. 13)
+        {
+            const folder = buildPath(recentOverflowRoot, "available-" ~
+                to!string(index));
+            mkdirRecurse(folder);
+            const project = buildPath(folder, "overflow.auroracut");
+            write(project, "{}");
+            rememberRecentProject(project);
+            availableOverflowProjects ~= project;
+        }
+        foreach (index; 0 .. 12)
+            rememberRecentProject(buildPath(tempDir(),
+                "aurora-cut-editor-smoke-missing-" ~ to!string(index) ~
+                ".auroracut"));
+        const availableRecents = loadRecentProjects(true);
+        assert(availableRecents.length == 12,
+            "Missing recent projects suppressed available older projects");
+        assert(availableRecents[0] == availableOverflowProjects[$ - 1],
+            "Recent Projects available ordering did not keep the newest real project first");
+        driver.click(globalCenter(recentProjects));
+        recentMenu = findOpenContextMenu(editor);
+        assert(menuHasLabel(recentMenu, "Clear unavailable projects"d),
+            "Recent Projects dropdown lost cleanup while showing available projects");
+        assert(!menuHasLabel(recentMenu, "No recent projects"d),
+            "Recent Projects dropdown incorrectly reported empty history while available projects exist");
         driver.pressKey(Key.escape);
     }
 
