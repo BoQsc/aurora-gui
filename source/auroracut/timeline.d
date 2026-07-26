@@ -21,7 +21,8 @@ private enum PointerMode : ubyte
     clipResizeEnd,
     marqueeSelect,
     textCreate,
-    transitionCreate,
+    transitionResizeIn,
+    transitionResizeOut,
     labelResize,
     trackResize
 }
@@ -30,8 +31,16 @@ private enum TimelineTool : ubyte
 {
     selection,
     cut,
-    text,
-    transition
+    text
+}
+
+private enum TimelineToolCount = 3;
+
+private enum TimelineSelectionPart : ubyte
+{
+    clip,
+    fadeIn,
+    fadeOut
 }
 
 /**
@@ -87,6 +96,7 @@ final class TimelineWidget : Widget
     private TimelineTool _activeTool = TimelineTool.selection;
     private TrackAddress _selectedTrack = TrackAddress(TrackKind.video, 0);
     private int _selectedIndex = -1;
+    private TimelineSelectionPart _selectedPart = TimelineSelectionPart.clip;
 
     private PointerMode _pointerMode;
     private TrackAddress _pressTrack;
@@ -108,6 +118,8 @@ final class TimelineWidget : Widget
     private TimelineClip _resizeClip;
     private double _resizePreviewStart;
     private double _resizePreviewEnd;
+    private double _transitionPreviewDuration;
+    private double _transitionGrabOffset;
 
     private bool _ghostVisible;
     private bool _ghostValid;
@@ -146,8 +158,9 @@ final class TimelineWidget : Widget
     private dstring _selectionToolText;
     private dstring _cutToolText;
     private dstring _textToolText;
-    private dstring _transitionToolText;
-    private dstring[4] _toolTips;
+    private dstring _fadeInText;
+    private dstring _fadeOutText;
+    private dstring[TimelineToolCount] _toolTips;
     private int _hoverToolIndex = -1;
     private bool _scrubGestureActive;
     private TimelinePlayheadLayer _playheadLayer;
@@ -200,11 +213,11 @@ final class TimelineWidget : Widget
         _selectionToolText = toUTF32("↖");
         _cutToolText = toUTF32("✂");
         _textToolText = toUTF32("T");
-        _transitionToolText = toUTF32("↔");
+        _fadeInText = toUTF32("In");
+        _fadeOutText = toUTF32("Out");
         _toolTips[0] = toUTF32("Selection (V)");
         _toolTips[1] = toUTF32("Cut (C)");
         _toolTips[2] = toUTF32("Text (T)");
-        _toolTips[3] = toUTF32("Transition (R)");
         refreshTextCaches();
         setFocusable(true);
         setCursor(CursorKind.arrow);
@@ -222,6 +235,22 @@ final class TimelineWidget : Widget
     size_t selectedCountForTesting() const @safe pure nothrow @nogc
     {
         return _selectedClipIds.length;
+    }
+    bool selectedFadeInTransition() const @safe pure nothrow @nogc
+    {
+        return _selectedPart == TimelineSelectionPart.fadeIn;
+    }
+    bool selectedFadeOutTransition() const @safe pure nothrow @nogc
+    {
+        return _selectedPart == TimelineSelectionPart.fadeOut;
+    }
+    bool selectedFadeInTransitionForTesting() const @safe pure nothrow @nogc
+    {
+        return selectedFadeInTransition();
+    }
+    bool selectedFadeOutTransitionForTesting() const @safe pure nothrow @nogc
+    {
+        return selectedFadeOutTransition();
     }
     int hoveredToolForTesting() const @safe pure nothrow @nogc
     {
@@ -253,7 +282,9 @@ final class TimelineWidget : Widget
     {
         return _pointerMode == PointerMode.clipDrag ||
             _pointerMode == PointerMode.clipResizeStart ||
-            _pointerMode == PointerMode.clipResizeEnd || _externalDrag;
+            _pointerMode == PointerMode.clipResizeEnd ||
+            _pointerMode == PointerMode.transitionResizeIn ||
+            _pointerMode == PointerMode.transitionResizeOut || _externalDrag;
     }
     size_t lastPaintedClipCountForTesting() const @safe pure nothrow @nogc
     {
@@ -410,6 +441,11 @@ final class TimelineWidget : Widget
         if (_selectedTrack == track && _selectedIndex == index &&
             (_selectedClipIds.length <= 1 || index < 0))
         {
+            if (_selectedPart != TimelineSelectionPart.clip)
+            {
+                _selectedPart = TimelineSelectionPart.clip;
+                invalidate();
+            }
             // Re-clicking an already selected sequence item still makes the
             // Sequence the active Preview context after Project Media was used.
             if (notify && onSelectionChanged !is null)
@@ -418,10 +454,23 @@ final class TimelineWidget : Widget
         }
         _selectedTrack = track;
         _selectedIndex = index;
+        _selectedPart = TimelineSelectionPart.clip;
         _selectedClipIds.length = 0;
         if (index >= 0)
             _selectedClipIds ~= _model.trackValue(track).clips[cast(size_t) index].id;
         revealTrack(track);
+        invalidate();
+        if (notify && onSelectionChanged !is null)
+            onSelectionChanged(_selectedTrack, _selectedIndex);
+    }
+
+    void setTransitionSelection(TrackAddress track, int index, bool fadeIn,
+        bool notify = true)
+    {
+        setSelection(track, index, false);
+        if (_selectedIndex < 0) return;
+        _selectedPart = fadeIn ? TimelineSelectionPart.fadeIn :
+            TimelineSelectionPart.fadeOut;
         invalidate();
         if (notify && onSelectionChanged !is null)
             onSelectionChanged(_selectedTrack, _selectedIndex);
@@ -450,6 +499,17 @@ final class TimelineWidget : Widget
         if (_selectedIndex >= 0 && _model.validTrack(_selectedTrack))
             _selectedClipIds ~= _model.trackValue(_selectedTrack)
                 .clips[cast(size_t) _selectedIndex].id;
+        else
+            _selectedPart = TimelineSelectionPart.clip;
+        if (_selectedPart != TimelineSelectionPart.clip && _selectedIndex >= 0 &&
+            _model.validTrack(_selectedTrack))
+        {
+            const clip = _model.trackValue(_selectedTrack)
+                .clips[cast(size_t) _selectedIndex];
+            if ((_selectedPart == TimelineSelectionPart.fadeIn && clip.fadeIn <= 0.0) ||
+                (_selectedPart == TimelineSelectionPart.fadeOut && clip.fadeOut <= 0.0))
+                _selectedPart = TimelineSelectionPart.clip;
+        }
         const maximum = _model.sequenceDuration();
         if (_playhead > maximum) _playhead = maximum;
         refreshTextCaches();
@@ -836,7 +896,7 @@ final class TimelineWidget : Widget
         if (point.x < 2 || point.x >= toolColumnWidth() - 2) return -1;
         const top = 2;
         const size = 20;
-        foreach (index; 0 .. 4)
+        foreach (index; 0 .. TimelineToolCount)
         {
             const y = top + cast(int) index * (size + 2);
             if (point.y >= y && point.y < y + size) return cast(int) index;
@@ -849,9 +909,7 @@ final class TimelineWidget : Widget
         if (_activeTool == tool) return;
         _activeTool = tool;
         setCursor(tool == TimelineTool.cut ? CursorKind.resizeDiagonalNESW :
-            (tool == TimelineTool.text ? CursorKind.text :
-            (tool == TimelineTool.transition ? CursorKind.resizeHorizontal :
-             CursorKind.arrow)));
+            (tool == TimelineTool.text ? CursorKind.text : CursorKind.arrow));
         invalidate();
     }
 
@@ -905,6 +963,64 @@ final class TimelineWidget : Widget
         if (point.x <= rect.x + threshold) return -1;
         if (point.x >= rect.right() - threshold) return 1;
         return 0;
+    }
+
+    private Rect transitionRect(TrackAddress address, const TimelineClip clip,
+        bool fadeIn, double overrideDuration = -1.0) const
+    {
+        const base = clipRect(address, clip);
+        if (base.empty()) return Rect.init;
+        const duration = overrideDuration >= 0.0 ? overrideDuration :
+            (fadeIn ? clip.fadeIn : clip.fadeOut);
+        if (duration <= 0.000_000_5 || clip.duration() <= 0.000_000_5)
+            return Rect.init;
+
+        const start = fadeIn ? clip.start : clip.end() - duration;
+        const finish = fadeIn ? clip.start + duration : clip.end();
+        const left = maxInt(base.x, xForTime(start));
+        const right = minInt(base.right(), xForTime(finish));
+        if (right <= left) return Rect.init;
+        return Rect(left, base.y, right - left, base.height);
+    }
+
+    private TimelineSelectionPart transitionPartAtPoint(TrackAddress address,
+        int index, Point point) const
+    {
+        if (!_model.validTrack(address)) return TimelineSelectionPart.clip;
+        const clips = _model.trackValue(address).clips;
+        if (index < 0 || index >= cast(int) clips.length)
+            return TimelineSelectionPart.clip;
+        const clip = clips[cast(size_t) index];
+        const inRect = transitionRect(address, clip, true);
+        if (!inRect.empty() && inRect.contains(point))
+            return TimelineSelectionPart.fadeIn;
+        const outRect = transitionRect(address, clip, false);
+        if (!outRect.empty() && outRect.contains(point))
+            return TimelineSelectionPart.fadeOut;
+        return TimelineSelectionPart.clip;
+    }
+
+    private double transitionMaximumDuration(bool fadeIn,
+        const TimelineClip clip) const
+    {
+        return fadeIn ?
+            (clip.duration() > clip.fadeOut ? clip.duration() - clip.fadeOut : 0.0) :
+            (clip.duration() > clip.fadeIn ? clip.duration() - clip.fadeIn : 0.0);
+    }
+
+    private double transitionRawDurationForPoint(bool fadeIn,
+        const TimelineClip clip, Point point) const
+    {
+        return fadeIn ? timeForX(point.x) - clip.start :
+            clip.end() - timeForX(point.x);
+    }
+
+    private double transitionDurationForPoint(bool fadeIn,
+        const TimelineClip clip, Point point) const
+    {
+        const raw = transitionRawDurationForPoint(fadeIn, clip, point);
+        const maximum = transitionMaximumDuration(fadeIn, clip);
+        return clampValue(raw, 0.0, maximum);
     }
 
     private size_t firstVisibleClip(const TimelineClip[] clips, double start) const
@@ -1231,14 +1347,13 @@ final class TimelineWidget : Widget
         const width = toolColumnWidth();
         canvas.fillRect(Rect(0, 0, width, bounds().height), Color.fromHex(0x20242a));
         canvas.fillRect(Rect(width - 1, 0, 1, bounds().height), palette.border);
-        foreach (index; 0 .. 4)
+        foreach (index; 0 .. TimelineToolCount)
         {
             const y = 2 + cast(int) index * 22;
             const selected = cast(TimelineTool) index == _activeTool;
             const rect = Rect(4, y, maxInt(1, width - 8), 20);
             const label = index == 0 ? _selectionToolText :
-                (index == 1 ? _cutToolText :
-                (index == 2 ? _textToolText : _transitionToolText));
+                (index == 1 ? _cutToolText : _textToolText);
             canvas.drawRoundedRect(rect, 3, selected ? palette.accent :
                 Color.fromHex(0x2a3038), selected ? palette.accentHover : palette.border, 1);
             canvas.drawTextInRect(rect, label, selected ? Color.rgb(255, 255, 255) :
@@ -1249,7 +1364,7 @@ final class TimelineWidget : Widget
 
     private void drawToolTooltip(ref Canvas canvas)
     {
-        if (_hoverToolIndex < 0 || _hoverToolIndex >= 4 ||
+        if (_hoverToolIndex < 0 || _hoverToolIndex >= TimelineToolCount ||
             _pointerMode != PointerMode.none) return;
         const y = 2 + _hoverToolIndex * 22;
         const width = 112;
@@ -1347,6 +1462,26 @@ final class TimelineWidget : Widget
         }
     }
 
+    private void drawTransitionBlock(ref Canvas canvas, Rect rect, bool fadeIn,
+        bool selected)
+    {
+        if (rect.empty()) return;
+        const palette = theme();
+        const color = fadeIn ? Color.fromHex(0x5fb3ff) :
+            Color.fromHex(0xffb74d);
+        canvas.fillRect(rect, color.withAlpha(selected ? 120 : 72));
+        const handleX = fadeIn ? rect.right() - 2 : rect.x;
+        canvas.fillRect(Rect(handleX, rect.y + 2, 2, maxInt(1, rect.height - 4)),
+            selected ? palette.accentHover : color.withAlpha(215));
+        if (selected)
+            canvas.strokeRect(Rect(rect.x, rect.y, rect.width, rect.height),
+                palette.accentHover, 1);
+        if (rect.width >= 26)
+            canvas.drawTextInRect(rect, fadeIn ? _fadeInText : _fadeOutText,
+                Color.rgb(255, 255, 255).withAlpha(220), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
     private void drawTrack(ref Canvas canvas, TrackAddress address)
     {
         const palette = theme();
@@ -1404,6 +1539,24 @@ final class TimelineWidget : Widget
             const fill = clip.muted || track.muted ? color.darker(38) : color;
             canvas.drawRoundedRect(clipBounds, 2, fill,
                 selected ? palette.accentHover : color.lighter(24), selected ? 2 : 1);
+
+            double fadeInDuration = clip.fadeIn;
+            double fadeOutDuration = clip.fadeOut;
+            if (address == _pressTrack && cast(int) index == _pressIndex)
+            {
+                if (_pointerMode == PointerMode.transitionResizeIn)
+                    fadeInDuration = _transitionPreviewDuration;
+                else if (_pointerMode == PointerMode.transitionResizeOut)
+                    fadeOutDuration = _transitionPreviewDuration;
+            }
+            const primarySelected = selected && address == _selectedTrack &&
+                cast(int) index == _selectedIndex;
+            drawTransitionBlock(canvas,
+                transitionRect(address, clip, true, fadeInDuration), true,
+                primarySelected && _selectedPart == TimelineSelectionPart.fadeIn);
+            drawTransitionBlock(canvas,
+                transitionRect(address, clip, false, fadeOutDuration), false,
+                primarySelected && _selectedPart == TimelineSelectionPart.fadeOut);
 
             if (clipBounds.width > 18)
             {
@@ -1567,6 +1720,7 @@ final class TimelineWidget : Widget
     private void updateMarqueeSelection()
     {
         _selectedClipIds.length = 0;
+        _selectedPart = TimelineSelectionPart.clip;
         const selectionRect = normalizedDragRect(_marqueeOrigin, _marqueeCurrent);
         bool havePrimary;
         foreach (row; 0 .. totalRows())
@@ -1630,7 +1784,6 @@ final class TimelineWidget : Widget
     {
         if (_activeTool == TimelineTool.cut) setCursor(CursorKind.resizeDiagonalNESW);
         else if (_activeTool == TimelineTool.text) setCursor(CursorKind.text);
-        else if (_activeTool == TimelineTool.transition) setCursor(CursorKind.resizeHorizontal);
         else setCursor(CursorKind.arrow);
     }
 
@@ -1708,28 +1861,6 @@ final class TimelineWidget : Widget
             return true;
         }
 
-        if (_activeTool == TimelineTool.transition)
-        {
-            if (overTrack && index >= 0 && event.position.x >= labelWidth())
-            {
-                TimelineClip clip;
-                if (_model.copyClip(address, index, clip))
-                {
-                    const t = timeForX(event.position.x);
-                    const fromStart = t - clip.start;
-                    const fromEnd = clip.end() - t;
-                    const fadeInSide = fromStart <= fromEnd;
-                    const rawDuration = fadeInSide ? fromStart : fromEnd;
-                    const duration = rawDuration < 0.0 ? 0.0 :
-                        (rawDuration > clip.duration() ? clip.duration() : rawDuration);
-                    setSelection(address, index);
-                    if (onTransitionToolRequested !is null)
-                        onTransitionToolRequested(address, index, fadeInSide, duration);
-                }
-            }
-            return true;
-        }
-
         if (_activeTool == TimelineTool.cut)
         {
             if (overTrack && event.position.x >= labelWidth())
@@ -1790,6 +1921,25 @@ final class TimelineWidget : Widget
                 _resizePreviewEnd = clip.end();
                 _pointerMode = edge < 0 ? PointerMode.clipResizeStart :
                     PointerMode.clipResizeEnd;
+                captureMouse();
+                setCursor(CursorKind.resizeHorizontal);
+                invalidate();
+                return true;
+            }
+            const transitionPart = transitionPartAtPoint(address, index,
+                event.position);
+            if (transitionPart != TimelineSelectionPart.clip)
+            {
+                const fadeIn = transitionPart == TimelineSelectionPart.fadeIn;
+                setTransitionSelection(address, index, fadeIn);
+                _pressTrack = address;
+                _pressIndex = index;
+                _resizeClip = clip;
+                _transitionPreviewDuration = fadeIn ? clip.fadeIn : clip.fadeOut;
+                _transitionGrabOffset = _transitionPreviewDuration -
+                    transitionDurationForPoint(fadeIn, clip, event.position);
+                _pointerMode = fadeIn ? PointerMode.transitionResizeIn :
+                    PointerMode.transitionResizeOut;
                 captureMouse();
                 setCursor(CursorKind.resizeHorizontal);
                 invalidate();
@@ -1882,6 +2032,19 @@ final class TimelineWidget : Widget
             invalidate();
             return true;
         }
+        if (_pointerMode == PointerMode.transitionResizeIn ||
+            _pointerMode == PointerMode.transitionResizeOut)
+        {
+            autoScrollDuringDrag(event.position);
+            const fadeIn = _pointerMode == PointerMode.transitionResizeIn;
+            _transitionPreviewDuration = clampValue(
+                transitionRawDurationForPoint(fadeIn, _resizeClip,
+                    event.position) + _transitionGrabOffset,
+                0.0, transitionMaximumDuration(fadeIn, _resizeClip));
+            setCursor(CursorKind.resizeHorizontal);
+            invalidate();
+            return true;
+        }
         if (_pointerMode == PointerMode.playhead)
         {
             setPlayhead(timeForX(event.position.x));
@@ -1915,13 +2078,17 @@ final class TimelineWidget : Widget
         TrackAddress hoverTrack;
         int hoverIndex = -1;
         bool overClipEdge;
+        bool overTransitionBlock;
         if (_activeTool == TimelineTool.selection && trackAtY(event.position.y, hoverTrack))
         {
             hoverIndex = clipAtPoint(hoverTrack, event.position);
             overClipEdge = hoverIndex >= 0 &&
                 clipEdgeAtPoint(hoverTrack, hoverIndex, event.position) != 0;
+            overTransitionBlock = !overClipEdge && hoverIndex >= 0 &&
+                transitionPartAtPoint(hoverTrack, hoverIndex,
+                    event.position) != TimelineSelectionPart.clip;
         }
-        if (overClipEdge) setCursor(CursorKind.resizeHorizontal);
+        if (overClipEdge || overTransitionBlock) setCursor(CursorKind.resizeHorizontal);
         else if (overLabelResizeHandle(event.position)) setCursor(CursorKind.resizeHorizontal);
         else if (resizeTrackAtY(event.position.y, hoverTrack)) setCursor(CursorKind.resizeVertical);
         else restoreToolCursor();
@@ -1971,6 +2138,16 @@ final class TimelineWidget : Widget
             if (onClipResizeRequested !is null)
                 onClipResizeRequested(_pressTrack, _pressIndex,
                     _resizePreviewStart, _resizePreviewEnd);
+            invalidate();
+            return true;
+        }
+        if (mode == PointerMode.transitionResizeIn ||
+            mode == PointerMode.transitionResizeOut)
+        {
+            const fadeIn = mode == PointerMode.transitionResizeIn;
+            if (onTransitionToolRequested !is null)
+                onTransitionToolRequested(_pressTrack, _pressIndex, fadeIn,
+                    _transitionPreviewDuration);
             invalidate();
             return true;
         }
@@ -2046,6 +2223,8 @@ final class TimelineWidget : Widget
             _pointerMode == PointerMode.clipDrag ||
             _pointerMode == PointerMode.clipResizeStart ||
             _pointerMode == PointerMode.clipResizeEnd ||
+            _pointerMode == PointerMode.transitionResizeIn ||
+            _pointerMode == PointerMode.transitionResizeOut ||
             _pointerMode == PointerMode.marqueeSelect ||
             _pointerMode == PointerMode.textCreate ||
             _pointerMode == PointerMode.playhead ||
@@ -2088,9 +2267,6 @@ final class TimelineWidget : Widget
                 return true;
             case Key.t:
                 setActiveTool(TimelineTool.text);
-                return true;
-            case Key.r:
-                setActiveTool(TimelineTool.transition);
                 return true;
             case Key.s:
                 if (onSplitRequested !is null) onSplitRequested();

@@ -293,6 +293,7 @@ int main(string[] arguments)
     auto undoButton = requireWidget!Button(editor, "undo");
     auto redoButton = requireWidget!Button(editor, "redo");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
+    auto addTransitions = requireWidget!Button(editor, "clip-add-transitions");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
         "export-mp4-compression-value");
@@ -775,6 +776,41 @@ int main(string[] arguments)
     driver.drag(edgeStart, Point(edgeStart.x + 24, edgeStart.y), 8);
     assert(editor.modelForTesting().trackValue(v3).clips[0].duration() >= beforeDuration,
         "Dragging a clip edge did not resize its timeline duration");
+
+    timeline.setSelection(v3, 0);
+    assert(addTransitions.enabled(),
+        "Add transition button did not enable for a selected timeline item");
+    addTransitions.activate();
+    assert(editor.modelForTesting().trackValue(v3).clips[0].fadeIn > 0.0 &&
+        editor.modelForTesting().trackValue(v3).clips[0].fadeOut > 0.0,
+        "Add transition button did not apply start and end transitions");
+    assert(driver.paint(), "Timeline did not paint visible transition blocks");
+
+    auto transitionClipRect = timeline.clipRectForTesting(v3, 0);
+    timelineGlobal = timeline.localToGlobal(Point(0, 0));
+    const fadeInPoint = Point(timelineGlobal.x + transitionClipRect.x + 18,
+        timelineGlobal.y + transitionClipRect.y + transitionClipRect.height / 2);
+    driver.click(fadeInPoint);
+    assert(timeline.selectedFadeInTransitionForTesting(),
+        "Clicking the start transition block did not select it");
+    driver.pressKey(Key.deleteKey);
+    assert(editor.modelForTesting().trackValue(v3).clips[0].fadeIn == 0.0 &&
+        editor.modelForTesting().trackValue(v3).clips[0].fadeOut > 0.0,
+        "Delete did not remove only the selected start transition");
+
+    const fadeOutBefore = editor.modelForTesting().trackValue(v3).clips[0].fadeOut;
+    const fadeOutStart = editor.modelForTesting().trackValue(v3).clips[0].start +
+        editor.modelForTesting().trackValue(v3).clips[0].duration() -
+        fadeOutBefore * 0.5;
+    const fadeOutPoint = timeline.pointForTrackTime(v3, fadeOutStart);
+    driver.click(fadeOutPoint);
+    assert(timeline.selectedFadeOutTransitionForTesting(),
+        "Clicking the end transition block did not select it");
+    driver.drag(fadeOutPoint, Point(fadeOutPoint.x - 30, fadeOutPoint.y), 8);
+    assert(editor.modelForTesting().trackValue(v3).clips[0].fadeOut > fadeOutBefore,
+        "Dragging the end transition block did not adjust its duration");
+    assert(timeline.selectedFadeOutTransitionForTesting(),
+        "Dragging an end transition did not keep that transition selected");
 
     // Dynamic track and composition operations are exposed through context menus.
     const overlayPoint = clipCenter(timeline, v3, 0);

@@ -73,6 +73,7 @@ private enum CutoutAdjustEdge : int
 private enum int mp4CompressionMinCrf = 18;
 private enum int mp4CompressionMaxCrf = 32;
 private enum int mp4CompressionDefaultCrf = 20;
+private enum double defaultClipTransitionDuration = 0.5;
 
 private double gainToDb(double gain)
 {
@@ -697,6 +698,7 @@ final class EditorRoot : VBox
     private Button _textAlignLeft;
     private Button _textAlignCenter;
     private Button _textAlignRight;
+    private Button _addTransitionsButton;
     private ScrollView _inspectorScroll;
     private Button[] _clipControls;
     private bool _syncingInspector;
@@ -1397,13 +1399,21 @@ final class EditorRoot : VBox
 
         _inspectorFadeSection = panel.add(new VBox(5));
         _inspectorFadeSection.setId("inspector-fade-section");
-        _inspectorFadeSection.layoutHints().preferredHeight = 96;
+        _inspectorFadeSection.layoutHints().preferredHeight = 126;
         _inspectorFadeSection.add(new Separator());
         auto fadeTitle = _inspectorFadeSection.add(
             new Label("EDGE FADES • ITEM"));
         fadeTitle.setScale(1);
         fadeTitle.setColor(Color.fromHex(0xb8c1cc));
         fadeTitle.layoutHints().preferredHeight = 20;
+        _addTransitionsButton = _inspectorFadeSection.add(
+            new Button("Add start/end transition"));
+        _addTransitionsButton.setId("clip-add-transitions");
+        _addTransitionsButton.layoutHints().preferredHeight = 26;
+        _addTransitionsButton.onClick = delegate() {
+            addDefaultTransitionsToSelectedClip();
+        };
+        _clipControls ~= _addTransitionsButton;
         _fadeIn = addInspectorValue(_inspectorFadeSection, "Fade in", _fadeInValue,
             0.0, 10.0, 0.0, "Change selected-item fade in",
             delegate(double value) { fadeInChanged(value); });
@@ -2500,6 +2510,24 @@ final class EditorRoot : VBox
     {
         const track = _timeline.selectedTrack();
         const index = _timeline.selectedIndex();
+        if (_timeline.selectedFadeInTransition() ||
+            _timeline.selectedFadeOutTransition())
+        {
+            const fadeIn = _timeline.selectedFadeInTransition();
+            auto before = captureTimelineSnapshot(fadeIn ?
+                "Remove start transition" : "Remove end transition");
+            const changed = fadeIn ? _model.setFadeIn(track, index, 0.0) :
+                _model.setFadeOut(track, index, 0.0);
+            if (!changed)
+            {
+                setStatus("Select a visible transition block to delete.");
+                return;
+            }
+            commitHistory(before);
+            afterTimelineMutation(fadeIn ? "Start transition removed." :
+                "End transition removed.", track, index, false);
+            return;
+        }
         auto before = captureTimelineSnapshot("Delete clip");
         if (!_model.removeClip(track, index))
         {
@@ -5764,6 +5792,54 @@ final class EditorRoot : VBox
         return "Export started in the background for the full sequence.";
     }
 
+    private double defaultTransitionDurationForClip(const TimelineClip clip) const
+    {
+        const maximum = clip.duration() * 0.5;
+        if (maximum <= 0.0) return 0.0;
+        return maximum < defaultClipTransitionDuration ? maximum :
+            defaultClipTransitionDuration;
+    }
+
+    private void addDefaultTransitionsToSelectedClip()
+    {
+        const track = _timeline.selectedTrack();
+        const index = _timeline.selectedIndex();
+        addDefaultTransitions(track, index);
+    }
+
+    private void addDefaultTransitions(TrackAddress track, int index)
+    {
+        TimelineClip clip;
+        if (!_model.copyClip(track, index, clip))
+        {
+            setStatus("Select a timeline item before adding transitions.");
+            return;
+        }
+
+        const duration = defaultTransitionDurationForClip(clip);
+        if (duration <= 0.0)
+        {
+            setStatus("The selected item is too short for transitions.");
+            return;
+        }
+        if (fabs(clip.fadeIn - duration) < 0.000_000_5 &&
+            fabs(clip.fadeOut - duration) < 0.000_000_5)
+        {
+            setStatus("The selected item already has default start/end transitions.");
+            return;
+        }
+
+        auto before = captureTimelineSnapshot("Add start/end transitions");
+        // Clear first so existing long one-sided fades cannot clamp the paired
+        // default. The final model state still remains constrained by duration.
+        _model.setFadeIn(track, index, 0.0);
+        _model.setFadeOut(track, index, duration);
+        _model.setFadeIn(track, index, duration);
+        commitHistory(before);
+        afterTimelineMutation(format("Start/end transitions set to %.2f seconds.",
+            duration), track, index, false);
+    }
+
     private void setTransitionRequested(TrackAddress track, int index,
         bool fadeIn, double duration)
     {
@@ -5775,6 +5851,8 @@ final class EditorRoot : VBox
             commitHistory(before);
             afterTimelineMutation(format("%s set to %.2f seconds.",
                 fadeIn ? "Fade in" : "Fade out", duration), track, index, false);
+            if (duration > 0.0)
+                _timeline.setTransitionSelection(track, index, fadeIn, false);
         }
     }
 
@@ -6212,18 +6290,8 @@ final class EditorRoot : VBox
                 items ~= ContextMenuItem.command("Remove fade out", delegate() {
                     setTransitionRequested(track, index, false, 0.0);
                 });
-            items ~= ContextMenuItem.command("Fade in/out 0.5s", delegate() {
-                _timeline.setSelection(track, index, false);
-                auto before = captureTimelineSnapshot("Set clip fades");
-                bool changed;
-                changed = _model.setFadeIn(track, index, 0.5) || changed;
-                changed = _model.setFadeOut(track, index, 0.5) || changed;
-                if (changed)
-                {
-                    commitHistory(before);
-                    afterTimelineMutation("Clip fade-in/fade-out set to 0.5s.",
-                        track, index, false);
-                }
+            items ~= ContextMenuItem.command("Add start/end transition", delegate() {
+                addDefaultTransitions(track, index);
             });
             items ~= ContextMenuItem.command("Clear clip fades", delegate() {
                 _timeline.setSelection(track, index, false);
