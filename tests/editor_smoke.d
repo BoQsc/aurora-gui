@@ -1,6 +1,8 @@
 module tests.editor_smoke;
 
 import aurora;
+import auroracut.clipboardimage : setClipboardImageProviderForTesting,
+    writeDibAsBmpFile;
 import auroracut.editor : EditorRoot, InspectorValueField;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
     TextAlignment, TrackAddress, TrackKind;
@@ -98,6 +100,42 @@ private Point clipCenter(TimelineWidget timeline, TrackAddress address, int inde
         origin.y + rect.y + rect.height / 2);
 }
 
+private void appendLe16(ref ubyte[] data, uint value)
+{
+    data ~= cast(ubyte) (value & 0xff);
+    data ~= cast(ubyte) ((value >> 8) & 0xff);
+}
+
+private void appendLe32(ref ubyte[] data, uint value)
+{
+    data ~= cast(ubyte) (value & 0xff);
+    data ~= cast(ubyte) ((value >> 8) & 0xff);
+    data ~= cast(ubyte) ((value >> 16) & 0xff);
+    data ~= cast(ubyte) ((value >> 24) & 0xff);
+}
+
+private ubyte[] tinyClipboardDib()
+{
+    ubyte[] dib;
+    appendLe32(dib, 40); // BITMAPINFOHEADER
+    appendLe32(dib, 2);  // width
+    appendLe32(dib, 2);  // height, bottom-up
+    appendLe16(dib, 1);  // planes
+    appendLe16(dib, 24); // BGR24
+    appendLe32(dib, 0);  // BI_RGB
+    appendLe32(dib, 16); // two 8-byte rows
+    appendLe32(dib, 2835);
+    appendLe32(dib, 2835);
+    appendLe32(dib, 0);
+    appendLe32(dib, 0);
+
+    // Bottom row: blue, white, plus row padding.
+    dib ~= [cast(ubyte) 255, 0, 0, 255, 255, 255, 0, 0];
+    // Top row: red, green, plus row padding.
+    dib ~= [cast(ubyte) 0, 0, 255, 0, 255, 0, 0, 0];
+    return dib;
+}
+
 private void doubleClickDrag(UiTestDriver driver, Point from, Point to, int steps = 12)
 {
     // The second press remains inside Aurora's double-click interval, then is
@@ -168,13 +206,24 @@ int main(string[] arguments)
     const recentPath = buildPath(tempDir(), "aurora-cut-editor-smoke-recent.json");
     const savedProject = buildPath(tempDir(),
         "aurora-cut-editor-smoke-recent.auroracut");
+    const screenshotPath = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-clipboard.bmp");
     if (exists(recentPath)) remove(recentPath);
     if (exists(savedProject)) remove(savedProject);
+    if (exists(screenshotPath)) remove(screenshotPath);
+    bool fakeClipboardHasImage;
+    ulong fakeClipboardSequence = 1;
+    setClipboardImageProviderForTesting(
+        delegate bool() { return fakeClipboardHasImage; },
+        delegate string() { return screenshotPath; },
+        delegate ulong() { return fakeClipboardSequence; });
     scope (exit)
     {
+        setClipboardImageProviderForTesting(null, null, null);
         setRecentProjectsFilePathForTesting("");
         if (exists(recentPath)) remove(recentPath);
         if (exists(savedProject)) remove(savedProject);
+        if (exists(screenshotPath)) remove(screenshotPath);
     }
     setRecentProjectsFilePathForTesting(recentPath);
     clearRecentProjects();
@@ -1042,6 +1091,31 @@ int main(string[] arguments)
     foreach (_; 0 .. 20) editor.tickTree(0.02);
     assert(preview.frameTitleForTesting() == timelineFrameTitle,
         "Selecting Project Media replaced the timeline composition preview");
+
+    {
+        writeDibAsBmpFile(screenshotPath, tinyClipboardDib());
+        fakeClipboardHasImage = true;
+        ++fakeClipboardSequence;
+
+        const screenshotTrack = TrackAddress(TrackKind.video,
+            model.addTrack(TrackKind.video));
+        timeline.modelChanged();
+        timeline.setSelection(screenshotTrack, -1, false);
+        timeline.setPlayhead(0.42, false);
+
+        const mediaBeforeScreenshot = mediaList.items().length;
+        driver.pressKey(Key.v, cast(uint) KeyModifier.control);
+        assert(waitForMediaCount(editor, mediaList, mediaBeforeScreenshot + 1),
+            "Pasted screenshot was not imported as project media");
+        assert(model.trackValue(screenshotTrack).clips.length == 1,
+            "Pasted screenshot was not placed on the selected video track");
+        const screenshotClip = model.trackValue(screenshotTrack).clips[0];
+        assert(fabs(screenshotClip.start - 0.42) < 0.001,
+            "Pasted screenshot was not placed at the playhead");
+        assert(model.assets[screenshotClip.assetIndex].path == screenshotPath,
+            "Pasted screenshot did not use the clipboard image file");
+        fakeClipboardHasImage = false;
+    }
 
     writeln("[editor-smoke] text selection, canvas transform, and timeline-only preview");
 

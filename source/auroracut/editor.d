@@ -2,6 +2,8 @@ module auroracut.editor;
 
 import aurora;
 import auroracut.appversion : appDisplayName;
+import auroracut.clipboardimage : clipboardImageAvailable, clipboardSequenceNumber,
+    saveClipboardImageAsBmp;
 import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     ExportRequest, compositeAudioArguments, compositeStreamArguments;
 import auroracut.filedialog : FileDialogController;
@@ -721,6 +723,7 @@ final class EditorRoot : VBox
     private bool _clipboardHasClip;
     private TimelineClip _clipboardClip;
     private TrackAddress _clipboardTrack;
+    private ulong _clipboardSystemSequence;
 
     private PlaybackKind _playbackKind;
     private MediaAsset _playbackAsset;
@@ -1732,6 +1735,7 @@ final class EditorRoot : VBox
                 _previewQualityHeight = 1080;
             clearHistory();
             _clipboardHasClip = false;
+            _clipboardSystemSequence = clipboardSequenceNumber();
             _timeline.modelChanged();
             _timeline.setSelection(TrackAddress(TrackKind.video, 0), -1, false);
             _timeline.setPlayhead(clampValue(data.playhead, 0.0,
@@ -2516,10 +2520,55 @@ final class EditorRoot : VBox
         _clipboardClip = clip;
         _clipboardTrack = track;
         _clipboardHasClip = true;
+        _clipboardSystemSequence = clipboardSequenceNumber();
         setStatus("Timeline item copied. Paste places it at the playhead.");
     }
 
-    private void pasteClipboard()
+    private bool pasteClipboardScreenshot()
+    {
+        if (!clipboardImageAvailable()) return false;
+        if (!_tools.ffprobe)
+        {
+            setStatus("FFprobe is required before pasted screenshots can be imported.");
+            return true;
+        }
+
+        string path;
+        try path = saveClipboardImageAsBmp();
+        catch (Exception error)
+        {
+            appLog("Clipboard image paste failed: " ~ error.toString());
+            setStatus("Could not paste screenshot: " ~ outputTail(error.msg, 900));
+            return true;
+        }
+        if (path.length == 0) return false;
+
+        string normalized;
+        try normalized = absoluteNormalized(path);
+        catch (Exception error)
+        {
+            setStatus("Could not paste screenshot: " ~ outputTail(error.msg, 900));
+            return true;
+        }
+
+        TrackAddress destination = _timeline.selectedTrack();
+        if (destination.kind != TrackKind.video)
+            destination = TrackAddress(TrackKind.video, 0);
+        const start = _timeline.playhead();
+        const existing = _model.assetIndexForPath(normalized);
+        if (existing >= 0)
+        {
+            addAssetToTrack(cast(size_t) existing, destination, true, start);
+            return true;
+        }
+
+        _pendingTimelineDrops ~= PendingTimelineDrop(normalized, destination, start);
+        queueMediaImports([normalized]);
+        setStatus("Pasted screenshot; importing it to the sequence.");
+        return true;
+    }
+
+    private void pasteTimelineClipboard()
     {
         if (!_clipboardHasClip)
         {
@@ -2545,6 +2594,15 @@ final class EditorRoot : VBox
         commitHistory(before);
         afterTimelineMutation("Timeline item pasted at the playhead.",
             destination, index, false, true);
+    }
+
+    private void pasteClipboard()
+    {
+        const systemClipboardChanged = !_clipboardHasClip ||
+            clipboardSequenceNumber() != _clipboardSystemSequence;
+        if (systemClipboardChanged && pasteClipboardScreenshot())
+            return;
+        pasteTimelineClipboard();
     }
 
     private void moveSelectedToTrack(TrackAddress destination)
@@ -5525,6 +5583,10 @@ final class EditorRoot : VBox
         const mediaIndex = selectedMediaIndex();
         const canAddSelected = mediaIndex >= 0 &&
             _model.canPlace(cast(size_t) mediaIndex, track.kind);
+        const canPasteScreenshot = clipboardImageAvailable();
+        const canPaste = _clipboardHasClip || canPasteScreenshot;
+        const pasteLabel = !_clipboardHasClip && canPasteScreenshot ?
+            "Paste screenshot at playhead" : "Paste at playhead";
 
         ContextMenuItem[] items;
         if (validClip)
@@ -5573,10 +5635,10 @@ final class EditorRoot : VBox
                 _timeline.setSelection(track, index, false);
                 copySelected();
             }, "Ctrl+C");
-            items ~= ContextMenuItem.command("Paste at playhead", delegate() {
+            items ~= ContextMenuItem.command(pasteLabel, delegate() {
                 _timeline.setSelection(track, index, false);
                 pasteClipboard();
-            }, "Ctrl+V", _clipboardHasClip);
+            }, "Ctrl+V", canPaste);
             items ~= ContextMenuItem.command("Duplicate", IconKind.file, delegate() {
                 _timeline.setSelection(track, index, false);
                 duplicateSelected();
@@ -5740,9 +5802,9 @@ final class EditorRoot : VBox
         }
 
         if (!validClip)
-            items ~= ContextMenuItem.command("Paste at playhead", delegate() {
+            items ~= ContextMenuItem.command(pasteLabel, delegate() {
                 pasteClipboard();
-            }, "Ctrl+V", _clipboardHasClip);
+            }, "Ctrl+V", canPaste);
         items ~= ContextMenuItem.command(format("Place selected media on %s",
             track.label()), track.kind == TrackKind.video ? IconKind.image : IconKind.music,
             delegate() {
