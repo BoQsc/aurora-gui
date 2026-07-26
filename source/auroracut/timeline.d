@@ -901,7 +901,7 @@ final class TimelineWidget : Widget
         if (index < 0 || index >= cast(int) clips.length) return 0;
         const rect = clipRect(address, clips[cast(size_t) index]);
         if (!rect.contains(point)) return 0;
-        const threshold = minInt(6, maxInt(3, rect.width / 4));
+        const threshold = minInt(10, maxInt(6, rect.width / 4));
         if (point.x <= rect.x + threshold) return -1;
         if (point.x >= rect.right() - threshold) return 1;
         return 0;

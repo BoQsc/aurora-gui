@@ -3,7 +3,8 @@ module auroracut.model;
 import auroracut.util : clampValue;
 import std.algorithm.sorting : sort;
 import std.math : fabs;
-import std.path : baseName, filenameCmp;
+import std.path : baseName, extension, filenameCmp;
+import std.string : toLower;
 
 /** Video and audio track families. Each family may contain V1..Vn / A1..An. */
 enum TrackKind : ubyte
@@ -41,6 +42,14 @@ final class MediaAsset
     {
         this.path = path;
         this.name = baseName(path);
+    }
+
+    bool isStillImage() const
+    {
+        const suffix = extension(path).toLower();
+        return hasVideo && !hasAudio &&
+            (suffix == ".png" || suffix == ".jpg" || suffix == ".jpeg" ||
+             suffix == ".webp" || suffix == ".bmp");
     }
 }
 
@@ -781,7 +790,8 @@ final class EditorModel
     }
 
     /** Resize a clip on the sequence without moving other items.
-     * Text items can be extended freely. Media items trim or reveal source time. */
+     * Text and still-image items can be extended freely. Video/audio media
+     * items trim or reveal source time. */
     bool resizeClipTimeline(TrackAddress address, int index,
         double requestedStart, double requestedEnd, out int newIndex)
     {
@@ -805,16 +815,23 @@ final class EditorModel
         if (nextStart != double.max && requestedEnd > nextStart) requestedEnd = nextStart;
         if (requestedEnd <= requestedStart + 0.049) return false;
 
+        const asset = clip.isText() ? null : assetForClip(clip);
+        if (!clip.isText() && asset is null) return false;
         if (clip.isText())
         {
             clip.start = requestedStart;
             clip.inPoint = 0.0;
             clip.outPoint = requestedEnd - requestedStart;
         }
+        else if (asset.isStillImage())
+        {
+            clip.start = requestedStart;
+            clip.inPoint = 0.0;
+            clip.outPoint = (requestedEnd - requestedStart) *
+                (clip.playbackRate > 0.000_001 ? clip.playbackRate : 1.0);
+        }
         else
         {
-            const asset = assetForClip(clip);
-            if (asset is null) return false;
             const leftDelta = requestedStart - oldStart;
             double nextIn = clip.inPoint + leftDelta;
             if (nextIn < 0.0)
@@ -1011,6 +1028,46 @@ final class EditorModel
         destination = TrackAddress(TrackKind.video, addTrack(TrackKind.video));
         detachTrackClips(destination);
         cutoutIndex = insertSorted(track(destination).clips, cutout);
+        return true;
+    }
+
+    bool setCropAndPosition(TrackAddress address, int index,
+        double cropX, double cropY, double cropWidth, double cropHeight,
+        double positionX, double positionY)
+    {
+        if (address.kind != TrackKind.video || !validTrack(address)) return false;
+        const clips = trackValue(address).clips;
+        if (index < 0 || index >= cast(int) clips.length) return false;
+        const current = clips[cast(size_t) index];
+        if (!current.usesMedia()) return false;
+        const asset = assetForClip(current);
+        if (asset is null || !asset.hasVideo) return false;
+
+        cropX = clampValue(cropX, 0.0, 1.0);
+        cropY = clampValue(cropY, 0.0, 1.0);
+        cropWidth = clampValue(cropWidth, 0.005, 1.0 - cropX);
+        cropHeight = clampValue(cropHeight, 0.005, 1.0 - cropY);
+        positionX = clampValue(positionX, -2.0, 2.0);
+        positionY = clampValue(positionY, -2.0, 2.0);
+
+        if (current.cropEnabled &&
+            fabs(current.cropX - cropX) <= 0.000_001 &&
+            fabs(current.cropY - cropY) <= 0.000_001 &&
+            fabs(current.cropWidth - cropWidth) <= 0.000_001 &&
+            fabs(current.cropHeight - cropHeight) <= 0.000_001 &&
+            fabs(current.positionX - positionX) <= 0.000_001 &&
+            fabs(current.positionY - positionY) <= 0.000_001)
+            return false;
+
+        detachTrackClips(address);
+        auto clip = &track(address).clips[cast(size_t) index];
+        clip.cropEnabled = true;
+        clip.cropX = cropX;
+        clip.cropY = cropY;
+        clip.cropWidth = cropWidth;
+        clip.cropHeight = cropHeight;
+        clip.positionX = positionX;
+        clip.positionY = positionY;
         return true;
     }
 

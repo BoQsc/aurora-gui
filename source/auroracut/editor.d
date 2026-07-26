@@ -61,6 +61,14 @@ private enum PendingPreviewKind : ubyte
     sequence
 }
 
+private enum CutoutAdjustEdge : int
+{
+    left = 1,
+    right = 2,
+    top = 4,
+    bottom = 8
+}
+
 private enum int mp4CompressionMinCrf = 18;
 private enum int mp4CompressionMaxCrf = 32;
 private enum int mp4CompressionDefaultCrf = 20;
@@ -748,6 +756,19 @@ final class EditorRoot : VBox
     private bool _canvasDragEditing;
     private bool _canvasDragChanged;
     private TimelineSnapshot _canvasDragSnapshot;
+    private bool _cutoutAdjustEditing;
+    private bool _cutoutAdjustChanged;
+    private TimelineSnapshot _cutoutAdjustSnapshot;
+    private TrackAddress _cutoutAdjustTrack;
+    private int _cutoutAdjustIndex = -1;
+    private double _cutoutAdjustLeft;
+    private double _cutoutAdjustRight;
+    private double _cutoutAdjustTop;
+    private double _cutoutAdjustBottom;
+    private double _cutoutAdjustCropX;
+    private double _cutoutAdjustCropY;
+    private double _cutoutAdjustCropWidth = 1.0;
+    private double _cutoutAdjustCropHeight = 1.0;
     private bool _previewTextClickValid;
     private TrackAddress _previewTextClickTrack;
     private int _previewTextClickIndex = -1;
@@ -1096,6 +1117,16 @@ final class EditorRoot : VBox
         _preview.onCutoutSelectionCompleted = delegate(double x1, double y1,
             double x2, double y2) {
             createCutoutFromPreviewSelection(x1, y1, x2, y2);
+        };
+        _preview.onCutoutAdjustDragStarted = delegate(int edge) {
+            beginCutoutAdjustDrag(edge);
+        };
+        _preview.onCutoutAdjustDragRequested = delegate(int edge,
+            double normalizedX, double normalizedY) {
+            adjustCutoutCropOnCanvas(edge, normalizedX, normalizedY);
+        };
+        _preview.onCutoutAdjustDragEnded = delegate() {
+            endCutoutAdjustDrag();
         };
         _preview.onInlineTextChanged = delegate(string value) {
             inlineTextChanged(value);
@@ -3257,6 +3288,168 @@ final class EditorRoot : VBox
         commitHistory(before);
         afterTimelineMutation("Rectangular cutout layer created. Drag or keyframe it like any other clip.",
             destination, cutoutIndex, false, true);
+    }
+
+    private bool beginCutoutAdjustment()
+    {
+        TrackAddress track;
+        int index;
+        TimelineClip clip;
+        MediaAsset asset;
+        if (!selectedClip(track, index, clip, asset) ||
+            track.kind != TrackKind.video || !clip.cropEnabled ||
+            clip.isText() || asset is null || !asset.hasVideo)
+        {
+            setStatus("Select an existing cutout clip before adjusting its rectangle.");
+            return false;
+        }
+        if (_preview is null) return false;
+        _preview.beginCutoutAdjustment();
+        setStatus("Drag a green side handle in Composition Preview to adjust the cutout rectangle.");
+        return true;
+    }
+
+    bool beginCutoutAdjustmentForTesting()
+    {
+        return beginCutoutAdjustment();
+    }
+
+    private void beginCutoutAdjustDrag(int edge)
+    {
+        if (_cutoutAdjustEditing) return;
+        TrackAddress track;
+        int index;
+        TimelineClip clip;
+        MediaAsset asset;
+        if (!selectedClip(track, index, clip, asset) ||
+            track.kind != TrackKind.video || !clip.cropEnabled ||
+            clip.isText() || asset is null || !asset.hasVideo)
+            return;
+
+        const sequenceTime = _timeline.playhead();
+        const localTime = clampValue(sequenceTime - clip.start, 0.0, clip.duration());
+        const evaluatedRotation = clip.evaluatedValue(EffectProperty.rotation, localTime);
+        if (fabs(evaluatedRotation) > 0.000_5)
+        {
+            setStatus("Cutout rectangle adjustment currently supports unrotated cutouts.");
+            return;
+        }
+
+        double centerX; double centerY; double width; double height; double rotation;
+        if (!compositionBounds(clip, asset, sequenceTime, centerX, centerY,
+            width, height, rotation))
+        {
+            setStatus("Move the playhead over the selected cutout before adjusting it.");
+            return;
+        }
+
+        _cutoutAdjustSnapshot = captureTimelineSnapshot("Adjust cutout rectangle");
+        _cutoutAdjustTrack = track;
+        _cutoutAdjustIndex = index;
+        _cutoutAdjustLeft = centerX - width * 0.5;
+        _cutoutAdjustRight = centerX + width * 0.5;
+        _cutoutAdjustTop = centerY - height * 0.5;
+        _cutoutAdjustBottom = centerY + height * 0.5;
+        _cutoutAdjustCropX = clip.cropX;
+        _cutoutAdjustCropY = clip.cropY;
+        _cutoutAdjustCropWidth = clip.cropWidth;
+        _cutoutAdjustCropHeight = clip.cropHeight;
+        _cutoutAdjustChanged = false;
+        _cutoutAdjustEditing = _model.beginContinuousEdit(track);
+    }
+
+    private void adjustCutoutCropOnCanvas(int edge, double pointerX, double pointerY)
+    {
+        if (!_cutoutAdjustEditing || _cutoutAdjustIndex < 0 ||
+            _cutoutAdjustCropWidth <= 0.000_001 ||
+            _cutoutAdjustCropHeight <= 0.000_001)
+            return;
+
+        const originalWidth = _cutoutAdjustRight - _cutoutAdjustLeft;
+        const originalHeight = _cutoutAdjustBottom - _cutoutAdjustTop;
+        if (originalWidth <= 0.000_001 || originalHeight <= 0.000_001) return;
+
+        double cropLeft = _cutoutAdjustCropX;
+        double cropTop = _cutoutAdjustCropY;
+        double cropRight = _cutoutAdjustCropX + _cutoutAdjustCropWidth;
+        double cropBottom = _cutoutAdjustCropY + _cutoutAdjustCropHeight;
+        const minimumCrop = 0.005;
+
+        if (edge == CutoutAdjustEdge.left)
+        {
+            cropLeft = _cutoutAdjustCropX +
+                (pointerX - _cutoutAdjustLeft) *
+                _cutoutAdjustCropWidth / originalWidth;
+            cropLeft = clampValue(cropLeft, 0.0, cropRight - minimumCrop);
+        }
+        else if (edge == CutoutAdjustEdge.right)
+        {
+            cropRight = _cutoutAdjustCropX +
+                (pointerX - _cutoutAdjustLeft) *
+                _cutoutAdjustCropWidth / originalWidth;
+            cropRight = clampValue(cropRight, cropLeft + minimumCrop, 1.0);
+        }
+        else if (edge == CutoutAdjustEdge.top)
+        {
+            cropTop = _cutoutAdjustCropY +
+                (pointerY - _cutoutAdjustTop) *
+                _cutoutAdjustCropHeight / originalHeight;
+            cropTop = clampValue(cropTop, 0.0, cropBottom - minimumCrop);
+        }
+        else if (edge == CutoutAdjustEdge.bottom)
+        {
+            cropBottom = _cutoutAdjustCropY +
+                (pointerY - _cutoutAdjustTop) *
+                _cutoutAdjustCropHeight / originalHeight;
+            cropBottom = clampValue(cropBottom, cropTop + minimumCrop, 1.0);
+        }
+        else return;
+
+        const cropWidth = cropRight - cropLeft;
+        const cropHeight = cropBottom - cropTop;
+        double visualLeft = _cutoutAdjustLeft;
+        double visualRight = _cutoutAdjustRight;
+        double visualTop = _cutoutAdjustTop;
+        double visualBottom = _cutoutAdjustBottom;
+
+        if (edge == CutoutAdjustEdge.left)
+            visualLeft = _cutoutAdjustRight -
+                originalWidth * cropWidth / _cutoutAdjustCropWidth;
+        else if (edge == CutoutAdjustEdge.right)
+            visualRight = _cutoutAdjustLeft +
+                originalWidth * cropWidth / _cutoutAdjustCropWidth;
+        else if (edge == CutoutAdjustEdge.top)
+            visualTop = _cutoutAdjustBottom -
+                originalHeight * cropHeight / _cutoutAdjustCropHeight;
+        else if (edge == CutoutAdjustEdge.bottom)
+            visualBottom = _cutoutAdjustTop +
+                originalHeight * cropHeight / _cutoutAdjustCropHeight;
+
+        const positionX = (visualLeft + visualRight) * 0.5;
+        const positionY = (visualTop + visualBottom) * 0.5;
+        if (!_model.setCropAndPosition(_cutoutAdjustTrack, _cutoutAdjustIndex,
+            cropLeft, cropTop, cropWidth, cropHeight, positionX, positionY))
+            return;
+        _cutoutAdjustChanged = true;
+        _positionX.setValue(positionX, false);
+        _positionXValue.setText(format("%+.2f", positionX));
+        _positionY.setValue(positionY, false);
+        _positionYValue.setText(format("%+.2f", positionY));
+        updatePreviewSelectionOverlay();
+    }
+
+    private void endCutoutAdjustDrag()
+    {
+        if (!_cutoutAdjustEditing) return;
+        _cutoutAdjustEditing = false;
+        _model.endContinuousEdit();
+        if (!_cutoutAdjustChanged) return;
+        commitHistory(_cutoutAdjustSnapshot);
+        markTimelineChanged();
+        _timeline.visualChanged();
+        syncInspector();
+        scheduleTimelineFrame();
+        setStatus("Cutout rectangle adjusted.");
     }
 
     private void setWorkIn(double value)
@@ -5936,6 +6129,13 @@ final class EditorRoot : VBox
                     syncInspector();
                     beginCutoutSelection();
                 });
+            if (track.kind == TrackKind.video && clip.cropEnabled &&
+                asset !is null && asset.hasVideo)
+                items ~= ContextMenuItem.command("Adjust cutout rectangle", delegate() {
+                    _timeline.setSelection(track, index, false);
+                    syncInspector();
+                    beginCutoutAdjustment();
+                });
             items ~= ContextMenuItem.command("Reset transform", delegate() {
                 _timeline.setSelection(track, index, false);
                 resetSelectedTransform();
@@ -6017,6 +6217,7 @@ final class EditorRoot : VBox
             selectedTrack.kind == TrackKind.video &&
             !selectedClipValue.isText() &&
             selectedAsset !is null && selectedAsset.hasVideo;
+        const canAdjustCutout = canCreateCutout && selectedClipValue.cropEnabled;
 
         ContextMenuItem[] items;
         string playLabel = "Play";
@@ -6033,6 +6234,9 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.command("Create rectangular cutout", delegate() {
             beginCutoutSelection();
         }, "", canCreateCutout);
+        items ~= ContextMenuItem.command("Adjust cutout rectangle", delegate() {
+            beginCutoutAdjustment();
+        }, "", canAdjustCutout);
         items ~= ContextMenuItem.command("Stop", delegate() {
             stopPlayback(true);
             setStatus("Playback stopped.");

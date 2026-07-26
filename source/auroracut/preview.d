@@ -40,6 +40,15 @@ private enum PreviewRequestKind : ubyte
     composition
 }
 
+private enum SelectionEdge : int
+{
+    none = 0,
+    left = 1,
+    right = 2,
+    top = 4,
+    bottom = 8
+}
+
 private struct PreviewRequest
 {
     ulong generation;
@@ -813,6 +822,9 @@ final class PreviewWidget : Widget
     private bool _cutoutDragging;
     private Point _cutoutStart;
     private Point _cutoutCurrent;
+    private bool _cutoutAdjustArmed;
+    private bool _cutoutAdjustDragging;
+    private int _cutoutAdjustEdge;
     private Point _lastDragPosition;
     private bool _selectionVisible;
     private bool _selectionIsText;
@@ -881,6 +893,10 @@ final class PreviewWidget : Widget
     void delegate() onTransformDragEnded;
     void delegate(double normalizedX1, double normalizedY1,
         double normalizedX2, double normalizedY2) onCutoutSelectionCompleted;
+    void delegate(int edge) onCutoutAdjustDragStarted;
+    void delegate(int edge, double normalizedX, double normalizedY)
+        onCutoutAdjustDragRequested;
+    void delegate() onCutoutAdjustDragEnded;
 
     this()
     {
@@ -1580,17 +1596,34 @@ final class PreviewWidget : Widget
     {
         return _cutoutArmed;
     }
+    bool cutoutAdjustArmedForTesting() const @safe pure nothrow @nogc
+    {
+        return _cutoutAdjustArmed;
+    }
     void beginCutoutSelection()
     {
         _cutoutArmed = true;
+        _cutoutAdjustArmed = false;
         _cutoutDragging = false;
         setCursor(CursorKind.resizeDiagonalNESW);
     }
-    void cancelCutoutSelection()
+    void beginCutoutAdjustment()
     {
-        if (!_cutoutArmed && !_cutoutDragging) return;
+        _cutoutAdjustArmed = true;
         _cutoutArmed = false;
         _cutoutDragging = false;
+        _cutoutAdjustDragging = false;
+        setCursor(CursorKind.resizeHorizontal);
+        invalidate();
+    }
+    void cancelCutoutSelection()
+    {
+        if (!_cutoutArmed && !_cutoutDragging &&
+            !_cutoutAdjustArmed && !_cutoutAdjustDragging) return;
+        _cutoutArmed = false;
+        _cutoutDragging = false;
+        _cutoutAdjustArmed = false;
+        _cutoutAdjustDragging = false;
         setCursor(CursorKind.arrow);
         invalidate();
     }
@@ -1730,6 +1763,70 @@ final class PreviewWidget : Widget
         return true;
     }
 
+    private bool selectionEdgeAt(Point point, out int edge) const
+    {
+        edge = SelectionEdge.none;
+        const destination = displayedImageRect();
+        if (!_selectionVisible || _playing || destination.width <= 0 ||
+            destination.height <= 0) return false;
+        const centerX = destination.x +
+            ((_selectionCenterX + 1.0) * 0.5 * destination.width);
+        const centerY = destination.y +
+            ((_selectionCenterY + 1.0) * 0.5 * destination.height);
+        const halfWidth = _selectionWidth * 0.25 * destination.width;
+        const halfHeight = _selectionHeight * 0.25 * destination.height;
+        if (halfWidth < 2.0 || halfHeight < 2.0) return false;
+        const radians = -_selectionRotation * PI / 180.0;
+        const dx = cast(double) point.x - centerX;
+        const dy = cast(double) point.y - centerY;
+        const localX = dx * cos(radians) - dy * sin(radians);
+        const localY = dx * sin(radians) + dy * cos(radians);
+        const threshold = 12.0;
+
+        double best = threshold + 1.0;
+        int bestEdge = SelectionEdge.none;
+        if (localY >= -halfHeight - threshold &&
+            localY <= halfHeight + threshold)
+        {
+            const leftDistance = localX + halfWidth;
+            const leftAbsolute = leftDistance < 0.0 ? -leftDistance : leftDistance;
+            if (leftAbsolute < best)
+            {
+                best = leftAbsolute;
+                bestEdge = SelectionEdge.left;
+            }
+            const rightDistance = localX - halfWidth;
+            const rightAbsolute = rightDistance < 0.0 ? -rightDistance : rightDistance;
+            if (rightAbsolute < best)
+            {
+                best = rightAbsolute;
+                bestEdge = SelectionEdge.right;
+            }
+        }
+        if (localX >= -halfWidth - threshold &&
+            localX <= halfWidth + threshold)
+        {
+            const topDistance = localY + halfHeight;
+            const topAbsolute = topDistance < 0.0 ? -topDistance : topDistance;
+            if (topAbsolute < best)
+            {
+                best = topAbsolute;
+                bestEdge = SelectionEdge.top;
+            }
+            const bottomDistance = localY - halfHeight;
+            const bottomAbsolute = bottomDistance < 0.0 ? -bottomDistance : bottomDistance;
+            if (bottomAbsolute < best)
+            {
+                best = bottomAbsolute;
+                bestEdge = SelectionEdge.bottom;
+            }
+        }
+
+        if (bestEdge == SelectionEdge.none || best > threshold) return false;
+        edge = bestEdge;
+        return true;
+    }
+
     private double selectionScaleDistance(Point point) const
     {
         const destination = displayedImageRect();
@@ -1837,6 +1934,16 @@ final class PreviewWidget : Widget
                 canvas.fillCircle(corner, 5, outline);
             canvas.fillCircle(Point((corners[0].x + corners[2].x) / 2,
                 (corners[0].y + corners[2].y) / 2), 3, outline);
+            if (_cutoutAdjustArmed)
+            {
+                const cropHandle = Color.fromHex(0x55d47a);
+                foreach (index; 0 .. 4)
+                {
+                    const next = corners[(index + 1) % 4];
+                    canvas.fillCircle(Point((corners[index].x + next.x) / 2,
+                        (corners[index].y + next.y) / 2), 5, cropHandle);
+                }
+            }
         }
 
         if (_cutoutDragging)
@@ -1884,6 +1991,21 @@ final class PreviewWidget : Widget
             invalidate();
             return true;
         }
+        if (_cutoutAdjustArmed)
+        {
+            int edge;
+            if (!selectionEdgeAt(event.position, edge)) return true;
+            _cutoutAdjustDragging = true;
+            _cutoutAdjustEdge = edge;
+            _cutoutAdjustArmed = false;
+            if (onCutoutAdjustDragStarted !is null)
+                onCutoutAdjustDragStarted(edge);
+            captureMouse();
+            setCursor(edge == SelectionEdge.top || edge == SelectionEdge.bottom ?
+                CursorKind.resizeVertical : CursorKind.resizeHorizontal);
+            invalidate();
+            return true;
+        }
         if (!normalizedPoint(event.position, normalizedX, normalizedY)) return true;
         int cornerIndex;
         if (selectionCornerAt(event.position, cornerIndex))
@@ -1914,6 +2036,17 @@ final class PreviewWidget : Widget
             invalidate();
             return true;
         }
+        if (_cutoutAdjustDragging)
+        {
+            double x; double y;
+            if (normalizedPointClamped(event.position, x, y) &&
+                onCutoutAdjustDragRequested !is null)
+                onCutoutAdjustDragRequested(_cutoutAdjustEdge, x, y);
+            setCursor(_cutoutAdjustEdge == SelectionEdge.top ||
+                _cutoutAdjustEdge == SelectionEdge.bottom ?
+                CursorKind.resizeVertical : CursorKind.resizeHorizontal);
+            return true;
+        }
         if (_scaleDragging)
         {
             const distance = selectionScaleDistance(event.position);
@@ -1925,6 +2058,16 @@ final class PreviewWidget : Widget
                     onTransformScaleRequested(factor);
             }
             return true;
+        }
+        if (_cutoutAdjustArmed)
+        {
+            int edge;
+            if (selectionEdgeAt(event.position, edge))
+                setCursor(edge == SelectionEdge.top || edge == SelectionEdge.bottom ?
+                    CursorKind.resizeVertical : CursorKind.resizeHorizontal);
+            else
+                setCursor(CursorKind.resizeHorizontal);
+            return super.onMouseMove(event);
         }
         if (!_dragging) return super.onMouseMove(event);
         const dx = event.position.x - _lastDragPosition.x;
@@ -1947,7 +2090,8 @@ final class PreviewWidget : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left)
-            return _dragging || _scaleDragging || _cutoutDragging;
+            return _dragging || _scaleDragging || _cutoutDragging ||
+                _cutoutAdjustDragging;
         if (_cutoutDragging)
         {
             double x1; double y1; double x2; double y2;
@@ -1960,6 +2104,14 @@ final class PreviewWidget : Widget
             invalidate();
             if (onCutoutSelectionCompleted !is null)
                 onCutoutSelectionCompleted(x1, y1, x2, y2);
+            return true;
+        }
+        if (_cutoutAdjustDragging)
+        {
+            _cutoutAdjustDragging = false;
+            releaseMouse();
+            setCursor(CursorKind.arrow);
+            if (onCutoutAdjustDragEnded !is null) onCutoutAdjustDragEnded();
             return true;
         }
         if (_scaleDragging)
@@ -1980,15 +2132,19 @@ final class PreviewWidget : Widget
 
     protected override void onFocusChanged(bool value)
     {
-        if (!value && (_dragging || _scaleDragging || _cutoutDragging))
+        if (!value && (_dragging || _scaleDragging || _cutoutDragging ||
+            _cutoutAdjustDragging))
         {
             _dragging = false;
             _scaleDragging = false;
             _cutoutDragging = false;
             _cutoutArmed = false;
+            _cutoutAdjustDragging = false;
+            _cutoutAdjustArmed = false;
             releaseMouse();
             setCursor(CursorKind.arrow);
             if (onTransformDragEnded !is null) onTransformDragEnded();
+            if (onCutoutAdjustDragEnded !is null) onCutoutAdjustDragEnded();
             invalidate();
         }
     }

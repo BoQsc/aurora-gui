@@ -1097,8 +1097,21 @@ int main(string[] arguments)
     assert(cutoutClip.muted,
         "Cutout duplicate must be muted so it cannot double embedded audio");
     foreach (_; 0 .. 20) editor.tickTree(0.02);
+    const cropWidthBeforeAdjust = cutoutClip.cropWidth;
+    assert(editor.beginCutoutAdjustmentForTesting(),
+        "Cutout adjustment mode did not arm for an existing cutout");
+    assert(preview.cutoutAdjustArmedForTesting(),
+        "Preview did not enter cutout adjustment mode");
+    const cutoutRightSide = Point(cutoutDragEnd.x,
+        (cutoutDragStart.y + cutoutDragEnd.y) / 2);
+    driver.drag(cutoutRightSide, Point(cutoutRightSide.x + 38,
+        cutoutRightSide.y), 10);
+    assert(model.copyClip(cutoutTrack, 0, cutoutClip));
+    assert(cutoutClip.cropWidth > cropWidthBeforeAdjust + 0.01,
+        "Dragging a cutout side handle did not widen the stored crop");
+
     const cutoutScaleBefore = cutoutClip.scale;
-    const cutoutCorner = Point(cutoutDragEnd.x, cutoutDragStart.y);
+    const cutoutCorner = Point(cutoutDragEnd.x + 38, cutoutDragStart.y);
     driver.drag(cutoutCorner, Point(cutoutCorner.x + 52, cutoutCorner.y - 32), 10);
     assert(model.copyClip(cutoutTrack, 0, cutoutClip));
     assert(cutoutClip.scale > cutoutScaleBefore + 0.01,
@@ -1148,6 +1161,19 @@ int main(string[] arguments)
             "Pasted screenshot was not placed at the playhead");
         assert(model.assets[screenshotClip.assetIndex].path == screenshotPath,
             "Pasted screenshot did not use the clipboard image file");
+
+        timeline.setSelection(screenshotTrack, 0, false);
+        assert(driver.paint());
+        const screenshotDurationBefore = screenshotClip.duration();
+        auto screenshotRect = timeline.clipRectForTesting(screenshotTrack, 0);
+        const screenshotTimelineOrigin = timeline.localToGlobal(Point(0, 0));
+        const screenshotEdge = Point(screenshotTimelineOrigin.x + screenshotRect.right() - 2,
+            screenshotTimelineOrigin.y + screenshotRect.y + screenshotRect.height / 2);
+        driver.drag(screenshotEdge, Point(screenshotEdge.x + 80, screenshotEdge.y), 10);
+        TimelineClip resizedScreenshot;
+        assert(model.copyClip(screenshotTrack, 0, resizedScreenshot));
+        assert(resizedScreenshot.duration() > screenshotDurationBefore + 0.25,
+            "Dragging a still-image clip edge did not extend its timeline duration");
         fakeClipboardHasImage = false;
     }
 

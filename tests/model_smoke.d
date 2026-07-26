@@ -38,6 +38,16 @@ private MediaAsset audioAsset(string path, double duration)
     return asset;
 }
 
+private MediaAsset stillImageAsset(string path, double duration = 5.0)
+{
+    auto asset = new MediaAsset(path);
+    asset.duration = duration;
+    asset.hasVideo = true;
+    asset.width = 800;
+    asset.height = 600;
+    return asset;
+}
+
 private bool clipIdsUnique(EditorModel model)
 {
     bool[ulong] found;
@@ -213,6 +223,21 @@ int main()
         const pasted = featureModel.pasteClip(featureV1, copied, 4.0);
         assert(pasted >= 0 && featureModel.trackValue(featureV1).clips.length == 2);
 
+        const stillIndex = featureModel.addAsset(stillImageAsset("screenshot.png"));
+        const stillTrack = TrackAddress(TrackKind.video,
+            featureModel.addTrack(TrackKind.video));
+        const stillClipIndex = featureModel.insertClip(stillIndex, stillTrack, 0.0);
+        assert(stillClipIndex >= 0);
+        int resizedStillIndex;
+        assert(featureModel.resizeClipTimeline(stillTrack, stillClipIndex,
+            0.0, 12.0, resizedStillIndex),
+            "Still-image timeline item could not be extended past its default duration");
+        TimelineClip resizedStill;
+        assert(featureModel.copyClip(stillTrack, resizedStillIndex, resizedStill));
+        assert(near(resizedStill.duration(), 12.0) && near(resizedStill.inPoint, 0.0) &&
+            near(resizedStill.outPoint, 12.0),
+            "Still-image timeline resize did not create a free timeline duration");
+
         TrackAddress cutoutTrack;
         int cutoutIndex;
         assert(featureModel.insertCutoutClip(featureV1, originalIndex,
@@ -228,6 +253,11 @@ int main()
             cutout.keyframes.length == 0);
         assert(near(cutout.positionX, 0.12) && near(cutout.positionY, -0.08) &&
             near(cutout.scale, 0.72) && near(cutout.opacity, 0.85));
+        assert(featureModel.setCropAndPosition(cutoutTrack, cutoutIndex,
+            0.20, 0.10, 0.50, 0.45, 0.20, -0.08));
+        assert(featureModel.copyClip(cutoutTrack, cutoutIndex, cutout));
+        assert(near(cutout.cropWidth, 0.50) && near(cutout.positionX, 0.20),
+            "Cutout crop adjustment did not update crop and visual center");
 
         const textTrack = TrackAddress(TrackKind.video,
             featureModel.addTrack(TrackKind.video));
