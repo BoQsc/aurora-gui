@@ -8,8 +8,9 @@ import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
 import aurorastream.root : StreamRoot;
 import core.thread : Thread;
 import core.time : msecs;
-import std.file : append;
+import std.file : append, exists, thisExePath;
 import std.json : JSONValue;
+import std.path : buildPath, dirName;
 import std.stdio : stderr, writeln;
 
 version (Windows)
@@ -31,7 +32,23 @@ private void recordStartupFailure(string details)
     }
 }
 
+private string applicationIconPath()
+{
+    const local = buildPath("assets", "aurora-stream.ico");
+    if (exists(local)) return local;
 
+    try
+    {
+        const besideExecutable = buildPath(dirName(thisExePath()), "assets",
+            "aurora-stream.ico");
+        if (exists(besideExecutable)) return besideExecutable;
+    }
+    catch (Exception)
+    {
+    }
+
+    return local;
+}
 
 private string commandOption(const string[] arguments, string option)
 {
@@ -113,6 +130,7 @@ private int runApplication(string executablePath)
 {
     WindowOptions options;
     options.title = appDisplayName ~ " — Twitch + YouTube Broadcaster";
+    options.iconPath = applicationIconPath();
     options.width = 1280;
     options.height = 780;
     options.resizable = true;
