@@ -34,6 +34,8 @@ struct WindowOptions
     bool decorated = true;
     bool alwaysOnTop;
     bool startMaximized;
+    /** Request a dark native titlebar where the host OS supports it. */
+    bool darkTitleBar;
     /** Start in native monitor fullscreen. Takes precedence over maximized. */
     bool startFullscreen;
     /** Let GuiWindow consume F11, Alt+Enter, and fullscreen Escape. */

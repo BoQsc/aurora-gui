@@ -73,6 +73,7 @@ private int runEditor()
     options.width = 1440;
     options.height = 900;
     options.resizable = true;
+    options.darkTitleBar = true;
     options.lowLatency = true;
     options.vsync = true;
     options.renderer = RendererPreference.automatic;

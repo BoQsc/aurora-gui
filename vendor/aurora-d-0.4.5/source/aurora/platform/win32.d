@@ -59,6 +59,8 @@ else version (Windows)
     private alias GetDpiForWindowFn = extern(Windows) UINT function(HWND hwnd) nothrow;
     private alias AdjustWindowRectExForDpiFn = extern(Windows) BOOL function(
         LPRECT rect, DWORD style, BOOL menu, DWORD exStyle, UINT dpi) nothrow;
+    private alias DwmSetWindowAttributeFn = extern(Windows) HRESULT function(
+        HWND hwnd, DWORD attribute, const(void)* value, DWORD size) nothrow;
 
     // Process-wide Win32 entry points and state. __gshared is intentional: a
     // DPI context belongs to the process rather than to D's thread-local data.
@@ -68,13 +70,25 @@ else version (Windows)
     private __gshared GetDpiForSystemFn getDpiForSystem;
     private __gshared GetDpiForWindowFn getDpiForWindow;
     private __gshared AdjustWindowRectExForDpiFn adjustWindowRectExForDpi;
+    private __gshared DwmSetWindowAttributeFn dwmSetWindowAttribute;
     private __gshared bool dpiFunctionsLoaded;
+    private __gshared bool dwmFunctionsLoaded;
     private __gshared bool dpiAwarenessInitialized;
 
     private immutable wchar[] windowClassName = "AuroraDSoftwareWindow"w;
     private immutable wchar[] user32LibraryName = "user32.dll"w;
     private immutable wchar[] shcoreLibraryName = "shcore.dll"w;
+    private immutable wchar[] dwmapiLibraryName = "dwmapi.dll"w;
     private __gshared bool classRegistered;
+
+    private enum DWORD dwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    private enum DWORD dwmwaUseImmersiveDarkMode = 20;
+    private enum DWORD dwmwaBorderColor = 34;
+    private enum DWORD dwmwaCaptionColor = 35;
+    private enum DWORD dwmwaTextColor = 36;
+    private enum DWORD darkBorderColor = 0x00141414;
+    private enum DWORD darkCaptionColor = 0x0020242a;
+    private enum DWORD darkCaptionTextColor = 0x00ffffff;
 
     // Run before main so applications using Aurora do not create an HWND while
     // the process is still DPI-unaware. The call is harmless when a host
@@ -126,6 +140,41 @@ else version (Windows)
             return;
         if (setProcessDPIAware !is null)
             setProcessDPIAware();
+    }
+
+    private void loadDwmFunctions() nothrow
+    {
+        if (dwmFunctionsLoaded) return;
+        dwmFunctionsLoaded = true;
+
+        HMODULE dwmapi = GetModuleHandleW(dwmapiLibraryName.ptr);
+        if (dwmapi is null) dwmapi = LoadLibraryW(dwmapiLibraryName.ptr);
+        if (dwmapi !is null)
+            dwmSetWindowAttribute = cast(DwmSetWindowAttributeFn)
+                GetProcAddress(dwmapi, "DwmSetWindowAttribute".ptr);
+    }
+
+    private void applyDarkTitleBar(HWND hwnd) nothrow
+    {
+        if (hwnd is null) return;
+        loadDwmFunctions();
+        if (dwmSetWindowAttribute is null) return;
+
+        BOOL enabled = TRUE;
+        if (dwmSetWindowAttribute(hwnd, dwmwaUseImmersiveDarkMode,
+                &enabled, cast(DWORD) enabled.sizeof) < 0)
+            dwmSetWindowAttribute(hwnd, dwmwaUseImmersiveDarkModeBefore20H1,
+                &enabled, cast(DWORD) enabled.sizeof);
+
+        DWORD border = darkBorderColor;
+        DWORD caption = darkCaptionColor;
+        DWORD text = darkCaptionTextColor;
+        dwmSetWindowAttribute(hwnd, dwmwaBorderColor, &border,
+            cast(DWORD) border.sizeof);
+        dwmSetWindowAttribute(hwnd, dwmwaCaptionColor, &caption,
+            cast(DWORD) caption.sizeof);
+        dwmSetWindowAttribute(hwnd, dwmwaTextColor, &text,
+            cast(DWORD) text.sizeof);
     }
 
     private uint querySystemDpi() nothrow
@@ -309,6 +358,8 @@ else version (Windows)
                 cast(void*) this);
             if (_hwnd is null)
                 throw new Exception("Aurora could not create a Win32 window.");
+            if (options.decorated && options.darkTitleBar)
+                applyDarkTitleBar(_hwnd);
 
             const creationDpi = _dpi;
             _dpi = queryWindowDpi(_hwnd, creationDpi);
