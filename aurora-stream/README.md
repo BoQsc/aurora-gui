@@ -241,7 +241,7 @@ YouTube defaults to:
 - Two-second keyframe interval
 - AAC stereo, 48 kHz, 160 kbps
 
-The optional **4K / 2160p60 highest-quality output** toggle appears on the same row as **Stream to YouTube** and changes only YouTube to:
+The optional **4K / 2160p60 highest-quality** toggle appears on the same row as **Stream to YouTube** and changes only YouTube to:
 
 - 3840×2160
 - 60 FPS

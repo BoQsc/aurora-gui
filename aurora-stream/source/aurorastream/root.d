@@ -187,9 +187,9 @@ final class StreamRoot : VBox
             markSettingsDirty();
         };
         _youtubeFourK = youtubeDestinationRow.add(new CheckBox(
-            "4K / 2160p60 highest-quality output",
+            "4K / 2160p60 highest-quality",
             saved.youtubeQuality == BroadcastQuality.fourK));
-        _youtubeFourK.layoutHints().preferredWidth = 310;
+        _youtubeFourK.layoutHints().preferredWidth = 240;
         _youtubeFourK.layoutHints().flex = 1.0;
         _youtubeFourK.onChanged = delegate(bool checked) {
             updateQualitySummary();
@@ -334,6 +334,13 @@ final class StreamRoot : VBox
         string placeholder, out ClipboardTextField field)
     {
         auto group = panel.add(new VBox(4));
+        // Aurora-D's Box layout positions nested containers from their layout
+        // hints rather than their measured descendants. Without an explicit
+        // height this group participates in spacing but receives a zero-height
+        // rectangle, so unhiding it cannot reveal either child.
+        enum fieldGroupHeight = 19 + 4 + 40;
+        group.layoutHints().preferredHeight = fieldGroupHeight;
+        group.layoutHints().minHeight = fieldGroupHeight;
         auto label = group.add(new Label(title));
         label.setScale(1);
         label.setColor(Color.fromHex(0x9ca8b5));
