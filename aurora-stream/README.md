@@ -6,6 +6,18 @@ Aurora Stream is a separate side project inside the Aurora Cut archive. It does 
 ../vendor/aurora-d-0.4.5/source
 ```
 
+## Unreleased desktop-audio reliability fixes
+
+The live Windows desktop-audio helper now runs in the MMCSS `Audio` class, preserves samples across scheduler stalls shorter than 100 ms, and gives FFmpeg substantially larger localhost RTP receive and reorder queues. Older settings with an empty desktop-audio endpoint now select the active Windows default after enumeration; an explicit **Disabled** selection remains disabled.
+
+For a non-interactive transport stress check that opens no window and plays no sound, run:
+
+```text
+python tests/run-quality-diagnostic.py --loaded-audio
+```
+
+This complements the audible real-WASAPI waveform control by running the live desktop-capture, NVENC, AAC, FIFO, and timestamped RTP receiver paths against Aurora Stream's internal synthetic sender.
+
 ## 0.4.9 deterministic quality diagnostic
 
 Version 0.4.9 adds a separate one-click quality harness without changing the live streaming path. Run:
@@ -14,9 +26,9 @@ Version 0.4.9 adds a separate one-click quality harness without changing the liv
 RUN-QUALITY-DIAGNOSTIC.bat
 ```
 
-The harness opens a synchronized full-screen 1920×1080p60 test card through FFplay. The card contains continuous frame-by-frame motion, a steady 997 Hz tone, and simultaneous one-second video/audio markers. It then exercises synthetic encoding, the current Desktop Duplication path, lower-overhead BGRA candidates, multiple RTP audio-resampling policies, live-style FIFO output, a 720p60 headroom control, an audio-only control, and a repeated best-path run.
+The harness opens a synchronized full-screen 1920×1080p60 test card through FFplay. The card contains continuous frame-by-frame motion, a steady 997 Hz tone, and simultaneous one-second video/audio markers. It then exercises synthetic encoding, the current Desktop Duplication path, lower-overhead BGRA candidates, the D3D11-direct single-output path, the default simultaneous Twitch 1080p plus YouTube 1440p workload, multiple RTP audio-resampling policies, live-style FIFO output, a 720p60 headroom control, an audio-only control, and a repeated best-path run.
 
-Every output is decoded and measured rather than trusted from nominal FFmpeg FPS. The report includes exact consecutive image duplicates, effective unique-image FPS, duplicate-run length, timestamp cadence, decoded audio dropout windows, sine-phase discontinuities, helper queue/pacing losses, A/V offset/jitter/drift, CPU/RAM/GPU use, FFmpeg queue warnings, and strict pass/fail thresholds. A path is recommended only after the same 1080p candidate passes both its original and repeated run.
+Every output is decoded and measured rather than trusted from nominal FFmpeg FPS. The report includes exact hashes plus visually near-identical adjacent images, effective unique-image FPS, duplicate-run length, expected dimensions, timestamp cadence, decoded audio dropout windows, sine-phase discontinuities, MMCSS state, helper queue/pacing losses, A/V offset/jitter/drift, CPU/RAM/GPU use, FFmpeg queue warnings, and strict pass/fail thresholds. A path is recommended only after the same 1080p candidate passes both its original and repeated run.
 
 The complete result is written to one file:
 
@@ -492,4 +504,3 @@ stream-pacing-diagnostic/
 ```
 
 Run the complete A/B/C diagnostic at least three times with the same continuously moving scene. Acceptance requires Phase C to remain within two unique images/s of the comparable baseline, no FFmpeg queue warning, no capture operation reaching 16.7 ms, no long stall followed by catch-up processing, and audible synchronized output. Twitch is tested only after local files pass.
-

@@ -12,6 +12,7 @@ import std.utf : toUTF16z, toUTF8;
 struct WasapiRtpMetrics
 {
     bool synthetic;
+    bool mmcssEnabled;
     ulong packetsCaptured;
     ulong capturedFramesQueued;
     ulong rtpPacketsSent;
@@ -20,6 +21,7 @@ struct WasapiRtpMetrics
     ulong framesDroppedOnOverflow;
     ulong staleFramesDiscarded;
     ulong pacingFramesSkipped;
+    ulong startupDiscontinuities;
     ulong discontinuities;
     ulong sendFailures;
     ulong maximumPacketGapMilliseconds;
@@ -36,6 +38,7 @@ struct WasapiRtpMetrics
     {
         return format(
             "mode=%s\r\n" ~
+            "mmcss_enabled=%s\r\n" ~
             "packets_captured=%s\r\n" ~
             "captured_frames_queued=%s\r\n" ~
             "rtp_packets_sent=%s\r\n" ~
@@ -44,6 +47,7 @@ struct WasapiRtpMetrics
             "frames_dropped_on_overflow=%s\r\n" ~
             "stale_frames_discarded=%s\r\n" ~
             "pacing_frames_skipped=%s\r\n" ~
+            "startup_discontinuities=%s\r\n" ~
             "discontinuities=%s\r\n" ~
             "send_failures=%s\r\n" ~
             "maximum_packet_gap_ms=%s\r\n" ~
@@ -55,10 +59,11 @@ struct WasapiRtpMetrics
             "output_intervals=%s\r\n" ~
             "rtp_source_port=%s\r\n" ~
             "rtp_destination_port=%s\r\n",
-            synthetic ? "synthetic-rtp" : "wasapi-rtp",
+            synthetic ? "synthetic-rtp" : "wasapi-rtp", mmcssEnabled,
             packetsCaptured, capturedFramesQueued, rtpPacketsSent,
             audioFramesSent, silentFramesSent, framesDroppedOnOverflow,
-            staleFramesDiscarded, pacingFramesSkipped, discontinuities,
+            staleFramesDiscarded, pacingFramesSkipped,
+            startupDiscontinuities, discontinuities,
             sendFailures, maximumPacketGapMilliseconds,
             maximumCaptureDurationMicroseconds, maximumSendDurationMicroseconds,
             maximumRingDepthFrames, eventWakeups, eventTimeouts, outputIntervals,
@@ -69,6 +74,7 @@ struct WasapiRtpMetrics
 version (Windows)
 {
     pragma(lib, "ole32");
+    pragma(lib, "avrt");
     static assert(size_t.sizeof == 8,
         "Aurora Stream currently requires an x86_64 Windows build.");
 
@@ -214,12 +220,14 @@ version (Windows)
         ulong GetTickCount64();
         BOOL QueryPerformanceCounter(long* value);
         BOOL QueryPerformanceFrequency(long* value);
-        HANDLE GetCurrentProcess();
-        BOOL SetPriorityClass(HANDLE process, DWORD priorityClass);
         HANDLE CreateEventW(void* eventAttributes, BOOL manualReset,
             BOOL initialState, const(wchar)* name);
         DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);
         BOOL CloseHandle(HANDLE handle);
+        HANDLE AvSetMmThreadCharacteristicsW(const(wchar)* taskName,
+            DWORD* taskIndex);
+        BOOL AvSetMmThreadPriority(HANDLE avrtHandle, int priority);
+        BOOL AvRevertMmThreadCharacteristics(HANDLE avrtHandle);
     }
 
     private enum DWORD coinitMultithreaded = 0x0;
@@ -238,18 +246,59 @@ version (Windows)
     private enum DWORD audioClientStreamFlagSrcDefaultQuality = 0x08000000;
     private enum DWORD audioClientBufferFlagDataDiscontinuity = 0x00000001;
     private enum DWORD audioClientBufferFlagSilent = 0x00000002;
-    private enum DWORD belowNormalPriorityClass = 0x00004000;
+    private enum int avrtPriorityHigh = 1;
     private enum DWORD waitObject0 = 0x00000000;
     private enum DWORD waitTimeout = 0x00000102;
     private enum DWORD waitFailed = 0xffffffff;
     private enum uint outputChunkFrames = 960;
     private enum ulong outputIntervalMicroseconds = 20_000;
+    private enum ulong outputCatchUpWindowMicroseconds = 100_000;
     private enum size_t ringCapacityFrames = 9_600;
     private enum size_t ringRecoveryFrames = 1_920;
 
     private bool succeeded(HRESULT result)
     {
         return result >= 0;
+    }
+
+    /**
+     * Register the helper's only capture/output thread with MMCSS. Keeping this
+     * thread below normal process priority made it the first work to be starved
+     * by desktop capture, color conversion, or an encoder spike—the exact
+     * conditions under which audio must keep its 20 ms cadence.
+     *
+     * MMCSS registration is best-effort so an unavailable Windows service does
+     * not prevent streaming. The result is exported in helper metrics and the
+     * quality diagnostic rejects an unregistered run.
+     */
+    private struct MmcssRegistration
+    {
+        HANDLE handle;
+
+        @property bool active() const
+        {
+            return handle !is null;
+        }
+
+        void activate()
+        {
+            DWORD taskIndex;
+            handle = AvSetMmThreadCharacteristicsW(toUTF16z("Audio"),
+                &taskIndex);
+            if (handle !is null &&
+                AvSetMmThreadPriority(handle, avrtPriorityHigh) == 0)
+            {
+                AvRevertMmThreadCharacteristics(handle);
+                handle = null;
+            }
+        }
+
+        void close()
+        {
+            if (handle !is null)
+                AvRevertMmThreadCharacteristics(handle);
+            handle = null;
+        }
     }
 
     private string hresultText(string operation, HRESULT result)
@@ -735,16 +784,21 @@ version (Windows)
     private ulong reanchorOutputClock(ulong nowMicroseconds,
         ref ulong nextOutputMicroseconds)
     {
-        // Never compress a delayed interval into a catch-up burst. A small
-        // sub-2 ms scheduling error is left to the next absolute deadline;
-        // larger lateness becomes an explicit RTP timestamp gap and a fresh
-        // 20 ms deadline from the actual send time.
-        if (nowMicroseconds <= nextOutputMicroseconds + 2_000) return 0;
+        // Normal Windows wake-up jitter must not become an audible RTP gap.
+        // A short scheduling stall is recovered by sending the due packets in
+        // a small local catch-up burst while preserving every RTP timestamp.
+        // The receiver has ample localhost buffering for this. Only a delay
+        // beyond 100 ms is treated as unrecoverable and skipped to prevent
+        // stale audio from accumulating.
+        if (nowMicroseconds < nextOutputMicroseconds +
+            outputCatchUpWindowMicroseconds)
+            return 0;
         const lateMicroseconds = nowMicroseconds - nextOutputMicroseconds;
-        const skippedFrames = (lateMicroseconds * 48_000 + 999_999) /
-            1_000_000;
-        nextOutputMicroseconds = nowMicroseconds;
-        return skippedFrames;
+        const missedIntervals = lateMicroseconds /
+            outputIntervalMicroseconds;
+        nextOutputMicroseconds += missedIntervals *
+            outputIntervalMicroseconds;
+        return missedIntervals * outputChunkFrames;
     }
 
     private DWORD waitMillisecondsUntil(ulong deadlineMicroseconds,
@@ -762,10 +816,12 @@ version (Windows)
         WasapiRtpMetrics metrics;
         metrics.synthetic = true;
         RtpSender sender;
+        MmcssRegistration mmcss;
         ubyte[outputChunkFrames * 4] silence;
         try
         {
-            SetPriorityClass(GetCurrentProcess(), belowNormalPriorityClass);
+            mmcss.activate();
+            metrics.mmcssEnabled = mmcss.active;
             long frequency;
             if (QueryPerformanceFrequency(&frequency) == 0) frequency = 0;
             sender.initialize(port, frequency, metrics);
@@ -808,6 +864,7 @@ version (Windows)
         }
         finally
         {
+            mmcss.close();
             sender.close();
         }
     }
@@ -824,12 +881,14 @@ version (Windows)
         HANDLE audioEvent;
         WasapiRtpMetrics metrics;
         RtpSender sender;
+        MmcssRegistration mmcss;
         PcmFrameRing ring;
         ubyte[outputChunkFrames * 4] outputChunk;
 
         try
         {
-            SetPriorityClass(GetCurrentProcess(), belowNormalPriorityClass);
+            mmcss.activate();
+            metrics.mmcssEnabled = mmcss.active;
             long frequency;
             if (QueryPerformanceFrequency(&frequency) == 0) frequency = 0;
 
@@ -948,8 +1007,17 @@ version (Windows)
                         lastPacketTick = packetTick;
                         if ((flags & audioClientBufferFlagDataDiscontinuity) != 0)
                         {
-                            ++metrics.discontinuities;
-                            ring.discardAll(metrics);
+                            // Windows commonly marks the first loopback packet
+                            // discontinuous because there is no predecessor.
+                            // Record that startup condition separately; only a
+                            // later flag represents a broken live capture span.
+                            if (metrics.packetsCaptured == 1)
+                                ++metrics.startupDiscontinuities;
+                            else
+                            {
+                                ++metrics.discontinuities;
+                                ring.discardAll(metrics);
+                            }
                         }
                         const silent =
                             (flags & audioClientBufferFlagSilent) != 0 ||
@@ -1006,6 +1074,7 @@ version (Windows)
                 if (stopAudio !is null) stopAudio(audioClient);
             }
             if (audioEvent !is null) CloseHandle(audioEvent);
+            mmcss.close();
             sender.close();
             releaseCom(captureClient);
             releaseCom(audioClient);

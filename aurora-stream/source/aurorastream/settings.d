@@ -8,7 +8,7 @@ import std.path : buildPath;
 /// Portable settings file kept beside the folder Aurora Stream is launched from.
 enum settingsFileName = "aurora-stream-settings.json";
 
-enum settingsSchemaVersion = 3;
+enum settingsSchemaVersion = 4;
 
 string settingsFilePath()
 {
@@ -89,6 +89,8 @@ private BroadcastSettings settingsFromJson(string source)
     const root = parseJSON(source);
     if (root.type != JSONType.object)
         throw new Exception("The settings root must be a JSON object.");
+    const desktopAudioEnabledWasSaved =
+        hasJsonKey(root, "desktopAudioEnabled");
 
     settings.twitchEnabled = jsonBool(root, "twitchEnabled",
         settings.twitchEnabled);
@@ -102,6 +104,8 @@ private BroadcastSettings settingsFromJson(string source)
     settings.youtubeKey = jsonString(root, "youtubeKey", settings.youtubeKey);
     settings.desktopAudioDevice = jsonString(root, "desktopAudioDevice",
         settings.desktopAudioDevice);
+    settings.desktopAudioEnabled = jsonBool(root, "desktopAudioEnabled",
+        settings.desktopAudioEnabled);
     settings.microphoneDevice = jsonString(root, "microphoneDevice",
         settings.microphoneDevice);
 
@@ -109,6 +113,18 @@ private BroadcastSettings settingsFromJson(string source)
     // DirectShow capture input. Those saved values are microphone/filter IDs,
     // not Windows render-endpoint IDs, so do not carry them into WASAPI.
     if (!hasJsonKey(root, "desktopAudioBackend"))
+    {
+        settings.desktopAudioDevice = "";
+        settings.desktopAudioEnabled = true;
+    }
+
+    // Schema 3 did not distinguish an intentional disable from an
+    // unconfigured first run. Prefer useful desktop audio when migrating it,
+    // while allowing an explicit schema-4 false value to win even if a stale
+    // endpoint ID is also present.
+    if (!desktopAudioEnabledWasSaved)
+        settings.desktopAudioEnabled = true;
+    if (!settings.desktopAudioEnabled)
         settings.desktopAudioDevice = "";
 
     settings.sourceQuality = qualityFromString(jsonString(root,
@@ -159,6 +175,7 @@ private string settingsToJson(BroadcastSettings settings)
     root["twitchQuality"] = qualityToString(settings.twitchQuality);
     root["youtubeQuality"] = qualityToString(settings.youtubeQuality);
     root["desktopAudioBackend"] = "wasapi-loopback";
+    root["desktopAudioEnabled"] = settings.desktopAudioEnabled;
     root["desktopAudioDevice"] = settings.desktopAudioDevice;
     root["microphoneDevice"] = settings.microphoneDevice;
     return root.toPrettyString() ~ "\n";
@@ -247,6 +264,7 @@ unittest
     source.twitchQuality = BroadcastQuality.fullHD;
     source.youtubeQuality = BroadcastQuality.fourK;
     source.desktopAudioDevice = "Desktop Loopback";
+    source.desktopAudioEnabled = true;
     source.microphoneDevice = "Microphone";
 
     const encoded = settingsToJson(source);
@@ -261,12 +279,14 @@ unittest
     assert(restored.twitchQuality == source.twitchQuality);
     assert(restored.youtubeQuality == source.youtubeQuality);
     assert(restored.desktopAudioDevice == source.desktopAudioDevice);
+    assert(restored.desktopAudioEnabled == source.desktopAudioEnabled);
     assert(restored.microphoneDevice == source.microphoneDevice);
 }
 
 unittest
 {
     BroadcastSettings defaults;
+    assert(defaults.desktopAudioEnabled);
     assert(defaults.youtubeServer == "rtmp://a.rtmp.youtube.com/live2");
     assert(defaults.sourceQuality == BroadcastQuality.fullHD);
     assert(defaults.twitchQuality == BroadcastQuality.fullHD);
@@ -293,5 +313,18 @@ unittest
         `{"desktopAudioBackend":"wasapi-loopback",` ~
         `"desktopAudioDevice":"{render-endpoint-id}"}`);
     assert(currentAudio.desktopAudioDevice == "{render-endpoint-id}");
-}
+    assert(currentAudio.desktopAudioEnabled);
 
+    const previouslyUnconfiguredAudio = settingsFromJson(
+        `{"schemaVersion":3,"desktopAudioBackend":"wasapi-loopback",` ~
+        `"desktopAudioDevice":""}`);
+    assert(previouslyUnconfiguredAudio.desktopAudioEnabled);
+    assert(previouslyUnconfiguredAudio.desktopAudioDevice.length == 0);
+
+    const explicitlyDisabledAudio = settingsFromJson(
+        `{"schemaVersion":4,"desktopAudioBackend":"wasapi-loopback",` ~
+        `"desktopAudioEnabled":false,` ~
+        `"desktopAudioDevice":"{ignored-render-endpoint-id}"}`);
+    assert(!explicitlyDisabledAudio.desktopAudioEnabled);
+    assert(explicitlyDisabledAudio.desktopAudioDevice.length == 0);
+}

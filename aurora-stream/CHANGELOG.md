@@ -1,5 +1,20 @@
 # Aurora Stream changelog
 
+## Unreleased
+
+- Stopped assigning the isolated audio helper below-normal process priority and registered its capture/pacing thread with Windows MMCSS `Audio` at high multimedia priority.
+- Stopped converting ordinary Windows wake-up jitter and short scheduler stalls into explicit RTP timestamp gaps; the helper now preserves every sample and catches up locally for delays below 100 ms, skipping only longer unrecoverable delays.
+- Added `mmcss_enabled` to helper metrics and made quality acceptance require that real-time scheduling was active.
+- Separated the normal first-packet WASAPI discontinuity flag from true mid-stream discontinuities so diagnostics do not report a startup condition as an audible crack.
+- Increased FFmpeg's local desktop-audio RTP thread queue, UDP receive buffer, and reorder queue so slow video initialization cannot discard otherwise clean WASAPI packets and create startup cracks/dropouts.
+- Migrated older empty desktop-audio settings to the active Windows default endpoint while preserving an explicit schema-4 **Disabled** choice.
+- Added a headless, silent loaded-audio regression that exercises desktop capture, NVENC, AAC, FIFO output, and timestamped RTP without covering the user's screen.
+- Added a full A/V phase for the exact live D3D11-direct-to-NVENC path with the same 360-packet FIFO configuration used by network outputs.
+- Added a two-output local phase matching the default Twitch 1080p60 plus YouTube 1440p60 scaling, bitrate, dual-NVENC, audio split, and FIFO workload.
+- Changed the repeat selection to prefer a candidate that already passes video, audio, and synchronization instead of choosing on video-weighted score alone.
+- Added visually near-identical adjacent-frame detection after H.264 decode, because exact frame hashes alone can miss repeated source images after lossy reconstruction.
+- Added expected-dimension checks so a native-resolution direct capture cannot be mislabeled as a 1080p pass.
+
 ## 0.4.9
 
 - Added `RUN-QUALITY-DIAGNOSTIC.bat`, a single-click deterministic 1080p60/audio quality matrix that does not contact Twitch or YouTube.

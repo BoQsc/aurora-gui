@@ -2,6 +2,9 @@
 
 Aurora Stream version: 0.4.9
 
+## Unreleased loaded-audio regression
+
+Run `python tests/run-quality-diagnostic.py --loaded-audio` for a headless, silent stress check of both the live compatibility graph and the lower-overhead BGRA graph. Each 12-second phase must encode 720 frames with no FFmpeg RTP-loss, maximum-delay, overrun, or output-queue warning; MMCSS must be active; and the sender must report no pacing skip or send failure. This test does not replace the audible decoded-waveform control or the full visual 60 FPS diagnostic.
 
 ## 0.4.9 deterministic quality acceptance
 
@@ -10,10 +13,11 @@ Run `RUN-QUALITY-DIAGNOSTIC.bat` with Aurora Stream closed. The runner builds th
 A solid implementation is not accepted unless the same 1080p path passes twice with all of the following:
 
 - at least 59.0 decoded unique images per second;
-- no identical-frame run longer than two frames;
+- no visually near-identical-frame run longer than two frames;
 - no FFmpeg `buffers queued` warning;
 - settled FFmpeg speed at least 0.98×;
 - no decoded audio dropout window or 997 Hz phase jump;
+- Windows MMCSS audio scheduling active;
 - no helper-inserted silence, stale-frame discard, overflow drop, pacing skip, or RTP send failure;
 - maximum audio packet gap no greater than 30 ms and send completion no greater than 5 ms;
 - median A/V marker offset within 120 ms, jitter within 20 ms, and drift within 20 ms.

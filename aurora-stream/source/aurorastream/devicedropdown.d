@@ -76,6 +76,20 @@ final class AudioDeviceDropdown : Button
         updateCaption();
     }
 
+    bool selectDefaultIfEmpty(bool notify = true)
+    {
+        if (_selectedDevice.length > 0 || _devices.length == 0)
+            return false;
+        foreach (device; _devices)
+        {
+            if (device.alternativeName != "default") continue;
+            setSelectedDevice(device.inputName, notify);
+            return true;
+        }
+        setSelectedDevice(_devices[0].inputName, notify);
+        return true;
+    }
+
     private ptrdiff_t findDeviceIndex(string value) const
     {
         foreach (index, device; _devices)

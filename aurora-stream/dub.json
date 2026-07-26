@@ -21,7 +21,8 @@
     "user32",
     "gdi32",
     "shell32",
-    "ole32"
+    "ole32",
+    "avrt"
   ],
   "lflags-osx": [
     "-framework",

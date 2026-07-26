@@ -57,6 +57,9 @@ struct BroadcastSettings
     string youtubeKey;
 
     string desktopAudioDevice;
+    // UI persistence hint: true with an empty device means select the active
+    // Windows default as soon as endpoint enumeration completes.
+    bool desktopAudioEnabled = true;
     string microphoneDevice;
 
     // The shared program canvas before service-specific scaling.
@@ -538,7 +541,12 @@ private string[] captureArguments(const BroadcastSettings settings,
     {
         arguments ~= [
             "-protocol_whitelist", "file,udp,rtp",
-            "-thread_queue_size", "64",
+            // Video device/filter initialization can stall FFmpeg for several
+            // seconds. Keep enough local RTP queued that clean WASAPI packets
+            // are not discarded merely because the video path is starting.
+            "-thread_queue_size", "4096",
+            "-buffer_size", "4194304",
+            "-reorder_queue_size", "2048",
             "-f", "sdp", "-i", desktopAudio.sdpPath
         ];
         audioInputs ~= PreparedAudioInput(nextInput++,
@@ -1462,7 +1470,7 @@ final class BroadcastWorker
             appendDiagnostic("Video path: " ~
                 videoPipelineLabel(settings, encoder, capture));
             appendDiagnostic(
-                "A/V architecture: FFmpeg owns video/encode/mux • separate low-priority audio process • timestamped RTP • no GUI-process PCM pacing thread");
+                "A/V architecture: FFmpeg owns video/encode/mux • separate MMCSS audio process • timestamped RTP • no GUI-process PCM pacing thread");
             appendDiagnostic(
                 "Output transport: bounded FIFO isolation from RTMP/TLS/network stalls");
             appendDiagnostic("Full startup log: aurora-stream-startup.log");

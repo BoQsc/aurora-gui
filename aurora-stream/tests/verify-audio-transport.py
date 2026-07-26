@@ -123,8 +123,9 @@ require('socket.bind(new InternetAddress("127.0.0.1"' in WASAPI and
         "rtp_source_port" in WASAPI,
         "the RTP sender is not explicitly bound to a distinct local source port")
 require("outputChunkFrames = 960" in WASAPI and
-        "outputIntervalMicroseconds = 20_000" in WASAPI,
-        "helper is not using one fixed 20 ms / 960-frame output interval")
+        "outputIntervalMicroseconds = 20_000" in WASAPI and
+        "outputCatchUpWindowMicroseconds = 100_000" in WASAPI,
+        "helper is not using a fixed 20 ms interval with bounded catch-up")
 require("new ubyte[ringCapacityFrames * 4]" in ring,
         "audio queue is not preallocated")
 require("discardOldest" in ring and "recoverNearRealTime" in ring and
@@ -140,8 +141,10 @@ require(helper.count("sender.sendChunk(outputChunk[]") == 1,
         "real helper has more than one RTP output site and may burst")
 require(synthetic.count("sender.sendChunk(silence[]") == 1,
         "synthetic helper has more than one RTP output site and may burst")
-require("reanchorOutputClock" in helper and "pacingFramesSkipped" in helper,
-        "late intervals are not re-anchored without catch-up delivery")
+require("reanchorOutputClock" in helper and
+        "outputCatchUpWindowMicroseconds" in WASAPI and
+        "pacingFramesSkipped" in helper,
+        "short scheduler stalls are not recovered before dropping samples")
 require("socket.blocking = false" in WASAPI,
         "RTP transport is not explicitly nonblocking")
 require(helper.find("sender.initialize(port, frequency, metrics)") <
@@ -155,6 +158,14 @@ require("packet = new ubyte[12 + outputChunkFrames * 4]" in WASAPI,
 require("maximum_send_duration_us" in WASAPI and
         "consecutiveSendFailures >= 5" in WASAPI,
         "RTP completion timing or persistent-send failure handling is missing")
+require("startupDiscontinuities" in WASAPI and
+        "metrics.packetsCaptured == 1" in WASAPI,
+        "initial WASAPI discontinuity is not separated from mid-stream defects")
+require("AvSetMmThreadCharacteristicsW" in WASAPI and
+        "AvSetMmThreadPriority" in WASAPI and
+        "mmcss_enabled" in WASAPI and
+        "belowNormalPriorityClass" not in WASAPI,
+        "the real-time audio helper is missing MMCSS scheduling or is still deprioritized")
 
 for old_symbol in (
     "WasapiLoopbackSource",
@@ -168,6 +179,10 @@ for old_symbol in (
 
 require('"-f", "sdp", "-i", desktopAudio.sdpPath' in capture_inputs,
         "FFmpeg does not ingest the isolated helper through SDP/RTP")
+require('"-thread_queue_size", "4096"' in capture_inputs and
+        '"-buffer_size", "4194304"' in capture_inputs and
+        '"-reorder_queue_size", "2048"' in capture_inputs,
+        "desktop RTP input is not buffered across slow video initialization")
 require('"-use_wallclock_as_timestamps"' not in
         capture_inputs.split("if (settings.microphoneDevice", 1)[0],
         "desktop RTP incorrectly rebuilds timestamps from wall clock")
@@ -262,18 +277,25 @@ require("stream keys are neither read nor transmitted" in FULL_DIAGNOSTIC.lower(
 require("aurora-stream-quality-diagnostic.txt" in QUALITY_DIAGNOSTIC and
         "quality-diagnostic-artifacts" in QUALITY_DIAGNOSTIC,
         "deterministic quality diagnostic output/report paths are missing")
-require("ffplay" in QUALITY_DIAGNOSTIC and "testsrc2=size=1920x1080:rate=60" in QUALITY_DIAGNOSTIC and
+require("ffplay" in QUALITY_DIAGNOSTIC and
+        "testsrc2=size=640x360:rate=60" in QUALITY_DIAGNOSTIC and
+        "scale=1920:1080:flags=neighbor" in QUALITY_DIAGNOSTIC and
         "997" in QUALITY_DIAGNOSTIC and "4000" in QUALITY_DIAGNOSTIC,
         "quality diagnostic lacks synchronized deterministic video/audio markers")
 for required_phase in (
     "Q01", "Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08",
-    "Q09", "Q10", "Q11",
+    "Q09", "Q10", "Q11", "Q12", "Q13",
 ):
     require(f'"{required_phase}"' in QUALITY_DIAGNOSTIC,
             f"quality diagnostic matrix is missing {required_phase}")
-require("framemd5" in QUALITY_DIAGNOSTIC and "unique_rate" in QUALITY_DIAGNOSTIC and
+require("framemd5" in QUALITY_DIAGNOSTIC and
+        "NEAR_DUPLICATE_LUMA_MAD" in QUALITY_DIAGNOSTIC and
+        "d3d11-direct" in QUALITY_DIAGNOSTIC and
+        "dual-default" in QUALITY_DIAGNOSTIC and
+        "mmcss_enabled" in QUALITY_DIAGNOSTIC and
+        "unique_rate" in QUALITY_DIAGNOSTIC and
         "phase_jumps" in QUALITY_DIAGNOSTIC and "A/V sync" in QUALITY_DIAGNOSTIC,
-        "quality diagnostic does not measure unique video cadence, audio cracks, and A/V sync")
+        "quality diagnostic does not cover visual cadence, live zero-copy, MMCSS audio, cracks, and A/V sync")
 require("GetProcessTimes" in QUALITY_DIAGNOSTIC and "nvidia-smi" in QUALITY_DIAGNOSTIC,
         "quality diagnostic does not measure CPU/GPU efficiency")
 require("passed all strict thresholds twice" in QUALITY_DIAGNOSTIC and

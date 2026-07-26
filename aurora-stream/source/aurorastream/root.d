@@ -47,6 +47,7 @@ final class StreamRoot : VBox
     private AudioDeviceDropdown _microphone;
     private Button _refreshAudioDevices;
     private ulong _audioDeviceGeneration;
+    private bool _selectDefaultDesktopAudio;
     private Label _output;
     private Label _presetSummary;
     private Button _startStop;
@@ -77,6 +78,8 @@ final class StreamRoot : VBox
         bool settingsLoaded;
         string settingsLoadMessage;
         const saved = loadSettings(settingsLoaded, settingsLoadMessage);
+        _selectDefaultDesktopAudio = saved.desktopAudioEnabled &&
+            saved.desktopAudioDevice.strip().length == 0;
         _settingsMessage = settingsLoadMessage;
         _settingsLoadFailed = !settingsLoaded &&
             settingsLoadMessage.startsWith("Could not load");
@@ -218,6 +221,10 @@ final class StreamRoot : VBox
             "Desktop audio (Windows WASAPI loopback)",
             saved.desktopAudioDevice,
             "No active Windows playback devices found");
+        _desktopAudio.onChanged = delegate(string value) {
+            _selectDefaultDesktopAudio = false;
+            markSettingsDirty();
+        };
         _microphone = addAudioDeviceDropdown(settingsContent,
             "Microphone (FFmpeg DirectShow)",
             saved.microphoneDevice,
@@ -601,6 +608,8 @@ final class StreamRoot : VBox
         settings.youtubeKey = _youtubeKey.textUtf8().strip();
         settings.youtubeQuality = selectedYoutubeQuality();
         settings.desktopAudioDevice = _desktopAudio.selectedDevice().strip();
+        settings.desktopAudioEnabled = _selectDefaultDesktopAudio ||
+            settings.desktopAudioDevice.length > 0;
         settings.microphoneDevice = _microphone.selectedDevice().strip();
         return settings;
     }
@@ -611,6 +620,15 @@ final class StreamRoot : VBox
         if (snapshot.requestedRunning || snapshot.processRunning)
         {
             _worker.stop();
+            return;
+        }
+
+        if (_selectDefaultDesktopAudio &&
+            _desktopAudio.selectedDevice().strip().length == 0)
+        {
+            _localStatus =
+                "Wait for Windows desktop-audio detection to finish, then start streaming.";
+            _localStatusError = true;
             return;
         }
 
@@ -640,6 +658,13 @@ final class StreamRoot : VBox
             _audioDeviceGeneration = audioScan.generation;
             _desktopAudio.setDevices(audioScan.desktopDevices);
             _microphone.setDevices(audioScan.microphoneDevices);
+            if (_selectDefaultDesktopAudio &&
+                _desktopAudio.selectDefaultIfEmpty())
+            {
+                _localStatus =
+                    "Selected the Windows default playback endpoint for desktop audio.";
+                _localStatusError = false;
+            }
 
             string scanError;
             if (audioScan.desktopError.length > 0)

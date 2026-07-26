@@ -9,6 +9,7 @@ resource usage.  No stream keys or internet destinations are used.
 
 from __future__ import annotations
 
+import argparse
 import array
 import contextlib
 import ctypes
@@ -32,20 +33,37 @@ CAPTURE_SECONDS = 12
 SYNTHETIC_SECONDS = 6
 FPS = 60.0
 SAMPLE_RATE = 48_000
+# Exact decoded hashes alone can miss a source-frame repeat after lossy H.264
+# reconstruction. Downscaled adjacent frames at or below this mean absolute
+# luma difference are therefore counted as visually repeated images.
+NEAR_DUPLICATE_LUMA_MAD = 0.75
+NEAR_DUPLICATE_MEDIAN_RATIO = 0.20
+DIFFERENCE_WIDTH = 160
+DIFFERENCE_HEIGHT = 90
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 CREATE_NEW_PROCESS_GROUP = 0x00000200 if os.name == "nt" else 0
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = ROOT / "aurora-stream-quality-diagnostic.txt"
+AUDIO_REPORT_PATH = ROOT / "aurora-stream-audio-quality-diagnostic.txt"
+LOADED_AUDIO_REPORT_PATH = ROOT / "aurora-stream-loaded-audio-diagnostic.txt"
 ARTIFACTS = ROOT / "quality-diagnostic-artifacts"
 
+AUDIO_TEST_SOURCE = (
+    "aevalsrc='0.12*sin(2*PI*997*t)+"
+    "if(lt(mod(t\\,1)\\,0.02)\\,0.75*sin(2*PI*4000*t)\\,0)':"
+    "s=48000:c=stereo"
+)
+
 TEST_GRAPH = (
-    "testsrc2=size=1920x1080:rate=60,"
+    # Generate the moving pattern at 640x360 and use nearest-neighbour scaling.
+    # A native 1080p testsrc2 consumed nearly an entire CPU on the target PC,
+    # starving its own audio renderer and invalidating later capture phases.
+    "testsrc2=size=640x360:rate=60,"
+    "scale=1920:1080:flags=neighbor,"
     "drawbox=x=0:y=0:w=240:h=240:color=black:t=fill,"
     "drawbox=x=0:y=0:w=240:h=240:color=white:t=fill:"
     "enable='lt(mod(t,1),0.05)'[out0];"
-    "aevalsrc='0.12*sin(2*PI*997*t)+"
-    "if(lt(mod(t\\,1)\\,0.02)\\,0.75*sin(2*PI*4000*t)\\,0)':"
-    "s=48000:c=stereo[out1]"
+    + AUDIO_TEST_SOURCE + "[out1]"
 )
 
 
@@ -115,11 +133,16 @@ class ResourceSummary:
 class VideoResult:
     valid: bool = False
     frames: int = 0
+    width: int = 0
+    height: int = 0
     duration: float = 0.0
     unique_rate: float = 0.0
     duplicates: int = 0
+    exact_duplicates: int = 0
     duplicate_ratio: float = 0.0
     longest_run: int = 0
+    minimum_adjacent_luma_mad: float = 0.0
+    duplicate_luma_threshold: float = 0.0
     interval_max_ms: float = 0.0
     interval_p99_ms: float = 0.0
     flash_times: list[float] = dataclasses.field(default_factory=list)
@@ -159,6 +182,9 @@ class PhaseResult:
     description: str
     output: Path
     command: list[str]
+    expected_size: tuple[int, int] | None = None
+    secondary_output: Path | None = None
+    secondary_expected_size: tuple[int, int] | None = None
     returncode: int | None = None
     timed_out: bool = False
     wall_seconds: float = 0.0
@@ -171,6 +197,7 @@ class PhaseResult:
     helper_status: str = ""
     resources: ResourceSummary = dataclasses.field(default_factory=ResourceSummary)
     video: VideoResult = dataclasses.field(default_factory=VideoResult)
+    secondary_video: VideoResult = dataclasses.field(default_factory=VideoResult)
     audio: AudioResult = dataclasses.field(default_factory=AudioResult)
     sync: SyncResult = dataclasses.field(default_factory=SyncResult)
     failure: str = ""
@@ -426,7 +453,7 @@ def sdp_text(port: int, rtcp_port: int) -> str:
 
 
 def start_helper(executable: Path, folder: Path, pair: ReservedPair,
-                 endpoint_id: str) -> Helper:
+                 endpoint_id: str, synthetic: bool = False) -> Helper:
     token = f"helper-{pair.rtp_port}-{time.time_ns()}"
     status = folder / f"{token}.status"
     stop = folder / f"{token}.stop"
@@ -443,6 +470,8 @@ def start_helper(executable: Path, folder: Path, pair: ReservedPair,
         "--metrics", str(metrics),
         "--endpoint", endpoint_id,
     ]
+    if synthetic:
+        command.append("--synthetic")
     process = subprocess.Popen(command, cwd=str(ROOT), text=True,
                                stdout=stdout_file, stderr=stderr_file,
                                creationflags=CREATE_NO_WINDOW,
@@ -567,14 +596,25 @@ def audio_filter(mode: str, input_index: int = 1) -> str:
 
 
 def common_output(output: Path, duration: int, fifo: bool, bgra: bool,
-                  size: tuple[int, int]) -> list[str]:
-    bitrate = "6000k" if size == (1920, 1080) else "4500k"
+                  size: tuple[int, int], video_map: str = "[v]",
+                  audio_map: str = "[a]", direct_d3d11: bool = False,
+                  bitrate_kbps: int | None = None) -> list[str]:
+    if bitrate_kbps is None:
+        bitrate_kbps = 6_000 if size == (1920, 1080) else 4_500
+    bitrate = f"{bitrate_kbps}k"
+    buffer_size = f"{bitrate_kbps * 2}k"
     result = [
-        "-map", "[v]", "-map", "[a]",
-        "-r:v", "60", "-fps_mode:v", "cfr",
+        "-map", video_map, "-map", audio_map,
+    ]
+    if direct_d3d11:
+        result += ["-fps_mode:v", "passthrough"]
+    else:
+        result += ["-r:v", "60", "-fps_mode:v", "cfr"]
+    result += [
         "-c:v", "h264_nvenc", "-preset", "p3", "-tune", "ll",
         "-rc", "cbr", "-b:v", bitrate, "-maxrate", bitrate,
-        "-bufsize", "12000k", "-profile:v", "high", "-level:v", "4.2",
+        "-bufsize", buffer_size, "-profile:v", "high",
+        "-level:v", "5.1" if size == (2560, 1440) else "4.2",
         "-g", "120", "-keyint_min", "120", "-bf", "2",
     ]
     if bgra:
@@ -586,7 +626,7 @@ def common_output(output: Path, duration: int, fifo: bool, bgra: bool,
     ]
     if fifo:
         result += [
-            "-f", "fifo", "-fifo_format", "flv", "-queue_size", "120",
+            "-f", "fifo", "-fifo_format", "flv", "-queue_size", "360",
             "-format_opts", "max_interleave_delta=0:flush_packets=1:"
             "flvflags=no_duration_filesize",
             "-attempt_recovery", "1", "-recovery_wait_time", "1",
@@ -603,24 +643,82 @@ def common_output(output: Path, duration: int, fifo: bool, bgra: bool,
 
 def desktop_command(output: Path, video_mode: str, audio_mode: str,
                     sdp: Path | None, fifo: bool) -> list[str]:
+    direct_d3d11 = video_mode == "d3d11-direct"
+    video_source = (
+        "ddagrab=output_idx=0:framerate=60:draw_mouse=0:dup_frames=1"
+    )
+    if not direct_d3d11:
+        video_source += ",hwdownload,format=bgra"
     command = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-stats_period", "0.25", "-progress", "pipe:2", "-benchmark",
         "-thread_queue_size", "512", "-f", "lavfi", "-i",
-        "ddagrab=output_idx=0:framerate=60:draw_mouse=0:dup_frames=1,"
-        "hwdownload,format=bgra",
+        video_source,
     ]
     if audio_mode == "synthetic":
         command += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
     else:
         assert sdp is not None
         command += [
-            "-protocol_whitelist", "file,udp,rtp", "-thread_queue_size", "128",
+            "-protocol_whitelist", "file,udp,rtp",
+            "-thread_queue_size", "4096",
+            "-buffer_size", "4194304",
+            "-reorder_queue_size", "2048",
             "-f", "sdp", "-i", str(sdp),
         ]
-    graph, bgra, size = build_video_filter(video_mode, audio_filter(audio_mode))
+    if direct_d3d11:
+        command += ["-filter_complex", audio_filter(audio_mode)]
+        command += common_output(
+            output, CAPTURE_SECONDS, fifo, False, (1920, 1080),
+            video_map="0:v", direct_d3d11=True,
+        )
+    else:
+        graph, bgra, size = build_video_filter(
+            video_mode, audio_filter(audio_mode)
+        )
+        command += ["-filter_complex", graph]
+        command += common_output(output, CAPTURE_SECONDS, fifo, bgra, size)
+    return command
+
+
+def dual_output_command(twitch_output: Path, youtube_output: Path,
+                        audio_mode: str, sdp: Path) -> list[str]:
+    """Mirror the default live 1080p Twitch + 1440p YouTube workload locally."""
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-nostdin",
+        "-stats_period", "0.25", "-progress", "pipe:2", "-benchmark",
+        "-thread_queue_size", "512", "-f", "lavfi", "-i",
+        "ddagrab=output_idx=0:framerate=60:draw_mouse=0:dup_frames=1,"
+        "hwdownload,format=bgra",
+        "-protocol_whitelist", "file,udp,rtp",
+        "-thread_queue_size", "4096",
+        "-buffer_size", "4194304",
+        "-reorder_queue_size", "2048",
+        "-f", "sdp", "-i", str(sdp),
+    ]
+    graph = (
+        "[0:v]fps=fps=60:start_time=0:round=near,settb=AVTB,"
+        "setpts=N/(60*TB),"
+        "scale=1920:1080:force_original_aspect_ratio=decrease:flags=bicubic,"
+        "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[vsource];"
+        "[vsource]split=2[vtwitchsource][vyoutubesource];"
+        "[vtwitchsource]format=yuv420p[vtwitch];"
+        "[vyoutubesource]scale=2560:1440:"
+        "force_original_aspect_ratio=decrease:flags=bicubic,"
+        "pad=2560:1440:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+        "format=yuv420p[vyoutube];"
+        + audio_filter(audio_mode)
+        + ";[a]asplit=2[atwitch][ayoutube]"
+    )
     command += ["-filter_complex", graph]
-    command += common_output(output, CAPTURE_SECONDS, fifo, bgra, size)
+    command += common_output(
+        twitch_output, CAPTURE_SECONDS, True, False, (1920, 1080),
+        video_map="[vtwitch]", audio_map="[atwitch]", bitrate_kbps=6_000,
+    )
+    command += common_output(
+        youtube_output, CAPTURE_SECONDS, True, False, (2560, 1440),
+        video_map="[vyoutube]", audio_map="[ayoutube]", bitrate_kbps=24_000,
+    )
     return command
 
 
@@ -644,7 +742,10 @@ def audio_only_command(output: Path, sdp: Path) -> list[str]:
     return [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-stats_period", "0.25", "-progress", "pipe:2",
-        "-protocol_whitelist", "file,udp,rtp", "-thread_queue_size", "128",
+        "-protocol_whitelist", "file,udp,rtp",
+        "-thread_queue_size", "4096",
+        "-buffer_size", "4194304",
+        "-reorder_queue_size", "2048",
         "-f", "sdp", "-i", str(sdp), "-map", "0:a", "-c:a", "pcm_s16le",
         "-ar", "48000", "-ac", "2", "-t", str(CAPTURE_SECONDS),
         "-f", "wav", str(output),
@@ -722,8 +823,13 @@ def video_analysis(path: Path) -> VideoResult:
         video = next(stream for stream in probe.get("streams", [])
                      if stream.get("codec_type") == "video")
         result.frames = int(video.get("nb_read_frames") or 0)
+        result.width = int(video.get("width") or 0)
+        result.height = int(video.get("height") or 0)
         result.duration = float(probe.get("format", {}).get("duration") or 0.0)
 
+        # Keep exact hashes as useful forensic data, but do not use them alone
+        # to decide unique cadence: two encodes of the same source image can
+        # reconstruct with slightly different pixels after lossy H.264.
         md5 = run_checked(["ffmpeg", "-v", "error", "-i", str(path),
                            "-map", "0:v:0", "-f", "framemd5", "-"], timeout=60)
         if md5.returncode != 0:
@@ -737,14 +843,42 @@ def video_analysis(path: Path) -> VideoResult:
                 hashes.append(fields[-1])
         if not result.frames:
             result.frames = len(hashes)
-        run = 1
         for index in range(1, len(hashes)):
             if hashes[index] == hashes[index - 1]:
-                result.duplicates += 1; run += 1
+                result.exact_duplicates += 1
+
+        luma = subprocess.check_output([
+            "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
+            "-vf",
+            f"scale={DIFFERENCE_WIDTH}:{DIFFERENCE_HEIGHT}:flags=area,"
+            "format=gray",
+            "-f", "rawvideo", "-",
+        ], timeout=60, creationflags=CREATE_NO_WINDOW)
+        frame_bytes = DIFFERENCE_WIDTH * DIFFERENCE_HEIGHT
+        luma_frames = len(luma) // frame_bytes
+        if luma_frames < 2:
+            raise RuntimeError("too few decoded frames for adjacent-image analysis")
+        luma_view = memoryview(luma)
+        adjacent_mad: list[float] = []
+        for index in range(1, luma_frames):
+            previous = luma_view[(index - 1) * frame_bytes:index * frame_bytes]
+            current = luma_view[index * frame_bytes:(index + 1) * frame_bytes]
+            difference = sum(abs(a - b) for a, b in zip(previous, current))
+            adjacent_mad.append(difference / frame_bytes)
+        result.minimum_adjacent_luma_mad = min(adjacent_mad)
+        result.duplicate_luma_threshold = min(
+            NEAR_DUPLICATE_LUMA_MAD,
+            statistics.median(adjacent_mad) * NEAR_DUPLICATE_MEDIAN_RATIO,
+        )
+        run = 1
+        for mad in adjacent_mad:
+            if mad <= result.duplicate_luma_threshold:
+                result.duplicates += 1
+                run += 1
                 result.longest_run = max(result.longest_run, run)
             else:
                 run = 1
-        result.longest_run = max(result.longest_run, 1 if hashes else 0)
+        result.longest_run = max(result.longest_run, 1)
         duration = result.duration if result.duration > 0 else result.frames / FPS
         result.unique_rate = ((result.frames - result.duplicates) / duration) if duration > 0 else 0.0
         result.duplicate_ratio = 100.0 * result.duplicates / max(1, result.frames - 1)
@@ -766,7 +900,7 @@ def video_analysis(path: Path) -> VideoResult:
                 result.interval_p99_ms = sorted_intervals[min(len(sorted_intervals) - 1,
                     int(0.99 * len(sorted_intervals)))]
 
-        width = int(video.get("width") or 1920)
+        width = result.width or 1920
         marker_size = max(32, round(240 * width / 1920))
         brightness = subprocess.check_output([
             "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
@@ -926,14 +1060,39 @@ def analyse_phase(phase: PhaseResult, expect_video: bool, expect_tone: bool,
         phase.video = video_analysis(phase.output)
         if phase.video.valid:
             report.line(
-                f"Video: frames={phase.video.frames}, duration={phase.video.duration:.3f}s, "
-                f"unique={phase.video.unique_rate:.3f} FPS, duplicates={phase.video.duplicates} "
-                f"({phase.video.duplicate_ratio:.3f}%), longest_run={phase.video.longest_run}, "
+                f"Video: size={phase.video.width}x{phase.video.height}, "
+                f"frames={phase.video.frames}, duration={phase.video.duration:.3f}s, "
+                f"unique={phase.video.unique_rate:.3f} FPS, visual_duplicates={phase.video.duplicates} "
+                f"({phase.video.duplicate_ratio:.3f}%), exact_duplicates={phase.video.exact_duplicates}, "
+                f"minimum_adjacent_luma_MAD={phase.video.minimum_adjacent_luma_mad:.3f}, "
+                f"duplicate_MAD_threshold={phase.video.duplicate_luma_threshold:.3f}, "
+                f"longest_run={phase.video.longest_run}, "
                 f"PTS max/p99={phase.video.interval_max_ms:.3f}/{phase.video.interval_p99_ms:.3f} ms, "
                 f"flash_events={len(phase.video.flash_times)}, flash_jitter={phase.video.flash_interval_jitter_ms:.3f} ms"
             )
         else:
             report.line("Video analysis failed: " + phase.video.error)
+        if phase.secondary_output is not None:
+            if (not phase.secondary_output.exists() or
+                    phase.secondary_output.stat().st_size == 0):
+                phase.secondary_video.error = "secondary output was not produced"
+                report.line("Secondary video analysis failed: " +
+                            phase.secondary_video.error)
+            else:
+                phase.secondary_video = video_analysis(phase.secondary_output)
+                if phase.secondary_video.valid:
+                    report.line(
+                        "Secondary video: "
+                        f"size={phase.secondary_video.width}x{phase.secondary_video.height}, "
+                        f"frames={phase.secondary_video.frames}, "
+                        f"duration={phase.secondary_video.duration:.3f}s, "
+                        f"unique={phase.secondary_video.unique_rate:.3f} FPS, "
+                        f"visual_duplicates={phase.secondary_video.duplicates}, "
+                        f"longest_run={phase.secondary_video.longest_run}"
+                    )
+                else:
+                    report.line("Secondary video analysis failed: " +
+                                phase.secondary_video.error)
     if expect_tone:
         phase.audio = audio_analysis(phase.output)
         if phase.audio.valid:
@@ -959,7 +1118,22 @@ def analyse_phase(phase: PhaseResult, expect_video: bool, expect_tone: bool,
 
 
 def video_quality_pass(phase: PhaseResult) -> bool:
-    return (phase.video.valid and phase.video.unique_rate >= 59.0 and
+    size_matches = (
+        phase.expected_size is None or
+        (phase.video.width, phase.video.height) == phase.expected_size
+    )
+    secondary_matches = True
+    if phase.secondary_output is not None:
+        secondary_matches = (
+            phase.secondary_video.valid and
+            (phase.secondary_expected_size is None or
+             (phase.secondary_video.width, phase.secondary_video.height) ==
+             phase.secondary_expected_size) and
+            phase.secondary_video.unique_rate >= 59.0 and
+            phase.secondary_video.longest_run <= 2
+        )
+    return (phase.video.valid and size_matches and secondary_matches and
+            phase.video.unique_rate >= 59.0 and
             phase.video.longest_run <= 2 and phase.queue_warnings == 0 and
             phase.average_settled_speed >= 0.98)
 
@@ -968,12 +1142,35 @@ def audio_quality_pass(phase: PhaseResult) -> bool:
     if not phase.audio.valid:
         return False
     metrics = helper_metrics(phase.helper_metrics)
+    receiver_output = phase.stderr.lower()
     return (
         phase.audio.dropout_windows == 0 and phase.audio.phase_jumps == 0 and
+        "rtp: missed" not in receiver_output and
+        "max delay reached" not in receiver_output and
+        "circular buffer overrun" not in receiver_output and
+        metrics.get("mmcss_enabled") == "true" and
         int(metrics.get("packets_captured", 0)) > 0 and
         int(metrics.get("silent_frames_sent", 0)) == 0 and
         int(metrics.get("frames_dropped_on_overflow", 0)) == 0 and
         int(metrics.get("stale_frames_discarded", 0)) == 0 and
+        int(metrics.get("pacing_frames_skipped", 0)) == 0 and
+        int(metrics.get("discontinuities", 0)) == 0 and
+        int(metrics.get("send_failures", 0)) == 0 and
+        int(metrics.get("maximum_packet_gap_ms", 9999)) <= 30 and
+        int(metrics.get("maximum_send_duration_us", 999999)) <= 5_000
+    )
+
+
+def synthetic_transport_quality_pass(phase: PhaseResult) -> bool:
+    metrics = helper_metrics(phase.helper_metrics)
+    receiver_output = phase.stderr.lower()
+    return (
+        phase.returncode == 0 and not phase.timed_out and
+        "rtp: missed" not in receiver_output and
+        "max delay reached" not in receiver_output and
+        "circular buffer overrun" not in receiver_output and
+        metrics.get("mmcss_enabled") == "true" and
+        int(metrics.get("rtp_packets_sent", 0)) > 0 and
         int(metrics.get("pacing_frames_skipped", 0)) == 0 and
         int(metrics.get("send_failures", 0)) == 0 and
         int(metrics.get("maximum_packet_gap_ms", 9999)) <= 30 and
@@ -1021,6 +1218,32 @@ def launch_test_card(report: Report) -> tuple[subprocess.Popen[str], object, Pat
     return process, stderr_file, stderr_path
 
 
+def launch_audio_test_signal(report: Report) -> tuple[subprocess.Popen[str], object, Path]:
+    stderr_path = ARTIFACTS / "ffplay-audio-test-signal.log"
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    command = [
+        "ffplay", "-hide_banner", "-loglevel", "warning", "-nodisp",
+        "-f", "lavfi", "-i", AUDIO_TEST_SOURCE, "-volume", "80",
+    ]
+    report.line("Launching deterministic audio test signal: " +
+                command_text(command))
+    process = subprocess.Popen(
+        command, cwd=str(ROOT), stdout=subprocess.DEVNULL,
+        stderr=stderr_file, text=True,
+        creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+    )
+    time.sleep(1.0)
+    if process.poll() is not None:
+        stderr_file.close()
+        text = stderr_path.read_text(
+            encoding="utf-8", errors="replace"
+        ) if stderr_path.exists() else ""
+        raise RuntimeError(
+            f"ffplay audio signal exited with code {process.returncode}: {text}"
+        )
+    return process, stderr_file, stderr_path
+
+
 def stop_test_card(process: subprocess.Popen[str], stderr_file: object) -> None:
     with contextlib.suppress(Exception):
         process.terminate()
@@ -1065,18 +1288,39 @@ def build_project(report: Report) -> Path:
 
 def run_real_phase(executable: Path, endpoint_id: str, name: str,
                    description: str, video_mode: str, audio_mode: str,
-                   fifo: bool, report: Report) -> PhaseResult:
-    output = ARTIFACTS / f"{name}.flv"
+                   fifo: bool, report: Report,
+                   analyse_video: bool = True,
+                   synthetic_helper: bool = False) -> PhaseResult:
+    dual_output = video_mode == "dual-default"
+    output = ARTIFACTS / (
+        f"{name}-twitch.flv" if dual_output else f"{name}.flv"
+    )
+    secondary_output = (
+        ARTIFACTS / f"{name}-youtube.flv" if dual_output else None
+    )
     with contextlib.suppress(OSError): output.unlink()
+    if secondary_output is not None:
+        with contextlib.suppress(OSError): secondary_output.unlink()
     pair = reserve_pair()
     sdp = ARTIFACTS / f"{name}.sdp"
     sdp.write_text(sdp_text(pair.rtp_port, pair.rtcp_port), encoding="ascii")
-    helper = start_helper(executable, ARTIFACTS, pair, endpoint_id)
-    status = wait_helper(helper, require_capture=True, timeout=4.0)
-    if status != "capturing":
+    helper = start_helper(
+        executable, ARTIFACTS, pair, endpoint_id,
+        synthetic=synthetic_helper,
+    )
+    status = wait_helper(
+        helper, require_capture=not synthetic_helper, timeout=4.0
+    )
+    expected_status = "ready" if synthetic_helper else "capturing"
+    if status != expected_status:
         metrics, helper_stdout, helper_stderr = stop_helper(helper)
         pair.close()
-        phase = PhaseResult(name, description, output, [])
+        expected_size = (1280, 720) if video_mode == "720-fast" else (1920, 1080)
+        phase = PhaseResult(
+            name, description, output, [], expected_size=expected_size,
+            secondary_output=secondary_output,
+            secondary_expected_size=(2560, 1440) if dual_output else None,
+        )
         phase.helper_status = status
         phase.helper_metrics = metrics
         phase.failure = (status or "helper never reported real WASAPI capture")
@@ -1086,11 +1330,174 @@ def run_real_phase(executable: Path, endpoint_id: str, name: str,
         if helper_stdout: report.line("Helper stdout:\n" + helper_stdout)
         if helper_stderr: report.line("Helper stderr:\n" + helper_stderr)
         return phase
-    command = desktop_command(output, video_mode, audio_mode, sdp, fifo)
-    phase = PhaseResult(name, description, output, command, helper_status=status)
+    if dual_output:
+        assert secondary_output is not None
+        command = dual_output_command(output, secondary_output, audio_mode, sdp)
+    else:
+        command = desktop_command(output, video_mode, audio_mode, sdp, fifo)
+    expected_size = (1280, 720) if video_mode == "720-fast" else (1920, 1080)
+    phase = PhaseResult(
+        name, description, output, command, expected_size=expected_size,
+        secondary_output=secondary_output,
+        secondary_expected_size=(2560, 1440) if dual_output else None,
+        helper_status=status,
+    )
     run_phase(phase, helper, pair, report)
-    analyse_phase(phase, expect_video=True, expect_tone=True, report=report)
+    analyse_phase(
+        phase, expect_video=analyse_video,
+        expect_tone=not synthetic_helper, report=report
+    )
     return phase
+
+
+def audio_only_main() -> int:
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    report = Report(AUDIO_REPORT_PATH)
+    report.line("Aurora Stream focused audio quality diagnostic")
+    report.line("==============================================")
+    report.line(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    report.line(f"Capture duration: {CAPTURE_SECONDS} seconds")
+    report.line("Source: continuous 997 Hz tone plus a 20 ms 4 kHz marker every second.")
+    report.line("Video capture and encoding are intentionally excluded.")
+    report.save()
+
+    signal = None
+    signal_stderr = None
+    try:
+        executable = build_project(report)
+        endpoint_id, endpoint_label = select_endpoint(executable)
+        report.line("Selected playback/loopback endpoint: " + endpoint_label)
+        signal, signal_stderr, _ = launch_audio_test_signal(report)
+
+        pair = reserve_pair()
+        sdp = ARTIFACTS / "audio-only.sdp"
+        sdp.write_text(
+            sdp_text(pair.rtp_port, pair.rtcp_port), encoding="ascii"
+        )
+        helper = start_helper(executable, ARTIFACTS, pair, endpoint_id)
+        status = wait_helper(helper, require_capture=True, timeout=4.0)
+        output = ARTIFACTS / "audio-only.wav"
+        with contextlib.suppress(OSError):
+            output.unlink()
+        phase = PhaseResult(
+            "A01", "Real WASAPI/RTP decoded continuity", output,
+            audio_only_command(output, sdp), helper_status=status,
+        )
+        if status == "capturing":
+            run_phase(phase, helper, pair, report)
+            analyse_phase(
+                phase, expect_video=False, expect_tone=True, report=report
+            )
+        else:
+            metrics, helper_stdout, helper_stderr = stop_helper(helper)
+            pair.close()
+            phase.helper_metrics = metrics
+            phase.failure = status or "helper never reported capture"
+            report.line("FAILED BEFORE FFMPEG: " + phase.failure)
+            if metrics:
+                report.line("Helper metrics:\n" + metrics)
+            if helper_stdout:
+                report.line("Helper stdout:\n" + helper_stdout)
+            if helper_stderr:
+                report.line("Helper stderr:\n" + helper_stderr)
+
+        report.section("FOCUSED AUDIO VERDICT")
+        passed = audio_quality_pass(phase)
+        report.line("Decoded waveform and helper transport: " +
+                    ("PASS" if passed else "FAIL"))
+        report.line(
+            "Required: MMCSS active; no decoded dropout/phase jump; no "
+            "mid-stream WASAPI discontinuity; no inserted silence, overflow, "
+            "stale discard, pacing skip, or RTP send failure."
+        )
+        report.line("Artifact: " + str(output))
+        report.line("Report: " + str(AUDIO_REPORT_PATH))
+        report.line(f"Finished: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        report.save()
+        return 0 if passed else 1
+    except Exception as error:
+        report.section("AUDIO DIAGNOSTIC FAILURE")
+        report.line(type(error).__name__ + ": " + str(error))
+        report.save()
+        return 2
+    finally:
+        if signal is not None and signal_stderr is not None:
+            stop_test_card(signal, signal_stderr)
+
+
+def loaded_audio_main() -> int:
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    report = Report(LOADED_AUDIO_REPORT_PATH)
+    report.line("Aurora Stream focused loaded A/V audio diagnostic")
+    report.line("================================================")
+    report.line(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    report.line(f"Capture duration per phase: {CAPTURE_SECONDS} seconds")
+    report.line(
+        "Source: Aurora Stream's silent, timestamped synthetic RTP helper."
+    )
+    report.line(
+        "Normal desktop capture, NVENC, AAC, the bounded live FIFO, and real "
+        "SDP/RTP receive path run concurrently as load."
+    )
+    report.line(
+        "This focused mode opens no window, plays no sound, and does not "
+        "grade waveform quality, visual frame uniqueness, or A/V sync."
+    )
+    report.line(
+        "It complements the real-WASAPI waveform control by stress-testing "
+        "the same receiver buffering without disturbing the desktop."
+    )
+    report.save()
+
+    try:
+        executable = build_project(report)
+        endpoint_id, endpoint_label = select_endpoint(executable)
+        report.line("Detected playback/loopback endpoint: " + endpoint_label)
+
+        phases = [
+            run_real_phase(
+                executable, endpoint_id, "L01",
+                "Live compatibility capture with buffered WASAPI/RTP",
+                "current", "async1000", True, report, analyse_video=False,
+                synthetic_helper=True,
+            ),
+            run_real_phase(
+                executable, endpoint_id, "L02",
+                "Lower-overhead BGRA capture with buffered WASAPI/RTP",
+                "bgra-native", "async1000", True, report,
+                analyse_video=False,
+                synthetic_helper=True,
+            ),
+        ]
+
+        report.section("FOCUSED LOADED A/V VERDICT")
+        for phase in phases:
+            transport_passed = synthetic_transport_quality_pass(phase)
+            report.line(
+                f"{phase.name}: RTP transport="
+                f"{'PASS' if transport_passed else 'FAIL'}; "
+                f"encoded_frames={phase.progress_frames}; "
+                f"final_speed={phase.final_speed:.3f}x"
+            )
+        passed = all(
+            synthetic_transport_quality_pass(phase) for phase in phases
+        )
+        report.line(
+            "Loaded RTP receive result: " + ("PASS" if passed else "FAIL")
+        )
+        report.line(
+            "Required: no FFmpeg RTP-loss/overrun warning and no sender "
+            "pacing skip, excessive packet gap, or send failure."
+        )
+        report.line("Report: " + str(LOADED_AUDIO_REPORT_PATH))
+        report.line(f"Finished: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        report.save()
+        return 0 if passed else 1
+    except Exception as error:
+        report.section("LOADED A/V DIAGNOSTIC FAILURE")
+        report.line(type(error).__name__ + ": " + str(error))
+        report.save()
+        return 2
 
 
 def main() -> int:
@@ -1117,7 +1524,8 @@ def main() -> int:
         # Q01: maximum encoder/mux capacity without desktop capture.
         q01 = PhaseResult("Q01", "Synthetic 1080p60 encoder/AAC capacity baseline",
                           ARTIFACTS / "Q01.flv",
-                          synthetic_baseline_command(ARTIFACTS / "Q01.flv"))
+                          synthetic_baseline_command(ARTIFACTS / "Q01.flv"),
+                          expected_size=(1920, 1080))
         run_phase(q01, None, None, report)
         analyse_phase(q01, expect_video=True, expect_tone=True, report=report)
         phases.append(q01)
@@ -1133,7 +1541,10 @@ def main() -> int:
         ]:
             output = ARTIFACTS / f"{name}.flv"
             command = desktop_command(output, video_mode, "synthetic", None, False)
-            phase = PhaseResult(name, description, output, command)
+            phase = PhaseResult(
+                name, description, output, command,
+                expected_size=(1920, 1080),
+            )
             run_phase(phase, None, None, report)
             analyse_phase(phase, expect_video=True, expect_tone=False, report=report)
             phases.append(phase)
@@ -1146,6 +1557,8 @@ def main() -> int:
             ("Q07", "BGRA clocked 1080p60 + gentle async=1 audio correction", "bgra-clocked", "async1", False),
             ("Q08", "BGRA native 1080p60 + current audio + live-style FIFO", "bgra-native", "async1000", True),
             ("Q09", "Fast 720p60 fallback + current audio", "720-fast", "async1000", False),
+            ("Q12", "Live D3D11-direct 1080p60 + current audio + live FIFO", "d3d11-direct", "async1000", True),
+            ("Q13", "Default dual output: Twitch 1080p60 + YouTube 1440p60", "dual-default", "async1000", True),
         ]
         full_av: list[PhaseResult] = []
         for item in matrix:
@@ -1177,26 +1590,42 @@ def main() -> int:
             if helper_stderr: report.line(helper_stderr)
         phases.append(q10)
 
-        # Repeat the best 1080p direct-FLV full-A/V candidate once.
+        # Repeat the best complete 1080p full-A/V candidate once. Prefer a path
+        # that already passed all dimensions before considering raw score.
         candidates = [phase for phase in full_av
                       if phase.output.suffix == ".flv" and "720p" not in phase.description
-                      and "FIFO" not in phase.description and phase.video.valid]
+                      and phase.video.valid]
         if candidates:
-            best = max(candidates, key=phase_score)
-            mode_map = {"Q04": ("current", "async1000"),
-                        "Q05": ("bgra-native", "async1000"),
-                        "Q06": ("bgra-clocked", "noasync"),
-                        "Q07": ("bgra-clocked", "async1")}
+            def repeat_rank(item: PhaseResult) -> tuple[int, int, float]:
+                passes = (
+                    int(video_quality_pass(item)) +
+                    int(audio_quality_pass(item)) +
+                    int(sync_quality_pass(item))
+                )
+                complete = int(passes == 3)
+                return complete, passes, phase_score(item)
+
+            best = max(candidates, key=repeat_rank)
+            mode_map = {"Q04": ("current", "async1000", False),
+                        "Q05": ("bgra-native", "async1000", False),
+                        "Q06": ("bgra-clocked", "noasync", False),
+                        "Q07": ("bgra-clocked", "async1", False),
+                        "Q08": ("bgra-native", "async1000", True),
+                        "Q12": ("d3d11-direct", "async1000", True),
+                        "Q13": ("dual-default", "async1000", True)}
             if best.name in mode_map:
-                video_mode, audio_mode = mode_map[best.name]
+                video_mode, audio_mode, fifo = mode_map[best.name]
                 repeat = run_real_phase(executable, endpoint_id, "Q11",
                     f"Repeat of highest-scoring 1080p path ({best.name})",
-                    video_mode, audio_mode, False, report)
+                    video_mode, audio_mode, fifo, report)
                 phases.append(repeat)
 
         report.section("FINAL QUALITY VERDICT")
         full_1080 = [phase for phase in phases
-                     if phase.name in {"Q04", "Q05", "Q06", "Q07", "Q08", "Q11"}]
+                     if phase.name in {
+                         "Q04", "Q05", "Q06", "Q07", "Q08", "Q11",
+                         "Q12", "Q13",
+                     }]
         solid_video = [phase for phase in full_1080 if video_quality_pass(phase)]
         clean_audio = [phase for phase in full_1080 if audio_quality_pass(phase)]
         good_sync = [phase for phase in full_1080 if sync_quality_pass(phase)]
@@ -1249,6 +1678,8 @@ def main() -> int:
         q03 = next((phase for phase in phases if phase.name == "Q03"), None)
         q09 = next((phase for phase in phases if phase.name == "Q09"), None)
         q10 = next((phase for phase in phases if phase.name == "Q10"), None)
+        q12 = next((phase for phase in phases if phase.name == "Q12"), None)
+        q13 = next((phase for phase in phases if phase.name == "Q13"), None)
         report.line()
         report.line("Automatic bottleneck interpretation:")
         if q01 and q01.video.valid and q01.video.unique_rate >= 59.5:
@@ -1262,6 +1693,21 @@ def main() -> int:
             report.line("- Audio-only control is clean; any audio defect in full A/V phases is scheduling/contention between pipelines.")
         if q09 and q09.video.valid and video_quality_pass(q09) and not solid_video:
             report.line("- 720p60 passes while 1080p60 fails, indicating insufficient 1080p capture/readback/conversion headroom on this machine.")
+        if q12 and q12.video.valid:
+            if video_quality_pass(q12):
+                report.line("- The exact live D3D11-direct/FIFO topology sustains 1080p60 without CPU readback.")
+            elif (q12.video.width, q12.video.height) != (1920, 1080):
+                report.line(
+                    f"- D3D11 direct capture produced {q12.video.width}x{q12.video.height}; "
+                    "the live zero-copy path cannot activate for a 1080p output on this monitor."
+                )
+            else:
+                report.line("- The exact live D3D11-direct/FIFO topology did not sustain the strict 1080p60 cadence threshold.")
+        if q13 and q13.video.valid:
+            if video_quality_pass(q13):
+                report.line("- The default simultaneous Twitch 1080p60 + YouTube 1440p60 local workload passes both output cadences.")
+            else:
+                report.line("- The default simultaneous Twitch 1080p60 + YouTube 1440p60 workload does not yet pass both output cadences.")
         if not solid_video:
             report.line("- Encoded 60/1 timestamps are not enough: no 1080p full-A/V path sustained at least 59 unique images per second.")
         if not clean_audio:
@@ -1269,8 +1715,12 @@ def main() -> int:
 
         report.line()
         report.line("Strict acceptance thresholds used:")
-        report.line("- Video: >=59.0 unique FPS, no duplicate run over 2 frames, no FFmpeg queue warning, settled speed >=0.98x.")
-        report.line("- Audio: zero decoded dropouts/phase jumps, zero helper silence/overflow/stale/pacing loss, packet gap <=30 ms, send <=5 ms.")
+        report.line(
+            "- Video: expected dimensions, >=59.0 visually unique FPS "
+            "(adaptive adjacent-luma difference), no duplicate "
+            "run over 2 frames, no FFmpeg queue warning, settled speed >=0.98x."
+        )
+        report.line("- Audio: MMCSS active, zero decoded dropouts/phase jumps, zero helper silence/overflow/stale/pacing loss, packet gap <=30 ms, send <=5 ms.")
         report.line("- Sync: absolute median offset <=120 ms, jitter <=20 ms, drift <=20 ms.")
         report.line("Artifacts remain in: " + str(ARTIFACTS))
         report.line("Upload only this report unless a specific phase file is requested: " + str(REPORT_PATH))
@@ -1289,4 +1739,19 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    focused = parser.add_mutually_exclusive_group()
+    focused.add_argument(
+        "--audio-only", action="store_true",
+        help="run only the deterministic real-WASAPI decoded waveform control",
+    )
+    focused.add_argument(
+        "--loaded-audio", action="store_true",
+        help="headlessly verify audio during two real desktop/NVENC phases",
+    )
+    options = parser.parse_args()
+    if options.audio_only:
+        raise SystemExit(audio_only_main())
+    if options.loaded_audio:
+        raise SystemExit(loaded_audio_main())
     raise SystemExit(main())
