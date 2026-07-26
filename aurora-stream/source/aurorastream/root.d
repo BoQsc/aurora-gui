@@ -380,11 +380,7 @@ final class StreamRoot : VBox
             })
         ];
 
-        // Context menus use a bottom-left anchor. Supplying the button bottom
-        // plus the complete menu height places the menu immediately below it.
-        enum menuHeight = 6 + 22 + 6 + 22;
-        showContextMenu(_settingsMenu, _settingsMenu.localToGlobal(
-            Point(0, _settingsMenu.bounds().height + menuHeight + 2)), items);
+        showContextMenuBelow(_settingsMenu, items);
     }
 
     private void setStreamingServersVisible(bool visible)
