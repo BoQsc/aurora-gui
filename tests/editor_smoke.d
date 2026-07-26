@@ -3,7 +3,7 @@ module tests.editor_smoke;
 import aurora;
 import auroracut.editor : EditorRoot, InspectorValueField;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
-    TrackAddress, TrackKind;
+    TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import core.thread : Thread;
@@ -183,22 +183,35 @@ int main(string[] arguments)
     auto inlineSize = requireWidget!TextField(editor, "preview-inline-text-size");
     auto inlineColor = requireWidget!TextField(editor, "preview-inline-color");
     auto inlineBold = requireWidget!Button(editor, "preview-inline-bold");
+    auto inlineAlignCenter = requireWidget!Button(editor,
+        "preview-inline-align-center");
+    auto inspectorAlignRight = requireWidget!Button(editor,
+        "clip-text-align-right");
     auto inlineDone = requireWidget!Button(editor, "preview-inline-done");
     auto inspectorTextField = requireWidget!TextField(editor, "clip-text");
     auto preview = requireWidget!PreviewWidget(editor, "preview");
     auto playSource = requireWidget!Button(editor, "play-preview");
     auto qualityButton = requireWidget!Button(editor, "preview-quality");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
+    auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
+    auto mp4CompressionValue = requireWidget!Label(editor,
+        "export-mp4-compression-value");
     assert(playSource.text() == "▶"d,
         "Preview transport button must show the play symbol while idle");
     assert(!revealExport.enabled() && !editor.revealExportEnabledForTesting(),
         "Export output button must stay disabled until an export completes");
+    mp4Compression.setValue(27.6);
+    assert(editor.mp4CompressionCrfForTesting() == 28 &&
+        mp4CompressionValue.text() == "CRF 28"d,
+        "MP4 compression slider did not update the output CRF");
     assert(findById(editor, "stop-playback") is null,
         "A separate Stop button returned to the transport");
     assert(findById(editor, "import-media") is null,
         "Project Media still contains a redundant visible Import button");
     assert(findById(editor, "add-selected-media") is null,
         "Project Media still contains a redundant Add selected button");
+    assert(inspectorAlignRight !is null,
+        "Inspector text alignment controls were not created");
     assert(!inspectorSourceSection.visible(),
         "Source / Timing controls still pollute Effects / Properties");
     assert(countWidgetsOfType!Slider(inspectorScroll) == 0,
@@ -723,6 +736,14 @@ int main(string[] arguments)
     assert(model.trackValue(textTrack).clips[0].text == "Aurora timeline");
     assert(model.trackValue(textTrack).clips.length == 1,
         "Typing title text created duplicate timeline items");
+    textField.setSelection(0, 6);
+    driver.pressKey(Key.c, cast(uint) KeyModifier.control);
+    textField.setCursorIndex(textField.textView().length);
+    driver.pressKey(Key.v, cast(uint) KeyModifier.control);
+    assert(model.trackValue(textTrack).clips[0].text == "Aurora timelineAurora",
+        "Ctrl+C / Ctrl+V did not copy and paste focused title text");
+    assert(model.trackValue(textTrack).clips.length == 1,
+        "Focused title paste triggered timeline-item paste");
 
     driver.click(globalCenter(inlineFont));
     auto fontMenu = findOpenContextMenu(editor);
@@ -758,12 +779,15 @@ int main(string[] arguments)
     inlineSize.setText("72", true);
     inlineColor.setText("#FFCC00", true);
     driver.click(globalCenter(inlineBold));
+    driver.click(globalCenter(inlineAlignCenter));
     const styledText = model.trackValue(textTrack).clips[0];
     assert(styledText.fontName == "Impact" && styledText.textBold,
         "Inline font or bold formatting did not update the selected text item");
     assert(fabs(styledText.textSize - 72.0) < 0.01 &&
         styledText.textColor == 0xffffcc00,
         "Inline size or color formatting did not update the selected text item");
+    assert(styledText.textAlignment == TextAlignment.center,
+        "Inline text alignment did not update the selected text item");
 
     // Re-arm Text and click the existing title. It must select, not duplicate.
     driver.click(textToolPoint);

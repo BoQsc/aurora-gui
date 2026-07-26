@@ -12,13 +12,86 @@ import aurora.text.unicode.bidi : ParagraphDirection;
 import aurora.text.unicode.grapheme : ceilGraphemeBoundary,
     floorGraphemeBoundary, graphemeBoundaries, nextGraphemeBoundary,
     previousGraphemeBoundary;
-import aurora.types : CursorKind, Point, Rect, Size, clampInt, maxInt;
+import aurora.types : CursorKind, HorizontalAlign, Point, Rect, Size,
+    clampInt, maxInt;
 import aurora.widget : Widget;
 import std.algorithm.comparison : max, min;
 import std.math : ceil, floor;
 import std.utf : toUTF32, toUTF8;
 
+version (Windows)
+{
+    import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
+        EmptyClipboard, GetClipboardData, GlobalAlloc, GlobalFree,
+        GlobalLock, GlobalUnlock, GMEM_MOVEABLE, HGLOBAL,
+        IsClipboardFormatAvailable, OpenClipboard, SetClipboardData;
+    import std.string : fromStringz;
+    import std.utf : toUTF16;
+}
+
 private dchar[] processClipboard;
+
+version (Windows)
+private dchar[] readSystemClipboardText()
+{
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return null;
+    if (!OpenClipboard(null)) return null;
+    scope (exit) CloseClipboard();
+
+    auto memory = GetClipboardData(CF_UNICODETEXT);
+    if (memory is null) return null;
+    auto text = cast(const(wchar)*) GlobalLock(memory);
+    if (text is null) return null;
+    scope (exit) GlobalUnlock(memory);
+    try return toUTF32(fromStringz(text)).dup;
+    catch (Exception) return null;
+}
+
+version (Windows)
+private bool writeSystemClipboardText(const(dchar)[] value)
+{
+    if (!OpenClipboard(null)) return false;
+    scope (exit) CloseClipboard();
+    if (!EmptyClipboard()) return false;
+
+    auto encoded = toUTF16(value);
+    const bytes = (encoded.length + 1) * wchar.sizeof;
+    auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory is null) return false;
+    auto text = cast(wchar*) GlobalLock(memory);
+    if (text is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    foreach (index, ch; encoded) text[index] = ch;
+    text[encoded.length] = 0;
+    GlobalUnlock(memory);
+
+    if (SetClipboardData(CF_UNICODETEXT, memory) is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    return true;
+}
+
+private void writeClipboardText(const(dchar)[] value)
+{
+    processClipboard = value.dup;
+    version (Windows)
+        writeSystemClipboardText(value);
+}
+
+private dchar[] readClipboardText()
+{
+    version (Windows)
+    {
+        auto systemText = readSystemClipboardText();
+        if (systemText.length > 0) return systemText;
+    }
+    return processClipboard.dup;
+}
 
 private struct EditState
 {
@@ -78,6 +151,7 @@ class TextEditor : Widget
     private bool _titleBox;
     private Color _titleBoxColor;
     private double _titleLayerOpacity = 1.0;
+    private HorizontalAlign _titleHorizontal = HorizontalAlign.left;
     private int _padding = 8;
 
     private TextLayout _textLayout;
@@ -86,6 +160,7 @@ class TextEditor : Widget
     private int _layoutMaxWidth;
     private bool _layoutWordWrap;
     private ParagraphDirection _layoutParagraphDirection = ParagraphDirection.automatic;
+    private HorizontalAlign _layoutTitleHorizontal = HorizontalAlign.left;
     private ulong _layoutFaceIdentity;
     private ulong _layoutFontRevision;
 
@@ -252,6 +327,7 @@ class TextEditor : Widget
         _canvasTextMode = value;
         _scrollLine = 0;
         _scrollX = 0;
+        markLayoutDirty();
         invalidate();
     }
 
@@ -318,6 +394,16 @@ class TextEditor : Widget
         _titleUnderline = underline;
         _titleBox = box;
         _titleBoxColor = boxColor;
+        invalidate();
+    }
+
+    /** Align each line within the canvas-title layout's measured width. */
+    void setTitleHorizontalAlignment(HorizontalAlign value)
+    {
+        if (_titleHorizontal == value) return;
+        _titleHorizontal = value;
+        markLayoutDirty();
+        ensureCursorVisible();
         invalidate();
     }
 
@@ -494,6 +580,28 @@ class TextEditor : Widget
         replaceRange(selectionStart(), selectionEnd(), value);
     }
 
+    private void pasteText(const(dchar)[] value)
+    {
+        dchar[] filtered;
+        foreach (ch; value)
+        {
+            if (ch == '\r') continue;
+            if (ch == '\t')
+            {
+                filtered ~= "    "d;
+                continue;
+            }
+            if (ch == '\n')
+            {
+                filtered ~= _multiline ? ch : ' ';
+                continue;
+            }
+            if (ch < 32 || ch == 127) continue;
+            filtered ~= ch;
+        }
+        if (filtered.length > 0) insertText(filtered);
+    }
+
     private void deleteSelection()
     {
         if (hasSelection()) replaceRange(selectionStart(), selectionEnd(), null);
@@ -651,6 +759,7 @@ class TextEditor : Widget
             _layoutMaxWidth != wrappedLayoutWidth() ||
             _layoutWordWrap != _wordWrap ||
             _layoutParagraphDirection != _paragraphDirection ||
+            _layoutTitleHorizontal != _titleHorizontal ||
             _layoutFaceIdentity != selectedFaceIdentity() ||
             _layoutFontRevision != fontSystem().revision;
     }
@@ -662,8 +771,43 @@ class TextEditor : Widget
         _layoutMaxWidth = wrappedLayoutWidth();
         _layoutWordWrap = _wordWrap;
         _layoutParagraphDirection = _paragraphDirection;
+        _layoutTitleHorizontal = _titleHorizontal;
         _layoutFaceIdentity = selectedFaceIdentity();
         _layoutFontRevision = fontSystem().revision;
+    }
+
+    private void alignCanvasTitleLayout(TextLayout layout)
+    {
+        if (!_canvasTextMode || layout is null ||
+            _titleHorizontal == HorizontalAlign.left) return;
+        foreach (lineIndex, ref line; layout.lines)
+        {
+            double offset;
+            final switch (_titleHorizontal)
+            {
+                case HorizontalAlign.left: continue;
+                case HorizontalAlign.center:
+                    offset = (layout.width - line.width) * 0.5;
+                    break;
+                case HorizontalAlign.right:
+                    offset = layout.width - line.width;
+                    break;
+            }
+            if (offset <= 0.000_001) continue;
+            line.x += offset;
+            foreach (ref run; layout.runs)
+                if (run.lineIndex == lineIndex) run.x += offset;
+            foreach (ref glyph; layout.glyphs)
+                if (glyph.lineIndex == lineIndex) glyph.x += offset;
+            foreach (ref cluster; layout.visualClusters)
+                if (cluster.lineIndex == lineIndex)
+                {
+                    cluster.xMin += offset;
+                    cluster.xMax += offset;
+                }
+            foreach (ref caret; layout.carets)
+                if (caret.lineIndex == lineIndex) caret.x += offset;
+        }
     }
 
     private TextLayout ensureLayout()
@@ -671,6 +815,7 @@ class TextEditor : Widget
         if (_textLayout is null || _layoutDirty || layoutParametersChanged())
         {
             _textLayout = fontSystem().textEngine.layout(_buffer, layoutOptions());
+            alignCanvasTitleLayout(_textLayout);
             _layoutDirty = false;
             rememberLayoutParameters();
         }
@@ -683,6 +828,7 @@ class TextEditor : Widget
         {
             _textLayout = fontSystem().textEngine.layout(_buffer,
                 layoutOptions());
+            alignCanvasTitleLayout(_textLayout);
             _layoutDirty = false;
             rememberLayoutParameters();
         }
@@ -992,20 +1138,23 @@ class TextEditor : Widget
                     return true;
                 case Key.c:
                     if (hasSelection())
-                        processClipboard = _buffer[selectionStart() ..
-                            selectionEnd()].dup;
+                        writeClipboardText(_buffer[selectionStart() ..
+                            selectionEnd()]);
                     return true;
                 case Key.x:
                     if (hasSelection())
                     {
-                        processClipboard = _buffer[selectionStart() ..
-                            selectionEnd()].dup;
-                        deleteSelection();
+                        writeClipboardText(_buffer[selectionStart() ..
+                            selectionEnd()]);
+                        if (!_readOnly) deleteSelection();
                     }
                     return true;
                 case Key.v:
-                    if (!_readOnly && processClipboard.length > 0)
-                        insertText(processClipboard);
+                    if (!_readOnly)
+                    {
+                        auto text = readClipboardText();
+                        if (text.length > 0) pasteText(text);
+                    }
                     return true;
                 case Key.z:
                     if (event.shift()) redo(); else undo();

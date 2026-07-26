@@ -1,6 +1,7 @@
 module auroracut.exporter;
 
-import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation;
+import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation,
+    TextAlignment;
 import auroracut.titlelayer : TitleVisual, renderTitlePam;
 import auroracut.util : absoluteNormalized, createWorkspace, ensureExtension,
     ensureParentDirectory, formatSeconds, outputTail, removePathQuietly, runChecked;
@@ -67,6 +68,7 @@ struct ExportClip
     bool textBold;
     bool textItalic;
     bool textUnderline;
+    TextAlignment textAlignment = TextAlignment.left;
     double textSize = 96.0;
     uint textColor = 0xffffffff;
     bool textBox;
@@ -731,6 +733,7 @@ private ExportClip cloneExportClip(const ref ExportClip source)
     result.textBold = source.textBold;
     result.textItalic = source.textItalic;
     result.textUnderline = source.textUnderline;
+    result.textAlignment = source.textAlignment;
     result.textSize = source.textSize;
     result.textColor = source.textColor;
     result.textBox = source.textBox;
@@ -748,6 +751,7 @@ private TitleVisual titleVisualFromClip(const ref ExportClip clip)
     visual.bold = clip.textBold;
     visual.italic = clip.textItalic;
     visual.underline = clip.textUnderline;
+    visual.textAlignment = clip.textAlignment;
     visual.textSize = clip.textSize;
     visual.textColor = clip.textColor;
     visual.box = clip.textBox;

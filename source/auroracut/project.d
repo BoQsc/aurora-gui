@@ -1,7 +1,8 @@
 module auroracut.project;
 
 import auroracut.model : ClipKind, EditorModel, EffectKeyframe, EffectProperty,
-    KeyframeInterpolation, MediaAsset, TimelineClip, TimelineTrack, TrackKind;
+    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
+    TimelineTrack, TrackKind, textAlignmentFromName, textAlignmentName;
 import auroracut.util : appLog;
 import std.file : readText, write;
 import std.format : format;
@@ -100,6 +101,7 @@ private JSONValue clipJson(const TimelineClip value)
         "textBold": JSONValue(value.textBold),
         "textItalic": JSONValue(value.textItalic),
         "textUnderline": JSONValue(value.textUnderline),
+        "textAlignment": JSONValue(textAlignmentName(value.textAlignment)),
         "textSize": jsonNumber(value.textSize, 96.0, path ~ ".textSize"),
         "textColor": jsonColor(value.textColor),
         "textBox": JSONValue(value.textBox),
@@ -227,6 +229,32 @@ private bool boolValue(const JSONValue value, string key, bool fallback = false)
         item !is null && item.type == JSONType.false_ ? false : fallback;
 }
 
+private TextAlignment textAlignmentValue(const JSONValue value, string key)
+{
+    auto item = member(value, key);
+    if (item is null) return TextAlignment.left;
+    switch (item.type)
+    {
+        case JSONType.string:
+            return textAlignmentFromName(item.str);
+        case JSONType.integer:
+            switch (item.integer)
+            {
+                case 1: return TextAlignment.center;
+                case 2: return TextAlignment.right;
+                default: return TextAlignment.left;
+            }
+        case JSONType.uinteger:
+            switch (item.uinteger)
+            {
+                case 1: return TextAlignment.center;
+                case 2: return TextAlignment.right;
+                default: return TextAlignment.left;
+            }
+        default: return TextAlignment.left;
+    }
+}
+
 private TimelineClip parseClip(const JSONValue value)
 {
     TimelineClip clip;
@@ -261,6 +289,7 @@ private TimelineClip parseClip(const JSONValue value)
     clip.textBold = boolValue(value, "textBold");
     clip.textItalic = boolValue(value, "textItalic");
     clip.textUnderline = boolValue(value, "textUnderline");
+    clip.textAlignment = textAlignmentValue(value, "textAlignment");
     clip.textSize = numberValue(value, "textSize", 96.0);
     clip.textColor = cast(uint) unsignedValue(value, "textColor", 0xffffffff);
     clip.textBox = boolValue(value, "textBox");

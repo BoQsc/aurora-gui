@@ -52,6 +52,45 @@ enum ClipKind : ubyte
     text
 }
 
+/** Paragraph alignment inside generated text layers. */
+enum TextAlignment : ubyte
+{
+    left,
+    center,
+    right
+}
+
+string textAlignmentName(TextAlignment value) @safe pure nothrow @nogc
+{
+    final switch (value)
+    {
+        case TextAlignment.left: return "left";
+        case TextAlignment.center: return "center";
+        case TextAlignment.right: return "right";
+    }
+}
+
+string textAlignmentLabel(TextAlignment value) @safe pure nothrow @nogc
+{
+    final switch (value)
+    {
+        case TextAlignment.left: return "Left";
+        case TextAlignment.center: return "Center";
+        case TextAlignment.right: return "Right";
+    }
+}
+
+TextAlignment textAlignmentFromName(string value) @safe pure nothrow
+{
+    switch (value)
+    {
+        case "center": return TextAlignment.center;
+        case "right": return TextAlignment.right;
+        case "left": return TextAlignment.left;
+        default: return TextAlignment.left;
+    }
+}
+
 /** Properties that can carry linear keyframes. Times are relative to clip start. */
 enum EffectProperty : ubyte
 {
@@ -126,6 +165,7 @@ struct TimelineClip
     bool textBold;
     bool textItalic;
     bool textUnderline;
+    TextAlignment textAlignment = TextAlignment.left;
     double textSize = 96.0;
     uint textColor = 0xffffffff; // AARRGGBB
     bool textBox;
@@ -1011,6 +1051,7 @@ final class EditorModel
             current.strokeWidth != 0.0 || current.strokeColor != 0xffffffff ||
             current.fontName != "Sans" || current.textBold ||
             current.textItalic || current.textUnderline ||
+            current.textAlignment != TextAlignment.left ||
             current.textSize != 96.0 || current.textColor != 0xffffffff || current.textBox ||
             current.textBoxColor != 0x80000000 || current.keyframes.length > 0;
         if (!changed) return false;
@@ -1038,6 +1079,7 @@ final class EditorModel
         clip.textBold = false;
         clip.textItalic = false;
         clip.textUnderline = false;
+        clip.textAlignment = TextAlignment.left;
         clip.textSize = 96.0;
         clip.textColor = 0xffffffff;
         clip.textBox = false;
@@ -1352,6 +1394,19 @@ final class EditorModel
             clips[cast(size_t) index].textUnderline == value) return false;
         detachTrackClips(address);
         track(address).clips[cast(size_t) index].textUnderline = value;
+        return true;
+    }
+
+    bool setTextAlignment(TrackAddress address, int index,
+        TextAlignment value)
+    {
+        if (!validTrack(address)) return false;
+        const clips = trackValue(address).clips;
+        if (index < 0 || index >= cast(int) clips.length ||
+            !clips[cast(size_t) index].isText() ||
+            clips[cast(size_t) index].textAlignment == value) return false;
+        detachTrackClips(address);
+        track(address).clips[cast(size_t) index].textAlignment = value;
         return true;
     }
 
@@ -1729,6 +1784,7 @@ final class EditorModel
         result.textBold = source.textBold;
         result.textItalic = source.textItalic;
         result.textUnderline = source.textUnderline;
+        result.textAlignment = source.textAlignment;
         result.textSize = source.textSize;
         result.textColor = source.textColor;
         result.textBox = source.textBox;

@@ -8,7 +8,8 @@ import auroracut.filedialog : FileDialogController;
 import auroracut.media : MediaImportResult, MediaImportService, ToolStatus,
     inspectToolStatus, mediaSecondaryText;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation,
-    MediaAsset, TimelineClip, TimelineTrack, TrackAddress, TrackKind;
+    MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
+    TrackKind, textAlignmentLabel;
 import auroracut.playback : HiddenAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
@@ -55,6 +56,10 @@ private enum PendingPreviewKind : ubyte
     asset,
     sequence
 }
+
+private enum int mp4CompressionMinCrf = 18;
+private enum int mp4CompressionMaxCrf = 32;
+private enum int mp4CompressionDefaultCrf = 20;
 
 private double gainToDb(double gain)
 {
@@ -615,6 +620,9 @@ final class EditorRoot : VBox
     private Button _revealExportButton;
     private Button _saveProjectButton;
     private Button _qualityButton;
+    private Slider _mp4CompressionSlider;
+    private Label _mp4CompressionLabel;
+    private int _mp4CompressionCrf = mp4CompressionDefaultCrf;
 
     private Label _inspectorTitle;
     private Label _inspectorSource;
@@ -669,6 +677,9 @@ final class EditorRoot : VBox
     private InspectorTextField _strokeColorField;
     private CheckBox _textBox;
     private Button _fontPresetButton;
+    private Button _textAlignLeft;
+    private Button _textAlignCenter;
+    private Button _textAlignRight;
     private ScrollView _inspectorScroll;
     private Button[] _clipControls;
     private bool _syncingInspector;
@@ -853,6 +864,7 @@ final class EditorRoot : VBox
     bool cancelRenderForTesting() { return _exportJob.cancel(); }
     int previewQualityHeightForTesting() const { return _previewQualityHeight; }
     void setPreviewQualityForTesting(int height) { setPreviewQuality(height); }
+    int mp4CompressionCrfForTesting() const { return _mp4CompressionCrf; }
     bool hasWorkInForTesting() const { return _hasWorkIn; }
     bool hasWorkOutForTesting() const { return _hasWorkOut; }
     double workInForTesting() const { return _workIn; }
@@ -901,6 +913,31 @@ final class EditorRoot : VBox
         _saveProjectButton.layoutHints().preferredHeight = 26;
         _saveProjectButton.onClick = delegate() { saveProject(false); };
         toolbar.add(new Spacer());
+
+        auto compressionTitle = toolbar.add(new Label("Compress"));
+        compressionTitle.setId("export-mp4-compression-title");
+        compressionTitle.setScale(1);
+        compressionTitle.setColor(Color.fromHex(0xb8c1cc));
+        compressionTitle.layoutHints().preferredHeight = 26;
+
+        _mp4CompressionSlider = toolbar.add(new Slider(
+            mp4CompressionMinCrf, mp4CompressionMaxCrf,
+            mp4CompressionDefaultCrf));
+        _mp4CompressionSlider.setId("export-mp4-compression");
+        _mp4CompressionSlider.layoutHints().preferredWidth = 92;
+        _mp4CompressionSlider.layoutHints().minWidth = 72;
+        _mp4CompressionSlider.layoutHints().preferredHeight = 26;
+        _mp4CompressionSlider.onChanged = delegate(double value) {
+            mp4CompressionChanged(value);
+        };
+
+        _mp4CompressionLabel = toolbar.add(new Label(""));
+        _mp4CompressionLabel.setId("export-mp4-compression-value");
+        _mp4CompressionLabel.setScale(1);
+        _mp4CompressionLabel.setColor(Color.fromHex(0xb8c1cc));
+        _mp4CompressionLabel.layoutHints().preferredHeight = 26;
+        syncMp4CompressionLabel();
+
         _exportButton = toolbar.add(new ExportButton("Export MP4", IconKind.save));
         _exportButton.setId("export-mp4");
         _exportButton.layoutHints().preferredHeight = 26;
@@ -913,6 +950,35 @@ final class EditorRoot : VBox
         _revealExportButton.layoutHints().preferredHeight = 26;
         _revealExportButton.setEnabled(false);
         _revealExportButton.onClick = delegate() { revealExportOutput(); };
+    }
+
+    private static int normalizedMp4CompressionCrf(double value)
+    {
+        int crf = cast(int) (value + 0.5);
+        if (crf < mp4CompressionMinCrf) crf = mp4CompressionMinCrf;
+        else if (crf > mp4CompressionMaxCrf) crf = mp4CompressionMaxCrf;
+        return crf;
+    }
+
+    private void syncMp4CompressionLabel()
+    {
+        if (_mp4CompressionLabel is null) return;
+        _mp4CompressionLabel.setText(format("CRF %d", _mp4CompressionCrf));
+    }
+
+    private void mp4CompressionChanged(double value)
+    {
+        const crf = normalizedMp4CompressionCrf(value);
+        _mp4CompressionCrf = crf;
+        if (_mp4CompressionSlider !is null &&
+            fabs(_mp4CompressionSlider.value() - crf) > 0.000_001)
+            _mp4CompressionSlider.setValue(crf, false);
+        syncMp4CompressionLabel();
+    }
+
+    private void applyMp4OutputCompression(ref ExportPreset preset)
+    {
+        preset.crf = _mp4CompressionCrf;
     }
 
     private Widget buildWorkspace()
@@ -1017,6 +1083,9 @@ final class EditorRoot : VBox
         };
         _preview.onInlineUnderlineChanged = delegate(bool value) {
             inlineTextStyleChanged(2, value);
+        };
+        _preview.onInlineTextAlignmentChanged = delegate(TextAlignment value) {
+            inlineTextAlignmentChanged(value);
         };
         _preview.onInlineEditEnded = delegate() { endInlineTextEditing(); };
 
@@ -1259,7 +1328,7 @@ final class EditorRoot : VBox
 
         _inspectorTextSection = panel.add(new VBox(5));
         _inspectorTextSection.setId("inspector-text-section");
-        _inspectorTextSection.layoutHints().preferredHeight = 190;
+        _inspectorTextSection.layoutHints().preferredHeight = 230;
         _inspectorTextSection.add(new Separator());
         auto textTitle = _inspectorTextSection.add(
             new Label("TEXT ITEM / SHAPE STYLE"));
@@ -1281,6 +1350,31 @@ final class EditorRoot : VBox
             delegate(double value) { textSizeChanged(value); },
             EffectProperty.textSize, true);
         _textSize.setId("clip-text-size");
+
+        addSmallPropertyLabel(_inspectorTextSection, "Text alignment");
+        auto alignmentRow = _inspectorTextSection.add(new HBox(5));
+        alignmentRow.layoutHints().preferredHeight = 28;
+        _textAlignLeft = alignmentRow.add(new Button("Left"));
+        _textAlignLeft.setId("clip-text-align-left");
+        _textAlignCenter = alignmentRow.add(new Button("Center"));
+        _textAlignCenter.setId("clip-text-align-center");
+        _textAlignRight = alignmentRow.add(new Button("Right"));
+        _textAlignRight.setId("clip-text-align-right");
+        foreach (button; [_textAlignLeft, _textAlignCenter, _textAlignRight])
+        {
+            button.layoutHints().flex = 1.0;
+            button.layoutHints().preferredHeight = 28;
+            button.setFlat(true);
+        }
+        _textAlignLeft.onClick = delegate() {
+            textAlignmentChanged(TextAlignment.left);
+        };
+        _textAlignCenter.onClick = delegate() {
+            textAlignmentChanged(TextAlignment.center);
+        };
+        _textAlignRight.onClick = delegate() {
+            textAlignmentChanged(TextAlignment.right);
+        };
 
         addSmallPropertyLabel(_inspectorTextSection, "Font family");
         auto fontRow = _inspectorTextSection.add(new HBox(5));
@@ -2446,6 +2540,7 @@ final class EditorRoot : VBox
         visual.bold = clip.textBold;
         visual.italic = clip.textItalic;
         visual.underline = clip.textUnderline;
+        visual.textAlignment = clip.textAlignment;
         visual.textSize = clip.evaluatedValue(EffectProperty.textSize, localTime);
         visual.textColor = clip.textColor;
         visual.box = clip.textBox;
@@ -2507,7 +2602,7 @@ final class EditorRoot : VBox
             _preview.beginInlineTextEditing(clip.id, clip.text, clip.fontName,
                 clip.evaluatedValue(EffectProperty.textSize, localTime),
                 formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-                clip.textUnderline, _previewQualityHeight);
+                clip.textUnderline, clip.textAlignment, _previewQualityHeight);
             syncInlineTextEffectsForClip(clip, localTime);
             scheduleTimelineFrame();
             return;
@@ -2526,7 +2621,7 @@ final class EditorRoot : VBox
         _preview.beginInlineTextEditing(clip.id, clip.text, clip.fontName,
             clip.evaluatedValue(EffectProperty.textSize, localTime),
             formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-            clip.textUnderline, _previewQualityHeight);
+            clip.textUnderline, clip.textAlignment, _previewQualityHeight);
         syncInlineTextEffectsForClip(clip, localTime);
         scheduleTimelineFrame();
         setStatus("Edit the live title directly in Composition Preview.");
@@ -2636,6 +2731,14 @@ final class EditorRoot : VBox
             default: return;
         }
         afterInlineTextPropertyChanged(changed);
+    }
+
+    private void inlineTextAlignmentChanged(TextAlignment value)
+    {
+        TimelineClip clip;
+        if (!validInlineTextTarget(clip)) return;
+        afterInlineTextPropertyChanged(_model.setTextAlignment(_inlineTextTrack,
+            _inlineTextIndex, value));
     }
 
     private void activateTimelineClip(TrackAddress track, int index)
@@ -3199,6 +3302,33 @@ final class EditorRoot : VBox
         }
     }
 
+    private void syncTextAlignmentButtons(TextAlignment value, bool enabled)
+    {
+        if (_textAlignLeft is null) return;
+        _textAlignLeft.setEnabled(enabled);
+        _textAlignCenter.setEnabled(enabled);
+        _textAlignRight.setEnabled(enabled);
+        _textAlignLeft.setAccent(enabled && value == TextAlignment.left);
+        _textAlignCenter.setAccent(enabled && value == TextAlignment.center);
+        _textAlignRight.setAccent(enabled && value == TextAlignment.right);
+    }
+
+    private void textAlignmentChanged(TextAlignment value)
+    {
+        if (_syncingInspector) return;
+        const track = _timeline.selectedTrack();
+        const index = _timeline.selectedIndex();
+        auto before = captureTimelineSnapshot("Change text alignment");
+        if (!_model.setTextAlignment(track, index, value))
+        {
+            syncInspector();
+            return;
+        }
+        commitHistory(before);
+        afterTimelineMutation("Text alignment set to " ~
+            textAlignmentLabel(value) ~ ".", track, index, false);
+    }
+
     private void styleScalarChanged(bool changed, InspectorValueField valueLabel, string text)
     {
         if (!changed) return;
@@ -3278,7 +3408,8 @@ final class EditorRoot : VBox
                 _preview.syncInlineTextStyle(clip.text, clip.fontName,
                     clip.evaluatedValue(EffectProperty.textSize, localTime),
                     formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-                    clip.textUnderline, _previewQualityHeight);
+                    clip.textUnderline, clip.textAlignment,
+                    _previewQualityHeight);
             }
             if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
             setStatus(resolvedPath.length > 0 ?
@@ -3472,6 +3603,8 @@ final class EditorRoot : VBox
         _blur.setEnabled(transformEnabled);
         _fontField.setEnabled(textEnabled);
         _fontPresetButton.setEnabled(textEnabled);
+        syncTextAlignmentButtons(textEnabled ? clip.textAlignment :
+            TextAlignment.left, textEnabled);
         _textColorField.setEnabled(textEnabled);
         _textBox.setEnabled(textEnabled);
         _strokeWidth.setEnabled(transformEnabled);
@@ -3513,6 +3646,7 @@ final class EditorRoot : VBox
             _blurValue.setText("0.0");
             _fontField.setText("", false);
             _fontPresetButton.setText("Font ▾");
+            syncTextAlignmentButtons(TextAlignment.left, false);
             _textColorField.setText("", false);
             _textBox.setChecked(false, false);
             _strokeWidth.setValue(0.0, false);
@@ -3581,6 +3715,8 @@ final class EditorRoot : VBox
         _fontField.setText(textEnabled ? clip.fontName : "", false);
         _fontPresetButton.setText(textEnabled ?
             canonicalTextFontName(clip.fontName) ~ " ▾" : "Font ▾");
+        syncTextAlignmentButtons(textEnabled ? clip.textAlignment :
+            TextAlignment.left, textEnabled);
         _textColorField.setText(textEnabled ? formatArgb(clip.textColor) : "", false);
         _textBox.setChecked(textEnabled && clip.textBox, false);
         _strokeWidth.setValue(clip.strokeWidth, false);
@@ -3603,7 +3739,7 @@ final class EditorRoot : VBox
         {
             _preview.syncInlineTextStyle(clip.text, clip.fontName, evaluatedTextSize,
                 formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-                clip.textUnderline, _previewQualityHeight);
+                clip.textUnderline, clip.textAlignment, _previewQualityHeight);
             syncInlineTextEffectsForClip(clip, localTime);
         }
         updatePreviewSelectionOverlay();
@@ -4695,7 +4831,8 @@ final class EditorRoot : VBox
         const suggested = kind == ExportKind.mp4 ?
             "aurora-cut-export.mp4" : "aurora-cut-export.mp3";
         _fileDialog.showSave(extension, suggested, delegate(string path) {
-            const preset = exportPresetForHeight(_previewQualityHeight);
+            auto preset = exportPresetForHeight(_previewQualityHeight);
+            if (kind == ExportKind.mp4) applyMp4OutputCompression(preset);
             auto request = buildExportRequest(kind, path, preset);
             startJob(request, JobPurpose.exportFile);
         });
@@ -4798,6 +4935,7 @@ final class EditorRoot : VBox
         result.textBold = clip.textBold;
         result.textItalic = clip.textItalic;
         result.textUnderline = clip.textUnderline;
+        result.textAlignment = clip.textAlignment;
         result.textSize = clip.textSize;
         result.textColor = clip.textColor;
         result.textBox = clip.textBox;
@@ -4838,6 +4976,7 @@ final class EditorRoot : VBox
         result.textBold = clip.textBold;
         result.textItalic = clip.textItalic;
         result.textUnderline = clip.textUnderline;
+        result.textAlignment = clip.textAlignment;
         result.textSize = clip.textSize;
         result.textColor = clip.textColor;
         result.textBox = clip.textBox;

@@ -2,7 +2,7 @@ module auroracut.preview;
 
 import aurora;
 import auroracut.exporter : ExportRequest, compositeFrameArguments;
-import auroracut.model : MediaAsset;
+import auroracut.model : MediaAsset, TextAlignment;
 import auroracut.titlelayer : TitleVisual, loadTitleFace, titlePaintStyle;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
@@ -60,6 +60,16 @@ struct PreviewServiceStats
     ulong cacheHits;
     ulong cancellations;
     ulong staleFrames;
+}
+
+private HorizontalAlign titleHorizontalAlign(TextAlignment alignment)
+{
+    final switch (alignment)
+    {
+        case TextAlignment.left: return HorizontalAlign.left;
+        case TextAlignment.center: return HorizontalAlign.center;
+        case TextAlignment.right: return HorizontalAlign.right;
+    }
 }
 
 
@@ -826,9 +836,13 @@ final class PreviewWidget : Widget
     private Button _inlineBold;
     private Button _inlineItalic;
     private Button _inlineUnderline;
+    private Button _inlineAlignLeft;
+    private Button _inlineAlignCenter;
+    private Button _inlineAlignRight;
     private bool _inlineBoldValue;
     private bool _inlineItalicValue;
     private bool _inlineUnderlineValue;
+    private TextAlignment _inlineTextAlignment = TextAlignment.left;
     private double _inlineAuthoredTextSize = 48.0;
     private double _inlineOpacity = 1.0;
     private bool _inlineTextBox;
@@ -848,6 +862,7 @@ final class PreviewWidget : Widget
     void delegate(bool value) onInlineBoldChanged;
     void delegate(bool value) onInlineItalicChanged;
     void delegate(bool value) onInlineUnderlineChanged;
+    void delegate(TextAlignment value) onInlineTextAlignmentChanged;
     void delegate() onInlineEditEnded;
 
     void delegate(Point globalPosition) onContextMenuRequested;
@@ -917,6 +932,28 @@ final class PreviewWidget : Widget
             applyInlineTitleAppearance();
             if (!_inlineSyncing && onInlineUnderlineChanged !is null)
                 onInlineUnderlineChanged(value);
+        };
+
+        _inlineAlignLeft = _inlineToolbar.add(new Button("L"));
+        _inlineAlignLeft.setId("preview-inline-align-left");
+        _inlineAlignCenter = _inlineToolbar.add(new Button("C"));
+        _inlineAlignCenter.setId("preview-inline-align-center");
+        _inlineAlignRight = _inlineToolbar.add(new Button("R"));
+        _inlineAlignRight.setId("preview-inline-align-right");
+        foreach (button; [_inlineAlignLeft, _inlineAlignCenter, _inlineAlignRight])
+        {
+            button.layoutHints().preferredWidth = 28;
+            button.layoutHints().preferredHeight = 28;
+            button.setFlat(true);
+        }
+        _inlineAlignLeft.onClick = delegate() {
+            setInlineTextAlignment(TextAlignment.left, true);
+        };
+        _inlineAlignCenter.onClick = delegate() {
+            setInlineTextAlignment(TextAlignment.center, true);
+        };
+        _inlineAlignRight.onClick = delegate() {
+            setInlineTextAlignment(TextAlignment.right, true);
         };
 
         _inlineSize = _inlineToolbar.add(new TextField());
@@ -1066,6 +1103,8 @@ final class PreviewWidget : Widget
         const style = titlePaintStyle(visual, pixelFactor);
         layer.setTextColor(style.foreground);
         layer.setTitleLayerOpacity(style.layerOpacity);
+        layer.setTitleHorizontalAlignment(titleHorizontalAlign(
+            visual.textAlignment));
         layer.setTitleEffects(style.strokeWidth, style.strokeColor,
             style.shadowOffsetX, style.shadowOffsetY, style.shadowBlur,
             style.shadowColor, style.underline, style.box, style.boxColor);
@@ -1187,6 +1226,27 @@ final class PreviewWidget : Widget
             onInlineFontChanged(_inlineFontName);
     }
 
+    private void syncInlineAlignmentButtons()
+    {
+        _inlineAlignLeft.setAccent(_inlineTextAlignment == TextAlignment.left);
+        _inlineAlignCenter.setAccent(_inlineTextAlignment == TextAlignment.center);
+        _inlineAlignRight.setAccent(_inlineTextAlignment == TextAlignment.right);
+    }
+
+    private void setInlineTextAlignment(TextAlignment value, bool notify)
+    {
+        if (_inlineTextAlignment == value)
+        {
+            syncInlineAlignmentButtons();
+            return;
+        }
+        _inlineTextAlignment = value;
+        syncInlineAlignmentButtons();
+        applyInlineTitleAppearance();
+        if (notify && !_inlineSyncing && onInlineTextAlignmentChanged !is null)
+            onInlineTextAlignmentChanged(value);
+    }
+
     /** Build one font command in its own call frame.
      *
      * D delegates capture foreach variables by reference. Building the
@@ -1244,6 +1304,7 @@ final class PreviewWidget : Widget
         visual.bold = _inlineBoldValue;
         visual.italic = _inlineItalicValue;
         visual.underline = _inlineUnderlineValue;
+        visual.textAlignment = _inlineTextAlignment;
         visual.textSize = _inlineAuthoredTextSize;
         visual.textColor = inlineColor(_inlineColor.textUtf8()).argb();
         visual.opacity = _inlineOpacity;
@@ -1284,7 +1345,7 @@ final class PreviewWidget : Widget
 
     void beginInlineTextEditing(ulong clipId, string text, string fontName,
         double textSize, string textColor, bool bold, bool italic,
-        bool underline, int authoredHeight = 1080)
+        bool underline, TextAlignment alignment, int authoredHeight = 1080)
     {
         _inlineTextEditing = true;
         _inlineClipId = clipId;
@@ -1303,6 +1364,7 @@ final class PreviewWidget : Widget
             visual.bold = bold;
             visual.italic = italic;
             visual.underline = underline;
+            visual.textAlignment = alignment;
             _titleVisuals[clipId] = visual;
         }
 
@@ -1313,12 +1375,14 @@ final class PreviewWidget : Widget
         _inlineBoldValue = bold;
         _inlineItalicValue = italic;
         _inlineUnderlineValue = underline;
+        _inlineTextAlignment = alignment;
         _inlineFontName = canonicalTextFontName(fontName);
         _inlineFont.setText(_inlineFontName ~ " ▾");
         _inlineColor.setText(textColor, false);
         _inlineBold.setAccent(bold);
         _inlineItalic.setAccent(italic);
         _inlineUnderline.setAccent(underline);
+        syncInlineAlignmentButtons();
         _inlineSyncing = false;
 
         applyInlineTitleAppearance();
@@ -1337,7 +1401,7 @@ final class PreviewWidget : Widget
 
     void syncInlineTextStyle(string text, string fontName, double textSize,
         string textColor, bool bold, bool italic, bool underline,
-        int authoredHeight = 1080)
+        TextAlignment alignment, int authoredHeight = 1080)
     {
         if (!_inlineTextEditing || _inlineText is null) return;
         _inlineSyncing = true;
@@ -1350,11 +1414,13 @@ final class PreviewWidget : Widget
         _inlineBoldValue = bold;
         _inlineItalicValue = italic;
         _inlineUnderlineValue = underline;
+        _inlineTextAlignment = alignment;
         _inlineFontName = canonicalTextFontName(fontName);
         _inlineFont.setText(_inlineFontName ~ " ▾");
         _inlineBold.setAccent(bold);
         _inlineItalic.setAccent(italic);
         _inlineUnderline.setAccent(underline);
+        syncInlineAlignmentButtons();
         _inlineSyncing = false;
         applyInlineTitleAppearance();
         layoutInlineTextEditor();
@@ -1785,7 +1851,8 @@ unittest
         "The title returned as a second compositor surface");
 
     preview.beginInlineTextEditing(41, title.text, title.fontName,
-        title.textSize, "#FFFFFFFF", false, false, false, 1080);
+        title.textSize, "#FFFFFFFF", false, false, false,
+        TextAlignment.left, 1080);
     auto during = preview.titleEditorForTesting(41);
     assert(during is before, "Editing replaced the live title with another widget");
     assert(preview.inlineTextEditing() && during.focusable() && !during.readOnly());

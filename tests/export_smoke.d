@@ -4,7 +4,8 @@ import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     ExportRequest, ExportState, compositeFrameArguments,
     compositeStreamArguments, normalizedExportRequestForTesting,
     renderCompositeFrame;
-import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation;
+import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation,
+    TextAlignment;
 import std.algorithm.searching : canFind;
 import std.array : join;
 import core.thread : Thread;
@@ -170,6 +171,7 @@ int main(string[] arguments)
     title.trackIndex = 2;
     title.text = "Aurora";
     title.fontName = "DejaVu Sans";
+    title.textAlignment = TextAlignment.center;
     title.textSize = 30.0;
     title.positionY = -0.68;
     title.strokeWidth = 2.0;

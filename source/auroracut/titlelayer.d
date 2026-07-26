@@ -5,10 +5,11 @@ import aurora.color : Color;
 import aurora.font : FontFace, FontRole;
 import aurora.surface : Surface;
 import aurora.text.atlas : FontSystem;
-import aurora.text.layout : TextLayoutOptions;
+import aurora.text.layout : TextLayout, TextLayoutOptions;
 import aurora.text.titlepaint : TitlePaintStyle, paintTitleLayout,
     titlePaintMargin;
 import aurora.types : Point, maxInt, minInt;
+import auroracut.model : TextAlignment;
 import auroracut.textfonts : canonicalTextFontName, textFontFilePath;
 import std.math : ceil;
 import std.utf : toUTF32;
@@ -22,6 +23,7 @@ struct TitleVisual
     bool bold;
     bool italic;
     bool underline;
+    TextAlignment textAlignment = TextAlignment.left;
     double textSize = 96.0;
     uint textColor = 0xffffffff;
     bool box;
@@ -102,6 +104,39 @@ TitlePaintStyle titlePaintStyle(const TitleVisual visual,
     return style;
 }
 
+void alignTitleLayout(TextLayout layout, TextAlignment alignment)
+{
+    if (layout is null || alignment == TextAlignment.left) return;
+    foreach (lineIndex, ref line; layout.lines)
+    {
+        double offset;
+        final switch (alignment)
+        {
+            case TextAlignment.left: continue;
+            case TextAlignment.center:
+                offset = (layout.width - line.width) * 0.5;
+                break;
+            case TextAlignment.right:
+                offset = layout.width - line.width;
+                break;
+        }
+        if (offset <= 0.000_001) continue;
+        line.x += offset;
+        foreach (ref run; layout.runs)
+            if (run.lineIndex == lineIndex) run.x += offset;
+        foreach (ref glyph; layout.glyphs)
+            if (glyph.lineIndex == lineIndex) glyph.x += offset;
+        foreach (ref cluster; layout.visualClusters)
+            if (cluster.lineIndex == lineIndex)
+            {
+                cluster.xMin += offset;
+                cluster.xMax += offset;
+            }
+        foreach (ref caret; layout.carets)
+            if (caret.lineIndex == lineIndex) caret.x += offset;
+    }
+}
+
 /** Rasterize title glyphs and effects through Aurora's own text engine. */
 TitleRaster renderTitlePam(const TitleVisual visual, string path)
 {
@@ -114,6 +149,7 @@ TitleRaster renderTitlePam(const TitleVisual visual, string path)
     options.overrideFace = face;
     options.pixelSize = maxInt(8, cast(int) (visual.textSize + 0.5));
     auto layout = fonts.textEngine.layout(toUTF32(visual.text), options);
+    alignTitleLayout(layout, visual.textAlignment);
     auto style = titlePaintStyle(visual, 1.0);
     // Export applies animated clip opacity/fades once to the completed RGBA
     // title raster. Keep this source layer fully visible while preserving each

@@ -245,7 +245,8 @@ final class TextLayout
             }
             if (last > line.logicalEnd && first <= line.logicalEnd &&
                 line.paragraphEnd > line.logicalEnd)
-                spans ~= Span(line.width, line.width + max(3.0, line.height * 0.25));
+                spans ~= Span(line.x + line.width,
+                    line.x + line.width + max(3.0, line.height * 0.25));
             if (spans.length == 0) continue;
             spans.sort!((a, b) => a.a < b.a);
             double start = spans[0].a;

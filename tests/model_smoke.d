@@ -1,7 +1,8 @@
 module tests.model_smoke;
 
 import auroracut.model : EditorModel, EffectProperty, KeyframeInterpolation,
-    MediaAsset, TimelineClip, TimelineTrack, TrackAddress, TrackKind;
+    MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
+    TrackKind;
 import auroracut.project : loadProjectFile, saveProjectFile;
 import std.file : exists, remove, tempDir;
 import std.math : fabs, isFinite;
@@ -219,6 +220,8 @@ int main()
         assert(featureModel.resizeClipTimeline(textTrack, textIndex,
             1.0, 11.0, resizedIndex));
         assert(near(featureModel.trackValue(textTrack).clips[cast(size_t) resizedIndex].duration(), 10.0));
+        assert(featureModel.setTextAlignment(textTrack, resizedIndex,
+            TextAlignment.center));
 
         assert(featureModel.setKeyframe(textTrack, resizedIndex,
             EffectProperty.scale, 0.0, 1.0));
@@ -238,7 +241,8 @@ int main()
         assert(featureModel.resetAllProperties(textTrack, resizedIndex));
         const reset = featureModel.trackValue(textTrack).clips[cast(size_t) resizedIndex];
         assert(near(reset.opacity, 1.0) && near(reset.scale, 1.0));
-        assert(reset.fadeIn == 0.0 && reset.keyframes.length == 0);
+        assert(reset.fadeIn == 0.0 && reset.textAlignment == TextAlignment.left &&
+            reset.keyframes.length == 0);
 
         // Moving a clip edge must keep animation attached to the same
         // absolute sequence moments and preserve interpolation metadata.
@@ -280,6 +284,8 @@ int main()
         assert(projectModel.setTextBold(titleTrack, titleIndex, true));
         assert(projectModel.setTextItalic(titleTrack, titleIndex, true));
         assert(projectModel.setTextUnderline(titleTrack, titleIndex, true));
+        assert(projectModel.setTextAlignment(titleTrack, titleIndex,
+            TextAlignment.right));
         assert(projectModel.setTextColor(titleTrack, titleIndex, 0xffffcc00));
         assert(projectModel.setTrackHeight(titleTrack, 36));
         assert(projectModel.setKeyframe(titleTrack, titleIndex,
@@ -300,7 +306,9 @@ int main()
         const savedTitle = loaded.videoTracks[1].clips[0];
         assert(savedTitle.text == "Saved title" && savedTitle.fontName == "Arial");
         assert(savedTitle.textBold && savedTitle.textItalic &&
-            savedTitle.textUnderline && savedTitle.textColor == 0xffffcc00);
+            savedTitle.textUnderline &&
+            savedTitle.textAlignment == TextAlignment.right &&
+            savedTitle.textColor == 0xffffcc00);
         assert(loaded.videoTracks[1].height == 36 &&
             savedTitle.keyframes.length == 1 &&
             savedTitle.keyframes[0].interpolation == KeyframeInterpolation.hold);
