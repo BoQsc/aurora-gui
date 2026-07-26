@@ -633,6 +633,8 @@ final class EditorRoot : VBox
     private Button _saveProjectButton;
     private Button _openProjectButton;
     private Button _recentProjectsButton;
+    private Button _undoButton;
+    private Button _redoButton;
     private Button _qualityButton;
     private Slider _mp4CompressionSlider;
     private Label _mp4CompressionLabel;
@@ -856,6 +858,7 @@ final class EditorRoot : VBox
         syncInspector();
         syncTimelineRange();
         updatePlaybackButtons();
+        updateHistoryButtons();
         updateQualityUi();
 
         if (!_tools.editingReady())
@@ -960,6 +963,17 @@ final class EditorRoot : VBox
         _recentProjectsButton.onClick = delegate() {
             showRecentProjectsMenu();
         };
+        _undoButton = toolbar.add(new Button("Undo"));
+        _undoButton.setId("undo");
+        _undoButton.layoutHints().preferredHeight = 26;
+        _undoButton.onClick = delegate() { undo(); };
+
+        _redoButton = toolbar.add(new Button("Redo"));
+        _redoButton.setId("redo");
+        _redoButton.layoutHints().preferredHeight = 26;
+        _redoButton.onClick = delegate() { redo(); };
+        updateHistoryButtons();
+
         toolbar.add(new Spacer());
 
         auto compressionTitle = toolbar.add(new Label("Compress"));
@@ -2273,18 +2287,27 @@ final class EditorRoot : VBox
         if (_undo.length >= 32) _undo = _undo[$ - 31 .. $].dup;
         _undo ~= snapshot;
         _redo.length = 0;
+        updateHistoryButtons();
     }
 
     private void clearHistory()
     {
         _undo.length = 0;
         _redo.length = 0;
+        updateHistoryButtons();
+    }
+
+    private void updateHistoryButtons()
+    {
+        if (_undoButton !is null) _undoButton.setEnabled(_undo.length > 0);
+        if (_redoButton !is null) _redoButton.setEnabled(_redo.length > 0);
     }
 
     private void undo()
     {
         if (_undo.length == 0)
         {
+            updateHistoryButtons();
             setStatus("Nothing to undo.");
             return;
         }
@@ -2292,12 +2315,14 @@ final class EditorRoot : VBox
         _undo.length -= 1;
         _redo ~= captureTimelineSnapshot(snapshot.label);
         applyTimelineSnapshot(snapshot, "Undo: " ~ snapshot.label ~ ".");
+        updateHistoryButtons();
     }
 
     private void redo()
     {
         if (_redo.length == 0)
         {
+            updateHistoryButtons();
             setStatus("Nothing to redo.");
             return;
         }
@@ -2306,6 +2331,7 @@ final class EditorRoot : VBox
         if (_undo.length >= 32) _undo = _undo[$ - 31 .. $].dup;
         _undo ~= captureTimelineSnapshot(snapshot.label);
         applyTimelineSnapshot(snapshot, "Redo: " ~ snapshot.label ~ ".");
+        updateHistoryButtons();
     }
 
     private void applyTimelineSnapshot(TimelineSnapshot snapshot, string statusText)

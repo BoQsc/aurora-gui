@@ -278,6 +278,8 @@ int main(string[] arguments)
     auto saveProject = requireWidget!Button(editor, "save-project");
     auto openProject = requireWidget!Button(editor, "open-project");
     auto recentProjects = requireWidget!Button(editor, "recent-projects");
+    auto undoButton = requireWidget!Button(editor, "undo");
+    auto redoButton = requireWidget!Button(editor, "redo");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
@@ -290,6 +292,12 @@ int main(string[] arguments)
     assert(recentProjects.text() == "Recent ▾"d &&
         recentProjects.bounds().x >= openProject.bounds().right(),
         "Recent Projects button is not directly to the right of Open");
+    assert(undoButton.text() == "Undo"d && redoButton.text() == "Redo"d &&
+        undoButton.bounds().x >= recentProjects.bounds().right() &&
+        redoButton.bounds().x >= undoButton.bounds().right(),
+        "Global Undo/Redo buttons are not beside the project controls");
+    assert(!undoButton.enabled() && !redoButton.enabled(),
+        "Global Undo/Redo buttons must start disabled before history exists");
     driver.click(globalCenter(recentProjects));
     auto recentMenu = findOpenContextMenu(editor);
     assert(recentMenu !is null, "Recent Projects button did not open a dropdown");
@@ -525,6 +533,18 @@ int main(string[] arguments)
         "Project Media drag did not create a V1 clip");
     assert(fabs(editor.modelForTesting().trackValue(v1).clips[0].start) < 0.0001,
         "The first sequence clip did not snap to 00:00:00");
+    assert(undoButton.enabled() && !redoButton.enabled(),
+        "Global Undo button did not enable after adding a sequence item");
+    driver.click(globalCenter(undoButton));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 0,
+        "Global Undo button did not revert the added sequence item");
+    assert(!undoButton.enabled() && redoButton.enabled(),
+        "Global Redo button did not enable after undo");
+    driver.click(globalCenter(redoButton));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1,
+        "Global Redo button did not restore the sequence item");
+    assert(undoButton.enabled() && !redoButton.enabled(),
+        "Global Undo/Redo button state was wrong after redo");
     // Regression: the first clip must keep the timeline viewport anchored at
     // sequence zero. Previously transport auto-follow silently scrolled the
     // ruler to ~00:00:16, making the clipped V1 body look as though it began
