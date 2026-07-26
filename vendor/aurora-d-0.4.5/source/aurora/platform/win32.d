@@ -264,6 +264,8 @@ else version (Windows)
         private LONG_PTR _windowedExStyle;
         private WINDOWPLACEMENT _windowedPlacement;
         private HCURSOR _cursor;
+        private HICON _largeIcon;
+        private HICON _smallIcon;
         private bool _pointerVisible = true;
         private wchar _pendingHighSurrogate;
 
@@ -320,6 +322,7 @@ else version (Windows)
                     maxIntLocal(1, options.height)), style, exStyle);
             }
             updateClientSize();
+            setWindowIcon(options.iconPath);
             DragAcceptFiles(_hwnd, TRUE);
             setCursor(CursorKind.arrow);
         }
@@ -423,6 +426,7 @@ else version (Windows)
             sink.onNativeShutdown();
             if (_hwnd !is null && IsWindow(_hwnd))
                 DestroyWindow(_hwnd);
+            releaseWindowIcons();
             _hwnd = null;
             return cast(int) exitCode;
         }
@@ -473,6 +477,47 @@ else version (Windows)
         {
             if (_hwnd !is null)
                 SetWindowTextW(_hwnd, toUTF16z(title));
+        }
+
+        private void setWindowIcon(string path)
+        {
+            if (_hwnd is null || path.length == 0) return;
+            auto large = loadWindowIcon(path, SM_CXICON, SM_CYICON);
+            auto small = loadWindowIcon(path, SM_CXSMICON, SM_CYSMICON);
+            if (large !is null)
+            {
+                SendMessageW(_hwnd, WM_SETICON, ICON_BIG,
+                    cast(LPARAM) large);
+                _largeIcon = large;
+            }
+            if (small !is null)
+            {
+                SendMessageW(_hwnd, WM_SETICON, ICON_SMALL,
+                    cast(LPARAM) small);
+                _smallIcon = small;
+            }
+        }
+
+        private HICON loadWindowIcon(string path, int metricX, int metricY)
+        {
+            const width = GetSystemMetrics(metricX);
+            const height = GetSystemMetrics(metricY);
+            return cast(HICON) LoadImageW(null, toUTF16z(path), IMAGE_ICON,
+                width, height, LR_LOADFROMFILE);
+        }
+
+        private void releaseWindowIcons()
+        {
+            if (_largeIcon !is null)
+            {
+                DestroyIcon(_largeIcon);
+                _largeIcon = null;
+            }
+            if (_smallIcon !is null)
+            {
+                DestroyIcon(_smallIcon);
+                _smallIcon = null;
+            }
         }
 
         override void setCursor(CursorKind cursor)
@@ -846,6 +891,7 @@ else version (Windows)
                     if (_inSizeMove) KillTimer(_hwnd, liveResizeTimerId);
                     _inSizeMove = false;
                     _closed = true;
+                    releaseWindowIcons();
                     _hwnd = null;
                     PostQuitMessage(0);
                     return 0;

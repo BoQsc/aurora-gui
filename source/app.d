@@ -4,7 +4,8 @@ import aurora;
 import auroracut.appversion : appDisplayName, appVersion;
 import auroracut.editor : EditorRoot;
 import auroracut.util : appLog;
-import std.file : append;
+import std.file : append, exists, thisExePath;
+import std.path : buildPath, dirName;
 import std.stdio : stderr, writeln;
 
 version (Windows)
@@ -45,6 +46,22 @@ private void recordStartupFailure(string details)
     }
 }
 
+private string applicationIconPath()
+{
+    const local = buildPath("assets", "aurora-cut.ico");
+    if (exists(local)) return local;
+    try
+    {
+        const besideExecutable = buildPath(dirName(thisExePath()), "assets",
+            "aurora-cut.ico");
+        if (exists(besideExecutable)) return besideExecutable;
+    }
+    catch (Exception)
+    {
+    }
+    return local;
+}
+
 private int runEditor()
 {
     reportStage("Starting " ~ appDisplayName ~ "...");
@@ -52,6 +69,7 @@ private int runEditor()
 
     WindowOptions options;
     options.title = appDisplayName ~ " — MP4 / MP3 Editor";
+    options.iconPath = applicationIconPath();
     options.width = 1440;
     options.height = 900;
     options.resizable = true;

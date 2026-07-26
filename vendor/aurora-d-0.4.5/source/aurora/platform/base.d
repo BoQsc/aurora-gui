@@ -25,6 +25,7 @@ struct NativeSurfaceInfo
 struct WindowOptions
 {
     string title = "Aurora";
+    string iconPath;
     int width = 960;
     int height = 640;
     int x = int.min;
