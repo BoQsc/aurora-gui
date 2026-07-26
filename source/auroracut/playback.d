@@ -708,6 +708,19 @@ private struct VideoRequest
     double displayStartTime;
 }
 
+private struct ReadyVideoFrame
+{
+    int slot = -1;
+    int width;
+    int height;
+    int fps;
+    double startTime;
+    string title;
+    long frameNumber;
+}
+
+private enum size_t videoFrameSlotCount = 16;
+
 /**
  * Persistent, asynchronous FFmpeg raw-video controller.
  *
@@ -730,16 +743,10 @@ final class VideoFrameStream
     private bool _finished;
     private string _error;
 
-    private ubyte[][4] _slots;
+    private ubyte[][videoFrameSlotCount] _slots;
     private int _displayedSlot = -1;
-    private int _readySlot = -1;
     private int _writingSlot = -1;
-    private int _readyWidth;
-    private int _readyHeight;
-    private int _readyFps;
-    private double _readyStartTime;
-    private string _readyTitle;
-    private long _readyFrameNumber;
+    private ReadyVideoFrame[] _readyFrames;
     private PlaybackWorkerStats _stats;
 
     this()
@@ -784,7 +791,7 @@ final class VideoFrameStream
         _running = true;
         _finished = false;
         _error = "";
-        _readySlot = -1;
+        _readyFrames.length = 0;
         ++_stats.requests;
         process = _process;
         if (process !is null) ++_stats.cancellations;
@@ -835,7 +842,7 @@ final class VideoFrameStream
         _running = true;
         _finished = false;
         _error = "";
-        _readySlot = -1;
+        _readyFrames.length = 0;
         ++_stats.requests;
         process = _process;
         if (process !is null) ++_stats.cancellations;
@@ -927,8 +934,6 @@ final class VideoFrameStream
 
         long frameNumber;
         bool reachedEof;
-        MonoTime pacingStarted;
-        bool pacingStartedValid;
         while (true)
         {
             const slot = acquireWriteSlot(request.generation, frameBytes);
@@ -955,18 +960,7 @@ final class VideoFrameStream
                 reachedEof = true;
                 break;
             }
-            if (!pacingStartedValid)
-            {
-                pacingStarted = MonoTime.currTime;
-                pacingStartedValid = true;
-            }
             releaseWriteSlot(slot, request, true, frameNumber++);
-            const target = pacingStarted +
-                (cast(long) (cast(double) frameNumber * 10_000_000.0 /
-                    request.fps)).hnsecs;
-            const remaining = target - MonoTime.currTime;
-            if (remaining.total!"hnsecs" > 0)
-                Thread.sleep(remaining);
         }
 
         try pipes.stdout.close();
@@ -989,29 +983,29 @@ final class VideoFrameStream
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        if (generation != _generation || !_running || _shutdown) return -1;
-
-        foreach (slot; 0 .. cast(int) _slots.length)
+        while (true)
         {
-            if (slot == _displayedSlot || slot == _readySlot ||
-                slot == _writingSlot) continue;
-            if (_slots[slot].length != frameBytes)
-                _slots[slot] = new ubyte[frameBytes];
-            _writingSlot = slot;
-            return slot;
-        }
+            if (generation != _generation || !_running || _shutdown) return -1;
 
-        if (_readySlot >= 0 && _readySlot != _displayedSlot)
-        {
-            const slot = _readySlot;
-            _readySlot = -1;
-            if (_slots[slot].length != frameBytes)
-                _slots[slot] = new ubyte[frameBytes];
-            _writingSlot = slot;
-            ++_stats.framesDropped;
-            return slot;
+            foreach (slot; 0 .. cast(int) _slots.length)
+            {
+                if (slot == _displayedSlot || slot == _writingSlot ||
+                    slotReady(slot)) continue;
+                if (_slots[slot].length != frameBytes)
+                    _slots[slot] = new ubyte[frameBytes];
+                _writingSlot = slot;
+                return slot;
+            }
+
+            _condition.wait();
         }
-        return -1;
+    }
+
+    private bool slotReady(int slot) const
+    {
+        foreach (ready; _readyFrames)
+            if (ready.slot == slot) return true;
+        return false;
     }
 
     private void releaseWriteSlot(int slot, const VideoRequest request,
@@ -1025,26 +1019,24 @@ final class VideoFrameStream
             if (publish) ++_stats.framesDropped;
             return;
         }
-        while (_readySlot >= 0 && _readySlot != _displayedSlot &&
-            request.generation == _generation && _running && !_shutdown)
-            _condition.wait();
         if (request.generation != _generation || !_running || _shutdown)
         {
             ++_stats.framesDropped;
             return;
         }
         ++_stats.framesDecoded;
-        if (_readySlot >= 0 && _readySlot != _displayedSlot)
-            ++_stats.framesDropped;
-        _readySlot = slot;
-        _readyWidth = request.width;
-        _readyHeight = request.height;
-        _readyFps = request.fps;
-        _readyStartTime = request.commandArguments.length > 0 ?
+        ReadyVideoFrame ready;
+        ready.slot = slot;
+        ready.width = request.width;
+        ready.height = request.height;
+        ready.fps = request.fps;
+        ready.startTime = request.commandArguments.length > 0 ?
             request.displayStartTime : request.startTime;
-        _readyTitle = request.title;
-        _readyFrameNumber = frameNumber;
+        ready.title = request.title;
+        ready.frameNumber = frameNumber;
+        _readyFrames ~= ready;
         ++_stats.framesPublished;
+        _condition.notifyAll();
     }
 
     private void publishFailure(ulong generation, string message)
@@ -1064,18 +1056,57 @@ final class VideoFrameStream
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        if (_readySlot < 0) return false;
-        _displayedSlot = _readySlot;
-        _readySlot = -1;
+        if (_readyFrames.length == 0) return false;
+        auto ready = popReadyFront();
         _condition.notifyAll();
-        frame = PreviewFrame.init;
-        frame.width = _readyWidth;
-        frame.height = _readyHeight;
-        frame.rgb = _slots[_displayedSlot];
-        frame.title = _readyTitle;
-        frame.sourceTime = _readyStartTime +
-            cast(double) _readyFrameNumber / _readyFps;
+        frame = previewFrame(ready);
         return true;
+    }
+
+    /** Return the newest queued frame whose timestamp is not ahead of the
+     * caller's clock. Older due frames are dropped here so audio remains the
+     * master clock when the UI cannot present every decoded frame. */
+    bool takeReadyUpTo(double maximumSourceTime, out PreviewFrame frame)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        bool found;
+        while (_readyFrames.length > 0 &&
+            readySourceTime(_readyFrames[0]) <= maximumSourceTime)
+        {
+            if (found) ++_stats.framesDropped;
+            auto ready = popReadyFront();
+            frame = previewFrame(ready);
+            found = true;
+        }
+        if (found) _condition.notifyAll();
+        return found;
+    }
+
+    private ReadyVideoFrame popReadyFront()
+    {
+        auto ready = _readyFrames[0];
+        foreach (index; 0 .. _readyFrames.length - 1)
+            _readyFrames[index] = _readyFrames[index + 1];
+        _readyFrames.length = _readyFrames.length - 1;
+        _displayedSlot = ready.slot;
+        return ready;
+    }
+
+    private double readySourceTime(const ReadyVideoFrame ready) const
+    {
+        return ready.startTime + cast(double) ready.frameNumber / ready.fps;
+    }
+
+    private PreviewFrame previewFrame(const ReadyVideoFrame ready)
+    {
+        PreviewFrame frame;
+        frame.width = ready.width;
+        frame.height = ready.height;
+        frame.rgb = _slots[ready.slot];
+        frame.title = ready.title;
+        frame.sourceTime = readySourceTime(ready);
+        return frame;
     }
 
     bool running()
@@ -1114,7 +1145,7 @@ final class VideoFrameStream
         _hasPending = false;
         _running = false;
         _finished = false;
-        _readySlot = -1;
+        _readyFrames.length = 0;
         _writingSlot = -1;
         process = _process;
         if (process !is null) ++_stats.cancellations;
@@ -1141,7 +1172,7 @@ final class VideoFrameStream
             _hasPending = false;
             _running = false;
             _finished = false;
-            _readySlot = -1;
+            _readyFrames.length = 0;
             process = _process;
             _condition.notifyAll();
         }

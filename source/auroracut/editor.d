@@ -751,8 +751,11 @@ final class EditorRoot : VBox
     private double _liveAudioEnd = -1.0;
     private ulong _liveAudioClipId;
     private bool _playbackAudioStarted;
+    private bool _playbackAudioRequired;
     private bool _playbackAwaitingAudioClock;
     private double _playbackAudioClockWait;
+    private double _playbackAudioClockLostWait;
+    private double _playbackVideoLagWait;
     private ulong _playbackModelRevision;
 
     private bool _canvasDragEditing;
@@ -779,6 +782,10 @@ final class EditorRoot : VBox
     // Playback/seek state is intentionally detached from host tick frequency.
     // The monotonic clock is authoritative, and drag events only replace one
     // pending seek instead of synchronously restarting FFmpeg for every pixel.
+    private enum double playbackVideoLeadSeconds = 0.018;
+    private enum double playbackVideoLagToleranceSeconds = 0.24;
+    private enum double playbackVideoLagAbortSeconds = 0.25;
+    private enum double playbackAudioClockLostAbortSeconds = 0.18;
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
@@ -4629,6 +4636,53 @@ final class EditorRoot : VBox
         return clampValue(value, _playbackStart, _playbackEnd);
     }
 
+    private double playbackSourceClockTime(double sequenceTime) const
+    {
+        return _sequencePlaybackDirect ? sequenceTime + _playbackMediaOffset :
+            sequenceTime;
+    }
+
+    private bool playbackAudioRequiredNow()
+    {
+        if (_playbackAsset is null) return false;
+        if (_sequencePlaybackLive)
+            return sequenceHasAudibleAudio(_playbackPosition, _playbackEnd);
+        return _playbackAsset.hasAudio && !_playbackSourceMuted &&
+            _playbackSourceVolume > 0.000_001;
+    }
+
+    private void haltPlaybackForSync(string statusText)
+    {
+        if (_playbackKind == PlaybackKind.none) return;
+        appLog(statusText);
+        _playbackPosition = clampValue(_playbackPosition, _playbackStart,
+            _playbackEnd);
+        _playbackRunning = false;
+        _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
+        _playbackAudioStarted = false;
+        _playbackAudioRequired = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoLagWait = 0.0;
+        _seekResumePlayback = false;
+        clearPendingSeekState();
+        _videoStream.stop();
+        _audioPlayer.stop();
+        _preview.setPlaying(false);
+        if (_playbackKind == PlaybackKind.sequence)
+        {
+            _timeline.setPlayhead(_playbackPosition, false);
+            syncPreviewTitleLayers(_playbackPosition);
+        }
+        _scrub.setValue(_playbackPosition, false);
+        updatePlaybackButtons();
+        updateTimeLabel();
+        requestPlaybackStill();
+        setStatus(statusText);
+    }
+
     private string playbackPreparingStatus() const
     {
         if (_playbackKind == PlaybackKind.sequence)
@@ -4837,8 +4891,11 @@ final class EditorRoot : VBox
         _videoStream.stop();
         _audioPlayer.stop();
         _playbackAudioStarted = false;
+        _playbackAudioRequired = playbackAudioRequiredNow();
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoLagWait = 0.0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         const remaining = _playbackEnd - _playbackPosition;
@@ -4918,8 +4975,11 @@ final class EditorRoot : VBox
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         _playbackAudioStarted = false;
+        _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoLagWait = 0.0;
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -5005,8 +5065,11 @@ final class EditorRoot : VBox
             _videoStream.stop();
             _audioPlayer.stop();
             _playbackAudioStarted = false;
+            _playbackAudioRequired = false;
             _playbackAwaitingAudioClock = false;
             _playbackAudioClockWait = 0.0;
+            _playbackAudioClockLostWait = 0.0;
+            _playbackVideoLagWait = 0.0;
             _previewService.cancel();
             _playbackClockValid = false;
             _playbackAwaitingFirstFrame = false;
@@ -5121,6 +5184,9 @@ final class EditorRoot : VBox
             (_playbackKind != PlaybackKind.source && !_sequencePlaybackDirect &&
              !_sequencePlaybackLive))
             return;
+        if (_playbackKind == PlaybackKind.sequence &&
+            (_sequenceRefreshDeferred || _playbackModelRevision != _modelRevision))
+            return;
         _sourceAudioRefreshPending = true;
         _sourceAudioRefreshDelay = 0.0;
     }
@@ -5129,6 +5195,9 @@ final class EditorRoot : VBox
     {
         if (!_playbackRunning || _playbackAsset is null ||
             _playbackAwaitingFirstFrame) return;
+        if (_playbackKind == PlaybackKind.sequence &&
+            (_sequenceRefreshDeferred || _playbackModelRevision != _modelRevision))
+            return;
         _playbackAudioStarted = false;
         double volume;
         bool muted;
@@ -5192,8 +5261,11 @@ final class EditorRoot : VBox
         _liveAudioEnd = -1.0;
         _liveAudioClipId = 0;
         _playbackAudioStarted = false;
+        _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoLagWait = 0.0;
         _playbackModelRevision = 0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
@@ -5221,8 +5293,11 @@ final class EditorRoot : VBox
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         _playbackAudioStarted = false;
+        _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoLagWait = 0.0;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _videoStream.stop();
@@ -5247,8 +5322,11 @@ final class EditorRoot : VBox
         if (_sourcePlayButton !is null)
         {
             string label = "▶";
-            if (_playbackKind != PlaybackKind.none && _playbackRunning)
+            if (_playbackKind != PlaybackKind.none && _playbackRunning &&
+                !_playbackAwaitingFirstFrame && !_playbackAwaitingAudioClock)
                 label = "❚❚";
+            else if (_playbackKind != PlaybackKind.none && _playbackRunning)
+                label = "...";
             _sourcePlayButton.setText(label);
         }
     }
@@ -6517,23 +6595,47 @@ final class EditorRoot : VBox
                         _playbackStart, _playbackEnd);
                     _playbackAwaitingAudioClock = false;
                     _playbackAwaitingFirstFrame = false;
+                    _playbackAudioClockLostWait = 0.0;
+                    _playbackVideoLagWait = 0.0;
                     resetPlaybackClock();
                     setStatus(playbackRunningStatus());
                     _preview.setPlaying(true);
                 }
                 else if (_playbackAudioClockWait >= 0.85)
                 {
-                    _audioPlayer.stop();
-                    _playbackAudioStarted = false;
-                    _playbackAwaitingAudioClock = false;
-                    _playbackAwaitingFirstFrame = false;
-                    resetPlaybackClock();
-                    setStatus("Audio output did not become ready; continuing video preview.");
-                    _preview.setPlaying(true);
+                    haltPlaybackForSync(
+                        "Audio output did not become ready; playback stopped to prevent desync.");
                 }
             }
 
             if (!_playbackAwaitingAudioClock && !_playbackAwaitingFirstFrame)
+            {
+                if (_playbackAudioStarted && _playbackAudioRequired)
+                {
+                    double audioPosition;
+                    if (_audioPlayer.clockPosition(audioPosition))
+                        _playbackAudioClockLostWait = 0.0;
+                    else if (!_audioPlayer.running() &&
+                        _audioPlayer.error().length == 0)
+                    {
+                        _playbackAudioStarted = false;
+                        _playbackAudioRequired = false;
+                        _playbackAudioClockLostWait = 0.0;
+                        resetPlaybackClock();
+                    }
+                    else
+                    {
+                        _playbackAudioClockLostWait += deltaSeconds;
+                        if (_playbackAudioClockLostWait >=
+                            playbackAudioClockLostAbortSeconds)
+                            haltPlaybackForSync(
+                                "Audio clock was lost; playback stopped to prevent desync.");
+                    }
+                }
+            }
+
+            if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame)
             {
                 _playbackPosition = clampValue(clockPlaybackPosition(),
                     _playbackStart, _playbackEnd);
@@ -6548,21 +6650,33 @@ final class EditorRoot : VBox
             }
             bool receivedFrame;
             PreviewFrame frame;
-            if (!_playbackAwaitingAudioClock && _videoStream.takeReady(frame))
+            if (!_playbackAwaitingAudioClock && _playbackAwaitingFirstFrame &&
+                _videoStream.takeReady(frame))
             {
                 receivedFrame = true;
                 bool handledFrame;
-                if (_playbackAwaitingFirstFrame && frame.valid())
+                if (frame.valid())
                 {
                     _playbackPosition = playbackTimeForFrame(frame);
                     double audioPosition = _playbackPosition;
+                    const audioRequired = _playbackAudioRequired;
                     const audioStarted = startPlaybackAudio();
                     const audioClockReady = audioStarted &&
                         _audioPlayer.clockPosition(audioPosition);
-                    if (audioStarted && !audioClockReady)
+                    if (audioRequired && !audioStarted)
+                    {
+                        _preview.setFrame(frame);
+                        haltPlaybackForSync(
+                            "Audio output could not start; playback stopped to prevent desync.");
+                        handledFrame = true;
+                    }
+                    else if (audioStarted && !audioClockReady)
                     {
                         _playbackAwaitingAudioClock = true;
+                        _playbackAwaitingFirstFrame = false;
                         _playbackAudioClockWait = 0.0;
+                        _playbackAudioClockLostWait = 0.0;
+                        _playbackVideoLagWait = 0.0;
                         _preview.setFrame(frame);
                         _preview.setPlaying(false);
                         handledFrame = true;
@@ -6570,8 +6684,11 @@ final class EditorRoot : VBox
                     else
                     {
                         if (audioClockReady)
+                        {
                             _playbackPosition = clampValue(audioPosition,
                                 _playbackStart, _playbackEnd);
+                            _playbackAudioClockLostWait = 0.0;
+                        }
                         _playbackAwaitingFirstFrame = false;
                         resetPlaybackClock();
                         setStatus(playbackRunningStatus());
@@ -6581,6 +6698,17 @@ final class EditorRoot : VBox
                 {
                     _preview.setFrame(frame);
                     _preview.setPlaying(!_playbackAwaitingFirstFrame);
+                }
+            }
+            else if (!_playbackAwaitingAudioClock && !_playbackAwaitingFirstFrame)
+            {
+                const maximumFrameTime = playbackSourceClockTime(_playbackPosition) +
+                    playbackVideoLeadSeconds;
+                if (_videoStream.takeReadyUpTo(maximumFrameTime, frame))
+                {
+                    receivedFrame = true;
+                    _preview.setFrame(frame);
+                    _preview.setPlaying(true);
                 }
             }
             else if (_videoStream.finished() && _playbackAsset.hasVideo)
@@ -6597,6 +6725,25 @@ final class EditorRoot : VBox
                     updatePlaybackButtons();
                     updateTimeLabel();
                 }
+            }
+
+            if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame && _playbackAsset.hasVideo &&
+                _playbackAudioRequired && _preview.hasFrame())
+            {
+                const frameTime = _sequencePlaybackDirect ?
+                    _preview.frameTime() - _playbackMediaOffset :
+                    _preview.frameTime();
+                if (_playbackPosition - frameTime >
+                    playbackVideoLagToleranceSeconds)
+                {
+                    _playbackVideoLagWait += deltaSeconds;
+                    if (_playbackVideoLagWait >= playbackVideoLagAbortSeconds)
+                        haltPlaybackForSync(
+                            "Video could not keep up with audio; playback stopped to prevent desync.");
+                }
+                else
+                    _playbackVideoLagWait = 0.0;
             }
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
