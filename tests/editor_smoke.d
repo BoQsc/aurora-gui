@@ -191,6 +191,19 @@ private bool waitForSequencePlayback(EditorRoot editor, PreviewWidget preview)
     return false;
 }
 
+private bool waitForPlaybackReady(EditorRoot editor, PreviewWidget preview)
+{
+    foreach (_; 0 .. 600)
+    {
+        editor.tickTree(0.02);
+        if (!editor.playbackAwaitingFirstFrameForTesting() &&
+            preview.playing() && preview.hasFrame())
+            return true;
+        Thread.sleep(20.msecs);
+    }
+    return false;
+}
+
 int main(string[] arguments)
 {
     assert(arguments.length == 4,
@@ -562,6 +575,10 @@ int main(string[] arguments)
         "Inspector property names collapsed to zero height");
     assert(gainKey.visible() && gainKey.text() == "◇ Key"d,
         "Per-item keyframe control is not visibly labeled");
+    enum double directTrimIn = 0.35;
+    assert(editor.modelForTesting().setTrimIn(v1, 0, directTrimIn),
+        "Direct playback regression setup could not trim the V1 source in-point");
+    timeline.modelChanged();
     const playbackLaunchPosition = timeline.playhead();
     assert(playbackLaunchPosition > 0.1,
         "The scrubber-origin regression test requires a non-zero launch position");
@@ -584,8 +601,18 @@ int main(string[] arguments)
         "Preview scrubber does not cover the complete sequence duration");
     assert(!editor.renderRunningForTesting(),
         "Plain V1 playback unexpectedly started a composition render");
+    assert(editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
+        "Direct V1 playback bypassed first-frame preroll");
+    assert(editor.audioStatsForTesting().requests ==
+        audioStatsBeforeDirectPlayback.requests,
+        "Direct Composition Preview started audio before a matching video frame");
     assert(waitForFrame(editor, preview, 0.0, 600),
         "Direct V1 playback did not produce an embedded frame");
+    assert(waitForPlaybackReady(editor, preview),
+        "Direct V1 playback never locked audio/video playback");
+    assert(editor.playbackPositionForTesting() <
+        playbackLaunchPosition + directTrimIn - 0.07,
+        "Direct Composition Preview used source trim time as the timeline audio clock");
     assert(editor.audioStatsForTesting().requests >
         audioStatsBeforeDirectPlayback.requests,
         "Direct Composition Preview did not request preview audio");

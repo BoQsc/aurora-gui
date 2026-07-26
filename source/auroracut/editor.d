@@ -4792,7 +4792,7 @@ final class EditorRoot : VBox
             const mediaPosition = clampValue(_playbackPosition + _playbackMediaOffset,
                 0.0, _playbackAsset.duration);
             if (!_audioPlayer.start(_playbackAsset.path, mediaPosition,
-                remaining, _playbackSourceVolume))
+                remaining, _playbackSourceVolume, _playbackPosition))
             {
                 _playbackAudioStarted = false;
                 setStatus("Visual playback is ready, but audio output could not start.");
@@ -5144,7 +5144,7 @@ final class EditorRoot : VBox
         {
             _audioPlayer.start(_playbackAsset.path,
                 clampValue(mediaPosition, 0.0, _playbackAsset.duration),
-                remaining, volume);
+                remaining, volume, _playbackPosition);
             _playbackAudioStarted = true;
         }
     }

@@ -273,8 +273,11 @@ final class PcmAudioPlayer
         return _error;
     }
 
+    /** Decode from source `startTime`, but publish the transport clock from
+     * `displayStartTime`. Direct timeline playback needs this because a clip's
+     * media in-point can differ from its sequence time. */
     bool start(string path, double startTime = 0.0, double duration = 0.0,
-        double volume = 1.0)
+        double volume = 1.0, double displayStartTime = -1.0)
     {
         if (path.length == 0 || volume <= 0.000_001 || duration <= 0.000_001)
         {
@@ -285,7 +288,8 @@ final class PcmAudioPlayer
         AudioRequest request;
         request.path = path;
         request.startTime = startTime < 0.0 ? 0.0 : startTime;
-        request.displayStartTime = request.startTime;
+        request.displayStartTime = displayStartTime < 0.0 ?
+            request.startTime : displayStartTime;
         request.duration = duration;
         request.volume = volume;
         return enqueue(request);
