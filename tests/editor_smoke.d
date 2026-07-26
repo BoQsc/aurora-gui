@@ -6,9 +6,11 @@ import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
     TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
+import auroracut.util : projectAutosaveDirectory;
 import core.thread : Thread;
 import core.time : msecs;
 import std.algorithm.searching : canFind;
+import std.conv : to;
 import std.datetime.stopwatch : AutoStart, StopWatch;
 import std.math : fabs;
 import std.stdio : writeln;
@@ -194,12 +196,27 @@ int main(string[] arguments)
     auto preview = requireWidget!PreviewWidget(editor, "preview");
     auto playSource = requireWidget!Button(editor, "play-preview");
     auto qualityButton = requireWidget!Button(editor, "preview-quality");
+    auto saveProject = requireWidget!Button(editor, "save-project");
+    auto openProject = requireWidget!Button(editor, "open-project");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
         "export-mp4-compression-value");
     assert(playSource.text() == "▶"d,
         "Preview transport button must show the play symbol while idle");
+    assert(openProject.text() == "Open"d &&
+        openProject.bounds().x >= saveProject.bounds().right(),
+        "Open Project button is not directly to the right of Save");
+    driver.click(globalCenter(openProject));
+    assert(driver.paint(), "Open Project dialog did not paint");
+    auto tempAutosaves = requireWidget!Button(editor,
+        "open-project-temp-autosaves");
+    auto dialogPath = requireWidget!TextField(editor, "file-dialog-path");
+    driver.click(globalCenter(tempAutosaves));
+    assert(driver.paint(), "Open Project temp shortcut did not repaint");
+    assert(dialogPath.textUtf8() == projectAutosaveDirectory(),
+        "Open Project dialog shortcut did not navigate to temp autosaves");
+    driver.pressKey(Key.escape);
     assert(!revealExport.enabled() && !editor.revealExportEnabledForTesting(),
         "Export output button must stay disabled until an export completes");
     mp4Compression.setValue(27.6);
@@ -221,6 +238,38 @@ int main(string[] arguments)
     assert(timelineScrollbar.bounds().height > 0 &&
         timelineScrollbar.bounds().height <= 12,
         "Timeline horizontal scrollbar is not compact");
+
+    // File dialogs use ListView for the folder/file rows. Its vertical
+    // scrollbar must be an input target, not only a painted decoration.
+    {
+        auto dialogList = new ListView();
+        dialogList.setBounds(Rect(0, 0, 200, 120));
+        dialogList.setRowHeight(30);
+        string[] rows;
+        foreach (index; 0 .. 20)
+            rows ~= "file-" ~ to!string(index);
+        dialogList.setStrings(rows);
+        Event down;
+        down.button = MouseButton.left;
+        down.position = Point(190, 60);
+        assert(dialogList.onMouseDown(down),
+            "File dialog scrollbar did not accept mouse-down");
+        assert(dialogList.draggingScrollbarForTesting(),
+            "File dialog scrollbar did not enter drag mode");
+        assert(dialogList.selectedIndex() < 0,
+            "Clicking the file dialog scrollbar selected a file row");
+        Event move;
+        move.position = Point(190, 110);
+        assert(dialogList.onMouseMove(move));
+        assert(dialogList.scrollOffset() > 0,
+            "Dragging the file dialog scrollbar did not scroll the list");
+        Event up;
+        up.button = MouseButton.left;
+        up.position = Point(190, 110);
+        assert(dialogList.onMouseUp(up));
+        assert(!dialogList.draggingScrollbarForTesting(),
+            "File dialog scrollbar did not leave drag mode on mouse-up");
+    }
 
     // Out-first export marking must create a complete visible zone rather than
     // leaving a lone Out marker and relying on export-time fallback behavior.
@@ -256,6 +305,40 @@ int main(string[] arguments)
             "Horizontal scrollbar thumb did not follow timeline panning");
         assert(fabs(scrollTimeline.pixelsPerSecond() - zoomBeforePan) < 0.0001,
             "Horizontal panning unexpectedly changed timeline zoom");
+    }
+
+    // Timeline items snap their start/end edges to the playhead when close.
+    // This includes edge-resize previews, not only full-clip drag ghosts.
+    {
+        auto snapModel = new EditorModel();
+        const snapTrack = TrackAddress(TrackKind.video, 0);
+        assert(snapModel.insertTextClip(snapTrack, 0.0, 2.0,
+            "Snap probe") >= 0);
+        auto snapTimeline = new TimelineWidget(snapModel);
+        snapTimeline.setBounds(Rect(0, 0, 800, 180));
+        snapTimeline.setZoom(100.0);
+        snapTimeline.setPlayhead(1.20, false);
+
+        const startSnap = snapTimeline.snappedStartForTesting(1.13,
+            0.30, snapTrack);
+        assert(fabs(startSnap - snapTimeline.playhead()) < 0.0001,
+            "Timeline item start did not snap to nearby playhead");
+
+        const endSnap = snapTimeline.snappedStartForTesting(0.88,
+            0.30, snapTrack);
+        assert(fabs(endSnap + 0.30 - snapTimeline.playhead()) < 0.0001,
+            "Timeline item end did not snap to nearby playhead");
+
+        const resizeSnap = snapTimeline.snappedEdgeForTesting(1.11,
+            0.05, 2.0, snapTrack);
+        assert(fabs(resizeSnap - snapTimeline.playhead()) < 0.0001,
+            "Timeline item edge resize did not snap to nearby playhead");
+
+        snapTimeline.setSnappingEnabled(false);
+        const unsnapped = snapTimeline.snappedStartForTesting(1.13,
+            0.30, snapTrack);
+        assert(fabs(unsnapped - 1.13) < 0.0001,
+            "Disabling timeline snapping did not bypass playhead snapping");
     }
 
     // Regression: V1/A1 row paint must never erase the Cut and Text buttons
@@ -304,6 +387,8 @@ int main(string[] arguments)
         "Context menu did not use the compact editor dimensions");
     assert(menuHasLabel(mediaMenu, "Add to V1"d));
     assert(menuHasLabel(mediaMenu, "Place on new video track at playhead"d));
+    assert(!menuHasLabel(mediaMenu, "Open project…"d),
+        "Project Media context menu still exposes Open Project");
     assert(!menuHasLabel(mediaMenu, "Play source in Preview"d),
         "Composition Preview exposed a competing source-player command");
     assert(menuHasLabel(mediaMenu, "Show in File Explorer"d));
@@ -372,6 +457,7 @@ int main(string[] arguments)
     const playbackLaunchPosition = timeline.playhead();
     assert(playbackLaunchPosition > 0.1,
         "The scrubber-origin regression test requires a non-zero launch position");
+    const audioStatsBeforeDirectPlayback = editor.audioStatsForTesting();
     driver.click(globalCenter(playSource));
     assert(editor.directSequencePlaybackForTesting(),
         "Plain V1 playback did not use direct source passthrough");
@@ -392,6 +478,9 @@ int main(string[] arguments)
         "Plain V1 playback unexpectedly started a composition render");
     assert(waitForFrame(editor, preview, 0.0, 600),
         "Direct V1 playback did not produce an embedded frame");
+    assert(editor.audioStatsForTesting().requests >
+        audioStatsBeforeDirectPlayback.requests,
+        "Direct Composition Preview did not request preview audio");
     driver.pressKey(Key.escape);
 
     driver.rightClick(globalCenter(preview));
@@ -416,8 +505,11 @@ int main(string[] arguments)
     writeln("[editor-smoke] project media drops");
 
     // A held second click can move the clip both horizontally and into a new V3.
-    const v2Start = clipCenter(timeline, v2, 0);
-    const v3Drop = timeline.newTrackDropPointForTesting(TrackKind.video, 1.0);
+    // Use a real grab point near the clip's start. Grabbing the visual center
+    // of a long clip preserves a many-second grab offset and correctly clamps
+    // the moved item to zero when the pointer is dragged back near the origin.
+    const v2Start = timeline.pointForTrackTime(v2, 0.55);
+    const v3Drop = timeline.newTrackDropPointForTesting(TrackKind.video, 0.90);
     doubleClickDrag(driver, v2Start, v3Drop);
     const v3 = TrackAddress(TrackKind.video, 2);
     assert(editor.modelForTesting().trackCount(TrackKind.video) == 3);
@@ -547,6 +639,7 @@ int main(string[] arguments)
     driver.click(mediaRowPoint(mediaList, 2));
     editor.setPreviewQualityForTesting(720);
     timeline.setPlayhead(0.60, false);
+    const audioStatsBeforeLivePlayback = editor.audioStatsForTesting();
     driver.click(globalCenter(playSource));
     assert(editor.playbackRunningForTesting() &&
         editor.sequencePlaybackForTesting() &&
@@ -555,6 +648,9 @@ int main(string[] arguments)
     assert(waitForSequencePlayback(editor, preview),
         "The live timeline composition never began embedded playback");
     assert(waitForFrame(editor, preview, 0.62, 600));
+    assert(editor.audioStatsForTesting().requests >
+        audioStatsBeforeLivePlayback.requests,
+        "Live Composition Preview did not request preview audio");
     writeln("[editor-smoke] sequence frame title=", preview.frameTitleForTesting(),
         " time=", preview.frameTime());
     assert(preview.frameTitleForTesting().canFind("Sequence"),
@@ -665,8 +761,8 @@ int main(string[] arguments)
         "Changing a composition transform stopped active playback");
 
     // Moving a clip while playback is active must not stop or restart the
-    // current FFmpeg video/audio snapshot. The edited revision is adopted only
-    // after pause/resume or a new Play command.
+    // current FFmpeg video snapshot. The edited revision is adopted only after
+    // pause/resume or a new Play command.
     const processesBeforeLiveMove = editor.videoStatsForTesting().processesStarted;
     const originalMoveStart = editor.modelForTesting().trackValue(v3).clips[0].start;
     editor.moveClipForTesting(v3, 0, v3, originalMoveStart + 0.10);
@@ -832,6 +928,9 @@ int main(string[] arguments)
     driver.doubleClick(globalCenter(preview));
     assert(timeline.selectedTrack() == textTrack && timeline.selectedIndex() == 0,
         "Preview double-click did not select the top text item");
+    textField = preview.titleEditorForTesting(firstTitleId);
+    assert(textField !is null,
+        "Preview double-click did not expose the current live title layer");
     foreach (_; 0 .. 200)
     {
         editor.tickTree(0.02);
@@ -863,9 +962,8 @@ int main(string[] arguments)
     assert(model.trackValue(textTrack).clips.length == 2,
         "Canvas dragging created an extra text item");
 
-    // A split item moved after a silent gap must schedule its future audio
-    // boundary. The old player stopped checking after the left item ended and
-    // required another seek or Play click before sound returned.
+    // A split item moved after a silent gap must remain discoverable as future
+    // audible media. The mixed PCM preview graph uses this same timeline shape.
     const gapTrack = TrackAddress(TrackKind.video,
         model.addTrack(TrackKind.video));
     const gapIndex = model.insertClip(0, gapTrack, 100.0);
@@ -876,7 +974,7 @@ int main(string[] arguments)
     assert(model.moveClipToTime(gapTrack, gapRight, gapTrack, 103.0,
         movedGapRight));
     assert(fabs(editor.nextTimelineAudioStartForTesting(101.10) - 103.0) < 0.001,
-        "Live audio did not schedule the next item after a split/move gap");
+        "Timeline audio lookup missed the next item after a split/move gap");
 
     // Project Media focus must not replace the timeline monitor with a source
     // frame. Composition Preview remains the timeline at all times.

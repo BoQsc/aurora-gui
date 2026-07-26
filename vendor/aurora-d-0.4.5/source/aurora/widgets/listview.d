@@ -31,6 +31,9 @@ class ListView : Widget
     private int _scrollOffset;
     private int _rowHeight = 44;
     private bool _showBorder = true;
+    private bool _draggingScrollbar;
+    private int _thumbGrabOffset;
+    private int _scrollbarWidth = 12;
 
     void delegate(int index) onSelectionChanged;
     void delegate(int index) onActivated;
@@ -47,6 +50,10 @@ class ListView : Widget
     int selectedIndex() const @safe pure nothrow @nogc { return _selected; }
     int rowHeight() const @safe pure nothrow @nogc { return _rowHeight; }
     int scrollOffset() const @safe pure nothrow @nogc { return _scrollOffset; }
+    bool draggingScrollbarForTesting() const @safe pure nothrow @nogc
+    {
+        return _draggingScrollbar;
+    }
 
     /** Returns the item index beneath a local point, or -1. */
     int indexAt(Point position) const @safe pure nothrow @nogc
@@ -145,6 +152,43 @@ class ListView : Widget
     protected override void onMouseLeave()
     {
         _hoveredRow = -1;
+        if (!_draggingScrollbar) setCursor(CursorKind.arrow);
+    }
+
+    private bool showScrollbar() const @safe pure nothrow @nogc
+    {
+        return contentHeight() > bounds().height;
+    }
+
+    private Rect scrollbarTrack() const @safe pure nothrow @nogc
+    {
+        return showScrollbar() ? Rect(maxInt(0, bounds().width - _scrollbarWidth - 3),
+            4, _scrollbarWidth, maxInt(1, bounds().height - 8)) : Rect.init;
+    }
+
+    private Rect scrollbarThumb() const @safe pure nothrow @nogc
+    {
+        const track = scrollbarTrack();
+        if (track.empty()) return Rect.init;
+        const thumbHeight = clampInt(track.height * bounds().height /
+            maxInt(1, contentHeight()), 24, track.height);
+        const travel = maxInt(0, track.height - thumbHeight);
+        const y = track.y + (maxScroll() == 0 ? 0 :
+            travel * _scrollOffset / maxInt(1, maxScroll()));
+        return Rect(track.x, y, track.width, thumbHeight);
+    }
+
+    private void updateScrollbarThumb(int pointerY)
+    {
+        const track = scrollbarTrack();
+        const thumb = scrollbarThumb();
+        if (track.empty() || thumb.empty()) return;
+        const travel = maxInt(1, track.height - thumb.height);
+        const y = clampInt(pointerY - _thumbGrabOffset, track.y,
+            track.bottom() - thumb.height);
+        _scrollOffset = clampInt((y - track.y) * maxScroll() / travel,
+            0, maxScroll());
+        invalidate();
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -203,14 +247,16 @@ class ListView : Widget
             }
         }
 
-        if (contentHeight() > bounds().height)
+        if (showScrollbar())
         {
-            const trackHeight = maxInt(1, bounds().height - 8);
-            const thumbHeight = maxInt(18, trackHeight * bounds().height / contentHeight());
-            const travel = maxInt(1, trackHeight - thumbHeight);
-            const thumbY = 4 + travel * _scrollOffset / maxInt(1, maxScroll());
-            content.fillRoundedRect(Rect(bounds().width - 7, thumbY, 4, thumbHeight), 2,
-                palette.textMuted.withAlpha(130));
+            const track = scrollbarTrack();
+            const thumb = scrollbarThumb();
+            content.fillRoundedRect(track, track.width / 2,
+                palette.border.withAlpha(70));
+            content.fillRoundedRect(thumb.inset(2, 1, 2, 1),
+                maxInt(2, (thumb.width - 4) / 2),
+                (_draggingScrollbar || hovered() ? palette.textMuted : palette.disabled)
+                    .withAlpha(_draggingScrollbar ? 230 : 170));
         }
 
         if (focused())
@@ -219,6 +265,22 @@ class ListView : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_draggingScrollbar)
+        {
+            updateScrollbarThumb(event.position.y);
+            return true;
+        }
+        if (scrollbarTrack().contains(event.position))
+        {
+            if (_hoveredRow != -1)
+            {
+                _hoveredRow = -1;
+                invalidate();
+            }
+            setCursor(CursorKind.hand);
+            return true;
+        }
+        setCursor(CursorKind.arrow);
         const next = rowAt(event.position);
         if (next != _hoveredRow)
         {
@@ -232,6 +294,18 @@ class ListView : Widget
     {
         if (event.button != MouseButton.left) return false;
         requestFocus();
+        const track = scrollbarTrack();
+        if (track.contains(event.position))
+        {
+            const thumb = scrollbarThumb();
+            _draggingScrollbar = true;
+            _thumbGrabOffset = thumb.contains(event.position) ?
+                event.position.y - thumb.y : thumb.height / 2;
+            captureMouse();
+            updateScrollbarThumb(event.position.y);
+            setCursor(CursorKind.hand);
+            return true;
+        }
         const row = rowAt(event.position);
         if (row >= 0 && !_items[cast(size_t) row].disabled)
         {
@@ -239,6 +313,17 @@ class ListView : Widget
             if (event.clickCount >= 2 && onActivated !is null)
                 onActivated(row);
         }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left || !_draggingScrollbar) return false;
+        updateScrollbarThumb(event.position.y);
+        _draggingScrollbar = false;
+        releaseMouse();
+        setCursor(CursorKind.arrow);
+        invalidate();
         return true;
     }
 

@@ -274,6 +274,18 @@ final class TimelineWidget : Widget
         return timeForX(x);
     }
 
+    double snappedStartForTesting(double desired, double duration,
+        TrackAddress address, ulong excludedClipId = 0) const
+    {
+        return snappedStart(desired, duration, address, excludedClipId);
+    }
+
+    double snappedEdgeForTesting(double desired, double minimum,
+        double maximum, TrackAddress address, ulong excludedClipId = 0) const
+    {
+        return snappedEdge(desired, minimum, maximum, address, excludedClipId);
+    }
+
     void setWorkArea(bool hasIn, double inPoint, bool hasOut, double outPoint)
     {
         inPoint = inPoint < 0.0 ? 0.0 : inPoint;
@@ -966,13 +978,64 @@ final class TimelineWidget : Widget
         return low;
     }
 
+    private double snapThreshold() const
+    {
+        const pixelThreshold = 12.0 / _pixelsPerSecond;
+        return pixelThreshold > 0.20 ? pixelThreshold : 0.20;
+    }
+
+    private double snappedEdge(double desired, double minimum, double maximum,
+        TrackAddress address, ulong excludedId) const
+    {
+        if (maximum < minimum)
+        {
+            const swap = minimum;
+            minimum = maximum;
+            maximum = swap;
+        }
+        desired = clampValue(desired, minimum, maximum);
+        if (!_snappingEnabled) return desired;
+
+        const threshold = snapThreshold();
+        double result = desired;
+        double best = threshold + 1.0;
+
+        void consider(double candidate)
+        {
+            if (candidate < minimum || candidate > maximum) return;
+            const distance = fabs(candidate - desired);
+            if (distance <= threshold && distance < best)
+            {
+                best = distance;
+                result = candidate;
+            }
+        }
+
+        consider(0.0);
+        consider(_playhead);
+        if (_model.validTrack(address))
+        {
+            const clips = _model.trackValue(address).clips;
+            const center = lowerBoundByStart(clips, desired);
+            const begin = center > 4 ? center - 4 : 0;
+            const finish = center + 5 < clips.length ? center + 5 : clips.length;
+            foreach (index; begin .. finish)
+            {
+                const clip = clips[index];
+                if (clip.id == excludedId) continue;
+                consider(clip.start);
+                consider(clip.end());
+            }
+        }
+        return result;
+    }
+
     private double snappedStart(double desired, double duration,
         TrackAddress address, ulong excludedId) const
     {
         desired = desired < 0.0 ? 0.0 : desired;
         if (!_snappingEnabled) return desired;
-        const pixelThreshold = 12.0 / _pixelsPerSecond;
-        const threshold = pixelThreshold > 0.20 ? pixelThreshold : 0.20;
+        const threshold = snapThreshold();
         if (desired <= threshold) return 0.0;
         double result = desired;
         double best = threshold + 1.0;
@@ -1804,15 +1867,16 @@ final class TimelineWidget : Widget
             const t = timeForX(event.position.x);
             if (_pointerMode == PointerMode.clipResizeStart)
             {
-                _resizePreviewStart = clampValue(t, 0.0,
-                    _resizeClip.end() - 0.05);
+                _resizePreviewStart = snappedEdge(t, 0.0,
+                    _resizeClip.end() - 0.05, _pressTrack, _resizeClip.id);
                 _resizePreviewEnd = _resizeClip.end();
             }
             else
             {
                 _resizePreviewStart = _resizeClip.start;
-                _resizePreviewEnd = t < _resizeClip.start + 0.05 ?
-                    _resizeClip.start + 0.05 : t;
+                _resizePreviewEnd = snappedEdge(t,
+                    _resizeClip.start + 0.05, double.max, _pressTrack,
+                    _resizeClip.id);
             }
             setCursor(CursorKind.resizeHorizontal);
             invalidate();
@@ -1970,7 +2034,7 @@ final class TimelineWidget : Widget
         bool createsTrack;
         if (!candidateTrackAt(event.position, target, createsTrack) ||
             event.position.x < labelWidth()) return false;
-        const start = timeForX(event.position.x);
+        const start = snappedStart(timeForX(event.position.x), 0.0, target, 0);
         if (onExplorerMediaDropRequested !is null)
             onExplorerMediaDropRequested(event.paths, target, start);
         return true;

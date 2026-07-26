@@ -20,7 +20,8 @@
   "libs-windows": [
     "user32",
     "gdi32",
-    "shell32"
+    "shell32",
+    "winmm"
   ],
   "lflags-osx": [
     "-framework",

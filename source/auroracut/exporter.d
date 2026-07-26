@@ -984,6 +984,32 @@ string[] compositeStreamArguments(ExportRequest request, double sequenceStart,
     return arguments;
 }
 
+/** Build a live s16le PCM timeline-audio stream using the same mix graph as
+ * MP4 export. The bytes are 48 kHz stereo signed 16-bit little-endian samples
+ * suitable for the preview audio device. */
+string[] compositeAudioArguments(ExportRequest request, double sequenceStart,
+    double sequenceEnd)
+{
+    request.rangeStart = sequenceStart;
+    request.rangeEnd = sequenceEnd;
+    request = normalizeExportRange(request);
+    InputClip[] inputs = collectInputs(request, false, true);
+    string[] arguments = [
+        "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
+        "-threads", "1", "-filter_threads", "1",
+        "-filter_complex_threads", "1"
+    ];
+    appendInputArguments(arguments, inputs);
+    const duration = request.sequenceDuration();
+    arguments ~= [
+        "-filter_complex", buildFilterGraph(request, inputs, duration, false, true),
+        "-map", "[aout]", "-vn", "-sn", "-dn",
+        "-t", formatSeconds(duration, 6), "-ac", "2", "-ar", "48000",
+        "-sample_fmt", "s16", "-f", "s16le", "pipe:1"
+    ];
+    return arguments;
+}
+
 /**
  * Render exactly one composed sequence frame through the same overlay graph
  * used by MP4 export. This compatibility helper is retained for scripts/tests;

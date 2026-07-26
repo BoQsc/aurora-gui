@@ -17,7 +17,6 @@ struct ToolStatus
 {
     bool ffmpeg;
     bool ffprobe;
-    bool ffplay;
     string h264Encoder = "libx264";
     string videoAcceleration = "CPU (libx264)";
     bool hardwareVideoEncoding;
@@ -75,7 +74,6 @@ ToolStatus inspectToolStatus()
     ToolStatus result;
     result.ffmpeg = commandAvailable("ffmpeg");
     result.ffprobe = commandAvailable("ffprobe");
-    result.ffplay = commandAvailable("ffplay");
     selectVideoAcceleration(result);
     return result;
 }

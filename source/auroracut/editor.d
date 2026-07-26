@@ -3,14 +3,14 @@ module auroracut.editor;
 import aurora;
 import auroracut.appversion : appDisplayName;
 import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
-    ExportRequest, compositeStreamArguments;
+    ExportRequest, compositeAudioArguments, compositeStreamArguments;
 import auroracut.filedialog : FileDialogController;
 import auroracut.media : MediaImportResult, MediaImportService, ToolStatus,
     inspectToolStatus, mediaSecondaryText;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation,
     MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
     TrackKind, textAlignmentLabel;
-import auroracut.playback : HiddenAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
+import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
 import auroracut.project : loadProjectFile, saveProjectFile;
@@ -19,7 +19,7 @@ import auroracut.titlelayer : TitleVisual;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
 import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory, clampValue,
-    formatTimecode, isSupportedMediaPath, outputTail;
+    formatTimecode, isSupportedMediaPath, outputTail, unnamedProjectAutosavePath;
 import core.time : MonoTime;
 import std.file : exists;
 import std.conv : ConvException, to;
@@ -600,7 +600,7 @@ final class EditorRoot : VBox
     private MediaImportService _importService;
     private FileDialogController _fileDialog;
     private PreviewService _previewService;
-    private HiddenAudioPlayer _audioPlayer;
+    private PcmAudioPlayer _audioPlayer;
     private VideoFrameStream _videoStream;
     private ExportJob _exportJob;
 
@@ -619,6 +619,7 @@ final class EditorRoot : VBox
     private ExportButton _exportButton;
     private Button _revealExportButton;
     private Button _saveProjectButton;
+    private Button _openProjectButton;
     private Button _qualityButton;
     private Slider _mp4CompressionSlider;
     private Label _mp4CompressionLabel;
@@ -733,11 +734,18 @@ final class EditorRoot : VBox
     private bool _sequencePlaybackLive;
     private double _liveAudioEnd = -1.0;
     private ulong _liveAudioClipId;
+    private bool _playbackAudioStarted;
+    private bool _playbackAwaitingAudioClock;
+    private double _playbackAudioClockWait;
     private ulong _playbackModelRevision;
 
     private bool _canvasDragEditing;
     private bool _canvasDragChanged;
     private TimelineSnapshot _canvasDragSnapshot;
+    private bool _previewTextClickValid;
+    private TrackAddress _previewTextClickTrack;
+    private int _previewTextClickIndex = -1;
+    private MonoTime _previewTextClickStarted;
 
     // Playback/seek state is intentionally detached from host tick frequency.
     // The monotonic clock is authoritative, and drag events only replace one
@@ -800,7 +808,7 @@ final class EditorRoot : VBox
         _model = new EditorModel();
         _importService = new MediaImportService();
         _previewService = new PreviewService();
-        _audioPlayer = new HiddenAudioPlayer();
+        _audioPlayer = new PcmAudioPlayer();
         _videoStream = new VideoFrameStream();
         _exportJob = new ExportJob();
         _tools = inspectToolStatus();
@@ -825,15 +833,13 @@ final class EditorRoot : VBox
 
         if (!_tools.editingReady())
             setStatus("FFmpeg and FFprobe must be installed and available on PATH.");
-        else if (!_tools.ffplay)
-            setStatus("Ready • H.264: " ~ _tools.videoAcceleration ~
-                " • install FFplay for preview audio");
         else
             setStatus("Ready • H.264: " ~ _tools.videoAcceleration);
     }
 
     void shutdown()
     {
+        autoSaveProjectOnExit();
         if (_fileDialog !is null) _fileDialog.dismiss();
         stopPlayback(false);
         _importService.shutdown();
@@ -873,6 +879,7 @@ final class EditorRoot : VBox
     void setWorkOutForTesting(double value) { setWorkOut(value); }
     void clearWorkRangeForTesting() { clearWorkRange(); }
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
+    PlaybackWorkerStats audioStatsForTesting() { return _audioPlayer.stats(); }
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
     bool seekPendingForTesting() const { return _seekPending; }
     bool deferredSequenceRefreshForTesting() const { return _sequenceRefreshDeferred; }
@@ -913,6 +920,11 @@ final class EditorRoot : VBox
         _saveProjectButton.setId("save-project");
         _saveProjectButton.layoutHints().preferredHeight = 26;
         _saveProjectButton.onClick = delegate() { saveProject(false); };
+
+        _openProjectButton = toolbar.add(new Button("Open", IconKind.folder));
+        _openProjectButton.setId("open-project");
+        _openProjectButton.layoutHints().preferredHeight = 26;
+        _openProjectButton.onClick = delegate() { openProjectDialog(); };
         toolbar.add(new Spacer());
 
         auto compressionTitle = toolbar.add(new Label("Compress"));
@@ -1650,6 +1662,28 @@ final class EditorRoot : VBox
         {
             appLog(format("Project save failed for '%s': %s", path, error.toString()));
             setStatus("Could not save project: " ~ outputTail(error.msg, 900));
+        }
+    }
+
+    private void autoSaveProjectOnExit()
+    {
+        const path = _projectPath.length > 0 ? _projectPath :
+            unnamedProjectAutosavePath();
+        try
+        {
+            endInlineTextEditing();
+            saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
+                _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
+            _projectPath = path;
+            _projectDirty = false;
+            updateProjectTitle();
+            appLog("Project autosaved on exit: " ~ path);
+        }
+        catch (Exception error)
+        {
+            appLog(format("Project autosave failed for '%s': %s",
+                path, error.toString()));
+            setStatus("Could not autosave project: " ~ outputTail(error.msg, 900));
         }
     }
 
@@ -2842,12 +2876,33 @@ final class EditorRoot : VBox
             if (!_model.copyClip(track, index, clip)) continue;
             auto asset = _model.assetForClip(clip);
             if (!pointInsideCompositionClip(x, y, clip, asset, sequenceTime)) continue;
+            bool repeatedTextClick;
+            if (clip.isText())
+            {
+                repeatedTextClick = _previewTextClickValid &&
+                    _previewTextClickTrack == track &&
+                    _previewTextClickIndex == index &&
+                    (MonoTime.currTime - _previewTextClickStarted)
+                        .total!"msecs" <= 500;
+                _previewTextClickValid = true;
+                _previewTextClickTrack = track;
+                _previewTextClickIndex = index;
+                _previewTextClickStarted = MonoTime.currTime;
+            }
+            else
+            {
+                _previewTextClickValid = false;
+                _previewTextClickIndex = -1;
+            }
             _timeline.setSelection(track, index, true);
             _lastSelectionIsMedia = false;
             syncInspector();
-            if (clickCount >= 2 && clip.isText()) focusSelectedTextField();
+            if (clip.isText() && (clickCount >= 2 || repeatedTextClick))
+                focusSelectedTextField();
             return true;
         }
+        _previewTextClickValid = false;
+        _previewTextClickIndex = -1;
         if (clickCount < 2)
         {
             _timeline.setSelection(_timeline.selectedTrack(), -1, true);
@@ -3016,7 +3071,7 @@ final class EditorRoot : VBox
         afterTimelineMutation(current ? "Track unmuted." :
             "Track muted; current playback continues.", address,
             _timeline.selectedTrack() == address ? _timeline.selectedIndex() : -1, false);
-        // Only the hidden audio output is refreshed. The embedded video decoder
+        // Only the PCM audio output is refreshed. The embedded video decoder
         // and playhead continue uninterrupted.
         queueSourceAudioRefresh();
     }
@@ -4069,8 +4124,11 @@ final class EditorRoot : VBox
         _playbackClockValid = true;
     }
 
-    private double clockPlaybackPosition() const
+    private double clockPlaybackPosition()
     {
+        double audioPosition;
+        if (_audioPlayer.clockPosition(audioPosition))
+            return clampValue(audioPosition, _playbackStart, _playbackEnd);
         if (!_playbackClockValid) return _playbackPosition;
         const elapsed = MonoTime.currTime - _playbackClockStarted;
         return _playbackClockBase +
@@ -4155,51 +4213,9 @@ final class EditorRoot : VBox
         return fps;
     }
 
-    private bool resolveSingleTimelineAudio(double sequenceTime,
-        out MediaAsset asset, out double sourceTime, out double duration,
-        out double volume, out ulong clipId)
-    {
-        bool found;
-        foreach (kind; [TrackKind.video, TrackKind.audio])
-        {
-            foreach (lane; 0 .. _model.trackCount(kind))
-            {
-                const address = TrackAddress(kind, lane);
-                const track = _model.trackValue(address);
-                if (track.disabled || track.muted) continue;
-                const index = _model.clipAtTime(address, sequenceTime);
-                if (index < 0) continue;
-                const clip = track.clips[cast(size_t) index];
-                auto candidate = _model.assetForClip(clip);
-                if (clip.isText() || candidate is null || !candidate.hasAudio ||
-                    clip.muted) continue;
-                const localTime = clampValue(sequenceTime - clip.start,
-                    0.0, clip.duration());
-                double gain = clip.evaluatedValue(EffectProperty.volume, localTime);
-                if (clip.fadeIn > 0.000_001 && localTime < clip.fadeIn)
-                    gain *= localTime / clip.fadeIn;
-                const remainingClip = clip.duration() - localTime;
-                if (clip.fadeOut > 0.000_001 && remainingClip < clip.fadeOut)
-                    gain *= remainingClip / clip.fadeOut;
-                if (gain <= 0.000_001) continue;
-                if (found) return false;
-                found = true;
-                asset = candidate;
-                sourceTime = clip.inPoint + localTime;
-                duration = remainingClip < candidate.duration - sourceTime ?
-                    remainingClip : candidate.duration - sourceTime;
-                volume = gain;
-                clipId = clip.id;
-            }
-        }
-        return found && duration > 0.001;
-    }
-
-    /** Earliest future sequence position containing audible media.
-     *
-     * Live audio used to stop permanently when it reached a gap between two
-     * split/moved items.  Scheduling the next boundary keeps the resolver
-     * alive and starts the right-hand item as soon as its sequence time begins.
+    /** Earliest future sequence position containing audible media.  The mixed
+     * PCM preview graph now covers those future regions in one stream; this
+     * helper remains as a small regression surface for timeline audio lookup.
      */
     private double nextTimelineAudioStart(double afterTime)
     {
@@ -4224,51 +4240,107 @@ final class EditorRoot : VBox
         return result;
     }
 
-    private void startLiveTimelineAudio()
+    private bool clipHasAudiblePotential(const TimelineClip clip) const
+    {
+        if (clip.muted || clip.isText()) return false;
+        if (clip.volume > 0.000_001) return true;
+        foreach (keyframe; clip.keyframes)
+            if (keyframe.property == EffectProperty.volume &&
+                keyframe.value > 0.000_001)
+                return true;
+        return false;
+    }
+
+    private bool sequenceHasAudibleAudio(double start, double end) const
+    {
+        foreach (kind; [TrackKind.video, TrackKind.audio])
+        {
+            foreach (lane; 0 .. _model.trackCount(kind))
+            {
+                const address = TrackAddress(kind, lane);
+                const track = _model.trackValue(address);
+                if (track.disabled || track.muted) continue;
+                foreach (clip; track.clips)
+                {
+                    if (clip.end() <= start + 0.000_5 ||
+                        clip.start >= end - 0.000_5 ||
+                        !clipHasAudiblePotential(clip)) continue;
+                    auto candidate = _model.assetForClip(clip);
+                    if (candidate !is null && candidate.hasAudio) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private bool startLiveTimelineAudio()
     {
         _audioPlayer.stop();
         _liveAudioEnd = -1.0;
         _liveAudioClipId = 0;
-        if (!_tools.ffplay || !_sequencePlaybackLive || !_playbackRunning) return;
-        MediaAsset asset;
-        double sourceTime;
-        double duration;
-        double volume;
-        ulong clipId;
-        if (!resolveSingleTimelineAudio(_playbackPosition, asset, sourceTime,
-            duration, volume, clipId))
+        if (!_tools.ffmpeg || !_sequencePlaybackLive || !_playbackRunning)
+            return false;
+        const sequenceTime = clampValue(_playbackPosition, _playbackStart,
+            _playbackEnd);
+        const remaining = _playbackEnd - sequenceTime;
+        if (remaining <= 0.001 ||
+            !sequenceHasAudibleAudio(sequenceTime, _playbackEnd))
+            return false;
+        try
         {
-            _liveAudioEnd = nextTimelineAudioStart(_playbackPosition);
-            return;
+            auto request = buildExportRequest(ExportKind.mp4, "",
+                ExportPreset.previewForHeight(liveDecodeHeight()), false);
+            auto arguments = compositeAudioArguments(request, sequenceTime,
+                _playbackEnd);
+            return _audioPlayer.startCommand(arguments, sequenceTime, remaining);
         }
-        if (_audioPlayer.start(asset.path, sourceTime, duration, volume))
+        catch (Exception error)
         {
-            _liveAudioEnd = _playbackPosition + duration;
-            _liveAudioClipId = clipId;
+            appLog(format("Preview audio graph failed at %.3f: %s",
+                sequenceTime, error.toString()));
+            return false;
         }
     }
 
-    private void startPlaybackAudio()
+    private bool startPlaybackAudio()
     {
+        if (_playbackAudioStarted) return true;
+        _playbackAudioStarted = true;
         _audioPlayer.stop();
-        if (_playbackAsset is null || _playbackAwaitingFirstFrame) return;
+        if (_playbackAsset is null)
+        {
+            _playbackAudioStarted = false;
+            return false;
+        }
+        const remaining = _playbackEnd - _playbackPosition;
+        if (remaining <= 0.001)
+        {
+            _playbackAudioStarted = false;
+            return false;
+        }
         if (_sequencePlaybackLive)
         {
-            startLiveTimelineAudio();
-            return;
+            const started = startLiveTimelineAudio();
+            if (!started) _playbackAudioStarted = false;
+            return started;
         }
 
-        const remaining = _playbackEnd - _playbackPosition;
-        if (remaining <= 0.001) return;
-        if (_playbackAsset.hasAudio && _tools.ffplay && !_playbackSourceMuted &&
+        if (_playbackAsset.hasAudio && _tools.ffmpeg && !_playbackSourceMuted &&
             _playbackSourceVolume > 0.000_001)
         {
             const mediaPosition = clampValue(_playbackPosition + _playbackMediaOffset,
                 0.0, _playbackAsset.duration);
             if (!_audioPlayer.start(_playbackAsset.path, mediaPosition,
                 remaining, _playbackSourceVolume))
+            {
+                _playbackAudioStarted = false;
                 setStatus("Visual playback is ready, but audio output could not start.");
+                return false;
+            }
+            return true;
         }
+        _playbackAudioStarted = false;
+        return false;
     }
 
     private void startPlaybackStreams()
@@ -4277,6 +4349,9 @@ final class EditorRoot : VBox
 
         _videoStream.stop();
         _audioPlayer.stop();
+        _playbackAudioStarted = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackAudioClockWait = 0.0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         const remaining = _playbackEnd - _playbackPosition;
@@ -4355,6 +4430,9 @@ final class EditorRoot : VBox
         clearPendingSeekState();
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackAudioStarted = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackAudioClockWait = 0.0;
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -4439,6 +4517,9 @@ final class EditorRoot : VBox
             _seekResumePlayback = _playbackRunning;
             _videoStream.stop();
             _audioPlayer.stop();
+            _playbackAudioStarted = false;
+            _playbackAwaitingAudioClock = false;
+            _playbackAudioClockWait = 0.0;
             _previewService.cancel();
             _playbackClockValid = false;
             _playbackAwaitingFirstFrame = false;
@@ -4518,7 +4599,7 @@ final class EditorRoot : VBox
         }
         else if (_seekResumePlayback && _playbackRunning)
         {
-            _preview.setPlaying(true);
+            _preview.setPlaying(false);
             startPlaybackStreams();
         }
         else
@@ -4561,14 +4642,16 @@ final class EditorRoot : VBox
     {
         if (!_playbackRunning || _playbackAsset is null ||
             _playbackAwaitingFirstFrame) return;
-        if (_sequencePlaybackLive)
-        {
-            startLiveTimelineAudio();
-            return;
-        }
+        _playbackAudioStarted = false;
         double volume;
         bool muted;
         double mediaPosition = _playbackPosition + _playbackMediaOffset;
+
+        if (_sequencePlaybackLive)
+        {
+            startPlaybackAudio();
+            return;
+        }
 
         if (_playbackKind == PlaybackKind.source)
         {
@@ -4595,11 +4678,14 @@ final class EditorRoot : VBox
         _playbackSourceMuted = muted;
         _audioPlayer.stop();
         const remaining = _playbackEnd - _playbackPosition;
-        if (remaining > 0.001 && _tools.ffplay && _playbackAsset.hasAudio &&
+        if (remaining > 0.001 && _tools.ffmpeg && _playbackAsset.hasAudio &&
             !muted && volume > 0.000_001)
+        {
             _audioPlayer.start(_playbackAsset.path,
                 clampValue(mediaPosition, 0.0, _playbackAsset.duration),
                 remaining, volume);
+            _playbackAudioStarted = true;
+        }
     }
 
     private void stopPlayback(bool restorePreview)
@@ -4618,6 +4704,9 @@ final class EditorRoot : VBox
         _sequencePlaybackLive = false;
         _liveAudioEnd = -1.0;
         _liveAudioClipId = 0;
+        _playbackAudioStarted = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackAudioClockWait = 0.0;
         _playbackModelRevision = 0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
@@ -4644,6 +4733,9 @@ final class EditorRoot : VBox
         _playbackRunning = false;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackAudioStarted = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackAudioClockWait = 0.0;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _videoStream.stop();
@@ -5250,8 +5342,6 @@ final class EditorRoot : VBox
             delegate() { saveProject(false); }, "Ctrl+S");
         items ~= ContextMenuItem.command("Save project as…", IconKind.save,
             delegate() { saveProject(true); }, "Ctrl+Shift+S");
-        items ~= ContextMenuItem.command("Open project…", IconKind.folder,
-            delegate() { openProjectDialog(); }, "Ctrl+O");
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Import media…", IconKind.open,
             delegate() { openImportDialog(); }, "Ctrl+I");
@@ -5891,7 +5981,33 @@ final class EditorRoot : VBox
 
         if (_playbackRunning && !_seekPending && _playbackAsset !is null)
         {
-            if (!_playbackAwaitingFirstFrame)
+            if (_playbackAwaitingAudioClock)
+            {
+                _playbackAudioClockWait += deltaSeconds;
+                double audioPosition;
+                if (_audioPlayer.clockPosition(audioPosition))
+                {
+                    _playbackPosition = clampValue(audioPosition,
+                        _playbackStart, _playbackEnd);
+                    _playbackAwaitingAudioClock = false;
+                    _playbackAwaitingFirstFrame = false;
+                    resetPlaybackClock();
+                    setStatus(playbackRunningStatus());
+                    _preview.setPlaying(true);
+                }
+                else if (_playbackAudioClockWait >= 0.85)
+                {
+                    _audioPlayer.stop();
+                    _playbackAudioStarted = false;
+                    _playbackAwaitingAudioClock = false;
+                    _playbackAwaitingFirstFrame = false;
+                    resetPlaybackClock();
+                    setStatus("Audio output did not become ready; continuing video preview.");
+                    _preview.setPlaying(true);
+                }
+            }
+
+            if (!_playbackAwaitingAudioClock && !_playbackAwaitingFirstFrame)
             {
                 _playbackPosition = clampValue(clockPlaybackPosition(),
                     _playbackStart, _playbackEnd);
@@ -5906,19 +6022,40 @@ final class EditorRoot : VBox
             }
             bool receivedFrame;
             PreviewFrame frame;
-            if (_videoStream.takeReady(frame))
+            if (!_playbackAwaitingAudioClock && _videoStream.takeReady(frame))
             {
                 receivedFrame = true;
+                bool handledFrame;
                 if (_playbackAwaitingFirstFrame && frame.valid())
                 {
-                    _playbackAwaitingFirstFrame = false;
                     _playbackPosition = playbackTimeForFrame(frame);
-                    resetPlaybackClock();
-                    setStatus(playbackRunningStatus());
-                    startPlaybackAudio();
+                    double audioPosition = _playbackPosition;
+                    const audioStarted = startPlaybackAudio();
+                    const audioClockReady = audioStarted &&
+                        _audioPlayer.clockPosition(audioPosition);
+                    if (audioStarted && !audioClockReady)
+                    {
+                        _playbackAwaitingAudioClock = true;
+                        _playbackAudioClockWait = 0.0;
+                        _preview.setFrame(frame);
+                        _preview.setPlaying(false);
+                        handledFrame = true;
+                    }
+                    else
+                    {
+                        if (audioClockReady)
+                            _playbackPosition = clampValue(audioPosition,
+                                _playbackStart, _playbackEnd);
+                        _playbackAwaitingFirstFrame = false;
+                        resetPlaybackClock();
+                        setStatus(playbackRunningStatus());
+                    }
                 }
-                _preview.setFrame(frame);
-                _preview.setPlaying(!_playbackAwaitingFirstFrame);
+                if (!handledFrame)
+                {
+                    _preview.setFrame(frame);
+                    _preview.setPlaying(!_playbackAwaitingFirstFrame);
+                }
             }
             else if (_videoStream.finished() && _playbackAsset.hasVideo)
             {
@@ -5994,7 +6131,7 @@ final class EditorRoot : VBox
                 _playbackAsset !is null && !_playbackAsset.hasVideo)
             {
                 // MP3 source playback uses an internally rendered waveform;
-                // hidden FFplay supplies only audio output.
+                // PCM preview audio supplies only audio output.
                 _preview.setFrame(staticFrame);
                 _preview.setPlaying(_playbackRunning);
                 _lastPreviewClockPaint = _playbackPosition;

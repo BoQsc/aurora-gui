@@ -168,8 +168,6 @@ class ContextMenu : TransientPopup
             return;
         }
 
-        // Timeline-style menus use the pointer as the bottom-left anchor: the
-        // menu opens upward beside the click, never covering the item below it.
         int x = clampInt(_requestedOrigin.x + 2, 4, maxInt(4, bounds().width - 84));
 
         const preferredWidth = preferredMenuWidth();
@@ -181,14 +179,28 @@ class ContextMenu : TransientPopup
             x = bounds().width - width - 4;
         }
 
-        int height = minInt(preferredMenuHeight(), maxInt(40, bounds().height - 8));
-        int y = _requestedOrigin.y - height - 2;
-        if (y < 4)
+        const preferredHeight = preferredMenuHeight();
+        const minimumHeight = 40;
+        const belowY = _requestedOrigin.y + 2;
+        const belowSpace = maxInt(0, bounds().height - 4 - belowY);
+        const aboveBottom = _requestedOrigin.y - 2;
+        const aboveSpace = maxInt(0, aboveBottom - 4);
+        const openAbove = preferredHeight > belowSpace &&
+            aboveSpace >= minimumHeight && aboveSpace >= belowSpace;
+
+        int height;
+        int y;
+        if (openAbove)
         {
-            // Near the top edge, open below the pointer while preserving the
-            // same left edge rather than moving the menu over the cursor.
-            y = minInt(bounds().height - height - 4, _requestedOrigin.y + 2);
+            height = minInt(preferredHeight, aboveSpace);
+            y = aboveBottom - height;
         }
+        else
+        {
+            height = minInt(preferredHeight, maxInt(minimumHeight, belowSpace));
+            y = belowY;
+        }
+        height = minInt(height, maxInt(minimumHeight, bounds().height - 8));
         y = clampInt(y, 4, maxInt(4, bounds().height - height - 4));
         _menuRect = Rect(x, y, width, height);
         clampScroll();

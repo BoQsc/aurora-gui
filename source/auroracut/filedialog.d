@@ -1,7 +1,8 @@
 module auroracut.filedialog;
 
 import aurora;
-import auroracut.util : ensureExtension, isSupportedMediaPath;
+import auroracut.util : ensureExtension, isSupportedMediaPath,
+    projectAutosaveDirectory;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute;
@@ -52,7 +53,8 @@ final class FileDialogController
     void showOpenProject(void delegate(string path) accepted)
     {
         show(FileDialogMode.open, "", "", accepted, ".auroracut",
-            "Open Aurora Cut project", "Open");
+            "Open Aurora Cut project", "Open",
+            projectAutosaveDirectory(), "Temp autosaves");
     }
 
     void showSave(string requiredExtension, string suggestedName,
@@ -76,7 +78,8 @@ final class FileDialogController
 
     private void show(FileDialogMode mode, string requiredExtension,
         string suggestedName, void delegate(string path) accepted,
-        string openExtension, string dialogTitle, string acceptLabel)
+        string openExtension, string dialogTitle, string acceptLabel,
+        string shortcutPath = "", string shortcutLabel = "")
     {
         dismiss();
         _mode = mode;
@@ -104,7 +107,15 @@ final class FileDialogController
         pathRow.layoutHints().preferredHeight = 40;
         auto upButton = pathRow.add(new Button("Up", IconKind.up));
         upButton.onClick = delegate() { navigate(dirName(_currentPath)); };
+        if (shortcutPath.length > 0)
+        {
+            auto shortcutButton = pathRow.add(new Button(shortcutLabel.length > 0 ?
+                shortcutLabel : "Shortcut", IconKind.folder));
+            shortcutButton.setId("open-project-temp-autosaves");
+            shortcutButton.onClick = delegate() { navigate(shortcutPath); };
+        }
         _pathField = pathRow.add(new TextField(_currentPath));
+        _pathField.setId("file-dialog-path");
         _pathField.layoutHints().flex = 1.0;
         _pathField.onSubmitted = delegate() { navigate(_pathField.textUtf8()); };
         auto refreshButton = pathRow.add(new IconButton(IconKind.refresh));
@@ -122,6 +133,7 @@ final class FileDialogController
         nameLabel.layoutHints().preferredWidth = 64;
         nameLabel.setScale(1);
         _nameField = nameRow.add(new TextField(suggestedName));
+        _nameField.setId("file-dialog-name");
         _nameField.layoutHints().flex = 1.0;
         _nameField.onSubmitted = delegate() { acceptCurrent(); };
 
@@ -134,6 +146,7 @@ final class FileDialogController
         footer.layoutHints().preferredHeight = 42;
         footer.add(new Spacer());
         auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.setId("file-dialog-cancel");
         cancelButton.onClick = delegate() { dismiss(); };
         auto acceptButton = footer.add(new Button(_acceptLabel,
             mode == FileDialogMode.open ? IconKind.open : IconKind.save));

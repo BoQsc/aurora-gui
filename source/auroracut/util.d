@@ -155,6 +155,20 @@ string applicationCacheDirectory()
     return root;
 }
 
+/** Folder used for unnamed project autosaves that must be easy to recover. */
+string projectAutosaveDirectory()
+{
+    const root = absoluteNormalized(buildPath(tempDir(), "Aurora Cut", "Autosaves"));
+    if (!exists(root)) mkdirRecurse(root);
+    return root;
+}
+
+/** Deterministic autosave location for an unnamed project on application exit. */
+string unnamedProjectAutosavePath()
+{
+    return buildPath(projectAutosaveDirectory(), "untitled-autosave.auroracut");
+}
+
 /** Creates a unique temporary workspace beneath the application cache. */
 string createWorkspace(string prefix)
 {

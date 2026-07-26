@@ -5,10 +5,15 @@ import auroracut.util : formatSeconds;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
-import core.time : MonoTime, hnsecs;
+import core.time : MonoTime, hnsecs, msecs;
 import std.format : format;
 import std.process : Config, Pid, ProcessPipes, Redirect, kill, pipeProcess,
-    spawnProcess, wait;
+    wait;
+
+version (Windows)
+{
+    import core.sys.windows.mmsystem;
+}
 
 /** Lightweight counters used by stress tests and diagnostics. */
 struct PlaybackWorkerStats
@@ -25,21 +30,166 @@ private struct AudioRequest
 {
     ulong generation;
     string path;
+    string[] commandArguments;
     double startTime;
+    double displayStartTime;
     double duration;
     double volume;
-    ubyte retryCount;
+}
+
+private enum int previewAudioSampleRate = 48_000;
+private enum int previewAudioChannels = 2;
+private enum int previewAudioBytesPerSample = 2;
+private enum int previewAudioFrameBytes =
+    previewAudioChannels * previewAudioBytesPerSample;
+private enum int previewAudioChunkFrames = 2_048;
+private enum int previewAudioChunkBytes =
+    previewAudioChunkFrames * previewAudioFrameBytes;
+private enum int previewAudioQueuedBuffers = 6;
+
+version (Windows)
+private final class WaveOutBuffer
+{
+    ubyte[] data;
+    WAVEHDR header;
+    bool prepared;
+}
+
+version (Windows)
+private final class WaveOutPcmSink
+{
+    private HWAVEOUT _handle;
+    private WaveOutBuffer[] _queued;
+
+    bool open()
+    {
+        WAVEFORMATEX format;
+        format.wFormatTag = WAVE_FORMAT_PCM;
+        format.nChannels = previewAudioChannels;
+        format.nSamplesPerSec = previewAudioSampleRate;
+        format.wBitsPerSample = previewAudioBytesPerSample * 8;
+        format.nBlockAlign = previewAudioFrameBytes;
+        format.nAvgBytesPerSec = previewAudioSampleRate * previewAudioFrameBytes;
+        format.cbSize = 0;
+        return waveOutOpen(&_handle, WAVE_MAPPER, &format, 0, 0,
+            CALLBACK_NULL) == MMSYSERR_NOERROR;
+    }
+
+    HWAVEOUT handle() @safe pure nothrow @nogc { return _handle; }
+
+    void reset()
+    {
+        if (_handle !is null)
+        {
+            waveOutReset(_handle);
+        }
+    }
+
+    private void removeQueued(size_t index)
+    {
+        auto item = _queued[index];
+        if (_handle !is null && item.prepared)
+        {
+            waveOutUnprepareHeader(_handle, &item.header, WAVEHDR.sizeof);
+            item.prepared = false;
+        }
+        foreach (shift; index .. _queued.length - 1)
+            _queued[shift] = _queued[shift + 1];
+        _queued.length = _queued.length - 1;
+    }
+
+    private void reapCompleted()
+    {
+        for (size_t index; index < _queued.length; )
+        {
+            if ((_queued[index].header.dwFlags & WHDR_DONE) == 0)
+            {
+                ++index;
+                continue;
+            }
+            removeQueued(index);
+        }
+    }
+
+    private bool waitForQueueRoom()
+    {
+        const started = MonoTime.currTime;
+        while (_queued.length >= previewAudioQueuedBuffers)
+        {
+            reapCompleted();
+            if (_queued.length < previewAudioQueuedBuffers) return true;
+            if ((MonoTime.currTime - started).total!"msecs" > 2_000)
+                return false;
+            Thread.sleep(2.msecs);
+        }
+        return true;
+    }
+
+    bool writeQueued(const(ubyte)[] data)
+    {
+        return writeQueued(data, null);
+    }
+
+    bool writeQueued(const(ubyte)[] data, void delegate() afterQueued)
+    {
+        if (_handle is null || data.length == 0) return false;
+        reapCompleted();
+        if (!waitForQueueRoom()) return false;
+
+        auto buffer = new WaveOutBuffer();
+        buffer.data = new ubyte[data.length];
+        buffer.data[] = data[];
+        buffer.header = WAVEHDR.init;
+        buffer.header.lpData = cast(char*) buffer.data.ptr;
+        buffer.header.dwBufferLength = cast(uint) buffer.data.length;
+        if (waveOutPrepareHeader(_handle, &buffer.header, WAVEHDR.sizeof) !=
+            MMSYSERR_NOERROR)
+            return false;
+        buffer.prepared = true;
+        if (waveOutWrite(_handle, &buffer.header, WAVEHDR.sizeof) != MMSYSERR_NOERROR)
+        {
+            waveOutUnprepareHeader(_handle, &buffer.header, WAVEHDR.sizeof);
+            return false;
+        }
+        _queued ~= buffer;
+        if (afterQueued !is null) afterQueued();
+        return true;
+    }
+
+    bool drain()
+    {
+        const started = MonoTime.currTime;
+        while (_queued.length > 0)
+        {
+            reapCompleted();
+            if (_queued.length == 0) return true;
+            if ((MonoTime.currTime - started).total!"msecs" > 2_000)
+                return false;
+            Thread.sleep(2.msecs);
+        }
+        return true;
+    }
+
+    void close()
+    {
+        if (_handle is null) return;
+        reset();
+        while (_queued.length > 0)
+            removeQueued(_queued.length - 1);
+        waveOutClose(_handle);
+        _handle = null;
+    }
 }
 
 /**
- * Asynchronous hidden FFplay controller.
+ * Asynchronous PCM preview-audio controller.
  *
- * Process creation, waiting, and reaping happen only on one daemon worker.
- * The UI thread merely replaces the newest request and asks the current child
- * to terminate. Rapid timeline seeks therefore cannot accumulate process
- * handles or block inside wait()/tryWait().
+ * FFmpeg is used only as the codec decoder/mixer. It writes raw 48 kHz stereo
+ * s16le PCM to stdout; Aurora Cut owns the audio-device output and exposes its
+ * playback clock to the editor. This avoids using a separate media player with
+ * an independent clock for Composition Preview.
  */
-final class HiddenAudioPlayer
+final class PcmAudioPlayer
 {
     private Mutex _mutex;
     private Condition _condition;
@@ -51,6 +201,11 @@ final class HiddenAudioPlayer
     private bool _requestedRunning;
     private ulong _generation;
     private PlaybackWorkerStats _stats;
+    private string _error;
+    private double _clockStartTime;
+    private MonoTime _fallbackClockStarted;
+    private bool _fallbackClockValid;
+    version (Windows) private HWAVEOUT _clockHandle;
 
     this()
     {
@@ -68,6 +223,56 @@ final class HiddenAudioPlayer
         return _requestedRunning;
     }
 
+    bool clockPosition(out double position)
+    {
+        position = 0.0;
+        version (AuroraHeadless)
+        {
+            double startTime;
+            MonoTime started;
+            bool valid;
+            _mutex.lock();
+            startTime = _clockStartTime;
+            started = _fallbackClockStarted;
+            valid = _fallbackClockValid;
+            _mutex.unlock();
+            if (!valid) return false;
+            const elapsed = MonoTime.currTime - started;
+            position = startTime +
+                cast(double) elapsed.total!"hnsecs" / 10_000_000.0;
+            return true;
+        }
+        else
+        version (Windows)
+        {
+            HWAVEOUT handle;
+            double startTime;
+            _mutex.lock();
+            handle = _clockHandle;
+            startTime = _clockStartTime;
+            _mutex.unlock();
+
+            if (handle is null) return false;
+            MMTIME time;
+            time.wType = TIME_SAMPLES;
+            if (waveOutGetPosition(handle, &time, MMTIME.sizeof) !=
+                MMSYSERR_NOERROR)
+                return false;
+            position = startTime +
+                cast(double) time.sample / cast(double) previewAudioSampleRate;
+            return true;
+        }
+        else
+            return false;
+    }
+
+    string error()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _error;
+    }
+
     bool start(string path, double startTime = 0.0, double duration = 0.0,
         double volume = 1.0)
     {
@@ -77,27 +282,68 @@ final class HiddenAudioPlayer
             return false;
         }
 
+        AudioRequest request;
+        request.path = path;
+        request.startTime = startTime < 0.0 ? 0.0 : startTime;
+        request.displayStartTime = request.startTime;
+        request.duration = duration;
+        request.volume = volume;
+        return enqueue(request);
+    }
+
+    bool startCommand(string[] arguments, double displayStartTime,
+        double duration, double volume = 1.0)
+    {
+        if (arguments.length == 0 || duration <= 0.000_001 ||
+            volume <= 0.000_001)
+        {
+            stop();
+            return false;
+        }
+
+        AudioRequest request;
+        request.commandArguments = arguments.dup;
+        request.startTime = displayStartTime < 0.0 ? 0.0 : displayStartTime;
+        request.displayStartTime = request.startTime;
+        request.duration = duration;
+        request.volume = volume;
+        return enqueue(request);
+    }
+
+    private bool enqueue(ref AudioRequest request)
+    {
         Pid process;
+        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         if (_shutdown)
         {
             _mutex.unlock();
             return false;
         }
-        AudioRequest request;
         request.generation = ++_generation;
-        request.path = path;
-        request.startTime = startTime < 0.0 ? 0.0 : startTime;
-        request.duration = duration;
-        request.volume = volume;
         _pending = request;
         _hasPending = true;
         _requestedRunning = true;
+        _error = "";
+        version (Windows)
+        {
+            handle = _clockHandle;
+            _clockHandle = null;
+        }
+        _fallbackClockValid = false;
         ++_stats.requests;
         process = _process;
         _condition.notify();
         _mutex.unlock();
 
+        version (Windows)
+        {
+            if (handle !is null)
+            {
+                try waveOutReset(handle);
+                catch (Throwable) {}
+            }
+        }
         // The worker owns wait()/reaping. Termination itself is non-blocking.
         if (process !is null)
         {
@@ -113,15 +359,30 @@ final class HiddenAudioPlayer
     void stop()
     {
         Pid process;
+        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         ++_generation;
         _hasPending = false;
         _requestedRunning = false;
         process = _process;
+        version (Windows)
+        {
+            handle = _clockHandle;
+            _clockHandle = null;
+        }
+        _fallbackClockValid = false;
         if (process !is null) ++_stats.cancellations;
         _condition.notify();
         _mutex.unlock();
 
+        version (Windows)
+        {
+            if (handle !is null)
+            {
+                try waveOutReset(handle);
+                catch (Throwable) {}
+            }
+        }
         if (process !is null)
         {
             try kill(process);
@@ -129,12 +390,11 @@ final class HiddenAudioPlayer
         }
     }
 
-    /** Stop and join the worker during application teardown. Interactive
-     * start/stop operations remain non-blocking; only final destruction waits
-     * so no decoder thread can outlive the D runtime or its owner object. */
+    /** Request final teardown without blocking the UI on a stuck audio driver. */
     void shutdown()
     {
         Pid process;
+        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         if (!_shutdown)
         {
@@ -143,20 +403,32 @@ final class HiddenAudioPlayer
             _hasPending = false;
             _requestedRunning = false;
             process = _process;
+            version (Windows)
+            {
+                handle = _clockHandle;
+                _clockHandle = null;
+            }
+            _fallbackClockValid = false;
             _condition.notifyAll();
         }
         _mutex.unlock();
 
+        version (Windows)
+        {
+            if (handle !is null)
+            {
+                try waveOutReset(handle);
+                catch (Throwable) {}
+            }
+        }
         if (process !is null)
         {
             try kill(process);
             catch (Exception) {}
         }
-        if (_worker !is null)
-        {
-            try _worker.join();
-            catch (Exception) {}
-        }
+        // Do not join here. The worker is daemonized and all owned children are
+        // asked to stop above; joining can still hang on a misbehaving audio
+        // driver during application exit.
     }
 
     PlaybackWorkerStats stats()
@@ -164,6 +436,66 @@ final class HiddenAudioPlayer
         _mutex.lock();
         scope (exit) _mutex.unlock();
         return _stats;
+    }
+
+    private string[] decodeArguments(const AudioRequest request)
+    {
+        if (request.commandArguments.length > 0)
+            return request.commandArguments.dup;
+
+        string[] arguments = [
+            "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
+            "-threads", "1",
+            "-ss", formatSeconds(request.startTime, 6), "-i", request.path,
+            "-t", formatSeconds(request.duration, 6), "-vn", "-sn", "-dn"
+        ];
+        if (request.volume < 0.999_5 || request.volume > 1.000_5)
+            arguments ~= ["-af", "volume=" ~ formatSeconds(request.volume, 5)];
+        arguments ~= [
+            "-ac", "2", "-ar", "48000", "-sample_fmt", "s16",
+            "-f", "s16le", "pipe:1"
+        ];
+        return arguments;
+    }
+
+    private void publishAudioFailure(ulong generation, string message)
+    {
+        _mutex.lock();
+        if (generation == _generation)
+        {
+            _requestedRunning = false;
+            _error = message;
+            version (Windows) _clockHandle = null;
+            _fallbackClockValid = false;
+        }
+        _mutex.unlock();
+    }
+
+    private void publishMonotonicClock(ulong generation, double startTime)
+    {
+        _mutex.lock();
+        if (generation == _generation && !_shutdown)
+        {
+            _clockStartTime = startTime;
+            _fallbackClockStarted = MonoTime.currTime;
+            _fallbackClockValid = true;
+        }
+        _mutex.unlock();
+    }
+
+    version (Windows)
+    private void publishAudioClock(ulong generation, HWAVEOUT handle,
+        double startTime)
+    {
+        _mutex.lock();
+        if (generation == _generation && !_shutdown)
+        {
+            _clockHandle = handle;
+            _clockStartTime = startTime;
+            _fallbackClockStarted = MonoTime.currTime;
+            _fallbackClockValid = true;
+        }
+        _mutex.unlock();
     }
 
     private void workerLoop()
@@ -183,77 +515,177 @@ final class HiddenAudioPlayer
             _hasPending = false;
             _mutex.unlock();
 
-            string[] arguments = [
-                "ffplay", "-hide_banner", "-loglevel", "error",
-                "-nodisp", "-vn", "-autoexit", "-sync", "audio"
-            ];
-            if (request.startTime > 0.000_5)
-                arguments ~= ["-ss", formatSeconds(request.startTime, 6)];
-            if (request.duration > 0.000_5)
-                arguments ~= ["-t", formatSeconds(request.duration, 6)];
-            if (request.volume < 0.999_5 || request.volume > 1.000_5)
-                arguments ~= ["-af", "volume=" ~ formatSeconds(request.volume, 5)];
-            arguments ~= request.path;
+            playRequest(request);
+        }
+    }
 
-            Pid process;
-            MonoTime processStarted;
-            try
-            {
-                process = spawnProcess(arguments, cast(const string[string]) null,
-                    Config.suppressConsole);
-                processStarted = MonoTime.currTime;
-            }
-            catch (Exception)
+    private void playRequest(AudioRequest request)
+    {
+        ProcessPipes pipes;
+        try
+        {
+            pipes = pipeProcess(decodeArguments(request), Redirect.stdout,
+                cast(const string[string]) null, Config.suppressConsole);
+        }
+        catch (Exception error)
+        {
+            publishAudioFailure(request.generation, error.msg);
+            return;
+        }
+
+        bool stale;
+        _mutex.lock();
+        stale = request.generation != _generation || _shutdown;
+        if (!stale)
+        {
+            _process = pipes.pid;
+            ++_stats.processesStarted;
+        }
+        _mutex.unlock();
+
+        if (stale)
+        {
+            try pipes.stdout.close();
+            catch (Exception) {}
+            try kill(pipes.pid);
+            catch (Exception) {}
+            try wait(pipes.pid);
+            catch (Exception) {}
+            return;
+        }
+
+        version (AuroraHeadless)
+        {
+            auto buffer = new ubyte[previewAudioChunkBytes];
+            bool clockPublished;
+            while (true)
             {
                 _mutex.lock();
-                if (request.generation == _generation)
-                    _requestedRunning = false;
+                stale = request.generation != _generation || _shutdown;
                 _mutex.unlock();
-                continue;
+                if (stale) break;
+
+                size_t received;
+                try
+                {
+                    while (received < buffer.length)
+                    {
+                        auto chunk = pipes.stdout.rawRead(
+                            buffer[received .. $]);
+                        if (chunk.length == 0) break;
+                        received += chunk.length;
+                    }
+                }
+                catch (Exception)
+                {
+                    received = 0;
+                }
+                if (received == 0) break;
+                if (!clockPublished)
+                {
+                    publishMonotonicClock(request.generation,
+                        request.displayStartTime);
+                    clockPublished = true;
+                }
+                const frames = received / previewAudioFrameBytes;
+                if (frames > 0)
+                    Thread.sleep((cast(long) frames * 10_000_000L /
+                        previewAudioSampleRate).hnsecs);
             }
 
-            bool stale;
-            _mutex.lock();
-            stale = request.generation != _generation || _shutdown;
-            if (!stale)
-            {
-                _process = process;
-                ++_stats.processesStarted;
-            }
-            _mutex.unlock();
-
-            if (stale)
-            {
-                try kill(process);
-                catch (Exception) {}
-            }
-            try wait(process);
+            try pipes.stdout.close();
+            catch (Exception) {}
+            try wait(pipes.pid);
             catch (Exception) {}
 
-            const elapsedMs = processStarted == MonoTime.init ? long.max :
-                (MonoTime.currTime - processStarted).total!"msecs";
             _mutex.lock();
-            if (_process is process) _process = null;
+            if (_process is pipes.pid) _process = null;
             if (request.generation == _generation && !_hasPending)
             {
-                // Some Windows audio-device/seek starts fail immediately while
-                // the same request succeeds on the next attempt. Retry once in
-                // the worker rather than forcing the editor to click Play or
-                // seek to the same position again.
-                if (!_shutdown && _requestedRunning && request.retryCount == 0 &&
-                    request.duration > 0.5 && elapsedMs >= 0 && elapsedMs < 350)
-                {
-                    ++request.retryCount;
-                    _pending = request;
-                    _hasPending = true;
-                    _condition.notify();
-                }
-                else
-                    _requestedRunning = false;
+                _requestedRunning = false;
+                _fallbackClockValid = false;
             }
-            const shouldExit = _shutdown;
             _mutex.unlock();
-            if (shouldExit) break;
+        }
+        else version (Windows)
+        {
+            auto sink = new WaveOutPcmSink();
+            if (!sink.open())
+            {
+                publishAudioFailure(request.generation,
+                    "The Windows PCM audio output could not be opened.");
+                try pipes.stdout.close();
+                catch (Exception) {}
+                try kill(pipes.pid);
+                catch (Exception) {}
+                try wait(pipes.pid);
+                catch (Exception) {}
+                return;
+            }
+            scope (exit) sink.close();
+
+            auto buffer = new ubyte[previewAudioChunkBytes];
+            bool clockPublished;
+            while (true)
+            {
+                _mutex.lock();
+                stale = request.generation != _generation || _shutdown;
+                _mutex.unlock();
+                if (stale) break;
+
+                size_t received;
+                try
+                {
+                    while (received < buffer.length)
+                    {
+                        auto chunk = pipes.stdout.rawRead(
+                            buffer[received .. $]);
+                        if (chunk.length == 0) break;
+                        received += chunk.length;
+                    }
+                }
+                catch (Exception)
+                {
+                    received = 0;
+                }
+                if (received == 0) break;
+                if (!clockPublished)
+                {
+                    if (!sink.writeQueued(buffer[0 .. received],
+                        delegate()
+                        {
+                            publishAudioClock(request.generation, sink.handle(),
+                                request.displayStartTime);
+                            clockPublished = true;
+                        }))
+                        break;
+                }
+                else if (!sink.writeQueued(buffer[0 .. received])) break;
+            }
+            sink.drain();
+
+            try pipes.stdout.close();
+            catch (Exception) {}
+            try wait(pipes.pid);
+            catch (Exception) {}
+
+            _mutex.lock();
+            if (_process is pipes.pid) _process = null;
+            if (_clockHandle is sink.handle()) _clockHandle = null;
+            if (request.generation == _generation && !_hasPending)
+                _requestedRunning = false;
+            _mutex.unlock();
+        }
+        else
+        {
+            publishAudioFailure(request.generation,
+                "PCM preview audio is currently implemented for Windows.");
+            try pipes.stdout.close();
+            catch (Exception) {}
+            try kill(pipes.pid);
+            catch (Exception) {}
+            try wait(pipes.pid);
+            catch (Exception) {}
         }
     }
 }
@@ -491,7 +923,8 @@ final class VideoFrameStream
 
         long frameNumber;
         bool reachedEof;
-        const pacingStarted = MonoTime.currTime;
+        MonoTime pacingStarted;
+        bool pacingStartedValid;
         while (true)
         {
             const slot = acquireWriteSlot(request.generation, frameBytes);
@@ -517,6 +950,11 @@ final class VideoFrameStream
                 releaseWriteSlot(slot, request, false, frameNumber);
                 reachedEof = true;
                 break;
+            }
+            if (!pacingStartedValid)
+            {
+                pacingStarted = MonoTime.currTime;
+                pacingStartedValid = true;
             }
             releaseWriteSlot(slot, request, true, frameNumber++);
             const target = pacingStarted +
@@ -583,6 +1021,14 @@ final class VideoFrameStream
             if (publish) ++_stats.framesDropped;
             return;
         }
+        while (_readySlot >= 0 && _readySlot != _displayedSlot &&
+            request.generation == _generation && _running && !_shutdown)
+            _condition.wait();
+        if (request.generation != _generation || !_running || _shutdown)
+        {
+            ++_stats.framesDropped;
+            return;
+        }
         ++_stats.framesDecoded;
         if (_readySlot >= 0 && _readySlot != _displayedSlot)
             ++_stats.framesDropped;
@@ -617,6 +1063,7 @@ final class VideoFrameStream
         if (_readySlot < 0) return false;
         _displayedSlot = _readySlot;
         _readySlot = -1;
+        _condition.notifyAll();
         frame = PreviewFrame.init;
         frame.width = _readyWidth;
         frame.height = _readyHeight;
@@ -667,7 +1114,7 @@ final class VideoFrameStream
         _writingSlot = -1;
         process = _process;
         if (process !is null) ++_stats.cancellations;
-        _condition.notify();
+        _condition.notifyAll();
         _mutex.unlock();
 
         if (process !is null)
