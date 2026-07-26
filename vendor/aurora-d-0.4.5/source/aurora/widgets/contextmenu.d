@@ -64,6 +64,8 @@ class ContextMenu : TransientPopup
 {
     private ContextMenuItem[] _items;
     private Point _requestedOrigin;
+    private Rect _requestedAnchor;
+    private bool _hasRequestedAnchor;
     private Rect _menuRect;
     private int _hot = -1;
     private int _pressed = -1;
@@ -105,6 +107,21 @@ class ContextMenu : TransientPopup
     void openAt(Point localPosition)
     {
         _requestedOrigin = localPosition;
+        _requestedAnchor = Rect.init;
+        _hasRequestedAnchor = false;
+        _scrollOffset = 0;
+        recalculateMenuRect();
+        _hot = firstSelectable();
+        revealHot();
+        requestFocus();
+        invalidate();
+    }
+
+    void openBelow(Rect localAnchor)
+    {
+        _requestedAnchor = localAnchor;
+        _hasRequestedAnchor = true;
+        _requestedOrigin = Point(localAnchor.x, localAnchor.bottom());
         _scrollOffset = 0;
         recalculateMenuRect();
         _hot = firstSelectable();
@@ -168,22 +185,37 @@ class ContextMenu : TransientPopup
             return;
         }
 
-        int x = clampInt(_requestedOrigin.x + 2, 4, maxInt(4, bounds().width - 84));
-
         const preferredWidth = preferredMenuWidth();
-        int availableWidth = maxInt(80, bounds().width - x - 4);
-        int width = minInt(preferredWidth, availableWidth);
-        if (width < 180 && bounds().width >= 188)
+        int x;
+        int width;
+        if (_hasRequestedAnchor)
         {
-            width = minInt(preferredWidth, bounds().width - 8);
-            x = bounds().width - width - 4;
+            width = minInt(preferredWidth, maxInt(80, bounds().width - 8));
+            x = _requestedAnchor.x;
+            if (x + width > bounds().width - 4)
+                x = _requestedAnchor.right() - width;
+            x = clampInt(x, 4, maxInt(4, bounds().width - width - 4));
+        }
+        else
+        {
+            x = clampInt(_requestedOrigin.x + 2, 4, maxInt(4, bounds().width - 84));
+
+            int availableWidth = maxInt(80, bounds().width - x - 4);
+            width = minInt(preferredWidth, availableWidth);
+            if (width < 180 && bounds().width >= 188)
+            {
+                width = minInt(preferredWidth, bounds().width - 8);
+                x = bounds().width - width - 4;
+            }
         }
 
         const preferredHeight = preferredMenuHeight();
         const minimumHeight = 40;
-        const belowY = _requestedOrigin.y + 2;
+        const belowY = _hasRequestedAnchor ? _requestedAnchor.bottom() + 2 :
+            _requestedOrigin.y + 2;
         const belowSpace = maxInt(0, bounds().height - 4 - belowY);
-        const aboveBottom = _requestedOrigin.y - 2;
+        const aboveBottom = _hasRequestedAnchor ? _requestedAnchor.y - 2 :
+            _requestedOrigin.y - 2;
         const aboveSpace = maxInt(0, aboveBottom - 4);
         const openAbove = preferredHeight > belowSpace &&
             aboveSpace >= minimumHeight && aboveSpace >= belowSpace;
@@ -460,6 +492,25 @@ ContextMenu showContextMenu(Widget owner, Point globalPosition, ContextMenuItem[
     popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
     root.bringChildToFront(popup);
     popup.openAt(root.globalToLocal(globalPosition));
+    return popup;
+}
+
+/** Show a context menu directly below the owner widget as a dropdown. */
+ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items)
+{
+    if (owner is null || items.length == 0) return null;
+    auto root = popupRoot(owner);
+    if (root is null) return null;
+    dismissTransientPopups(root);
+    auto popup = new ContextMenu(items, owner);
+    root.add(popup);
+    popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+    root.bringChildToFront(popup);
+    const ownerOrigin = owner.globalOrigin();
+    const rootOrigin = root.globalOrigin();
+    popup.openBelow(Rect(ownerOrigin.x - rootOrigin.x,
+        ownerOrigin.y - rootOrigin.y, owner.bounds().width,
+        owner.bounds().height));
     return popup;
 }
 

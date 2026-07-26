@@ -14,6 +14,8 @@ import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStrea
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
 import auroracut.project : loadProjectFile, saveProjectFile;
+import auroracut.recentprojects : clearRecentProjects,
+    clearUnavailableRecentProjects, loadRecentProjects, rememberRecentProject;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import auroracut.titlelayer : TitleVisual;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
@@ -620,6 +622,7 @@ final class EditorRoot : VBox
     private Button _revealExportButton;
     private Button _saveProjectButton;
     private Button _openProjectButton;
+    private Button _recentProjectsButton;
     private Button _qualityButton;
     private Slider _mp4CompressionSlider;
     private Label _mp4CompressionLabel;
@@ -895,6 +898,7 @@ final class EditorRoot : VBox
     double scrubMinimumForTesting() const { return _scrub.minimum(); }
     double scrubMaximumForTesting() const { return _scrub.maximum(); }
     double scrubValueForTesting() const { return _scrub.value(); }
+    void saveProjectForTesting(string path) { writeProject(path); }
     string lastExportPathForTesting() const { return _lastExportPath; }
     bool revealExportEnabledForTesting() const
     {
@@ -925,6 +929,13 @@ final class EditorRoot : VBox
         _openProjectButton.setId("open-project");
         _openProjectButton.layoutHints().preferredHeight = 26;
         _openProjectButton.onClick = delegate() { openProjectDialog(); };
+
+        _recentProjectsButton = toolbar.add(new Button("Recent ▾", IconKind.clock));
+        _recentProjectsButton.setId("recent-projects");
+        _recentProjectsButton.layoutHints().preferredHeight = 26;
+        _recentProjectsButton.onClick = delegate() {
+            showRecentProjectsMenu();
+        };
         toolbar.add(new Spacer());
 
         auto compressionTitle = toolbar.add(new Label("Compress"));
@@ -1655,6 +1666,7 @@ final class EditorRoot : VBox
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
             _projectPath = path;
             _projectDirty = false;
+            rememberRecentProject(path);
             updateProjectTitle();
             setStatus("Project saved: " ~ path);
         }
@@ -1676,6 +1688,7 @@ final class EditorRoot : VBox
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
             _projectPath = path;
             _projectDirty = false;
+            rememberRecentProject(path);
             updateProjectTitle();
             appLog("Project autosaved on exit: " ~ path);
         }
@@ -1725,6 +1738,7 @@ final class EditorRoot : VBox
                 _model.sequenceDuration()), false);
             _projectPath = path;
             _projectDirty = false;
+            rememberRecentProject(path);
             ++_modelRevision;
             if (_modelRevision == 0) _modelRevision = 1;
             syncMediaList();
@@ -1741,6 +1755,63 @@ final class EditorRoot : VBox
             appLog(format("Project open failed for '%s': %s", path, error.toString()));
             setStatus("Could not open project: " ~ outputTail(error.msg, 900));
         }
+    }
+
+    private static string recentProjectMenuLabel(string path)
+    {
+        const folder = dirName(path);
+        const name = baseName(path);
+        if (folder.length == 0 || folder == ".") return name;
+        return name ~ " — " ~ folder;
+    }
+
+    private void showRecentProjectsMenu()
+    {
+        ContextMenuItem[] items;
+        const projects = loadRecentProjects(false);
+        bool foundAvailable;
+        bool foundUnavailable;
+
+        foreach (path; projects)
+        {
+            if (!exists(path))
+            {
+                foundUnavailable = true;
+                continue;
+            }
+
+            foundAvailable = true;
+            const captured = path;
+            const current = _projectPath.length > 0 &&
+                filenameCmp(_projectPath, captured) == 0;
+            items ~= ContextMenuItem.check(recentProjectMenuLabel(captured),
+                current, delegate() { openProject(captured); });
+        }
+
+        if (!foundAvailable)
+            items ~= ContextMenuItem.command("No recent projects", delegate() {},
+                "", false);
+
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Browse project…", IconKind.open,
+            delegate() { openProjectDialog(); });
+
+        if (foundAvailable || foundUnavailable)
+        {
+            if (foundUnavailable)
+                items ~= ContextMenuItem.command("Clear unavailable projects",
+                    IconKind.trash, delegate() {
+                        clearUnavailableRecentProjects();
+                        setStatus("Unavailable recent projects cleared.");
+                    });
+            items ~= ContextMenuItem.command("Clear recent projects", IconKind.trash,
+                delegate() {
+                    clearRecentProjects();
+                    setStatus("Recent projects cleared.");
+                });
+        }
+
+        showContextMenuBelow(_recentProjectsButton, items);
     }
 
     private void openImportDialog()

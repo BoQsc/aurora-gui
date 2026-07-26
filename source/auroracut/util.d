@@ -155,6 +155,40 @@ string applicationCacheDirectory()
     return root;
 }
 
+/** Application-owned persistent state directory for user-local UI history. */
+string applicationStateDirectory()
+{
+    string root;
+    version (Windows)
+    {
+        const base = environment.get("LOCALAPPDATA",
+            environment.get("APPDATA", tempDir()));
+        root = buildPath(base, "Aurora Cut");
+    }
+    else version (OSX)
+    {
+        const home = environment.get("HOME", tempDir());
+        root = buildPath(home, "Library", "Application Support", "Aurora Cut");
+    }
+    else
+    {
+        const xdg = environment.get("XDG_STATE_HOME", "");
+        if (xdg.length > 0)
+            root = buildPath(xdg, "aurora-cut");
+        else
+        {
+            const home = environment.get("HOME", "");
+            root = home.length > 0
+                ? buildPath(home, ".local", "state", "aurora-cut")
+                : buildPath(tempDir(), "aurora-cut");
+        }
+    }
+
+    root = absoluteNormalized(root);
+    if (!exists(root)) mkdirRecurse(root);
+    return root;
+}
+
 /** Folder used for unnamed project autosaves that must be easy to recover. */
 string projectAutosaveDirectory()
 {

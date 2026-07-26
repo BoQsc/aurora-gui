@@ -5,6 +5,8 @@ import auroracut.editor : EditorRoot, InspectorValueField;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
     TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
+import auroracut.recentprojects : clearRecentProjects, loadRecentProjects,
+    rememberRecentProject, setRecentProjectsFilePathForTesting;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import auroracut.util : projectAutosaveDirectory;
 import core.thread : Thread;
@@ -12,7 +14,9 @@ import core.time : msecs;
 import std.algorithm.searching : canFind;
 import std.conv : to;
 import std.datetime.stopwatch : AutoStart, StopWatch;
+import std.file : exists, remove, tempDir;
 import std.math : fabs;
+import std.path : baseName, buildPath, dirName;
 import std.stdio : writeln;
 
 private Widget findById(Widget root, string requestedId)
@@ -161,6 +165,19 @@ int main(string[] arguments)
     options.renderer = RendererPreference.software;
 
     auto window = new GuiWindow(options, Theme.dark());
+    const recentPath = buildPath(tempDir(), "aurora-cut-editor-smoke-recent.json");
+    const savedProject = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-recent.auroracut");
+    if (exists(recentPath)) remove(recentPath);
+    if (exists(savedProject)) remove(savedProject);
+    scope (exit)
+    {
+        setRecentProjectsFilePathForTesting("");
+        if (exists(recentPath)) remove(recentPath);
+        if (exists(savedProject)) remove(savedProject);
+    }
+    setRecentProjectsFilePathForTesting(recentPath);
+    clearRecentProjects();
     auto editor = new EditorRoot(window);
     window.setRoot(editor);
     scope (exit) editor.shutdown();
@@ -198,6 +215,7 @@ int main(string[] arguments)
     auto qualityButton = requireWidget!Button(editor, "preview-quality");
     auto saveProject = requireWidget!Button(editor, "save-project");
     auto openProject = requireWidget!Button(editor, "open-project");
+    auto recentProjects = requireWidget!Button(editor, "recent-projects");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
@@ -207,6 +225,21 @@ int main(string[] arguments)
     assert(openProject.text() == "Open"d &&
         openProject.bounds().x >= saveProject.bounds().right(),
         "Open Project button is not directly to the right of Save");
+    assert(recentProjects.text() == "Recent ▾"d &&
+        recentProjects.bounds().x >= openProject.bounds().right(),
+        "Recent Projects button is not directly to the right of Open");
+    driver.click(globalCenter(recentProjects));
+    auto recentMenu = findOpenContextMenu(editor);
+    assert(recentMenu !is null, "Recent Projects button did not open a dropdown");
+    assert(recentMenu.menuRect().x == recentProjects.localToGlobal(Point(0, 0)).x &&
+        recentMenu.menuRect().y == recentProjects.localToGlobal(
+            Point(0, recentProjects.bounds().height)).y + 2,
+        "Recent Projects dropdown was not anchored immediately below the button");
+    assert(menuHasLabel(recentMenu, "No recent projects"d),
+        "Empty Recent Projects dropdown did not explain that there is no history");
+    assert(menuHasLabel(recentMenu, "Browse project…"d),
+        "Recent Projects dropdown did not include a browse fallback");
+    driver.pressKey(Key.escape);
     driver.click(globalCenter(openProject));
     assert(driver.paint(), "Open Project dialog did not paint");
     auto tempAutosaves = requireWidget!Button(editor,
@@ -238,6 +271,32 @@ int main(string[] arguments)
     assert(timelineScrollbar.bounds().height > 0 &&
         timelineScrollbar.bounds().height <= 12,
         "Timeline horizontal scrollbar is not compact");
+
+    {
+        editor.saveProjectForTesting(savedProject);
+        assert(loadRecentProjects(true).length == 1 &&
+            loadRecentProjects(true)[0] == savedProject,
+            "Saving a project did not add it to recent projects");
+
+        driver.click(globalCenter(recentProjects));
+        recentMenu = findOpenContextMenu(editor);
+        assert(recentMenu !is null,
+            "Recent Projects dropdown did not open after saving a project");
+        assert(menuHasLabel(recentMenu,
+            (baseName(savedProject) ~ " — " ~ dirName(savedProject)).to!dstring),
+            "Recent Projects dropdown did not show the saved project");
+        assert(menuItemChecked(recentMenu,
+            (baseName(savedProject) ~ " — " ~ dirName(savedProject)).to!dstring),
+            "Recent Projects dropdown did not mark the current project");
+        driver.pressKey(Key.escape);
+
+        rememberRecentProject(buildPath(tempDir(), "missing-recent.auroracut"));
+        driver.click(globalCenter(recentProjects));
+        recentMenu = findOpenContextMenu(editor);
+        assert(menuHasLabel(recentMenu, "Clear unavailable projects"d),
+            "Recent Projects dropdown did not offer cleanup for missing projects");
+        driver.pressKey(Key.escape);
+    }
 
     // File dialogs use ListView for the folder/file rows. Its vertical
     // scrollbar must be an input target, not only a painted decoration.
