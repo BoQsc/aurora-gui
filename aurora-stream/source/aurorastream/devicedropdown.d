@@ -161,16 +161,6 @@ final class AudioDeviceDropdown : Button
                 items ~= deviceItem(device.inputName, device.label);
         }
 
-        int rowCount;
-        int separatorCount;
-        foreach (item; items)
-        {
-            if (item.separator) ++separatorCount;
-            else ++rowCount;
-        }
-        const estimatedHeight = 6 + rowCount * 22 + separatorCount * 4;
-        showContextMenu(this,
-            localToGlobal(Point(0, bounds().height + estimatedHeight + 2)),
-            items);
+        showContextMenuBelow(this, items);
     }
 }

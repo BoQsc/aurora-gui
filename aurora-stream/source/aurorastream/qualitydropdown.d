@@ -88,10 +88,7 @@ final class SourceQualityDropdown : Button
             qualityItem(BroadcastQuality.fourK)
         ];
 
-        enum estimatedHeight = 6 + 3 * 22;
-        showContextMenu(this,
-            localToGlobal(Point(0, bounds().height + estimatedHeight + 2)),
-            items);
+        showContextMenuBelow(this, items);
     }
 }
 
