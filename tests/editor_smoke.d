@@ -138,7 +138,9 @@ private bool waitForSequencePlayback(EditorRoot editor, PreviewWidget preview)
     foreach (_; 0 .. 2_400)
     {
         editor.tickTree(0.02);
-        if (editor.sequencePlaybackForTesting() && preview.hasFrame() &&
+        if (editor.sequencePlaybackForTesting() &&
+            !editor.playbackAwaitingFirstFrameForTesting() &&
+            preview.playing() && preview.hasFrame() &&
             preview.frameTitleForTesting().canFind("Sequence")) return true;
         Thread.sleep(20.msecs);
     }
@@ -547,8 +549,9 @@ int main(string[] arguments)
     timeline.setPlayhead(0.60, false);
     driver.click(globalCenter(playSource));
     assert(editor.playbackRunningForTesting() &&
-        editor.sequencePlaybackForTesting() && preview.playing(),
-        "The Preview transport did not start timeline playback");
+        editor.sequencePlaybackForTesting() &&
+        editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
+        "The Preview transport did not enter first-frame preroll");
     assert(waitForSequencePlayback(editor, preview),
         "The live timeline composition never began embedded playback");
     assert(waitForFrame(editor, preview, 0.62, 600));
@@ -603,7 +606,7 @@ int main(string[] arguments)
     assert(scrubCompositor.baseBuilds == 0,
         "Playback-selector movement rebuilt static workspace geometry");
     editor.endSeekGestureForTesting();
-    assert(waitForFrame(editor, preview, 0.0, 600),
+    assert(waitForSequencePlayback(editor, preview),
         "Playback did not recover after a rapid selector gesture");
     const statsAfterScrub = editor.videoStatsForTesting();
     assert(statsAfterScrub.processesStarted - statsBeforeScrub.processesStarted < 12,

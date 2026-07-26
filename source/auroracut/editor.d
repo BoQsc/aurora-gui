@@ -846,6 +846,7 @@ final class EditorRoot : VBox
     // Small public inspection surface used by deterministic smoke tests.
     EditorModel modelForTesting() { return _model; }
     bool playbackRunningForTesting() const { return _playbackRunning; }
+    bool playbackAwaitingFirstFrameForTesting() const { return _playbackAwaitingFirstFrame; }
     bool sequencePlaybackForTesting() const
     {
         return _playbackKind == PlaybackKind.sequence && _playbackRunning;
@@ -3862,7 +3863,7 @@ final class EditorRoot : VBox
         _pendingPreviewKind = PendingPreviewKind.sequence;
         _pendingPreviewTime = nextTime;
         // Do not restart the debounce timer on every slider pixel or keystroke.
-        // Long gestures therefore refresh repeatedly (roughly 8 fps at most),
+        // Long gestures therefore refresh repeatedly (roughly 16 fps at most),
         // while short edits still coalesce into one background composition frame.
         if (!samePendingFrame) _pendingPreviewDelay = 0.0;
     }
@@ -4051,21 +4052,14 @@ final class EditorRoot : VBox
         if (kind == PlaybackKind.source ||
             (!directSequence && !liveSequence && !_preview.hasCompositionFrame()))
             _preview.setMessage(kind == PlaybackKind.sequence ?
-                "Starting composition playback…" : "Starting source playback…");
-        _preview.setPlaying(true);
+                "Preparing composition playback…" : "Preparing source playback…");
+        _preview.setPlaying(false);
         if (kind == PlaybackKind.sequence)
             syncPreviewTitleLayers(_playbackPosition);
         startPlaybackStreams();
         syncTimelineRange();
         updatePlaybackButtons();
         updateTimeLabel();
-        setStatus(kind == PlaybackKind.sequence
-            ? (directSequence
-                ? "Playing the timeline directly from its source clip."
-                : (liveSequence
-                    ? "Playing the live timeline composition — no proxy render."
-                    : "Playing the rendered timeline composition."))
-            : "Playing source frames inside Aurora Preview.");
     }
 
     private void resetPlaybackClock()
@@ -4088,6 +4082,32 @@ final class EditorRoot : VBox
         const value = _sequencePlaybackDirect ?
             frame.sourceTime - _playbackMediaOffset : frame.sourceTime;
         return clampValue(value, _playbackStart, _playbackEnd);
+    }
+
+    private string playbackPreparingStatus() const
+    {
+        if (_playbackKind == PlaybackKind.sequence)
+        {
+            if (_sequencePlaybackDirect)
+                return "Preparing timeline playback from its source clip.";
+            if (_sequencePlaybackLive)
+                return "Preparing the live timeline composition.";
+            return "Preparing rendered timeline playback.";
+        }
+        return "Preparing source playback.";
+    }
+
+    private string playbackRunningStatus() const
+    {
+        if (_playbackKind == PlaybackKind.sequence)
+        {
+            if (_sequencePlaybackDirect)
+                return "Playing the timeline directly from its source clip.";
+            if (_sequencePlaybackLive)
+                return "Playing the live timeline composition.";
+            return "Playing the rendered timeline composition.";
+        }
+        return "Playing source frames inside Aurora Preview.";
     }
 
     private int liveDecodeHeight() const
@@ -4228,6 +4248,29 @@ final class EditorRoot : VBox
         }
     }
 
+    private void startPlaybackAudio()
+    {
+        _audioPlayer.stop();
+        if (_playbackAsset is null || _playbackAwaitingFirstFrame) return;
+        if (_sequencePlaybackLive)
+        {
+            startLiveTimelineAudio();
+            return;
+        }
+
+        const remaining = _playbackEnd - _playbackPosition;
+        if (remaining <= 0.001) return;
+        if (_playbackAsset.hasAudio && _tools.ffplay && !_playbackSourceMuted &&
+            _playbackSourceVolume > 0.000_001)
+        {
+            const mediaPosition = clampValue(_playbackPosition + _playbackMediaOffset,
+                0.0, _playbackAsset.duration);
+            if (!_audioPlayer.start(_playbackAsset.path, mediaPosition,
+                remaining, _playbackSourceVolume))
+                setStatus("Visual playback is ready, but audio output could not start.");
+        }
+    }
+
     private void startPlaybackStreams()
     {
         if (_playbackAsset is null || !_playbackRunning) return;
@@ -4256,7 +4299,6 @@ final class EditorRoot : VBox
                 "Sequence 01 • live composition");
             if (!videoStarted)
                 setStatus("The live timeline compositor could not be started.");
-            startLiveTimelineAudio();
         }
         else
         {
@@ -4272,18 +4314,33 @@ final class EditorRoot : VBox
             else
                 _previewService.requestAsset(_playbackAsset, mediaPosition,
                     decode.width, decode.height);
-
-            if (_playbackAsset.hasAudio && _tools.ffplay && !_playbackSourceMuted &&
-                _playbackSourceVolume > 0.000_001)
-            {
-                if (!_audioPlayer.start(_playbackAsset.path, mediaPosition,
-                    remaining, _playbackSourceVolume))
-                    setStatus("Visual playback is running, but audio output could not start.");
-            }
         }
 
-        _playbackAwaitingFirstFrame = videoStarted;
-        resetPlaybackClock();
+        if ((_sequencePlaybackLive || _playbackAsset.hasVideo) && !videoStarted)
+        {
+            _playbackRunning = false;
+            _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
+            _preview.setPlaying(false);
+            updatePlaybackButtons();
+            return;
+        }
+
+        if (videoStarted)
+        {
+            _playbackAwaitingFirstFrame = true;
+            _playbackClockValid = false;
+            _preview.setPlaying(false);
+            setStatus(playbackPreparingStatus());
+        }
+        else
+        {
+            _playbackAwaitingFirstFrame = false;
+            resetPlaybackClock();
+            _preview.setPlaying(true);
+            setStatus(playbackRunningStatus());
+            startPlaybackAudio();
+        }
         _transportPaintAccumulator = 1.0;
     }
 
@@ -4350,14 +4407,12 @@ final class EditorRoot : VBox
             _timeline.setPlayhead(_playbackPosition, false);
         _playbackRunning = true;
         _seekResumePlayback = false;
-        _preview.setPlaying(true);
+        _preview.setPlaying(false);
         if (_playbackKind == PlaybackKind.sequence)
             syncPreviewTitleLayers(_playbackPosition);
         startPlaybackStreams();
         syncTimelineRange();
         updatePlaybackButtons();
-        setStatus(_playbackKind == PlaybackKind.sequence
-            ? "Composition preview resumed." : "Source playback resumed.");
     }
 
     /**
@@ -4386,6 +4441,7 @@ final class EditorRoot : VBox
             _audioPlayer.stop();
             _previewService.cancel();
             _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
             _preview.setPlaying(false);
         }
 
@@ -4503,7 +4559,8 @@ final class EditorRoot : VBox
 
     private void refreshSourceAudio()
     {
-        if (!_playbackRunning || _playbackAsset is null) return;
+        if (!_playbackRunning || _playbackAsset is null ||
+            _playbackAwaitingFirstFrame) return;
         if (_sequencePlaybackLive)
         {
             startLiveTimelineAudio();
@@ -5834,15 +5891,18 @@ final class EditorRoot : VBox
 
         if (_playbackRunning && !_seekPending && _playbackAsset !is null)
         {
-            _playbackPosition = clampValue(clockPlaybackPosition(),
-                _playbackStart, _playbackEnd);
-            if (_sequencePlaybackLive && _liveAudioEnd >= 0.0)
+            if (!_playbackAwaitingFirstFrame)
             {
-                // End an active item a fraction early, but do not repeatedly
-                // probe a silent gap before the next item's exact start.
-                const lead = _liveAudioClipId != 0 ? 0.02 : 0.0;
-                if (_playbackPosition >= _liveAudioEnd - lead)
-                    startLiveTimelineAudio();
+                _playbackPosition = clampValue(clockPlaybackPosition(),
+                    _playbackStart, _playbackEnd);
+                if (_sequencePlaybackLive && _liveAudioEnd >= 0.0)
+                {
+                    // End an active item a fraction early, but do not repeatedly
+                    // probe a silent gap before the next item's exact start.
+                    const lead = _liveAudioClipId != 0 ? 0.02 : 0.0;
+                    if (_playbackPosition >= _liveAudioEnd - lead)
+                        startLiveTimelineAudio();
+                }
             }
             bool receivedFrame;
             PreviewFrame frame;
@@ -5854,20 +5914,32 @@ final class EditorRoot : VBox
                     _playbackAwaitingFirstFrame = false;
                     _playbackPosition = playbackTimeForFrame(frame);
                     resetPlaybackClock();
+                    setStatus(playbackRunningStatus());
+                    startPlaybackAudio();
                 }
                 _preview.setFrame(frame);
-                _preview.setPlaying(true);
+                _preview.setPlaying(!_playbackAwaitingFirstFrame);
             }
             else if (_videoStream.finished() && _playbackAsset.hasVideo)
             {
                 const error = _videoStream.error();
                 if (error.length > 0)
                     setStatus("Embedded decoder ended: " ~ outputTail(error, 600));
+                if (_playbackAwaitingFirstFrame)
+                {
+                    _playbackRunning = false;
+                    _playbackClockValid = false;
+                    _playbackAwaitingFirstFrame = false;
+                    _preview.setPlaying(false);
+                    updatePlaybackButtons();
+                    updateTimeLabel();
+                }
             }
 
-            if (_playbackPosition >= _playbackEnd - 0.001)
+            if (_playbackRunning && !_playbackAwaitingFirstFrame &&
+                _playbackPosition >= _playbackEnd - 0.001)
                 finishPlayback();
-            else
+            else if (_playbackRunning && !_playbackAwaitingFirstFrame)
             {
                 _transportPaintAccumulator += deltaSeconds;
                 // The transport and timeline are visual controls, not clocks.
@@ -5904,7 +5976,7 @@ final class EditorRoot : VBox
             _playbackKind == PlaybackKind.none)
         {
             _pendingPreviewDelay += deltaSeconds;
-            if (_pendingPreviewDelay >= 0.12)
+            if (_pendingPreviewDelay >= 0.06)
                 dispatchPendingPreview();
         }
 
