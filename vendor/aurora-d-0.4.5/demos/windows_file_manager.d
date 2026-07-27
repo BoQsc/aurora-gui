@@ -2,8 +2,8 @@ module demos.windows_file_manager;
 
 import aurora;
 import std.algorithm.sorting : sort;
-import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir,
-    mkdir, writeFile = write;
+import std.file : DirEntry, SpanMode, copy, dirEntries, exists, getcwd, isDir,
+    mkdir, removeFile = remove, renameFile = rename, rmdirRecurse, writeFile = write;
 import std.format : format;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
     rootName;
@@ -41,6 +41,13 @@ private enum SortColumn
     size
 }
 
+private enum NavigationKind
+{
+    folder,
+    thisPc,
+    network
+}
+
 private struct ExplorerEntry
 {
     string name;
@@ -56,6 +63,7 @@ private struct NavigationItem
     string label;
     string path;
     IconKind icon;
+    NavigationKind kind;
     bool enabled = true;
     bool pinned;
 }
@@ -95,6 +103,13 @@ final class WindowsFileManagerRoot : Widget
     private bool _draggingSidebarScrollbar;
     private int _sidebarScrollbarGrabY;
     private int _sidebarScrollbarGrabScrollY;
+    private bool _pendingEntryDrag;
+    private bool _draggingEntry;
+    private int _dragSourceVisibleIndex = -1;
+    private int _dropTargetVisibleIndex = -1;
+    private int _dropTargetNavigationIndex = -1;
+    private Point _dragStart;
+    private Point _dragCurrent;
 
     private Rect _addressRect;
     private Rect _addressTextRect;
@@ -186,6 +201,7 @@ final class WindowsFileManagerRoot : Widget
         drawSidebar(canvas);
         drawDetailsView(canvas);
         drawStatusBar(canvas);
+        drawDragPreview(canvas);
     }
 
     override bool onMouseDown(ref Event event)
@@ -193,7 +209,7 @@ final class WindowsFileManagerRoot : Widget
         if (event.button == MouseButton.right)
         {
             requestFocus();
-            showContextMenuFor(event.position, event.globalPosition);
+            showContextMenuFor(event.position);
             return true;
         }
         if (event.button != MouseButton.left) return false;
@@ -262,7 +278,13 @@ final class WindowsFileManagerRoot : Widget
             _selectedVisibleIndex = visibleIndex;
             updateSelectedStatus();
             if (event.clickCount >= 2)
+            {
                 activateEntry(visibleIndex);
+            }
+            else
+            {
+                beginEntryDrag(visibleIndex, event.position);
+            }
             invalidate();
             return true;
         }
@@ -290,6 +312,11 @@ final class WindowsFileManagerRoot : Widget
             dragSidebarScrollbar(event.position.y);
             return true;
         }
+        if (_pendingEntryDrag || _draggingEntry)
+        {
+            updateEntryDrag(event.position);
+            return true;
+        }
         return false;
     }
 
@@ -312,6 +339,17 @@ final class WindowsFileManagerRoot : Widget
             if (commandAt(event.position) == pressed && commandEnabled(pressed))
                 activateCommand(pressed);
             invalidate();
+            return true;
+        }
+        if (_pendingEntryDrag || _draggingEntry)
+        {
+            const completed = _draggingEntry;
+            releaseMouse();
+            if (completed)
+                completeEntryDrop(event.position);
+            else
+                invalidate();
+            resetEntryDrag(false);
             return true;
         }
         return false;
@@ -402,6 +440,13 @@ final class WindowsFileManagerRoot : Widget
     override bool onFilesDropped(ref Event event)
     {
         if (event.paths.length == 0) return false;
+        const targetDirectory = dropTargetDirectoryAt(event.position, "", true);
+        if (targetDirectory.length > 0)
+        {
+            moveDroppedPaths(event.paths, targetDirectory);
+            return true;
+        }
+
         const path = event.paths[0];
         try
         {
@@ -424,6 +469,234 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
         return false;
+    }
+
+    private void beginEntryDrag(int visibleIndex, Point position)
+    {
+        _pendingEntryDrag = true;
+        _draggingEntry = false;
+        _dragSourceVisibleIndex = visibleIndex;
+        _dropTargetVisibleIndex = -1;
+        _dropTargetNavigationIndex = -1;
+        _dragStart = position;
+        _dragCurrent = position;
+        captureMouse();
+    }
+
+    private void updateEntryDrag(Point position)
+    {
+        _dragCurrent = position;
+        if (_pendingEntryDrag && dragThresholdExceeded(position))
+        {
+            _pendingEntryDrag = false;
+            _draggingEntry = true;
+        }
+        if (_draggingEntry)
+            updateDropTargets(position);
+        invalidate();
+    }
+
+    private void updateDropTargets(Point position)
+    {
+        _dropTargetVisibleIndex = -1;
+        _dropTargetNavigationIndex = -1;
+        if (!hasDragSource()) return;
+
+        const sourcePath = dragSourceEntry().path;
+        const navIndex = navigationIndexAt(position);
+        if (isNavigationDropTarget(navIndex, sourcePath))
+        {
+            _dropTargetNavigationIndex = navIndex;
+            return;
+        }
+
+        const visibleIndex = entryIndexAt(position);
+        if (isEntryDropTarget(visibleIndex, sourcePath))
+            _dropTargetVisibleIndex = visibleIndex;
+    }
+
+    private void completeEntryDrop(Point position)
+    {
+        if (!hasDragSource())
+        {
+            invalidate();
+            return;
+        }
+
+        const entry = dragSourceEntry();
+        const targetDirectory = dropTargetDirectoryAt(position, entry.path, false);
+        if (targetDirectory.length == 0)
+        {
+            _statusText = "Move canceled.";
+            invalidate();
+            return;
+        }
+
+        const movedPath = movePathIntoDirectory(entry.path, targetDirectory);
+        if (movedPath.length > 0)
+        {
+            navigate(_currentPath, false, false);
+            if (pathsEqual(dirName(movedPath), _currentPath))
+                selectPath(movedPath);
+            _statusText = "Moved " ~ entry.name ~ " to " ~ folderDisplayName(targetDirectory) ~ ".";
+        }
+        invalidate();
+    }
+
+    private void resetEntryDrag(bool redraw)
+    {
+        _pendingEntryDrag = false;
+        _draggingEntry = false;
+        _dragSourceVisibleIndex = -1;
+        _dropTargetVisibleIndex = -1;
+        _dropTargetNavigationIndex = -1;
+        if (redraw) invalidate();
+    }
+
+    private bool hasDragSource() const
+    {
+        return _dragSourceVisibleIndex >= 0 &&
+            _dragSourceVisibleIndex < cast(int) _visibleEntries.length;
+    }
+
+    private ExplorerEntry dragSourceEntry() const
+    {
+        if (!hasDragSource()) return ExplorerEntry.init;
+        return _entries[cast(size_t) _visibleEntries[cast(size_t) _dragSourceVisibleIndex]];
+    }
+
+    private bool dragThresholdExceeded(Point position) const
+    {
+        return absInt(position.x - _dragStart.x) >= 4 ||
+            absInt(position.y - _dragStart.y) >= 4;
+    }
+
+    private string dropTargetDirectoryAt(Point point, string sourcePath,
+        bool allowCurrentFolder) const
+    {
+        const navIndex = navigationIndexAt(point);
+        if (isNavigationDropTarget(navIndex, sourcePath))
+            return _navigation[cast(size_t) navIndex].path;
+
+        const visibleIndex = entryIndexAt(point);
+        if (isEntryDropTarget(visibleIndex, sourcePath))
+        {
+            const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
+            return entry.path;
+        }
+
+        if (allowCurrentFolder && _rowsRect.contains(point) && _currentPath.length > 0 &&
+            exists(_currentPath) && isDir(_currentPath))
+            return _currentPath;
+        return "";
+    }
+
+    private bool isNavigationDropTarget(int index, string sourcePath) const
+    {
+        if (index < 0 || index >= cast(int) _navigation.length) return false;
+        const item = _navigation[cast(size_t) index];
+        if (!item.enabled) return false;
+        if (item.kind != NavigationKind.folder && item.kind != NavigationKind.thisPc)
+            return false;
+        return isDirectoryDropTarget(item.path, sourcePath);
+    }
+
+    private bool isEntryDropTarget(int visibleIndex, string sourcePath) const
+    {
+        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleEntries.length) return false;
+        const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
+        if (!entry.directory) return false;
+        return isDirectoryDropTarget(entry.path, sourcePath);
+    }
+
+    private bool isDirectoryDropTarget(string targetDirectory, string sourcePath) const
+    {
+        if (targetDirectory.length == 0 || !exists(targetDirectory) || !isDir(targetDirectory))
+            return false;
+        if (sourcePath.length == 0) return true;
+        if (!exists(sourcePath)) return false;
+        if (pathsEqual(targetDirectory, sourcePath)) return false;
+        if (pathsEqual(targetDirectory, dirName(sourcePath))) return false;
+        if (isDir(sourcePath) && isSameOrDescendantPath(targetDirectory, sourcePath))
+            return false;
+        return true;
+    }
+
+    private void moveDroppedPaths(string[] paths, string targetDirectory)
+    {
+        int moved;
+        string lastMovedPath;
+        foreach (path; paths)
+        {
+            const movedPath = movePathIntoDirectory(path, targetDirectory);
+            if (movedPath.length > 0)
+            {
+                ++moved;
+                lastMovedPath = movedPath;
+            }
+        }
+
+        if (moved > 0)
+        {
+            navigate(_currentPath, false, false);
+            if (moved == 1 && pathsEqual(dirName(lastMovedPath), _currentPath))
+                selectPath(lastMovedPath);
+            _statusText = moved == 1 ? "Moved " ~ baseName(lastMovedPath) ~ "." :
+                format("Moved %d items.", moved);
+        }
+        else if (_statusText.length == 0)
+            _statusText = "No items moved.";
+        invalidate();
+    }
+
+    private string movePathIntoDirectory(string sourcePath, string targetDirectory)
+    {
+        try
+        {
+            const source = buildNormalizedPath(sourcePath);
+            const target = buildNormalizedPath(targetDirectory);
+            if (!exists(source))
+            {
+                _statusText = "Cannot move missing item: " ~ source;
+                return "";
+            }
+            if (!exists(target) || !isDir(target))
+            {
+                _statusText = "Cannot move to unavailable folder: " ~ target;
+                return "";
+            }
+            if (pathsEqual(source, target))
+            {
+                _statusText = "Cannot move a folder into itself.";
+                return "";
+            }
+            if (pathsEqual(dirName(source), target))
+            {
+                _statusText = baseName(source) ~ " is already in " ~ folderDisplayName(target) ~ ".";
+                return "";
+            }
+            if (isDir(source) && isSameOrDescendantPath(target, source))
+            {
+                _statusText = "Cannot move a folder into itself.";
+                return "";
+            }
+
+            const name = baseName(source);
+            if (name.length == 0)
+            {
+                _statusText = "Cannot move a drive root.";
+                return "";
+            }
+
+            const destination = uniqueDestinationPath(target, name);
+            movePath(source, destination);
+            return destination;
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot move item: " ~ error.msg;
+            return "";
+        }
     }
 
     private void updateGeometry()
@@ -501,18 +774,21 @@ final class WindowsFileManagerRoot : Widget
         addNavigation("Videos", buildNormalizedPath(home, "Videos"), IconKind.music, true);
         addDocumentFolders(documents, 12);
         addNavigation("OneDrive - Personal", buildNormalizedPath(home, "OneDrive"), IconKind.drive, false);
-        addNavigation("This PC", rootPathFor(home), IconKind.computer, false);
-        addNavigation("Network", rootPathFor(home), IconKind.drive, false);
+        addNavigation("This PC", rootPathFor(home), IconKind.computer, false,
+            NavigationKind.thisPc, true);
+        addNavigation("Network", "", IconKind.drive, false, NavigationKind.network, true);
     }
 
-    private void addNavigation(string label, string path, IconKind icon, bool pinned)
+    private void addNavigation(string label, string path, IconKind icon, bool pinned,
+        NavigationKind kind = NavigationKind.folder, bool forceEnabled = false)
     {
         NavigationItem item;
         item.label = label;
         item.path = path;
         item.icon = icon;
+        item.kind = kind;
         item.pinned = pinned;
-        item.enabled = path.length > 0 && exists(path) && isDir(path);
+        item.enabled = forceEnabled || (path.length > 0 && exists(path) && isDir(path));
         _navigation ~= item;
     }
 
@@ -534,6 +810,7 @@ final class WindowsFileManagerRoot : Widget
                     nav.label = name;
                     nav.path = item.name;
                     nav.icon = IconKind.folder;
+                    nav.kind = NavigationKind.folder;
                     nav.enabled = true;
                     nav.pinned = true;
                     added ~= nav;
@@ -705,6 +982,11 @@ final class WindowsFileManagerRoot : Widget
     {
         if (index < 0 || index >= cast(int) _navigation.length) return;
         const item = _navigation[cast(size_t) index];
+        if (item.kind == NavigationKind.network)
+        {
+            openNetworkLocation();
+            return;
+        }
         if (!item.enabled)
         {
             _statusText = item.label ~ " is not available.";
@@ -712,6 +994,13 @@ final class WindowsFileManagerRoot : Widget
             return;
         }
         navigate(item.path, true, true);
+    }
+
+    private bool navigationItemSelected(const NavigationItem item) const
+    {
+        if (!item.enabled) return false;
+        if (item.kind == NavigationKind.network) return false;
+        return item.path.length > 0 && pathsEqual(item.path, _currentPath);
     }
 
     private void activateEntry(int visibleIndex)
@@ -860,6 +1149,62 @@ final class WindowsFileManagerRoot : Widget
         return buildNormalizedPath(_currentPath, stem ~ " " ~ format("%d", _entries.length) ~ suffix);
     }
 
+    private static string uniqueDestinationPath(string targetDirectory, string name)
+    {
+        auto candidate = buildNormalizedPath(targetDirectory, name);
+        if (!exists(candidate)) return candidate;
+        foreach (index; 2 .. 1000)
+        {
+            candidate = buildNormalizedPath(targetDirectory,
+                collisionName(name, cast(int) index));
+            if (!exists(candidate)) return candidate;
+        }
+        return buildNormalizedPath(targetDirectory,
+            collisionName(name, 1000));
+    }
+
+    private static string collisionName(string name, int index)
+    {
+        const ext = extension(name);
+        if (ext.length > 0 && ext.length < name.length)
+            return name[0 .. $ - ext.length] ~ " (" ~ format("%d", index) ~ ")" ~ ext;
+        return name ~ " (" ~ format("%d", index) ~ ")";
+    }
+
+    private static void movePath(string source, string destination)
+    {
+        try
+        {
+            renameFile(source, destination);
+        }
+        catch (Exception)
+        {
+            copyPathRecursive(source, destination);
+            removePathRecursive(source);
+        }
+    }
+
+    private static void copyPathRecursive(string source, string destination)
+    {
+        if (isDir(source))
+        {
+            mkdir(destination);
+            foreach (DirEntry item; dirEntries(source, SpanMode.shallow))
+                copyPathRecursive(item.name,
+                    buildNormalizedPath(destination, baseName(item.name)));
+        }
+        else
+            copy(source, destination);
+    }
+
+    private static void removePathRecursive(string path)
+    {
+        if (isDir(path))
+            rmdirRecurse(path);
+        else
+            removeFile(path);
+    }
+
     private void selectPath(string path)
     {
         foreach (visibleIndex, entryIndex; _visibleEntries)
@@ -902,6 +1247,20 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
+    private void openNetworkLocation()
+    {
+        version (Windows)
+        {
+            if (openPathWithSystem("shell:NetworkPlacesFolder"))
+                _statusText = "Opened Network.";
+            else
+                _statusText = "Cannot open Network.";
+        }
+        else
+            _statusText = "Network browsing is not available in this build.";
+        invalidate();
+    }
+
     private void copySelectedPath()
     {
         if (!hasSelection()) return;
@@ -922,7 +1281,7 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
-    private void showContextMenuFor(Point localPosition, Point globalPosition)
+    private void showContextMenuFor(Point localPosition)
     {
         const visibleIndex = entryIndexAt(localPosition);
         if (visibleIndex >= 0)
@@ -954,7 +1313,7 @@ final class WindowsFileManagerRoot : Widget
             delegate() { copyCurrentPath(); });
         items ~= ContextMenuItem.command("Refresh", IconKind.refresh,
             delegate() { refresh(); }, "F5");
-        showContextMenu(this, globalPosition, items);
+        showContextMenu(this, localToGlobal(localPosition), items);
     }
 
     private void updateStatus()
@@ -1198,7 +1557,12 @@ final class WindowsFileManagerRoot : Widget
             if (row.bottom() < _sidebarRowsRect.y || row.y > _sidebarRowsRect.bottom())
                 continue;
 
-            if (item.enabled && pathsEqual(item.path, _currentPath))
+            if (_draggingEntry && cast(int) index == _dropTargetNavigationIndex)
+            {
+                content.fillRect(row, explorerDropTarget);
+                content.strokeRect(row, explorerBlue, 1);
+            }
+            else if (navigationItemSelected(item))
                 content.fillRect(row, explorerSelection);
             else if (!item.enabled)
                 content.fillRect(row, Color.rgba(0, 0, 0, 20));
@@ -1244,7 +1608,12 @@ final class WindowsFileManagerRoot : Widget
             const y = _rowsRect.y + visibleIndex * rowHeight - _scrollY;
             const row = Rect(_rowsRect.x + 20, y,
                 maxInt(0, _usableListWidth - 24), rowHeight);
-            if (visibleIndex == _selectedVisibleIndex)
+            if (_draggingEntry && visibleIndex == _dropTargetVisibleIndex)
+            {
+                rows.fillRect(row, explorerDropTarget);
+                rows.strokeRect(row, explorerBlue, 1);
+            }
+            else if (visibleIndex == _selectedVisibleIndex)
             {
                 rows.fillRect(row, explorerSelection);
                 rows.strokeRect(row, explorerSelectionBorder, 1);
@@ -1265,6 +1634,21 @@ final class WindowsFileManagerRoot : Widget
         }
 
         drawScrollbar(canvas, _listScrollbarRect, _listScrollbarThumbRect);
+    }
+
+    private void drawDragPreview(ref Canvas canvas)
+    {
+        if (!_draggingEntry || !hasDragSource()) return;
+        const entry = dragSourceEntry();
+        const previewWidth = clampInt(52 + cast(int) entry.name.length * 7, 150, 320);
+        const preview = Rect(_dragCurrent.x + 12, _dragCurrent.y + 12,
+            previewWidth, 30);
+        canvas.drawRoundedRect(preview, 2, explorerDragPreview, explorerSelectionBorder, 1);
+        const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
+        drawIcon(canvas, icon, Rect(preview.x + 8, preview.y + 6, 17, 17),
+            explorerText, entry.directory ? folderAccent : fileAccent);
+        drawText(canvas, Rect(preview.x + 32, preview.y, maxInt(0, preview.width - 42),
+            preview.height), entry.name, explorerText, HorizontalAlign.left);
     }
 
     private void drawStatusBar(ref Canvas canvas)
@@ -1439,12 +1823,52 @@ final class WindowsFileManagerRoot : Widget
         return root.length > 0 ? root : path;
     }
 
+    private static string folderDisplayName(string path)
+    {
+        const name = baseName(path);
+        return name.length > 0 ? name : displayRoot(path);
+    }
+
     private static bool pathsEqual(string a, string b)
     {
         version (Windows)
             return icmp(buildNormalizedPath(a), buildNormalizedPath(b)) == 0;
         else
             return buildNormalizedPath(a) == buildNormalizedPath(b);
+    }
+
+    private static bool isSameOrDescendantPath(string candidate, string parent)
+    {
+        if (pathsEqual(candidate, parent)) return true;
+        const normalizedCandidate = ensureTrailingSeparator(buildNormalizedPath(candidate));
+        const normalizedParent = ensureTrailingSeparator(buildNormalizedPath(parent));
+        if (normalizedCandidate.length < normalizedParent.length) return false;
+        version (Windows)
+            return icmp(normalizedCandidate[0 .. normalizedParent.length],
+                normalizedParent) == 0;
+        else
+            return normalizedCandidate[0 .. normalizedParent.length] == normalizedParent;
+    }
+
+    private static string ensureTrailingSeparator(string path)
+    {
+        if (path.length == 0) return pathSeparator();
+        const last = path[$ - 1];
+        if (last == '/' || last == '\\') return path;
+        return path ~ pathSeparator();
+    }
+
+    private static string pathSeparator()
+    {
+        version (Windows)
+            return "\\";
+        else
+            return "/";
+    }
+
+    private static int absInt(int value)
+    {
+        return value < 0 ? -value : value;
     }
 
     private static bool containsInsensitive(string value, string loweredNeedle)
@@ -1635,6 +2059,8 @@ private immutable Color explorerBlue = Color.fromHex(0x005a9e);
 private immutable Color explorerPressed = Color.fromHex(0x303030);
 private immutable Color explorerSelection = Color.fromHex(0x353535);
 private immutable Color explorerSelectionBorder = Color.fromHex(0x5a5a5a);
+private immutable Color explorerDropTarget = Color.fromHex(0x24445f);
+private immutable Color explorerDragPreview = Color.rgba(32, 32, 32, 225);
 private immutable Color explorerStatus = Color.fromHex(0x303030);
 private immutable Color explorerScrollbarTrack = Color.fromHex(0x242424);
 private immutable Color explorerScrollbarThumb = Color.fromHex(0x6a6a6a);
