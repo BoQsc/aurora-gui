@@ -90,13 +90,17 @@
       "targetType": "executable",
       "targetName": "aurora-windows-file-manager",
       "mainSourceFile": "demos/windows_file_manager.d",
+      "versions": [
+        "AuroraWindowsFileManagerApp"
+      ],
       "libs-linux": [
         "X11",
         "dl"
       ],
       "libs-windows": [
         "user32",
-        "gdi32"
+        "gdi32",
+        "shell32"
       ],
       "lflags-osx": [
         "-framework",
@@ -115,13 +119,17 @@
       "targetType": "executable",
       "targetName": "aurora-desktop",
       "mainSourceFile": "demos/desktop_environment.d",
+      "sourceFiles": [
+        "demos/windows_file_manager.d"
+      ],
       "libs-linux": [
         "X11",
         "dl"
       ],
       "libs-windows": [
         "user32",
-        "gdi32"
+        "gdi32",
+        "shell32"
       ],
       "lflags-osx": [
         "-framework",

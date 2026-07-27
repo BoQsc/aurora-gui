@@ -2,13 +2,23 @@ module demos.windows_file_manager;
 
 import aurora;
 import std.algorithm.sorting : sort;
-import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir;
+import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir,
+    mkdir, writeFile = write;
 import std.format : format;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
     rootName;
-import std.process : environment;
+import std.process : Config, environment, spawnProcess;
 import std.string : icmp, toLower;
-import std.utf : toUTF32;
+import std.utf : toUTF16, toUTF16z, toUTF32;
+
+version (Windows)
+{
+    import core.sys.windows.shellapi : ShellExecuteW;
+    import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
+        EmptyClipboard, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+        GMEM_MOVEABLE, OpenClipboard, SetClipboardData;
+    import core.sys.windows.winuser : SW_SHOWNORMAL;
+}
 
 private enum CommandButton
 {
@@ -16,7 +26,19 @@ private enum CommandButton
     back,
     forward,
     up,
-    refresh
+    refresh,
+    newFolder,
+    newTextFile,
+    openSelected,
+    copyPath
+}
+
+private enum SortColumn
+{
+    name,
+    modified,
+    type,
+    size
 }
 
 private struct ExplorerEntry
@@ -40,17 +62,18 @@ private struct NavigationItem
 
 final class WindowsFileManagerRoot : Widget
 {
-    private enum ribbonHeight = 74;
-    private enum addressHeight = 44;
-    private enum statusHeight = 28;
-    private enum sidebarMinimumWidth = 250;
-    private enum sidebarMaximumWidth = 360;
-    private enum rowHeight = 28;
-    private enum sidebarRowHeight = 30;
-    private enum headerHeight = 38;
-    private enum scrollbarWidth = 13;
+    private enum ribbonHeight = 66;
+    private enum addressHeight = 40;
+    private enum statusHeight = 26;
+    private enum sidebarMinimumWidth = 228;
+    private enum sidebarMaximumWidth = 330;
+    private enum rowHeight = 25;
+    private enum sidebarRowHeight = 27;
+    private enum headerHeight = 34;
+    private enum scrollbarWidth = 12;
 
     private GuiWindow _window;
+    private TextField _addressField;
     private TextField _searchField;
     private ExplorerEntry[] _entries;
     private int[] _visibleEntries;
@@ -61,6 +84,8 @@ final class WindowsFileManagerRoot : Widget
     private string[] _history;
     private int _historyIndex = -1;
     private int _selectedVisibleIndex = -1;
+    private SortColumn _sortColumn = SortColumn.name;
+    private bool _sortAscending = true;
     private int _scrollY;
     private int _sidebarScrollY;
     private CommandButton _pressedCommand = CommandButton.none;
@@ -72,8 +97,13 @@ final class WindowsFileManagerRoot : Widget
     private int _sidebarScrollbarGrabScrollY;
 
     private Rect _addressRect;
+    private Rect _addressTextRect;
     private Rect _searchRect;
     private Rect _searchTextRect;
+    private Rect _newFolderRect;
+    private Rect _newTextFileRect;
+    private Rect _openSelectedRect;
+    private Rect _copyPathRect;
     private Rect _sidebarRect;
     private Rect _sidebarRowsRect;
     private Rect _mainRect;
@@ -88,6 +118,17 @@ final class WindowsFileManagerRoot : Widget
     private Rect _listScrollbarThumbRect;
     private Rect _sidebarScrollbarRect;
     private Rect _sidebarScrollbarThumbRect;
+    private Rect _nameHeaderRect;
+    private Rect _dateHeaderRect;
+    private Rect _typeHeaderRect;
+    private Rect _sizeHeaderRect;
+    private int _usableListWidth;
+    private int _dateX;
+    private int _typeX;
+    private int _sizeX;
+    private int _sizeWidth;
+
+    void delegate(string title) onTitleChanged;
 
     this(GuiWindow window, string initialPath = "")
     {
@@ -96,10 +137,18 @@ final class WindowsFileManagerRoot : Widget
         layoutHints().minWidth = 820;
         layoutHints().minHeight = 500;
 
+        _addressField = add(new TextField());
+        _addressField.setTransparentBackground(true);
+        _addressField.setShowBorder(false);
+        _addressField.setPadding(4);
+        _addressField.setTextColor(explorerText);
+        _addressField.onSubmitted = delegate() { submitAddress(); };
+
         _searchField = add(new TextField());
         _searchField.setTransparentBackground(true);
         _searchField.setShowBorder(false);
         _searchField.setPadding(5);
+        _searchField.setTextColor(explorerText);
         _searchField.onChanged = delegate()
         {
             _searchQuery = _searchField.textUtf8();
@@ -122,6 +171,8 @@ final class WindowsFileManagerRoot : Widget
     protected override void onLayout()
     {
         updateGeometry();
+        if (_addressField !is null)
+            _addressField.setBounds(_addressTextRect);
         if (_searchField !is null)
             _searchField.setBounds(_searchTextRect);
     }
@@ -139,15 +190,35 @@ final class WindowsFileManagerRoot : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        if (event.button == MouseButton.right)
+        {
+            requestFocus();
+            showContextMenuFor(event.position, event.globalPosition);
+            return true;
+        }
         if (event.button != MouseButton.left) return false;
         requestFocus();
 
         const command = commandAt(event.position);
-        if (command != CommandButton.none)
+        if (command != CommandButton.none && commandEnabled(command))
         {
             _pressedCommand = command;
             captureMouse();
             invalidate();
+            return true;
+        }
+
+        if (_addressRect.contains(event.position))
+        {
+            _addressField.requestFocus();
+            _addressField.selectAll();
+            return true;
+        }
+
+        const sortColumn = sortColumnAt(event.position);
+        if (sortColumn >= 0)
+        {
+            setSortColumn(cast(SortColumn) sortColumn);
             return true;
         }
 
@@ -238,7 +309,7 @@ final class WindowsFileManagerRoot : Widget
             const pressed = _pressedCommand;
             _pressedCommand = CommandButton.none;
             releaseMouse();
-            if (commandAt(event.position) == pressed)
+            if (commandAt(event.position) == pressed && commandEnabled(pressed))
                 activateCommand(pressed);
             invalidate();
             return true;
@@ -302,12 +373,55 @@ final class WindowsFileManagerRoot : Widget
         }
         if (event.control() || event.meta())
         {
+            if (event.key == Key.l)
+            {
+                _addressField.requestFocus();
+                _addressField.selectAll();
+                return true;
+            }
             if (event.key == Key.f)
             {
                 _searchField.requestFocus();
                 _searchField.selectAll();
                 return true;
             }
+            if (event.key == Key.n)
+            {
+                createNewFolder();
+                return true;
+            }
+            if (event.key == Key.c && _selectedVisibleIndex >= 0)
+            {
+                copySelectedPath();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    override bool onFilesDropped(ref Event event)
+    {
+        if (event.paths.length == 0) return false;
+        const path = event.paths[0];
+        try
+        {
+            if (exists(path) && isDir(path))
+            {
+                navigate(path, true, true);
+                return true;
+            }
+            if (exists(path))
+            {
+                navigate(dirName(path), true, true);
+                selectPath(path);
+                return true;
+            }
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot open dropped item: " ~ error.msg;
+            invalidate();
+            return true;
         }
         return false;
     }
@@ -327,19 +441,49 @@ final class WindowsFileManagerRoot : Widget
         _rowsRect = Rect(_mainRect.x, _mainRect.y + headerHeight, _mainRect.width,
             maxInt(0, _mainRect.height - headerHeight));
 
-        _backRect = Rect(12, ribbonHeight + 7, 28, 30);
-        _forwardRect = Rect(44, ribbonHeight + 7, 28, 30);
-        _upRect = Rect(84, ribbonHeight + 7, 28, 30);
-        const searchWidth = clampInt(w / 5, 170, 270);
-        _searchRect = Rect(maxInt(0, w - searchWidth - 14), ribbonHeight + 7,
-            searchWidth, 30);
-        _refreshRect = Rect(maxInt(120, _searchRect.x - 34), ribbonHeight + 7, 30, 30);
-        _addressRect = Rect(126, ribbonHeight + 7,
-            maxInt(120, _refreshRect.x - 132), 30);
+        _backRect = Rect(10, ribbonHeight + 6, 26, 28);
+        _forwardRect = Rect(39, ribbonHeight + 6, 26, 28);
+        _upRect = Rect(76, ribbonHeight + 6, 26, 28);
+        const searchWidth = clampInt(w / 5, 160, 250);
+        _searchRect = Rect(maxInt(0, w - searchWidth - 12), ribbonHeight + 6,
+            searchWidth, 28);
+        _refreshRect = Rect(maxInt(112, _searchRect.x - 32), ribbonHeight + 6, 28, 28);
+        _addressRect = Rect(116, ribbonHeight + 6,
+            maxInt(110, _refreshRect.x - 122), 28);
+        _addressTextRect = Rect(_addressRect.x + 31, _addressRect.y + 2,
+            maxInt(0, _addressRect.width - 39), maxInt(0, _addressRect.height - 4));
         _searchTextRect = Rect(_searchRect.x + 32, _searchRect.y + 2,
             maxInt(0, _searchRect.width - 38), maxInt(0, _searchRect.height - 4));
+        _newFolderRect = Rect(84, 38, 92, 24);
+        _newTextFileRect = Rect(182, 38, 86, 24);
+        _openSelectedRect = Rect(274, 38, 70, 24);
+        _copyPathRect = Rect(350, 38, 88, 24);
 
+        updateColumnGeometry();
         rebuildScrollbars();
+    }
+
+    private void updateColumnGeometry()
+    {
+        _usableListWidth = maxInt(120, _mainRect.width - scrollbarWidth);
+        const nameWidth = clampInt(_usableListWidth - 415, 240,
+            maxInt(240, _usableListWidth - 250));
+        const dateWidth = 165;
+        const typeWidth = 150;
+        _sizeWidth = 100;
+        const nameX = _mainRect.x + 20;
+        _dateX = _mainRect.x + nameWidth;
+        _typeX = _dateX + dateWidth;
+        _sizeX = _typeX + typeWidth;
+
+        _nameHeaderRect = Rect(nameX, _headerRect.y, maxInt(0, _dateX - nameX),
+            _headerRect.height);
+        _dateHeaderRect = Rect(_dateX + 8, _headerRect.y,
+            maxInt(0, _typeX - _dateX - 8), _headerRect.height);
+        _typeHeaderRect = Rect(_typeX + 8, _headerRect.y,
+            maxInt(0, _sizeX - _typeX - 8), _headerRect.height);
+        _sizeHeaderRect = Rect(_sizeX + 8, _headerRect.y,
+            maxInt(0, _sizeWidth - 8), _headerRect.height);
     }
 
     private void rebuildNavigation()
@@ -441,7 +585,7 @@ final class WindowsFileManagerRoot : Widget
                 }
                 entries ~= entry;
             }
-            sort!entryLess(entries);
+            sortEntries(entries);
             _entries = entries;
             _currentPath = path;
             _selectedVisibleIndex = -1;
@@ -452,6 +596,7 @@ final class WindowsFileManagerRoot : Widget
                 _searchQuery = "";
                 _searchField.setText("", false);
             }
+            _addressField.setText(path, false);
             _searchField.setPlaceholder(searchPlaceholder());
 
             if (addHistory)
@@ -500,10 +645,60 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
-    private static bool entryLess(ExplorerEntry a, ExplorerEntry b)
+    private void sortEntries(ref ExplorerEntry[] entries)
     {
-        if (a.directory != b.directory) return a.directory;
-        return icmp(a.name, b.name) < 0;
+        sort!((a, b) => compareEntries(a, b) < 0)(entries);
+    }
+
+    private int compareEntries(ExplorerEntry a, ExplorerEntry b) const
+    {
+        if (a.directory != b.directory) return a.directory ? -1 : 1;
+
+        int result;
+        final switch (_sortColumn)
+        {
+            case SortColumn.name:
+                result = icmp(a.name, b.name);
+                break;
+            case SortColumn.modified:
+                result = icmp(a.modified, b.modified);
+                break;
+            case SortColumn.type:
+                result = icmp(a.type, b.type);
+                break;
+            case SortColumn.size:
+                if (a.size < b.size) result = -1;
+                else if (a.size > b.size) result = 1;
+                else result = 0;
+                break;
+        }
+        if (result == 0) result = icmp(a.name, b.name);
+        return _sortAscending ? result : -result;
+    }
+
+    private int sortColumnAt(Point point) const
+    {
+        if (_nameHeaderRect.contains(point)) return cast(int) SortColumn.name;
+        if (_dateHeaderRect.contains(point)) return cast(int) SortColumn.modified;
+        if (_typeHeaderRect.contains(point)) return cast(int) SortColumn.type;
+        if (_sizeHeaderRect.contains(point)) return cast(int) SortColumn.size;
+        return -1;
+    }
+
+    private void setSortColumn(SortColumn column)
+    {
+        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        if (_sortColumn == column)
+            _sortAscending = !_sortAscending;
+        else
+        {
+            _sortColumn = column;
+            _sortAscending = true;
+        }
+        sortEntries(_entries);
+        rebuildVisibleEntries();
+        if (selectedPath.length > 0)
+            selectPath(selectedPath);
     }
 
     private void activateNavigation(int index)
@@ -526,10 +721,7 @@ final class WindowsFileManagerRoot : Widget
         if (entry.directory)
             navigate(entry.path, true, true);
         else
-        {
-            _statusText = entry.name ~ " selected";
-            invalidate();
-        }
+            openPath(entry.path);
     }
 
     private void activateCommand(CommandButton command)
@@ -549,6 +741,18 @@ final class WindowsFileManagerRoot : Widget
                 break;
             case CommandButton.refresh:
                 refresh();
+                break;
+            case CommandButton.newFolder:
+                createNewFolder();
+                break;
+            case CommandButton.newTextFile:
+                createNewTextFile();
+                break;
+            case CommandButton.openSelected:
+                if (_selectedVisibleIndex >= 0) activateEntry(_selectedVisibleIndex);
+                break;
+            case CommandButton.copyPath:
+                copySelectedPath();
                 break;
         }
     }
@@ -579,6 +783,180 @@ final class WindowsFileManagerRoot : Widget
         navigate(_currentPath, false, false);
     }
 
+    private void submitAddress()
+    {
+        const requested = _addressField.textUtf8();
+        navigate(requested, true, true);
+        _addressField.setText(_currentPath, false);
+        requestFocus();
+    }
+
+    private bool hasSelection() const
+    {
+        return _selectedVisibleIndex >= 0 &&
+            _selectedVisibleIndex < cast(int) _visibleEntries.length;
+    }
+
+    private ExplorerEntry selectedEntry() const
+    {
+        if (!hasSelection()) return ExplorerEntry.init;
+        return _entries[cast(size_t) _visibleEntries[cast(size_t) _selectedVisibleIndex]];
+    }
+
+    private void createNewFolder()
+    {
+        createDirectoryItem(uniqueChildPath("New folder", ""));
+    }
+
+    private void createNewTextFile()
+    {
+        createFileItem(uniqueChildPath("New Text Document", ".txt"));
+    }
+
+    private void createDirectoryItem(string path)
+    {
+        try
+        {
+            mkdir(path);
+            navigate(_currentPath, false, true);
+            selectPath(path);
+            _statusText = "Created " ~ baseName(path);
+            invalidate();
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot create folder: " ~ error.msg;
+            invalidate();
+        }
+    }
+
+    private void createFileItem(string path)
+    {
+        try
+        {
+            writeFile(path, "");
+            navigate(_currentPath, false, true);
+            selectPath(path);
+            _statusText = "Created " ~ baseName(path);
+            invalidate();
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot create file: " ~ error.msg;
+            invalidate();
+        }
+    }
+
+    private string uniqueChildPath(string stem, string suffix) const
+    {
+        auto candidate = buildNormalizedPath(_currentPath, stem ~ suffix);
+        if (!exists(candidate)) return candidate;
+        foreach (index; 2 .. 1000)
+        {
+            candidate = buildNormalizedPath(_currentPath,
+                stem ~ " (" ~ format("%d", index) ~ ")" ~ suffix);
+            if (!exists(candidate)) return candidate;
+        }
+        return buildNormalizedPath(_currentPath, stem ~ " " ~ format("%d", _entries.length) ~ suffix);
+    }
+
+    private void selectPath(string path)
+    {
+        foreach (visibleIndex, entryIndex; _visibleEntries)
+        {
+            if (pathsEqual(_entries[cast(size_t) entryIndex].path, path))
+            {
+                _selectedVisibleIndex = cast(int) visibleIndex;
+                ensureSelectionVisible();
+                updateSelectedStatus();
+                invalidate();
+                return;
+            }
+        }
+    }
+
+    private void ensureSelectionVisible()
+    {
+        if (!hasSelection()) return;
+        const top = _selectedVisibleIndex * rowHeight;
+        const bottom = top + rowHeight;
+        if (top < _scrollY)
+            setListScroll(top);
+        else if (bottom > _scrollY + _rowsRect.height)
+            setListScroll(bottom - _rowsRect.height);
+    }
+
+    private void openPath(string path)
+    {
+        try
+        {
+            if (openPathWithSystem(path))
+                _statusText = "Opened " ~ baseName(path);
+            else
+                _statusText = "No system opener is available for " ~ baseName(path);
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot open item: " ~ error.msg;
+        }
+        invalidate();
+    }
+
+    private void copySelectedPath()
+    {
+        if (!hasSelection()) return;
+        const entry = selectedEntry();
+        if (writeClipboardText(entry.path))
+            _statusText = "Copied path for " ~ entry.name;
+        else
+            _statusText = "Clipboard is not available.";
+        invalidate();
+    }
+
+    private void copyCurrentPath()
+    {
+        if (writeClipboardText(_currentPath))
+            _statusText = "Copied current folder path.";
+        else
+            _statusText = "Clipboard is not available.";
+        invalidate();
+    }
+
+    private void showContextMenuFor(Point localPosition, Point globalPosition)
+    {
+        const visibleIndex = entryIndexAt(localPosition);
+        if (visibleIndex >= 0)
+        {
+            _selectedVisibleIndex = visibleIndex;
+            updateSelectedStatus();
+            invalidate();
+        }
+
+        ContextMenuItem[] items;
+        if (hasSelection())
+        {
+            const entry = selectedEntry();
+            items ~= ContextMenuItem.command("Open", IconKind.open,
+                delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+            if (!entry.directory)
+                items ~= ContextMenuItem.command("Open with system", IconKind.open,
+                    delegate() { openPath(entry.path); });
+            items ~= ContextMenuItem.command("Copy path", IconKind.file,
+                delegate() { copySelectedPath(); }, "Ctrl+C");
+            items ~= ContextMenuItem.separatorItem();
+        }
+        items ~= ContextMenuItem.command("New folder", IconKind.folder,
+            delegate() { createNewFolder(); }, "Ctrl+N");
+        items ~= ContextMenuItem.command("New text file", IconKind.newDocument,
+            delegate() { createNewTextFile(); });
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Copy current path", IconKind.file,
+            delegate() { copyCurrentPath(); });
+        items ~= ContextMenuItem.command("Refresh", IconKind.refresh,
+            delegate() { refresh(); }, "F5");
+        showContextMenu(this, globalPosition, items);
+    }
+
     private void updateStatus()
     {
         if (_searchQuery.length > 0)
@@ -606,7 +984,16 @@ final class WindowsFileManagerRoot : Widget
         string title = baseName(_currentPath);
         if (title.length == 0) title = displayRoot(_currentPath);
         if (title.length == 0) title = "File Manager";
-        _window.setTitle(title ~ " - Aurora Windows File Manager");
+        const fullTitle = title ~ " - Aurora Windows File Manager";
+        if (_window !is null)
+            _window.setTitle(fullTitle);
+        if (onTitleChanged !is null)
+            onTitleChanged(fullTitle);
+    }
+
+    void publishTitle()
+    {
+        updateWindowTitle();
     }
 
     private CommandButton commandAt(Point point) const
@@ -615,7 +1002,32 @@ final class WindowsFileManagerRoot : Widget
         if (_forwardRect.contains(point)) return CommandButton.forward;
         if (_upRect.contains(point)) return CommandButton.up;
         if (_refreshRect.contains(point)) return CommandButton.refresh;
+        if (_newFolderRect.contains(point)) return CommandButton.newFolder;
+        if (_newTextFileRect.contains(point)) return CommandButton.newTextFile;
+        if (_openSelectedRect.contains(point)) return CommandButton.openSelected;
+        if (_copyPathRect.contains(point)) return CommandButton.copyPath;
         return CommandButton.none;
+    }
+
+    private bool commandEnabled(CommandButton command) const
+    {
+        final switch (command)
+        {
+            case CommandButton.none:
+                return false;
+            case CommandButton.back:
+                return canGoBack();
+            case CommandButton.forward:
+                return canGoForward();
+            case CommandButton.up:
+            case CommandButton.refresh:
+            case CommandButton.newFolder:
+            case CommandButton.newTextFile:
+                return _currentPath.length > 0 && exists(_currentPath) && isDir(_currentPath);
+            case CommandButton.openSelected:
+            case CommandButton.copyPath:
+                return hasSelection();
+        }
     }
 
     private int navigationIndexAt(Point point) const
@@ -724,21 +1136,30 @@ final class WindowsFileManagerRoot : Widget
     private void drawRibbon(ref Canvas canvas)
     {
         canvas.fillRect(Rect(0, 0, bounds().width, ribbonHeight), explorerBlack);
-        canvas.fillRect(Rect(0, 38, bounds().width, 1), explorerLine);
+        canvas.fillRect(Rect(0, 34, bounds().width, 1), explorerLine);
         canvas.fillRect(Rect(0, ribbonHeight - 1, bounds().width, 1), explorerLine);
 
-        canvas.fillRect(Rect(0, 0, 72, 38), explorerBlue);
-        drawText(canvas, Rect(0, 0, 72, 38), "File", explorerText,
+        canvas.fillRect(Rect(0, 0, 70, 34), explorerBlue);
+        drawText(canvas, Rect(0, 0, 70, 34), "File", explorerText,
             HorizontalAlign.center);
 
-        drawText(canvas, Rect(84, 0, 70, 38), "Home", explorerText,
+        drawText(canvas, Rect(82, 0, 62, 34), "Home", explorerText,
             HorizontalAlign.left);
-        drawText(canvas, Rect(158, 0, 70, 38), "Share", explorerText,
+        drawText(canvas, Rect(150, 0, 62, 34), "Share", explorerText,
             HorizontalAlign.left);
-        drawText(canvas, Rect(232, 0, 70, 38), "View", explorerText,
+        drawText(canvas, Rect(218, 0, 62, 34), "View", explorerText,
             HorizontalAlign.left);
 
-        canvas.fillRect(Rect(0, 39, bounds().width, 35), explorerBlack);
+        canvas.fillRect(Rect(0, 35, bounds().width, maxInt(0, ribbonHeight - 35)),
+            explorerBlack);
+        drawCommandButton(canvas, _newFolderRect, CommandButton.newFolder,
+            IconKind.folder, "New folder", true);
+        drawCommandButton(canvas, _newTextFileRect, CommandButton.newTextFile,
+            IconKind.newDocument, "New file", true);
+        drawCommandButton(canvas, _openSelectedRect, CommandButton.openSelected,
+            IconKind.open, "Open", hasSelection());
+        drawCommandButton(canvas, _copyPathRect, CommandButton.copyPath,
+            IconKind.file, "Copy path", hasSelection());
     }
 
     private void drawAddressBar(ref Canvas canvas)
@@ -751,16 +1172,13 @@ final class WindowsFileManagerRoot : Widget
         drawUpButton(canvas, _upRect);
 
         canvas.drawRoundedRect(_addressRect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.folder, Rect(_addressRect.x + 8, _addressRect.y + 6, 18, 18),
+        drawIcon(canvas, IconKind.folder, Rect(_addressRect.x + 8, _addressRect.y + 6, 16, 16),
             explorerText, folderAccent);
-        drawText(canvas, Rect(_addressRect.x + 34, _addressRect.y,
-            maxInt(0, _addressRect.width - 42), _addressRect.height),
-            breadcrumbText(_currentPath), explorerText, HorizontalAlign.left);
 
         drawRefreshButton(canvas, _refreshRect);
 
         canvas.drawRoundedRect(_searchRect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.search, Rect(_searchRect.x + 9, _searchRect.y + 7, 16, 16),
+        drawIcon(canvas, IconKind.search, Rect(_searchRect.x + 9, _searchRect.y + 7, 15, 15),
             explorerMuted, explorerMuted);
     }
 
@@ -786,13 +1204,13 @@ final class WindowsFileManagerRoot : Widget
                 content.fillRect(row, Color.rgba(0, 0, 0, 20));
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
-            drawIcon(content, item.icon, Rect(row.x + 42, row.y + 6, 18, 18),
+            drawIcon(content, item.icon, Rect(row.x + 36, row.y + 5, 17, 17),
                 textColor, folderAccent);
-            drawText(content, Rect(row.x + 68, row.y, maxInt(0, row.width - 96),
+            drawText(content, Rect(row.x + 60, row.y, maxInt(0, row.width - 86),
                 row.height), item.label, textColor, HorizontalAlign.left);
 
             if (item.pinned)
-                drawPin(content, Rect(row.right() - 24, row.y + 8, 12, 12),
+                drawPin(content, Rect(row.right() - 22, row.y + 7, 11, 11),
                     explorerMuted);
         }
 
@@ -806,28 +1224,14 @@ final class WindowsFileManagerRoot : Widget
         canvas.fillRect(Rect(_headerRect.x, _headerRect.bottom() - 1,
             _headerRect.width, 1), explorerLine);
 
-        const usableWidth = maxInt(120, _mainRect.width - scrollbarWidth);
-        const nameWidth = clampInt(usableWidth - 460, 260, maxInt(260, usableWidth - 280));
-        const dateWidth = 180;
-        const typeWidth = 170;
-        const sizeWidth = 110;
-        const nameX = _mainRect.x + 24;
-        const dateX = _mainRect.x + nameWidth;
-        const typeX = dateX + dateWidth;
-        const sizeX = typeX + typeWidth;
-
-        drawHeaderCell(canvas, Rect(nameX, _headerRect.y, maxInt(0, dateX - nameX),
-            _headerRect.height), "Name");
-        drawHeaderCell(canvas, Rect(dateX + 8, _headerRect.y,
-            maxInt(0, typeX - dateX - 8), _headerRect.height), "Date modified");
-        drawHeaderCell(canvas, Rect(typeX + 8, _headerRect.y,
-            maxInt(0, sizeX - typeX - 8), _headerRect.height), "Type");
-        drawHeaderCell(canvas, Rect(sizeX + 8, _headerRect.y,
-            maxInt(0, sizeWidth - 8), _headerRect.height), "Size");
-        canvas.fillRect(Rect(dateX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(typeX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(sizeX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(sizeX + sizeWidth, _headerRect.y, 1, _headerRect.height),
+        drawHeaderCell(canvas, _nameHeaderRect, "Name", SortColumn.name);
+        drawHeaderCell(canvas, _dateHeaderRect, "Date modified", SortColumn.modified);
+        drawHeaderCell(canvas, _typeHeaderRect, "Type", SortColumn.type);
+        drawHeaderCell(canvas, _sizeHeaderRect, "Size", SortColumn.size);
+        canvas.fillRect(Rect(_dateX, _headerRect.y, 1, _headerRect.height), explorerLine);
+        canvas.fillRect(Rect(_typeX, _headerRect.y, 1, _headerRect.height), explorerLine);
+        canvas.fillRect(Rect(_sizeX, _headerRect.y, 1, _headerRect.height), explorerLine);
+        canvas.fillRect(Rect(_sizeX + _sizeWidth, _headerRect.y, 1, _headerRect.height),
             explorerLine);
 
         auto rows = canvas.clipped(_rowsRect);
@@ -838,7 +1242,8 @@ final class WindowsFileManagerRoot : Widget
         {
             const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
             const y = _rowsRect.y + visibleIndex * rowHeight - _scrollY;
-            const row = Rect(_rowsRect.x + 20, y, maxInt(0, usableWidth - 24), rowHeight);
+            const row = Rect(_rowsRect.x + 20, y,
+                maxInt(0, _usableListWidth - 24), rowHeight);
             if (visibleIndex == _selectedVisibleIndex)
             {
                 rows.fillRect(row, explorerSelection);
@@ -846,15 +1251,15 @@ final class WindowsFileManagerRoot : Widget
             }
 
             const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
-            drawIcon(rows, icon, Rect(row.x + 7, row.y + 5, 18, 18), explorerText,
+            drawIcon(rows, icon, Rect(row.x + 6, row.y + 4, 17, 17), explorerText,
                 entry.directory ? folderAccent : fileAccent);
-            drawText(rows, Rect(row.x + 31, row.y, maxInt(0, dateX - row.x - 39),
+            drawText(rows, Rect(row.x + 28, row.y, maxInt(0, _dateX - row.x - 35),
                 row.height), entry.name, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(dateX + 8, row.y, maxInt(0, typeX - dateX - 14),
+            drawText(rows, Rect(_dateX + 8, row.y, maxInt(0, _typeX - _dateX - 14),
                 row.height), entry.modified, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(typeX + 8, row.y, maxInt(0, sizeX - typeX - 14),
+            drawText(rows, Rect(_typeX + 8, row.y, maxInt(0, _sizeX - _typeX - 14),
                 row.height), entry.type, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(sizeX + 8, row.y, maxInt(0, sizeWidth - 16),
+            drawText(rows, Rect(_sizeX + 8, row.y, maxInt(0, _sizeWidth - 16),
                 row.height), entry.directory ? "" : humanSize(entry.size),
                 explorerText, HorizontalAlign.right);
         }
@@ -892,7 +1297,7 @@ final class WindowsFileManagerRoot : Widget
     {
         if (_pressedCommand == CommandButton.up)
             canvas.fillRect(rect, explorerPressed);
-        drawIcon(canvas, IconKind.up, Rect(rect.x + 5, rect.y + 5, 20, 20),
+        drawIcon(canvas, IconKind.up, Rect(rect.x + 5, rect.y + 5, 18, 18),
             explorerText, explorerText);
     }
 
@@ -901,13 +1306,34 @@ final class WindowsFileManagerRoot : Widget
         if (_pressedCommand == CommandButton.refresh)
             canvas.fillRect(rect, explorerPressed);
         canvas.drawRoundedRect(rect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.refresh, Rect(rect.x + 6, rect.y + 6, 18, 18),
+        drawIcon(canvas, IconKind.refresh, Rect(rect.x + 6, rect.y + 6, 16, 16),
             explorerMuted, explorerText);
     }
 
-    private void drawHeaderCell(ref Canvas canvas, Rect rect, string text)
+    private void drawCommandButton(ref Canvas canvas, Rect rect, CommandButton command,
+        IconKind icon, string label, bool enabled)
     {
-        drawText(canvas, rect.inset(4, 0, 4, 0), text, explorerText,
+        const pressed = _pressedCommand == command;
+        if (pressed)
+            canvas.fillRect(rect, explorerPressed);
+        else
+            canvas.fillRect(rect, Color.rgba(255, 255, 255, 10));
+        canvas.strokeRect(rect, enabled ? explorerFieldBorder.withAlpha(150) :
+            explorerFieldBorder.withAlpha(70), 1);
+        const foreground = enabled ? explorerText : explorerDisabled;
+        drawIcon(canvas, icon, Rect(rect.x + 5, rect.y + 4, 16, 16),
+            foreground, folderAccent);
+        drawText(canvas, Rect(rect.x + 25, rect.y, maxInt(0, rect.width - 29),
+            rect.height), label, foreground, HorizontalAlign.left);
+    }
+
+    private void drawHeaderCell(ref Canvas canvas, Rect rect, string text,
+        SortColumn column)
+    {
+        const label = _sortColumn == column
+            ? text ~ (_sortAscending ? " ^" : " v")
+            : text;
+        drawText(canvas, rect.inset(4, 0, 4, 0), label, explorerText,
             HorizontalAlign.left);
     }
 
@@ -1111,6 +1537,67 @@ private string toUpperAscii(string value)
     return cast(string) result;
 }
 
+private string processClipboardText;
+
+private bool writeClipboardText(string value)
+{
+    processClipboardText = value;
+    version (Windows)
+        return writeSystemClipboardText(value);
+    else
+        return true;
+}
+
+version (Windows)
+private bool writeSystemClipboardText(string value)
+{
+    if (!OpenClipboard(null)) return false;
+    scope (exit) CloseClipboard();
+    if (!EmptyClipboard()) return false;
+
+    auto encoded = toUTF16(value);
+    const bytes = (encoded.length + 1) * wchar.sizeof;
+    auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory is null) return false;
+    auto text = cast(wchar*) GlobalLock(memory);
+    if (text is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    foreach (index, ch; encoded)
+        text[index] = ch;
+    text[encoded.length] = 0;
+    GlobalUnlock(memory);
+
+    if (SetClipboardData(CF_UNICODETEXT, memory) is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    return true;
+}
+
+private bool openPathWithSystem(string path)
+{
+    version (Windows)
+    {
+        auto result = ShellExecuteW(null, "open".toUTF16z, path.toUTF16z,
+            null, null, SW_SHOWNORMAL);
+        return cast(size_t) result > 32;
+    }
+    else version (OSX)
+    {
+        spawnProcess(["open", path], null, Config.detached);
+        return true;
+    }
+    else
+    {
+        spawnProcess(["xdg-open", path], null, Config.detached);
+        return true;
+    }
+}
+
 private Theme explorerTheme()
 {
     auto theme = Theme.dark();
@@ -1154,6 +1641,7 @@ private immutable Color explorerScrollbarThumb = Color.fromHex(0x6a6a6a);
 private immutable Color folderAccent = Color.fromHex(0xf4d35e);
 private immutable Color fileAccent = Color.fromHex(0x78aee8);
 
+version (AuroraWindowsFileManagerApp)
 int main(string[] args)
 {
     WindowOptions options;

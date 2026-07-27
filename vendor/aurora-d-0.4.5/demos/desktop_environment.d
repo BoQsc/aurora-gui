@@ -1,6 +1,7 @@
 module demos.desktop_environment;
 
 import aurora;
+import demos.windows_file_manager : WindowsFileManagerRoot;
 import std.conv : to;
 import std.utf : toUTF8;
 
@@ -101,32 +102,15 @@ final class DesktopEnvironmentRoot : Widget
 
     private void buildFilesWindow()
     {
-        auto content = new VBox(6, Insets(7));
-        auto toolbar = content.add(new HBox(5));
-        toolbar.layoutHints().preferredHeight = 40;
-        toolbar.add(new Button("Up", IconKind.up));
-        toolbar.add(new Button("Refresh", IconKind.refresh));
-        auto path = toolbar.add(new TextField("/home/demo"));
-        path.layoutHints().flex = 1.0;
-
-        auto files = content.add(new ListView());
-        files.setItems([
-            ListItem("Documents", IconKind.folder, "Folder"),
-            ListItem("Pictures", IconKind.folder, "Folder"),
-            ListItem("Music", IconKind.folder, "Folder"),
-            ListItem("project-notes.txt", IconKind.notepad, "4.2 KiB"),
-            ListItem("wallpaper.png", IconKind.image, "1.8 MiB"),
-            ListItem("theme.d", IconKind.file, "12.7 KiB")
-        ]);
-        files.onActivated = delegate(int index)
-        {
-            if (index >= 0)
-                showMessage("Opened " ~ toUTF8(files.items()[cast(size_t) index].text));
-        };
-
+        auto content = new WindowsFileManagerRoot(null);
         _filesWindow = _desktop.addWindow(
             new FloatingWindow("File Explorer", IconKind.folder, content));
-        _filesWindow.setBounds(Rect(540, 125, 590, 430));
+        content.onTitleChanged = delegate(string title)
+        {
+            if (_filesWindow !is null) _filesWindow.setTitle(title);
+        };
+        content.publishTitle();
+        _filesWindow.setBounds(Rect(170, 82, 930, 570));
         connectWindow(_filesWindow);
     }
 
