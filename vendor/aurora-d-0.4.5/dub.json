@@ -86,6 +86,31 @@
       ]
     },
     {
+      "name": "windows-file-manager",
+      "targetType": "executable",
+      "targetName": "aurora-windows-file-manager",
+      "mainSourceFile": "demos/windows_file_manager.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
       "name": "desktop",
       "targetType": "executable",
       "targetName": "aurora-desktop",
