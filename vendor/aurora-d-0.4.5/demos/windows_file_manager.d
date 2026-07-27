@@ -3,7 +3,8 @@ module demos.windows_file_manager;
 import aurora;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, copy, dirEntries, exists, getcwd, isDir,
-    mkdir, removeFile = remove, renameFile = rename, rmdirRecurse, writeFile = write;
+    mkdir, removeFile = remove, renameFile = rename, rmdirRecurse, thisExePath,
+    writeFile = write;
 import std.format : format;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
     rootName;
@@ -2226,6 +2227,37 @@ private immutable Color explorerScrollbarThumb = Color.fromHex(0x6a6a6a);
 private immutable Color folderAccent = Color.fromHex(0xf4d35e);
 private immutable Color fileAccent = Color.fromHex(0x78aee8);
 
+private string windowsFileManagerIconPath()
+{
+    string[] basePaths = [getcwd()];
+
+    try
+    {
+        const exePath = thisExePath();
+        if (exePath.length)
+            basePaths ~= dirName(exePath);
+    }
+    catch (Exception)
+    {
+    }
+
+    foreach (basePath; basePaths)
+    {
+        foreach (relativePath; [
+            "resources/windows/windows_file_manager.ico",
+            "../resources/windows/windows_file_manager.ico",
+            "../../resources/windows/windows_file_manager.ico"
+        ])
+        {
+            const candidate = buildNormalizedPath(basePath, relativePath);
+            if (exists(candidate))
+                return candidate;
+        }
+    }
+
+    return "";
+}
+
 version (AuroraWindowsFileManagerApp)
 int main(string[] args)
 {
@@ -2234,6 +2266,7 @@ int main(string[] args)
     options.width = 1280;
     options.height = 760;
     options.darkTitleBar = true;
+    options.iconPath = windowsFileManagerIconPath();
     auto window = new GuiWindow(options, explorerTheme());
     const initial = args.length > 1 ? args[1] : "";
     window.setRoot(new WindowsFileManagerRoot(window, initial));
