@@ -37,6 +37,7 @@ public import aurora.widgets.basic;
 public import aurora.widgets.button;
 public import aurora.widgets.contextmenu;
 public import aurora.widgets.desktop;
+public import aurora.widgets.filedialog;
 public import aurora.widgets.label;
 public import aurora.widgets.listview;
 public import aurora.widgets.popup;

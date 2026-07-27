@@ -8,11 +8,11 @@ import std.path : baseName;
 final class NotepadRoot : VBox
 {
     private GuiWindow _window;
-    private TextField _path;
     private TextArea _editor;
     private Label _status;
     private Button _wrapButton;
     private Button _themeButton;
+    private string _currentPath;
     private bool _dirty;
     private bool _dark;
     private bool _wrap;
@@ -21,6 +21,7 @@ final class NotepadRoot : VBox
     {
         super(7, Insets(8));
         _window = window;
+        _currentPath = initialPath;
 
         auto toolbar = add(new HBox(6));
         toolbar.layoutHints().preferredHeight = 42;
@@ -34,12 +35,6 @@ final class NotepadRoot : VBox
         saveButton.onClick = delegate() { saveDocument(); };
 
         toolbar.add(new Separator(Orientation.vertical));
-        _path = toolbar.add(new TextField(initialPath));
-        _path.setPlaceholder("Path to a UTF-8 text file");
-        _path.layoutHints().flex = 1.0;
-        _path.layoutHints().preferredWidth = 320;
-        _path.onSubmitted = delegate() { openDocument(); };
-
         _wrapButton = toolbar.add(new Button("Wrap"));
         _wrapButton.onClick = delegate() { toggleWrap(); };
         _themeButton = toolbar.add(new Button("Dark", IconKind.settings));
@@ -68,7 +63,7 @@ final class NotepadRoot : VBox
     private void newDocument()
     {
         _editor.setText("", false);
-        _path.setText("", false);
+        _currentPath = "";
         _dirty = false;
         _status.setText("New document");
         updateTitle();
@@ -77,14 +72,20 @@ final class NotepadRoot : VBox
 
     private void openDocument()
     {
-        const path = _path.textUtf8();
-        if (path.length == 0)
+        FileDialogOptions options;
+        options.mode = FileDialogMode.open;
+        options.title = "Open Text File";
+        options.initialPath = _currentPath;
+        options.acceptLabel = "Open";
+        showFileDialog(this, options, delegate(string path)
         {
-            _status.setText("Enter a path, then press Open or Enter.");
-            _path.requestFocus();
-            return;
-        }
-        loadPath(path);
+            loadPath(path);
+        },
+        delegate()
+        {
+            _status.setText("Open canceled.");
+            _editor.requestFocus();
+        });
     }
 
     private void loadPath(string path)
@@ -99,7 +100,7 @@ final class NotepadRoot : VBox
             const text = readText(path);
             _editor.setText(text, false);
             _editor.setCursorIndex(0);
-            _path.setText(path, false);
+            _currentPath = path;
             _dirty = false;
             _status.setText("Opened " ~ path);
             updateStatus();
@@ -113,16 +114,41 @@ final class NotepadRoot : VBox
 
     private void saveDocument()
     {
-        const path = _path.textUtf8();
+        auto path = _currentPath;
         if (path.length == 0)
         {
-            _status.setText("Enter a destination path first.");
-            _path.requestFocus();
+            showSaveDialog();
             return;
         }
+        saveToPath(path);
+    }
+
+    private void showSaveDialog()
+    {
+        FileDialogOptions options;
+        options.mode = FileDialogMode.save;
+        options.title = "Save Text File";
+        options.initialPath = _currentPath.length > 0 ? _currentPath :
+            "Untitled.txt";
+        options.defaultFileName = "Untitled.txt";
+        options.acceptLabel = "Save";
+        showFileDialog(this, options, delegate(string path)
+        {
+            saveToPath(path);
+        },
+        delegate()
+        {
+            _status.setText("Save canceled.");
+            _editor.requestFocus();
+        });
+    }
+
+    private void saveToPath(string path)
+    {
         try
         {
             write(path, _editor.textUtf8());
+            _currentPath = path;
             _dirty = false;
             _status.setText("Saved " ~ path);
             updateStatus();
@@ -161,7 +187,7 @@ final class NotepadRoot : VBox
 
     private void updateTitle()
     {
-        auto path = _path.textUtf8();
+        auto path = _currentPath;
         const name = path.length == 0 ? "Untitled" : baseName(path);
         _window.setTitle((_dirty ? "*" : "") ~ name ~ " — Aurora Notepad");
     }
@@ -176,7 +202,7 @@ final class NotepadRoot : VBox
         }
         if (shortcut && event.key == Key.o)
         {
-            _path.requestFocus();
+            openDocument();
             return true;
         }
         if (shortcut && event.key == Key.n)
