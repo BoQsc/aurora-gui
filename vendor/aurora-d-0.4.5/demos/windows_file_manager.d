@@ -70,6 +70,9 @@ private struct NavigationItem
 
 final class WindowsFileManagerRoot : Widget
 {
+    private enum defaultUiZoomPercent = 80;
+    private enum minimumUiZoomPercent = 80;
+    private enum maximumUiZoomPercent = 125;
     private enum ribbonHeight = 66;
     private enum addressHeight = 40;
     private enum statusHeight = 26;
@@ -91,6 +94,7 @@ final class WindowsFileManagerRoot : Widget
     private string _statusText = "Ready";
     private string[] _history;
     private int _historyIndex = -1;
+    private int _uiZoomPercent = defaultUiZoomPercent;
     private int _selectedVisibleIndex = -1;
     private SortColumn _sortColumn = SortColumn.name;
     private bool _sortAscending = true;
@@ -149,20 +153,20 @@ final class WindowsFileManagerRoot : Widget
     {
         _window = window;
         setFocusable(true);
-        layoutHints().minWidth = 820;
-        layoutHints().minHeight = 500;
+        layoutHints().minWidth = scaled(820);
+        layoutHints().minHeight = scaled(500);
 
         _addressField = add(new TextField());
         _addressField.setTransparentBackground(true);
         _addressField.setShowBorder(false);
-        _addressField.setPadding(4);
+        _addressField.setPadding(scaled(4));
         _addressField.setTextColor(explorerText);
         _addressField.onSubmitted = delegate() { submitAddress(); };
 
         _searchField = add(new TextField());
         _searchField.setTransparentBackground(true);
         _searchField.setShowBorder(false);
-        _searchField.setPadding(5);
+        _searchField.setPadding(scaled(5));
         _searchField.setTextColor(explorerText);
         _searchField.onChanged = delegate()
         {
@@ -180,16 +184,13 @@ final class WindowsFileManagerRoot : Widget
 
     protected override Size onMeasure(Size available)
     {
-        return Size(1180, 720);
+        return Size(scaled(1180), scaled(720));
     }
 
     protected override void onLayout()
     {
         updateGeometry();
-        if (_addressField !is null)
-            _addressField.setBounds(_addressTextRect);
-        if (_searchField !is null)
-            _searchField.setBounds(_searchTextRect);
+        layoutTextFields();
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -357,14 +358,22 @@ final class WindowsFileManagerRoot : Widget
 
     override bool onMouseWheel(ref Event event)
     {
+        if (event.control() || event.meta())
+        {
+            if (event.wheelY != 0)
+                setUiZoomPercent(_uiZoomPercent + (event.wheelY > 0 ? 10 : -10));
+            return true;
+        }
+        const sideRow = sidebarRowHeightPx();
+        const row = rowHeightPx();
         if (_sidebarRect.contains(event.position))
         {
-            setSidebarScroll(_sidebarScrollY - event.wheelY * sidebarRowHeight / 3);
+            setSidebarScroll(_sidebarScrollY - event.wheelY * sideRow / 3);
             return true;
         }
         if (_mainRect.contains(event.position))
         {
-            setListScroll(_scrollY - event.wheelY * rowHeight / 3);
+            setListScroll(_scrollY - event.wheelY * row / 3);
             return true;
         }
         return false;
@@ -411,6 +420,21 @@ final class WindowsFileManagerRoot : Widget
         }
         if (event.control() || event.meta())
         {
+            if (event.key == Key.equal)
+            {
+                setUiZoomPercent(_uiZoomPercent + 10);
+                return true;
+            }
+            if (event.key == Key.minus)
+            {
+                setUiZoomPercent(_uiZoomPercent - 10);
+                return true;
+            }
+            if (event.key == Key.digit0)
+            {
+                setUiZoomPercent(defaultUiZoomPercent);
+                return true;
+            }
             if (event.key == Key.l)
             {
                 _addressField.requestFocus();
@@ -699,38 +723,138 @@ final class WindowsFileManagerRoot : Widget
         }
     }
 
+    int uiZoomPercent() const @safe pure nothrow @nogc
+    {
+        return _uiZoomPercent;
+    }
+
+    void setUiZoomPercent(int percent)
+    {
+        const next = clampInt(percent, minimumUiZoomPercent, maximumUiZoomPercent);
+        if (next == _uiZoomPercent) return;
+        const previousRow = rowHeightPx();
+        const previousSidebarRow = sidebarRowHeightPx();
+        _uiZoomPercent = next;
+        applyZoomMetrics();
+        updateGeometry();
+        if (previousRow > 0)
+            _scrollY = _scrollY * rowHeightPx() / previousRow;
+        if (previousSidebarRow > 0)
+            _sidebarScrollY = _sidebarScrollY * sidebarRowHeightPx() / previousSidebarRow;
+        setListScroll(_scrollY);
+        setSidebarScroll(_sidebarScrollY);
+        layoutTextFields();
+        _statusText = format("Zoom %d%%", _uiZoomPercent);
+        invalidate();
+    }
+
+    private void applyZoomMetrics()
+    {
+        layoutHints().minWidth = scaled(820);
+        layoutHints().minHeight = scaled(500);
+        if (_addressField !is null)
+            _addressField.setPadding(scaled(4));
+        if (_searchField !is null)
+            _searchField.setPadding(scaled(5));
+    }
+
+    private void layoutTextFields()
+    {
+        if (_addressField !is null)
+            _addressField.setBounds(_addressTextRect);
+        if (_searchField !is null)
+            _searchField.setBounds(_searchTextRect);
+    }
+
+    private int scaled(int value) const @safe pure nothrow @nogc
+    {
+        if (value == 0) return 0;
+        const sign = value < 0 ? -1 : 1;
+        const magnitude = value < 0 ? -value : value;
+        return sign * maxInt(1, (magnitude * _uiZoomPercent + 50) / 100);
+    }
+
+    private int ribbonHeightPx() const @safe pure nothrow @nogc
+    {
+        return scaled(ribbonHeight);
+    }
+
+    private int addressHeightPx() const @safe pure nothrow @nogc
+    {
+        return scaled(addressHeight);
+    }
+
+    private int statusHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(22, scaled(statusHeight));
+    }
+
+    private int rowHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(22, scaled(rowHeight));
+    }
+
+    private int sidebarRowHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(23, scaled(sidebarRowHeight));
+    }
+
+    private int headerHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(29, scaled(headerHeight));
+    }
+
+    private int scrollbarWidthPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(10, scaled(scrollbarWidth));
+    }
+
+    private int textScale() const @safe pure nothrow @nogc
+    {
+        const pixels = maxInt(10, (UiFontSizeCaption * _uiZoomPercent + 50) / 100);
+        return fontScaleForPixelSize(pixels);
+    }
+
     private void updateGeometry()
     {
         const w = bounds().width;
         const h = bounds().height;
-        const sidebarWidth = clampInt(w / 4, sidebarMinimumWidth, sidebarMaximumWidth);
-        const contentTop = ribbonHeight + addressHeight;
-        const contentHeight = maxInt(0, h - contentTop - statusHeight);
-        _statusRect = Rect(0, maxInt(contentTop, h - statusHeight), w, statusHeight);
+        const sidebarWidth = clampInt(w / 4, scaled(sidebarMinimumWidth),
+            scaled(sidebarMaximumWidth));
+        const ribbon = ribbonHeightPx();
+        const address = addressHeightPx();
+        const status = statusHeightPx();
+        const header = headerHeightPx();
+        const contentTop = ribbon + address;
+        const contentHeight = maxInt(0, h - contentTop - status);
+        _statusRect = Rect(0, maxInt(contentTop, h - status), w, status);
         _sidebarRect = Rect(0, contentTop, sidebarWidth, contentHeight);
-        _sidebarRowsRect = _sidebarRect.inset(0, 4, 0, 4);
+        _sidebarRowsRect = _sidebarRect.inset(0, scaled(4), 0, scaled(4));
         _mainRect = Rect(sidebarWidth, contentTop, maxInt(0, w - sidebarWidth), contentHeight);
-        _headerRect = Rect(_mainRect.x, _mainRect.y, _mainRect.width, headerHeight);
-        _rowsRect = Rect(_mainRect.x, _mainRect.y + headerHeight, _mainRect.width,
-            maxInt(0, _mainRect.height - headerHeight));
+        _headerRect = Rect(_mainRect.x, _mainRect.y, _mainRect.width, header);
+        _rowsRect = Rect(_mainRect.x, _mainRect.y + header, _mainRect.width,
+            maxInt(0, _mainRect.height - header));
 
-        _backRect = Rect(10, ribbonHeight + 6, 26, 28);
-        _forwardRect = Rect(39, ribbonHeight + 6, 26, 28);
-        _upRect = Rect(76, ribbonHeight + 6, 26, 28);
-        const searchWidth = clampInt(w / 5, 160, 250);
-        _searchRect = Rect(maxInt(0, w - searchWidth - 12), ribbonHeight + 6,
-            searchWidth, 28);
-        _refreshRect = Rect(maxInt(112, _searchRect.x - 32), ribbonHeight + 6, 28, 28);
-        _addressRect = Rect(116, ribbonHeight + 6,
-            maxInt(110, _refreshRect.x - 122), 28);
-        _addressTextRect = Rect(_addressRect.x + 31, _addressRect.y + 2,
-            maxInt(0, _addressRect.width - 39), maxInt(0, _addressRect.height - 4));
-        _searchTextRect = Rect(_searchRect.x + 32, _searchRect.y + 2,
-            maxInt(0, _searchRect.width - 38), maxInt(0, _searchRect.height - 4));
-        _newFolderRect = Rect(84, 38, 92, 24);
-        _newTextFileRect = Rect(182, 38, 86, 24);
-        _openSelectedRect = Rect(274, 38, 70, 24);
-        _copyPathRect = Rect(350, 38, 88, 24);
+        _backRect = Rect(scaled(10), ribbon + scaled(6), scaled(26), scaled(28));
+        _forwardRect = Rect(scaled(39), ribbon + scaled(6), scaled(26), scaled(28));
+        _upRect = Rect(scaled(76), ribbon + scaled(6), scaled(26), scaled(28));
+        const searchWidth = clampInt(w / 5, scaled(160), scaled(250));
+        _searchRect = Rect(maxInt(0, w - searchWidth - scaled(12)),
+            ribbon + scaled(6), searchWidth, scaled(28));
+        _refreshRect = Rect(maxInt(scaled(112), _searchRect.x - scaled(32)),
+            ribbon + scaled(6), scaled(28), scaled(28));
+        _addressRect = Rect(scaled(116), ribbon + scaled(6),
+            maxInt(scaled(110), _refreshRect.x - scaled(122)), scaled(28));
+        _addressTextRect = Rect(_addressRect.x + scaled(31), _addressRect.y + scaled(2),
+            maxInt(0, _addressRect.width - scaled(39)),
+            maxInt(0, _addressRect.height - scaled(4)));
+        _searchTextRect = Rect(_searchRect.x + scaled(32), _searchRect.y + scaled(2),
+            maxInt(0, _searchRect.width - scaled(38)),
+            maxInt(0, _searchRect.height - scaled(4)));
+        _newFolderRect = Rect(scaled(84), scaled(38), scaled(92), scaled(24));
+        _newTextFileRect = Rect(scaled(182), scaled(38), scaled(86), scaled(24));
+        _openSelectedRect = Rect(scaled(274), scaled(38), scaled(70), scaled(24));
+        _copyPathRect = Rect(scaled(350), scaled(38), scaled(88), scaled(24));
 
         updateColumnGeometry();
         rebuildScrollbars();
@@ -738,25 +862,26 @@ final class WindowsFileManagerRoot : Widget
 
     private void updateColumnGeometry()
     {
-        _usableListWidth = maxInt(120, _mainRect.width - scrollbarWidth);
-        const nameWidth = clampInt(_usableListWidth - 415, 240,
-            maxInt(240, _usableListWidth - 250));
-        const dateWidth = 165;
-        const typeWidth = 150;
-        _sizeWidth = 100;
-        const nameX = _mainRect.x + 20;
+        const scrollbar = scrollbarWidthPx();
+        _usableListWidth = maxInt(scaled(120), _mainRect.width - scrollbar);
+        const nameWidth = clampInt(_usableListWidth - scaled(415), scaled(240),
+            maxInt(scaled(240), _usableListWidth - scaled(250)));
+        const dateWidth = scaled(165);
+        const typeWidth = scaled(150);
+        _sizeWidth = scaled(100);
+        const nameX = _mainRect.x + scaled(20);
         _dateX = _mainRect.x + nameWidth;
         _typeX = _dateX + dateWidth;
         _sizeX = _typeX + typeWidth;
 
         _nameHeaderRect = Rect(nameX, _headerRect.y, maxInt(0, _dateX - nameX),
             _headerRect.height);
-        _dateHeaderRect = Rect(_dateX + 8, _headerRect.y,
-            maxInt(0, _typeX - _dateX - 8), _headerRect.height);
-        _typeHeaderRect = Rect(_typeX + 8, _headerRect.y,
-            maxInt(0, _sizeX - _typeX - 8), _headerRect.height);
-        _sizeHeaderRect = Rect(_sizeX + 8, _headerRect.y,
-            maxInt(0, _sizeWidth - 8), _headerRect.height);
+        _dateHeaderRect = Rect(_dateX + scaled(8), _headerRect.y,
+            maxInt(0, _typeX - _dateX - scaled(8)), _headerRect.height);
+        _typeHeaderRect = Rect(_typeX + scaled(8), _headerRect.y,
+            maxInt(0, _sizeX - _typeX - scaled(8)), _headerRect.height);
+        _sizeHeaderRect = Rect(_sizeX + scaled(8), _headerRect.y,
+            maxInt(0, _sizeWidth - scaled(8)), _headerRect.height);
     }
 
     private void rebuildNavigation()
@@ -1223,8 +1348,9 @@ final class WindowsFileManagerRoot : Widget
     private void ensureSelectionVisible()
     {
         if (!hasSelection()) return;
-        const top = _selectedVisibleIndex * rowHeight;
-        const bottom = top + rowHeight;
+        const row = rowHeightPx();
+        const top = _selectedVisibleIndex * row;
+        const bottom = top + row;
         if (top < _scrollY)
             setListScroll(top);
         else if (bottom > _scrollY + _rowsRect.height)
@@ -1392,16 +1518,18 @@ final class WindowsFileManagerRoot : Widget
     private int navigationIndexAt(Point point) const
     {
         if (!_sidebarRowsRect.contains(point)) return -1;
+        const row = sidebarRowHeightPx();
         const y = point.y - _sidebarRowsRect.y + _sidebarScrollY;
-        const index = y / sidebarRowHeight;
+        const index = y / row;
         return index >= 0 && index < cast(int) _navigation.length ? index : -1;
     }
 
     private int entryIndexAt(Point point) const
     {
         if (!_rowsRect.contains(point)) return -1;
+        const row = rowHeightPx();
         const y = point.y - _rowsRect.y + _scrollY;
-        const index = y / rowHeight;
+        const index = y / row;
         return index >= 0 && index < cast(int) _visibleEntries.length ? index : -1;
     }
 
@@ -1421,24 +1549,27 @@ final class WindowsFileManagerRoot : Widget
 
     private int maxListScroll() const
     {
-        return maxInt(0, cast(int) _visibleEntries.length * rowHeight - _rowsRect.height);
+        return maxInt(0, cast(int) _visibleEntries.length * rowHeightPx() -
+            _rowsRect.height);
     }
 
     private int maxSidebarScroll() const
     {
-        return maxInt(0, cast(int) _navigation.length * sidebarRowHeight -
+        return maxInt(0, cast(int) _navigation.length * sidebarRowHeightPx() -
             _sidebarRowsRect.height);
     }
 
     private void pageListScroll(int direction)
     {
-        setListScroll(_scrollY + direction * maxInt(rowHeight, _rowsRect.height - rowHeight));
+        const row = rowHeightPx();
+        setListScroll(_scrollY + direction * maxInt(row, _rowsRect.height - row));
     }
 
     private void pageSidebarScroll(int direction)
     {
+        const row = sidebarRowHeightPx();
         setSidebarScroll(_sidebarScrollY +
-            direction * maxInt(sidebarRowHeight, _sidebarRowsRect.height - sidebarRowHeight));
+            direction * maxInt(row, _sidebarRowsRect.height - row));
     }
 
     private void dragListScrollbar(int pointerY)
@@ -1460,33 +1591,35 @@ final class WindowsFileManagerRoot : Widget
     private void rebuildScrollbars()
     {
         const listMax = maxListScroll();
-        _listScrollbarRect = Rect(_rowsRect.right() - scrollbarWidth, _rowsRect.y,
-            scrollbarWidth, _rowsRect.height);
+        const scrollbar = scrollbarWidthPx();
+        _listScrollbarRect = Rect(_rowsRect.right() - scrollbar, _rowsRect.y,
+            scrollbar, _rowsRect.height);
         if (listMax > 0)
         {
-            const contentHeight = cast(int) _visibleEntries.length * rowHeight;
+            const contentHeight = cast(int) _visibleEntries.length * rowHeightPx();
             const thumbHeight = clampInt(_rowsRect.height * _rowsRect.height /
-                maxInt(1, contentHeight), 34, maxInt(34, _rowsRect.height));
+                maxInt(1, contentHeight), scaled(34), maxInt(scaled(34), _rowsRect.height));
             const travel = maxInt(1, _rowsRect.height - thumbHeight);
             const thumbY = _rowsRect.y + _scrollY * travel / listMax;
-            _listScrollbarThumbRect = Rect(_listScrollbarRect.x + 2, thumbY,
-                maxInt(1, scrollbarWidth - 4), thumbHeight);
+            _listScrollbarThumbRect = Rect(_listScrollbarRect.x + scaled(2), thumbY,
+                maxInt(1, scrollbar - scaled(4)), thumbHeight);
         }
         else
             _listScrollbarThumbRect = Rect.init;
 
         const navMax = maxSidebarScroll();
-        _sidebarScrollbarRect = Rect(_sidebarRowsRect.right() - scrollbarWidth,
-            _sidebarRowsRect.y, scrollbarWidth, _sidebarRowsRect.height);
+        _sidebarScrollbarRect = Rect(_sidebarRowsRect.right() - scrollbar,
+            _sidebarRowsRect.y, scrollbar, _sidebarRowsRect.height);
         if (navMax > 0)
         {
-            const contentHeight = cast(int) _navigation.length * sidebarRowHeight;
+            const contentHeight = cast(int) _navigation.length * sidebarRowHeightPx();
             const thumbHeight = clampInt(_sidebarRowsRect.height * _sidebarRowsRect.height /
-                maxInt(1, contentHeight), 34, maxInt(34, _sidebarRowsRect.height));
+                maxInt(1, contentHeight), scaled(34),
+                maxInt(scaled(34), _sidebarRowsRect.height));
             const travel = maxInt(1, _sidebarRowsRect.height - thumbHeight);
             const thumbY = _sidebarRowsRect.y + _sidebarScrollY * travel / navMax;
-            _sidebarScrollbarThumbRect = Rect(_sidebarScrollbarRect.x + 2, thumbY,
-                maxInt(1, scrollbarWidth - 4), thumbHeight);
+            _sidebarScrollbarThumbRect = Rect(_sidebarScrollbarRect.x + scaled(2), thumbY,
+                maxInt(1, scrollbar - scaled(4)), thumbHeight);
         }
         else
             _sidebarScrollbarThumbRect = Rect.init;
@@ -1494,22 +1627,24 @@ final class WindowsFileManagerRoot : Widget
 
     private void drawRibbon(ref Canvas canvas)
     {
-        canvas.fillRect(Rect(0, 0, bounds().width, ribbonHeight), explorerBlack);
-        canvas.fillRect(Rect(0, 34, bounds().width, 1), explorerLine);
-        canvas.fillRect(Rect(0, ribbonHeight - 1, bounds().width, 1), explorerLine);
+        const ribbon = ribbonHeightPx();
+        const tabHeight = scaled(34);
+        canvas.fillRect(Rect(0, 0, bounds().width, ribbon), explorerBlack);
+        canvas.fillRect(Rect(0, tabHeight, bounds().width, 1), explorerLine);
+        canvas.fillRect(Rect(0, ribbon - 1, bounds().width, 1), explorerLine);
 
-        canvas.fillRect(Rect(0, 0, 70, 34), explorerBlue);
-        drawText(canvas, Rect(0, 0, 70, 34), "File", explorerText,
+        canvas.fillRect(Rect(0, 0, scaled(70), tabHeight), explorerBlue);
+        drawText(canvas, Rect(0, 0, scaled(70), tabHeight), "File", explorerText,
             HorizontalAlign.center);
 
-        drawText(canvas, Rect(82, 0, 62, 34), "Home", explorerText,
+        drawText(canvas, Rect(scaled(82), 0, scaled(62), tabHeight), "Home", explorerText,
             HorizontalAlign.left);
-        drawText(canvas, Rect(150, 0, 62, 34), "Share", explorerText,
+        drawText(canvas, Rect(scaled(150), 0, scaled(62), tabHeight), "Share", explorerText,
             HorizontalAlign.left);
-        drawText(canvas, Rect(218, 0, 62, 34), "View", explorerText,
+        drawText(canvas, Rect(scaled(218), 0, scaled(62), tabHeight), "View", explorerText,
             HorizontalAlign.left);
 
-        canvas.fillRect(Rect(0, 35, bounds().width, maxInt(0, ribbonHeight - 35)),
+        canvas.fillRect(Rect(0, scaled(35), bounds().width, maxInt(0, ribbon - scaled(35))),
             explorerBlack);
         drawCommandButton(canvas, _newFolderRect, CommandButton.newFolder,
             IconKind.folder, "New folder", true);
@@ -1523,7 +1658,8 @@ final class WindowsFileManagerRoot : Widget
 
     private void drawAddressBar(ref Canvas canvas)
     {
-        canvas.fillRect(Rect(0, ribbonHeight, bounds().width, addressHeight),
+        const ribbon = ribbonHeightPx();
+        canvas.fillRect(Rect(0, ribbon, bounds().width, addressHeightPx()),
             explorerAddressBackground);
 
         drawNavButton(canvas, _backRect, CommandButton.back, canGoBack());
@@ -1531,13 +1667,15 @@ final class WindowsFileManagerRoot : Widget
         drawUpButton(canvas, _upRect);
 
         canvas.drawRoundedRect(_addressRect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.folder, Rect(_addressRect.x + 8, _addressRect.y + 6, 16, 16),
+        drawIcon(canvas, IconKind.folder, Rect(_addressRect.x + scaled(8),
+            _addressRect.y + scaled(6), scaled(16), scaled(16)),
             explorerText, folderAccent);
 
         drawRefreshButton(canvas, _refreshRect);
 
         canvas.drawRoundedRect(_searchRect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.search, Rect(_searchRect.x + 9, _searchRect.y + 7, 15, 15),
+        drawIcon(canvas, IconKind.search, Rect(_searchRect.x + scaled(9),
+            _searchRect.y + scaled(7), scaled(15), scaled(15)),
             explorerMuted, explorerMuted);
     }
 
@@ -1548,12 +1686,14 @@ final class WindowsFileManagerRoot : Widget
             _sidebarRect.height), explorerLine);
 
         auto content = canvas.clipped(_sidebarRowsRect);
+        const sideRow = sidebarRowHeightPx();
+        const scrollbar = scrollbarWidthPx();
         foreach (index, item; _navigation)
         {
-            const rowY = _sidebarRowsRect.y + cast(int) index * sidebarRowHeight -
+            const rowY = _sidebarRowsRect.y + cast(int) index * sideRow -
                 _sidebarScrollY;
             const row = Rect(_sidebarRowsRect.x, rowY,
-                maxInt(0, _sidebarRowsRect.width - scrollbarWidth), sidebarRowHeight);
+                maxInt(0, _sidebarRowsRect.width - scrollbar), sideRow);
             if (row.bottom() < _sidebarRowsRect.y || row.y > _sidebarRowsRect.bottom())
                 continue;
 
@@ -1568,13 +1708,16 @@ final class WindowsFileManagerRoot : Widget
                 content.fillRect(row, Color.rgba(0, 0, 0, 20));
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
-            drawIcon(content, item.icon, Rect(row.x + 36, row.y + 5, 17, 17),
+            drawIcon(content, item.icon, Rect(row.x + scaled(36), row.y + scaled(5),
+                scaled(17), scaled(17)),
                 textColor, folderAccent);
-            drawText(content, Rect(row.x + 60, row.y, maxInt(0, row.width - 86),
-                row.height), item.label, textColor, HorizontalAlign.left);
+            drawText(content, Rect(row.x + scaled(60), row.y,
+                maxInt(0, row.width - scaled(86)), row.height), item.label, textColor,
+                HorizontalAlign.left);
 
             if (item.pinned)
-                drawPin(content, Rect(row.right() - 22, row.y + 7, 11, 11),
+                drawPin(content, Rect(row.right() - scaled(22), row.y + scaled(7),
+                    scaled(11), scaled(11)),
                     explorerMuted);
         }
 
@@ -1599,15 +1742,16 @@ final class WindowsFileManagerRoot : Widget
             explorerLine);
 
         auto rows = canvas.clipped(_rowsRect);
-        const first = maxInt(0, _scrollY / rowHeight);
+        const rowHeightScaled = rowHeightPx();
+        const first = maxInt(0, _scrollY / rowHeightScaled);
         const last = minInt(cast(int) _visibleEntries.length,
-            (_scrollY + _rowsRect.height) / rowHeight + 2);
+            (_scrollY + _rowsRect.height) / rowHeightScaled + 2);
         foreach (visibleIndex; first .. last)
         {
             const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
-            const y = _rowsRect.y + visibleIndex * rowHeight - _scrollY;
-            const row = Rect(_rowsRect.x + 20, y,
-                maxInt(0, _usableListWidth - 24), rowHeight);
+            const y = _rowsRect.y + visibleIndex * rowHeightScaled - _scrollY;
+            const row = Rect(_rowsRect.x + scaled(20), y,
+                maxInt(0, _usableListWidth - scaled(24)), rowHeightScaled);
             if (_draggingEntry && visibleIndex == _dropTargetVisibleIndex)
             {
                 rows.fillRect(row, explorerDropTarget);
@@ -1620,15 +1764,19 @@ final class WindowsFileManagerRoot : Widget
             }
 
             const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
-            drawIcon(rows, icon, Rect(row.x + 6, row.y + 4, 17, 17), explorerText,
+            drawIcon(rows, icon, Rect(row.x + scaled(6), row.y + scaled(4),
+                scaled(17), scaled(17)), explorerText,
                 entry.directory ? folderAccent : fileAccent);
-            drawText(rows, Rect(row.x + 28, row.y, maxInt(0, _dateX - row.x - 35),
-                row.height), entry.name, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_dateX + 8, row.y, maxInt(0, _typeX - _dateX - 14),
-                row.height), entry.modified, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_typeX + 8, row.y, maxInt(0, _sizeX - _typeX - 14),
-                row.height), entry.type, explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_sizeX + 8, row.y, maxInt(0, _sizeWidth - 16),
+            drawText(rows, Rect(row.x + scaled(28), row.y,
+                maxInt(0, _dateX - row.x - scaled(35)), row.height), entry.name,
+                explorerText, HorizontalAlign.left);
+            drawText(rows, Rect(_dateX + scaled(8), row.y,
+                maxInt(0, _typeX - _dateX - scaled(14)), row.height), entry.modified,
+                explorerText, HorizontalAlign.left);
+            drawText(rows, Rect(_typeX + scaled(8), row.y,
+                maxInt(0, _sizeX - _typeX - scaled(14)), row.height), entry.type,
+                explorerText, HorizontalAlign.left);
+            drawText(rows, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
                 row.height), entry.directory ? "" : humanSize(entry.size),
                 explorerText, HorizontalAlign.right);
         }
@@ -1640,15 +1788,18 @@ final class WindowsFileManagerRoot : Widget
     {
         if (!_draggingEntry || !hasDragSource()) return;
         const entry = dragSourceEntry();
-        const previewWidth = clampInt(52 + cast(int) entry.name.length * 7, 150, 320);
-        const preview = Rect(_dragCurrent.x + 12, _dragCurrent.y + 12,
-            previewWidth, 30);
-        canvas.drawRoundedRect(preview, 2, explorerDragPreview, explorerSelectionBorder, 1);
+        const previewWidth = clampInt(scaled(52) + cast(int) entry.name.length * scaled(7),
+            scaled(150), scaled(320));
+        const preview = Rect(_dragCurrent.x + scaled(12), _dragCurrent.y + scaled(12),
+            previewWidth, scaled(30));
+        canvas.drawRoundedRect(preview, scaled(2), explorerDragPreview, explorerSelectionBorder, 1);
         const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
-        drawIcon(canvas, icon, Rect(preview.x + 8, preview.y + 6, 17, 17),
+        drawIcon(canvas, icon, Rect(preview.x + scaled(8), preview.y + scaled(6),
+            scaled(17), scaled(17)),
             explorerText, entry.directory ? folderAccent : fileAccent);
-        drawText(canvas, Rect(preview.x + 32, preview.y, maxInt(0, preview.width - 42),
-            preview.height), entry.name, explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(preview.x + scaled(32), preview.y,
+            maxInt(0, preview.width - scaled(42)), preview.height), entry.name,
+            explorerText, HorizontalAlign.left);
     }
 
     private void drawStatusBar(ref Canvas canvas)
@@ -1656,8 +1807,8 @@ final class WindowsFileManagerRoot : Widget
         canvas.fillRect(_statusRect, explorerStatus);
         canvas.fillRect(Rect(_statusRect.x, _statusRect.y, _statusRect.width, 1),
             explorerLine);
-        drawText(canvas, Rect(_statusRect.x + 20, _statusRect.y,
-            maxInt(0, _statusRect.width - 40), _statusRect.height), _statusText,
+        drawText(canvas, Rect(_statusRect.x + scaled(20), _statusRect.y,
+            maxInt(0, _statusRect.width - scaled(40)), _statusRect.height), _statusText,
             explorerText, HorizontalAlign.left);
     }
 
@@ -1671,9 +1822,11 @@ final class WindowsFileManagerRoot : Widget
         const midY = rect.y + rect.height / 2;
         const midX = rect.x + rect.width / 2;
         const dir = command == CommandButton.back ? -1 : 1;
-        canvas.drawLine(Point(midX + dir * 5, midY - 6), Point(midX - dir * 3, midY),
+        canvas.drawLine(Point(midX + dir * scaled(5), midY - scaled(6)),
+            Point(midX - dir * scaled(3), midY),
             color, 2);
-        canvas.drawLine(Point(midX - dir * 3, midY), Point(midX + dir * 5, midY + 6),
+        canvas.drawLine(Point(midX - dir * scaled(3), midY),
+            Point(midX + dir * scaled(5), midY + scaled(6)),
             color, 2);
     }
 
@@ -1681,7 +1834,8 @@ final class WindowsFileManagerRoot : Widget
     {
         if (_pressedCommand == CommandButton.up)
             canvas.fillRect(rect, explorerPressed);
-        drawIcon(canvas, IconKind.up, Rect(rect.x + 5, rect.y + 5, 18, 18),
+        drawIcon(canvas, IconKind.up, Rect(rect.x + scaled(5), rect.y + scaled(5),
+            scaled(18), scaled(18)),
             explorerText, explorerText);
     }
 
@@ -1690,7 +1844,8 @@ final class WindowsFileManagerRoot : Widget
         if (_pressedCommand == CommandButton.refresh)
             canvas.fillRect(rect, explorerPressed);
         canvas.drawRoundedRect(rect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.refresh, Rect(rect.x + 6, rect.y + 6, 16, 16),
+        drawIcon(canvas, IconKind.refresh, Rect(rect.x + scaled(6), rect.y + scaled(6),
+            scaled(16), scaled(16)),
             explorerMuted, explorerText);
     }
 
@@ -1705,10 +1860,12 @@ final class WindowsFileManagerRoot : Widget
         canvas.strokeRect(rect, enabled ? explorerFieldBorder.withAlpha(150) :
             explorerFieldBorder.withAlpha(70), 1);
         const foreground = enabled ? explorerText : explorerDisabled;
-        drawIcon(canvas, icon, Rect(rect.x + 5, rect.y + 4, 16, 16),
+        drawIcon(canvas, icon, Rect(rect.x + scaled(5), rect.y + scaled(4),
+            scaled(16), scaled(16)),
             foreground, folderAccent);
-        drawText(canvas, Rect(rect.x + 25, rect.y, maxInt(0, rect.width - 29),
-            rect.height), label, foreground, HorizontalAlign.left);
+        drawText(canvas, Rect(rect.x + scaled(25), rect.y,
+            maxInt(0, rect.width - scaled(29)), rect.height), label, foreground,
+            HorizontalAlign.left);
     }
 
     private void drawHeaderCell(ref Canvas canvas, Rect rect, string text,
@@ -1717,31 +1874,33 @@ final class WindowsFileManagerRoot : Widget
         const label = _sortColumn == column
             ? text ~ (_sortAscending ? " ^" : " v")
             : text;
-        drawText(canvas, rect.inset(4, 0, 4, 0), label, explorerText,
+        drawText(canvas, rect.inset(scaled(4), 0, scaled(4), 0), label, explorerText,
             HorizontalAlign.left);
     }
 
-    private static void drawText(ref Canvas canvas, Rect rect, string text, Color color,
+    private void drawText(ref Canvas canvas, Rect rect, string text, Color color,
         HorizontalAlign horizontal)
     {
-        canvas.drawTextInRect(rect, toUTF32(text), color, cast(int) TextScale.caption,
+        canvas.drawTextInRect(rect, toUTF32(text), color, textScale(),
             horizontal, VerticalAlign.middle, true);
     }
 
-    private static void drawPin(ref Canvas canvas, Rect rect, Color color)
+    private void drawPin(ref Canvas canvas, Rect rect, Color color)
     {
         const cx = rect.x + rect.width / 2;
         const cy = rect.y + rect.height / 2;
-        canvas.drawLine(Point(cx - 3, cy - 3), Point(cx + 3, cy + 3), color, 2);
-        canvas.fillRect(Rect(cx - 4, cy - 5, 8, 3), color);
-        canvas.drawLine(Point(cx, cy + 3), Point(cx - 3, cy + 6), color, 1);
+        canvas.drawLine(Point(cx - scaled(3), cy - scaled(3)),
+            Point(cx + scaled(3), cy + scaled(3)), color, 2);
+        canvas.fillRect(Rect(cx - scaled(4), cy - scaled(5), scaled(8), scaled(3)), color);
+        canvas.drawLine(Point(cx, cy + scaled(3)), Point(cx - scaled(3), cy + scaled(6)),
+            color, 1);
     }
 
-    private static void drawScrollbar(ref Canvas canvas, Rect track, Rect thumb)
+    private void drawScrollbar(ref Canvas canvas, Rect track, Rect thumb)
     {
         if (track.empty() || thumb.empty()) return;
         canvas.fillRect(track, explorerScrollbarTrack);
-        canvas.fillRoundedRect(thumb, 2, explorerScrollbarThumb);
+        canvas.fillRoundedRect(thumb, scaled(2), explorerScrollbarThumb);
     }
 
     private bool canGoBack() const
