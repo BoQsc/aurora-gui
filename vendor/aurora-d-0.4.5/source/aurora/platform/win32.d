@@ -48,6 +48,7 @@ else version (Windows)
     private enum uint maximumMessagesPerBatch = 64;
     private enum WPARAM unicodeNoChar = 0xffff;
     private enum int wheelDelta = 120;
+    private enum int wheelUnitDelta = wheelDelta / 3;
     private enum uint defaultDpi = 96;
     private enum int processPerMonitorDpiAware = 2;
 
@@ -316,6 +317,8 @@ else version (Windows)
         private HICON _largeIcon;
         private HICON _smallIcon;
         private bool _pointerVisible = true;
+        private int _wheelRemainderX;
+        private int _wheelRemainderY;
         private wchar _pendingHighSurrogate;
 
         this(WindowOptions options, NativeWindowSink sink)
@@ -928,9 +931,12 @@ else version (Windows)
                     event.preciseGlobalPosition = event.precisePosition;
                     event.hasPrecisePosition = true;
                     event.modifiers = currentModifiers();
-                    const amount = cast(int) highWordSigned(wParam) / wheelDelta;
-                    if (message == WM_MOUSEWHEEL) event.wheelY = amount * 3;
-                    else event.wheelX = amount * 3;
+                    const rawDelta = cast(int) highWordSigned(wParam);
+                    if (message == WM_MOUSEWHEEL)
+                        event.wheelY = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderY);
+                    else
+                        event.wheelX = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderX);
+                    if (event.wheelX == 0 && event.wheelY == 0) return 0;
                     event.timestampMs = cast(long) GetTickCount();
                     sink.onNativeEvent(event);
                     return 0;
@@ -1246,6 +1252,18 @@ else version (Windows)
                 case CursorKind.move: return cursorSizeAll;
                 case CursorKind.forbidden: return cursorNo;
             }
+        }
+
+        private static int wheelUnitsFromRawDelta(int rawDelta, ref int remainder)
+            @safe pure nothrow @nogc
+        {
+            if (rawDelta == 0) return 0;
+            if ((rawDelta > 0 && remainder < 0) || (rawDelta < 0 && remainder > 0))
+                remainder = 0;
+            remainder += rawDelta;
+            const units = remainder / wheelUnitDelta;
+            remainder -= units * wheelUnitDelta;
+            return units;
         }
 
         private static int maxIntLocal(int a, int b) @safe pure nothrow @nogc

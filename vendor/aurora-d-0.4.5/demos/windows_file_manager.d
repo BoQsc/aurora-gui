@@ -211,7 +211,7 @@ final class WindowsFileManagerRoot : Widget
         if (event.button == MouseButton.right)
         {
             requestFocus();
-            showContextMenuFor(event.position);
+            showContextMenuFor(event.position, event.globalPosition);
             return true;
         }
         if (event.button != MouseButton.left) return false;
@@ -767,6 +767,11 @@ final class WindowsFileManagerRoot : Widget
             _searchField.setBounds(_searchTextRect);
     }
 
+    private int commandButtonWidth(string label) const @safe pure nothrow @nogc
+    {
+        return maxInt(scaled(96), scaled(46) + cast(int) label.length * scaled(8));
+    }
+
     private int scaled(int value) const @safe pure nothrow @nogc
     {
         if (value == 0) return 0;
@@ -852,10 +857,21 @@ final class WindowsFileManagerRoot : Widget
         _searchTextRect = Rect(_searchRect.x + scaled(32), _searchRect.y + scaled(2),
             maxInt(0, _searchRect.width - scaled(38)),
             maxInt(0, _searchRect.height - scaled(4)));
-        _newFolderRect = Rect(scaled(84), scaled(38), scaled(92), scaled(24));
-        _newTextFileRect = Rect(scaled(182), scaled(38), scaled(86), scaled(24));
-        _openSelectedRect = Rect(scaled(274), scaled(38), scaled(70), scaled(24));
-        _copyPathRect = Rect(scaled(350), scaled(38), scaled(88), scaled(24));
+        const commandY = scaled(38);
+        const commandHeight = scaled(24);
+        const commandGap = scaled(8);
+        int commandX = scaled(84);
+        _newFolderRect = Rect(commandX, commandY, commandButtonWidth("New folder"),
+            commandHeight);
+        commandX = _newFolderRect.right() + commandGap;
+        _newTextFileRect = Rect(commandX, commandY, commandButtonWidth("New file"),
+            commandHeight);
+        commandX = _newTextFileRect.right() + commandGap;
+        _openSelectedRect = Rect(commandX, commandY, commandButtonWidth("Open"),
+            commandHeight);
+        commandX = _openSelectedRect.right() + commandGap;
+        _copyPathRect = Rect(commandX, commandY, commandButtonWidth("Copy path"),
+            commandHeight);
 
         updateColumnGeometry();
         rebuildScrollbars();
@@ -1408,7 +1424,7 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
-    private void showContextMenuFor(Point localPosition)
+    private void showContextMenuFor(Point localPosition, Point globalPosition)
     {
         const visibleIndex = entryIndexAt(localPosition);
         if (visibleIndex >= 0)
@@ -1440,7 +1456,7 @@ final class WindowsFileManagerRoot : Widget
             delegate() { copyCurrentPath(); });
         items ~= ContextMenuItem.command("Refresh", IconKind.refresh,
             delegate() { refresh(); }, "F5");
-        showContextMenu(this, localToGlobal(localPosition), items);
+        showContextMenu(this, globalPosition, items);
     }
 
     private void updateStatus()
