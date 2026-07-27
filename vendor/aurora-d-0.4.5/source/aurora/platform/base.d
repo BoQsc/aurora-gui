@@ -3,7 +3,7 @@ module aurora.platform.base;
 import aurora.event : Event;
 import aurora.font : FontRenderMode;
 public import aurora.render.base : RendererPreference;
-import aurora.types : CursorKind, DisplayScale, PointF, Size;
+import aurora.types : CursorKind, DisplayScale, PointF, Rect, Size;
 
 enum NativeSurfaceKind : ubyte
 {
@@ -94,6 +94,12 @@ abstract class NativeWindow
     abstract bool fullscreen() const;
     abstract void close();
     abstract Size clientSize() const;
+    /** Outer native window bounds in Aurora logical screen coordinates. */
+    bool windowBounds(out Rect bounds)
+    {
+        bounds = Rect.init;
+        return false;
+    }
 
     final void toggleFullscreen()
     {

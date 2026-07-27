@@ -78,7 +78,7 @@ final class NotepadRoot : VBox
         options.initialPath = _currentPath;
         options.acceptLabel = "Open";
         string path;
-        if (runFileDialogWindow(options, path, dialogTheme()))
+        if (runFileDialogWindow(_window, options, path, dialogTheme()))
         {
             loadPath(path);
         }
@@ -134,7 +134,7 @@ final class NotepadRoot : VBox
         options.defaultFileName = "Untitled.txt";
         options.acceptLabel = "Save";
         string path;
-        if (runFileDialogWindow(options, path, dialogTheme()))
+        if (runFileDialogWindow(_window, options, path, dialogTheme()))
         {
             saveToPath(path);
         }

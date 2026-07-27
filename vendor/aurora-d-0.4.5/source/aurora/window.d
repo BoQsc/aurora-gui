@@ -168,6 +168,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     Size logicalClientSize() const @safe pure nothrow @nogc { return _clientSize; }
     Size framebufferSize() const @safe pure nothrow @nogc { return _framebufferSize; }
     DisplayScale displayScale() const @safe pure nothrow @nogc { return _displayScale; }
+    bool windowBounds(out Rect bounds)
+    {
+        bounds = Rect.init;
+        return _native !is null && _native.windowBounds(bounds);
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     string rendererFallbackReason() const { return _rendererFallbackReason; }

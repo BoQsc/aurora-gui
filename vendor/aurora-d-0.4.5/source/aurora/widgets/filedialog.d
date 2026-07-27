@@ -606,10 +606,21 @@ FileDialogOverlay showFileDialog(Widget owner, FileDialogOptions options,
 
 bool runFileDialogWindow(FileDialogOptions options, out string path)
 {
-    return runFileDialogWindow(options, path, Theme.light());
+    return runFileDialogWindow(null, options, path, Theme.light());
 }
 
 bool runFileDialogWindow(FileDialogOptions options, out string path, Theme theme)
+{
+    return runFileDialogWindow(null, options, path, theme);
+}
+
+bool runFileDialogWindow(GuiWindow owner, FileDialogOptions options, out string path)
+{
+    return runFileDialogWindow(owner, options, path, Theme.light());
+}
+
+bool runFileDialogWindow(GuiWindow owner, FileDialogOptions options, out string path,
+    Theme theme)
 {
     path = "";
     const size = options.preferredSize.empty() ? Size(760, 540) :
@@ -621,6 +632,7 @@ bool runFileDialogWindow(FileDialogOptions options, out string path, Theme theme
     windowOptions.height = maxInt(380, size.height);
     windowOptions.decorated = false;
     windowOptions.enableFullscreenShortcut = false;
+    centerDialogOverOwner(owner, windowOptions);
 
     auto window = new GuiWindow(windowOptions, theme);
     auto panel = new FileDialogPanel(options);
@@ -644,6 +656,15 @@ bool runFileDialogWindow(FileDialogOptions options, out string path, Theme theme
     window.setRoot(panel);
     window.run();
     return accepted;
+}
+
+private void centerDialogOverOwner(GuiWindow owner, ref WindowOptions options)
+{
+    if (owner is null) return;
+    Rect bounds;
+    if (!owner.windowBounds(bounds) || bounds.empty()) return;
+    options.x = bounds.x + (bounds.width - options.width) / 2;
+    options.y = bounds.y + (bounds.height - options.height) / 2;
 }
 
 private string dialogWindowTitle(FileDialogOptions options)

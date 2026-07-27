@@ -8,7 +8,7 @@ else version (Windows)
 {
     import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
     import aurora.platform.base : NativeSurfaceInfo, NativeSurfaceKind, NativeWindow, NativeWindowSink, WindowOptions;
-    import aurora.types : CursorKind, DisplayScale, Point, PointF, Size;
+    import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
     import core.sys.windows.windows;
     import std.utf : toUTF16z, toUTF8;
 
@@ -680,6 +680,22 @@ else version (Windows)
         override Size clientSize() const
         {
             return _clientSize;
+        }
+
+        override bool windowBounds(out Rect bounds)
+        {
+            bounds = Rect.init;
+            if (_hwnd is null) return false;
+            RECT native;
+            if (GetWindowRect(_hwnd, &native) == FALSE) return false;
+            const topLeft = _displayScale.physicalToLogical(
+                Point(native.left, native.top));
+            const bottomRight = _displayScale.physicalToLogical(
+                Point(native.right, native.bottom));
+            bounds = Rect(topLeft.x, topLeft.y,
+                maxIntLocal(1, bottomRight.x - topLeft.x),
+                maxIntLocal(1, bottomRight.y - topLeft.y));
+            return true;
         }
 
         override Size framebufferSize() const
