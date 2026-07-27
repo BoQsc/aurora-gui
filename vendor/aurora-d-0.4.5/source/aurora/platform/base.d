@@ -83,6 +83,11 @@ abstract class NativeWindow
     {
         return false;
     }
+    /** Start the platform's normal top-level window move loop, if supported. */
+    bool beginSystemMove()
+    {
+        return false;
+    }
     /** Enter or leave native monitor fullscreen. */
     abstract void setFullscreen(bool value);
     /** Current or requested native fullscreen state. */

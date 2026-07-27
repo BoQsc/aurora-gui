@@ -111,6 +111,8 @@ class PopupOverlay : TransientPopup
     private bool _drawShadow = true;
     private Color _backdrop = Color.rgba(0, 0, 0, 0);
     private bool _consumeAnchorPress;
+    private bool _manualPanelPosition;
+    private Point _manualPanelOrigin;
 
     this(Widget content, Widget focusReturn = null)
     {
@@ -141,6 +143,32 @@ class PopupOverlay : TransientPopup
         _anchorGlobal = globalAnchor;
         _placement = placement;
         recalculatePanelRect();
+        invalidate();
+    }
+
+    /** Place the panel explicitly while still clamping it to the overlay. */
+    void setPanelPosition(Point origin)
+    {
+        _manualPanelPosition = true;
+        _manualPanelOrigin = origin;
+        recalculatePanelRect();
+        if (_content !is null) _content.setBounds(_panelRect);
+        invalidate();
+    }
+
+    /** Move an explicitly positioned panel by a logical delta. */
+    void movePanelBy(int dx, int dy)
+    {
+        setPanelPosition(Point(_panelRect.x + dx, _panelRect.y + dy));
+    }
+
+    /** Return future layout to anchor-based placement. */
+    void clearPanelPosition()
+    {
+        if (!_manualPanelPosition) return;
+        _manualPanelPosition = false;
+        recalculatePanelRect();
+        if (_content !is null) _content.setBounds(_panelRect);
         invalidate();
     }
 
@@ -239,31 +267,42 @@ class PopupOverlay : TransientPopup
         const rootOrigin = globalOrigin();
         const anchor = Rect(_anchorGlobal.x - rootOrigin.x,
             _anchorGlobal.y - rootOrigin.y, _anchorGlobal.width, _anchorGlobal.height);
-        int x = anchor.x;
+        int x;
         int y;
-        final switch (_placement)
+        if (_manualPanelPosition)
         {
-            case PopupPlacement.above:
-                y = anchor.y - height - _gap;
-                break;
-            case PopupPlacement.below:
-                y = anchor.bottom() + _gap;
-                break;
-            case PopupPlacement.centered:
-                x = (bounds().width - width) / 2;
-                y = (bounds().height - height) / 2;
-                break;
-            case PopupPlacement.automatic:
-                const below = bounds().height - _margin - (anchor.bottom() + _gap);
-                const above = anchor.y - _gap - _margin;
-                y = below >= height || below >= above ? anchor.bottom() + _gap :
-                    anchor.y - height - _gap;
-                break;
+            x = _manualPanelOrigin.x;
+            y = _manualPanelOrigin.y;
+        }
+        else
+        {
+            x = anchor.x;
+            final switch (_placement)
+            {
+                case PopupPlacement.above:
+                    y = anchor.y - height - _gap;
+                    break;
+                case PopupPlacement.below:
+                    y = anchor.bottom() + _gap;
+                    break;
+                case PopupPlacement.centered:
+                    x = (bounds().width - width) / 2;
+                    y = (bounds().height - height) / 2;
+                    break;
+                case PopupPlacement.automatic:
+                    const below = bounds().height - _margin - (anchor.bottom() + _gap);
+                    const above = anchor.y - _gap - _margin;
+                    y = below >= height || below >= above ? anchor.bottom() + _gap :
+                        anchor.y - height - _gap;
+                    break;
+            }
         }
 
         x = clampInt(x, _margin, maxInt(_margin, bounds().width - width - _margin));
         y = clampInt(y, _margin, maxInt(_margin, bounds().height - height - _margin));
         _panelRect = Rect(x, y, width, height);
+        if (_manualPanelPosition)
+            _manualPanelOrigin = Point(x, y);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -382,6 +421,9 @@ unittest
         PopupPlacement.above);
     assert(popup !is null);
     assert(popup.bounds() == Rect(0, 0, 640, 480));
+    assert(popup.panelRect().bottom() <= 472);
+    popup.setPanelPosition(Point(999, 999));
+    assert(popup.panelRect().right() <= 632);
     assert(popup.panelRect().bottom() <= 472);
     Event outside;
     outside.button = MouseButton.left;

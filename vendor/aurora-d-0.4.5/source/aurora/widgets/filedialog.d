@@ -5,6 +5,8 @@ import aurora.color : Color;
 import aurora.event : Event, Key, MouseButton;
 import aurora.icons : IconKind;
 import aurora.layout : HBox, VBox;
+import aurora.platform.base : WindowOptions;
+import aurora.theme : Theme;
 import aurora.types : HorizontalAlign, Insets, Orientation, Point, Rect, Size,
     VerticalAlign, maxInt;
 import aurora.widget : Widget;
@@ -15,6 +17,7 @@ import aurora.widgets.popup : PopupOverlay, PopupPlacement,
     dismissTransientPopups, popupRoot;
 import aurora.widgets.splitpane : SplitPane;
 import aurora.widgets.texteditor : TextField;
+import aurora.window : GuiWindow;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir;
 import std.format : format;
@@ -63,6 +66,8 @@ class FileDialogOverlay : PopupOverlay
 class FileDialogPanel : VBox
 {
     private FileDialogOptions _options;
+    private HBox _header;
+    private Label _titleLabel;
     private TextField _pathField;
     private TextField _nameField;
     private ListView _shortcuts;
@@ -72,9 +77,13 @@ class FileDialogPanel : VBox
     private string[] _shortcutPaths;
     private string _currentDirectory;
     private string _selectedPath;
+    private bool _allowPanelDrag;
+    private bool _draggingDialog;
+    private Point _lastDragPosition;
 
     void delegate(string path) onAccepted;
     void delegate() onCanceled;
+    bool delegate() onWindowMoveRequested;
 
     this(FileDialogOptions options)
     {
@@ -85,12 +94,12 @@ class FileDialogPanel : VBox
         layoutHints().minWidth = 520;
         layoutHints().minHeight = 380;
 
-        auto header = add(new HBox(8));
-        header.layoutHints().preferredHeight = 40;
-        auto title = header.add(new Label(dialogTitle()));
-        title.setScale(2);
-        title.layoutHints().flex = 1.0;
-        auto closeButton = header.add(new IconButton(IconKind.close));
+        _header = add(new HBox(8));
+        _header.layoutHints().preferredHeight = 40;
+        _titleLabel = _header.add(new Label(dialogTitle()));
+        _titleLabel.setScale(2);
+        _titleLabel.layoutHints().flex = 1.0;
+        auto closeButton = _header.add(new IconButton(IconKind.close));
         closeButton.onClick = delegate() { cancel(); };
 
         auto navigation = add(new HBox(6));
@@ -151,6 +160,12 @@ class FileDialogPanel : VBox
         initializeLocation();
     }
 
+    void setPanelDragging(bool value)
+    {
+        if (_allowPanelDrag == value) return;
+        _allowPanelDrag = value;
+    }
+
     void focusDefault()
     {
         if (_options.mode == FileDialogMode.save)
@@ -197,6 +212,57 @@ class FileDialogPanel : VBox
             return true;
         }
         return false;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (!_allowPanelDrag || event.button != MouseButton.left ||
+            _header is null ||
+            !topDragRegionContains(event.position))
+            return false;
+        auto overlay = cast(FileDialogOverlay) parent();
+        if (overlay is null)
+            return onWindowMoveRequested !is null && onWindowMoveRequested();
+        _draggingDialog = true;
+        _lastDragPosition = event.globalPosition;
+        captureMouse();
+        return true;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        if (!_draggingDialog) return false;
+        const dx = event.globalPosition.x - _lastDragPosition.x;
+        const dy = event.globalPosition.y - _lastDragPosition.y;
+        _lastDragPosition = event.globalPosition;
+        auto overlay = cast(FileDialogOverlay) parent();
+        if (overlay !is null)
+            overlay.movePanelBy(dx, dy);
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left || !_draggingDialog) return false;
+        _draggingDialog = false;
+        releaseMouse();
+        return true;
+    }
+
+    protected override void onFocusChanged(bool focused)
+    {
+        if (!focused && _draggingDialog)
+        {
+            _draggingDialog = false;
+            releaseMouse();
+        }
+    }
+
+    private bool topDragRegionContains(Point point) const
+    {
+        if (_header is null || point.x < 0 || point.x >= bounds().width)
+            return false;
+        return point.y >= 0 && point.y < _header.bounds().bottom();
     }
 
     private string dialogTitle() const
@@ -505,6 +571,7 @@ FileDialogOverlay showFileDialog(Widget owner, FileDialogOptions options,
     dismissTransientPopups(root);
 
     auto panel = new FileDialogPanel(options);
+    panel.setPanelDragging(true);
     FileDialogOverlay popup;
     bool completed;
     panel.onAccepted = delegate(string path)
@@ -535,4 +602,52 @@ FileDialogOverlay showFileDialog(Widget owner, FileDialogOptions options,
     popup.layoutTree();
     panel.focusDefault();
     return popup;
+}
+
+bool runFileDialogWindow(FileDialogOptions options, out string path)
+{
+    return runFileDialogWindow(options, path, Theme.light());
+}
+
+bool runFileDialogWindow(FileDialogOptions options, out string path, Theme theme)
+{
+    path = "";
+    const size = options.preferredSize.empty() ? Size(760, 540) :
+        options.preferredSize;
+
+    WindowOptions windowOptions;
+    windowOptions.title = dialogWindowTitle(options);
+    windowOptions.width = maxInt(520, size.width);
+    windowOptions.height = maxInt(380, size.height);
+    windowOptions.decorated = false;
+    windowOptions.enableFullscreenShortcut = false;
+
+    auto window = new GuiWindow(windowOptions, theme);
+    auto panel = new FileDialogPanel(options);
+    panel.setPanelDragging(true);
+    panel.onWindowMoveRequested = delegate()
+    {
+        return window.beginSystemMove();
+    };
+    bool accepted;
+    panel.onAccepted = delegate(string selected)
+    {
+        path = selected;
+        accepted = true;
+        window.close();
+    };
+    panel.onCanceled = delegate()
+    {
+        window.close();
+    };
+
+    window.setRoot(panel);
+    window.run();
+    return accepted;
+}
+
+private string dialogWindowTitle(FileDialogOptions options)
+{
+    if (options.title.length > 0) return options.title;
+    return options.mode == FileDialogMode.open ? "Open File" : "Save File";
 }

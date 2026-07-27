@@ -328,6 +328,8 @@ else version (Windows)
             _displayScale = DisplayScale.fromDpi(_dpi);
 
             DWORD style = options.decorated ? WS_OVERLAPPEDWINDOW : WS_POPUP;
+            if (!options.decorated && options.resizable)
+                style |= WS_THICKFRAME;
             if (!options.resizable)
                 style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
             DWORD exStyle = options.alwaysOnTop ? WS_EX_TOPMOST : 0;
@@ -335,7 +337,8 @@ else version (Windows)
             const requestedClient = _displayScale.logicalToPhysical(
                 Size(maxIntLocal(1, options.width), maxIntLocal(1, options.height)));
             RECT outer = RECT(0, 0, requestedClient.width, requestedClient.height);
-            adjustOuterRectForDpi(outer, style, exStyle, _dpi);
+            if (options.decorated)
+                adjustOuterRectForDpi(outer, style, exStyle, _dpi);
             const width = outer.right - outer.left;
             const height = outer.bottom - outer.top;
             const x = options.x == int.min ? CW_USEDEFAULT :
@@ -587,6 +590,14 @@ else version (Windows)
             return true;
         }
 
+        override bool beginSystemMove()
+        {
+            if (_hwnd is null || _fullscreen) return false;
+            ReleaseCapture();
+            SendMessageW(_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            return true;
+        }
+
         override void setFullscreen(bool value)
         {
             if (_hwnd is null || value == _fullscreen) return;
@@ -727,6 +738,14 @@ else version (Windows)
                         paintNow();
                         return 0;
                     }
+                    break;
+                case WM_NCCALCSIZE:
+                    if (!options.decorated)
+                        return 0;
+                    break;
+                case WM_NCHITTEST:
+                    if (!options.decorated && options.resizable && !_fullscreen)
+                        return hitTestBorderlessResize(lParam);
                     break;
                 case wmDropFiles:
                 {
@@ -920,6 +939,9 @@ else version (Windows)
                     emitCodePoint(cast(dchar) wParam);
                     return 0;
                 case WM_SETCURSOR:
+                    if (!options.decorated && options.resizable && !_fullscreen &&
+                        unsignedLowWord(lParam) != HTCLIENT)
+                        break;
                     if (!_pointerVisible)
                     {
                         SetCursor(null);
@@ -944,7 +966,6 @@ else version (Windows)
                     _closed = true;
                     releaseWindowIcons();
                     _hwnd = null;
-                    PostQuitMessage(0);
                     return 0;
                 default:
                     break;
@@ -1009,12 +1030,39 @@ else version (Windows)
         {
             const physical = _displayScale.logicalToPhysical(logical);
             RECT outer = RECT(0, 0, physical.width, physical.height);
-            adjustOuterRectForDpi(outer, style, exStyle, _dpi);
+            if (options.decorated)
+                adjustOuterRectForDpi(outer, style, exStyle, _dpi);
             _inDpiChange = true;
             SetWindowPos(_hwnd, null, 0, 0, outer.right - outer.left,
                 outer.bottom - outer.top,
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             _inDpiChange = false;
+        }
+
+        private LRESULT hitTestBorderlessResize(LPARAM lParam)
+        {
+            RECT rect;
+            if (_hwnd is null || GetWindowRect(_hwnd, &rect) == FALSE)
+                return HTCLIENT;
+
+            const x = signedLowWord(lParam);
+            const y = signedHighWord(lParam);
+            const marginX = maxIntLocal(6, _displayScale.logicalToPhysicalX(8));
+            const marginY = maxIntLocal(6, _displayScale.logicalToPhysicalY(8));
+            const onLeft = x >= rect.left && x < rect.left + marginX;
+            const onRight = x < rect.right && x >= rect.right - marginX;
+            const onTop = y >= rect.top && y < rect.top + marginY;
+            const onBottom = y < rect.bottom && y >= rect.bottom - marginY;
+
+            if (onTop && onLeft) return HTTOPLEFT;
+            if (onTop && onRight) return HTTOPRIGHT;
+            if (onBottom && onLeft) return HTBOTTOMLEFT;
+            if (onBottom && onRight) return HTBOTTOMRIGHT;
+            if (onLeft) return HTLEFT;
+            if (onRight) return HTRIGHT;
+            if (onTop) return HTTOP;
+            if (onBottom) return HTBOTTOM;
+            return HTCLIENT;
         }
 
         private void updateClientSize(int knownWidth = -1, int knownHeight = -1)

@@ -292,6 +292,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         _native.close();
     }
 
+    bool beginSystemMove()
+    {
+        return _native !is null && _native.beginSystemMove();
+    }
+
     void saveScreenshot(string path)
     {
         surface().savePpm(path);

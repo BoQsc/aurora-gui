@@ -77,15 +77,16 @@ final class NotepadRoot : VBox
         options.title = "Open Text File";
         options.initialPath = _currentPath;
         options.acceptLabel = "Open";
-        showFileDialog(this, options, delegate(string path)
+        string path;
+        if (runFileDialogWindow(options, path, dialogTheme()))
         {
             loadPath(path);
-        },
-        delegate()
+        }
+        else
         {
             _status.setText("Open canceled.");
             _editor.requestFocus();
-        });
+        }
     }
 
     private void loadPath(string path)
@@ -132,15 +133,16 @@ final class NotepadRoot : VBox
             "Untitled.txt";
         options.defaultFileName = "Untitled.txt";
         options.acceptLabel = "Save";
-        showFileDialog(this, options, delegate(string path)
+        string path;
+        if (runFileDialogWindow(options, path, dialogTheme()))
         {
             saveToPath(path);
-        },
-        delegate()
+        }
+        else
         {
             _status.setText("Save canceled.");
             _editor.requestFocus();
-        });
+        }
     }
 
     private void saveToPath(string path)
@@ -172,6 +174,11 @@ final class NotepadRoot : VBox
         _dark = !_dark;
         _window.setTheme(_dark ? Theme.dark() : Theme.light());
         _themeButton.setText(_dark ? "Light" : "Dark");
+    }
+
+    private Theme dialogTheme()
+    {
+        return _dark ? Theme.dark() : Theme.light();
     }
 
     private void updateStatus()
