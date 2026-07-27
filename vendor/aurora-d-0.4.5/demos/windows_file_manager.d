@@ -15,10 +15,7 @@ import std.utf : toUTF16, toUTF16z, toUTF32;
 version (Windows)
 {
     import core.sys.windows.shellapi : ShellExecuteW;
-    import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
-        EmptyClipboard, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
-        GMEM_MOVEABLE, OpenClipboard, SetClipboardData;
-    import core.sys.windows.winuser : SW_SHOWNORMAL;
+    import core.sys.windows.windows;
 }
 
 private enum CommandButton
@@ -69,6 +66,220 @@ private struct NavigationItem
     bool pinned;
 }
 
+version (Windows)
+{
+    private immutable wchar[] dragPreviewWindowClassName =
+        "AuroraWindowsFileManagerDragPreview"w;
+    private enum int dragPreviewCursorArrow = 32512;
+    private enum DWORD dragPreviewLayerAlpha = 232;
+    private enum DWORD errorClassAlreadyExists = 1410;
+    private __gshared bool dragPreviewWindowClassRegistered;
+
+    private extern(Windows) nothrow LRESULT dragPreviewWindowProc(
+        HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        DragPreviewOverlay overlay;
+        if (message == WM_NCCREATE)
+        {
+            auto create = cast(CREATESTRUCTW*) lParam;
+            overlay = cast(DragPreviewOverlay) create.lpCreateParams;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cast(LONG_PTR) cast(void*) overlay);
+        }
+        else
+            overlay = cast(DragPreviewOverlay) cast(void*)
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+        if (overlay !is null)
+        {
+            if (message == WM_PAINT)
+            {
+                overlay.paint(hwnd);
+                return 0;
+            }
+            if (message == WM_ERASEBKGND)
+                return 1;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    private bool registerDragPreviewWindowClass() nothrow
+    {
+        if (dragPreviewWindowClassRegistered) return true;
+
+        WNDCLASSEXW wc;
+        wc.cbSize = WNDCLASSEXW.sizeof;
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = &dragPreviewWindowProc;
+        wc.hInstance = GetModuleHandleW(null);
+        wc.hCursor = LoadCursorW(null, cast(LPCWSTR) dragPreviewCursorArrow);
+        wc.lpszClassName = dragPreviewWindowClassName.ptr;
+
+        if (RegisterClassExW(&wc) == 0 && GetLastError() != errorClassAlreadyExists)
+            return false;
+        dragPreviewWindowClassRegistered = true;
+        return true;
+    }
+}
+
+private final class DragPreviewOverlay
+{
+    version (Windows)
+    {
+        private HWND _hwnd;
+        private string _label;
+        private wstring _wideLabel;
+        private bool _directory;
+        private bool _visible;
+        private int _width = 150;
+        private int _height = 30;
+    }
+
+    void show(string label, bool directory)
+    {
+        version (Windows)
+        {
+            _label = label;
+            _wideLabel = toUTF16(label);
+            _directory = directory;
+            _visible = true;
+            update();
+        }
+    }
+
+    void update()
+    {
+        version (Windows)
+        {
+            if (!_visible || !ensureWindow()) return;
+
+            _width = clampPreviewInt(56 + cast(int) _label.length * 8, 150, 360);
+            _height = 30;
+
+            POINT cursor;
+            if (GetCursorPos(&cursor) == FALSE) return;
+            SetWindowPos(_hwnd, HWND_TOPMOST, cursor.x + 14, cursor.y + 18,
+                _width, _height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            InvalidateRect(_hwnd, null, FALSE);
+            UpdateWindow(_hwnd);
+        }
+    }
+
+    void hide()
+    {
+        version (Windows)
+        {
+            _visible = false;
+            if (_hwnd !is null)
+                ShowWindow(_hwnd, SW_HIDE);
+        }
+    }
+
+    bool visible() const @safe pure nothrow @nogc
+    {
+        version (Windows)
+            return _visible;
+        else
+            return false;
+    }
+
+    version (Windows)
+    private bool ensureWindow()
+    {
+        if (_hwnd !is null) return true;
+        if (!registerDragPreviewWindowClass()) return false;
+
+        _hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+            dragPreviewWindowClassName.ptr,
+            null,
+            WS_POPUP,
+            0,
+            0,
+            _width,
+            _height,
+            null,
+            null,
+            GetModuleHandleW(null),
+            cast(void*) this);
+        if (_hwnd is null) return false;
+        SetLayeredWindowAttributes(_hwnd, 0, cast(ubyte) dragPreviewLayerAlpha, LWA_ALPHA);
+        return true;
+    }
+
+    version (Windows)
+    void paint(HWND hwnd) nothrow
+    {
+        PAINTSTRUCT ps;
+        auto dc = BeginPaint(hwnd, &ps);
+        if (dc !is null)
+        {
+            RECT client;
+            GetClientRect(hwnd, &client);
+            fillPreviewRect(dc, client, previewRgb(32, 32, 32));
+            fillPreviewRect(dc, RECT(0, 0, client.right, 1), previewRgb(116, 144, 178));
+            fillPreviewRect(dc, RECT(0, client.bottom - 1, client.right, client.bottom),
+                previewRgb(58, 76, 96));
+            fillPreviewRect(dc, RECT(0, 0, 1, client.bottom), previewRgb(58, 76, 96));
+            fillPreviewRect(dc, RECT(client.right - 1, 0, client.right, client.bottom),
+                previewRgb(58, 76, 96));
+
+            if (_directory)
+            {
+                fillPreviewRect(dc, RECT(9, 8, 21, 14), previewRgb(245, 205, 82));
+                fillPreviewRect(dc, RECT(9, 12, 29, 24), previewRgb(235, 174, 38));
+                fillPreviewRect(dc, RECT(11, 14, 29, 24), previewRgb(251, 214, 76));
+            }
+            else
+            {
+                fillPreviewRect(dc, RECT(11, 6, 27, 24), previewRgb(220, 226, 233));
+                fillPreviewRect(dc, RECT(20, 6, 27, 13), previewRgb(178, 191, 205));
+                fillPreviewRect(dc, RECT(13, 15, 25, 17), previewRgb(95, 145, 205));
+                fillPreviewRect(dc, RECT(13, 20, 24, 22), previewRgb(124, 135, 148));
+            }
+
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, previewRgb(245, 247, 249));
+            RECT textRect = RECT(36, 0, maxPreviewInt(36, client.right - 8), client.bottom);
+            DrawTextW(dc, _wideLabel.ptr, cast(int) _wideLabel.length,
+                &textRect, cast(UINT) (DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS));
+        }
+        EndPaint(hwnd, &ps);
+    }
+
+    version (Windows)
+    private static void fillPreviewRect(HDC dc, RECT rect, COLORREF color) nothrow
+    {
+        auto brush = CreateSolidBrush(color);
+        if (brush !is null)
+        {
+            FillRect(dc, &rect, brush);
+            DeleteObject(brush);
+        }
+    }
+
+    version (Windows)
+    private static COLORREF previewRgb(ubyte r, ubyte g, ubyte b)
+        @safe pure nothrow @nogc
+    {
+        return cast(COLORREF) (cast(uint) r | (cast(uint) g << 8) | (cast(uint) b << 16));
+    }
+
+    version (Windows)
+    private static int clampPreviewInt(int value, int minimum, int maximum)
+        @safe pure nothrow @nogc
+    {
+        if (value < minimum) return minimum;
+        if (value > maximum) return maximum;
+        return value;
+    }
+
+    version (Windows)
+    private static int maxPreviewInt(int a, int b) @safe pure nothrow @nogc
+    {
+        return a > b ? a : b;
+    }
+}
+
 final class WindowsFileManagerRoot : Widget
 {
     private enum defaultUiZoomPercent = 80;
@@ -87,6 +298,7 @@ final class WindowsFileManagerRoot : Widget
     private GuiWindow _window;
     private TextField _addressField;
     private TextField _searchField;
+    private DragPreviewOverlay _dragPreviewOverlay;
     private ExplorerEntry[] _entries;
     private int[] _visibleEntries;
     private NavigationItem[] _navigation;
@@ -515,9 +727,13 @@ final class WindowsFileManagerRoot : Widget
         {
             _pendingEntryDrag = false;
             _draggingEntry = true;
+            showExternalDragPreview();
         }
         if (_draggingEntry)
+        {
             updateDropTargets(position);
+            updateExternalDragPreview();
+        }
         invalidate();
     }
 
@@ -570,12 +786,39 @@ final class WindowsFileManagerRoot : Widget
 
     private void resetEntryDrag(bool redraw)
     {
+        hideExternalDragPreview();
         _pendingEntryDrag = false;
         _draggingEntry = false;
         _dragSourceVisibleIndex = -1;
         _dropTargetVisibleIndex = -1;
         _dropTargetNavigationIndex = -1;
         if (redraw) invalidate();
+    }
+
+    private DragPreviewOverlay dragPreviewOverlay()
+    {
+        if (_dragPreviewOverlay is null)
+            _dragPreviewOverlay = new DragPreviewOverlay();
+        return _dragPreviewOverlay;
+    }
+
+    private void showExternalDragPreview()
+    {
+        if (!hasDragSource()) return;
+        const entry = dragSourceEntry();
+        dragPreviewOverlay().show(entry.name, entry.directory);
+    }
+
+    private void updateExternalDragPreview()
+    {
+        if (_dragPreviewOverlay !is null)
+            _dragPreviewOverlay.update();
+    }
+
+    private void hideExternalDragPreview()
+    {
+        if (_dragPreviewOverlay !is null)
+            _dragPreviewOverlay.hide();
     }
 
     private bool hasDragSource() const
@@ -1804,6 +2047,7 @@ final class WindowsFileManagerRoot : Widget
     private void drawDragPreview(ref Canvas canvas)
     {
         if (!_draggingEntry || !hasDragSource()) return;
+        if (_dragPreviewOverlay !is null && _dragPreviewOverlay.visible()) return;
         const entry = dragSourceEntry();
         const previewWidth = clampInt(scaled(52) + cast(int) entry.name.length * scaled(7),
             scaled(150), scaled(320));
