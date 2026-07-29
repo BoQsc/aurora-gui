@@ -348,12 +348,13 @@ int main()
             "aurora-cut-project-roundtrip.auroracut");
         scope (exit) if (exists(projectPath)) remove(projectPath);
         saveProjectFile(projectPath, projectModel, 2.25, true, 1.0,
-            true, 4.5, 1440);
+            true, 4.5, 1440, 854, 480);
         const loaded = loadProjectFile(projectPath);
         assert(loaded.assets.length == 1 && loaded.videoTracks.length == 3);
         assert(near(loaded.playhead, 2.25) && loaded.hasWorkIn &&
             loaded.hasWorkOut && near(loaded.workIn, 1.0) &&
-            near(loaded.workOut, 4.5) && loaded.previewQualityHeight == 1440);
+            near(loaded.workOut, 4.5) && loaded.previewQualityHeight == 1440 &&
+            loaded.compositionWidth == 854 && loaded.compositionHeight == 480);
 
         const legacyProjectPath = buildPath(tempDir(),
             "aurora-cut-project-legacy-preview-default.auroracut");
@@ -363,6 +364,9 @@ int main()
         const legacy = loadProjectFile(legacyProjectPath);
         assert(legacy.previewQualityHeight == 720,
             "Projects without a saved preview quality must default to 720p");
+        assert(legacy.compositionWidth == 1920 &&
+            legacy.compositionHeight == 1080,
+            "Projects without a saved composition resolution must default to 1080p");
 
         const savedCutout = loaded.videoTracks[savedCutoutTrack.lane]
             .clips[cast(size_t) savedCutoutIndex];

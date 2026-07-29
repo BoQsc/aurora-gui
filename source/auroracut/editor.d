@@ -15,8 +15,8 @@ import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpol
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
-import auroracut.project : defaultPreviewQualityHeight, loadProjectFile,
-    saveProjectFile;
+import auroracut.project : defaultCompositionHeight, defaultCompositionWidth,
+    defaultPreviewQualityHeight, loadProjectFile, saveProjectFile;
 import auroracut.recentprojects : clearRecentProjects,
     clearUnavailableRecentProjects, hasUnavailableRecentProjects,
     loadRecentProjects, rememberRecentProject;
@@ -30,19 +30,21 @@ import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadResult,
     YtDlpDownloadService, YtDlpInstallResult, YtDlpInstallService,
     ytDlpImportDirectory;
 import core.time : MonoTime;
+import std.algorithm : max, min;
 import std.file : exists;
 import std.conv : ConvException, to;
 import std.format : format;
 import std.math : PI, cos, fabs, log10, pow, sin;
-import std.path : baseName, buildPath, dirName, filenameCmp;
+import std.path : baseName, buildPath, dirName, extension, filenameCmp;
 import std.process : Config, spawnProcess;
-import std.string : strip;
+import std.string : strip, toLower;
 
 private enum JobPurpose : ubyte
 {
     none,
     exportFile,
-    previewTimeline
+    previewTimeline,
+    compressOutput
 }
 
 private enum PlaybackKind : ubyte
@@ -646,6 +648,8 @@ final class EditorRoot : VBox
     private Button _undoButton;
     private Button _redoButton;
     private Button _qualityButton;
+    private Button _resolutionButton;
+    private Button _compressOutputButton;
     private Slider _mp4CompressionSlider;
     private Label _mp4CompressionLabel;
     private int _mp4CompressionCrf = mp4CompressionDefaultCrf;
@@ -741,6 +745,8 @@ final class EditorRoot : VBox
     private string _importLastError;
     private PendingTimelineDrop[] _pendingTimelineDrops;
     private PopupOverlay _downloadPopup;
+    private PopupOverlay _resolutionPopup;
+    private PopupOverlay _compressOutputPopup;
     private bool _openYtDlpDialogAfterInstall;
 
     private bool _clipboardHasClip;
@@ -831,6 +837,8 @@ final class EditorRoot : VBox
     private double _lastPreviewClockPaint = -1.0;
 
     private int _previewQualityHeight = defaultPreviewQualityHeight;
+    private int _compositionWidth = defaultCompositionWidth;
+    private int _compositionHeight = defaultCompositionHeight;
     // Default to the low-latency path. Render/export quality remains governed
     // independently by the 720p–2160p composition preset.
     private PlaybackPerformance _playbackPerformance = PlaybackPerformance.responsive;
@@ -879,6 +887,8 @@ final class EditorRoot : VBox
         updatePlaybackButtons();
         updateHistoryButtons();
         updateQualityUi();
+        updateCompositionResolutionUi();
+        syncOutputButtons();
 
         if (!_tools.editingReady())
             setStatus("FFmpeg and FFprobe must be installed and available on PATH.");
@@ -898,6 +908,8 @@ final class EditorRoot : VBox
         autoSaveProjectOnExit();
         if (_fileDialog !is null) _fileDialog.dismiss();
         if (_downloadPopup !is null) _downloadPopup.dismiss();
+        if (_resolutionPopup !is null) _resolutionPopup.dismiss();
+        if (_compressOutputPopup !is null) _compressOutputPopup.dismiss();
         stopPlayback(false);
         _downloadService.shutdown();
         _ytDlpInstallService.shutdown();
@@ -932,6 +944,12 @@ final class EditorRoot : VBox
     bool cancelRenderForTesting() { return _exportJob.cancel(); }
     int previewQualityHeightForTesting() const { return _previewQualityHeight; }
     void setPreviewQualityForTesting(int height) { setPreviewQuality(height); }
+    int compositionWidthForTesting() const { return _compositionWidth; }
+    int compositionHeightForTesting() const { return _compositionHeight; }
+    void setCompositionResolutionForTesting(int width, int height)
+    {
+        setCompositionResolution(width, height);
+    }
     int mp4CompressionCrfForTesting() const { return _mp4CompressionCrf; }
     string projectPathForTesting() const { return _projectPath; }
     bool hasWorkInForTesting() const { return _hasWorkIn; }
@@ -967,9 +985,22 @@ final class EditorRoot : VBox
     double scrubValueForTesting() const { return _scrub.value(); }
     void saveProjectForTesting(string path) { writeProject(path); }
     string lastExportPathForTesting() const { return _lastExportPath; }
+    void setLastExportPathForTesting(string path)
+    {
+        _lastExportPath = path;
+        syncOutputButtons();
+    }
+    bool startCompressLastOutputForTesting(int crf)
+    {
+        return startCompressLastOutput(_lastExportPath, crf);
+    }
     bool revealExportEnabledForTesting() const
     {
         return _revealExportButton !is null && _revealExportButton.enabled();
+    }
+    bool compressOutputEnabledForTesting() const
+    {
+        return _compressOutputButton !is null && _compressOutputButton.enabled();
     }
     double nextTimelineAudioStartForTesting(double value)
     {
@@ -1040,6 +1071,11 @@ final class EditorRoot : VBox
         _mp4CompressionLabel.layoutHints().preferredHeight = 26;
         syncMp4CompressionLabel();
 
+        _resolutionButton = toolbar.add(new Button("1920×1080"));
+        _resolutionButton.setId("composition-resolution");
+        _resolutionButton.layoutHints().preferredHeight = 26;
+        _resolutionButton.onClick = delegate() { openCompositionResolutionPopup(); };
+
         _exportButton = toolbar.add(new ExportButton("Export MP4", IconKind.save));
         _exportButton.setId("export-mp4");
         _exportButton.layoutHints().preferredHeight = 26;
@@ -1052,6 +1088,12 @@ final class EditorRoot : VBox
         _revealExportButton.layoutHints().preferredHeight = 26;
         _revealExportButton.setEnabled(false);
         _revealExportButton.onClick = delegate() { revealExportOutput(); };
+
+        _compressOutputButton = toolbar.add(new Button("Compress…"));
+        _compressOutputButton.setId("compress-last-output");
+        _compressOutputButton.layoutHints().preferredHeight = 26;
+        _compressOutputButton.setEnabled(false);
+        _compressOutputButton.onClick = delegate() { openCompressOutputPopup(); };
     }
 
     private static int normalizedMp4CompressionCrf(double value)
@@ -1081,6 +1123,354 @@ final class EditorRoot : VBox
     private void applyMp4OutputCompression(ref ExportPreset preset)
     {
         preset.crf = _mp4CompressionCrf;
+    }
+
+    private static int normalizedCompositionDimension(int value, int fallback)
+    {
+        if (value <= 0) value = fallback;
+        if (value < 16) value = 16;
+        else if (value > 8192) value = 8192;
+        if (value % 2 != 0) ++value;
+        return value;
+    }
+
+    private ExportPreset compositionExportPreset() const
+    {
+        return ExportPreset.custom(_compositionWidth, _compositionHeight);
+    }
+
+    private void updateCompositionResolutionUi()
+    {
+        if (_resolutionButton !is null)
+            _resolutionButton.setText(format("%d×%d", _compositionWidth,
+                _compositionHeight));
+    }
+
+    private void setCompositionResolution(int width, int height,
+        string statusPrefix = "Composition/output resolution")
+    {
+        width = normalizedCompositionDimension(width, defaultCompositionWidth);
+        height = normalizedCompositionDimension(height, defaultCompositionHeight);
+        if (_compositionWidth == width && _compositionHeight == height) return;
+        _compositionWidth = width;
+        _compositionHeight = height;
+        markProjectDirty();
+        updateCompositionResolutionUi();
+        setStatus(format("%s set to %d×%d.", statusPrefix, width, height));
+    }
+
+    private bool matchVisibleContentResolution(out int width, out int height)
+    {
+        long bestArea;
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const address = TrackAddress(TrackKind.video, lane);
+            const track = _model.trackValue(address);
+            if (track.disabled) continue;
+            foreach (clip; track.clips)
+            {
+                if (clip.isText() || clip.muted || clip.opacity <= 0.000_001)
+                    continue;
+                auto asset = _model.assetForClip(clip);
+                if (asset is null || !asset.hasVideo ||
+                    asset.width <= 0 || asset.height <= 0)
+                    continue;
+                int candidateWidth = asset.width;
+                int candidateHeight = asset.height;
+                if (clip.cropEnabled)
+                {
+                    candidateWidth = cast(int) (cast(double) candidateWidth *
+                        max(0.005, min(1.0, clip.cropWidth)) + 0.5);
+                    candidateHeight = cast(int) (cast(double) candidateHeight *
+                        max(0.005, min(1.0, clip.cropHeight)) + 0.5);
+                }
+                candidateWidth = normalizedCompositionDimension(candidateWidth,
+                    defaultCompositionWidth);
+                candidateHeight = normalizedCompositionDimension(candidateHeight,
+                    defaultCompositionHeight);
+                const area = cast(long) candidateWidth *
+                    cast(long) candidateHeight;
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    width = candidateWidth;
+                    height = candidateHeight;
+                }
+            }
+        }
+        return bestArea > 0;
+    }
+
+    private void closeCompositionResolutionPopup()
+    {
+        if (_resolutionPopup !is null) _resolutionPopup.dismiss();
+        _resolutionPopup = null;
+    }
+
+    private void openCompositionResolutionPopup()
+    {
+        closeCompositionResolutionPopup();
+
+        auto content = new VBox(8, Insets(12));
+        content.setId("composition-resolution-popup");
+        content.setBackground(Color.fromHex(0x242a32));
+        content.setBorder(Color.fromHex(0x4a5562), 8);
+
+        auto title = content.add(new Label("Composition / output resolution"));
+        title.setScale(2);
+        title.layoutHints().preferredHeight = 30;
+
+        auto presetRow = content.add(new HBox(6));
+        presetRow.layoutHints().preferredHeight = 32;
+        auto hd = presetRow.add(new Button("1280×720"));
+        hd.onClick = delegate() {
+            setCompositionResolution(1280, 720);
+            closeCompositionResolutionPopup();
+        };
+        auto fullHd = presetRow.add(new Button("1920×1080"));
+        fullHd.setId("composition-resolution-restore");
+        fullHd.onClick = delegate() {
+            setCompositionResolution(defaultCompositionWidth,
+                defaultCompositionHeight, "Default composition/output resolution");
+            closeCompositionResolutionPopup();
+        };
+        auto quadHd = presetRow.add(new Button("2560×1440"));
+        quadHd.onClick = delegate() {
+            setCompositionResolution(2560, 1440);
+            closeCompositionResolutionPopup();
+        };
+        auto ultraHd = presetRow.add(new Button("3840×2160"));
+        ultraHd.onClick = delegate() {
+            setCompositionResolution(3840, 2160);
+            closeCompositionResolutionPopup();
+        };
+
+        auto customRow = content.add(new HBox(8));
+        customRow.layoutHints().preferredHeight = 34;
+        auto widthLabel = customRow.add(new Label("W"));
+        widthLabel.layoutHints().preferredWidth = 18;
+        auto widthField = customRow.add(new TextField());
+        widthField.setId("composition-resolution-width");
+        widthField.setText(to!string(_compositionWidth), false);
+        widthField.layoutHints().preferredWidth = 84;
+        auto heightLabel = customRow.add(new Label("H"));
+        heightLabel.layoutHints().preferredWidth = 18;
+        auto heightField = customRow.add(new TextField());
+        heightField.setId("composition-resolution-height");
+        heightField.setText(to!string(_compositionHeight), false);
+        heightField.layoutHints().preferredWidth = 84;
+        customRow.add(new Spacer());
+
+        auto hint = content.add(new Label(
+            "Export MP4 uses this canvas. Preview responsiveness is controlled separately."));
+        hint.setScale(1);
+        hint.setColor(Color.fromHex(0x87919c));
+        hint.layoutHints().preferredHeight = 28;
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 38;
+        auto matchButton = footer.add(new Button("Match content"));
+        matchButton.setId("composition-resolution-match-content");
+        matchButton.onClick = delegate() {
+            int width;
+            int height;
+            if (!matchVisibleContentResolution(width, height))
+            {
+                setStatus("No visible video or image content is available to match.");
+                return;
+            }
+            setCompositionResolution(width, height,
+                "Composition/output resolution matched to visible content");
+            closeCompositionResolutionPopup();
+        };
+        footer.add(new Spacer());
+        auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.onClick = delegate() { closeCompositionResolutionPopup(); };
+        auto applyButton = footer.add(new Button("Apply", IconKind.save));
+        applyButton.setId("composition-resolution-apply");
+        applyButton.setAccent(true);
+
+        bool delegate() applyCustom = delegate bool() {
+            int width;
+            int height;
+            try
+            {
+                width = to!int(widthField.textUtf8().strip());
+                height = to!int(heightField.textUtf8().strip());
+            }
+            catch (Exception)
+            {
+                setStatus("Enter numeric width and height for the composition resolution.");
+                return false;
+            }
+            setCompositionResolution(width, height);
+            closeCompositionResolutionPopup();
+            return true;
+        };
+        widthField.onSubmitted = delegate() { applyCustom(); };
+        heightField.onSubmitted = delegate() { applyCustom(); };
+        applyButton.onClick = delegate() { applyCustom(); };
+
+        auto owner = _resolutionButton is null ? cast(Widget) this :
+            cast(Widget) _resolutionButton;
+        const origin = owner.localToGlobal(Point(0, 0));
+        _resolutionPopup = showPopup(owner,
+            Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
+            content, PopupPlacement.below, Size(520, 220));
+        if (_resolutionPopup !is null)
+        {
+            _resolutionPopup.onDismissed = delegate() { _resolutionPopup = null; };
+            widthField.requestFocus();
+        }
+    }
+
+    private bool lastExportMp4Available() const
+    {
+        return _lastExportPath.length > 0 && exists(_lastExportPath) &&
+            extension(_lastExportPath).toLower() == ".mp4";
+    }
+
+    private void syncOutputButtons()
+    {
+        const outputExists = _lastExportPath.length > 0 && exists(_lastExportPath);
+        const running = _exportJob.state().running;
+        if (_revealExportButton !is null)
+            _revealExportButton.setEnabled(outputExists);
+        if (_compressOutputButton !is null)
+            _compressOutputButton.setEnabled(outputExists &&
+                extension(_lastExportPath).toLower() == ".mp4" && !running);
+    }
+
+    private void closeCompressOutputPopup()
+    {
+        if (_compressOutputPopup !is null) _compressOutputPopup.dismiss();
+        _compressOutputPopup = null;
+    }
+
+    private static string compressedOutputPath(string sourcePath, int crf)
+    {
+        const ext = extension(sourcePath);
+        const stem = ext.length > 0 ? sourcePath[0 .. $ - ext.length] :
+            sourcePath;
+        auto candidate = format("%s-compressed-crf%d.mp4", stem, crf);
+        if (!exists(candidate)) return candidate;
+        foreach (index; 2 .. 1000)
+        {
+            candidate = format("%s-compressed-crf%d-%d.mp4", stem, crf, index);
+            if (!exists(candidate)) return candidate;
+        }
+        return candidate;
+    }
+
+    private void openCompressOutputPopup()
+    {
+        if (!_tools.ffmpeg)
+        {
+            setStatus("FFmpeg is required before output can be compressed.");
+            return;
+        }
+        if (_exportJob.state().running)
+        {
+            setStatus("A render is already running.");
+            return;
+        }
+        if (!lastExportMp4Available())
+        {
+            setStatus("Export an MP4 first before compressing the previous output.");
+            syncOutputButtons();
+            return;
+        }
+        closeCompressOutputPopup();
+
+        auto content = new VBox(8, Insets(12));
+        content.setId("compress-output-popup");
+        content.setBackground(Color.fromHex(0x242a32));
+        content.setBorder(Color.fromHex(0x4a5562), 8);
+
+        auto title = content.add(new Label("Compress previous MP4 output"));
+        title.setScale(2);
+        title.layoutHints().preferredHeight = 30;
+
+        auto source = content.add(new Label(baseName(_lastExportPath)));
+        source.setScale(1);
+        source.setColor(Color.fromHex(0xb8c1cc));
+        source.layoutHints().preferredHeight = 24;
+
+        int crf = _mp4CompressionCrf;
+        auto row = content.add(new HBox(8));
+        row.layoutHints().preferredHeight = 34;
+        auto slider = row.add(new Slider(mp4CompressionMinCrf,
+            mp4CompressionMaxCrf, crf));
+        slider.setId("compress-output-crf");
+        slider.layoutHints().flex = 1.0;
+        auto valueLabel = row.add(new Label(format("CRF %d", crf)));
+        valueLabel.setId("compress-output-crf-value");
+        valueLabel.setScale(1);
+        valueLabel.layoutHints().preferredWidth = 62;
+        slider.onChanged = delegate(double value) {
+            crf = normalizedMp4CompressionCrf(value);
+            valueLabel.setText(format("CRF %d", crf));
+        };
+
+        auto hint = content.add(new Label(
+            "Creates a new MP4 beside the previous output; the original is kept."));
+        hint.setScale(1);
+        hint.setColor(Color.fromHex(0x87919c));
+        hint.layoutHints().preferredHeight = 28;
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 38;
+        footer.add(new Spacer());
+        auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.onClick = delegate() { closeCompressOutputPopup(); };
+        auto startButton = footer.add(new Button("Compress copy", IconKind.save));
+        startButton.setId("compress-output-start");
+        startButton.setAccent(true);
+        startButton.onClick = delegate() {
+            const sourcePath = _lastExportPath;
+            closeCompressOutputPopup();
+            startCompressLastOutput(sourcePath, crf);
+        };
+
+        auto owner = _compressOutputButton is null ? cast(Widget) this :
+            cast(Widget) _compressOutputButton;
+        const origin = owner.localToGlobal(Point(0, 0));
+        _compressOutputPopup = showPopup(owner,
+            Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
+            content, PopupPlacement.below, Size(430, 195));
+        if (_compressOutputPopup !is null)
+            _compressOutputPopup.onDismissed = delegate() {
+                _compressOutputPopup = null;
+            };
+    }
+
+    private bool startCompressLastOutput(string sourcePath, int crf)
+    {
+        if (sourcePath.length == 0 || !exists(sourcePath) ||
+            extension(sourcePath).toLower() != ".mp4")
+        {
+            setStatus("The previous MP4 output is no longer available.");
+            syncOutputButtons();
+            return false;
+        }
+        const outputPath = compressedOutputPath(sourcePath, crf);
+        if (!_exportJob.startRecompress(sourcePath, outputPath, crf))
+        {
+            setStatus("A render is already running.");
+            syncOutputButtons();
+            return false;
+        }
+        _jobPurpose = JobPurpose.compressOutput;
+        _jobCompletionHandled = false;
+        _lastProgressValue = 0.0;
+        _lastProgressPercent = -1;
+        _lastProgressLabel = "Compress";
+        _lastJobStatus = "";
+        _progress.setValue(0.0);
+        _progress.setLabel(_lastProgressLabel);
+        syncOutputButtons();
+        setStatus(format("Compressing previous MP4 output at CRF %d…", crf));
+        return true;
     }
 
     private Widget buildWorkspace()
@@ -1773,7 +2163,8 @@ final class EditorRoot : VBox
             const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
-                _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
+                _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
+                _compositionWidth, _compositionHeight);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -1796,7 +2187,8 @@ final class EditorRoot : VBox
             const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
-                _workIn, _hasWorkOut, _workOut, _previewQualityHeight);
+                _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
+                _compositionWidth, _compositionHeight);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -1842,6 +2234,10 @@ final class EditorRoot : VBox
             if (_previewQualityHeight != 720 && _previewQualityHeight != 1080 &&
                 _previewQualityHeight != 1440 && _previewQualityHeight != 2160)
                 _previewQualityHeight = defaultPreviewQualityHeight;
+            _compositionWidth = normalizedCompositionDimension(data.compositionWidth,
+                defaultCompositionWidth);
+            _compositionHeight = normalizedCompositionDimension(data.compositionHeight,
+                defaultCompositionHeight);
             clearHistory();
             _clipboardHasClip = false;
             _clipboardSystemSequence = clipboardSequenceNumber();
@@ -1858,6 +2254,7 @@ final class EditorRoot : VBox
             syncTimelineRange();
             syncTimelineWorkArea();
             syncInspector();
+            updateCompositionResolutionUi();
             updateQualityUi();
             updateProjectTitle();
             scheduleTimelineFrame();
@@ -5865,7 +6262,8 @@ final class EditorRoot : VBox
         const suggested = kind == ExportKind.mp4 ?
             "aurora-cut-export.mp4" : "aurora-cut-export.mp3";
         _fileDialog.showSave(extension, suggested, delegate(string path) {
-            auto preset = exportPresetForHeight(_previewQualityHeight);
+            auto preset = kind == ExportKind.mp4 ? compositionExportPreset() :
+                exportPresetForHeight(_compositionHeight);
             if (kind == ExportKind.mp4) applyMp4OutputCompression(preset);
             auto request = buildExportRequest(kind, path, preset);
             startJob(request, JobPurpose.exportFile);
@@ -6037,11 +6435,12 @@ final class EditorRoot : VBox
         if (purpose == JobPurpose.exportFile)
         {
             _lastExportPath = "";
-            if (_revealExportButton !is null) _revealExportButton.setEnabled(false);
         }
+        syncOutputButtons();
         _lastProgressValue = 0.0;
         _lastProgressPercent = -1;
-        _lastProgressLabel = purpose == JobPurpose.previewTimeline ? "Preview" : "Export";
+        _lastProgressLabel = purpose == JobPurpose.previewTimeline ? "Preview" :
+            purpose == JobPurpose.compressOutput ? "Compress" : "Export";
         _lastJobStatus = "";
         _progress.setValue(0.0);
         _progress.setLabel(_lastProgressLabel);
@@ -6064,8 +6463,10 @@ final class EditorRoot : VBox
         if (request.hasRange())
             return "Export started in the background for " ~
                 formatTimecode(request.rangeStart) ~ " to " ~
-                formatTimecode(request.rangeEnd) ~ ".";
-        return "Export started in the background for the full sequence.";
+                formatTimecode(request.rangeEnd) ~
+                format(" at %d×%d.", request.preset.width, request.preset.height);
+        return format("Export started in the background for the full sequence at %d×%d.",
+            request.preset.width, request.preset.height);
     }
 
     private double defaultTransitionDurationForClip(const TimelineClip clip) const
@@ -6197,7 +6598,7 @@ final class EditorRoot : VBox
     private void addQualityItem(ref ContextMenuItem[] items, int height)
     {
         const selected = _previewQualityHeight == height;
-        items ~= ContextMenuItem.check(format("%dp preview and MP4", height), selected,
+        items ~= ContextMenuItem.check(format("%dp preview", height), selected,
             delegate() { setPreviewQuality(height); });
     }
 
@@ -6238,7 +6639,7 @@ final class EditorRoot : VBox
         markProjectDirty();
         updateQualityUi();
         if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
-        setStatus(format("Preview/export quality set to %dp. Existing playback continues.",
+        setStatus(format("Preview quality set to %dp. Existing playback continues.",
             height));
     }
 
@@ -6741,7 +7142,7 @@ final class EditorRoot : VBox
         if (!exists(_lastExportPath))
         {
             setStatus("The last export is no longer at " ~ _lastExportPath);
-            if (_revealExportButton !is null) _revealExportButton.setEnabled(false);
+            syncOutputButtons();
             return;
         }
         if (revealPathInFileManager(_lastExportPath, "export output"))
@@ -7250,16 +7651,21 @@ final class EditorRoot : VBox
                 }
                 else
                 {
-                    _lastExportPath = state.outputPath;
-                    if (_revealExportButton !is null)
-                        _revealExportButton.setEnabled(exists(_lastExportPath));
-                    setStatus("Export complete: " ~ state.outputPath);
+                    if (completedPurpose != JobPurpose.compressOutput)
+                        _lastExportPath = state.outputPath;
+                    syncOutputButtons();
+                    setStatus(completedPurpose == JobPurpose.compressOutput ?
+                        "Compressed MP4 complete: " ~ state.outputPath :
+                        "Export complete: " ~ state.outputPath);
                 }
             }
             else if (state.cancelled)
                 setStatus("Background render cancelled. Editing and playback were not interrupted.");
             else
-                setStatus("Render failed: " ~ outputTail(state.error, 1000));
+                setStatus(completedPurpose == JobPurpose.compressOutput ?
+                    "Compression failed: " ~ outputTail(state.error, 1000) :
+                    "Render failed: " ~ outputTail(state.error, 1000));
+            syncOutputButtons();
         }
     }
 

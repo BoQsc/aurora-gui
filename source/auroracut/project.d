@@ -9,6 +9,8 @@ import std.format : format;
 import std.json : JSONException, JSONType, JSONValue, parseJSON;
 
 enum int defaultPreviewQualityHeight = 720;
+enum int defaultCompositionWidth = 1920;
+enum int defaultCompositionHeight = 1080;
 
 /** Serializable editor state. Media metadata is stored so opening a project
  * does not block the UI on a fresh FFprobe pass. */
@@ -23,6 +25,8 @@ struct ProjectData
     double workIn;
     double workOut;
     int previewQualityHeight = defaultPreviewQualityHeight;
+    int compositionWidth = defaultCompositionWidth;
+    int compositionHeight = defaultCompositionHeight;
 }
 
 private bool finiteNumber(double value) @safe pure nothrow @nogc
@@ -150,7 +154,8 @@ private JSONValue assetJson(const MediaAsset value, size_t index)
 
 void saveProjectFile(string path, EditorModel model, double playhead,
     bool hasWorkIn, double workIn, bool hasWorkOut, double workOut,
-    int previewQualityHeight)
+    int previewQualityHeight, int compositionWidth = defaultCompositionWidth,
+    int compositionHeight = defaultCompositionHeight)
 {
     JSONValue[] assets;
     foreach (index, asset; model.assets) assets ~= assetJson(asset, index);
@@ -168,6 +173,8 @@ void saveProjectFile(string path, EditorModel model, double playhead,
         "workIn": jsonNumber(workIn, 0.0, "project.workIn"),
         "workOut": jsonNumber(workOut, 0.0, "project.workOut"),
         "previewQualityHeight": JSONValue(cast(long) previewQualityHeight),
+        "compositionWidth": JSONValue(cast(long) compositionWidth),
+        "compositionHeight": JSONValue(cast(long) compositionHeight),
         "assets": JSONValue(assets),
         "videoTracks": JSONValue(video),
         "audioTracks": JSONValue(audio)
@@ -364,6 +371,10 @@ ProjectData loadProjectFile(string path)
     result.workOut = numberValue(root, "workOut");
     result.previewQualityHeight = cast(int) integerValue(root,
         "previewQualityHeight", defaultPreviewQualityHeight);
+    result.compositionWidth = cast(int) integerValue(root,
+        "compositionWidth", defaultCompositionWidth);
+    result.compositionHeight = cast(int) integerValue(root,
+        "compositionHeight", defaultCompositionHeight);
 
     auto assets = member(root, "assets");
     if (assets !is null && assets.type == JSONType.array)

@@ -204,6 +204,17 @@ private bool waitForPlaybackReady(EditorRoot editor, PreviewWidget preview)
     return false;
 }
 
+private bool waitForRenderIdle(EditorRoot editor, int iterations = 1_200)
+{
+    foreach (_; 0 .. iterations)
+    {
+        editor.tickTree(0.02);
+        if (!editor.renderRunningForTesting()) return true;
+        Thread.sleep(20.msecs);
+    }
+    return false;
+}
+
 int main(string[] arguments)
 {
     assert(arguments.length == 4,
@@ -231,6 +242,8 @@ int main(string[] arguments)
         "aurora-cut-editor-smoke-recent-overflow");
     const screenshotPath = buildPath(tempDir(),
         "aurora-cut-editor-smoke-clipboard.bmp");
+    const fakeOutputPath = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-output.mp4");
     if (exists(recentPath)) remove(recentPath);
     if (exists(savedProject)) remove(savedProject);
     if (exists(recentOpenA)) remove(recentOpenA);
@@ -239,6 +252,7 @@ int main(string[] arguments)
     if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
     if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
     if (exists(screenshotPath)) remove(screenshotPath);
+    if (exists(fakeOutputPath)) remove(fakeOutputPath);
     bool fakeClipboardHasImage;
     ulong fakeClipboardSequence = 1;
     setClipboardImageProviderForTesting(
@@ -257,6 +271,7 @@ int main(string[] arguments)
         if (exists(recentDuplicateB)) rmdirRecurse(recentDuplicateB);
         if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
         if (exists(screenshotPath)) remove(screenshotPath);
+        if (exists(fakeOutputPath)) remove(fakeOutputPath);
     }
     setRecentProjectsFilePathForTesting(recentPath);
     clearRecentProjects();
@@ -295,6 +310,7 @@ int main(string[] arguments)
     auto preview = requireWidget!PreviewWidget(editor, "preview");
     auto playSource = requireWidget!Button(editor, "play-preview");
     auto qualityButton = requireWidget!Button(editor, "preview-quality");
+    auto resolutionButton = requireWidget!Button(editor, "composition-resolution");
     auto saveProject = requireWidget!Button(editor, "save-project");
     auto openProject = requireWidget!Button(editor, "open-project");
     auto recentProjects = requireWidget!Button(editor, "recent-projects");
@@ -302,6 +318,7 @@ int main(string[] arguments)
     auto undoButton = requireWidget!Button(editor, "undo");
     auto redoButton = requireWidget!Button(editor, "redo");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
+    auto compressOutput = requireWidget!Button(editor, "compress-last-output");
     auto addTransitions = requireWidget!Button(editor, "clip-add-transitions");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
@@ -311,6 +328,10 @@ int main(string[] arguments)
     assert(editor.previewQualityHeightForTesting() == 720 &&
         qualityButton.text() == "720p"d,
         "Composition Preview must default to 720p for responsive startup");
+    assert(editor.compositionWidthForTesting() == 1920 &&
+        editor.compositionHeightForTesting() == 1080 &&
+        resolutionButton.text() == "1920×1080"d,
+        "MP4 composition/output resolution must default to 1080p");
     assert(openProject.text() == "Open"d &&
         openProject.bounds().x >= saveProject.bounds().right(),
         "Open Project button is not directly to the right of Save");
@@ -349,6 +370,55 @@ int main(string[] arguments)
     driver.pressKey(Key.escape);
     assert(!revealExport.enabled() && !editor.revealExportEnabledForTesting(),
         "Export output button must stay disabled until an export completes");
+    assert(!compressOutput.enabled() && !editor.compressOutputEnabledForTesting(),
+        "Compress previous output button must stay disabled until an MP4 export exists");
+    driver.click(globalCenter(resolutionButton));
+    assert(driver.paint(), "Composition resolution popup did not paint");
+    auto resolutionWidth = requireWidget!TextField(editor,
+        "composition-resolution-width");
+    auto resolutionHeight = requireWidget!TextField(editor,
+        "composition-resolution-height");
+    auto resolutionApply = requireWidget!Button(editor,
+        "composition-resolution-apply");
+    resolutionWidth.setText("854", true);
+    resolutionHeight.setText("480", true);
+    driver.click(globalCenter(resolutionApply));
+    assert(editor.compositionWidthForTesting() == 854 &&
+        editor.compositionHeightForTesting() == 480 &&
+        resolutionButton.text() == "854×480"d,
+        "Custom composition resolution did not apply");
+    driver.click(globalCenter(resolutionButton));
+    assert(driver.paint(), "Composition resolution restore popup did not paint");
+    auto resolutionRestore = requireWidget!Button(editor,
+        "composition-resolution-restore");
+    driver.click(globalCenter(resolutionRestore));
+    assert(editor.compositionWidthForTesting() == 1920 &&
+        editor.compositionHeightForTesting() == 1080,
+        "Composition resolution restore did not return to 1080p");
+    write(fakeOutputPath, "fake mp4 marker");
+    editor.setLastExportPathForTesting(fakeOutputPath);
+    assert(revealExport.enabled() && editor.revealExportEnabledForTesting() &&
+        compressOutput.enabled() && editor.compressOutputEnabledForTesting(),
+        "Completed MP4 output did not enable Output and Compress controls");
+    driver.click(globalCenter(compressOutput));
+    assert(driver.paint(), "Compress previous output popup did not paint");
+    auto recompressSlider = requireWidget!Slider(editor, "compress-output-crf");
+    auto recompressLabel = requireWidget!Label(editor, "compress-output-crf-value");
+    auto recompressStart = requireWidget!Button(editor, "compress-output-start");
+    recompressSlider.setValue(31.2);
+    assert(recompressLabel.text() == "CRF 31"d &&
+        recompressStart.text() == "Compress copy"d,
+        "Compress previous output popup did not expose CRF slider and approval button");
+    driver.pressKey(Key.escape);
+    editor.setLastExportPathForTesting(arguments[1]);
+    assert(editor.startCompressLastOutputForTesting(31),
+        "Editor-owned previous-output compression did not start");
+    assert(waitForRenderIdle(editor),
+        "Editor-owned previous-output compression did not finish");
+    assert(editor.lastExportPathForTesting() == arguments[1],
+        "Compressed MP4 output replaced the remembered normal export path");
+    assert(editor.compressOutputEnabledForTesting(),
+        "Compress button did not continue remembering the last normal MP4 output");
     mp4Compression.setValue(27.6);
     assert(editor.mp4CompressionCrfForTesting() == 28 &&
         mp4CompressionValue.text() == "CRF 28"d,
@@ -669,6 +739,16 @@ int main(string[] arguments)
     assert(fabs(timeline.timeAtXForTesting(timeline.timeOriginXForTesting())) < 0.0001,
         "Timeline zero origin no longer maps to 00:00:00");
 
+    driver.click(globalCenter(resolutionButton));
+    assert(driver.paint(), "Composition resolution match popup did not paint");
+    auto resolutionMatch = requireWidget!Button(editor,
+        "composition-resolution-match-content");
+    driver.click(globalCenter(resolutionMatch));
+    assert(editor.compositionWidthForTesting() == 320 &&
+        editor.compositionHeightForTesting() == 180,
+        "Composition resolution did not match the visible video content");
+    editor.setCompositionResolutionForTesting(1920, 1080);
+
     const selectionPlayheadBefore = timeline.playhead();
     driver.click(clipCenter(timeline, v1, 0));
     assert(fabs(timeline.playhead() - selectionPlayheadBefore) < 0.0001,
@@ -900,10 +980,10 @@ int main(string[] arguments)
     driver.click(globalCenter(qualityButton));
     auto qualityMenu = findOpenContextMenu(editor);
     assert(qualityMenu !is null);
-    assert(menuHasLabel(qualityMenu, "720p preview and MP4"d));
-    assert(menuHasLabel(qualityMenu, "1080p preview and MP4"d));
-    assert(menuHasLabel(qualityMenu, "1440p preview and MP4"d));
-    assert(menuHasLabel(qualityMenu, "2160p preview and MP4"d));
+    assert(menuHasLabel(qualityMenu, "720p preview"d));
+    assert(menuHasLabel(qualityMenu, "1080p preview"d));
+    assert(menuHasLabel(qualityMenu, "1440p preview"d));
+    assert(menuHasLabel(qualityMenu, "2160p preview"d));
     driver.pressKey(Key.escape);
 
     writeln("[editor-smoke] context menus and quality");

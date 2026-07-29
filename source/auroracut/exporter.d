@@ -13,7 +13,7 @@ import std.conv : to;
 import std.file : write;
 import std.format : format;
 import std.math : fabs;
-import std.path : buildPath, extension;
+import std.path : buildPath, extension, filenameCmp;
 import std.process : Config, Pid, Redirect, kill, pipeProcess, wait;
 import std.string : startsWith, strip, toLower;
 
@@ -188,6 +188,17 @@ struct ExportPreset
         return result;
     }
 
+    static ExportPreset custom(int requestedWidth, int requestedHeight)
+    {
+        ExportPreset result;
+        result.width = evenDimension(requestedWidth);
+        result.height = evenDimension(requestedHeight);
+        result.crf = result.height >= 2160 ? 18 :
+            result.height >= 1440 ? 19 : 20;
+        result.videoPreset = result.height >= 2160 ? "fast" : "veryfast";
+        return result;
+    }
+
     static ExportPreset previewForHeight(int requestedHeight)
     {
         ExportPreset result;
@@ -257,6 +268,13 @@ private struct InputClip
     int inputIndex;
 }
 
+private struct RecompressRequest
+{
+    string inputPath;
+    string outputPath;
+    int crf;
+}
+
 final class ExportJob
 {
     private Mutex _mutex;
@@ -292,6 +310,32 @@ final class ExportJob
         request.video = request.video.dup;
         request.audio = request.audio.dup;
         _thread = new Thread({ runRequest(request); });
+        _thread.isDaemon = true;
+        _thread.start();
+        return true;
+    }
+
+    bool startRecompress(string inputPath, string outputPath, int crf)
+    {
+        _mutex.lock();
+        if (_state.running || _shutdown)
+        {
+            _mutex.unlock();
+            return false;
+        }
+        _state = ExportState.init;
+        _state.running = true;
+        _state.status = "Preparing MP4 recompression…";
+        _state.outputPath = outputPath;
+        _cancelRequested = false;
+        _process = null;
+        _mutex.unlock();
+
+        RecompressRequest request;
+        request.inputPath = inputPath;
+        request.outputPath = outputPath;
+        request.crf = crf;
+        _thread = new Thread({ runRecompressRequest(request); });
         _thread.isDaemon = true;
         _thread.start();
         return true;
@@ -480,6 +524,64 @@ final class ExportJob
             finishCancelled();
         else
             finishFailure(failure.length > 0 ? failure : "The render did not complete.");
+    }
+
+    private void runRecompressRequest(RecompressRequest request)
+    {
+        string outputPath;
+        string failure;
+        bool success;
+        bool cancelled;
+        try
+        {
+            if (request.inputPath.length == 0)
+                throw new Exception("No source MP4 was provided.");
+            const inputPath = absoluteNormalized(request.inputPath);
+            outputPath = absoluteNormalized(ensureExtension(request.outputPath, ".mp4"));
+            if (filenameCmp(inputPath, outputPath) == 0)
+                throw new Exception("Choose a different output path for the compressed copy.");
+            ensureParentDirectory(outputPath);
+            if (cancellationRequested())
+                throw new Exception("Render cancelled.");
+
+            const crf = max(0, min(51, request.crf));
+            publish(0.04, format("Compressing MP4 copy at CRF %d…", crf));
+            string[] arguments = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-nostats", "-stats_period", "0.25", "-progress", "pipe:1",
+                "-i", inputPath,
+                "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
+                "-c:v", "libx264", "-preset", "veryfast",
+                "-crf", format("%d", crf),
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
+                outputPath
+            ];
+            runCancellable(arguments, "Compress MP4", 0.0);
+            if (cancellationRequested())
+                throw new Exception("Render cancelled.");
+            publish(0.98, "Finalizing compressed MP4…");
+            success = true;
+        }
+        catch (Exception error)
+        {
+            cancelled = cancellationRequested();
+            if (!cancelled) failure = error.msg;
+        }
+        finally
+        {
+            if (!success && outputPath.length > 0)
+                removePathQuietly(outputPath);
+        }
+
+        if (success)
+            finishSuccess(outputPath);
+        else if (cancelled)
+            finishCancelled();
+        else
+            finishFailure(failure.length > 0 ? failure :
+                "The MP4 recompression did not complete.");
     }
 
     /** Execute FFmpeg on the worker, publish real progress, and keep ownership
