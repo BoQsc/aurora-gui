@@ -15,7 +15,8 @@ import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpol
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
-import auroracut.project : loadProjectFile, saveProjectFile;
+import auroracut.project : defaultPreviewQualityHeight, loadProjectFile,
+    saveProjectFile;
 import auroracut.recentprojects : clearRecentProjects,
     clearUnavailableRecentProjects, hasUnavailableRecentProjects,
     loadRecentProjects, rememberRecentProject;
@@ -767,7 +768,6 @@ final class EditorRoot : VBox
     private bool _playbackAwaitingAudioClock;
     private double _playbackAudioClockWait;
     private double _playbackAudioClockLostWait;
-    private double _playbackVideoLagWait;
     private ulong _playbackModelRevision;
 
     private bool _canvasDragEditing;
@@ -795,9 +795,8 @@ final class EditorRoot : VBox
     // The monotonic clock is authoritative, and drag events only replace one
     // pending seek instead of synchronously restarting FFmpeg for every pixel.
     private enum double playbackVideoLeadSeconds = 0.018;
-    private enum double playbackVideoLagToleranceSeconds = 0.24;
-    private enum double playbackVideoLagAbortSeconds = 0.25;
-    private enum double playbackAudioClockLostAbortSeconds = 0.18;
+    private enum double playbackVideoLagToleranceSeconds = 0.075;
+    private enum double playbackAudioClockLostAbortSeconds = 0.10;
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
@@ -808,7 +807,6 @@ final class EditorRoot : VBox
     private double _seekDelay;
     private double _seekTarget;
     private double _seekStillTarget = -1.0;
-    private double _transportPaintAccumulator;
     private double _lastTimeLabelPlaybackPosition = -1.0;
     private string _lastTimeText;
     private string _lastStatusText;
@@ -832,7 +830,7 @@ final class EditorRoot : VBox
     // frame arrivals.
     private double _lastPreviewClockPaint = -1.0;
 
-    private int _previewQualityHeight = 1080;
+    private int _previewQualityHeight = defaultPreviewQualityHeight;
     // Default to the low-latency path. Render/export quality remains governed
     // independently by the 720p–2160p composition preset.
     private PlaybackPerformance _playbackPerformance = PlaybackPerformance.responsive;
@@ -948,6 +946,14 @@ final class EditorRoot : VBox
     bool seekPendingForTesting() const { return _seekPending; }
     bool deferredSequenceRefreshForTesting() const { return _sequenceRefreshDeferred; }
     ulong playbackRevisionForTesting() const { return _playbackModelRevision; }
+    double playbackVideoLagToleranceForTesting() const
+    {
+        return playbackVideoLagToleranceSeconds;
+    }
+    double playbackTransportVisualIntervalForTesting() const
+    {
+        return 0.0;
+    }
     ulong modelRevisionForTesting() const { return _modelRevision; }
     void moveClipForTesting(TrackAddress source, int index,
         TrackAddress destination, double start)
@@ -1138,7 +1144,7 @@ final class EditorRoot : VBox
         previewTitle.setScale(1);
         previewTitle.setColor(Color.fromHex(0xb8c1cc));
         previewHeader.add(new Spacer());
-        _qualityButton = previewHeader.add(new Button("1080p"));
+        _qualityButton = previewHeader.add(new Button("720p"));
         _qualityButton.setId("preview-quality");
         _qualityButton.onClick = delegate() {
             const point = _qualityButton.localToGlobal(
@@ -1835,7 +1841,7 @@ final class EditorRoot : VBox
             _previewQualityHeight = data.previewQualityHeight;
             if (_previewQualityHeight != 720 && _previewQualityHeight != 1080 &&
                 _previewQualityHeight != 1440 && _previewQualityHeight != 2160)
-                _previewQualityHeight = 1080;
+                _previewQualityHeight = defaultPreviewQualityHeight;
             clearHistory();
             _clipboardHasClip = false;
             _clipboardSystemSequence = clipboardSequenceNumber();
@@ -4894,7 +4900,6 @@ final class EditorRoot : VBox
         _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
         clearPendingSeekState();
-        _transportPaintAccumulator = 1.0;
         _lastTimeLabelPlaybackPosition = -1.0;
         _lastPreviewClockPaint = -1.0;
 
@@ -4946,6 +4951,24 @@ final class EditorRoot : VBox
             sequenceTime;
     }
 
+    private double displayedPlaybackFrameTime() const
+    {
+        if (_preview is null || !_preview.hasFrame()) return _playbackPosition;
+        double frameTime = _sequencePlaybackDirect ?
+            _preview.frameTime() - _playbackMediaOffset :
+            _preview.frameTime();
+        return clampValue(frameTime, _playbackStart, _playbackEnd);
+    }
+
+    private bool displayedVideoBehindPlaybackClock() const
+    {
+        if (_playbackAsset is null || !_playbackAsset.hasVideo ||
+            _preview is null || !_preview.hasFrame())
+            return false;
+        return _playbackPosition - displayedPlaybackFrameTime() >
+            playbackVideoLagToleranceSeconds;
+    }
+
     private bool playbackAudioRequiredNow()
     {
         if (_playbackAsset is null) return false;
@@ -4969,7 +4992,6 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
-        _playbackVideoLagWait = 0.0;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _videoStream.stop();
@@ -5199,7 +5221,6 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
-        _playbackVideoLagWait = 0.0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         const remaining = _playbackEnd - _playbackPosition;
@@ -5264,7 +5285,6 @@ final class EditorRoot : VBox
             setStatus(playbackRunningStatus());
             startPlaybackAudio();
         }
-        _transportPaintAccumulator = 1.0;
     }
 
     private void pausePlayback()
@@ -5283,7 +5303,6 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
-        _playbackVideoLagWait = 0.0;
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -5373,7 +5392,6 @@ final class EditorRoot : VBox
             _playbackAwaitingAudioClock = false;
             _playbackAudioClockWait = 0.0;
             _playbackAudioClockLostWait = 0.0;
-            _playbackVideoLagWait = 0.0;
             _previewService.cancel();
             _playbackClockValid = false;
             _playbackAwaitingFirstFrame = false;
@@ -5569,13 +5587,11 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
-        _playbackVideoLagWait = 0.0;
         _playbackModelRevision = 0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
         clearPendingSeekState();
-        _transportPaintAccumulator = 0.0;
         _sourceAudioRefreshPending = false;
         _sourceAudioRefreshDelay = 0.0;
         _sequenceRefreshPending = false;
@@ -5601,7 +5617,6 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
-        _playbackVideoLagWait = 0.0;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _videoStream.stop();
@@ -5862,9 +5877,10 @@ final class EditorRoot : VBox
         switch (height)
         {
             case 720: return ExportPreset.hd();
+            case 1080: return ExportPreset.fullHd();
             case 1440: return ExportPreset.quadHd();
             case 2160: return ExportPreset.ultraHd();
-            default: return ExportPreset.fullHd();
+            default: return ExportPreset.hd();
         }
     }
 
@@ -6216,7 +6232,7 @@ final class EditorRoot : VBox
     private void setPreviewQuality(int height)
     {
         height = height == 720 || height == 1080 || height == 1440 || height == 2160
-            ? height : 1080;
+            ? height : defaultPreviewQualityHeight;
         if (_previewQualityHeight == height) return;
         _previewQualityHeight = height;
         markProjectDirty();
@@ -6941,13 +6957,18 @@ final class EditorRoot : VBox
                 {
                     _playbackPosition = clampValue(audioPosition,
                         _playbackStart, _playbackEnd);
-                    _playbackAwaitingAudioClock = false;
-                    _playbackAwaitingFirstFrame = false;
-                    _playbackAudioClockLostWait = 0.0;
-                    _playbackVideoLagWait = 0.0;
-                    resetPlaybackClock();
-                    setStatus(playbackRunningStatus());
-                    _preview.setPlaying(true);
+                    if (displayedVideoBehindPlaybackClock())
+                        haltPlaybackForSync(
+                            "Video frame was not ready with audio; playback stopped to prevent desync.");
+                    else
+                    {
+                        _playbackAwaitingAudioClock = false;
+                        _playbackAwaitingFirstFrame = false;
+                        _playbackAudioClockLostWait = 0.0;
+                        resetPlaybackClock();
+                        setStatus(playbackRunningStatus());
+                        _preview.setPlaying(true);
+                    }
                 }
                 else if (_playbackAudioClockWait >= 0.85)
                 {
@@ -6956,7 +6977,8 @@ final class EditorRoot : VBox
                 }
             }
 
-            if (!_playbackAwaitingAudioClock && !_playbackAwaitingFirstFrame)
+            if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame)
             {
                 if (_playbackAudioStarted && _playbackAudioRequired)
                 {
@@ -6998,14 +7020,16 @@ final class EditorRoot : VBox
             }
             bool receivedFrame;
             PreviewFrame frame;
-            if (!_playbackAwaitingAudioClock && _playbackAwaitingFirstFrame &&
+            if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                _playbackAwaitingFirstFrame &&
                 _videoStream.takeReady(frame))
             {
                 receivedFrame = true;
                 bool handledFrame;
                 if (frame.valid())
                 {
-                    _playbackPosition = playbackTimeForFrame(frame);
+                    const framePlaybackTime = playbackTimeForFrame(frame);
+                    _playbackPosition = framePlaybackTime;
                     double audioPosition = _playbackPosition;
                     const audioRequired = _playbackAudioRequired;
                     const audioStarted = startPlaybackAudio();
@@ -7024,7 +7048,6 @@ final class EditorRoot : VBox
                         _playbackAwaitingFirstFrame = false;
                         _playbackAudioClockWait = 0.0;
                         _playbackAudioClockLostWait = 0.0;
-                        _playbackVideoLagWait = 0.0;
                         _preview.setFrame(frame);
                         _preview.setPlaying(false);
                         handledFrame = true;
@@ -7037,9 +7060,21 @@ final class EditorRoot : VBox
                                 _playbackStart, _playbackEnd);
                             _playbackAudioClockLostWait = 0.0;
                         }
-                        _playbackAwaitingFirstFrame = false;
-                        resetPlaybackClock();
-                        setStatus(playbackRunningStatus());
+                        if (audioClockReady &&
+                            _playbackPosition - framePlaybackTime >
+                            playbackVideoLagToleranceSeconds)
+                        {
+                            _preview.setFrame(frame);
+                            haltPlaybackForSync(
+                                "Video frame was not ready with audio; playback stopped to prevent desync.");
+                            handledFrame = true;
+                        }
+                        else
+                        {
+                            _playbackAwaitingFirstFrame = false;
+                            resetPlaybackClock();
+                            setStatus(playbackRunningStatus());
+                        }
                     }
                 }
                 if (!handledFrame)
@@ -7048,7 +7083,8 @@ final class EditorRoot : VBox
                     _preview.setPlaying(!_playbackAwaitingFirstFrame);
                 }
             }
-            else if (!_playbackAwaitingAudioClock && !_playbackAwaitingFirstFrame)
+            else if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame)
             {
                 const maximumFrameTime = playbackSourceClockTime(_playbackPosition) +
                     playbackVideoLeadSeconds;
@@ -7059,7 +7095,8 @@ final class EditorRoot : VBox
                     _preview.setPlaying(true);
                 }
             }
-            else if (_videoStream.finished() && _playbackAsset.hasVideo)
+            else if (_playbackRunning && _videoStream.finished() &&
+                _playbackAsset.hasVideo)
             {
                 const error = _videoStream.error();
                 if (error.length > 0)
@@ -7079,19 +7116,9 @@ final class EditorRoot : VBox
                 !_playbackAwaitingFirstFrame && _playbackAsset.hasVideo &&
                 _playbackAudioRequired && _preview.hasFrame())
             {
-                const frameTime = _sequencePlaybackDirect ?
-                    _preview.frameTime() - _playbackMediaOffset :
-                    _preview.frameTime();
-                if (_playbackPosition - frameTime >
-                    playbackVideoLagToleranceSeconds)
-                {
-                    _playbackVideoLagWait += deltaSeconds;
-                    if (_playbackVideoLagWait >= playbackVideoLagAbortSeconds)
-                        haltPlaybackForSync(
-                            "Video could not keep up with audio; playback stopped to prevent desync.");
-                }
-                else
-                    _playbackVideoLagWait = 0.0;
+                if (displayedVideoBehindPlaybackClock())
+                    haltPlaybackForSync(
+                        "Video could not keep up with audio; playback stopped to prevent desync.");
             }
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
@@ -7099,25 +7126,20 @@ final class EditorRoot : VBox
                 finishPlayback();
             else if (_playbackRunning && !_playbackAwaitingFirstFrame)
             {
-                _transportPaintAccumulator += deltaSeconds;
                 // The transport and timeline are visual controls, not clocks.
-                // Updating them at 30 Hz keeps pointer input instant while the
-                // decoder continues at the source frame rate.
-                if (_transportPaintAccumulator >= 1.0 / 30.0 || receivedFrame)
+                // Move the retained playhead every playback tick for immediate
+                // feedback; only the formatted text label remains throttled.
+                if (_playbackKind == PlaybackKind.sequence)
                 {
-                    _transportPaintAccumulator = 0.0;
-                    if (_playbackKind == PlaybackKind.sequence)
-                    {
-                        _timeline.setPlayhead(_playbackPosition, false);
-                        syncPreviewTitleLayers(_playbackPosition);
-                    }
-                    _scrub.setValue(_playbackPosition, false);
-                    if (_lastTimeLabelPlaybackPosition < 0.0 ||
-                        fabs(_playbackPosition - _lastTimeLabelPlaybackPosition) >= 0.10)
-                    {
-                        _lastTimeLabelPlaybackPosition = _playbackPosition;
-                        updateTimeLabel();
-                    }
+                    _timeline.setPlayhead(_playbackPosition, false);
+                    syncPreviewTitleLayers(_playbackPosition);
+                }
+                _scrub.setValue(_playbackPosition, false);
+                if (_lastTimeLabelPlaybackPosition < 0.0 ||
+                    fabs(_playbackPosition - _lastTimeLabelPlaybackPosition) >= 0.10)
+                {
+                    _lastTimeLabelPlaybackPosition = _playbackPosition;
+                    updateTimeLabel();
                 }
 
                 if (!_playbackAsset.hasVideo &&

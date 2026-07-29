@@ -8,6 +8,8 @@ import std.file : readText, write;
 import std.format : format;
 import std.json : JSONException, JSONType, JSONValue, parseJSON;
 
+enum int defaultPreviewQualityHeight = 720;
+
 /** Serializable editor state. Media metadata is stored so opening a project
  * does not block the UI on a fresh FFprobe pass. */
 struct ProjectData
@@ -20,7 +22,7 @@ struct ProjectData
     bool hasWorkOut;
     double workIn;
     double workOut;
-    int previewQualityHeight = 1080;
+    int previewQualityHeight = defaultPreviewQualityHeight;
 }
 
 private bool finiteNumber(double value) @safe pure nothrow @nogc
@@ -361,7 +363,7 @@ ProjectData loadProjectFile(string path)
     result.workIn = numberValue(root, "workIn");
     result.workOut = numberValue(root, "workOut");
     result.previewQualityHeight = cast(int) integerValue(root,
-        "previewQualityHeight", 1080);
+        "previewQualityHeight", defaultPreviewQualityHeight);
 
     auto assets = member(root, "assets");
     if (assets !is null && assets.type == JSONType.array)

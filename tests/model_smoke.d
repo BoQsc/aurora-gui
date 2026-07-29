@@ -4,7 +4,7 @@ import auroracut.model : EditorModel, EffectProperty, KeyframeInterpolation,
     MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
     TrackKind;
 import auroracut.project : loadProjectFile, saveProjectFile;
-import std.file : exists, remove, tempDir;
+import std.file : exists, remove, tempDir, write;
 import std.math : fabs, isFinite;
 import std.path : buildPath;
 import std.stdio : writeln;
@@ -354,6 +354,16 @@ int main()
         assert(near(loaded.playhead, 2.25) && loaded.hasWorkIn &&
             loaded.hasWorkOut && near(loaded.workIn, 1.0) &&
             near(loaded.workOut, 4.5) && loaded.previewQualityHeight == 1440);
+
+        const legacyProjectPath = buildPath(tempDir(),
+            "aurora-cut-project-legacy-preview-default.auroracut");
+        scope (exit) if (exists(legacyProjectPath)) remove(legacyProjectPath);
+        write(legacyProjectPath,
+            `{"format":"aurora-cut-project","version":2,"assets":[],"videoTracks":[],"audioTracks":[]}`);
+        const legacy = loadProjectFile(legacyProjectPath);
+        assert(legacy.previewQualityHeight == 720,
+            "Projects without a saved preview quality must default to 720p");
+
         const savedCutout = loaded.videoTracks[savedCutoutTrack.lane]
             .clips[cast(size_t) savedCutoutIndex];
         assert(savedCutout.cropEnabled && near(savedCutout.cropX, 0.25) &&

@@ -194,9 +194,10 @@ struct ExportPreset
         switch (requestedHeight)
         {
             case 720: result = hd(); break;
+            case 1080: result = fullHd(); break;
             case 1440: result = quadHd(); break;
             case 2160: result = ultraHd(); break;
-            default: result = fullHd(); break;
+            default: result = hd(); break;
         }
         result.crf = requestedHeight >= 2160 ? 25 : 23;
         result.videoPreset = "ultrafast";

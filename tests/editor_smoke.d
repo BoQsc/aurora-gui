@@ -308,6 +308,9 @@ int main(string[] arguments)
         "export-mp4-compression-value");
     assert(playSource.text() == "▶"d,
         "Preview transport button must show the play symbol while idle");
+    assert(editor.previewQualityHeightForTesting() == 720 &&
+        qualityButton.text() == "720p"d,
+        "Composition Preview must default to 720p for responsive startup");
     assert(openProject.text() == "Open"d &&
         openProject.bounds().x >= saveProject.bounds().right(),
         "Open Project button is not directly to the right of Save");
@@ -356,6 +359,10 @@ int main(string[] arguments)
         "Project Media still contains a redundant visible Import button");
     assert(findById(editor, "add-selected-media") is null,
         "Project Media still contains a redundant Add selected button");
+    assert(editor.playbackVideoLagToleranceForTesting() <= 0.080,
+        "Playback still allows a visibly desynced video/audio lag window");
+    assert(fabs(editor.playbackTransportVisualIntervalForTesting()) < 0.0001,
+        "Timeline playhead transport is still throttled instead of tick-smooth");
     assert(inspectorAlignRight !is null,
         "Inspector text alignment controls were not created");
     assert(!inspectorSourceSection.visible(),
@@ -893,6 +900,7 @@ int main(string[] arguments)
     driver.click(globalCenter(qualityButton));
     auto qualityMenu = findOpenContextMenu(editor);
     assert(qualityMenu !is null);
+    assert(menuHasLabel(qualityMenu, "720p preview and MP4"d));
     assert(menuHasLabel(qualityMenu, "1080p preview and MP4"d));
     assert(menuHasLabel(qualityMenu, "1440p preview and MP4"d));
     assert(menuHasLabel(qualityMenu, "2160p preview and MP4"d));
