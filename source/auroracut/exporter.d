@@ -3,8 +3,9 @@ module auroracut.exporter;
 import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation,
     TextAlignment;
 import auroracut.titlelayer : TitleVisual, renderTitlePam;
-import auroracut.util : absoluteNormalized, createWorkspace, ensureExtension,
-    ensureParentDirectory, formatSeconds, outputTail, removePathQuietly, runChecked;
+import auroracut.util : absoluteNormalized, appLog, createWorkspace,
+    ensureExtension, ensureParentDirectory, formatSeconds, outputTail,
+    removePathQuietly, runChecked;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.algorithm : min, max;
@@ -15,7 +16,7 @@ import std.format : format;
 import std.math : fabs;
 import std.path : buildPath, extension, filenameCmp;
 import std.process : Config, Pid, Redirect, kill, pipeProcess, wait;
-import std.string : startsWith, strip, toLower;
+import std.string : join, startsWith, strip, toLower;
 
 
 enum ExportKind : ubyte
@@ -230,6 +231,9 @@ struct ExportRequest
     string videoEncoder = "libx264";
     string videoAcceleration = "CPU (libx264)";
     bool hardwareVideoEncoding;
+    string videoDecodeAcceleration = "CPU decode";
+    string[] videoDecodeInputOptions;
+    bool hardwareVideoDecoding;
     // Interactive preview supplies live Aurora title widgets. Final export
     // prepares Aurora-rendered RGBA title inputs when this remains true.
     bool renderTitles = true;
@@ -266,6 +270,7 @@ private struct InputClip
     ExportClip clip;
     bool videoTrack;
     int inputIndex;
+    string[] decodeInputOptions;
 }
 
 private struct RecompressRequest
@@ -589,6 +594,7 @@ final class ExportJob
     private void runCancellable(string[] arguments, string description,
         double duration)
     {
+        appLog("RUN " ~ arguments.join(" "));
         auto pipes = pipeProcess(arguments,
             Redirect.stdout | Redirect.stderrToStdout,
             cast(const string[string]) null, Config.suppressConsole);
@@ -1218,6 +1224,20 @@ private double fadeEnvelopeValue(const ref ExportClip clip, double localTime)
     return result;
 }
 
+private bool isStillImagePath(string path)
+{
+    const suffix = extension(path).toLower();
+    return suffix == ".png" || suffix == ".jpg" || suffix == ".jpeg" ||
+        suffix == ".webp" || suffix == ".bmp";
+}
+
+private bool isHardwareDecodeCandidatePath(string path)
+{
+    const suffix = extension(path).toLower();
+    return suffix == ".mp4" || suffix == ".mov" || suffix == ".mkv" ||
+        suffix == ".webm";
+}
+
 private InputClip[] collectInputs(const ExportRequest request, bool includeVideo,
     bool includeAudio)
 {
@@ -1235,6 +1255,9 @@ private InputClip[] collectInputs(const ExportRequest request, bool includeVideo
         value.clip = cloneExportClip(clip);
         value.videoTrack = true;
         value.inputIndex = fileInputIndex++;
+        if (includeVideo && clip.hasVideo && !clip.generatedText &&
+            isHardwareDecodeCandidatePath(clip.path))
+            value.decodeInputOptions = request.videoDecodeInputOptions.dup;
         result ~= value;
     }
     if (includeAudio) foreach (clip; request.audio)
@@ -1262,10 +1285,10 @@ private void appendInputArguments(ref string[] arguments, const InputClip[] inpu
             ];
             continue;
         }
-        const suffix = extension(input.clip.path).toLower();
-        const stillImage = suffix == ".png" || suffix == ".jpg" ||
-            suffix == ".jpeg" || suffix == ".webp" || suffix == ".bmp";
+        const stillImage = isStillImagePath(input.clip.path);
         if (stillImage) arguments ~= ["-loop", "1"];
+        else if (input.decodeInputOptions.length > 0)
+            arguments ~= input.decodeInputOptions;
         arguments ~= [
             "-ss", formatSeconds(input.clip.inPoint),
             "-t", formatSeconds(max(0.0, input.clip.outPoint - input.clip.inPoint)),
@@ -1497,11 +1520,10 @@ private void appendRasterTitleLayer(ref string graph, const InputClip input,
     const envelope = fadeEnvelopeExpression(clip, "T");
     const alpha = format("clip((%s)*(%s),0,1)", opacity, envelope);
 
-    graph ~= format("[%d:v:0]format=rgba," ~
-        "scale=w='max(1,round(iw*(%s)))':h='max(1,round(ih*(%s)))':" ~
-        "eval=frame", input.inputIndex, factor, factor);
-    graph ~= format(",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':" ~
-        "a='alpha(X,Y)*(%s)'", alpha);
+    graph ~= format("[%d:v:0]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':" ~
+        "b='b(X,Y)':a='alpha(X,Y)*(%s)'", input.inputIndex, alpha);
+    graph ~= format(",scale=w='max(1,round(iw*(%s)))':" ~
+        "h='max(1,round(ih*(%s)))':eval=frame", factor, factor);
     if (clip.blur > 0.000_001)
         graph ~= format(",gblur=sigma=%s:steps=2",
             formatSeconds(clip.blur, 5));

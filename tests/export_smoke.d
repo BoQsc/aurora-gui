@@ -6,7 +6,7 @@ import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     renderCompositeFrame;
 import auroracut.model : EffectKeyframe, EffectProperty, KeyframeInterpolation,
     TextAlignment;
-import std.algorithm.searching : canFind;
+import std.algorithm.searching : canFind, count;
 import std.array : join;
 import core.thread : Thread;
 import core.time : msecs;
@@ -231,6 +231,16 @@ int main(string[] arguments)
     assert(!previewCommand.canFind("drawtext") &&
         !previewCommand.canFind("title-") && !previewCommand.canFind(".pam"),
         "Interactive preview still burns a second title into its background");
+    assert(!previewCommand.canFind("-hwaccel"),
+        "CPU preview command unexpectedly contains hardware decode options");
+
+    auto acceleratedPreview = composed;
+    acceleratedPreview.videoDecodeInputOptions = ["-hwaccel", "d3d11va"];
+    const acceleratedPreviewCommand =
+        compositeFrameArguments(acceleratedPreview, 0.35).join("\n");
+    assert(acceleratedPreviewCommand.count("-hwaccel") == 2 &&
+        acceleratedPreviewCommand.canFind("-hwaccel\nd3d11va\n-ss"),
+        "Interactive preview did not apply hardware decode before video inputs");
 
     // Compatibility frame rendering includes Aurora-rasterized title overlays.
     const activeFramePath = arguments[4] ~ "/composed-active.ppm";
@@ -248,6 +258,13 @@ int main(string[] arguments)
     // proxy. Validate its first RGB frame through the same advanced layer graph.
     auto liveCommand = compositeStreamArguments(composed, 0.35, 0.70,
         320, 180, 24);
+    auto acceleratedLive = composed;
+    acceleratedLive.videoDecodeInputOptions = ["-hwaccel", "d3d11va"];
+    const acceleratedLiveCommand =
+        compositeStreamArguments(acceleratedLive, 0.35, 0.70,
+            320, 180, 24).join("\n");
+    assert(acceleratedLiveCommand.count("-hwaccel") == 2,
+        "Live timeline playback did not apply hardware decode to both video inputs");
     auto liveFrame = firstRawFrame(liveCommand, 320, 180);
     const liveCenter = rawPixel(liveFrame, 320, 160, 90);
     const liveCorner = rawPixel(liveFrame, 320, 12, 12);

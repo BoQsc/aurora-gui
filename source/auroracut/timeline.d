@@ -170,6 +170,8 @@ final class TimelineWidget : Widget
     private double _workOut;
 
     void delegate(double time) onPlayheadChanged;
+    double delegate(double time) onFrameStepSecondsRequested;
+    void delegate() onImmediatePreviewRequested;
     void delegate() onHorizontalViewportChanged;
     void delegate() onScrubStarted;
     void delegate() onScrubEnded;
@@ -315,6 +317,12 @@ final class TimelineWidget : Widget
         double maximum, TrackAddress address, ulong excludedClipId = 0) const
     {
         return snappedEdge(desired, minimum, maximum, address, excludedClipId);
+    }
+
+    double frameStepSecondsForTesting(double time)
+    {
+        return onFrameStepSecondsRequested is null ? 1.0 / 30.0 :
+            onFrameStepSecondsRequested(time);
     }
 
     void setWorkArea(bool hasIn, double inPoint, bool hasOut, double outPoint)
@@ -2245,11 +2253,25 @@ final class TimelineWidget : Widget
         switch (event.key)
         {
             case Key.left:
-                setPlayhead(_playhead - (event.shift() ? 1.0 : 0.1));
+            {
+                const step = event.shift() ? 1.0 :
+                    (onFrameStepSecondsRequested is null ? 1.0 / 30.0 :
+                     onFrameStepSecondsRequested(_playhead));
+                setPlayhead(_playhead - step);
+                if (!event.shift() && onImmediatePreviewRequested !is null)
+                    onImmediatePreviewRequested();
                 return true;
+            }
             case Key.right:
-                setPlayhead(_playhead + (event.shift() ? 1.0 : 0.1));
+            {
+                const step = event.shift() ? 1.0 :
+                    (onFrameStepSecondsRequested is null ? 1.0 / 30.0 :
+                     onFrameStepSecondsRequested(_playhead));
+                setPlayhead(_playhead + step);
+                if (!event.shift() && onImmediatePreviewRequested !is null)
+                    onImmediatePreviewRequested();
                 return true;
+            }
             case Key.home:
                 setPlayhead(0.0);
                 return true;

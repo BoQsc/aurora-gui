@@ -13,7 +13,9 @@ import core.thread : Thread;
 import std.conv : ConvException, parse, to;
 import std.format : format;
 import std.math : PI, cos, sin, sqrt;
+import std.path : extension;
 import std.process : Config, Pid, ProcessPipes, Redirect, kill, pipeProcess, wait;
+import std.string : toLower;
 import std.utf : toUTF32;
 
 /** RGB24 frame displayed by Aurora's preview canvas. */
@@ -58,6 +60,7 @@ private struct PreviewRequest
     double time;
     int width;
     int height;
+    string[] decodeInputOptions;
     bool publish = true;
 }
 
@@ -81,6 +84,12 @@ private HorizontalAlign titleHorizontalAlign(TextAlignment alignment)
     }
 }
 
+private bool isHardwareDecodeCandidatePath(string path)
+{
+    const suffix = extension(path).toLower();
+    return suffix == ".mp4" || suffix == ".mov" || suffix == ".mkv" ||
+        suffix == ".webm";
+}
 
 private struct AssetPreviewCacheEntry
 {
@@ -152,7 +161,8 @@ final class PreviewService
         requestAsset(asset, sourceTime, 960, 540);
     }
 
-    void requestAsset(MediaAsset asset, double sourceTime, int width, int height)
+    void requestAsset(MediaAsset asset, double sourceTime, int width, int height,
+        string[] decodeInputOptions = null)
     {
         if (asset is null) return;
         normalizeSize(width, height);
@@ -162,12 +172,15 @@ final class PreviewService
         request.time = sourceTime;
         request.width = width;
         request.height = height;
+        if (asset.hasVideo && isHardwareDecodeCandidatePath(asset.path))
+            request.decodeInputOptions = decodeInputOptions.dup;
         request.publish = true;
         enqueue(request);
     }
 
     /** Decode and cache a source frame without replacing Composition Preview. */
-    void requestWarmAsset(MediaAsset asset, double sourceTime, int width, int height)
+    void requestWarmAsset(MediaAsset asset, double sourceTime, int width, int height,
+        string[] decodeInputOptions = null)
     {
         if (asset is null) return;
         normalizeSize(width, height);
@@ -177,6 +190,8 @@ final class PreviewService
         request.time = sourceTime;
         request.width = width;
         request.height = height;
+        if (asset.hasVideo && isHardwareDecodeCandidatePath(asset.path))
+            request.decodeInputOptions = decodeInputOptions.dup;
         request.publish = false;
         enqueue(request);
     }
@@ -352,7 +367,11 @@ final class PreviewService
                         request.width, request.height, request.width, request.height);
                     arguments = [
                         "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
-                        "-threads", "1", "-filter_threads", "1",
+                        "-threads", "1", "-filter_threads", "1"
+                    ];
+                    if (request.decodeInputOptions.length > 0)
+                        arguments ~= request.decodeInputOptions;
+                    arguments ~= [
                         "-ss", formatSeconds(renderedTime, 6), "-i", request.asset.path,
                         "-frames:v", "1", "-an", "-sn", "-dn",
                         "-vf", filter, "-pix_fmt", "rgb24",
@@ -405,6 +424,11 @@ final class PreviewService
         catch (Exception error)
         {
             releaseWriteSlot(slot);
+            if (canRetryWithoutHardwareDecode(request))
+            {
+                renderRequest(cpuDecodeFallbackRequest(request));
+                return;
+            }
             if (request.publish) publishError(request.generation, error.msg);
             return;
         }
@@ -451,11 +475,14 @@ final class PreviewService
         catch (Exception) {}
 
         bool acceptedFrame;
+        bool retryWithoutHardwareDecode;
         _mutex.lock();
         if (_process is pipes.pid) _process = null;
         const current = request.generation == _generation && !_shutdown;
         if (_writingSlot == slot) _writingSlot = -1;
-        if (current && received == frameBytes)
+        retryWithoutHardwareDecode = current && received != frameBytes &&
+            canRetryWithoutHardwareDecode(request);
+        if (!retryWithoutHardwareDecode && current && received == frameBytes)
         {
             if (request.publish)
             {
@@ -479,12 +506,32 @@ final class PreviewService
         }
         _mutex.unlock();
 
+        if (retryWithoutHardwareDecode)
+        {
+            renderRequest(cpuDecodeFallbackRequest(request));
+            return;
+        }
         if (acceptedFrame && request.kind == PreviewRequestKind.asset &&
             request.asset !is null)
             storeAssetCache(request, _slots[slot]);
         else if (acceptedFrame && request.kind == PreviewRequestKind.composition &&
             request.composition.cacheKey != 0)
             storeCompositionCache(request, _slots[slot]);
+    }
+
+    private bool canRetryWithoutHardwareDecode(const PreviewRequest request) const
+    {
+        return request.decodeInputOptions.length > 0 ||
+            request.composition.videoDecodeInputOptions.length > 0;
+    }
+
+    private PreviewRequest cpuDecodeFallbackRequest(PreviewRequest request) const
+    {
+        request.decodeInputOptions.length = 0;
+        request.composition.videoDecodeInputOptions.length = 0;
+        request.composition.videoDecodeAcceleration = "CPU decode";
+        request.composition.hardwareVideoDecoding = false;
+        return request;
     }
 
     private bool tryPublishCachedAsset(PreviewRequest request)

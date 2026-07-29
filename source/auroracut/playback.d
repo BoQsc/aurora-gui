@@ -7,8 +7,10 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, hnsecs, msecs;
 import std.format : format;
+import std.path : extension;
 import std.process : Config, Pid, ProcessPipes, Redirect, kill, pipeProcess,
     wait;
+import std.string : toLower;
 
 version (Windows)
 {
@@ -35,6 +37,7 @@ private struct AudioRequest
     double displayStartTime;
     double duration;
     double volume;
+    bool startPaused;
 }
 
 private enum int previewAudioSampleRate = 48_000;
@@ -156,6 +159,18 @@ private final class WaveOutPcmSink
         return true;
     }
 
+    bool pause()
+    {
+        return _handle !is null &&
+            waveOutPause(_handle) == MMSYSERR_NOERROR;
+    }
+
+    bool restart()
+    {
+        return _handle !is null &&
+            waveOutRestart(_handle) == MMSYSERR_NOERROR;
+    }
+
     bool drain()
     {
         const started = MonoTime.currTime;
@@ -199,6 +214,7 @@ final class PcmAudioPlayer
     private bool _hasPending;
     private bool _shutdown;
     private bool _requestedRunning;
+    private bool _resumeRequested;
     private ulong _generation;
     private PlaybackWorkerStats _stats;
     private string _error;
@@ -277,7 +293,8 @@ final class PcmAudioPlayer
      * `displayStartTime`. Direct timeline playback needs this because a clip's
      * media in-point can differ from its sequence time. */
     bool start(string path, double startTime = 0.0, double duration = 0.0,
-        double volume = 1.0, double displayStartTime = -1.0)
+        double volume = 1.0, double displayStartTime = -1.0,
+        bool startPaused = false)
     {
         if (path.length == 0 || volume <= 0.000_001 || duration <= 0.000_001)
         {
@@ -292,11 +309,12 @@ final class PcmAudioPlayer
             request.startTime : displayStartTime;
         request.duration = duration;
         request.volume = volume;
+        request.startPaused = startPaused;
         return enqueue(request);
     }
 
     bool startCommand(string[] arguments, double displayStartTime,
-        double duration, double volume = 1.0)
+        double duration, double volume = 1.0, bool startPaused = false)
     {
         if (arguments.length == 0 || duration <= 0.000_001 ||
             volume <= 0.000_001)
@@ -311,6 +329,7 @@ final class PcmAudioPlayer
         request.displayStartTime = request.startTime;
         request.duration = duration;
         request.volume = volume;
+        request.startPaused = startPaused;
         return enqueue(request);
     }
 
@@ -328,6 +347,7 @@ final class PcmAudioPlayer
         _pending = request;
         _hasPending = true;
         _requestedRunning = true;
+        _resumeRequested = false;
         _error = "";
         version (Windows)
         {
@@ -357,6 +377,16 @@ final class PcmAudioPlayer
         return true;
     }
 
+    bool resume()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (!_requestedRunning) return false;
+        _resumeRequested = true;
+        _condition.notifyAll();
+        return true;
+    }
+
     /** Compatibility no-op: lifecycle polling is handled by the worker. */
     void poll() {}
 
@@ -368,6 +398,7 @@ final class PcmAudioPlayer
         ++_generation;
         _hasPending = false;
         _requestedRunning = false;
+        _resumeRequested = false;
         process = _process;
         version (Windows)
         {
@@ -406,6 +437,7 @@ final class PcmAudioPlayer
             ++_generation;
             _hasPending = false;
             _requestedRunning = false;
+            _resumeRequested = false;
             process = _process;
             version (Windows)
             {
@@ -523,6 +555,15 @@ final class PcmAudioPlayer
         }
     }
 
+    private bool waitForResume(ulong generation)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        while (!_shutdown && generation == _generation && !_resumeRequested)
+            _condition.wait();
+        return !_shutdown && generation == _generation;
+    }
+
     private void playRequest(AudioRequest request)
     {
         ProcessPipes pipes;
@@ -590,6 +631,12 @@ final class PcmAudioPlayer
                     publishMonotonicClock(request.generation,
                         request.displayStartTime);
                     clockPublished = true;
+                    if (request.startPaused)
+                    {
+                        if (!waitForResume(request.generation)) break;
+                        publishMonotonicClock(request.generation,
+                            request.displayStartTime);
+                    }
                 }
                 const frames = received / previewAudioFrameBytes;
                 if (frames > 0)
@@ -626,16 +673,33 @@ final class PcmAudioPlayer
                 catch (Exception) {}
                 return;
             }
+            if (request.startPaused && !sink.pause())
+            {
+                publishAudioFailure(request.generation,
+                    "The Windows PCM audio output could not be paused for preroll.");
+                try pipes.stdout.close();
+                catch (Exception) {}
+                try kill(pipes.pid);
+                catch (Exception) {}
+                try wait(pipes.pid);
+                catch (Exception) {}
+                return;
+            }
             scope (exit) sink.close();
 
             auto buffer = new ubyte[previewAudioChunkBytes];
             bool clockPublished;
+            bool drainSink = true;
             while (true)
             {
                 _mutex.lock();
                 stale = request.generation != _generation || _shutdown;
                 _mutex.unlock();
-                if (stale) break;
+                if (stale)
+                {
+                    drainSink = false;
+                    break;
+                }
 
                 size_t received;
                 try
@@ -663,10 +727,24 @@ final class PcmAudioPlayer
                             clockPublished = true;
                         }))
                         break;
+                    if (request.startPaused)
+                    {
+                        if (!waitForResume(request.generation))
+                        {
+                            drainSink = false;
+                            break;
+                        }
+                        if (!sink.restart())
+                        {
+                            drainSink = false;
+                            break;
+                        }
+                    }
                 }
                 else if (!sink.writeQueued(buffer[0 .. received])) break;
             }
-            sink.drain();
+            if (drainSink) sink.drain();
+            else sink.reset();
 
             try pipes.stdout.close();
             catch (Exception) {}
@@ -705,6 +783,8 @@ private struct VideoRequest
     int fps;
     string title;
     string[] commandArguments;
+    string[] fallbackCommandArguments;
+    string[] decodeInputOptions;
     double displayStartTime;
 }
 
@@ -720,6 +800,13 @@ private struct ReadyVideoFrame
 }
 
 private enum size_t videoFrameSlotCount = 16;
+
+private bool isHardwareDecodeCandidatePath(string path)
+{
+    const suffix = extension(path).toLower();
+    return suffix == ".mp4" || suffix == ".mov" || suffix == ".mkv" ||
+        suffix == ".webm";
+}
 
 /**
  * Persistent, asynchronous FFmpeg raw-video controller.
@@ -759,7 +846,7 @@ final class VideoFrameStream
     }
 
     bool start(string path, double startTime, double duration, int width,
-        int height, int fps, string title)
+        int height, int fps, string title, string[] decodeInputOptions = null)
     {
         if (path.length == 0 || duration <= 0.0 || width <= 0 || height <= 0 || fps <= 0)
         {
@@ -786,6 +873,8 @@ final class VideoFrameStream
         request.height = height;
         request.fps = fps;
         request.title = title;
+        if (isHardwareDecodeCandidatePath(path))
+            request.decodeInputOptions = decodeInputOptions.dup;
         _pending = request;
         _hasPending = true;
         _running = true;
@@ -809,7 +898,8 @@ final class VideoFrameStream
     /** Start an already-built FFmpeg RGB24 command. This is used by the
      * live timeline compositor and avoids rendering a temporary proxy file. */
     bool startCommand(string[] arguments, double displayStartTime,
-        double duration, int width, int height, int fps, string title)
+        double duration, int width, int height, int fps, string title,
+        string[] fallbackArguments = null)
     {
         if (arguments.length == 0 || duration <= 0.0 || width <= 0 ||
             height <= 0 || fps <= 0)
@@ -830,6 +920,7 @@ final class VideoFrameStream
         VideoRequest request;
         request.generation = ++_generation;
         request.commandArguments = arguments.dup;
+        request.fallbackCommandArguments = fallbackArguments.dup;
         request.displayStartTime = displayStartTime < 0.0 ? 0.0 : displayStartTime;
         request.startTime = request.displayStartTime;
         request.duration = duration;
@@ -880,24 +971,7 @@ final class VideoFrameStream
     {
         const frameBytes = cast(size_t) request.width *
             cast(size_t) request.height * 3;
-        string[] arguments;
-        if (request.commandArguments.length > 0)
-            arguments = request.commandArguments;
-        else
-        {
-            const videoFilter = format(
-                "scale=%d:%d:force_original_aspect_ratio=decrease:flags=fast_bilinear," ~
-                "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d",
-                request.width, request.height, request.width, request.height,
-                request.fps);
-            arguments = [
-                "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
-                "-threads", "2", "-filter_threads", "1",
-                "-ss", formatSeconds(request.startTime, 6), "-i", request.path,
-                "-t", formatSeconds(request.duration, 6), "-an", "-sn", "-dn",
-                "-vf", videoFilter, "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"
-            ];
-        }
+        const arguments = decodeArguments(request);
 
         ProcessPipes pipes;
         try
@@ -907,6 +981,11 @@ final class VideoFrameStream
         }
         catch (Exception error)
         {
+            if (canRetryWithoutHardwareDecode(request))
+            {
+                decodeRequest(cpuDecodeFallbackRequest(request));
+                return;
+            }
             publishFailure(request.generation, error.msg);
             return;
         }
@@ -968,15 +1047,96 @@ final class VideoFrameStream
         try wait(pipes.pid);
         catch (Exception) {}
 
+        bool retryWithoutHardwareDecode;
         _mutex.lock();
         if (_process is pipes.pid) _process = null;
-        if (request.generation == _generation)
+        retryWithoutHardwareDecode = frameNumber == 0 &&
+            canRetryWithoutHardwareDecode(request) &&
+            request.generation == _generation && !_shutdown;
+        if (retryWithoutHardwareDecode)
+        {
+            _finished = false;
+            _writingSlot = -1;
+        }
+        else if (request.generation == _generation)
         {
             _running = false;
             _finished = reachedEof;
             _writingSlot = -1;
         }
         _mutex.unlock();
+        if (retryWithoutHardwareDecode)
+            decodeRequest(cpuDecodeFallbackRequest(request));
+    }
+
+    private string[] decodeArguments(const VideoRequest request) const
+    {
+        if (request.commandArguments.length > 0)
+            return request.commandArguments.dup;
+
+        const videoFilter = format(
+            "scale=%d:%d:force_original_aspect_ratio=decrease:flags=fast_bilinear," ~
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d",
+            request.width, request.height, request.width, request.height,
+            request.fps);
+        string[] arguments = [
+            "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
+            "-threads", "2", "-filter_threads", "1"
+        ];
+        if (request.decodeInputOptions.length > 0)
+            arguments ~= request.decodeInputOptions;
+        arguments ~= [
+            "-ss", formatSeconds(request.startTime, 6), "-i", request.path,
+            "-t", formatSeconds(request.duration, 6), "-an", "-sn", "-dn",
+            "-vf", videoFilter, "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"
+        ];
+        return arguments;
+    }
+
+    private bool canRetryWithoutHardwareDecode(const VideoRequest request) const
+    {
+        return request.decodeInputOptions.length > 0 ||
+            request.fallbackCommandArguments.length > 0 ||
+            commandContainsHardwareDecodeOptions(request.commandArguments);
+    }
+
+    private VideoRequest cpuDecodeFallbackRequest(VideoRequest request) const
+    {
+        request.decodeInputOptions.length = 0;
+        if (request.fallbackCommandArguments.length > 0)
+        {
+            request.commandArguments = request.fallbackCommandArguments.dup;
+            request.fallbackCommandArguments.length = 0;
+        }
+        else if (request.commandArguments.length > 0)
+            request.commandArguments =
+                commandWithoutHardwareDecodeOptions(request.commandArguments);
+        return request;
+    }
+
+    private bool commandContainsHardwareDecodeOptions(const string[] arguments) const
+    {
+        foreach (argument; arguments)
+            if (argument == "-hwaccel" || argument == "-hwaccel_output_format")
+                return true;
+        return false;
+    }
+
+    private string[] commandWithoutHardwareDecodeOptions(
+        const string[] arguments) const
+    {
+        string[] result;
+        for (size_t index; index < arguments.length; ++index)
+        {
+            const argument = arguments[index];
+            if (argument == "-hwaccel" || argument == "-hwaccel_output_format")
+            {
+                if (index + 1 < arguments.length) ++index;
+                continue;
+            }
+            result ~= argument;
+        }
+        return result;
     }
 
     private int acquireWriteSlot(ulong generation, size_t frameBytes)

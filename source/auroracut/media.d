@@ -1,8 +1,9 @@
 module auroracut.media;
 
 import auroracut.model : MediaAsset;
-import auroracut.util : absoluteNormalized, commandAvailable, formatTimecode,
-    isSupportedMediaPath, outputTail, runChecked;
+import auroracut.util : absoluteNormalized, commandAvailable, createWorkspace,
+    formatTimecode, isSupportedMediaPath, outputTail, removePathQuietly,
+    runChecked;
 import auroracut.ytdlp : detectYtDlpCommand;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
@@ -11,6 +12,7 @@ import std.conv : to;
 import std.file : exists, isDir;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
+import std.path : buildPath;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.string : indexOf, strip;
 
@@ -23,8 +25,33 @@ struct ToolStatus
     string h264Encoder = "libx264";
     string videoAcceleration = "CPU (libx264)";
     bool hardwareVideoEncoding;
+    string videoDecodeAcceleration = "CPU decode";
+    string[] videoDecodeInputOptions;
+    bool hardwareVideoDecoding;
 
     bool editingReady() const { return ffmpeg && ffprobe; }
+}
+
+private string nullVideoOutputPath()
+{
+    version (Windows)
+        return "NUL";
+    else
+        return "/dev/null";
+}
+
+private bool commandWorks(const string[] arguments, size_t maximumOutput = 2 * 1024 * 1024)
+{
+    try
+    {
+        const result = execute(arguments, null, Config.suppressConsole,
+            maximumOutput);
+        return result.status == 0;
+    }
+    catch (Exception)
+    {
+        return false;
+    }
 }
 
 /**
@@ -34,22 +61,12 @@ struct ToolStatus
  */
 private bool encoderWorks(string encoder)
 {
-    try
-    {
-        string[] arguments = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
-            "-frames:v", "1", "-an", "-c:v", encoder,
-            "-f", "null", "-"
-        ];
-        const result = execute(arguments, null, Config.suppressConsole,
-            2 * 1024 * 1024);
-        return result.status == 0;
-    }
-    catch (Exception)
-    {
-        return false;
-    }
+    return commandWorks([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+        "-frames:v", "1", "-an", "-c:v", encoder,
+        "-f", "null", "-"
+    ]);
 }
 
 private void selectVideoAcceleration(ref ToolStatus result)
@@ -72,6 +89,79 @@ private void selectVideoAcceleration(ref ToolStatus result)
     }
 }
 
+private bool writeDecodeProbeSample(string path)
+{
+    return commandWorks([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-f", "lavfi", "-i", "testsrc2=s=96x54:r=1:d=0.25",
+        "-frames:v", "1", "-an", "-c:v", "libx264",
+        "-pix_fmt", "yuv420p", path
+    ], 4 * 1024 * 1024) && exists(path);
+}
+
+private bool decoderWorks(string accelerator, string samplePath)
+{
+    if (accelerator.length == 0 || samplePath.length == 0) return false;
+    return commandWorks([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-hwaccel", accelerator,
+        "-ss", "0", "-i", samplePath,
+        "-frames:v", "1", "-an", "-sn", "-dn",
+        "-vf", "scale=64:64:flags=fast_bilinear",
+        "-pix_fmt", "rgb24", "-f", "rawvideo", nullVideoOutputPath()
+    ], 4 * 1024 * 1024);
+}
+
+private void selectVideoDecodeAcceleration(ref ToolStatus result)
+{
+    if (!result.ffmpeg) return;
+
+    string workspace;
+    try
+    {
+        workspace = createWorkspace("decode-probe");
+        scope (exit) removePathQuietly(workspace);
+        const samplePath = buildPath(workspace, "sample.mp4");
+        if (!writeDecodeProbeSample(samplePath)) return;
+
+        version (Windows)
+        {
+            // Use copy-back hardware decode modes that remain compatible with
+            // Aurora Cut's current CPU filter graph and RGB preview pipe.
+            foreach (candidate; [
+                ["d3d11va", "D3D11VA"],
+                ["dxva2", "DXVA2"],
+                ["cuda", "NVIDIA CUDA"]
+            ])
+            {
+                if (!decoderWorks(candidate[0], samplePath)) continue;
+                result.videoDecodeInputOptions = ["-hwaccel", candidate[0]];
+                result.videoDecodeAcceleration = candidate[1];
+                result.hardwareVideoDecoding = true;
+                return;
+            }
+        }
+        else
+        {
+            foreach (candidate; [
+                ["cuda", "NVIDIA CUDA"],
+                ["vaapi", "VAAPI"]
+            ])
+            {
+                if (!decoderWorks(candidate[0], samplePath)) continue;
+                result.videoDecodeInputOptions = ["-hwaccel", candidate[0]];
+                result.videoDecodeAcceleration = candidate[1];
+                result.hardwareVideoDecoding = true;
+                return;
+            }
+        }
+    }
+    catch (Exception)
+    {
+        if (workspace.length > 0) removePathQuietly(workspace);
+    }
+}
+
 ToolStatus inspectToolStatus()
 {
     ToolStatus result;
@@ -80,6 +170,7 @@ ToolStatus inspectToolStatus()
     result.ytDlpCommand = detectYtDlpCommand();
     result.ytDlp = result.ytDlpCommand.length > 0;
     selectVideoAcceleration(result);
+    selectVideoDecodeAcceleration(result);
     return result;
 }
 
