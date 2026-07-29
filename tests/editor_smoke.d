@@ -298,6 +298,7 @@ int main(string[] arguments)
     auto saveProject = requireWidget!Button(editor, "save-project");
     auto openProject = requireWidget!Button(editor, "open-project");
     auto recentProjects = requireWidget!Button(editor, "recent-projects");
+    auto downloadMedia = requireWidget!Button(editor, "download-media-url");
     auto undoButton = requireWidget!Button(editor, "undo");
     auto redoButton = requireWidget!Button(editor, "redo");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
@@ -313,6 +314,8 @@ int main(string[] arguments)
     assert(recentProjects.text() == "Recent ▾"d &&
         recentProjects.bounds().x >= openProject.bounds().right(),
         "Recent Projects button is not directly to the right of Open");
+    assert(downloadMedia.text() == "Download"d,
+        "Project Media yt-dlp download button was not created");
     assert(undoButton.text() == "Undo"d && redoButton.text() == "Redo"d &&
         undoButton.bounds().x >= recentProjects.bounds().right() &&
         redoButton.bounds().x >= undoButton.bounds().right(),
@@ -615,6 +618,8 @@ int main(string[] arguments)
         "Context menu did not use the compact editor dimensions");
     assert(menuHasLabel(mediaMenu, "Add to V1"d));
     assert(menuHasLabel(mediaMenu, "Place on new video track at playhead"d));
+    assert(menuHasLabel(mediaMenu, "Download with yt-dlp…"d),
+        "Project Media context menu is missing yt-dlp import");
     assert(!menuHasLabel(mediaMenu, "Open project…"d),
         "Project Media context menu still exposes Open Project");
     assert(!menuHasLabel(mediaMenu, "Play source in Preview"d),

@@ -21,7 +21,8 @@
     "user32",
     "gdi32",
     "shell32",
-    "winmm"
+    "winmm",
+    "wininet"
   ],
   "lflags-osx": [
     "-framework",

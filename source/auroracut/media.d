@@ -3,6 +3,7 @@ module auroracut.media;
 import auroracut.model : MediaAsset;
 import auroracut.util : absoluteNormalized, commandAvailable, formatTimecode,
     isSupportedMediaPath, outputTail, runChecked;
+import auroracut.ytdlp : detectYtDlpCommand;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
@@ -17,6 +18,8 @@ struct ToolStatus
 {
     bool ffmpeg;
     bool ffprobe;
+    bool ytDlp;
+    string ytDlpCommand;
     string h264Encoder = "libx264";
     string videoAcceleration = "CPU (libx264)";
     bool hardwareVideoEncoding;
@@ -74,6 +77,8 @@ ToolStatus inspectToolStatus()
     ToolStatus result;
     result.ffmpeg = commandAvailable("ffmpeg");
     result.ffprobe = commandAvailable("ffprobe");
+    result.ytDlpCommand = detectYtDlpCommand();
+    result.ytDlp = result.ytDlpCommand.length > 0;
     selectVideoAcceleration(result);
     return result;
 }

@@ -25,6 +25,9 @@ import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
 import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory, clampValue,
     formatTimecode, isSupportedMediaPath, outputTail, unnamedProjectAutosavePath;
+import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadResult,
+    YtDlpDownloadService, YtDlpInstallResult, YtDlpInstallService,
+    ytDlpImportDirectory;
 import core.time : MonoTime;
 import std.file : exists;
 import std.conv : ConvException, to;
@@ -613,6 +616,8 @@ final class EditorRoot : VBox
     private EditorModel _model;
     private ToolStatus _tools;
     private MediaImportService _importService;
+    private YtDlpDownloadService _downloadService;
+    private YtDlpInstallService _ytDlpInstallService;
     private FileDialogController _fileDialog;
     private PreviewService _previewService;
     private PcmAudioPlayer _audioPlayer;
@@ -636,6 +641,7 @@ final class EditorRoot : VBox
     private Button _saveProjectButton;
     private Button _openProjectButton;
     private Button _recentProjectsButton;
+    private Button _downloadMediaButton;
     private Button _undoButton;
     private Button _redoButton;
     private Button _qualityButton;
@@ -733,6 +739,8 @@ final class EditorRoot : VBox
     private size_t _importFailedCount;
     private string _importLastError;
     private PendingTimelineDrop[] _pendingTimelineDrops;
+    private PopupOverlay _downloadPopup;
+    private bool _openYtDlpDialogAfterInstall;
 
     private bool _clipboardHasClip;
     private TimelineClip _clipboardClip;
@@ -847,6 +855,8 @@ final class EditorRoot : VBox
         _window = window;
         _model = new EditorModel();
         _importService = new MediaImportService();
+        _downloadService = new YtDlpDownloadService();
+        _ytDlpInstallService = new YtDlpInstallService();
         _previewService = new PreviewService();
         _audioPlayer = new PcmAudioPlayer();
         _videoStream = new VideoFrameStream();
@@ -876,13 +886,23 @@ final class EditorRoot : VBox
             setStatus("FFmpeg and FFprobe must be installed and available on PATH.");
         else
             setStatus("Ready • H.264: " ~ _tools.videoAcceleration);
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            if (!_tools.ytDlp) startYtDlpAddonInstall(false);
+        }
     }
 
     void shutdown()
     {
         autoSaveProjectOnExit();
         if (_fileDialog !is null) _fileDialog.dismiss();
+        if (_downloadPopup !is null) _downloadPopup.dismiss();
         stopPlayback(false);
+        _downloadService.shutdown();
+        _ytDlpInstallService.shutdown();
         _importService.shutdown();
         _exportJob.shutdown();
         _videoStream.shutdown();
@@ -909,6 +929,8 @@ final class EditorRoot : VBox
     }
     bool renderRunningForTesting() { return _exportJob.state().running; }
     bool importBusyForTesting() { return _importService.busy() || _queuedImportPaths.length > 0; }
+    bool downloadBusyForTesting() { return _downloadService.busy(); }
+    bool ytDlpAvailableForTesting() const { return _tools.ytDlp; }
     bool cancelRenderForTesting() { return _exportJob.cancel(); }
     int previewQualityHeightForTesting() const { return _previewQualityHeight; }
     void setPreviewQualityForTesting(int height) { setPreviewQuality(height); }
@@ -1064,10 +1086,16 @@ final class EditorRoot : VBox
         mediaPanel.setBorder(Color.fromHex(0x424a55), 0);
         mediaPanel.onMediaDropped = delegate(string[] paths) { importDroppedMedia(paths); };
 
-        auto mediaTitle = mediaPanel.add(new Label("PROJECT MEDIA"));
+        auto mediaHeader = mediaPanel.add(new HBox(6));
+        mediaHeader.layoutHints().preferredHeight = 30;
+        auto mediaTitle = mediaHeader.add(new Label("PROJECT MEDIA"));
         mediaTitle.setScale(1);
         mediaTitle.setColor(Color.fromHex(0xb8c1cc));
-        mediaTitle.layoutHints().preferredHeight = 24;
+        mediaTitle.layoutHints().flex = 1.0;
+        _downloadMediaButton = mediaHeader.add(new Button("Download", IconKind.open));
+        _downloadMediaButton.setId("download-media-url");
+        _downloadMediaButton.layoutHints().preferredHeight = 30;
+        _downloadMediaButton.onClick = delegate() { openYtDlpDialog(); };
         auto dropHint = mediaPanel.add(new Label(
             "Drop files here • drag media to any sequence track"));
         dropHint.setScale(1);
@@ -1943,6 +1971,193 @@ final class EditorRoot : VBox
         _fileDialog.showOpen(delegate(string path) { importMedia(path); });
     }
 
+    private static bool startsWithLiteral(string value, string prefix)
+    {
+        return value.length >= prefix.length && value[0 .. prefix.length] == prefix;
+    }
+
+    private static bool isYtDlpUrl(string value)
+    {
+        return startsWithLiteral(value, "http://") ||
+            startsWithLiteral(value, "https://");
+    }
+
+    private void closeYtDlpDialog()
+    {
+        if (_downloadPopup !is null) _downloadPopup.dismiss();
+        _downloadPopup = null;
+    }
+
+    private void startYtDlpAddonInstall(bool openDialogAfterInstall)
+    {
+        _tools = inspectToolStatus();
+        if (_tools.ytDlp)
+        {
+            if (openDialogAfterInstall) openYtDlpDialog();
+            return;
+        }
+
+        _openYtDlpDialogAfterInstall =
+            _openYtDlpDialogAfterInstall || openDialogAfterInstall;
+
+        if (_ytDlpInstallService.busy())
+        {
+            setStatus("Installing yt-dlp add-on in the background…");
+            return;
+        }
+
+        if (!_ytDlpInstallService.install())
+        {
+            setStatus("Could not start yt-dlp add-on install.");
+            return;
+        }
+        setStatus("Installing yt-dlp add-on in the background…");
+    }
+
+    private void openYtDlpDialog()
+    {
+        if (!_tools.ytDlp)
+        {
+            startYtDlpAddonInstall(true);
+            return;
+        }
+        if (!_tools.ffmpeg)
+        {
+            setStatus("FFmpeg is required for yt-dlp video merging and audio extraction.");
+            return;
+        }
+        if (!_tools.ffprobe)
+        {
+            setStatus("FFprobe is required to import yt-dlp downloads.");
+            return;
+        }
+
+        closeYtDlpDialog();
+
+        auto content = new VBox(8, Insets(12));
+        content.setBackground(Color.fromHex(0x242a32));
+        content.setBorder(Color.fromHex(0x4a5562), 8);
+
+        auto title = content.add(new Label("Download with yt-dlp"));
+        title.setScale(2);
+        title.layoutHints().preferredHeight = 30;
+
+        auto urlRow = content.add(new HBox(8));
+        urlRow.layoutHints().preferredHeight = 42;
+        auto urlLabel = urlRow.add(new Label("URL"));
+        urlLabel.layoutHints().preferredWidth = 44;
+        auto urlField = urlRow.add(new TextField());
+        urlField.setId("yt-dlp-url");
+        urlField.layoutHints().flex = 1.0;
+
+        auto optionRow = content.add(new HBox(8));
+        optionRow.layoutHints().preferredHeight = 34;
+        auto audioOnly = optionRow.add(new CheckBox("Audio only (MP3)", false));
+        audioOnly.setId("yt-dlp-audio-only");
+        optionRow.add(new Spacer());
+
+        auto hint = content.add(new Label("Downloaded files are kept in " ~
+            ytDlpImportDirectory()));
+        hint.setScale(1);
+        hint.setColor(Color.fromHex(0x87919c));
+        hint.layoutHints().preferredHeight = 28;
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 42;
+        footer.add(new Spacer());
+        auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.onClick = delegate() { closeYtDlpDialog(); };
+        auto downloadButton = footer.add(new Button("Download", IconKind.open));
+        downloadButton.setAccent(true);
+
+        bool delegate() accept = delegate bool() {
+            if (!queueYtDlpDownload(urlField.textUtf8(), audioOnly.checked()))
+                return false;
+            closeYtDlpDialog();
+            return true;
+        };
+        urlField.onSubmitted = delegate() { accept(); };
+        downloadButton.onClick = delegate() { accept(); };
+
+        auto owner = _downloadMediaButton is null ? cast(Widget) this :
+            cast(Widget) _downloadMediaButton;
+        const origin = owner.localToGlobal(Point(0, 0));
+        _downloadPopup = showPopup(owner,
+            Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
+            content, PopupPlacement.below, Size(560, 210));
+        if (_downloadPopup !is null)
+        {
+            _downloadPopup.onDismissed = delegate() { _downloadPopup = null; };
+            urlField.requestFocus();
+        }
+    }
+
+    private bool queueYtDlpDownload(string requestedUrl, bool audioOnly)
+    {
+        const url = requestedUrl.strip();
+        if (!isYtDlpUrl(url))
+        {
+            setStatus("Enter an http:// or https:// URL for yt-dlp.");
+            return false;
+        }
+        if (!_tools.ytDlp)
+        {
+            startYtDlpAddonInstall(false);
+            return false;
+        }
+        if (!_tools.ffmpeg)
+        {
+            setStatus("FFmpeg is required for yt-dlp video merging and audio extraction.");
+            return false;
+        }
+        if (!_tools.ffprobe)
+        {
+            setStatus("FFprobe is required to import yt-dlp downloads.");
+            return false;
+        }
+
+        const kind = audioOnly ? YtDlpDownloadKind.audio : YtDlpDownloadKind.video;
+        if (!_downloadService.enqueue(_tools.ytDlpCommand, url, kind))
+        {
+            setStatus("Could not queue the yt-dlp download.");
+            return false;
+        }
+
+        setStatus(audioOnly
+            ? "Downloading audio with yt-dlp in the background…"
+            : "Downloading video with yt-dlp in the background…");
+        return true;
+    }
+
+    private void drainYtDlpAddonInstall()
+    {
+        YtDlpInstallResult result;
+        while (_ytDlpInstallService.takeReady(result))
+        {
+            if (result.success())
+            {
+                _tools = inspectToolStatus();
+                if (_tools.ytDlp)
+                {
+                    setStatus("yt-dlp add-on installed. Ready to download/import media.");
+                    if (_openYtDlpDialogAfterInstall)
+                    {
+                        _openYtDlpDialogAfterInstall = false;
+                        openYtDlpDialog();
+                    }
+                }
+                else
+                    setStatus("yt-dlp add-on was downloaded but could not be activated.");
+            }
+            else
+            {
+                _openYtDlpDialogAfterInstall = false;
+                setStatus("yt-dlp add-on install failed: " ~
+                    outputTail(result.error, 700));
+            }
+        }
+    }
+
     private bool importPathQueued(string path) const
     {
         foreach (queued; _queuedImportPaths)
@@ -2149,6 +2364,21 @@ final class EditorRoot : VBox
         }
         if (lastIndex >= 0) _mediaList.setSelectedIndex(lastIndex);
         finishImportBatchIfIdle();
+    }
+
+    private void drainDownloadedMedia()
+    {
+        YtDlpDownloadResult result;
+        while (_downloadService.takeReady(result))
+        {
+            if (result.success())
+            {
+                setStatus("yt-dlp download complete: " ~ baseName(result.path));
+                queueMediaImports([result.path]);
+            }
+            else
+                setStatus("yt-dlp download failed: " ~ outputTail(result.error, 700));
+        }
     }
 
     private void finishImportBatchIfIdle()
@@ -6040,6 +6270,8 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Import media…", IconKind.open,
             delegate() { openImportDialog(); }, "Ctrl+I");
+        items ~= ContextMenuItem.command("Download with yt-dlp…", IconKind.open,
+            delegate() { openYtDlpDialog(); }, "Ctrl+Shift+I");
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Add to V1", IconKind.image, delegate() {
             addAssetToTrack(cast(size_t) index, TrackAddress(TrackKind.video, 0),
@@ -6648,6 +6880,8 @@ final class EditorRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        drainYtDlpAddonInstall();
+        drainDownloadedMedia();
         drainImportedMedia();
         _audioPlayer.poll();
 
@@ -7035,6 +7269,11 @@ final class EditorRoot : VBox
         if (command && event.key == Key.o)
         {
             openProjectDialog();
+            return true;
+        }
+        if (command && event.shift() && event.key == Key.i)
+        {
+            openYtDlpDialog();
             return true;
         }
         if (command && event.key == Key.i)
