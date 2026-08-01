@@ -84,6 +84,23 @@ private Point globalCenter(Widget widget)
         origin.y + widget.bounds().height / 2);
 }
 
+private void assertSequenceTimelineSeparatedFromStatus(SplitPane sequenceSplit,
+    TimelineWidget timeline, TimelineHorizontalScrollbar timelineScrollbar,
+    Widget statusBar)
+{
+    auto sequenceArea = sequenceSplit.second();
+    const sequenceOrigin = sequenceArea.localToGlobal(Point(0, 0));
+    const timelineOrigin = timeline.localToGlobal(Point(0, 0));
+    const scrollbarOrigin = timelineScrollbar.localToGlobal(Point(0, 0));
+    const statusOrigin = statusBar.localToGlobal(Point(0, 0));
+    assert(sequenceOrigin.y + sequenceArea.bounds().height <= statusOrigin.y,
+        "Sequence panel overlaps the status bar");
+    assert(timelineOrigin.y + timeline.bounds().height <= statusOrigin.y,
+        "Sequence timeline overlaps the status bar");
+    assert(scrollbarOrigin.y + timelineScrollbar.bounds().height <= statusOrigin.y,
+        "Sequence scrollbar overlaps the status bar");
+}
+
 private Point mediaRowPoint(ListView list, int index)
 {
     const origin = list.localToGlobal(Point(0, 0));
@@ -290,6 +307,7 @@ int main(string[] arguments)
     auto timelineScrollbar = requireWidget!TimelineHorizontalScrollbar(editor,
         "sequence-horizontal-scrollbar");
     auto sequenceSplit = requireWidget!SplitPane(editor, "workspace-sequence-split");
+    auto statusBar = requireWidget!Widget(editor, "status-bar");
     auto inspectorScroll = requireWidget!ScrollView(editor, "clip-inspector-scroll");
     auto inspectorSourceSection = requireWidget!Widget(editor,
         "inspector-source-section");
@@ -442,6 +460,8 @@ int main(string[] arguments)
     assert(timelineScrollbar.bounds().height > 0 &&
         timelineScrollbar.bounds().height <= 12,
         "Timeline horizontal scrollbar is not compact");
+    assertSequenceTimelineSeparatedFromStatus(sequenceSplit, timeline,
+        timelineScrollbar, statusBar);
 
     {
         editor.saveProjectForTesting(savedProject);
@@ -657,8 +677,12 @@ int main(string[] arguments)
         const origin = timeline.localToGlobal(Point(0, 0));
         const pitch = snapshot.width();
         const expected = Color.fromHex(0x2a3038).argb();
-        const cutPixel = snapshot.pixels()[cast(size_t) (origin.y + 30) * pitch + origin.x + 6];
-        const textPixel = snapshot.pixels()[cast(size_t) (origin.y + 52) * pitch + origin.x + 6];
+        const cutPoint = window.displayScale().logicalToPhysical(
+            Point(origin.x + 6, origin.y + 30));
+        const textPoint = window.displayScale().logicalToPhysical(
+            Point(origin.x + 6, origin.y + 52));
+        const cutPixel = snapshot.pixels()[cast(size_t) cutPoint.y * pitch + cutPoint.x];
+        const textPixel = snapshot.pixels()[cast(size_t) textPoint.y * pitch + textPoint.x];
         assert(cutPixel == expected, "V1 row erased the Cut tool button");
         assert(textPixel == expected, "A1 row erased the Text tool button");
     }

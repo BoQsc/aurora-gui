@@ -227,7 +227,10 @@ final class TimelineWidget : Widget
         // narrow playhead is a retained compositor layer, so transport motion
         // cannot repaint thousands of clips or the complete editor window.
         _playheadLayer = add(new TimelinePlayheadLayer());
-        layoutHints().minHeight = 118;
+        // The editor's sequence panel must remain usable in compact windows
+        // without forcing the timeline child to spill over the status bar.
+        // 72px leaves room for the ruler, drop gap, and the default V/A rows.
+        layoutHints().minHeight = 72;
         layoutHints().preferredHeight = 190;
     }
 

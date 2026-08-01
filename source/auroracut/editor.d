@@ -2087,6 +2087,10 @@ final class EditorRoot : VBox
         _timeline = area.add(new TimelineWidget(_model));
         _timeline.setId("sequence-timeline");
         _timeline.layoutHints().flex = 1.0;
+        // In the editor layout the timeline must flex down to the compact
+        // sequence-panel minimum. Keeping the widget's standalone preferred
+        // height here lets VBox place it past the panel and into the status bar.
+        _timeline.layoutHints().preferredHeight = -1;
         _timelineScrollbar = area.add(new TimelineHorizontalScrollbar(_timeline));
         _timelineScrollbar.setId("sequence-horizontal-scrollbar");
         _timeline.onHorizontalViewportChanged = delegate() {
@@ -2147,7 +2151,9 @@ final class EditorRoot : VBox
     private void buildStatusBar()
     {
         auto bar = add(new HBox(8, Insets(8, 3)));
+        bar.setId("status-bar");
         bar.setBackground(Color.fromHex(0x20242a));
+        bar.layoutHints().minHeight = 34;
         bar.layoutHints().preferredHeight = 34;
         _status = bar.add(new Label("Ready"));
         _status.setScale(1);
