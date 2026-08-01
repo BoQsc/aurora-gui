@@ -49,6 +49,19 @@ private bool waitForPlaybackReady(EditorRoot editor, PreviewWidget preview)
     return false;
 }
 
+private bool waitForStillFrame(EditorRoot editor, PreviewWidget preview,
+    double expectedTime)
+{
+    foreach (_; 0 .. 300)
+    {
+        editor.tickTree(0.02);
+        if (preview.hasFrame() && fabs(preview.frameTime() - expectedTime) < 0.02)
+            return true;
+        Thread.sleep(5.msecs);
+    }
+    return false;
+}
+
 int main(string[] arguments)
 {
     assert(arguments.length == 2,
@@ -93,6 +106,24 @@ int main(string[] arguments)
     assert(driver.paint(), "Synced playback setup paint failed");
     assert(fabs(timeline.frameStepSecondsForTesting(0.15) - 1.0 / 30.0) <
         0.000_001, "Timeline keyboard frame step is not one source frame");
+    const steppedTime = 0.15 + timeline.frameStepSecondsForTesting(0.15);
+    const framePreviewRequestsBeforeStep = editor.previewStatsForTesting().requests;
+    timeline.setPlayhead(steppedTime, true);
+    assert(editor.previewStatsForTesting().requests ==
+        framePreviewRequestsBeforeStep + 1,
+        "Frame-step playhead movement did not request preview immediately");
+    assert(waitForStillFrame(editor, preview, steppedTime),
+        "Frame-step preview frame did not render for cache verification");
+    const requestsBeforeAwayStep = editor.previewStatsForTesting().requests;
+    timeline.setPlayhead(0.15, true);
+    assert(editor.previewStatsForTesting().requests == requestsBeforeAwayStep + 1,
+        "Moving to an uncached frame did not request preview immediately");
+    const requestsBeforeCachedStep = editor.previewStatsForTesting().requests;
+    timeline.setPlayhead(steppedTime, true);
+    assert(editor.previewStatsForTesting().requests == requestsBeforeCachedStep,
+        "Cached frame-step preview spawned another worker request");
+    assert(fabs(preview.frameTime() - steppedTime) < 0.02,
+        "Cached frame-step preview did not display synchronously");
 
     const audioRequestsBefore = editor.audioStatsForTesting().requests;
     driver.click(globalCenter(playButton));

@@ -41,6 +41,21 @@ private void assertSequenceTimelineSeparatedFromStatus(SplitPane sequenceSplit,
         "Sequence scrollbar overlaps the status bar");
 }
 
+private void assertStatusProgressCentered(Widget statusBar, ProgressBar progress)
+{
+    const statusOrigin = statusBar.localToGlobal(Point(0, 0));
+    const progressOrigin = progress.localToGlobal(Point(0, 0));
+    const statusCenter = statusOrigin.x + statusBar.bounds().width / 2;
+    const progressCenter = progressOrigin.x + progress.bounds().width / 2;
+    const delta = statusCenter >= progressCenter ?
+        statusCenter - progressCenter : progressCenter - statusCenter;
+    assert(delta <= 1, "Status loading bar is not centered");
+    assert(progressOrigin.y >= statusOrigin.y &&
+        progressOrigin.y + progress.bounds().height <=
+            statusOrigin.y + statusBar.bounds().height,
+        "Status loading bar does not fit inside the status area");
+}
+
 int main()
 {
     WindowOptions options;
@@ -60,16 +75,19 @@ int main()
         "sequence-horizontal-scrollbar");
     auto sequenceSplit = requireWidget!SplitPane(editor, "workspace-sequence-split");
     auto statusBar = requireWidget!Widget(editor, "status-bar");
+    auto statusProgress = requireWidget!ProgressBar(editor, "status-progress");
 
     driver.resize(Size(options.width, options.height));
     assert(driver.paint(), "Default editor paint failed");
     assertSequenceTimelineSeparatedFromStatus(sequenceSplit, timeline,
         timelineScrollbar, statusBar);
+    assertStatusProgressCentered(statusBar, statusProgress);
 
     driver.resize(Size(options.width, 520));
     assert(driver.paint(), "Compact editor paint failed");
     assertSequenceTimelineSeparatedFromStatus(sequenceSplit, timeline,
         timelineScrollbar, statusBar);
+    assertStatusProgressCentered(statusBar, statusProgress);
 
     return 0;
 }

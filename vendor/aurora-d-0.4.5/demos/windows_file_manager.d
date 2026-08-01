@@ -15,20 +15,30 @@ import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 version (Windows)
 {
     pragma(lib, "ole32.lib");
+    pragma(lib, "shell32.lib");
     pragma(lib, "shlwapi.lib");
     import core.sys.windows.com : CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
         CoCreateInstance, CoInitializeEx, CoUninitialize, RPC_E_CHANGED_MODE,
         S_FALSE, S_OK;
-    import core.sys.windows.objbase : STGM_READ;
+    import core.sys.windows.objbase : CoTaskMemFree, STGM_READ;
     import core.sys.windows.objidl : IPersistFile;
-    import core.sys.windows.shlobj : CSIDL_RECENT, ILFree, IEnumIDList, IShellFolder,
-        IShellLinkW, LPCITEMIDLIST, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO,
-        SHGetDesktopFolder, SHGetFolderPathW, SHParseDisplayName, STRRET;
+    import core.sys.windows.shlobj : CSIDL_DESKTOPDIRECTORY, CSIDL_MYMUSIC,
+        CSIDL_MYPICTURES, CSIDL_MYVIDEO, CSIDL_PERSONAL, CSIDL_PROFILE,
+        CSIDL_RECENT, ILFree, IEnumIDList, IShellFolder, IShellLinkW,
+        LPCITEMIDLIST, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO, SHGetDesktopFolder,
+        SHGetFolderPathW, SHParseDisplayName, STRRET;
     import core.sys.windows.shellapi : ShellExecuteW;
     import core.sys.windows.shlwapi : StrRetToBufW;
     import core.sys.windows.uuid : CLSID_ShellLink, IID_IPersistFile, IID_IShellFolder,
         IID_IShellLinkW;
     import core.sys.windows.windows;
+
+    private const GUID folderIdDownloads =
+        {0x374DE290, 0x123F, 0x4565,
+            [0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B]};
+
+    extern (Windows) private HRESULT SHGetKnownFolderPath(const(GUID)* folderId,
+        DWORD flags, HANDLE token, wchar** path);
 }
 
 private enum CommandButton
@@ -1932,9 +1942,48 @@ final class WindowsFileManagerRoot : Widget
                 }
             }
         }
+        else if (_showThisPc)
+        {
+            const folderCount = thisPcVisibleCount(false, query);
+            const driveCount = thisPcVisibleCount(true, query);
+            VisibleRow folderHeader;
+            folderHeader.entryIndex = -1;
+            folderHeader.groupLabel = format("Folders (%d)", folderCount);
+            _visibleRows ~= folderHeader;
+            foreach (index, entry; _entries)
+            {
+                if (!entry.drive &&
+                    (query.length == 0 || containsInsensitive(entry.name, query)))
+                {
+                    VisibleRow row;
+                    row.entryIndex = cast(int) index;
+                    _visibleRows ~= row;
+                }
+            }
+
+            VisibleRow separator;
+            separator.entryIndex = -1;
+            separator.separator = true;
+            _visibleRows ~= separator;
+
+            VisibleRow driveHeader;
+            driveHeader.entryIndex = -1;
+            driveHeader.groupLabel = format("Devices and drives (%d)", driveCount);
+            _visibleRows ~= driveHeader;
+            foreach (index, entry; _entries)
+            {
+                if (entry.drive &&
+                    (query.length == 0 || containsInsensitive(entry.name, query)))
+                {
+                    VisibleRow row;
+                    row.entryIndex = cast(int) index;
+                    _visibleRows ~= row;
+                }
+            }
+        }
 
         string previousGroupLabel;
-        if (!_showQuickAccess)
+        if (!_showQuickAccess && !_showThisPc)
         {
             foreach (index, entry; _entries)
             {
@@ -1973,6 +2022,18 @@ final class WindowsFileManagerRoot : Widget
         foreach (entry; _entries)
         {
             if (entry.quickAccessRecent != recent) continue;
+            if (query.length == 0 || containsInsensitive(entry.name, query))
+                ++count;
+        }
+        return count;
+    }
+
+    private size_t thisPcVisibleCount(bool drive, string query) const
+    {
+        size_t count;
+        foreach (entry; _entries)
+        {
+            if (entry.drive != drive) continue;
             if (query.length == 0 || containsInsensitive(entry.name, query))
                 ++count;
         }
@@ -2122,26 +2183,50 @@ final class WindowsFileManagerRoot : Widget
         ExplorerEntry[] entries;
         version (Windows)
         {
-            const mask = GetLogicalDrives();
-            foreach (index; 0 .. 26)
+            foreach (item; windowsThisPcItems())
             {
-                if ((mask & (1u << index)) == 0) continue;
-                const letter = cast(char) ('A' + index);
-                const path = format("%c:\\", letter);
-                ExplorerEntry entry;
-                entry.path = path;
-                entry.name = driveDisplayName(path);
-                entry.directory = true;
-                entry.drive = true;
-                entry.type = driveTypeText(GetDriveTypeW(path.toUTF16z));
-                ulong freeBytes;
-                ulong totalBytes;
-                if (queryDiskSpace(path, freeBytes, totalBytes))
+                const path = item.path;
+                if (path.length == 0) continue;
+                if (isDriveRootPath(path))
+                    appendThisPcDrive(entries, path, item.displayName);
+                else
+                    appendThisPcFolder(entries, item.displayName, path, true);
+            }
+
+            if (entries.length == 0)
+            {
+                const current = getcwd();
+                auto home = windowsCsidlFolder(CSIDL_PROFILE);
+                if (home.length == 0)
+                    home = environment.get("USERPROFILE", environment.get("HOME", current));
+
+                appendThisPcFolder(entries, "Desktop",
+                    windowsCsidlFolder(CSIDL_DESKTOPDIRECTORY));
+                appendThisPcFolder(entries, "Documents",
+                    windowsCsidlFolder(CSIDL_PERSONAL));
+
+                auto downloads = windowsKnownFolderPath(&folderIdDownloads);
+                if (downloads.length == 0)
+                    downloads = buildNormalizedPath(home, "Downloads");
+                appendThisPcFolder(entries, "Downloads", downloads);
+
+                appendThisPcFolder(entries, "Music",
+                    windowsCsidlFolder(CSIDL_MYMUSIC));
+                appendThisPcFolder(entries, "Pictures",
+                    windowsCsidlFolder(CSIDL_MYPICTURES));
+                appendThisPcFolder(entries, "Videos",
+                    windowsCsidlFolder(CSIDL_MYVIDEO));
+
+                const threeDObjects = buildNormalizedPath(home, "3D Objects");
+                appendThisPcFolder(entries, "3D Objects", threeDObjects);
+
+                const mask = GetLogicalDrives();
+                foreach (index; 0 .. 26)
                 {
-                    entry.size = totalBytes;
-                    entry.sizeText = diskSizeText(freeBytes, totalBytes);
+                    if ((mask & (1u << index)) == 0) continue;
+                    const letter = cast(char) ('A' + index);
+                    appendThisPcDrive(entries, format("%c:\\", letter));
                 }
-                entries ~= entry;
             }
         }
         else
@@ -2155,6 +2240,68 @@ final class WindowsFileManagerRoot : Widget
             entries ~= entry;
         }
         return entries;
+    }
+
+    private static bool appendThisPcFolder(ref ExplorerEntry[] entries, string label,
+        string path, bool nativeShellItem = false)
+    {
+        bool filesystemFolder;
+        try
+        {
+            filesystemFolder = exists(path) && isDir(path);
+        }
+        catch (Exception)
+        {
+            filesystemFolder = false;
+        }
+        if (path.length == 0 || (!filesystemFolder && !nativeShellItem)) return false;
+        foreach (entry; entries)
+            if (pathsEqual(entry.path, path))
+                return false;
+
+        ExplorerEntry entry;
+        if (filesystemFolder)
+        {
+            try
+            {
+                if (!populateExplorerEntry(DirEntry(path), label, entry))
+                    return false;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            populateNativeQuickAccessEntry(path, label, true, entry);
+        }
+        entry.type = "System folder";
+        entries ~= entry;
+        return true;
+    }
+
+    version (Windows)
+    private static void appendThisPcDrive(ref ExplorerEntry[] entries, string path,
+        string displayName = "")
+    {
+        if (path.length == 0) return;
+        ExplorerEntry entry;
+        entry.path = path;
+        entry.name = displayName.length > 0 ? displayName : driveDisplayName(path);
+        entry.directory = true;
+        entry.drive = true;
+        entry.type = driveTypeText(GetDriveTypeW(path.toUTF16z));
+        entry.modifiedDay = "Unknown date";
+        ulong freeBytes;
+        ulong totalBytes;
+        if (queryDiskSpace(path, freeBytes, totalBytes))
+        {
+            entry.size = totalBytes;
+            entry.sizeKnown = true;
+            entry.sizeText = diskSizeText(freeBytes, totalBytes);
+        }
+        entries ~= entry;
     }
 
     private ExplorerEntry[] buildQuickAccessEntries()
@@ -2655,7 +2802,15 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
-    private void showProperties(string path)
+    private void showEntryProperties(ExplorerEntry entry)
+    {
+        const location = entry.drive ? "This PC" : dirName(entry.path);
+        showProperties(entry.path, entry.name, entry.type, entry.sizeText, location);
+    }
+
+    private void showProperties(string path, string preferredName = "",
+        string preferredType = "", string preferredSizeText = "",
+        string preferredLocation = "")
     {
         if (path.length == 0) return;
         version (Windows)
@@ -2688,12 +2843,18 @@ final class WindowsFileManagerRoot : Widget
                 return;
             }
 
-            const name = baseName(path).length > 0 ? baseName(path) : path;
+            const fallbackName = baseName(path).length > 0 ? baseName(path) : path;
+            const name = preferredName.length > 0 ? preferredName : fallbackName;
+            const type = preferredType.length > 0 ? preferredType :
+                typeText(name, directory);
+            const location = preferredLocation.length > 0 ? preferredLocation :
+                dirName(path);
+            const displaySize = preferredSizeText.length > 0 ? preferredSizeText :
+                (directory ? (sizeText.length > 0 ? sizeText : "Folder") :
+                    humanSize(size));
             if (_propertiesWindow is null)
                 _propertiesWindow = new PropertiesWindow();
-            _propertiesWindow.show(path, name, typeText(name, directory), dirName(path),
-                directory ? (sizeText.length > 0 ? sizeText : "Folder") : humanSize(size),
-                modified);
+            _propertiesWindow.show(path, name, type, location, displaySize, modified);
             _statusText = _propertiesWindow.visible()
                 ? "Showing properties for " ~ name
                 : "Cannot open the Properties window.";
@@ -2701,6 +2862,35 @@ final class WindowsFileManagerRoot : Widget
         else
             _statusText = "Properties are only available on Windows.";
         invalidate();
+    }
+
+    private void showThisPcProperties()
+    {
+        version (Windows)
+        {
+            const entries = _showThisPc ? _folderEntries : buildThisPcEntries();
+            const folderCount = thisPcEntryCount(entries, false);
+            const driveCount = thisPcEntryCount(entries, true);
+            if (_propertiesWindow is null)
+                _propertiesWindow = new PropertiesWindow();
+            _propertiesWindow.show("This PC", "This PC", "System folder", "Desktop",
+                format("%d folders, %d drives", folderCount, driveCount),
+                "Not applicable");
+            _statusText = _propertiesWindow.visible()
+                ? "Showing properties for This PC"
+                : "Cannot open the Properties window.";
+        }
+        else
+            _statusText = "Properties are only available on Windows.";
+        invalidate();
+    }
+
+    private static size_t thisPcEntryCount(const ExplorerEntry[] entries, bool drive)
+    {
+        size_t count;
+        foreach (entry; entries)
+            if (entry.drive == drive) ++count;
+        return count;
     }
 
     private void recordRecentFile(string path)
@@ -2735,6 +2925,20 @@ final class WindowsFileManagerRoot : Widget
         }
         else
             _statusText = "Network browsing is not available in this build.";
+        invalidate();
+    }
+
+    private void openThisPcWithSystem()
+    {
+        version (Windows)
+        {
+            if (openPathWithSystem("shell:MyComputerFolder"))
+                _statusText = "Opened This PC in the system file manager.";
+            else
+                _statusText = "Cannot open This PC in the system file manager.";
+        }
+        else
+            _statusText = "This PC is only available on Windows.";
         invalidate();
     }
 
@@ -2787,6 +2991,10 @@ final class WindowsFileManagerRoot : Widget
                 ContextMenuItem[] navigationItems;
                 navigationItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { openThisPc(); });
+                navigationItems ~= ContextMenuItem.command("Open with system", IconKind.open,
+                    delegate() { openThisPcWithSystem(); });
+                navigationItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                    delegate() { showThisPcProperties(); });
                 navigationItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
                     delegate() { openThisPc(); }, "F5");
                 showContextMenu(this, globalPosition, navigationItems);
@@ -2816,14 +3024,14 @@ final class WindowsFileManagerRoot : Widget
             ContextMenuItem[] quickAccessItems;
             if (hasSelection())
             {
-                const entry = selectedEntry();
+                auto entry = selectedEntry();
                 quickAccessItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
                 if (!entry.directory)
                     quickAccessItems ~= ContextMenuItem.command("Open with system", IconKind.open,
                         delegate() { openPath(entry.path); });
                 quickAccessItems ~= ContextMenuItem.command("Properties", IconKind.file,
-                    delegate() { showProperties(entry.path); });
+                    delegate() { showEntryProperties(entry); });
                 quickAccessItems ~= ContextMenuItem.separatorItem();
             }
             quickAccessItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
@@ -2843,15 +3051,20 @@ final class WindowsFileManagerRoot : Widget
             ContextMenuItem[] thisPcItems;
             if (hasSelection())
             {
-                const entry = selectedEntry();
+                auto entry = selectedEntry();
                 thisPcItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
                 thisPcItems ~= ContextMenuItem.command("Properties", IconKind.file,
-                    delegate() { showProperties(entry.path); });
+                    delegate() { showEntryProperties(entry); });
                 thisPcItems ~= ContextMenuItem.command("Copy path", IconKind.file,
                     delegate() { copySelectedPath(); }, "Ctrl+C");
                 thisPcItems ~= ContextMenuItem.separatorItem();
             }
+            thisPcItems ~= ContextMenuItem.command("Open This PC with system", IconKind.open,
+                delegate() { openThisPcWithSystem(); });
+            thisPcItems ~= ContextMenuItem.command("This PC properties", IconKind.file,
+                delegate() { showThisPcProperties(); });
+            thisPcItems ~= ContextMenuItem.separatorItem();
             thisPcItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
                 delegate() { refresh(); }, "F5");
             showContextMenu(this, globalPosition, thisPcItems);
@@ -2868,14 +3081,14 @@ final class WindowsFileManagerRoot : Widget
         ContextMenuItem[] items;
         if (hasSelection())
         {
-            const entry = selectedEntry();
+            auto entry = selectedEntry();
             items ~= ContextMenuItem.command("Open", IconKind.open,
                 delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
             if (!entry.directory)
                 items ~= ContextMenuItem.command("Open with system", IconKind.open,
                     delegate() { openPath(entry.path); });
             items ~= ContextMenuItem.command("Properties", IconKind.file,
-                delegate() { showProperties(entry.path); });
+                delegate() { showEntryProperties(entry); });
             items ~= ContextMenuItem.command("Copy path", IconKind.file,
                 delegate() { copySelectedPath(); }, "Ctrl+C");
             items ~= ContextMenuItem.separatorItem();
@@ -2903,10 +3116,10 @@ final class WindowsFileManagerRoot : Widget
         if (_showThisPc)
         {
             if (_searchQuery.length > 0)
-                _statusText = format("%d matches in %d drives",
-                    visibleItemCount(), _entries.length);
+                _statusText = format("%d matches in This PC", visibleItemCount());
             else
-                _statusText = format("%d drives", _entries.length);
+                _statusText = format("%d folders, %d drives",
+                    thisPcEntryCount(_entries, false), thisPcEntryCount(_entries, true));
         }
         else if (_searchQuery.length > 0)
             _statusText = format("%d matches in %d items",
@@ -2926,8 +3139,10 @@ final class WindowsFileManagerRoot : Widget
         const entry = _entries[cast(size_t) entryIndex];
         const sizeText = entrySizeText(entry);
         _statusText = sizeText.length > 0 ? entry.name ~ "  " ~ sizeText :
+            (entry.drive ? entry.name ~ " drive" :
             (entry.directory ? entry.name ~ " folder" :
-                entry.name ~ "  " ~ humanSize(entry.size));
+                (entry.sizeKnown ? entry.name ~ "  " ~ humanSize(entry.size) :
+                    entry.name)));
     }
 
     private void updateWindowTitle()
@@ -3494,6 +3709,12 @@ final class WindowsFileManagerRoot : Widget
         return root.length > 0 ? root : "/";
     }
 
+    private static bool isDriveRootPath(string path)
+    {
+        const root = rootName(path);
+        return root.length > 0 && pathsEqual(path, rootPathFor(path));
+    }
+
     private static string displayRoot(string path)
     {
         const root = rootName(path);
@@ -3514,7 +3735,21 @@ final class WindowsFileManagerRoot : Widget
     {
         const root = rootName(path);
         if (root.length >= 2 && root[1] == ':')
+        {
+            version (Windows)
+            {
+                wchar[MAX_PATH] volumeName;
+                if (GetVolumeInformationW(path.toUTF16z, volumeName.ptr,
+                        cast(DWORD) volumeName.length, null, null, null, null,
+                        0) != FALSE)
+                {
+                    const label = windowsWideBufferString(volumeName[]);
+                    if (label.length > 0)
+                        return label ~ " (" ~ root[0 .. 2] ~ ")";
+                }
+            }
             return "Local Disk (" ~ root[0 .. 2] ~ ")";
+        }
         return displayRoot(path);
     }
 
@@ -3765,12 +4000,38 @@ private string windowsWideBufferString(const(wchar)[] buffer)
 }
 
 version (Windows)
-private string windowsRecentFolder()
+private string windowsWidePointerString(const(wchar)* buffer)
+{
+    if (buffer is null) return "";
+    size_t length;
+    while (buffer[length] != 0)
+        ++length;
+    return length > 0 ? toUTF8(buffer[0 .. length]) : "";
+}
+
+version (Windows)
+private string windowsCsidlFolder(int csidl)
 {
     wchar[MAX_PATH] path;
-    if (SHGetFolderPathW(null, CSIDL_RECENT, null, 0, path.ptr) != S_OK)
+    if (SHGetFolderPathW(null, csidl, null, 0, path.ptr) != S_OK)
         return "";
     return windowsWideBufferString(path[]);
+}
+
+version (Windows)
+private string windowsKnownFolderPath(const(GUID)* folderId)
+{
+    wchar* path;
+    if (SHGetKnownFolderPath(folderId, 0, null, &path) != S_OK || path is null)
+        return "";
+    scope (exit) CoTaskMemFree(path);
+    return windowsWidePointerString(path);
+}
+
+version (Windows)
+private string windowsRecentFolder()
+{
+    return windowsCsidlFolder(CSIDL_RECENT);
 }
 
 version (Windows)
@@ -3856,6 +4117,18 @@ private bool shellFolderItemIsFolder(IShellFolder folder, LPITEMIDLIST child)
 version (Windows)
 private WindowsQuickAccessItem[] windowsQuickAccessItems()
 {
+    return windowsShellNamespaceItems("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}", 96);
+}
+
+version (Windows)
+private WindowsQuickAccessItem[] windowsThisPcItems()
+{
+    return windowsShellNamespaceItems("shell:::{20d04fe0-3aea-1069-a2d8-08002b30309d}", 96);
+}
+
+version (Windows)
+private WindowsQuickAccessItem[] windowsShellNamespaceItems(string shellNamespace, size_t limit)
+{
     WindowsQuickAccessItem[] items;
     const initResult = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
     if (initResult != S_OK && initResult != S_FALSE && initResult != RPC_E_CHANGED_MODE)
@@ -3866,34 +4139,32 @@ private WindowsQuickAccessItem[] windowsQuickAccessItems()
         if (shouldUninitialize) CoUninitialize();
     }
 
-    LPITEMIDLIST quickAccessPidl;
-    const quickAccessNamespace =
-        "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
-    if (SHParseDisplayName(quickAccessNamespace.toUTF16z, null,
-            cast(LPITEMIDLIST) &quickAccessPidl, SFGAOF.init,
-            null) != S_OK || quickAccessPidl is null)
+    LPITEMIDLIST namespacePidl;
+    if (SHParseDisplayName(shellNamespace.toUTF16z, null,
+            cast(LPITEMIDLIST) &namespacePidl, SFGAOF.init,
+            null) != S_OK || namespacePidl is null)
         return items;
-    scope (exit) ILFree(quickAccessPidl);
+    scope (exit) ILFree(namespacePidl);
 
     IShellFolder desktopFolder;
     if (SHGetDesktopFolder(&desktopFolder) != S_OK || desktopFolder is null)
         return items;
     scope (exit) desktopFolder.Release();
 
-    IShellFolder quickAccessFolder;
-    if (desktopFolder.BindToObject(quickAccessPidl, null, &IID_IShellFolder,
-            cast(void**) &quickAccessFolder) != S_OK || quickAccessFolder is null)
+    IShellFolder shellFolder;
+    if (desktopFolder.BindToObject(namespacePidl, null, &IID_IShellFolder,
+            cast(void**) &shellFolder) != S_OK || shellFolder is null)
         return items;
-    scope (exit) quickAccessFolder.Release();
+    scope (exit) shellFolder.Release();
 
     IEnumIDList enumerator;
     const enumFlags = SHCONTF.SHCONTF_FOLDERS | SHCONTF.SHCONTF_NONFOLDERS;
-    if (quickAccessFolder.EnumObjects(null, enumFlags, &enumerator) != S_OK ||
+    if (shellFolder.EnumObjects(null, enumFlags, &enumerator) != S_OK ||
         enumerator is null)
         return items;
     scope (exit) enumerator.Release();
 
-    while (items.length < 96)
+    while (items.length < limit)
     {
         LPITEMIDLIST child;
         ULONG fetched;
@@ -3901,15 +4172,15 @@ private WindowsQuickAccessItem[] windowsQuickAccessItems()
             break;
         scope (exit) ILFree(child);
 
-        const resolvedPath = shellFolderDisplayName(quickAccessFolder, child,
+        const resolvedPath = shellFolderDisplayName(shellFolder, child,
             SHGNO.SHGDN_FORPARSING);
         if (resolvedPath.length > 0)
         {
             WindowsQuickAccessItem item;
             item.path = resolvedPath;
-            item.displayName = shellFolderDisplayName(quickAccessFolder, child,
+            item.displayName = shellFolderDisplayName(shellFolder, child,
                 SHGNO.SHGDN_NORMAL);
-            item.isFolder = shellFolderItemIsFolder(quickAccessFolder, child);
+            item.isFolder = shellFolderItemIsFolder(shellFolder, child);
             items ~= item;
         }
     }
