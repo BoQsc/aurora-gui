@@ -3,11 +3,12 @@ module demos.windows_file_manager;
 import aurora;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, copy, dirEntries, exists, getcwd, isDir,
-    mkdir, removeFile = remove, renameFile = rename, rmdirRecurse, thisExePath,
+    mkdir, readText, removeFile = remove, renameFile = rename, rmdirRecurse, thisExePath,
     writeFile = write;
 import std.format : format;
-import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
-    rootName;
+import std.json : JSONValue, parseJSON;
+import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension,
+    isAbsolute, rootName;
 import std.process : Config, environment, spawnProcess;
 import std.string : icmp, strip, toLower;
 import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
@@ -135,6 +136,20 @@ private struct NavigationItem
     bool pinned;
     int indentLevel;
     bool thisPcChild;
+}
+
+private final class FileManagerIconAtlas
+{
+    RgbaImage image;
+    Rect[string] frames;
+
+    bool frameFor(string name, out Rect frame)
+    {
+        auto found = name in frames;
+        if (found is null) return false;
+        frame = *found;
+        return true;
+    }
 }
 
 private final class PreviewTextField : TextField
@@ -781,6 +796,8 @@ final class WindowsFileManagerRoot : Widget
     private ContextMenu _homeMenu;
     private ContextMenu _viewMenu;
     private DragPreviewOverlay _dragPreviewOverlay;
+    private FileManagerIconAtlas _iconAtlas;
+    private bool _iconAtlasLoadAttempted;
     version (Windows)
         private PropertiesWindow _propertiesWindow;
     private ExplorerEntry[] _entries;
@@ -5257,7 +5274,7 @@ final class WindowsFileManagerRoot : Widget
         drawUpButton(canvas, _upRect);
 
         canvas.drawRoundedRect(_addressRect, 0, explorerField, explorerFieldBorder, 1);
-        drawIcon(canvas, IconKind.folder, Rect(_addressRect.x + scaled(8),
+        drawFileManagerIcon(canvas, IconKind.folder, Rect(_addressRect.x + scaled(8),
             _addressRect.y + scaled(6), scaled(16), scaled(16)),
             explorerText, folderAccent);
 
@@ -5314,7 +5331,7 @@ final class WindowsFileManagerRoot : Widget
                     Rect(row.x + scaled(22), row.y + scaled(8),
                         scaled(10), scaled(10)), arrowColor, arrowColor);
             }
-            drawIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
+            drawFileManagerIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
                 row.y + scaled(5),
                 scaled(17), scaled(17)),
                 textColor, folderAccent);
@@ -5429,9 +5446,8 @@ final class WindowsFileManagerRoot : Widget
     private void drawDetailsEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
-        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(6), row.y + scaled(4),
-            scaled(17), scaled(17)), explorerText,
-            entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), row.y + scaled(4),
+            scaled(17), scaled(17)));
         if (!drawRenameFieldBackground(canvas, visibleIndex))
             drawText(canvas, Rect(row.x + scaled(28), row.y,
                 maxInt(0, _dateX - row.x - scaled(35)), row.height),
@@ -5450,9 +5466,8 @@ final class WindowsFileManagerRoot : Widget
     private void drawListEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
-        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(6), row.y + scaled(5),
-            scaled(17), scaled(17)), explorerText,
-            entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), row.y + scaled(5),
+            scaled(17), scaled(17)));
         if (!drawRenameFieldBackground(canvas, visibleIndex))
             drawText(canvas, Rect(row.x + scaled(28), row.y,
                 maxInt(0, row.width - scaled(34)), row.height), entry.name,
@@ -5464,9 +5479,8 @@ final class WindowsFileManagerRoot : Widget
     {
         const iconSize = viewIconSizePx();
         const iconX = row.x + maxInt(0, (row.width - iconSize) / 2);
-        drawIcon(canvas, entryIcon(entry), Rect(iconX, row.y + scaled(10),
-            iconSize, iconSize), explorerText,
-            entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(iconX, row.y + scaled(10),
+            iconSize, iconSize));
         if (!drawRenameFieldBackground(canvas, visibleIndex))
         {
             const textTop = row.y + iconSize + scaled(12);
@@ -5482,9 +5496,8 @@ final class WindowsFileManagerRoot : Widget
     {
         const iconSize = viewIconSizePx();
         const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
-        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(8), iconY,
-            iconSize, iconSize), explorerText,
-            entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(8), iconY,
+            iconSize, iconSize));
         const textX = row.x + iconSize + scaled(16);
         if (!drawRenameFieldBackground(canvas, visibleIndex))
             drawText(canvas, Rect(textX, row.y + scaled(6),
@@ -5500,9 +5513,8 @@ final class WindowsFileManagerRoot : Widget
     {
         const iconSize = viewIconSizePx();
         const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
-        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(8), iconY,
-            iconSize, iconSize), explorerText,
-            entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(8), iconY,
+            iconSize, iconSize));
         const textX = row.x + iconSize + scaled(18);
         if (!drawRenameFieldBackground(canvas, visibleIndex))
             drawText(canvas, Rect(textX, row.y + scaled(6),
@@ -5527,6 +5539,226 @@ final class WindowsFileManagerRoot : Widget
     {
         return entry.drive ? IconKind.drive :
             (entry.directory ? IconKind.folder : iconForFile(entry.name));
+    }
+
+    private void drawExplorerEntryIcon(ref Canvas canvas, ExplorerEntry entry, Rect rect)
+    {
+        if (drawAtlasIcon(canvas, atlasIconNameForEntry(entry), rect))
+            return;
+        drawIcon(canvas, entryIcon(entry), rect, explorerText,
+            entry.directory ? folderAccent : fileAccent);
+    }
+
+    private bool drawAtlasIcon(ref Canvas canvas, string name, Rect rect)
+    {
+        if (name.length == 0 || rect.empty()) return false;
+        auto atlas = iconAtlas();
+        if (atlas is null || atlas.image is null) return false;
+        Rect source;
+        if (!atlas.frameFor(name, source)) return false;
+        canvas.drawImage(fitImageRect(rect, source), atlas.image, source,
+            Color.rgb(255, 255, 255), true);
+        return true;
+    }
+
+    private void drawFileManagerIcon(ref Canvas canvas, IconKind icon, Rect rect,
+        Color foreground, Color accent)
+    {
+        if (foreground.a > 220 && drawAtlasIcon(canvas, atlasIconNameForIcon(icon), rect))
+            return;
+        drawIcon(canvas, icon, rect, foreground, accent);
+    }
+
+    private FileManagerIconAtlas iconAtlas()
+    {
+        if (!_iconAtlasLoadAttempted)
+        {
+            _iconAtlasLoadAttempted = true;
+            _iconAtlas = loadFileManagerIconAtlas();
+        }
+        return _iconAtlas;
+    }
+
+    private static Rect fitImageRect(Rect bounds, Rect source)
+        @safe pure nothrow @nogc
+    {
+        if (bounds.empty() || source.empty()) return bounds;
+        const sourceWidth = maxInt(1, source.width);
+        const sourceHeight = maxInt(1, source.height);
+        int width = bounds.width;
+        int height = cast(int) ((cast(long) width * sourceHeight + sourceWidth / 2) /
+            sourceWidth);
+        if (height > bounds.height)
+        {
+            height = bounds.height;
+            width = cast(int) ((cast(long) height * sourceWidth + sourceHeight / 2) /
+                sourceHeight);
+        }
+        width = maxInt(1, minInt(bounds.width, width));
+        height = maxInt(1, minInt(bounds.height, height));
+        return Rect(bounds.x + (bounds.width - width) / 2,
+            bounds.y + (bounds.height - height) / 2, width, height);
+    }
+
+    private static string atlasIconNameForEntry(ExplorerEntry entry)
+    {
+        if (entry.drive) return "drive";
+        if (entry.directory)
+        {
+            if (icmp(entry.name, "Desktop") == 0 ||
+                pathsEqual(entry.path, defaultDesktopFolder()))
+                return "desktop";
+            if (icmp(entry.name, "Documents") == 0 ||
+                pathsEqual(entry.path, defaultDocumentsFolder()))
+                return "document";
+            if (icmp(entry.name, "Downloads") == 0 ||
+                pathsEqual(entry.path, defaultDownloadsFolder()))
+                return "download";
+            if (icmp(entry.name, "Music") == 0 ||
+                pathsEqual(entry.path, defaultMusicFolder()))
+                return "music";
+            if (icmp(entry.name, "Pictures") == 0 ||
+                pathsEqual(entry.path, defaultPicturesFolder()))
+                return "pictures";
+            if (icmp(entry.name, "Videos") == 0 ||
+                pathsEqual(entry.path, defaultVideosFolder()))
+                return "videos";
+            return "folder";
+        }
+
+        const ext = extension(entry.name);
+        if (icmp(ext, ".png") == 0 || icmp(ext, ".jpg") == 0 ||
+            icmp(ext, ".jpeg") == 0 || icmp(ext, ".gif") == 0 ||
+            icmp(ext, ".bmp") == 0 || icmp(ext, ".webp") == 0 ||
+            icmp(ext, ".svg") == 0)
+            return "pictures";
+        if (icmp(ext, ".mp3") == 0 || icmp(ext, ".wav") == 0 ||
+            icmp(ext, ".flac") == 0 || icmp(ext, ".ogg") == 0 ||
+            icmp(ext, ".m4a") == 0)
+            return "music";
+        if (icmp(ext, ".mp4") == 0 || icmp(ext, ".mov") == 0 ||
+            icmp(ext, ".mkv") == 0 || icmp(ext, ".avi") == 0 ||
+            icmp(ext, ".webm") == 0)
+            return "videos";
+        if (icmp(ext, ".zip") == 0 || icmp(ext, ".7z") == 0 ||
+            icmp(ext, ".rar") == 0 || icmp(ext, ".tar") == 0 ||
+            icmp(ext, ".gz") == 0)
+            return "storage_box";
+        if (icmp(ext, ".txt") == 0 || icmp(ext, ".md") == 0 ||
+            icmp(ext, ".json") == 0 || icmp(ext, ".d") == 0 ||
+            icmp(ext, ".doc") == 0 || icmp(ext, ".docx") == 0 ||
+            icmp(ext, ".pdf") == 0)
+            return "document";
+        return "file";
+    }
+
+    private static string atlasIconNameForIcon(IconKind icon)
+    {
+        switch (icon)
+        {
+            case IconKind.file:
+                return "file";
+            case IconKind.folder:
+                return "folder";
+            case IconKind.home:
+                return "home";
+            case IconKind.computer:
+                return "desktop";
+            case IconKind.notepad:
+            case IconKind.newDocument:
+                return "document";
+            case IconKind.trash:
+                return "trash";
+            case IconKind.open:
+                return "folder_open";
+            case IconKind.up:
+                return "up";
+            case IconKind.settings:
+                return "settings";
+            case IconKind.image:
+                return "pictures";
+            case IconKind.music:
+                return "music";
+            case IconKind.drive:
+                return "drive";
+            default:
+                return "";
+        }
+    }
+
+    private static FileManagerIconAtlas loadFileManagerIconAtlas()
+    {
+        foreach (directory; fileManagerIconAssetDirectories())
+        {
+            const atlasPath = buildPath(directory, "file_manager_icon_atlas.json");
+            if (!exists(atlasPath)) continue;
+            try
+            {
+                auto atlas = readFileManagerIconAtlas(atlasPath);
+                if (atlas !is null) return atlas;
+            }
+            catch (Exception)
+            {
+                // Asset loading is optional; vector icons remain the fallback.
+            }
+        }
+        return null;
+    }
+
+    private static FileManagerIconAtlas readFileManagerIconAtlas(string atlasPath)
+    {
+        auto root = parseJSON(readText(atlasPath));
+        const directory = dirName(atlasPath);
+        const imageName = root["image"].str;
+        const imagePath = buildPath(directory, imageName);
+        if (!exists(imagePath)) return null;
+
+        auto atlas = new FileManagerIconAtlas();
+        atlas.image = loadPngImage(imagePath);
+        foreach (icon; root["icons"].array)
+        {
+            auto frameValue = icon["frame"];
+            Rect frame = Rect(jsonInt(frameValue, "x"), jsonInt(frameValue, "y"),
+                jsonInt(frameValue, "width"), jsonInt(frameValue, "height"));
+            atlas.frames[icon["name"].str] = frame;
+            foreach (aliasValue; icon["aliases"].array)
+                atlas.frames[aliasValue.str] = frame;
+        }
+        return atlas.frames.length > 0 && atlas.image !is null ? atlas : null;
+    }
+
+    private static string[] fileManagerIconAssetDirectories()
+    {
+        string[] directories;
+        appendUniqueDirectory(directories, buildPath(getcwd(), "assets", "icons"));
+        try
+        {
+            const exePath = thisExePath();
+            appendUniqueDirectory(directories, buildPath(dirName(exePath), "assets", "icons"));
+            appendUniqueDirectory(directories, buildPath(dirName(dirName(exePath)),
+                "assets", "icons"));
+        }
+        catch (Exception)
+        {
+        }
+
+        const sourceRoot = dirName(dirName(dirName(dirName(__FILE_FULL_PATH__))));
+        appendUniqueDirectory(directories, buildPath(sourceRoot, "assets", "icons"));
+        return directories;
+    }
+
+    private static void appendUniqueDirectory(ref string[] directories, string path)
+    {
+        if (path.length == 0) return;
+        foreach (existing; directories)
+            if (pathsEqual(existing, path))
+                return;
+        directories ~= path;
+    }
+
+    private static int jsonInt(JSONValue value, string key)
+    {
+        return cast(int) value[key].integer;
     }
 
     private string entryMetadataText(ExplorerEntry entry) const
@@ -5557,11 +5789,8 @@ final class WindowsFileManagerRoot : Widget
         const preview = Rect(_dragCurrent.x + scaled(12), _dragCurrent.y + scaled(12),
             previewWidth, scaled(30));
         canvas.drawRoundedRect(preview, scaled(2), explorerDragPreview, explorerSelectionBorder, 1);
-        const icon = entry.drive ? IconKind.drive :
-            (entry.directory ? IconKind.folder : iconForFile(entry.name));
-        drawIcon(canvas, icon, Rect(preview.x + scaled(8), preview.y + scaled(6),
-            scaled(17), scaled(17)),
-            explorerText, entry.directory ? folderAccent : fileAccent);
+        drawExplorerEntryIcon(canvas, entry, Rect(preview.x + scaled(8),
+            preview.y + scaled(6), scaled(17), scaled(17)));
         drawText(canvas, Rect(preview.x + scaled(32), preview.y,
             maxInt(0, preview.width - scaled(42)), preview.height), entry.name,
             explorerText, HorizontalAlign.left);
@@ -5609,7 +5838,7 @@ final class WindowsFileManagerRoot : Widget
     {
         if (_pressedCommand == CommandButton.up)
             canvas.fillRect(rect, explorerPressed);
-        drawIcon(canvas, IconKind.up, Rect(rect.x + scaled(5), rect.y + scaled(5),
+        drawFileManagerIcon(canvas, IconKind.up, Rect(rect.x + scaled(5), rect.y + scaled(5),
             scaled(18), scaled(18)),
             explorerText, explorerText);
     }
@@ -5635,7 +5864,7 @@ final class WindowsFileManagerRoot : Widget
         canvas.strokeRect(rect, enabled ? explorerFieldBorder.withAlpha(150) :
             explorerFieldBorder.withAlpha(70), 1);
         const foreground = enabled ? explorerText : explorerDisabled;
-        drawIcon(canvas, icon, Rect(rect.x + scaled(5), rect.y + scaled(4),
+        drawFileManagerIcon(canvas, icon, Rect(rect.x + scaled(5), rect.y + scaled(4),
             scaled(16), scaled(16)),
             foreground, folderAccent);
         drawText(canvas, Rect(rect.x + scaled(25), rect.y,

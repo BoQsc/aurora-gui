@@ -3,7 +3,7 @@ module aurora.render.software;
 import aurora.color : Color;
 import aurora.render.base : RenderBackend, RendererStats;
 import aurora.render.drawlist : DrawBatch, DrawBatchKind, DrawList, DrawVertex,
-    RgbImageCommand;
+    RgbImageCommand, RgbaImageCommand;
 import aurora.render.scene : RenderLayer, RenderScene;
 import aurora.surface : Surface, blendArgb;
 import aurora.types : Rect, Size, maxInt, minInt;
@@ -332,6 +332,12 @@ final class SoftwareRenderer : RenderBackend
                     rasterRgbImage(target, list.rgbImages[batch.imageIndex], clip);
                 continue;
             }
+            if (batch.kind == DrawBatchKind.rgbaImage)
+            {
+                if (batch.imageIndex < list.rgbaImages.length)
+                    rasterRgbaImage(target, list.rgbaImages[batch.imageIndex], clip);
+                continue;
+            }
 
             const end = batch.firstIndex + batch.indexCount;
             uint offset = batch.firstIndex;
@@ -353,6 +359,193 @@ final class SoftwareRenderer : RenderBackend
                 offset += 3;
             }
         }
+    }
+
+    /** Scaled straight-alpha RGBA image blit with source-rect support. */
+    private static void rasterRgbaImage(Surface surface, const RgbaImageCommand image,
+        Rect batchClip)
+    {
+        if (surface is null || image.image is null || image.destination.empty())
+            return;
+        const sourceRect = image.source.intersection(image.image.bounds());
+        if (sourceRect.empty()) return;
+        const pixels = image.image.pixels();
+        const clip = image.destination.intersection(image.clip).intersection(batchClip)
+            .intersection(Rect(0, 0, surface.width(), surface.height()));
+        if (clip.empty()) return;
+
+        auto destination = surface.pixels();
+        const destWidth = maxInt(1, image.destination.width);
+        const destHeight = maxInt(1, image.destination.height);
+        const surfaceWidth = cast(size_t) surface.width();
+        const sourceImageWidth = cast(size_t) image.image.width();
+        const sourceWidth = maxInt(1, sourceRect.width);
+        const sourceHeight = maxInt(1, sourceRect.height);
+
+        if (destWidth == sourceRect.width && destHeight == sourceRect.height)
+        {
+            const firstSourceX = sourceRect.x + clip.x - image.destination.x;
+            foreach (y; clip.y .. clip.bottom())
+            {
+                const sourceY = sourceRect.y + y - image.destination.y;
+                auto source = (cast(size_t) sourceY * sourceImageWidth +
+                    cast(size_t) firstSourceX) * 4;
+                auto outIndex = cast(size_t) y * surfaceWidth + cast(size_t) clip.x;
+                foreach (_; clip.x .. clip.right())
+                {
+                    blendRgbaPixel(destination[outIndex++], pixels[source],
+                        pixels[source + 1], pixels[source + 2], pixels[source + 3],
+                        image.tint);
+                    source += 4;
+                }
+            }
+            return;
+        }
+
+        enum long fixedOne = 1L << 32;
+        const long xStep = (cast(long) sourceWidth << 32) / destWidth;
+        const long yStep = (cast(long) sourceHeight << 32) / destHeight;
+
+        if (!image.linearFiltering)
+        {
+            long sourceYFixed = cast(long) (clip.y - image.destination.y) * yStep;
+            foreach (y; clip.y .. clip.bottom())
+            {
+                int sy = cast(int) (sourceYFixed >> 32);
+                sy = sourceRect.y + minInt(sourceHeight - 1, maxInt(0, sy));
+                long sourceXFixed = cast(long) (clip.x - image.destination.x) * xStep;
+                auto outIndex = cast(size_t) y * surfaceWidth + cast(size_t) clip.x;
+                foreach (_; clip.x .. clip.right())
+                {
+                    int sx = cast(int) (sourceXFixed >> 32);
+                    sx = sourceRect.x + minInt(sourceWidth - 1, maxInt(0, sx));
+                    const source = (cast(size_t) sy * sourceImageWidth +
+                        cast(size_t) sx) * 4;
+                    blendRgbaPixel(destination[outIndex++], pixels[source],
+                        pixels[source + 1], pixels[source + 2], pixels[source + 3],
+                        image.tint);
+                    sourceXFixed += xStep;
+                }
+                sourceYFixed += yStep;
+            }
+            return;
+        }
+
+        const long halfPixel = fixedOne >> 1;
+        long sourceYFixed = cast(long) (clip.y - image.destination.y) * yStep +
+            (yStep >> 1) - halfPixel;
+        foreach (y; clip.y .. clip.bottom())
+        {
+            int y0;
+            int y1;
+            uint fy;
+            if (sourceYFixed <= 0)
+            {
+                y0 = 0;
+                y1 = sourceHeight > 1 ? 1 : 0;
+                fy = 0;
+            }
+            else
+            {
+                y0 = cast(int) (sourceYFixed >> 32);
+                if (y0 >= sourceHeight - 1)
+                {
+                    y0 = sourceHeight - 1;
+                    y1 = y0;
+                    fy = 0;
+                }
+                else
+                {
+                    y1 = y0 + 1;
+                    fy = cast(uint) ((sourceYFixed >> 24) & 0xff);
+                }
+            }
+            y0 += sourceRect.y;
+            y1 += sourceRect.y;
+            const uint inverseY = 256u - fy;
+            long sourceXFixed = cast(long) (clip.x - image.destination.x) * xStep +
+                (xStep >> 1) - halfPixel;
+            auto outIndex = cast(size_t) y * surfaceWidth + cast(size_t) clip.x;
+
+            foreach (_; clip.x .. clip.right())
+            {
+                int x0;
+                int x1;
+                uint fx;
+                if (sourceXFixed <= 0)
+                {
+                    x0 = 0;
+                    x1 = sourceWidth > 1 ? 1 : 0;
+                    fx = 0;
+                }
+                else
+                {
+                    x0 = cast(int) (sourceXFixed >> 32);
+                    if (x0 >= sourceWidth - 1)
+                    {
+                        x0 = sourceWidth - 1;
+                        x1 = x0;
+                        fx = 0;
+                    }
+                    else
+                    {
+                        x1 = x0 + 1;
+                        fx = cast(uint) ((sourceXFixed >> 24) & 0xff);
+                    }
+                }
+                x0 += sourceRect.x;
+                x1 += sourceRect.x;
+                const uint inverseX = 256u - fx;
+
+                const p00 = (cast(size_t) y0 * sourceImageWidth + cast(size_t) x0) * 4;
+                const p10 = (cast(size_t) y0 * sourceImageWidth + cast(size_t) x1) * 4;
+                const p01 = (cast(size_t) y1 * sourceImageWidth + cast(size_t) x0) * 4;
+                const p11 = (cast(size_t) y1 * sourceImageWidth + cast(size_t) x1) * 4;
+
+                const uint topR = cast(uint) pixels[p00] * inverseX +
+                    cast(uint) pixels[p10] * fx;
+                const uint topG = cast(uint) pixels[p00 + 1] * inverseX +
+                    cast(uint) pixels[p10 + 1] * fx;
+                const uint topB = cast(uint) pixels[p00 + 2] * inverseX +
+                    cast(uint) pixels[p10 + 2] * fx;
+                const uint topA = cast(uint) pixels[p00 + 3] * inverseX +
+                    cast(uint) pixels[p10 + 3] * fx;
+                const uint bottomR = cast(uint) pixels[p01] * inverseX +
+                    cast(uint) pixels[p11] * fx;
+                const uint bottomG = cast(uint) pixels[p01 + 1] * inverseX +
+                    cast(uint) pixels[p11 + 1] * fx;
+                const uint bottomB = cast(uint) pixels[p01 + 2] * inverseX +
+                    cast(uint) pixels[p11 + 2] * fx;
+                const uint bottomA = cast(uint) pixels[p01 + 3] * inverseX +
+                    cast(uint) pixels[p11 + 3] * fx;
+
+                const uint red = (topR * inverseY + bottomR * fy + 32_768u) >> 16;
+                const uint green = (topG * inverseY + bottomG * fy + 32_768u) >> 16;
+                const uint blue = (topB * inverseY + bottomB * fy + 32_768u) >> 16;
+                const uint alpha = (topA * inverseY + bottomA * fy + 32_768u) >> 16;
+                blendRgbaPixel(destination[outIndex++], red, green, blue, alpha,
+                    image.tint);
+                sourceXFixed += xStep;
+            }
+            sourceYFixed += yStep;
+        }
+    }
+
+    private static void blendRgbaPixel(ref uint destination, uint red, uint green,
+        uint blue, uint alpha, Color tint) @safe nothrow @nogc
+    {
+        red = (red * cast(uint) tint.r + 127u) / 255u;
+        green = (green * cast(uint) tint.g + 127u) / 255u;
+        blue = (blue * cast(uint) tint.b + 127u) / 255u;
+        alpha = (alpha * cast(uint) tint.a + 127u) / 255u;
+        if (alpha == 0) return;
+        if (alpha >= 255)
+        {
+            destination = 0xff000000u | (red << 16) | (green << 8) | blue;
+            return;
+        }
+        destination = blendArgb(destination, Color(cast(ubyte) red,
+            cast(ubyte) green, cast(ubyte) blue, cast(ubyte) alpha));
     }
 
     /**

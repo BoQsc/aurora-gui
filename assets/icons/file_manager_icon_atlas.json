@@ -1,0 +1,1218 @@
+{
+  "format": "file-manager-icon-atlas",
+  "version": 1,
+  "image": "modern_dark_file_manager_icon_set.png",
+  "image_size": {
+    "width": 1536,
+    "height": 1024
+  },
+  "icon_count": 35,
+  "grid": {
+    "columns": 7,
+    "rows": 5
+  },
+  "coordinates": {
+    "origin": "top-left",
+    "units": "pixels",
+    "frame_format": "x, y, width, height",
+    "uv_origin": "top-left"
+  },
+  "rights": {
+    "origin": "original AI-generated project asset",
+    "third_party_icon_pack_used": false,
+    "attribution_required": false,
+    "recommended_distribution_license": "CC0-1.0",
+    "note": "This records the intended project usage and is not legal advice."
+  },
+  "notes": [
+    "Frames include 8 pixels of transparent padding around the measured icon content.",
+    "Some generated icons are visual alternatives or duplicates.",
+    "Use aliases to map application actions without depending on one exact name."
+  ],
+  "icons": [
+    {
+      "name": "folder",
+      "category": "place",
+      "aliases": [
+        "folder_closed",
+        "directory"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 0
+      },
+      "frame": {
+        "x": 192,
+        "y": 136,
+        "width": 130,
+        "height": 118
+      },
+      "content_bounds": {
+        "x": 200,
+        "y": 144,
+        "width": 114,
+        "height": 102
+      },
+      "uv": {
+        "u0": 0.125,
+        "v0": 0.1328125,
+        "u1": 0.20963542,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "folder_alt",
+      "category": "place",
+      "aliases": [
+        "folder_closed_alt",
+        "directory_alt"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 1
+      },
+      "frame": {
+        "x": 369,
+        "y": 137,
+        "width": 131,
+        "height": 117
+      },
+      "content_bounds": {
+        "x": 377,
+        "y": 145,
+        "width": 115,
+        "height": 101
+      },
+      "uv": {
+        "u0": 0.24023438,
+        "v0": 0.13378906,
+        "u1": 0.32552083,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "home",
+      "category": "place",
+      "aliases": [
+        "home_directory"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 2
+      },
+      "frame": {
+        "x": 551,
+        "y": 141,
+        "width": 124,
+        "height": 113
+      },
+      "content_bounds": {
+        "x": 559,
+        "y": 149,
+        "width": 108,
+        "height": 97
+      },
+      "uv": {
+        "u0": 0.35872396,
+        "v0": 0.13769531,
+        "u1": 0.43945312,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "desktop",
+      "category": "place",
+      "aliases": [
+        "computer",
+        "monitor"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 3
+      },
+      "frame": {
+        "x": 760,
+        "y": 148,
+        "width": 124,
+        "height": 106
+      },
+      "content_bounds": {
+        "x": 768,
+        "y": 156,
+        "width": 108,
+        "height": 90
+      },
+      "uv": {
+        "u0": 0.49479167,
+        "v0": 0.14453125,
+        "u1": 0.57552083,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "document",
+      "category": "file_type",
+      "aliases": [
+        "file_document",
+        "text_file"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 4
+      },
+      "frame": {
+        "x": 947,
+        "y": 148,
+        "width": 98,
+        "height": 106
+      },
+      "content_bounds": {
+        "x": 955,
+        "y": 156,
+        "width": 82,
+        "height": 90
+      },
+      "uv": {
+        "u0": 0.61653646,
+        "v0": 0.14453125,
+        "u1": 0.68033854,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "folder_details",
+      "category": "place",
+      "aliases": [
+        "folder_info",
+        "folder_properties"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 5
+      },
+      "frame": {
+        "x": 1108,
+        "y": 148,
+        "width": 111,
+        "height": 106
+      },
+      "content_bounds": {
+        "x": 1116,
+        "y": 156,
+        "width": 95,
+        "height": 90
+      },
+      "uv": {
+        "u0": 0.72135417,
+        "v0": 0.14453125,
+        "u1": 0.79361979,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "download",
+      "category": "action",
+      "aliases": [
+        "download_to_device"
+      ],
+      "grid": {
+        "row": 0,
+        "column": 6
+      },
+      "frame": {
+        "x": 1259,
+        "y": 137,
+        "width": 114,
+        "height": 117
+      },
+      "content_bounds": {
+        "x": 1267,
+        "y": 145,
+        "width": 98,
+        "height": 101
+      },
+      "uv": {
+        "u0": 0.81966146,
+        "v0": 0.13378906,
+        "u1": 0.89388021,
+        "v1": 0.24804688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "pictures",
+      "category": "file_type",
+      "aliases": [
+        "images",
+        "photos"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 0
+      },
+      "frame": {
+        "x": 193,
+        "y": 302,
+        "width": 123,
+        "height": 91
+      },
+      "content_bounds": {
+        "x": 201,
+        "y": 310,
+        "width": 107,
+        "height": 75
+      },
+      "uv": {
+        "u0": 0.12565104,
+        "v0": 0.29492188,
+        "u1": 0.20572917,
+        "v1": 0.38378906
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "videos",
+      "category": "file_type",
+      "aliases": [
+        "movies",
+        "video"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 1
+      },
+      "frame": {
+        "x": 369,
+        "y": 304,
+        "width": 125,
+        "height": 89
+      },
+      "content_bounds": {
+        "x": 377,
+        "y": 312,
+        "width": 109,
+        "height": 73
+      },
+      "uv": {
+        "u0": 0.24023438,
+        "v0": 0.296875,
+        "u1": 0.32161458,
+        "v1": 0.38378906
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "music",
+      "category": "file_type",
+      "aliases": [
+        "audio",
+        "sound"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 2
+      },
+      "frame": {
+        "x": 558,
+        "y": 302,
+        "width": 112,
+        "height": 93
+      },
+      "content_bounds": {
+        "x": 566,
+        "y": 310,
+        "width": 96,
+        "height": 77
+      },
+      "uv": {
+        "u0": 0.36328125,
+        "v0": 0.29492188,
+        "u1": 0.43619792,
+        "v1": 0.38574219
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "storage_box",
+      "category": "device",
+      "aliases": [
+        "storage",
+        "archive_box"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 3
+      },
+      "frame": {
+        "x": 766,
+        "y": 307,
+        "width": 108,
+        "height": 89
+      },
+      "content_bounds": {
+        "x": 774,
+        "y": 315,
+        "width": 92,
+        "height": 73
+      },
+      "uv": {
+        "u0": 0.49869792,
+        "v0": 0.29980469,
+        "u1": 0.56901042,
+        "v1": 0.38671875
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "drive",
+      "category": "device",
+      "aliases": [
+        "disk",
+        "hard_drive"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 4
+      },
+      "frame": {
+        "x": 939,
+        "y": 307,
+        "width": 114,
+        "height": 89
+      },
+      "content_bounds": {
+        "x": 947,
+        "y": 315,
+        "width": 98,
+        "height": 73
+      },
+      "uv": {
+        "u0": 0.61132812,
+        "v0": 0.29980469,
+        "u1": 0.68554688,
+        "v1": 0.38671875
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "recent",
+      "category": "navigation",
+      "aliases": [
+        "history",
+        "recent_files"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 5
+      },
+      "frame": {
+        "x": 1114,
+        "y": 298,
+        "width": 108,
+        "height": 104
+      },
+      "content_bounds": {
+        "x": 1122,
+        "y": 306,
+        "width": 92,
+        "height": 88
+      },
+      "uv": {
+        "u0": 0.72526042,
+        "v0": 0.29101562,
+        "u1": 0.79557292,
+        "v1": 0.39257812
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "favorite",
+      "category": "navigation",
+      "aliases": [
+        "star",
+        "favorites"
+      ],
+      "grid": {
+        "row": 1,
+        "column": 6
+      },
+      "frame": {
+        "x": 1265,
+        "y": 298,
+        "width": 109,
+        "height": 104
+      },
+      "content_bounds": {
+        "x": 1273,
+        "y": 306,
+        "width": 93,
+        "height": 88
+      },
+      "uv": {
+        "u0": 0.82356771,
+        "v0": 0.29101562,
+        "u1": 0.89453125,
+        "v1": 0.39257812
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "new_folder",
+      "category": "action",
+      "aliases": [
+        "folder_add",
+        "create_folder"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 0
+      },
+      "frame": {
+        "x": 196,
+        "y": 444,
+        "width": 127,
+        "height": 112
+      },
+      "content_bounds": {
+        "x": 204,
+        "y": 452,
+        "width": 111,
+        "height": 96
+      },
+      "uv": {
+        "u0": 0.12760417,
+        "v0": 0.43359375,
+        "u1": 0.21028646,
+        "v1": 0.54296875
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "folder_open_blue",
+      "category": "place",
+      "aliases": [
+        "open_folder_blue"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 1
+      },
+      "frame": {
+        "x": 373,
+        "y": 447,
+        "width": 127,
+        "height": 107
+      },
+      "content_bounds": {
+        "x": 381,
+        "y": 455,
+        "width": 111,
+        "height": 91
+      },
+      "uv": {
+        "u0": 0.24283854,
+        "v0": 0.43652344,
+        "u1": 0.32552083,
+        "v1": 0.54101562
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "folder_open",
+      "category": "place",
+      "aliases": [
+        "open_folder"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 2
+      },
+      "frame": {
+        "x": 561,
+        "y": 453,
+        "width": 122,
+        "height": 96
+      },
+      "content_bounds": {
+        "x": 569,
+        "y": 461,
+        "width": 106,
+        "height": 80
+      },
+      "uv": {
+        "u0": 0.36523438,
+        "v0": 0.44238281,
+        "u1": 0.44466146,
+        "v1": 0.53613281
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "history_forward",
+      "category": "navigation",
+      "aliases": [
+        "redo",
+        "navigate_forward_curved"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 3
+      },
+      "frame": {
+        "x": 755,
+        "y": 450,
+        "width": 132,
+        "height": 99
+      },
+      "content_bounds": {
+        "x": 763,
+        "y": 458,
+        "width": 116,
+        "height": 83
+      },
+      "uv": {
+        "u0": 0.49153646,
+        "v0": 0.43945312,
+        "u1": 0.57747396,
+        "v1": 0.53613281
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "open_item",
+      "category": "action",
+      "aliases": [
+        "open",
+        "launch"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 4
+      },
+      "frame": {
+        "x": 933,
+        "y": 450,
+        "width": 134,
+        "height": 99
+      },
+      "content_bounds": {
+        "x": 941,
+        "y": 458,
+        "width": 118,
+        "height": 83
+      },
+      "uv": {
+        "u0": 0.60742188,
+        "v0": 0.43945312,
+        "u1": 0.69466146,
+        "v1": 0.53613281
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "up",
+      "category": "navigation",
+      "aliases": [
+        "parent_directory",
+        "go_up"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 5
+      },
+      "frame": {
+        "x": 1111,
+        "y": 453,
+        "width": 112,
+        "height": 100
+      },
+      "content_bounds": {
+        "x": 1119,
+        "y": 461,
+        "width": 96,
+        "height": 84
+      },
+      "uv": {
+        "u0": 0.72330729,
+        "v0": 0.44238281,
+        "u1": 0.79622396,
+        "v1": 0.54003906
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "forward",
+      "category": "navigation",
+      "aliases": [
+        "navigate_forward",
+        "right"
+      ],
+      "grid": {
+        "row": 2,
+        "column": 6
+      },
+      "frame": {
+        "x": 1265,
+        "y": 444,
+        "width": 107,
+        "height": 109
+      },
+      "content_bounds": {
+        "x": 1273,
+        "y": 452,
+        "width": 91,
+        "height": 93
+      },
+      "uv": {
+        "u0": 0.82356771,
+        "v0": 0.43359375,
+        "u1": 0.89322917,
+        "v1": 0.54003906
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "new_folder_alt",
+      "category": "action",
+      "aliases": [
+        "folder_add_alt",
+        "create_folder_alt"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 0
+      },
+      "frame": {
+        "x": 195,
+        "y": 601,
+        "width": 126,
+        "height": 101
+      },
+      "content_bounds": {
+        "x": 203,
+        "y": 609,
+        "width": 110,
+        "height": 85
+      },
+      "uv": {
+        "u0": 0.12695312,
+        "v0": 0.58691406,
+        "u1": 0.20898438,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "copy",
+      "category": "action",
+      "aliases": [
+        "duplicate",
+        "copy_item"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 1
+      },
+      "frame": {
+        "x": 373,
+        "y": 600,
+        "width": 127,
+        "height": 102
+      },
+      "content_bounds": {
+        "x": 381,
+        "y": 608,
+        "width": 111,
+        "height": 86
+      },
+      "uv": {
+        "u0": 0.24283854,
+        "v0": 0.5859375,
+        "u1": 0.32552083,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "file",
+      "category": "file_type",
+      "aliases": [
+        "generic_file"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 2
+      },
+      "frame": {
+        "x": 566,
+        "y": 598,
+        "width": 107,
+        "height": 104
+      },
+      "content_bounds": {
+        "x": 574,
+        "y": 606,
+        "width": 91,
+        "height": 88
+      },
+      "uv": {
+        "u0": 0.36848958,
+        "v0": 0.58398438,
+        "u1": 0.43815104,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "paste",
+      "category": "action",
+      "aliases": [
+        "paste_item",
+        "clipboard"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 3
+      },
+      "frame": {
+        "x": 767,
+        "y": 588,
+        "width": 99,
+        "height": 114
+      },
+      "content_bounds": {
+        "x": 775,
+        "y": 596,
+        "width": 83,
+        "height": 98
+      },
+      "uv": {
+        "u0": 0.49934896,
+        "v0": 0.57421875,
+        "u1": 0.56380208,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "trash",
+      "category": "action",
+      "aliases": [
+        "delete",
+        "remove"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 4
+      },
+      "frame": {
+        "x": 951,
+        "y": 591,
+        "width": 97,
+        "height": 111
+      },
+      "content_bounds": {
+        "x": 959,
+        "y": 599,
+        "width": 81,
+        "height": 95
+      },
+      "uv": {
+        "u0": 0.61914062,
+        "v0": 0.57714844,
+        "u1": 0.68229167,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "rename",
+      "category": "action",
+      "aliases": [
+        "edit_name",
+        "pencil"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 5
+      },
+      "frame": {
+        "x": 1110,
+        "y": 589,
+        "width": 115,
+        "height": 113
+      },
+      "content_bounds": {
+        "x": 1118,
+        "y": 597,
+        "width": 99,
+        "height": 97
+      },
+      "uv": {
+        "u0": 0.72265625,
+        "v0": 0.57519531,
+        "u1": 0.79752604,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "grid_view",
+      "category": "view",
+      "aliases": [
+        "tiles",
+        "icon_view"
+      ],
+      "grid": {
+        "row": 3,
+        "column": 6
+      },
+      "frame": {
+        "x": 1270,
+        "y": 601,
+        "width": 104,
+        "height": 101
+      },
+      "content_bounds": {
+        "x": 1278,
+        "y": 609,
+        "width": 88,
+        "height": 85
+      },
+      "uv": {
+        "u0": 0.82682292,
+        "v0": 0.58691406,
+        "u1": 0.89453125,
+        "v1": 0.68554688
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "new_folder_large",
+      "category": "action",
+      "aliases": [
+        "folder_add_large"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 0
+      },
+      "frame": {
+        "x": 196,
+        "y": 751,
+        "width": 126,
+        "height": 97
+      },
+      "content_bounds": {
+        "x": 204,
+        "y": 759,
+        "width": 110,
+        "height": 81
+      },
+      "uv": {
+        "u0": 0.12760417,
+        "v0": 0.73339844,
+        "u1": 0.20963542,
+        "v1": 0.828125
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "upload_to_folder",
+      "category": "action",
+      "aliases": [
+        "folder_upload",
+        "import"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 1
+      },
+      "frame": {
+        "x": 371,
+        "y": 751,
+        "width": 121,
+        "height": 97
+      },
+      "content_bounds": {
+        "x": 379,
+        "y": 759,
+        "width": 105,
+        "height": 81
+      },
+      "uv": {
+        "u0": 0.24153646,
+        "v0": 0.73339844,
+        "u1": 0.3203125,
+        "v1": 0.828125
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "download_to_folder",
+      "category": "action",
+      "aliases": [
+        "folder_download",
+        "export"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 2
+      },
+      "frame": {
+        "x": 568,
+        "y": 752,
+        "width": 116,
+        "height": 96
+      },
+      "content_bounds": {
+        "x": 576,
+        "y": 760,
+        "width": 100,
+        "height": 80
+      },
+      "uv": {
+        "u0": 0.36979167,
+        "v0": 0.734375,
+        "u1": 0.4453125,
+        "v1": 0.828125
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "list_view",
+      "category": "view",
+      "aliases": [
+        "details_view",
+        "rows"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 3
+      },
+      "frame": {
+        "x": 759,
+        "y": 753,
+        "width": 122,
+        "height": 96
+      },
+      "content_bounds": {
+        "x": 767,
+        "y": 761,
+        "width": 106,
+        "height": 80
+      },
+      "uv": {
+        "u0": 0.49414062,
+        "v0": 0.73535156,
+        "u1": 0.57356771,
+        "v1": 0.82910156
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "settings",
+      "category": "system",
+      "aliases": [
+        "preferences",
+        "gear"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 4
+      },
+      "frame": {
+        "x": 945,
+        "y": 750,
+        "width": 104,
+        "height": 101
+      },
+      "content_bounds": {
+        "x": 953,
+        "y": 758,
+        "width": 88,
+        "height": 85
+      },
+      "uv": {
+        "u0": 0.61523438,
+        "v0": 0.73242188,
+        "u1": 0.68294271,
+        "v1": 0.83105469
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "trash_alt",
+      "category": "action",
+      "aliases": [
+        "delete_alt",
+        "remove_alt"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 5
+      },
+      "frame": {
+        "x": 1114,
+        "y": 746,
+        "width": 95,
+        "height": 103
+      },
+      "content_bounds": {
+        "x": 1122,
+        "y": 754,
+        "width": 79,
+        "height": 87
+      },
+      "uv": {
+        "u0": 0.72526042,
+        "v0": 0.72851562,
+        "u1": 0.78710938,
+        "v1": 0.82910156
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    },
+    {
+      "name": "network",
+      "category": "device",
+      "aliases": [
+        "network_computer",
+        "server"
+      ],
+      "grid": {
+        "row": 4,
+        "column": 6
+      },
+      "frame": {
+        "x": 1265,
+        "y": 749,
+        "width": 116,
+        "height": 99
+      },
+      "content_bounds": {
+        "x": 1273,
+        "y": 757,
+        "width": 100,
+        "height": 83
+      },
+      "uv": {
+        "u0": 0.82356771,
+        "v0": 0.73144531,
+        "u1": 0.89908854,
+        "v1": 0.828125
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 module aurora.render.drawlist;
 
 import aurora.color : Color;
+import aurora.image : RgbaImage;
 import aurora.text.atlas : AtlasGlyph, FontSystem;
 import aurora.types : DisplayScale, Point, Rect, Size, clampInt, maxInt, minInt;
 import std.math : PI, cos, sin, sqrt;
@@ -20,7 +21,8 @@ struct DrawVertex
 enum DrawBatchKind : ubyte
 {
     triangles,
-    rgbImage
+    rgbImage,
+    rgbaImage
 }
 
 /** One CPU RGB image draw retained alongside vector geometry. */
@@ -31,6 +33,17 @@ struct RgbImageCommand
     int width;
     int height;
     ubyte[] pixels;
+    bool linearFiltering = true;
+}
+
+/** One retained RGBA image draw backed by a revisioned image object. */
+struct RgbaImageCommand
+{
+    Rect destination;
+    Rect source;
+    Rect clip;
+    RgbaImage image;
+    Color tint = Color(255, 255, 255, 255);
     bool linearFiltering = true;
 }
 
@@ -50,6 +63,7 @@ final class DrawList
     uint[] indices;
     DrawBatch[] batches;
     RgbImageCommand[] rgbImages;
+    RgbaImageCommand[] rgbaImages;
     Color clearColor = Color.rgba(0, 0, 0, 0);
     FontSystem fonts;
     Size logicalViewport;
@@ -73,6 +87,7 @@ final class DrawList
         indices.length = 0;
         batches.length = 0;
         rgbImages.length = 0;
+        rgbaImages.length = 0;
         logicalViewport = logicalSize;
         viewport = framebufferSize;
         displayScale = scale;
@@ -81,7 +96,7 @@ final class DrawList
 
     bool empty() const @safe pure nothrow @nogc
     {
-        return indices.length == 0 && rgbImages.length == 0;
+        return indices.length == 0 && rgbImages.length == 0 && rgbaImages.length == 0;
     }
 
     /** Add an RGB24 image in logical coordinates while preserving draw order. */
@@ -108,6 +123,47 @@ final class DrawList
         DrawBatch batch;
         batch.clip = deviceClip;
         batch.kind = DrawBatchKind.rgbImage;
+        batch.imageIndex = imageIndex;
+        batches ~= batch;
+    }
+
+    /** Add a straight-alpha RGBA image in logical coordinates while preserving draw order. */
+    void addRgbaImage(Rect destination, RgbaImage image, Rect source,
+        Color tint, Rect clip, bool linearFiltering = true)
+    {
+        if (image is null || destination.empty() || tint.a == 0) return;
+        source = source.intersection(image.bounds());
+        if (source.empty()) return;
+        const deviceDestination = logicalToDevice(destination);
+        const deviceClip = logicalToDevice(clip);
+        if (clippedOut(deviceDestination, deviceClip)) return;
+
+        RgbaImageCommand command;
+        command.destination = deviceDestination;
+        command.source = source;
+        command.clip = deviceClip;
+        command.image = image;
+        command.tint = tint;
+        command.linearFiltering = linearFiltering;
+        const imageIndex = cast(uint) rgbaImages.length;
+        rgbaImages ~= command;
+
+        DrawVertex[4] quad;
+        quad[0] = vertex(deviceDestination.x, deviceDestination.y,
+            cast(float) source.x, cast(float) source.y, tint);
+        quad[1] = vertex(deviceDestination.right(), deviceDestination.y,
+            cast(float) source.right(), cast(float) source.y, tint);
+        quad[2] = vertex(deviceDestination.right(), deviceDestination.bottom(),
+            cast(float) source.right(), cast(float) source.bottom(), tint);
+        quad[3] = vertex(deviceDestination.x, deviceDestination.bottom(),
+            cast(float) source.x, cast(float) source.bottom(), tint);
+        const firstIndex = appendQuadVertices(quad);
+
+        DrawBatch batch;
+        batch.firstIndex = firstIndex;
+        batch.indexCount = 6;
+        batch.clip = deviceClip;
+        batch.kind = DrawBatchKind.rgbaImage;
         batch.imageIndex = imageIndex;
         batches ~= batch;
     }
@@ -368,6 +424,12 @@ final class DrawList
 
     private void addQuadVertices(ref DrawVertex[4] quad, Rect clip)
     {
+        const firstIndex = appendQuadVertices(quad);
+        finishBatch(firstIndex, clip);
+    }
+
+    private uint appendQuadVertices(ref DrawVertex[4] quad)
+    {
         const firstIndex = cast(uint) indices.length;
         const base = cast(uint) vertices.length;
         vertices ~= quad[];
@@ -377,7 +439,7 @@ final class DrawList
         indices ~= base;
         indices ~= base + 2;
         indices ~= base + 3;
-        finishBatch(firstIndex, clip);
+        return firstIndex;
     }
 
     private uint addVertex(DrawVertex value)

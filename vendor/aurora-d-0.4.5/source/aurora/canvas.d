@@ -2,6 +2,7 @@ module aurora.canvas;
 
 import aurora.color : Color;
 import aurora.font : FontFace, FontMetrics, FontRole, fontPixelSize;
+import aurora.image : RgbaImage;
 import aurora.render.drawlist : DrawList;
 import aurora.surface : Surface;
 import aurora.text.atlas : AtlasGlyph, FontSystem;
@@ -130,6 +131,50 @@ struct Canvas
                     cast(size_t) sourceX) * 3;
                 _surface.setPixel(x, y, Color.rgb(pixels[offset],
                     pixels[offset + 1], pixels[offset + 2]));
+            }
+        }
+    }
+
+    void drawImage(Rect destination, RgbaImage image, bool linearFiltering = true)
+    {
+        if (image is null) return;
+        drawImage(destination, image, image.bounds(), Color(255, 255, 255, 255),
+            linearFiltering);
+    }
+
+    void drawImage(Rect destination, RgbaImage image, Rect source,
+        Color tint = Color(255, 255, 255, 255), bool linearFiltering = true)
+    {
+        if (image is null || destination.empty() || tint.a == 0) return;
+        source = source.intersection(image.bounds());
+        if (source.empty()) return;
+        const absolute = toSurface(destination);
+        if (_drawList !is null)
+        {
+            _drawList.addRgbaImage(absolute, image, source, tint, _clip,
+                linearFiltering);
+            return;
+        }
+        if (_surface is null) return;
+
+        const clipped = absolute.intersection(_clip);
+        if (clipped.empty()) return;
+        const pixels = image.pixels();
+        foreach (y; clipped.y .. clipped.bottom())
+        {
+            const sourceY = source.y + clampInt((y - absolute.y) * source.height /
+                maxInt(1, absolute.height), 0, source.height - 1);
+            foreach (x; clipped.x .. clipped.right())
+            {
+                const sourceX = source.x + clampInt((x - absolute.x) * source.width /
+                    maxInt(1, absolute.width), 0, source.width - 1);
+                const offset = (cast(size_t) sourceY * cast(size_t) image.width() +
+                    cast(size_t) sourceX) * 4;
+                auto color = Color(pixels[offset], pixels[offset + 1],
+                    pixels[offset + 2], pixels[offset + 3]);
+                if (tint != Color(255, 255, 255, 255))
+                    color = tintedImageColor(color, tint);
+                _surface.setPixel(x, y, color);
             }
         }
     }
@@ -417,6 +462,16 @@ struct Canvas
                     Color(color.r, color.g, color.b, cast(ubyte) alpha), _clip);
             }
         }
+    }
+
+    private static Color tintedImageColor(Color source, Color tint)
+        @safe pure nothrow @nogc
+    {
+        return Color(
+            cast(ubyte) ((cast(uint) source.r * cast(uint) tint.r + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.g * cast(uint) tint.g + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.b * cast(uint) tint.b + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.a * cast(uint) tint.a + 127u) / 255u));
     }
 }
 

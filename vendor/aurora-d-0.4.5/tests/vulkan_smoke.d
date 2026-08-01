@@ -28,6 +28,7 @@ private final class VulkanSmokeRoot : Widget
     private bool _baselineCaptured;
     private bool _hidLayer;
     private bool _restoredLayer;
+    private RgbaImage _testImage;
 
     this(GuiWindow window)
     {
@@ -37,6 +38,9 @@ private final class VulkanSmokeRoot : Widget
         panel.add(new Label("Geometry stays resident; movement changes only its viewport."));
         _floating = add(new FloatingWindow("Retained compositor", IconKind.computer, panel));
         _floating.setBounds(Rect(30, 112, 430, 105));
+        _testImage = new RgbaImage(2, 2, [
+            255, 80, 80, 255, 80, 255, 80, 255,
+            80, 120, 255, 255, 255, 220, 80, 255]);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -49,6 +53,7 @@ private final class VulkanSmokeRoot : Widget
         canvas.drawText(Point(24, 65),
             "office ffi  A\u0301  Ελληνικά  Кириллица  العربية  עברית"d,
             palette.accent, 2);
+        canvas.drawImage(Rect(650, 26, 36, 36), _testImage, false);
     }
 
     protected override void onTick(double deltaSeconds)

@@ -1,13 +1,15 @@
 module aurora.render.vulkan;
 
 import aurora.platform.base : NativeSurfaceInfo, NativeSurfaceKind, WindowOptions;
+import aurora.image : RgbaImage;
 import aurora.render.base : RenderBackend, RendererStats;
 import aurora.render.drawlist : DrawBatchKind, DrawList, DrawVertex;
 import aurora.render.scene : RenderScene;
 import aurora.surface : Surface;
 import aurora.types : Rect, Size, maxInt, minInt;
 import aurora.vulkan.api;
-import aurora.vulkan.shaders : fragmentShaderSpirv, vertexShaderSpirv;
+import aurora.vulkan.shaders : fragmentShaderSpirv, imageFragmentShaderSpirv,
+    vertexShaderSpirv;
 import core.stdc.config : c_ulong;
 import core.stdc.string : memcpy;
 import std.algorithm : max, min;
@@ -34,6 +36,21 @@ private final class GpuLayerGeometry
     ulong lastSeenScene;
 }
 
+private final class GpuImageTexture
+{
+    HostBuffer staging;
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkDescriptorSet linearDescriptorSet;
+    VkDescriptorSet nearestDescriptorSet;
+    ulong revision;
+    ulong submittedRevision;
+    int width;
+    int height;
+    bool initialized;
+}
+
 private struct FrameResources
 {
     VkCommandBuffer commandBuffer;
@@ -52,6 +69,8 @@ private struct GpuVertex
     float b;
     float a;
 }
+
+enum uint imageDescriptorSetLimit = 1024;
 
 private bool supportsPresentMode(const(int)[] modes, int expected)
     @safe pure nothrow @nogc
@@ -153,6 +172,7 @@ final class VulkanRenderer : RenderBackend
     private VkDescriptorSetLayout _descriptorSetLayout;
     private VkPipelineLayout _pipelineLayout;
     private VkPipeline _pipeline;
+    private VkPipeline _imagePipeline;
     private VkDescriptorPool _descriptorPool;
     private VkDescriptorSet _descriptorSet;
 
@@ -171,12 +191,15 @@ final class VulkanRenderer : RenderBackend
     private VkDeviceMemory _atlasMemory;
     private VkImageView _atlasView;
     private VkSampler _atlasSampler;
+    private VkSampler _imageLinearSampler;
+    private VkSampler _imageNearestSampler;
     private int _atlasWidth;
     private int _atlasHeight;
     private ulong _atlasRevision;
     private ulong _submittedAtlasRevision;
     private VkImage _submittedAtlasImage;
     private bool _atlasInitialized;
+    private GpuImageTexture[ulong] _imageTextures;
     private bool _closed;
     private bool _usingXcb;
 
@@ -276,6 +299,7 @@ final class VulkanRenderer : RenderBackend
         // age from drag transforms without rebuilding any Aurora content.
         scene.lateLatch();
         ensureAtlas(scene.base);
+        ensureSceneImages(scene);
         ++_sceneGeneration;
         if (_sceneGeneration == 0) ++_sceneGeneration;
         auto baseGeometry = ensureGeometryBuffers(scene.base, 0, scene.baseRevision);
@@ -383,17 +407,19 @@ final class VulkanRenderer : RenderBackend
             cache.atlasHeight != maxInt(1, list.fonts.atlas.height());
     }
 
-    private bool sceneRequiresGpuMutation(RenderScene scene) const
+    private bool sceneRequiresGpuMutation(RenderScene scene)
     {
         const atlas = scene.base.fonts.atlas;
         if (_atlasImage == VK_NULL_HANDLE || _atlasWidth != atlas.width() ||
             _atlasHeight != atlas.height() || _atlasRevision != atlas.revision() ||
             _submittedAtlasRevision != atlas.revision())
             return true;
+        if (drawListRequiresImageMutation(scene.base)) return true;
         if (geometryNeedsUpload(scene.base, 0, scene.baseRevision)) return true;
         foreach (layer; scene.layers)
             if (layer.visible && layer.drawList !is null &&
-                geometryNeedsUpload(layer.drawList, layer.id, layer.revision))
+                (drawListRequiresImageMutation(layer.drawList) ||
+                geometryNeedsUpload(layer.drawList, layer.id, layer.revision)))
                 return true;
 
         // Removing a retained layer destroys its buffers, so it is also a GPU
@@ -415,6 +441,25 @@ final class VulkanRenderer : RenderBackend
         return false;
     }
 
+    private bool drawListRequiresImageMutation(DrawList list)
+    {
+        if (list is null) return false;
+        foreach (command; list.rgbaImages)
+        {
+            auto image = command.image;
+            if (image is null) continue;
+            auto found = image.id() in _imageTextures;
+            if (found is null || *found is null) return true;
+            auto texture = *found;
+            if (texture.image == VK_NULL_HANDLE ||
+                texture.width != image.width() || texture.height != image.height() ||
+                texture.revision != image.revision() ||
+                texture.submittedRevision != image.revision())
+                return true;
+        }
+        return false;
+    }
+
     override void shutdown()
     {
         if (_closed) return;
@@ -424,11 +469,16 @@ final class VulkanRenderer : RenderBackend
 
         destroySwapchain();
         destroyGeometryCaches();
+        destroyImageTextures();
         destroyHostBuffer(_atlasStaging);
         destroyAtlasImage();
 
         if (_device !is null && _vk !is null)
         {
+            if (_imageNearestSampler != VK_NULL_HANDLE && _vk.vkDestroySampler !is null)
+                _vk.vkDestroySampler(_device, _imageNearestSampler, null);
+            if (_imageLinearSampler != VK_NULL_HANDLE && _vk.vkDestroySampler !is null)
+                _vk.vkDestroySampler(_device, _imageLinearSampler, null);
             if (_atlasSampler != VK_NULL_HANDLE && _vk.vkDestroySampler !is null)
                 _vk.vkDestroySampler(_device, _atlasSampler, null);
             if (_descriptorPool != VK_NULL_HANDLE && _vk.vkDestroyDescriptorPool !is null)
@@ -677,10 +727,10 @@ final class VulkanRenderer : RenderBackend
 
         VkDescriptorPoolSize poolSize;
         poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = 1;
+        poolSize.descriptorCount = imageDescriptorSetLimit;
         VkDescriptorPoolCreateInfo pool;
         pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool.maxSets = 1;
+        pool.maxSets = imageDescriptorSetLimit;
         pool.poolSizeCount = 1;
         pool.pPoolSizes = &poolSize;
         check(_vk.vkCreateDescriptorPool(_device, &pool, null, &_descriptorPool),
@@ -709,6 +759,16 @@ final class VulkanRenderer : RenderBackend
         sampler.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
         check(_vk.vkCreateSampler(_device, &sampler, null, &_atlasSampler),
             "creating the Vulkan glyph sampler");
+
+        sampler.magFilter = VK_FILTER_LINEAR;
+        sampler.minFilter = VK_FILTER_LINEAR;
+        check(_vk.vkCreateSampler(_device, &sampler, null, &_imageLinearSampler),
+            "creating the Vulkan linear image sampler");
+
+        sampler.magFilter = VK_FILTER_NEAREST;
+        sampler.minFilter = VK_FILTER_NEAREST;
+        check(_vk.vkCreateSampler(_device, &sampler, null, &_imageNearestSampler),
+            "creating the Vulkan nearest image sampler");
     }
 
     private void createCommandResources()
@@ -848,7 +908,7 @@ final class VulkanRenderer : RenderBackend
         createPresentSemaphores();
         createSwapchainViews();
         createRenderPass();
-        createPipeline();
+        createPipelines();
         createFramebuffers();
         _swapchainDirty = false;
     }
@@ -917,10 +977,18 @@ final class VulkanRenderer : RenderBackend
             "creating the Vulkan render pass");
     }
 
-    private void createPipeline()
+    private void createPipelines()
+    {
+        _pipeline = createGraphicsPipeline(fragmentShaderSpirv,
+            "creating the Vulkan glyph graphics pipeline (check embedded SPIR-V compatibility)");
+        _imagePipeline = createGraphicsPipeline(imageFragmentShaderSpirv,
+            "creating the Vulkan RGBA image graphics pipeline (check embedded SPIR-V compatibility)");
+    }
+
+    private VkPipeline createGraphicsPipeline(const(uint)[] fragmentCode, string operation)
     {
         const vertexModule = createShader(vertexShaderSpirv);
-        const fragmentModule = createShader(fragmentShaderSpirv);
+        const fragmentModule = createShader(fragmentCode);
         scope (exit)
         {
             _vk.vkDestroyShaderModule(_device, vertexModule, null);
@@ -1003,8 +1071,10 @@ final class VulkanRenderer : RenderBackend
         info.renderPass = _renderPass;
         info.subpass = 0;
         info.basePipelineIndex = -1;
-        check(_vk.vkCreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &info, null, &_pipeline),
-            "creating the Vulkan graphics pipeline (check embedded SPIR-V compatibility)");
+        VkPipeline pipeline;
+        check(_vk.vkCreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &info, null,
+            &pipeline), operation);
+        return pipeline;
     }
 
     private VkShaderModule createShader(const(uint)[] code)
@@ -1082,6 +1152,25 @@ final class VulkanRenderer : RenderBackend
             value.b = source.b;
             value.a = source.a;
             destination[index] = value;
+        }
+        foreach (batch; list.batches)
+        {
+            if (batch.kind != DrawBatchKind.rgbaImage ||
+                batch.imageIndex >= list.rgbaImages.length)
+                continue;
+            auto command = list.rgbaImages[batch.imageIndex];
+            if (command.image is null) continue;
+            const imageWidth = cast(float) maxInt(1, command.image.width());
+            const imageHeight = cast(float) maxInt(1, command.image.height());
+            foreach (offset; 0 .. batch.indexCount)
+            {
+                const indexOffset = cast(size_t) batch.firstIndex + cast(size_t) offset;
+                if (indexOffset >= list.indices.length) break;
+                const vertexIndex = list.indices[indexOffset];
+                if (vertexIndex >= list.vertices.length) continue;
+                destination[vertexIndex].u = list.vertices[vertexIndex].u / imageWidth;
+                destination[vertexIndex].v = list.vertices[vertexIndex].v / imageHeight;
+            }
         }
         if (list.indices.length > 0)
             memcpy(cache.indexBuffer.mapped, list.indices.ptr,
@@ -1202,6 +1291,157 @@ final class VulkanRenderer : RenderBackend
         _vk.vkUpdateDescriptorSets(_device, 1, &write, 0, null);
     }
 
+    private void ensureSceneImages(RenderScene scene)
+    {
+        ensureDrawListImages(scene.base);
+        foreach (layer; scene.layers)
+            if (layer.visible && layer.drawList !is null)
+                ensureDrawListImages(layer.drawList);
+    }
+
+    private void ensureDrawListImages(DrawList list)
+    {
+        if (list is null) return;
+        foreach (command; list.rgbaImages)
+            ensureImageTexture(command.image);
+    }
+
+    private GpuImageTexture ensureImageTexture(RgbaImage image)
+    {
+        if (image is null) return null;
+        auto found = image.id() in _imageTextures;
+        GpuImageTexture texture;
+        if (found is null)
+        {
+            texture = new GpuImageTexture();
+            _imageTextures[image.id()] = texture;
+        }
+        else
+            texture = *found;
+
+        if (texture.image == VK_NULL_HANDLE ||
+            texture.width != image.width() || texture.height != image.height())
+        {
+            destroyGpuImageStorage(texture);
+            texture.width = image.width();
+            texture.height = image.height();
+            createGpuImageStorage(texture);
+            texture.revision = 0;
+            texture.submittedRevision = 0;
+            texture.initialized = false;
+        }
+
+        const byteCount = cast(VkDeviceSize) image.width() *
+            cast(VkDeviceSize) image.height() * 4;
+        ensureHostBuffer(texture.staging, max(cast(VkDeviceSize) 256, byteCount),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        if (texture.revision != image.revision())
+        {
+            memcpy(texture.staging.mapped, image.pixels().ptr, cast(size_t) byteCount);
+            texture.revision = image.revision();
+        }
+        if (texture.linearDescriptorSet == VK_NULL_HANDLE ||
+            texture.nearestDescriptorSet == VK_NULL_HANDLE)
+            allocateGpuImageDescriptors(texture);
+        updateGpuImageDescriptors(texture);
+        return texture;
+    }
+
+    private GpuImageTexture imageTexture(RgbaImage image)
+    {
+        if (image is null) return null;
+        auto found = image.id() in _imageTextures;
+        return found is null ? null : *found;
+    }
+
+    private void createGpuImageStorage(GpuImageTexture texture)
+    {
+        VkImageCreateInfo image;
+        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image.imageType = VK_IMAGE_TYPE_2D;
+        image.format = VK_FORMAT_R8G8B8A8_UNORM;
+        image.extent = VkExtent3D(cast(uint) texture.width, cast(uint) texture.height, 1);
+        image.mipLevels = 1;
+        image.arrayLayers = 1;
+        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        check(_vk.vkCreateImage(_device, &image, null, &texture.image),
+            "creating a Vulkan RGBA image");
+
+        VkMemoryRequirements requirements;
+        _vk.vkGetImageMemoryRequirements(_device, texture.image, &requirements);
+        VkMemoryAllocateInfo allocation;
+        allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        check(_vk.vkAllocateMemory(_device, &allocation, null, &texture.memory),
+            "allocating Vulkan RGBA image memory");
+        check(_vk.vkBindImageMemory(_device, texture.image, texture.memory, 0),
+            "binding Vulkan RGBA image memory");
+
+        VkImageViewCreateInfo view;
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = texture.image;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = VK_FORMAT_R8G8B8A8_UNORM;
+        view.components = VkComponentMapping(VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY);
+        view.subresourceRange = colorRange();
+        check(_vk.vkCreateImageView(_device, &view, null, &texture.view),
+            "creating a Vulkan RGBA image view");
+    }
+
+    private void allocateGpuImageDescriptors(GpuImageTexture texture)
+    {
+        VkDescriptorSetLayout[2] layouts = [_descriptorSetLayout, _descriptorSetLayout];
+        VkDescriptorSet[2] sets;
+        VkDescriptorSetAllocateInfo allocation;
+        allocation.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocation.descriptorPool = _descriptorPool;
+        allocation.descriptorSetCount = sets.length;
+        allocation.pSetLayouts = layouts.ptr;
+        check(_vk.vkAllocateDescriptorSets(_device, &allocation, sets.ptr),
+            "allocating Vulkan RGBA image descriptor sets");
+        texture.linearDescriptorSet = sets[0];
+        texture.nearestDescriptorSet = sets[1];
+    }
+
+    private void updateGpuImageDescriptors(GpuImageTexture texture)
+    {
+        if (texture.view == VK_NULL_HANDLE ||
+            texture.linearDescriptorSet == VK_NULL_HANDLE ||
+            texture.nearestDescriptorSet == VK_NULL_HANDLE)
+            return;
+
+        VkDescriptorImageInfo[2] imageInfos;
+        imageInfos[0].sampler = _imageLinearSampler;
+        imageInfos[0].imageView = texture.view;
+        imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[1].sampler = _imageNearestSampler;
+        imageInfos[1].imageView = texture.view;
+        imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet[2] writes;
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = texture.linearDescriptorSet;
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &imageInfos[0];
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = texture.nearestDescriptorSet;
+        writes[1].dstBinding = 0;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].pImageInfo = &imageInfos[1];
+        _vk.vkUpdateDescriptorSets(_device, writes.length, writes.ptr, 0, null);
+    }
+
     private void recordCommandBuffer(RenderScene scene, uint imageIndex,
         VkCommandBuffer commandBuffer)
     {
@@ -1211,6 +1451,7 @@ final class VulkanRenderer : RenderBackend
         check(_vk.vkBeginCommandBuffer(commandBuffer, &begin),
             "beginning the Vulkan command buffer");
         uploadAtlas(commandBuffer, scene.base);
+        uploadSceneImages(commandBuffer, scene);
 
         VkClearValue clear;
         clear.color.float32[0] = scene.base.clearColor.r / 255.0f;
@@ -1225,9 +1466,6 @@ final class VulkanRenderer : RenderBackend
         pass.clearValueCount = 1;
         pass.pClearValues = &clear;
         _vk.vkCmdBeginRenderPass(commandBuffer, &pass, 0);
-        _vk.vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _pipeline);
-        _vk.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            _pipelineLayout, 0, 1, &_descriptorSet, 0, null);
 
         auto baseCache = _geometryCaches[0];
         recordRetainedLayer(commandBuffer, scene.base, baseCache,
@@ -1269,12 +1507,46 @@ final class VulkanRenderer : RenderBackend
         _vk.vkCmdBindIndexBuffer(commandBuffer, geometry.indexBuffer.buffer,
             0, VK_INDEX_TYPE_UINT32);
 
+        VkPipeline currentPipeline = VK_NULL_HANDLE;
+        VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
         foreach (batch; list.batches)
         {
-            if (batch.kind != DrawBatchKind.triangles) continue;
+            VkPipeline pipeline = _pipeline;
+            VkDescriptorSet descriptorSet = _descriptorSet;
+            switch (batch.kind)
+            {
+                case DrawBatchKind.triangles:
+                    break;
+                case DrawBatchKind.rgbaImage:
+                    if (batch.imageIndex >= list.rgbaImages.length) continue;
+                    auto command = list.rgbaImages[batch.imageIndex];
+                    auto texture = imageTexture(command.image);
+                    if (texture is null) continue;
+                    descriptorSet = command.linearFiltering ?
+                        texture.linearDescriptorSet : texture.nearestDescriptorSet;
+                    if (descriptorSet == VK_NULL_HANDLE) continue;
+                    pipeline = _imagePipeline;
+                    break;
+                case DrawBatchKind.rgbImage:
+                    continue;
+                default:
+                    continue;
+            }
             auto clipped = batch.clip.translated(deviceBounds.x, deviceBounds.y)
                 .intersection(deviceBounds).intersection(framebufferBounds);
             if (clipped.empty() || batch.indexCount == 0) continue;
+            if (pipeline != currentPipeline)
+            {
+                _vk.vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                currentPipeline = pipeline;
+                currentDescriptorSet = VK_NULL_HANDLE;
+            }
+            if (descriptorSet != currentDescriptorSet)
+            {
+                _vk.vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    _pipelineLayout, 0, 1, &descriptorSet, 0, null);
+                currentDescriptorSet = descriptorSet;
+            }
             VkRect2D scissor;
             scissor.offset = VkOffset2D(clipped.x, clipped.y);
             scissor.extent = VkExtent2D(cast(uint) clipped.width,
@@ -1325,6 +1597,66 @@ final class VulkanRenderer : RenderBackend
         ++_stats.atlasUploads;
         _submittedAtlasRevision = _atlasRevision;
         _submittedAtlasImage = _atlasImage;
+    }
+
+    private void uploadSceneImages(VkCommandBuffer commandBuffer, RenderScene scene)
+    {
+        uploadDrawListImages(commandBuffer, scene.base);
+        foreach (layer; scene.layers)
+            if (layer.visible && layer.drawList !is null)
+                uploadDrawListImages(commandBuffer, layer.drawList);
+    }
+
+    private void uploadDrawListImages(VkCommandBuffer commandBuffer, DrawList list)
+    {
+        if (list is null) return;
+        foreach (command; list.rgbaImages)
+        {
+            auto texture = imageTexture(command.image);
+            if (texture is null) continue;
+            uploadImageTexture(commandBuffer, texture);
+        }
+    }
+
+    private void uploadImageTexture(VkCommandBuffer commandBuffer, GpuImageTexture texture)
+    {
+        if (texture is null || texture.image == VK_NULL_HANDLE || texture.revision == 0)
+            return;
+        if (texture.submittedRevision == texture.revision && texture.initialized)
+            return;
+
+        VkImageMemoryBarrier toTransfer;
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransfer.oldLayout = texture.initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
+            VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = uint.max;
+        toTransfer.dstQueueFamilyIndex = uint.max;
+        toTransfer.image = texture.image;
+        toTransfer.subresourceRange = colorRange();
+        toTransfer.srcAccessMask = texture.initialized ? VK_ACCESS_SHADER_READ_BIT : 0;
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        _vk.vkCmdPipelineBarrier(commandBuffer,
+            texture.initialized ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, &toTransfer);
+
+        VkBufferImageCopy region;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = VkExtent3D(cast(uint) texture.width, cast(uint) texture.height, 1);
+        _vk.vkCmdCopyBufferToImage(commandBuffer, texture.staging.buffer, texture.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        VkImageMemoryBarrier toShader = toTransfer;
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        _vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, null, 0, null, 1, &toShader);
+
+        texture.initialized = true;
+        texture.submittedRevision = texture.revision;
     }
 
     private void ensureHostBuffer(ref HostBuffer buffer, VkDeviceSize required, VkFlags usage)
@@ -1391,6 +1723,41 @@ final class VulkanRenderer : RenderBackend
         _atlasInitialized = false;
     }
 
+    private void destroyImageTextures()
+    {
+        foreach (id, texture; _imageTextures)
+            destroyGpuImageTexture(texture);
+        _imageTextures = null;
+    }
+
+    private void destroyGpuImageTexture(GpuImageTexture texture)
+    {
+        if (texture is null) return;
+        destroyHostBuffer(texture.staging);
+        destroyGpuImageStorage(texture);
+        texture.linearDescriptorSet = VK_NULL_HANDLE;
+        texture.nearestDescriptorSet = VK_NULL_HANDLE;
+    }
+
+    private void destroyGpuImageStorage(GpuImageTexture texture)
+    {
+        if (texture is null) return;
+        if (_device !is null && _vk !is null)
+        {
+            if (texture.view != VK_NULL_HANDLE && _vk.vkDestroyImageView !is null)
+                _vk.vkDestroyImageView(_device, texture.view, null);
+            if (texture.image != VK_NULL_HANDLE && _vk.vkDestroyImage !is null)
+                _vk.vkDestroyImage(_device, texture.image, null);
+            if (texture.memory != VK_NULL_HANDLE && _vk.vkFreeMemory !is null)
+                _vk.vkFreeMemory(_device, texture.memory, null);
+        }
+        texture.view = VK_NULL_HANDLE;
+        texture.image = VK_NULL_HANDLE;
+        texture.memory = VK_NULL_HANDLE;
+        texture.submittedRevision = 0;
+        texture.initialized = false;
+    }
+
     private void destroySwapchain()
     {
         if (_device is null || _vk is null) return;
@@ -1402,6 +1769,9 @@ final class VulkanRenderer : RenderBackend
         if (_pipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
             _vk.vkDestroyPipeline(_device, _pipeline, null);
         _pipeline = VK_NULL_HANDLE;
+        if (_imagePipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
+            _vk.vkDestroyPipeline(_device, _imagePipeline, null);
+        _imagePipeline = VK_NULL_HANDLE;
         if (_renderPass != VK_NULL_HANDLE && _vk.vkDestroyRenderPass !is null)
             _vk.vkDestroyRenderPass(_device, _renderPass, null);
         _renderPass = VK_NULL_HANDLE;

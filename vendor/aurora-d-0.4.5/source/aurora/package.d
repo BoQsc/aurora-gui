@@ -10,6 +10,7 @@ public import aurora.color;
 public import aurora.diagnostics;
 public import aurora.event;
 public import aurora.font;
+public import aurora.image;
 public import aurora.icons;
 public import aurora.layout;
 public import aurora.platform.base : WindowOptions;
