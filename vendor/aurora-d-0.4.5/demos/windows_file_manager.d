@@ -1957,21 +1957,21 @@ final class WindowsFileManagerRoot : Widget
         final switch (_viewMode)
         {
             case FileViewMode.extraLargeIcons:
-                return maxInt(128, scaled(132));
+                return maxInt(128, scaled(134));
             case FileViewMode.largeIcons:
-                return maxInt(106, scaled(108));
+                return maxInt(108, scaled(110));
             case FileViewMode.mediumIcons:
-                return maxInt(84, scaled(86));
+                return maxInt(86, scaled(90));
             case FileViewMode.smallIcons:
-                return maxInt(28, scaled(30));
+                return maxInt(29, inlineEntryIconSizePx() + scaled(7));
             case FileViewMode.list:
-                return maxInt(24, scaled(26));
+                return maxInt(26, inlineEntryIconSizePx() + scaled(6));
             case FileViewMode.details:
-                return maxInt(22, scaled(rowHeight));
+                return maxInt(26, inlineEntryIconSizePx() + scaled(6));
             case FileViewMode.tiles:
-                return maxInt(58, scaled(62));
+                return maxInt(58, tileEntryIconSizePx() + scaled(18));
             case FileViewMode.content:
-                return maxInt(54, scaled(58));
+                return maxInt(56, tileEntryIconSizePx() + scaled(16));
         }
     }
 
@@ -1980,18 +1980,18 @@ final class WindowsFileManagerRoot : Widget
         final switch (_viewMode)
         {
             case FileViewMode.extraLargeIcons:
-                return scaled(72);
+                return maxInt(76, scaled(80));
             case FileViewMode.largeIcons:
-                return scaled(56);
+                return maxInt(58, scaled(62));
             case FileViewMode.mediumIcons:
-                return scaled(40);
+                return maxInt(44, scaled(46));
             case FileViewMode.smallIcons:
             case FileViewMode.list:
             case FileViewMode.details:
-                return scaled(17);
+                return inlineEntryIconSizePx();
             case FileViewMode.tiles:
             case FileViewMode.content:
-                return scaled(34);
+                return tileEntryIconSizePx();
         }
     }
 
@@ -2000,20 +2000,50 @@ final class WindowsFileManagerRoot : Widget
         final switch (_viewMode)
         {
             case FileViewMode.extraLargeIcons:
-                return scaled(152);
+                return scaled(160);
             case FileViewMode.largeIcons:
-                return scaled(132);
+                return scaled(140);
             case FileViewMode.mediumIcons:
-                return scaled(112);
+                return scaled(116);
             case FileViewMode.smallIcons:
             case FileViewMode.list:
-                return scaled(190);
+                return scaled(200);
             case FileViewMode.details:
             case FileViewMode.content:
                 return maxInt(scaled(120), _usableListWidth - scaled(24));
             case FileViewMode.tiles:
-                return scaled(250);
+                return scaled(260);
         }
+    }
+
+    private int inlineEntryIconSizePx() const @safe pure nothrow @nogc
+    {
+        return maxInt(18, scaled(20));
+    }
+
+    private int tileEntryIconSizePx() const @safe pure nothrow @nogc
+    {
+        return maxInt(36, scaled(38));
+    }
+
+    private int inlineEntryTextXOffsetPx() const @safe pure nothrow @nogc
+    {
+        return scaled(6) + inlineEntryIconSizePx() + scaled(7);
+    }
+
+    private int entryTextPixelSize() const @safe pure nothrow @nogc
+    {
+        return fontPixelSize(entryTextScale());
+    }
+
+    private int entryTextScale() const @safe pure nothrow @nogc
+    {
+        return textScale();
+    }
+
+    private int entryLineHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(scaled(24), entryTextPixelSize() + scaled(7));
     }
 
     private int groupHeaderHeightPx() const @safe pure nothrow @nogc
@@ -5097,20 +5127,20 @@ final class WindowsFileManagerRoot : Widget
         if (row.width <= 0 || row.height <= 0) return Rect.init;
         if (_viewMode == FileViewMode.details)
         {
-            const x = row.x + scaled(27);
+            const x = row.x + inlineEntryTextXOffsetPx() - scaled(1);
             const right = minInt(row.right() - scaled(6), _dateX - scaled(8));
             return Rect(x, row.y + scaled(2), maxInt(0, right - x),
                 maxInt(0, row.height - scaled(4)));
         }
         if (_viewMode == FileViewMode.content || _viewMode == FileViewMode.tiles)
         {
-            const x = row.x + viewIconSizePx() + scaled(14);
+            const x = row.x + scaled(8) + viewIconSizePx() + scaled(8);
             return Rect(x, row.y + scaled(6), maxInt(0, row.right() - x - scaled(8)),
-                maxInt(scaled(20), scaled(24)));
+                maxInt(scaled(20), entryLineHeightPx()));
         }
         if (_viewMode == FileViewMode.smallIcons || _viewMode == FileViewMode.list)
         {
-            const x = row.x + scaled(26);
+            const x = row.x + inlineEntryTextXOffsetPx() - scaled(1);
             return Rect(x, row.y + scaled(2), maxInt(0, row.width - scaled(32)),
                 maxInt(0, row.height - scaled(4)));
         }
@@ -5446,19 +5476,22 @@ final class WindowsFileManagerRoot : Widget
     private void drawDetailsEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
-        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), row.y + scaled(4),
-            scaled(17), scaled(17)));
+        const iconSize = inlineEntryIconSizePx();
+        const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
+        const textX = row.x + inlineEntryTextXOffsetPx();
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), iconY,
+            iconSize, iconSize));
         if (!drawRenameFieldBackground(canvas, visibleIndex))
-            drawText(canvas, Rect(row.x + scaled(28), row.y,
-                maxInt(0, _dateX - row.x - scaled(35)), row.height),
+            drawEntryText(canvas, Rect(textX, row.y,
+                maxInt(0, _dateX - textX - scaled(8)), row.height),
                 entry.name, explorerText, HorizontalAlign.left);
-        drawText(canvas, Rect(_dateX + scaled(8), row.y,
+        drawEntryText(canvas, Rect(_dateX + scaled(8), row.y,
             maxInt(0, _typeX - _dateX - scaled(14)), row.height), entry.modified,
             explorerText, HorizontalAlign.left);
-        drawText(canvas, Rect(_typeX + scaled(8), row.y,
+        drawEntryText(canvas, Rect(_typeX + scaled(8), row.y,
             maxInt(0, _sizeX - _typeX - scaled(14)), row.height), entry.type,
             explorerText, HorizontalAlign.left);
-        drawText(canvas, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
+        drawEntryText(canvas, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
             row.height), entrySizeText(entry),
             explorerText, HorizontalAlign.right);
     }
@@ -5466,11 +5499,14 @@ final class WindowsFileManagerRoot : Widget
     private void drawListEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
-        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), row.y + scaled(5),
-            scaled(17), scaled(17)));
+        const iconSize = inlineEntryIconSizePx();
+        const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
+        const textX = row.x + inlineEntryTextXOffsetPx();
+        drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(6), iconY,
+            iconSize, iconSize));
         if (!drawRenameFieldBackground(canvas, visibleIndex))
-            drawText(canvas, Rect(row.x + scaled(28), row.y,
-                maxInt(0, row.width - scaled(34)), row.height), entry.name,
+            drawEntryText(canvas, Rect(textX, row.y,
+                maxInt(0, row.right() - textX - scaled(6)), row.height), entry.name,
                 explorerText, HorizontalAlign.left);
     }
 
@@ -5486,7 +5522,7 @@ final class WindowsFileManagerRoot : Widget
             const textTop = row.y + iconSize + scaled(12);
             canvas.drawTextInRect(Rect(row.x + scaled(4), textTop,
                     maxInt(0, row.width - scaled(8)), maxInt(0, row.bottom() - textTop)),
-                toUTF32(entry.name), explorerText, textScale(),
+                toUTF32(entry.name), explorerText, entryTextScale(),
                 HorizontalAlign.center, VerticalAlign.top, true);
         }
     }
@@ -5500,11 +5536,11 @@ final class WindowsFileManagerRoot : Widget
             iconSize, iconSize));
         const textX = row.x + iconSize + scaled(16);
         if (!drawRenameFieldBackground(canvas, visibleIndex))
-            drawText(canvas, Rect(textX, row.y + scaled(6),
-                maxInt(0, row.right() - textX - scaled(8)), scaled(24)),
+            drawEntryText(canvas, Rect(textX, row.y + scaled(6),
+                maxInt(0, row.right() - textX - scaled(8)), entryLineHeightPx()),
                 entry.name, explorerText, HorizontalAlign.left);
-        drawText(canvas, Rect(textX, row.y + scaled(29),
-            maxInt(0, row.right() - textX - scaled(8)), scaled(22)),
+        drawEntryText(canvas, Rect(textX, row.y + scaled(6) + entryLineHeightPx(),
+            maxInt(0, row.right() - textX - scaled(8)), entryLineHeightPx()),
             entryMetadataText(entry), explorerMuted, HorizontalAlign.left);
     }
 
@@ -5517,11 +5553,11 @@ final class WindowsFileManagerRoot : Widget
             iconSize, iconSize));
         const textX = row.x + iconSize + scaled(18);
         if (!drawRenameFieldBackground(canvas, visibleIndex))
-            drawText(canvas, Rect(textX, row.y + scaled(6),
-                maxInt(0, row.right() - textX - scaled(12)), scaled(24)),
+            drawEntryText(canvas, Rect(textX, row.y + scaled(6),
+                maxInt(0, row.right() - textX - scaled(12)), entryLineHeightPx()),
                 entry.name, explorerText, HorizontalAlign.left);
-        drawText(canvas, Rect(textX, row.y + scaled(29),
-            maxInt(0, row.right() - textX - scaled(12)), scaled(22)),
+        drawEntryText(canvas, Rect(textX, row.y + scaled(6) + entryLineHeightPx(),
+            maxInt(0, row.right() - textX - scaled(12)), entryLineHeightPx()),
             entryMetadataText(entry), explorerMuted, HorizontalAlign.left);
     }
 
@@ -5892,7 +5928,19 @@ final class WindowsFileManagerRoot : Widget
     private void drawText(ref Canvas canvas, Rect rect, string text, Color color,
         HorizontalAlign horizontal)
     {
-        canvas.drawTextInRect(rect, toUTF32(text), color, textScale(),
+        drawTextWithScale(canvas, rect, text, color, horizontal, textScale());
+    }
+
+    private void drawEntryText(ref Canvas canvas, Rect rect, string text, Color color,
+        HorizontalAlign horizontal)
+    {
+        drawTextWithScale(canvas, rect, text, color, horizontal, entryTextScale());
+    }
+
+    private void drawTextWithScale(ref Canvas canvas, Rect rect, string text,
+        Color color, HorizontalAlign horizontal, int scale)
+    {
+        canvas.drawTextInRect(rect, toUTF32(text), color, scale,
             horizontal, VerticalAlign.middle, true);
     }
 
