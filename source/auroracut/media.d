@@ -205,7 +205,7 @@ private string[] probeArguments(string path)
     return [
         "ffprobe", "-v", "error",
         "-show_entries",
-        "format=duration:stream=codec_type,width,height,r_frame_rate,channels,sample_rate",
+        "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,channels,sample_rate",
         "-of", "json", path
     ];
 }
@@ -260,6 +260,7 @@ private MediaAsset parseProbeJson(string requestedPath, string output)
             const kind = objectText(stream, "codec_type");
             if (kind == "video" && !asset.hasVideo)
             {
+                asset.videoCodec = objectText(stream, "codec_name");
                 asset.width = parseIntOr(objectText(stream, "width"));
                 asset.height = parseIntOr(objectText(stream, "height"));
                 asset.frameRate = parseRate(objectText(stream, "r_frame_rate"));

@@ -10,11 +10,24 @@ import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
     rootName;
 import std.process : Config, environment, spawnProcess;
 import std.string : icmp, toLower;
-import std.utf : toUTF16, toUTF16z, toUTF32;
+import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 
 version (Windows)
 {
+    pragma(lib, "ole32.lib");
+    pragma(lib, "shlwapi.lib");
+    import core.sys.windows.com : CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, RPC_E_CHANGED_MODE,
+        S_FALSE, S_OK;
+    import core.sys.windows.objbase : STGM_READ;
+    import core.sys.windows.objidl : IPersistFile;
+    import core.sys.windows.shlobj : CSIDL_RECENT, ILFree, IEnumIDList, IShellFolder,
+        IShellLinkW, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO,
+        SHGetDesktopFolder, SHGetFolderPathW, SHParseDisplayName, STRRET;
     import core.sys.windows.shellapi : ShellExecuteW;
+    import core.sys.windows.shlwapi : StrRetToBufW;
+    import core.sys.windows.uuid : CLSID_ShellLink, IID_IPersistFile, IID_IShellFolder,
+        IID_IShellLinkW;
     import core.sys.windows.windows;
 }
 
@@ -39,8 +52,15 @@ private enum SortColumn
     size
 }
 
+private enum GroupBy
+{
+    none,
+    dateModified
+}
+
 private enum NavigationKind
 {
+    quickAccess,
     folder,
     thisPc,
     network
@@ -51,9 +71,21 @@ private struct ExplorerEntry
     string name;
     string path;
     bool directory;
+    bool drive;
     ulong size;
+    string sizeText;
     string modified;
+    string modifiedDay;
+    string modifiedSortKey;
     string type;
+    bool quickAccessRecent;
+}
+
+private struct VisibleRow
+{
+    int entryIndex;
+    string groupLabel;
+    bool separator;
 }
 
 private struct NavigationItem
@@ -70,10 +102,13 @@ version (Windows)
 {
     private immutable wchar[] dragPreviewWindowClassName =
         "AuroraWindowsFileManagerDragPreview"w;
+    private immutable wchar[] propertiesWindowClassName =
+        "AuroraWindowsFileManagerProperties"w;
     private enum int dragPreviewCursorArrow = 32512;
     private enum DWORD dragPreviewLayerAlpha = 232;
     private enum DWORD errorClassAlreadyExists = 1410;
     private __gshared bool dragPreviewWindowClassRegistered;
+    private __gshared bool propertiesWindowClassRegistered;
 
     private extern(Windows) nothrow LRESULT dragPreviewWindowProc(
         HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -117,6 +152,47 @@ version (Windows)
         if (RegisterClassExW(&wc) == 0 && GetLastError() != errorClassAlreadyExists)
             return false;
         dragPreviewWindowClassRegistered = true;
+        return true;
+    }
+
+    private extern(Windows) nothrow LRESULT propertiesWindowProc(
+        HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        PropertiesWindow window;
+        if (message == WM_NCCREATE)
+        {
+            auto create = cast(CREATESTRUCTW*) lParam;
+            window = cast(PropertiesWindow) create.lpCreateParams;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cast(LONG_PTR) cast(void*) window);
+        }
+        else
+            window = cast(PropertiesWindow) cast(void*)
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+        if (window !is null)
+        {
+            LRESULT result;
+            if (window.handleMessage(hwnd, message, wParam, lParam, result))
+                return result;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    private bool registerPropertiesWindowClass() nothrow
+    {
+        if (propertiesWindowClassRegistered) return true;
+
+        WNDCLASSEXW wc;
+        wc.cbSize = WNDCLASSEXW.sizeof;
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = &propertiesWindowProc;
+        wc.hInstance = GetModuleHandleW(null);
+        wc.hCursor = LoadCursorW(null, cast(LPCWSTR) dragPreviewCursorArrow);
+        wc.lpszClassName = propertiesWindowClassName.ptr;
+
+        if (RegisterClassExW(&wc) == 0 && GetLastError() != errorClassAlreadyExists)
+            return false;
+        propertiesWindowClassRegistered = true;
         return true;
     }
 }
@@ -280,6 +356,277 @@ private final class DragPreviewOverlay
     }
 }
 
+version (Windows)
+private final class PropertiesWindow
+{
+    private static immutable wchar[] fontName = "Segoe UI"w;
+    private HWND _hwnd;
+    private string _path;
+    private wstring _wideName;
+    private wstring _wideType;
+    private wstring _wideLocation;
+    private wstring _wideSize;
+    private wstring _wideModified;
+    private wstring _widePath;
+    private string _copyStatus;
+    private int _hoverButton = -1;
+    private int _width = 560;
+    private int _height = 370;
+
+    bool visible() const @safe pure nothrow @nogc
+    {
+        return _hwnd !is null;
+    }
+
+    void show(string path, string name, string type, string location, string size,
+        string modified)
+    {
+        _path = path;
+        _wideName = toUTF16(name);
+        _wideType = toUTF16(type);
+        _wideLocation = toUTF16(location);
+        _wideSize = toUTF16(size);
+        _wideModified = toUTF16(modified);
+        _widePath = toUTF16(path);
+        _copyStatus = "";
+
+        const title = "Properties - " ~ name;
+        if (_hwnd is null)
+        {
+            if (!registerPropertiesWindowClass()) return;
+            HWND owner = GetActiveWindow();
+            if (owner is null) owner = GetForegroundWindow();
+
+            int x = maxInt(0, (GetSystemMetrics(SM_CXSCREEN) - _width) / 2);
+            int y = maxInt(0, (GetSystemMetrics(SM_CYSCREEN) - _height) / 2);
+            RECT ownerRect;
+            if (owner !is null && GetWindowRect(owner, &ownerRect) != FALSE)
+            {
+                x = ownerRect.left + (ownerRect.right - ownerRect.left - _width) / 2;
+                y = ownerRect.top + (ownerRect.bottom - ownerRect.top - _height) / 2;
+            }
+
+            const style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+            _hwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                propertiesWindowClassName.ptr,
+                title.toUTF16z,
+                style,
+                x,
+                y,
+                _width,
+                _height,
+                owner,
+                null,
+                GetModuleHandleW(null),
+                cast(void*) this);
+            if (_hwnd is null) return;
+        }
+        else
+            SetWindowTextW(_hwnd, title.toUTF16z);
+
+        SetWindowPos(_hwnd, HWND_TOP, 0, 0, _width, _height,
+            SWP_NOMOVE | SWP_SHOWWINDOW);
+        ShowWindow(_hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(_hwnd);
+        InvalidateRect(_hwnd, null, FALSE);
+        UpdateWindow(_hwnd);
+    }
+
+    void close()
+    {
+        if (_hwnd !is null)
+            DestroyWindow(_hwnd);
+    }
+
+    bool handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+        out LRESULT result) nothrow
+    {
+        result = 0;
+        switch (message)
+        {
+            case WM_PAINT:
+                paint(hwnd);
+                return true;
+            case WM_ERASEBKGND:
+                result = 1;
+                return true;
+            case WM_MOUSEMOVE:
+            {
+                RECT client;
+                GetClientRect(hwnd, &client);
+                const x = cast(int) cast(short) (lParam & 0xffff);
+                const y = cast(int) cast(short) ((lParam >> 16) & 0xffff);
+                const next = buttonAt(client, x, y);
+                if (next != _hoverButton)
+                {
+                    _hoverButton = next;
+                    InvalidateRect(hwnd, null, FALSE);
+                }
+                return true;
+            }
+            case WM_MOUSELEAVE:
+                _hoverButton = -1;
+                InvalidateRect(hwnd, null, FALSE);
+                return true;
+            case WM_LBUTTONUP:
+            {
+                RECT client;
+                GetClientRect(hwnd, &client);
+                const x = cast(int) cast(short) (lParam & 0xffff);
+                const y = cast(int) cast(short) ((lParam >> 16) & 0xffff);
+                const button = buttonAt(client, x, y);
+                if (button == 0) copyPath();
+                else if (button == 1) DestroyWindow(hwnd);
+                return true;
+            }
+            case WM_KEYDOWN:
+                if (wParam == VK_ESCAPE)
+                {
+                    DestroyWindow(hwnd);
+                    return true;
+                }
+                break;
+            case WM_NCDESTROY:
+                _hwnd = null;
+                _hoverButton = -1;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                break;
+            default:
+                break;
+        }
+        return false;
+    }
+
+    private void paint(HWND hwnd) nothrow
+    {
+        PAINTSTRUCT ps;
+        auto dc = BeginPaint(hwnd, &ps);
+        if (dc !is null)
+        {
+            RECT client;
+            GetClientRect(hwnd, &client);
+            fillRect(dc, client, rgb(32, 32, 32));
+
+            drawText(dc, _wideName, RECT(20, 18, client.right - 20, 48),
+                rgb(245, 247, 249), true, 17);
+            drawRow(dc, "Type"w, _wideType, 68, client.right);
+            drawRow(dc, "Location"w, _wideLocation, 104, client.right);
+            drawRow(dc, "Size"w, _wideSize, 140, client.right);
+            drawRow(dc, "Modified"w, _wideModified, 176, client.right);
+            drawRow(dc, "Path"w, _widePath, 212, client.right);
+
+            if (_copyStatus.length > 0)
+                drawText(dc, toUTF16(_copyStatus),
+                    RECT(20, client.bottom - 76, client.right - 20, client.bottom - 50),
+                    rgb(167, 167, 167), false, 12);
+
+            const copy = copyButtonRect(client);
+            const close = closeButtonRect(client);
+            drawButton(dc, copy, "Copy path"w, _hoverButton == 0);
+            drawButton(dc, close, "Close"w, _hoverButton == 1);
+        }
+        EndPaint(hwnd, &ps);
+    }
+
+    private void copyPath() nothrow
+    {
+        try
+        {
+            _copyStatus = writeClipboardText(_path)
+                ? "Path copied to clipboard." : "Clipboard is unavailable.";
+        }
+        catch (Exception)
+        {
+            _copyStatus = "Clipboard is unavailable.";
+        }
+        if (_hwnd !is null)
+        {
+            InvalidateRect(_hwnd, null, FALSE);
+            UpdateWindow(_hwnd);
+        }
+    }
+
+    private static int buttonAt(RECT client, int x, int y) @safe pure nothrow @nogc
+    {
+        if (contains(copyButtonRect(client), x, y)) return 0;
+        if (contains(closeButtonRect(client), x, y)) return 1;
+        return -1;
+    }
+
+    private static RECT copyButtonRect(RECT client) @safe pure nothrow @nogc
+    {
+        return RECT(client.right - 202, client.bottom - 46, client.right - 108,
+            client.bottom - 12);
+    }
+
+    private static RECT closeButtonRect(RECT client) @safe pure nothrow @nogc
+    {
+        return RECT(client.right - 98, client.bottom - 46, client.right - 12,
+            client.bottom - 12);
+    }
+
+    private static bool contains(RECT rect, int x, int y) @safe pure nothrow @nogc
+    {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }
+
+    private static void drawRow(HDC dc, const(wchar)[] label, const(wchar)[] value,
+        int y, int right) nothrow
+    {
+        drawText(dc, label, RECT(20, y, 132, y + 28), rgb(167, 167, 167), false, 12);
+        drawText(dc, value, RECT(145, y, maxInt(145, right - 20), y + 28),
+            rgb(242, 242, 242), false, 12);
+    }
+
+    private static void drawButton(HDC dc, RECT rect, const(wchar)[] label,
+        bool hovered) nothrow
+    {
+        const background = hovered ? rgb(53, 53, 53) : rgb(32, 32, 32);
+        fillRect(dc, rect, background);
+        auto pen = CreatePen(PS_SOLID, 1, rgb(90, 90, 90));
+        auto oldPen = SelectObject(dc, pen);
+        auto oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        if (pen !is null) DeleteObject(pen);
+        drawText(dc, label, rect, rgb(242, 242, 242), false, 12);
+    }
+
+    private static void drawText(HDC dc, const(wchar)[] text, RECT rect,
+        COLORREF color, bool bold, int size) nothrow
+    {
+        auto font = CreateFontW(-size, 0, 0, 0, bold ? FW_SEMIBOLD : FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            fontName.ptr);
+        auto oldFont = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, color);
+        DrawTextW(dc, text.ptr, cast(int) text.length, &rect,
+            cast(UINT) (DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS));
+        SelectObject(dc, oldFont);
+        if (font !is null) DeleteObject(font);
+    }
+
+    private static void fillRect(HDC dc, RECT rect, COLORREF color) nothrow
+    {
+        auto brush = CreateSolidBrush(color);
+        if (brush !is null)
+        {
+            FillRect(dc, &rect, brush);
+            DeleteObject(brush);
+        }
+    }
+
+    private static COLORREF rgb(ubyte r, ubyte g, ubyte b)
+        @safe pure nothrow @nogc
+    {
+        return cast(COLORREF) (cast(uint) r | (cast(uint) g << 8) | (cast(uint) b << 16));
+    }
+}
+
 final class WindowsFileManagerRoot : Widget
 {
     private enum defaultUiZoomPercent = 80;
@@ -291,6 +638,10 @@ final class WindowsFileManagerRoot : Widget
     private enum sidebarMinimumWidth = 228;
     private enum sidebarMaximumWidth = 330;
     private enum rowHeight = 25;
+    private enum groupHeaderHeight = 28;
+    private enum quickAccessSeparatorHeight = 12;
+    private enum maximumSearchDepth = 64;
+    private enum maximumSearchResults = 10000;
     private enum sidebarRowHeight = 27;
     private enum headerHeight = 34;
     private enum scrollbarWidth = 12;
@@ -299,18 +650,28 @@ final class WindowsFileManagerRoot : Widget
     private TextField _addressField;
     private TextField _searchField;
     private DragPreviewOverlay _dragPreviewOverlay;
+    version (Windows)
+        private PropertiesWindow _propertiesWindow;
     private ExplorerEntry[] _entries;
-    private int[] _visibleEntries;
+    private ExplorerEntry[] _folderEntries;
+    private VisibleRow[] _visibleRows;
+    private int[] _visibleRowOffsets;
+    private int _visibleContentHeight;
     private NavigationItem[] _navigation;
     private string _currentPath;
+    private bool _showQuickAccess;
+    private bool _showThisPc;
     private string _searchQuery;
     private string _statusText = "Ready";
+    private string[] _recentFiles;
     private string[] _history;
     private int _historyIndex = -1;
     private int _uiZoomPercent = defaultUiZoomPercent;
     private int _selectedVisibleIndex = -1;
     private SortColumn _sortColumn = SortColumn.name;
     private bool _sortAscending = true;
+    private GroupBy _groupBy = GroupBy.none;
+    private bool _groupAscending;
     private int _scrollY;
     private int _sidebarScrollY;
     private CommandButton _pressedCommand = CommandButton.none;
@@ -384,7 +745,7 @@ final class WindowsFileManagerRoot : Widget
         _searchField.onChanged = delegate()
         {
             _searchQuery = _searchField.textUtf8();
-            rebuildVisibleEntries();
+            updateSearchResults();
         };
         _searchField.onSubmitted = delegate()
         {
@@ -420,10 +781,11 @@ final class WindowsFileManagerRoot : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        updateGeometry();
         if (event.button == MouseButton.right)
         {
             requestFocus();
-            showContextMenuFor(event.position, event.globalPosition);
+            showContextMenuFor(event.position);
             return true;
         }
         if (event.button != MouseButton.left) return false;
@@ -486,7 +848,7 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
 
-        const visibleIndex = entryIndexAt(event.position);
+        const visibleIndex = visibleEntryIndexAt(event.position);
         if (visibleIndex >= 0)
         {
             _selectedVisibleIndex = visibleIndex;
@@ -751,7 +1113,7 @@ final class WindowsFileManagerRoot : Widget
             return;
         }
 
-        const visibleIndex = entryIndexAt(position);
+        const visibleIndex = visibleEntryIndexAt(position);
         if (isEntryDropTarget(visibleIndex, sourcePath))
             _dropTargetVisibleIndex = visibleIndex;
     }
@@ -821,16 +1183,43 @@ final class WindowsFileManagerRoot : Widget
             _dragPreviewOverlay.hide();
     }
 
+    private int entryIndexForVisibleRow(int visibleIndex) const
+    {
+        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleRows.length)
+            return -1;
+        return _visibleRows[cast(size_t) visibleIndex].entryIndex;
+    }
+
+    private int visibleRowHeight(int visibleIndex) const
+    {
+        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleRows.length)
+            return 0;
+        if (entryIndexForVisibleRow(visibleIndex) >= 0)
+            return rowHeightPx();
+        return _visibleRows[cast(size_t) visibleIndex].separator
+            ? quickAccessSeparatorHeightPx() : groupHeaderHeightPx();
+    }
+
+    private int visibleItemCount() const
+    {
+        int count;
+        foreach (row; _visibleRows)
+            if (row.entryIndex >= 0)
+                ++count;
+        return count;
+    }
+
     private bool hasDragSource() const
     {
         return _dragSourceVisibleIndex >= 0 &&
-            _dragSourceVisibleIndex < cast(int) _visibleEntries.length;
+            _dragSourceVisibleIndex < cast(int) _visibleRows.length &&
+            entryIndexForVisibleRow(_dragSourceVisibleIndex) >= 0;
     }
 
     private ExplorerEntry dragSourceEntry() const
     {
         if (!hasDragSource()) return ExplorerEntry.init;
-        return _entries[cast(size_t) _visibleEntries[cast(size_t) _dragSourceVisibleIndex]];
+        return _entries[cast(size_t) entryIndexForVisibleRow(_dragSourceVisibleIndex)];
     }
 
     private bool dragThresholdExceeded(Point position) const
@@ -846,10 +1235,10 @@ final class WindowsFileManagerRoot : Widget
         if (isNavigationDropTarget(navIndex, sourcePath))
             return _navigation[cast(size_t) navIndex].path;
 
-        const visibleIndex = entryIndexAt(point);
+        const visibleIndex = visibleEntryIndexAt(point);
         if (isEntryDropTarget(visibleIndex, sourcePath))
         {
-            const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
+            const entry = _entries[cast(size_t) entryIndexForVisibleRow(visibleIndex)];
             return entry.path;
         }
 
@@ -871,8 +1260,9 @@ final class WindowsFileManagerRoot : Widget
 
     private bool isEntryDropTarget(int visibleIndex, string sourcePath) const
     {
-        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleEntries.length) return false;
-        const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
+        const entryIndex = entryIndexForVisibleRow(visibleIndex);
+        if (entryIndex < 0) return false;
+        const entry = _entries[cast(size_t) entryIndex];
         if (!entry.directory) return false;
         return isDirectoryDropTarget(entry.path, sourcePath);
     }
@@ -981,6 +1371,7 @@ final class WindowsFileManagerRoot : Widget
         _uiZoomPercent = next;
         applyZoomMetrics();
         updateGeometry();
+        rebuildVisibleRowOffsets();
         if (previousRow > 0)
             _scrollY = _scrollY * rowHeightPx() / previousRow;
         if (previousSidebarRow > 0)
@@ -1041,6 +1432,16 @@ final class WindowsFileManagerRoot : Widget
     private int rowHeightPx() const @safe pure nothrow @nogc
     {
         return maxInt(22, scaled(rowHeight));
+    }
+
+    private int groupHeaderHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(24, scaled(groupHeaderHeight));
+    }
+
+    private int quickAccessSeparatorHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(8, scaled(quickAccessSeparatorHeight));
     }
 
     private int sidebarRowHeightPx() const @safe pure nothrow @nogc
@@ -1151,6 +1552,8 @@ final class WindowsFileManagerRoot : Widget
         const home = environment.get("USERPROFILE", environment.get("HOME", current));
         const documents = buildNormalizedPath(home, "Documents");
 
+        addNavigation("Quick Access", "", IconKind.open, false,
+            NavigationKind.quickAccess, true);
         addNavigation("Personal", home, IconKind.folder, true);
         addNavigation("Desktop", buildNormalizedPath(home, "Desktop"), IconKind.computer, true);
         addNavigation("Downloads", buildNormalizedPath(home, "Downloads"), IconKind.open, true);
@@ -1159,7 +1562,7 @@ final class WindowsFileManagerRoot : Widget
         addNavigation("Videos", buildNormalizedPath(home, "Videos"), IconKind.music, true);
         addDocumentFolders(documents, 12);
         addNavigation("OneDrive - Personal", buildNormalizedPath(home, "OneDrive"), IconKind.drive, false);
-        addNavigation("This PC", rootPathFor(home), IconKind.computer, false,
+        addNavigation("This PC", "", IconKind.computer, false,
             NavigationKind.thisPc, true);
         addNavigation("Network", "", IconKind.drive, false, NavigationKind.network, true);
     }
@@ -1218,6 +1621,7 @@ final class WindowsFileManagerRoot : Widget
     private void navigate(string candidate, bool addHistory, bool clearSearch)
     {
         const path = resolvePath(candidate);
+        const enteringNewFolder = _currentPath.length == 0 || !pathsEqual(_currentPath, path);
         try
         {
             if (!exists(path) || !isDir(path))
@@ -1227,27 +1631,18 @@ final class WindowsFileManagerRoot : Widget
                 return;
             }
 
+            _showQuickAccess = false;
+            _showThisPc = false;
             ExplorerEntry[] entries;
             foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
             {
                 ExplorerEntry entry;
-                entry.path = item.name;
-                entry.name = baseName(item.name);
-                if (entry.name.length == 0) entry.name = item.name;
-                try
-                {
-                    entry.directory = item.isDir;
-                    if (!entry.directory) entry.size = item.size;
-                    entry.modified = modifiedText(item);
-                    entry.type = typeText(entry.name, entry.directory);
-                }
-                catch (Exception)
-                {
-                    continue;
-                }
+                if (!populateExplorerEntry(item, "", entry)) continue;
                 entries ~= entry;
             }
-            sortEntries(entries);
+            if (enteringNewFolder)
+                applyDefaultViewForPath(path);
+            _folderEntries = entries;
             _entries = entries;
             _currentPath = path;
             _selectedVisibleIndex = -1;
@@ -1263,7 +1658,7 @@ final class WindowsFileManagerRoot : Widget
 
             if (addHistory)
                 pushHistory(path);
-            rebuildVisibleEntries();
+            updateSearchResults();
             updateWindowTitle();
         }
         catch (Exception error)
@@ -1271,6 +1666,31 @@ final class WindowsFileManagerRoot : Widget
             _statusText = "Cannot open folder: " ~ error.msg;
             invalidate();
         }
+    }
+
+    private void applyDefaultViewForPath(string path)
+    {
+        if (isDownloadsPath(path))
+        {
+            _groupBy = GroupBy.dateModified;
+            _groupAscending = false;
+            _sortColumn = SortColumn.modified;
+            _sortAscending = false;
+        }
+        else
+        {
+            _groupBy = GroupBy.none;
+            _groupAscending = false;
+            _sortColumn = SortColumn.name;
+            _sortAscending = true;
+        }
+    }
+
+    private static bool isDownloadsPath(string path)
+    {
+        const current = getcwd();
+        const home = environment.get("USERPROFILE", environment.get("HOME", current));
+        return pathsEqual(path, buildNormalizedPath(home, "Downloads"));
     }
 
     private string resolvePath(string candidate) const
@@ -1291,20 +1711,189 @@ final class WindowsFileManagerRoot : Widget
         _historyIndex = cast(int) _history.length - 1;
     }
 
+    private void updateSearchResults()
+    {
+        _selectedVisibleIndex = -1;
+        _scrollY = 0;
+        if (_showQuickAccess || _showThisPc)
+            _entries = _folderEntries.dup;
+        else if (_searchQuery.length == 0)
+            _entries = _folderEntries.dup;
+        else
+            _entries = recursiveSearchEntries(_currentPath, _searchQuery.toLower());
+        if (!_showQuickAccess)
+            sortEntries(_entries);
+        rebuildVisibleEntries();
+    }
+
+    private static ExplorerEntry[] recursiveSearchEntries(string root, string loweredQuery)
+    {
+        ExplorerEntry[] results;
+        bool[string] visited;
+        collectSearchEntries(root, root, loweredQuery, results, visited, 0);
+        return results;
+    }
+
+    private static void collectSearchEntries(string root, string folder, string loweredQuery,
+        ref ExplorerEntry[] results, ref bool[string] visited, int depth)
+    {
+        if (depth > maximumSearchDepth || results.length >= maximumSearchResults)
+            return;
+
+        const normalizedFolder = buildNormalizedPath(folder);
+        if (normalizedFolder in visited) return;
+        visited[normalizedFolder] = true;
+
+        try
+        {
+            foreach (DirEntry item; dirEntries(folder, SpanMode.shallow))
+            {
+                ExplorerEntry entry;
+                if (!populateExplorerEntry(item, relativeSearchName(root, item.name), entry))
+                    continue;
+                if (containsInsensitive(baseName(item.name), loweredQuery))
+                    results ~= entry;
+                if (entry.directory)
+                    collectSearchEntries(root, item.name, loweredQuery, results, visited,
+                        depth + 1);
+                if (results.length >= maximumSearchResults)
+                    return;
+            }
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static bool populateExplorerEntry(DirEntry item, string displayName,
+        out ExplorerEntry entry)
+    {
+        entry = ExplorerEntry.init;
+        entry.path = item.name;
+        entry.name = displayName.length > 0 ? displayName : baseName(item.name);
+        if (entry.name.length == 0) entry.name = item.name;
+        try
+        {
+            entry.directory = item.isDir;
+            if (!entry.directory) entry.size = item.size;
+            entry.modified = modifiedText(item);
+            entry.modifiedSortKey = modifiedSortKey(item);
+            entry.modifiedDay = entry.modifiedSortKey.length >= 10
+                ? entry.modifiedSortKey[0 .. 10] : "Unknown date";
+            entry.type = typeText(entry.name, entry.directory);
+            return true;
+        }
+        catch (Exception)
+        {
+            entry = ExplorerEntry.init;
+            return false;
+        }
+    }
+
+    private static string relativeSearchName(string root, string path)
+    {
+        const normalizedRoot = ensureTrailingSeparator(buildNormalizedPath(root));
+        const normalizedPath = buildNormalizedPath(path);
+        if (normalizedPath.length >= normalizedRoot.length)
+        {
+            version (Windows)
+            {
+                if (icmp(normalizedPath[0 .. normalizedRoot.length], normalizedRoot) == 0)
+                    return normalizedPath[normalizedRoot.length .. $];
+            }
+            else if (normalizedPath[0 .. normalizedRoot.length] == normalizedRoot)
+                return normalizedPath[normalizedRoot.length .. $];
+        }
+        return baseName(path);
+    }
+
     private void rebuildVisibleEntries()
     {
-        _visibleEntries.length = 0;
+        _visibleRows.length = 0;
         const query = _searchQuery.toLower();
-        foreach (index, entry; _entries)
+
+        if (_showQuickAccess)
         {
-            if (query.length == 0 || containsInsensitive(entry.name, query))
-                _visibleEntries ~= cast(int) index;
+            VisibleRow frequentHeader;
+            frequentHeader.entryIndex = -1;
+            frequentHeader.groupLabel = "Frequent folders";
+            _visibleRows ~= frequentHeader;
+            foreach (index, entry; _entries)
+            {
+                if (!entry.quickAccessRecent &&
+                    (query.length == 0 || containsInsensitive(entry.name, query)))
+                {
+                    VisibleRow row;
+                    row.entryIndex = cast(int) index;
+                    _visibleRows ~= row;
+                }
+            }
+
+            VisibleRow separator;
+            separator.entryIndex = -1;
+            separator.separator = true;
+            _visibleRows ~= separator;
+
+            VisibleRow recentHeader;
+            recentHeader.entryIndex = -1;
+            recentHeader.groupLabel = "Recent files";
+            _visibleRows ~= recentHeader;
+            foreach (index, entry; _entries)
+            {
+                if (entry.quickAccessRecent &&
+                    (query.length == 0 || containsInsensitive(entry.name, query)))
+                {
+                    VisibleRow row;
+                    row.entryIndex = cast(int) index;
+                    _visibleRows ~= row;
+                }
+            }
         }
-        if (_selectedVisibleIndex >= cast(int) _visibleEntries.length)
+
+        string previousGroupLabel;
+        if (!_showQuickAccess)
+        {
+            foreach (index, entry; _entries)
+            {
+                if (query.length == 0 || containsInsensitive(entry.name, query))
+                {
+                    if (_groupBy == GroupBy.dateModified)
+                    {
+                        const groupLabel = entry.modifiedDay.length > 0
+                            ? entry.modifiedDay : "Unknown date";
+                        if (_visibleRows.length == 0 || previousGroupLabel != groupLabel)
+                        {
+                            VisibleRow groupRow;
+                            groupRow.entryIndex = -1;
+                            groupRow.groupLabel = groupLabel;
+                            _visibleRows ~= groupRow;
+                            previousGroupLabel = groupLabel;
+                        }
+                    }
+                    VisibleRow row;
+                    row.entryIndex = cast(int) index;
+                    _visibleRows ~= row;
+                }
+            }
+        }
+        rebuildVisibleRowOffsets();
+        if (!hasSelection())
             _selectedVisibleIndex = -1;
         setListScroll(_scrollY);
         updateStatus();
         invalidate();
+    }
+
+    private void rebuildVisibleRowOffsets()
+    {
+        _visibleRowOffsets.length = _visibleRows.length;
+        _visibleContentHeight = 0;
+        foreach (index, row; _visibleRows)
+        {
+            _visibleRowOffsets[index] = _visibleContentHeight;
+            _visibleContentHeight += row.entryIndex >= 0 ? rowHeightPx() :
+                (row.separator ? quickAccessSeparatorHeightPx() : groupHeaderHeightPx());
+        }
     }
 
     private void sortEntries(ref ExplorerEntry[] entries)
@@ -1314,7 +1903,14 @@ final class WindowsFileManagerRoot : Widget
 
     private int compareEntries(ExplorerEntry a, ExplorerEntry b) const
     {
-        if (a.directory != b.directory) return a.directory ? -1 : 1;
+        if (_groupBy == GroupBy.dateModified)
+        {
+            auto result = icmp(a.modifiedDay, b.modifiedDay);
+            if (!_groupAscending) result = -result;
+            if (result != 0) return result;
+        }
+        else if (a.directory != b.directory)
+            return a.directory ? -1 : 1;
 
         int result;
         final switch (_sortColumn)
@@ -1323,7 +1919,7 @@ final class WindowsFileManagerRoot : Widget
                 result = icmp(a.name, b.name);
                 break;
             case SortColumn.modified:
-                result = icmp(a.modified, b.modified);
+                result = icmp(a.modifiedSortKey, b.modifiedSortKey);
                 break;
             case SortColumn.type:
                 result = icmp(a.type, b.type);
@@ -1349,8 +1945,15 @@ final class WindowsFileManagerRoot : Widget
 
     private void setSortColumn(SortColumn column)
     {
+        if (_showQuickAccess) return;
         const selectedPath = hasSelection() ? selectedEntry().path : "";
-        if (_sortColumn == column)
+        if (_groupBy == GroupBy.dateModified && column == SortColumn.modified)
+        {
+            _groupAscending = !_groupAscending;
+            _sortColumn = column;
+            _sortAscending = _groupAscending;
+        }
+        else if (_sortColumn == column)
             _sortAscending = !_sortAscending;
         else
         {
@@ -1363,10 +1966,217 @@ final class WindowsFileManagerRoot : Widget
             selectPath(selectedPath);
     }
 
+    private void setGroupBy(GroupBy groupBy)
+    {
+        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        _groupBy = groupBy;
+        if (_groupBy == GroupBy.dateModified)
+        {
+            _groupAscending = false;
+            _sortColumn = SortColumn.modified;
+            _sortAscending = false;
+        }
+        sortEntries(_entries);
+        rebuildVisibleEntries();
+        if (selectedPath.length > 0)
+            selectPath(selectedPath);
+    }
+
+    private void openQuickAccess()
+    {
+        _showQuickAccess = true;
+        _showThisPc = false;
+        _currentPath = "";
+        _groupBy = GroupBy.none;
+        _sortColumn = SortColumn.name;
+        _sortAscending = true;
+        _searchQuery = "";
+        _searchField.setText("", false);
+        _searchField.setPlaceholder(searchPlaceholder());
+        _addressField.setText("Quick Access", false);
+        _folderEntries = buildQuickAccessEntries();
+        _entries = _folderEntries.dup;
+        _selectedVisibleIndex = -1;
+        _scrollY = 0;
+        rebuildVisibleEntries();
+        updateWindowTitle();
+    }
+
+    private void openThisPc()
+    {
+        _showQuickAccess = false;
+        _showThisPc = true;
+        _currentPath = "";
+        _groupBy = GroupBy.none;
+        _sortColumn = SortColumn.name;
+        _sortAscending = true;
+        _searchQuery = "";
+        _searchField.setText("", false);
+        _searchField.setPlaceholder(searchPlaceholder());
+        _addressField.setText("This PC", false);
+        _folderEntries = buildThisPcEntries();
+        _entries = _folderEntries.dup;
+        _selectedVisibleIndex = -1;
+        _scrollY = 0;
+        updateSearchResults();
+        updateWindowTitle();
+    }
+
+    private static ExplorerEntry[] buildThisPcEntries()
+    {
+        ExplorerEntry[] entries;
+        version (Windows)
+        {
+            const mask = GetLogicalDrives();
+            foreach (index; 0 .. 26)
+            {
+                if ((mask & (1u << index)) == 0) continue;
+                const letter = cast(char) ('A' + index);
+                const path = format("%c:\\", letter);
+                ExplorerEntry entry;
+                entry.path = path;
+                entry.name = driveDisplayName(path);
+                entry.directory = true;
+                entry.drive = true;
+                entry.type = driveTypeText(GetDriveTypeW(path.toUTF16z));
+                ulong freeBytes;
+                ulong totalBytes;
+                if (queryDiskSpace(path, freeBytes, totalBytes))
+                {
+                    entry.size = totalBytes;
+                    entry.sizeText = diskSizeText(freeBytes, totalBytes);
+                }
+                entries ~= entry;
+            }
+        }
+        else
+        {
+            ExplorerEntry entry;
+            entry.path = "/";
+            entry.name = "/";
+            entry.directory = true;
+            entry.drive = true;
+            entry.type = "Filesystem";
+            entries ~= entry;
+        }
+        return entries;
+    }
+
+    private ExplorerEntry[] buildQuickAccessEntries()
+    {
+        ExplorerEntry[] entries;
+
+        version (Windows)
+        {
+            size_t frequentFolderCount;
+            size_t recentFileCount;
+            foreach (path; windowsQuickAccessPaths())
+            {
+                if (path.length == 0 || !exists(path)) continue;
+                if (isDir(path))
+                {
+                    if (frequentFolderCount < 12 && appendQuickAccessFolder(entries, path))
+                        ++frequentFolderCount;
+                }
+                else if (recentFileCount < 20 &&
+                    appendQuickAccessRecentFile(entries, path))
+                    ++recentFileCount;
+            }
+
+            foreach (path; windowsRecentShortcutPaths())
+            {
+                if (path.length == 0 || !exists(path)) continue;
+                if (isDir(path))
+                {
+                    if (frequentFolderCount < 12 && appendQuickAccessFolder(entries, path))
+                        ++frequentFolderCount;
+                }
+                else if (recentFileCount < 20 &&
+                    appendQuickAccessRecentFile(entries, path))
+                    ++recentFileCount;
+            }
+        }
+
+        const current = getcwd();
+        const home = environment.get("USERPROFILE", environment.get("HOME", current));
+        const documents = buildNormalizedPath(home, "Documents");
+        foreach (path; [
+            buildNormalizedPath(home, "Desktop"),
+            buildNormalizedPath(home, "Downloads"),
+            documents,
+            buildNormalizedPath(home, "Pictures"),
+            buildNormalizedPath(home, "Videos")
+        ])
+        {
+            if (quickAccessFolderCount(entries) >= 12) break;
+            appendQuickAccessFolder(entries, path);
+        }
+
+        for (int index = cast(int) _history.length - 1;
+            index >= 0 && quickAccessFolderCount(entries) < 12; --index)
+            appendQuickAccessFolder(entries, _history[cast(size_t) index]);
+
+        foreach (path; _recentFiles)
+            appendQuickAccessRecentFile(entries, path);
+        return entries;
+    }
+
+    private static size_t quickAccessFolderCount(const ExplorerEntry[] entries)
+    {
+        size_t count;
+        foreach (entry; entries)
+            if (!entry.quickAccessRecent) ++count;
+        return count;
+    }
+
+    private static bool appendQuickAccessFolder(ref ExplorerEntry[] entries, string path)
+    {
+        if (path.length == 0 || !exists(path) || !isDir(path)) return false;
+        foreach (entry; entries)
+            if (!entry.quickAccessRecent && pathsEqual(entry.path, path))
+                return false;
+
+        ExplorerEntry entry;
+        entry.path = path;
+        entry.name = baseName(path);
+        if (entry.name.length == 0) entry.name = path;
+        entry.directory = true;
+        entry.type = "File folder";
+        entries ~= entry;
+        return true;
+    }
+
+    private static bool appendQuickAccessRecentFile(ref ExplorerEntry[] entries, string path)
+    {
+        if (path.length == 0 || !exists(path) || isDir(path)) return false;
+        foreach (entry; entries)
+            if (pathsEqual(entry.path, path))
+                return false;
+
+        ExplorerEntry entry;
+        entry.path = path;
+        entry.name = baseName(path);
+        if (entry.name.length == 0) entry.name = path;
+        entry.type = typeText(entry.name, false);
+        entry.quickAccessRecent = true;
+        entries ~= entry;
+        return true;
+    }
+
     private void activateNavigation(int index)
     {
         if (index < 0 || index >= cast(int) _navigation.length) return;
         const item = _navigation[cast(size_t) index];
+        if (item.kind == NavigationKind.quickAccess)
+        {
+            openQuickAccess();
+            return;
+        }
+        if (item.kind == NavigationKind.thisPc)
+        {
+            openThisPc();
+            return;
+        }
         if (item.kind == NavigationKind.network)
         {
             openNetworkLocation();
@@ -1384,14 +2194,20 @@ final class WindowsFileManagerRoot : Widget
     private bool navigationItemSelected(const NavigationItem item) const
     {
         if (!item.enabled) return false;
-        if (item.kind == NavigationKind.network) return false;
+        if (item.kind == NavigationKind.quickAccess)
+            return _showQuickAccess;
+        if (item.kind == NavigationKind.thisPc)
+            return _showThisPc;
+        if (item.kind != NavigationKind.folder)
+            return false;
         return item.path.length > 0 && pathsEqual(item.path, _currentPath);
     }
 
     private void activateEntry(int visibleIndex)
     {
-        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleEntries.length) return;
-        const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
+        const entryIndex = entryIndexForVisibleRow(visibleIndex);
+        if (entryIndex < 0) return;
+        const entry = _entries[cast(size_t) entryIndex];
         if (entry.directory)
             navigate(entry.path, true, true);
         else
@@ -1447,6 +2263,7 @@ final class WindowsFileManagerRoot : Widget
 
     private void goUp()
     {
+        if (_showQuickAccess || _showThisPc) return;
         const parent = dirName(_currentPath);
         if (parent.length > 0 && !pathsEqual(parent, _currentPath))
             navigate(parent, true, true);
@@ -1454,27 +2271,48 @@ final class WindowsFileManagerRoot : Widget
 
     private void refresh()
     {
+        if (_showQuickAccess)
+        {
+            openQuickAccess();
+            return;
+        }
+        if (_showThisPc)
+        {
+            openThisPc();
+            return;
+        }
         navigate(_currentPath, false, false);
     }
 
     private void submitAddress()
     {
         const requested = _addressField.textUtf8();
+        if (icmp(requested, "This PC") == 0)
+        {
+            openThisPc();
+            requestFocus();
+            return;
+        }
+        if (icmp(requested, "Quick Access") == 0)
+        {
+            openQuickAccess();
+            requestFocus();
+            return;
+        }
         navigate(requested, true, true);
-        _addressField.setText(_currentPath, false);
+        _addressField.setText(_showThisPc ? "This PC" : _currentPath, false);
         requestFocus();
     }
 
     private bool hasSelection() const
     {
-        return _selectedVisibleIndex >= 0 &&
-            _selectedVisibleIndex < cast(int) _visibleEntries.length;
+        return entryIndexForVisibleRow(_selectedVisibleIndex) >= 0;
     }
 
     private ExplorerEntry selectedEntry() const
     {
         if (!hasSelection()) return ExplorerEntry.init;
-        return _entries[cast(size_t) _visibleEntries[cast(size_t) _selectedVisibleIndex]];
+        return _entries[cast(size_t) entryIndexForVisibleRow(_selectedVisibleIndex)];
     }
 
     private void createNewFolder()
@@ -1489,6 +2327,13 @@ final class WindowsFileManagerRoot : Widget
 
     private void createDirectoryItem(string path)
     {
+        if (_showQuickAccess || _showThisPc)
+        {
+            _statusText = _showThisPc ? "This PC is not a folder." :
+                "Quick Access is not a folder.";
+            invalidate();
+            return;
+        }
         try
         {
             mkdir(path);
@@ -1506,6 +2351,13 @@ final class WindowsFileManagerRoot : Widget
 
     private void createFileItem(string path)
     {
+        if (_showQuickAccess || _showThisPc)
+        {
+            _statusText = _showThisPc ? "This PC is not a folder." :
+                "Quick Access is not a folder.";
+            invalidate();
+            return;
+        }
         try
         {
             writeFile(path, "");
@@ -1592,9 +2444,10 @@ final class WindowsFileManagerRoot : Widget
 
     private void selectPath(string path)
     {
-        foreach (visibleIndex, entryIndex; _visibleEntries)
+        foreach (visibleIndex, row; _visibleRows)
         {
-            if (pathsEqual(_entries[cast(size_t) entryIndex].path, path))
+            if (row.entryIndex >= 0 &&
+                pathsEqual(_entries[cast(size_t) row.entryIndex].path, path))
             {
                 _selectedVisibleIndex = cast(int) visibleIndex;
                 ensureSelectionVisible();
@@ -1608,9 +2461,8 @@ final class WindowsFileManagerRoot : Widget
     private void ensureSelectionVisible()
     {
         if (!hasSelection()) return;
-        const row = rowHeightPx();
-        const top = _selectedVisibleIndex * row;
-        const bottom = top + row;
+        const top = _visibleRowOffsets[cast(size_t) _selectedVisibleIndex];
+        const bottom = top + visibleRowHeight(_selectedVisibleIndex);
         if (top < _scrollY)
             setListScroll(top);
         else if (bottom > _scrollY + _rowsRect.height)
@@ -1621,8 +2473,12 @@ final class WindowsFileManagerRoot : Widget
     {
         try
         {
-            if (openPathWithSystem(path))
+            const opened = openPathWithSystem(path);
+            if (opened)
+            {
+                recordRecentFile(path);
                 _statusText = "Opened " ~ baseName(path);
+            }
             else
                 _statusText = "No system opener is available for " ~ baseName(path);
         }
@@ -1631,6 +2487,75 @@ final class WindowsFileManagerRoot : Widget
             _statusText = "Cannot open item: " ~ error.msg;
         }
         invalidate();
+    }
+
+    private void showProperties(string path)
+    {
+        if (path.length == 0) return;
+        version (Windows)
+        {
+            bool directory;
+            ulong size;
+            string sizeText;
+            string modified;
+            try
+            {
+                const item = DirEntry(path);
+                directory = item.isDir;
+                if (!directory) size = item.size;
+                version (Windows)
+                {
+                    if (directory && pathsEqual(path, rootPathFor(path)))
+                    {
+                        ulong freeBytes;
+                        ulong totalBytes;
+                        if (queryDiskSpace(path, freeBytes, totalBytes))
+                            sizeText = diskSizeText(freeBytes, totalBytes);
+                    }
+                }
+                modified = format("%s", item.timeLastModified);
+            }
+            catch (Exception error)
+            {
+                _statusText = "Cannot read properties: " ~ error.msg;
+                invalidate();
+                return;
+            }
+
+            const name = baseName(path).length > 0 ? baseName(path) : path;
+            if (_propertiesWindow is null)
+                _propertiesWindow = new PropertiesWindow();
+            _propertiesWindow.show(path, name, typeText(name, directory), dirName(path),
+                directory ? (sizeText.length > 0 ? sizeText : "Folder") : humanSize(size),
+                modified);
+            _statusText = _propertiesWindow.visible()
+                ? "Showing properties for " ~ name
+                : "Cannot open the Properties window.";
+        }
+        else
+            _statusText = "Properties are only available on Windows.";
+        invalidate();
+    }
+
+    private void recordRecentFile(string path)
+    {
+        if (path.length == 0) return;
+        string[] updated = [path];
+        foreach (recent; _recentFiles)
+        {
+            if (!pathsEqual(recent, path))
+                updated ~= recent;
+        }
+        if (updated.length > 10)
+            updated = updated[0 .. 10];
+        _recentFiles = updated;
+        if (_showQuickAccess)
+            openQuickAccess();
+        else
+        {
+            rebuildNavigation();
+            setSidebarScroll(_sidebarScrollY);
+        }
     }
 
     private void openNetworkLocation()
@@ -1660,6 +2585,13 @@ final class WindowsFileManagerRoot : Widget
 
     private void copyCurrentPath()
     {
+        if (_showQuickAccess || _showThisPc)
+        {
+            _statusText = _showThisPc ? "This PC has no filesystem path." :
+                "Quick Access has no filesystem path.";
+            invalidate();
+            return;
+        }
         if (writeClipboardText(_currentPath))
             _statusText = "Copied current folder path.";
         else
@@ -1667,9 +2599,89 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
-    private void showContextMenuFor(Point localPosition, Point globalPosition)
+    private void showContextMenuFor(Point localPosition)
     {
-        const visibleIndex = entryIndexAt(localPosition);
+        const globalPosition = localToGlobal(localPosition);
+        const navigationIndex = navigationIndexAt(localPosition);
+        if (navigationIndex >= 0)
+        {
+            const navigationItem = _navigation[cast(size_t) navigationIndex];
+            if (navigationItem.kind == NavigationKind.thisPc && navigationItem.enabled)
+            {
+                ContextMenuItem[] navigationItems;
+                navigationItems ~= ContextMenuItem.command("Open", IconKind.open,
+                    delegate() { openThisPc(); });
+                navigationItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
+                    delegate() { openThisPc(); }, "F5");
+                showContextMenu(this, globalPosition, navigationItems);
+                return;
+            }
+            if (navigationItem.kind == NavigationKind.folder &&
+                navigationItem.enabled && navigationItem.path.length > 0)
+            {
+                ContextMenuItem[] navigationItems;
+                navigationItems ~= ContextMenuItem.command("Open", IconKind.open,
+                    delegate() { navigate(navigationItem.path, true, true); });
+                navigationItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                    delegate() { showProperties(navigationItem.path); });
+                showContextMenu(this, globalPosition, navigationItems);
+                return;
+            }
+        }
+        if (_showQuickAccess)
+        {
+            const visibleIndex = visibleEntryIndexAt(localPosition);
+            if (visibleIndex >= 0)
+            {
+                _selectedVisibleIndex = visibleIndex;
+                updateSelectedStatus();
+                invalidate();
+            }
+            ContextMenuItem[] quickAccessItems;
+            if (hasSelection())
+            {
+                const entry = selectedEntry();
+                quickAccessItems ~= ContextMenuItem.command("Open", IconKind.open,
+                    delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+                if (!entry.directory)
+                    quickAccessItems ~= ContextMenuItem.command("Open with system", IconKind.open,
+                        delegate() { openPath(entry.path); });
+                quickAccessItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                    delegate() { showProperties(entry.path); });
+                quickAccessItems ~= ContextMenuItem.separatorItem();
+            }
+            quickAccessItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
+                delegate() { refresh(); }, "F5");
+            showContextMenu(this, globalPosition, quickAccessItems);
+            return;
+        }
+        if (_showThisPc)
+        {
+            const visibleIndex = visibleEntryIndexAt(localPosition);
+            if (visibleIndex >= 0)
+            {
+                _selectedVisibleIndex = visibleIndex;
+                updateSelectedStatus();
+                invalidate();
+            }
+            ContextMenuItem[] thisPcItems;
+            if (hasSelection())
+            {
+                const entry = selectedEntry();
+                thisPcItems ~= ContextMenuItem.command("Open", IconKind.open,
+                    delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+                thisPcItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                    delegate() { showProperties(entry.path); });
+                thisPcItems ~= ContextMenuItem.command("Copy path", IconKind.file,
+                    delegate() { copySelectedPath(); }, "Ctrl+C");
+                thisPcItems ~= ContextMenuItem.separatorItem();
+            }
+            thisPcItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
+                delegate() { refresh(); }, "F5");
+            showContextMenu(this, globalPosition, thisPcItems);
+            return;
+        }
+        const visibleIndex = visibleEntryIndexAt(localPosition);
         if (visibleIndex >= 0)
         {
             _selectedVisibleIndex = visibleIndex;
@@ -1686,6 +2698,8 @@ final class WindowsFileManagerRoot : Widget
             if (!entry.directory)
                 items ~= ContextMenuItem.command("Open with system", IconKind.open,
                     delegate() { openPath(entry.path); });
+            items ~= ContextMenuItem.command("Properties", IconKind.file,
+                delegate() { showProperties(entry.path); });
             items ~= ContextMenuItem.command("Copy path", IconKind.file,
                 delegate() { copySelectedPath(); }, "Ctrl+C");
             items ~= ContextMenuItem.separatorItem();
@@ -1694,6 +2708,12 @@ final class WindowsFileManagerRoot : Widget
             delegate() { createNewFolder(); }, "Ctrl+N");
         items ~= ContextMenuItem.command("New text file", IconKind.newDocument,
             delegate() { createNewTextFile(); });
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command(
+            _groupBy == GroupBy.dateModified ? "Ungroup" : "Group by date modified",
+            IconKind.file,
+            delegate() { setGroupBy(_groupBy == GroupBy.dateModified
+                ? GroupBy.none : GroupBy.dateModified); });
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Copy current path", IconKind.file,
             delegate() { copyCurrentPath(); });
@@ -1704,28 +2724,56 @@ final class WindowsFileManagerRoot : Widget
 
     private void updateStatus()
     {
-        if (_searchQuery.length > 0)
+        if (_showThisPc)
+        {
+            if (_searchQuery.length > 0)
+                _statusText = format("%d matches in %d drives",
+                    visibleItemCount(), _entries.length);
+            else
+                _statusText = format("%d drives", _entries.length);
+        }
+        else if (_searchQuery.length > 0)
             _statusText = format("%d matches in %d items",
-                _visibleEntries.length, _entries.length);
+                visibleItemCount(), _entries.length);
         else
             _statusText = format("%d items", _entries.length);
     }
 
     private void updateSelectedStatus()
     {
-        if (_selectedVisibleIndex < 0 ||
-            _selectedVisibleIndex >= cast(int) _visibleEntries.length)
+        const entryIndex = entryIndexForVisibleRow(_selectedVisibleIndex);
+        if (entryIndex < 0)
         {
             updateStatus();
             return;
         }
-        const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) _selectedVisibleIndex]];
-        _statusText = entry.directory ? entry.name ~ " folder" :
-            entry.name ~ "  " ~ humanSize(entry.size);
+        const entry = _entries[cast(size_t) entryIndex];
+        const sizeText = entrySizeText(entry);
+        _statusText = sizeText.length > 0 ? entry.name ~ "  " ~ sizeText :
+            (entry.directory ? entry.name ~ " folder" :
+                entry.name ~ "  " ~ humanSize(entry.size));
     }
 
     private void updateWindowTitle()
     {
+        if (_showQuickAccess)
+        {
+            const fullTitle = "Quick Access - Aurora Windows File Manager";
+            if (_window !is null)
+                _window.setTitle(fullTitle);
+            if (onTitleChanged !is null)
+                onTitleChanged(fullTitle);
+            return;
+        }
+        if (_showThisPc)
+        {
+            const fullTitle = "This PC - Aurora Windows File Manager";
+            if (_window !is null)
+                _window.setTitle(fullTitle);
+            if (onTitleChanged !is null)
+                onTitleChanged(fullTitle);
+            return;
+        }
         string title = baseName(_currentPath);
         if (title.length == 0) title = displayRoot(_currentPath);
         if (title.length == 0) title = "File Manager";
@@ -1765,7 +2813,11 @@ final class WindowsFileManagerRoot : Widget
             case CommandButton.forward:
                 return canGoForward();
             case CommandButton.up:
+                return !_showQuickAccess && !_showThisPc &&
+                    _currentPath.length > 0 && exists(_currentPath) && isDir(_currentPath);
             case CommandButton.refresh:
+                return _showQuickAccess || _showThisPc ||
+                    (_currentPath.length > 0 && exists(_currentPath) && isDir(_currentPath));
             case CommandButton.newFolder:
             case CommandButton.newTextFile:
                 return _currentPath.length > 0 && exists(_currentPath) && isDir(_currentPath);
@@ -1784,13 +2836,28 @@ final class WindowsFileManagerRoot : Widget
         return index >= 0 && index < cast(int) _navigation.length ? index : -1;
     }
 
-    private int entryIndexAt(Point point) const
+    // Returns the visual row index. The visual index includes group headers;
+    // it must not be confused with the underlying _entries index.
+    private int visibleEntryIndexAt(Point point) const
     {
         if (!_rowsRect.contains(point)) return -1;
-        const row = rowHeightPx();
-        const y = point.y - _rowsRect.y + _scrollY;
-        const index = y / row;
-        return index >= 0 && index < cast(int) _visibleEntries.length ? index : -1;
+        foreach (index; 0 .. _visibleRows.length)
+        {
+            const visibleIndex = cast(int) index;
+            if (entryIndexForVisibleRow(visibleIndex) >= 0 &&
+                visibleRowRect(visibleIndex).contains(point))
+                return visibleIndex;
+        }
+        return -1;
+    }
+
+    private Rect visibleRowRect(int visibleIndex) const
+    {
+        if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleRows.length)
+            return Rect.init;
+        return Rect(_rowsRect.x + scaled(20),
+            _rowsRect.y + _visibleRowOffsets[cast(size_t) visibleIndex] - _scrollY,
+            maxInt(0, _usableListWidth - scaled(24)), visibleRowHeight(visibleIndex));
     }
 
     private void setListScroll(int value)
@@ -1809,8 +2876,7 @@ final class WindowsFileManagerRoot : Widget
 
     private int maxListScroll() const
     {
-        return maxInt(0, cast(int) _visibleEntries.length * rowHeightPx() -
-            _rowsRect.height);
+        return maxInt(0, _visibleContentHeight - _rowsRect.height);
     }
 
     private int maxSidebarScroll() const
@@ -1856,7 +2922,7 @@ final class WindowsFileManagerRoot : Widget
             scrollbar, _rowsRect.height);
         if (listMax > 0)
         {
-            const contentHeight = cast(int) _visibleEntries.length * rowHeightPx();
+            const contentHeight = _visibleContentHeight;
             const thumbHeight = clampInt(_rowsRect.height * _rowsRect.height /
                 maxInt(1, contentHeight), scaled(34), maxInt(scaled(34), _rowsRect.height));
             const travel = maxInt(1, _rowsRect.height - thumbHeight);
@@ -2002,16 +3068,29 @@ final class WindowsFileManagerRoot : Widget
             explorerLine);
 
         auto rows = canvas.clipped(_rowsRect);
-        const rowHeightScaled = rowHeightPx();
-        const first = maxInt(0, _scrollY / rowHeightScaled);
-        const last = minInt(cast(int) _visibleEntries.length,
-            (_scrollY + _rowsRect.height) / rowHeightScaled + 2);
-        foreach (visibleIndex; first .. last)
+        foreach (visibleIndex, visibleRow; _visibleRows)
         {
-            const entry = _entries[cast(size_t) _visibleEntries[cast(size_t) visibleIndex]];
-            const y = _rowsRect.y + visibleIndex * rowHeightScaled - _scrollY;
-            const row = Rect(_rowsRect.x + scaled(20), y,
-                maxInt(0, _usableListWidth - scaled(24)), rowHeightScaled);
+            const row = visibleRowRect(cast(int) visibleIndex);
+            if (row.bottom() <= _rowsRect.y) continue;
+            if (row.y >= _rowsRect.bottom()) break;
+            if (visibleRow.entryIndex < 0)
+            {
+                if (visibleRow.separator)
+                {
+                    rows.fillRect(Rect(row.x + scaled(8), row.y + row.height / 2,
+                        maxInt(0, row.width - scaled(16)), 1), explorerLine);
+                    continue;
+                }
+                rows.fillRect(row, explorerHeader);
+                const headerLabel = _showQuickAccess ? visibleRow.groupLabel :
+                    "Date modified: " ~ visibleRow.groupLabel;
+                drawText(rows, Rect(row.x + scaled(8), row.y, row.width - scaled(16),
+                    row.height), headerLabel,
+                    explorerMuted, HorizontalAlign.left);
+                rows.fillRect(Rect(row.x, row.bottom() - 1, row.width, 1), explorerLine);
+                continue;
+            }
+            const entry = _entries[cast(size_t) visibleRow.entryIndex];
             if (_draggingEntry && visibleIndex == _dropTargetVisibleIndex)
             {
                 rows.fillRect(row, explorerDropTarget);
@@ -2023,7 +3102,8 @@ final class WindowsFileManagerRoot : Widget
                 rows.strokeRect(row, explorerSelectionBorder, 1);
             }
 
-            const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
+            const icon = entry.drive ? IconKind.drive :
+                (entry.directory ? IconKind.folder : iconForFile(entry.name));
             drawIcon(rows, icon, Rect(row.x + scaled(6), row.y + scaled(4),
                 scaled(17), scaled(17)), explorerText,
                 entry.directory ? folderAccent : fileAccent);
@@ -2037,7 +3117,7 @@ final class WindowsFileManagerRoot : Widget
                 maxInt(0, _sizeX - _typeX - scaled(14)), row.height), entry.type,
                 explorerText, HorizontalAlign.left);
             drawText(rows, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
-                row.height), entry.directory ? "" : humanSize(entry.size),
+                row.height), entrySizeText(entry),
                 explorerText, HorizontalAlign.right);
         }
 
@@ -2054,7 +3134,8 @@ final class WindowsFileManagerRoot : Widget
         const preview = Rect(_dragCurrent.x + scaled(12), _dragCurrent.y + scaled(12),
             previewWidth, scaled(30));
         canvas.drawRoundedRect(preview, scaled(2), explorerDragPreview, explorerSelectionBorder, 1);
-        const icon = entry.directory ? IconKind.folder : iconForFile(entry.name);
+        const icon = entry.drive ? IconKind.drive :
+            (entry.directory ? IconKind.folder : iconForFile(entry.name));
         drawIcon(canvas, icon, Rect(preview.x + scaled(8), preview.y + scaled(6),
             scaled(17), scaled(17)),
             explorerText, entry.directory ? folderAccent : fileAccent);
@@ -2176,6 +3257,10 @@ final class WindowsFileManagerRoot : Widget
 
     private string searchPlaceholder() const
     {
+        if (_showQuickAccess)
+            return "Search Quick Access";
+        if (_showThisPc)
+            return "Search This PC";
         string title = baseName(_currentPath);
         if (title.length == 0) title = displayRoot(_currentPath);
         if (title.length == 0) title = "folder";
@@ -2249,6 +3334,62 @@ final class WindowsFileManagerRoot : Widget
         return name.length > 0 ? name : displayRoot(path);
     }
 
+    private static string driveDisplayName(string path)
+    {
+        const root = rootName(path);
+        if (root.length >= 2 && root[1] == ':')
+            return "Local Disk (" ~ root[0 .. 2] ~ ")";
+        return displayRoot(path);
+    }
+
+    private static string entrySizeText(ExplorerEntry entry)
+    {
+        if (entry.sizeText.length > 0) return entry.sizeText;
+        return entry.directory ? "" : humanSize(entry.size);
+    }
+
+    private static string diskSizeText(ulong freeBytes, ulong totalBytes)
+    {
+        if (totalBytes == 0) return "";
+        return humanSize(freeBytes) ~ " free of " ~ humanSize(totalBytes);
+    }
+
+    version (Windows)
+    private static string driveTypeText(uint driveType)
+    {
+        switch (driveType)
+        {
+            case DRIVE_REMOVABLE:
+                return "Removable Drive";
+            case DRIVE_FIXED:
+                return "Local Disk";
+            case DRIVE_REMOTE:
+                return "Network Drive";
+            case DRIVE_CDROM:
+                return "DVD Drive";
+            case DRIVE_RAMDISK:
+                return "RAM Disk";
+            default:
+                return "Drive";
+        }
+    }
+
+    version (Windows)
+    private static bool queryDiskSpace(string path, out ulong freeBytes, out ulong totalBytes)
+    {
+        freeBytes = 0;
+        totalBytes = 0;
+        ULARGE_INTEGER freeAvailable;
+        ULARGE_INTEGER total;
+        ULARGE_INTEGER totalFree;
+        if (GetDiskFreeSpaceExW(path.toUTF16z, &freeAvailable, &total,
+                &totalFree) == FALSE)
+            return false;
+        freeBytes = cast(ulong) totalFree.QuadPart;
+        totalBytes = cast(ulong) total.QuadPart;
+        return true;
+    }
+
     private static bool pathsEqual(string a, string b)
     {
         version (Windows)
@@ -2300,6 +3441,21 @@ final class WindowsFileManagerRoot : Widget
             if (haystack[index .. index + loweredNeedle.length] == loweredNeedle)
                 return true;
         return false;
+    }
+
+    private static string modifiedSortKey(DirEntry item)
+    {
+        try
+        {
+            const time = item.timeLastModified;
+            return format("%04d-%02d-%02d %02d:%02d:%02d",
+                cast(int) time.year, cast(int) time.month, cast(int) time.day,
+                cast(int) time.hour, cast(int) time.minute, cast(int) time.second);
+        }
+        catch (Exception)
+        {
+            return "";
+        }
     }
 
     private static string modifiedText(DirEntry item)
@@ -2420,6 +3576,143 @@ private bool writeSystemClipboardText(string value)
         return false;
     }
     return true;
+}
+
+version (Windows)
+private string windowsWideBufferString(const(wchar)[] buffer)
+{
+    size_t length;
+    while (length < buffer.length && buffer[length] != 0)
+        ++length;
+    return length > 0 ? toUTF8(buffer[0 .. length]) : "";
+}
+
+version (Windows)
+private string windowsRecentFolder()
+{
+    wchar[MAX_PATH] path;
+    if (SHGetFolderPathW(null, CSIDL_RECENT, null, 0, path.ptr) != S_OK)
+        return "";
+    return windowsWideBufferString(path[]);
+}
+
+version (Windows)
+private string resolveWindowsShortcut(string shortcutPath)
+{
+    const initResult = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
+    if (initResult != S_OK && initResult != S_FALSE && initResult != RPC_E_CHANGED_MODE)
+        return "";
+    const shouldUninitialize = initResult == S_OK || initResult == S_FALSE;
+    scope (exit)
+    {
+        if (shouldUninitialize) CoUninitialize();
+    }
+
+    IShellLinkW shellLink;
+    if (CoCreateInstance(&CLSID_ShellLink, null, CLSCTX_INPROC_SERVER,
+            &IID_IShellLinkW, cast(void**) &shellLink) != S_OK || shellLink is null)
+        return "";
+    scope (exit) shellLink.Release();
+
+    IPersistFile persistFile;
+    if (shellLink.QueryInterface(&IID_IPersistFile, cast(void**) &persistFile) != S_OK ||
+        persistFile is null)
+        return "";
+    scope (exit) persistFile.Release();
+
+    if (persistFile.Load(shortcutPath.toUTF16z, STGM_READ) != S_OK)
+        return "";
+
+    wchar[MAX_PATH] target;
+    WIN32_FIND_DATAW findData;
+    if (shellLink.GetPath(target.ptr, cast(int) target.length, &findData, 0) != S_OK)
+        return "";
+    return windowsWideBufferString(target[]);
+}
+
+version (Windows)
+private string[] windowsRecentShortcutPaths()
+{
+    string[] paths;
+    const recentFolder = windowsRecentFolder();
+    if (recentFolder.length == 0 || !exists(recentFolder)) return paths;
+
+    try
+    {
+        foreach (DirEntry item; dirEntries(recentFolder, SpanMode.shallow))
+        {
+            if (item.isDir || icmp(extension(item.name), ".lnk") != 0) continue;
+            const target = resolveWindowsShortcut(item.name);
+            if (target.length > 0 && paths.length < 40)
+                paths ~= target;
+            if (paths.length >= 40) break;
+        }
+    }
+    catch (Exception)
+    {
+    }
+    return paths;
+}
+
+version (Windows)
+private string[] windowsQuickAccessPaths()
+{
+    string[] paths;
+    const initResult = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
+    if (initResult != S_OK && initResult != S_FALSE && initResult != RPC_E_CHANGED_MODE)
+        return paths;
+    const shouldUninitialize = initResult == S_OK || initResult == S_FALSE;
+    scope (exit)
+    {
+        if (shouldUninitialize) CoUninitialize();
+    }
+
+    LPITEMIDLIST quickAccessPidl;
+    const quickAccessNamespace =
+        "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
+    if (SHParseDisplayName(quickAccessNamespace.toUTF16z, null,
+            cast(LPITEMIDLIST) &quickAccessPidl, SFGAOF.init,
+            null) != S_OK || quickAccessPidl is null)
+        return paths;
+    scope (exit) ILFree(quickAccessPidl);
+
+    IShellFolder desktopFolder;
+    if (SHGetDesktopFolder(&desktopFolder) != S_OK || desktopFolder is null)
+        return paths;
+    scope (exit) desktopFolder.Release();
+
+    IShellFolder quickAccessFolder;
+    if (desktopFolder.BindToObject(quickAccessPidl, null, &IID_IShellFolder,
+            cast(void**) &quickAccessFolder) != S_OK || quickAccessFolder is null)
+        return paths;
+    scope (exit) quickAccessFolder.Release();
+
+    IEnumIDList enumerator;
+    const enumFlags = SHCONTF.SHCONTF_FOLDERS | SHCONTF.SHCONTF_NONFOLDERS;
+    if (quickAccessFolder.EnumObjects(null, enumFlags, &enumerator) != S_OK ||
+        enumerator is null)
+        return paths;
+    scope (exit) enumerator.Release();
+
+    while (paths.length < 64)
+    {
+        LPITEMIDLIST child;
+        ULONG fetched;
+        if (enumerator.Next(1, &child, &fetched) != S_OK || fetched == 0 || child is null)
+            break;
+        scope (exit) ILFree(child);
+
+        STRRET displayName;
+        if (quickAccessFolder.GetDisplayNameOf(child, SHGNO.SHGDN_FORPARSING, &displayName) != S_OK)
+            continue;
+        wchar[MAX_PATH] path;
+        if (StrRetToBufW(&displayName, child, path.ptr, cast(UINT) path.length) != S_OK)
+            continue;
+        const resolvedPath = windowsWideBufferString(path[]);
+        if (resolvedPath.length > 0)
+            paths ~= resolvedPath;
+    }
+    return paths;
 }
 
 private bool openPathWithSystem(string path)

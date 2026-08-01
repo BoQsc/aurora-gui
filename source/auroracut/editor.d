@@ -28,7 +28,7 @@ import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory, c
     formatTimecode, isSupportedMediaPath, outputTail, unnamedProjectAutosavePath;
 import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadResult,
     YtDlpDownloadService, YtDlpInstallResult, YtDlpInstallService,
-    ytDlpImportDirectory;
+    normalizeYtDlpMaxHeight, ytDlpImportDirectory, ytDlpMaxWidthForHeight;
 import core.time : MonoTime;
 import std.algorithm : max, min;
 import std.file : exists;
@@ -645,6 +645,7 @@ final class EditorRoot : VBox
     private Button _openProjectButton;
     private Button _recentProjectsButton;
     private Button _downloadMediaButton;
+    private Button _ytDlpQualityButton;
     private Button _undoButton;
     private Button _redoButton;
     private Button _qualityButton;
@@ -748,6 +749,7 @@ final class EditorRoot : VBox
     private PopupOverlay _resolutionPopup;
     private PopupOverlay _compressOutputPopup;
     private bool _openYtDlpDialogAfterInstall;
+    private int _ytDlpMaxHeight = 1080;
 
     private bool _clipboardHasClip;
     private TimelineClip _clipboardClip;
@@ -773,6 +775,8 @@ final class EditorRoot : VBox
     private bool _playbackAudioStarted;
     private bool _playbackAudioRequired;
     private bool _playbackAwaitingAudioClock;
+    private bool _playbackVideoWaiting;
+    private double _playbackVideoWaitClock;
     private double _playbackAudioClockWait;
     private double _playbackAudioClockLostWait;
     private ulong _playbackModelRevision;
@@ -803,7 +807,8 @@ final class EditorRoot : VBox
     // pending seek instead of synchronously restarting FFmpeg for every pixel.
     private enum double playbackVideoLeadSeconds = 0.018;
     private enum double playbackVideoLagToleranceSeconds = 0.075;
-    private enum double playbackAudioClockLostAbortSeconds = 0.10;
+    private enum double directPlaybackPrerollSeconds = 0.055;
+    private enum double livePlaybackPrerollSeconds = 0.090;
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
@@ -2404,6 +2409,46 @@ final class EditorRoot : VBox
     {
         if (_downloadPopup !is null) _downloadPopup.dismiss();
         _downloadPopup = null;
+        _ytDlpQualityButton = null;
+        _ytDlpMaxHeight = 1080;
+    }
+
+    private string ytDlpQualityLabel(int height) const
+    {
+        height = normalizeYtDlpMaxHeight(height);
+        return format("Up to %dx%d ▾", ytDlpMaxWidthForHeight(height),
+            height);
+    }
+
+    private void setYtDlpMaxHeight(int height)
+    {
+        _ytDlpMaxHeight = normalizeYtDlpMaxHeight(height);
+        if (_ytDlpQualityButton !is null)
+            _ytDlpQualityButton.setText(ytDlpQualityLabel(_ytDlpMaxHeight));
+    }
+
+    /** Open the quality menu without dismissing the enclosing download popup. */
+    private void showYtDlpQualityMenu()
+    {
+        if (_ytDlpQualityButton is null) return;
+        ContextMenuItem[] items;
+        foreach (height; [1080, 720, 480, 360, 240])
+        {
+            const selected = _ytDlpMaxHeight == height;
+            items ~= ContextMenuItem.check(ytDlpQualityLabel(height), selected,
+                delegate() { setYtDlpMaxHeight(height); });
+        }
+
+        auto root = popupRoot(_ytDlpQualityButton);
+        if (root is null) return;
+        auto menu = new ContextMenu(items, _ytDlpQualityButton);
+        root.add(menu);
+        root.bringChildToFront(menu);
+        const ownerOrigin = _ytDlpQualityButton.globalOrigin();
+        const rootOrigin = root.globalOrigin();
+        menu.openBelow(Rect(ownerOrigin.x - rootOrigin.x,
+            ownerOrigin.y - rootOrigin.y, _ytDlpQualityButton.bounds().width,
+            _ytDlpQualityButton.bounds().height));
     }
 
     private void startYtDlpAddonInstall(bool openDialogAfterInstall)
@@ -2474,11 +2519,31 @@ final class EditorRoot : VBox
         audioOnly.setId("yt-dlp-audio-only");
         optionRow.add(new Spacer());
 
+        auto qualityRow = content.add(new HBox(8));
+        qualityRow.layoutHints().preferredHeight = 34;
+        auto qualityLabel = qualityRow.add(new Label("Video quality"));
+        qualityLabel.layoutHints().preferredWidth = 112;
+        qualityRow.add(new Spacer());
+        _ytDlpQualityButton = qualityRow.add(new Button(
+            ytDlpQualityLabel(_ytDlpMaxHeight)));
+        _ytDlpQualityButton.setId("yt-dlp-quality");
+        _ytDlpQualityButton.layoutHints().preferredWidth = 160;
+        _ytDlpQualityButton.layoutHints().preferredHeight = 30;
+        _ytDlpQualityButton.onClick = delegate() { showYtDlpQualityMenu(); };
+        audioOnly.onChanged = delegate(bool value) {
+            _ytDlpQualityButton.setEnabled(!value);
+        };
+
         auto hint = content.add(new Label("Downloaded files are kept in " ~
             ytDlpImportDirectory()));
         hint.setScale(1);
         hint.setColor(Color.fromHex(0x87919c));
         hint.layoutHints().preferredHeight = 28;
+
+        auto openDownloadFolder = content.add(new Button("Open folder", IconKind.folder));
+        openDownloadFolder.setId("yt-dlp-open-folder");
+        openDownloadFolder.layoutHints().preferredHeight = 30;
+        openDownloadFolder.onClick = delegate() { revealYtDlpDownloadFolder(); };
 
         auto footer = content.add(new HBox(8));
         footer.layoutHints().preferredHeight = 42;
@@ -2489,7 +2554,8 @@ final class EditorRoot : VBox
         downloadButton.setAccent(true);
 
         bool delegate() accept = delegate bool() {
-            if (!queueYtDlpDownload(urlField.textUtf8(), audioOnly.checked()))
+            if (!queueYtDlpDownload(urlField.textUtf8(), audioOnly.checked(),
+                _ytDlpMaxHeight))
                 return false;
             closeYtDlpDialog();
             return true;
@@ -2502,15 +2568,20 @@ final class EditorRoot : VBox
         const origin = owner.localToGlobal(Point(0, 0));
         _downloadPopup = showPopup(owner,
             Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
-            content, PopupPlacement.below, Size(560, 210));
+            content, PopupPlacement.below, Size(560, 320));
         if (_downloadPopup !is null)
         {
-            _downloadPopup.onDismissed = delegate() { _downloadPopup = null; };
+            _downloadPopup.onDismissed = delegate() {
+                _downloadPopup = null;
+                _ytDlpQualityButton = null;
+                _ytDlpMaxHeight = 1080;
+            };
             urlField.requestFocus();
         }
     }
 
-    private bool queueYtDlpDownload(string requestedUrl, bool audioOnly)
+    private bool queueYtDlpDownload(string requestedUrl, bool audioOnly,
+        int maxHeight)
     {
         const url = requestedUrl.strip();
         if (!isYtDlpUrl(url))
@@ -2535,7 +2606,8 @@ final class EditorRoot : VBox
         }
 
         const kind = audioOnly ? YtDlpDownloadKind.audio : YtDlpDownloadKind.video;
-        if (!_downloadService.enqueue(_tools.ytDlpCommand, url, kind))
+        const height = normalizeYtDlpMaxHeight(maxHeight);
+        if (!_downloadService.enqueue(_tools.ytDlpCommand, url, kind, height))
         {
             setStatus("Could not queue the yt-dlp download.");
             return false;
@@ -2543,7 +2615,8 @@ final class EditorRoot : VBox
 
         setStatus(audioOnly
             ? "Downloading audio with yt-dlp in the background…"
-            : "Downloading video with yt-dlp in the background…");
+            : format("Downloading video up to %dx%d with yt-dlp in the background…",
+                ytDlpMaxWidthForHeight(height), height));
         return true;
     }
 
@@ -5342,6 +5415,7 @@ final class EditorRoot : VBox
         _playbackRunning = true;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackVideoWaiting = false;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _lastTimeLabelPlaybackPosition = -1.0;
@@ -5434,6 +5508,7 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _seekResumePlayback = false;
@@ -5460,6 +5535,7 @@ final class EditorRoot : VBox
         _audioPlayer.stop();
         _playbackAudioStarted = false;
         _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackClockValid = false;
@@ -5467,36 +5543,6 @@ final class EditorRoot : VBox
         _preview.setPlaying(false);
         updatePlaybackButtons();
         setStatus(statusText);
-    }
-
-    private void restartPlaybackForSync(string statusText)
-    {
-        if (_playbackKind == PlaybackKind.none || _playbackAsset is null) return;
-        appLog(statusText);
-        _playbackPosition = clampValue(clockPlaybackPosition(), _playbackStart,
-            _playbackEnd);
-        _videoStream.stop();
-        _audioPlayer.stop();
-        _playbackAudioStarted = false;
-        _playbackAwaitingAudioClock = false;
-        _playbackAudioClockWait = 0.0;
-        _playbackAudioClockLostWait = 0.0;
-        _playbackClockValid = false;
-        _playbackAwaitingFirstFrame = false;
-        _preview.setPlaying(false);
-        if (_playbackKind == PlaybackKind.sequence)
-        {
-            _timeline.setPlayhead(_playbackPosition, false);
-            syncPreviewTitleLayers(_playbackPosition);
-        }
-        _scrub.setValue(_playbackPosition, false);
-        updatePlaybackButtons();
-        updateTimeLabel();
-        setStatus(statusText);
-        if (_playbackPosition >= _playbackEnd - 0.001)
-            finishPlayback();
-        else
-            startPlaybackStreams();
     }
 
     private string playbackPreparingStatus() const
@@ -5514,6 +5560,21 @@ final class EditorRoot : VBox
         return "Preparing source playback.";
     }
 
+    private string[] playbackDecodeInputOptions(const MediaAsset asset) const
+    {
+        if (asset !is null && asset.hasVideo)
+        {
+            const codec = asset.videoCodec.toLower();
+            // Existing project files may not contain codec metadata. Their
+            // large-frame dimensions still identify the downloaded AV1 media
+            // that must not receive the startup H.264-only D3D11VA probe.
+            if (codec == "av1" || (codec.length == 0 && asset.width >= 2560 &&
+                asset.height >= 1440))
+                return ["-c:v", "libdav1d"];
+        }
+        return _tools.videoDecodeInputOptions.dup;
+    }
+
     private string playbackRunningStatus() const
     {
         if (_playbackKind == PlaybackKind.sequence)
@@ -5527,6 +5588,32 @@ final class EditorRoot : VBox
             return "Playing the rendered timeline composition.";
         }
         return "Playing source frames inside Aurora Preview.";
+    }
+
+    private void waitForVideoBuffer()
+    {
+        if (_playbackVideoWaiting || _playbackKind == PlaybackKind.none)
+            return;
+        _playbackVideoWaitClock = clockPlaybackPosition();
+        _playbackPosition = clampValue(displayedPlaybackFrameTime(),
+            _playbackStart, _playbackEnd);
+        _playbackVideoWaiting = true;
+        _playbackClockValid = false;
+        if (_playbackAudioRequired) _audioPlayer.pause();
+        _preview.setPlaying(false);
+        updatePlaybackButtons();
+        setStatus("Buffering video before continuing playback…");
+    }
+
+    private void resumeAfterVideoBuffer()
+    {
+        if (!_playbackVideoWaiting) return;
+        _playbackVideoWaiting = false;
+        if (_playbackAudioRequired) _audioPlayer.resume();
+        resetPlaybackClock();
+        _preview.setPlaying(true);
+        updatePlaybackButtons();
+        setStatus(playbackRunningStatus());
     }
 
     private int liveDecodeHeight() const
@@ -5553,16 +5640,16 @@ final class EditorRoot : VBox
         final switch (_playbackPerformance)
         {
             case PlaybackPerformance.responsive:
-                pixelBudget = 50_000_000;
-                modeCap = 45;
+                pixelBudget = 28_000_000;
+                modeCap = 30;
                 break;
             case PlaybackPerformance.balanced:
-                pixelBudget = 70_000_000;
-                modeCap = 40;
+                pixelBudget = 34_000_000;
+                modeCap = 30;
                 break;
             case PlaybackPerformance.fidelity:
-                pixelBudget = 100_000_000;
-                modeCap = 60;
+                pixelBudget = 60_000_000;
+                modeCap = 45;
                 break;
         }
         if (fps > modeCap) fps = modeCap;
@@ -5572,6 +5659,12 @@ final class EditorRoot : VBox
             if (fps > budgetFps) fps = budgetFps;
         }
         return fps;
+    }
+
+    private double playbackPrerollSeconds() const
+    {
+        return _sequencePlaybackLive ? livePlaybackPrerollSeconds :
+            directPlaybackPrerollSeconds;
     }
 
     /** Earliest future sequence position containing audible media.  The mixed
@@ -5715,6 +5808,7 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = playbackAudioRequiredNow();
         _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackClockValid = false;
@@ -5783,13 +5877,14 @@ final class EditorRoot : VBox
             {
                 videoStarted = _videoStream.start(_playbackAsset.path, mediaPosition,
                     remaining, decode.width, decode.height, fps, _playbackAsset.name,
-                    _tools.videoDecodeInputOptions);
+                    playbackDecodeInputOptions(_playbackAsset));
                 if (!videoStarted)
                     setStatus("The embedded video decoder could not be started.");
             }
             else
                 _previewService.requestAsset(_playbackAsset, mediaPosition,
-                    decode.width, decode.height, _tools.videoDecodeInputOptions);
+                    decode.width, decode.height,
+                    playbackDecodeInputOptions(_playbackAsset));
         }
 
         if ((_sequencePlaybackLive || _playbackAsset.hasVideo) && !videoStarted)
@@ -5830,6 +5925,7 @@ final class EditorRoot : VBox
         clearPendingSeekState();
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackVideoWaiting = false;
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
@@ -5923,6 +6019,7 @@ final class EditorRoot : VBox
             _playbackAudioStarted = false;
             _playbackAudioRequired = false;
             _playbackAwaitingAudioClock = false;
+            _playbackVideoWaiting = false;
             _playbackAudioClockWait = 0.0;
             _playbackAudioClockLostWait = 0.0;
             _previewService.cancel();
@@ -5961,6 +6058,15 @@ final class EditorRoot : VBox
                     decode.width, decode.height);
                 return;
             }
+            MediaAsset directFrameAsset;
+            double directFrameSourceTime;
+            if (resolveDirectSequenceFrame(_playbackPosition,
+                directFrameAsset, directFrameSourceTime))
+            {
+                _previewService.requestAsset(directFrameAsset,
+                    directFrameSourceTime, decode.width, decode.height);
+                return;
+            }
             // Never seek a possibly stale/black proxy for a paused composition.
             // Render the requested sequence frame from the actual source clips
             // through the compositor graph instead. This is also what normal
@@ -5992,6 +6098,10 @@ final class EditorRoot : VBox
             _playbackAsset is null) return;
         _playbackPosition = clampValue(_seekTarget, _playbackStart, _playbackEnd);
         clearPendingSeekState();
+        // A drag may have queued a low-resolution still frame while the
+        // pointer was moving. It is obsolete as soon as the seek is committed;
+        // leave no competing FFmpeg compositor alive while playback restarts.
+        _previewService.cancel();
 
         if (_playbackPosition >= _playbackEnd - 0.001)
         {
@@ -6119,6 +6229,7 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackModelRevision = 0;
@@ -6149,6 +6260,7 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _seekResumePlayback = false;
@@ -6324,13 +6436,15 @@ final class EditorRoot : VBox
             const candidate = track.clips[cast(size_t) index];
             if (candidate.isText()) continue;
             auto candidateAsset = _model.assetForClip(candidate);
-            if (candidateAsset is null || !candidateAsset.hasVideo ||
+            if (candidateAsset is null ||
+                (!candidateAsset.hasVideo && !candidateAsset.isStillImage()) ||
                 clipNeedsVisualComposition(candidate))
                 return false;
             if (found) return false;
             found = true;
             asset = candidateAsset;
-            sourceTime = candidate.inPoint + (sequenceTime - candidate.start);
+            sourceTime = candidateAsset.isStillImage() ? 0.0 :
+                candidate.inPoint + (sequenceTime - candidate.start);
         }
         return found;
     }
@@ -6565,6 +6679,7 @@ final class EditorRoot : VBox
         result.cropHeight = clip.cropHeight;
         result.hasVideo = asset.hasVideo;
         result.hasAudio = asset.hasAudio;
+        result.videoCodec = asset.videoCodec;
         result.sourceWidth = asset.width;
         result.sourceHeight = asset.height;
         result.trackIndex = lane;
@@ -6823,13 +6938,13 @@ final class EditorRoot : VBox
 
     private void addPlaybackPerformanceItems(ref ContextMenuItem[] items)
     {
-        items ~= ContextMenuItem.check("Playback: Responsive (720p max)",
+        items ~= ContextMenuItem.check("Playback: Responsive (720p / 30 FPS max)",
             _playbackPerformance == PlaybackPerformance.responsive,
             delegate() { setPlaybackPerformance(PlaybackPerformance.responsive); });
-        items ~= ContextMenuItem.check("Playback: Balanced (1080p max)",
+        items ~= ContextMenuItem.check("Playback: Balanced (1080p / 30 FPS max)",
             _playbackPerformance == PlaybackPerformance.balanced,
             delegate() { setPlaybackPerformance(PlaybackPerformance.balanced); });
-        items ~= ContextMenuItem.check("Playback: Maximum fidelity",
+        items ~= ContextMenuItem.check("Playback: Maximum fidelity (45 FPS max)",
             _playbackPerformance == PlaybackPerformance.fidelity,
             delegate() { setPlaybackPerformance(PlaybackPerformance.fidelity); });
     }
@@ -7370,6 +7485,36 @@ final class EditorRoot : VBox
             setStatus("Opened the export output folder.");
     }
 
+    private void revealYtDlpDownloadFolder()
+    {
+        const path = ytDlpImportDirectory();
+        if (openDirectoryInFileManager(path, "yt-dlp download folder"))
+            setStatus("Opened the yt-dlp download folder.");
+    }
+
+    private bool openDirectoryInFileManager(string path, string description)
+    {
+        try
+        {
+            string[] arguments;
+            version (Windows)
+                arguments = ["explorer.exe", path];
+            else version (OSX)
+                arguments = ["open", path];
+            else
+                arguments = ["xdg-open", path];
+            spawnProcess(arguments, cast(const string[string]) null,
+                Config.detached | Config.suppressConsole);
+            return true;
+        }
+        catch (Exception error)
+        {
+            setStatus("Could not open the " ~ description ~ ": " ~
+                outputTail(error.msg, 500));
+            return false;
+        }
+    }
+
     private bool revealPathInFileManager(string path, string description)
     {
         try
@@ -7558,9 +7703,13 @@ final class EditorRoot : VBox
                      fabs(_seekTarget - _seekStillTarget) >= 0.010))
                 {
                     _playbackPosition = _seekTarget;
-                    // A settled drag gets a small responsive thumbnail; release
-                    // commits the full live decoder exactly once.
-                    requestPlaybackStill(540);
+                    // A paused seek gets a small responsive thumbnail. While
+                    // resuming active playback, keep the retained frame
+                    // visible instead: a one-frame compositor render can
+                    // otherwise compete with the decoder that is about to
+                    // resume and make playback look permanently stuck.
+                    if (!_seekResumePlayback)
+                        requestPlaybackStill(540);
                     _seekStillTarget = _seekTarget;
                     _seekDelay = 0.0;
                 }
@@ -7601,7 +7750,7 @@ final class EditorRoot : VBox
             }
 
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame)
+                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
             {
                 if (_playbackAudioStarted && _playbackAudioRequired)
                 {
@@ -7618,20 +7767,20 @@ final class EditorRoot : VBox
                     }
                     else
                     {
-                        _playbackAudioClockLostWait += deltaSeconds;
-                        if (_playbackAudioClockLostWait >=
-                            playbackAudioClockLostAbortSeconds)
-                        {
-                            restartPlaybackForSync(
-                                "Audio clock was lost; waiting to restart synchronized playback.");
-                            return;
-                        }
+                        // A transient waveOut position failure must not tear
+                        // down an otherwise healthy transport. The monotonic
+                        // clock established at preroll remains available from
+                        // `clockPlaybackPosition()` and keeps the playhead
+                        // moving until the device clock becomes readable
+                        // again. Stopping/restarting here was another source
+                        // of playback that appeared to hang indefinitely.
+                        _playbackAudioClockLostWait = 0.0;
                     }
                 }
             }
 
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame)
+                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
             {
                 _playbackPosition = clampValue(clockPlaybackPosition(),
                     _playbackStart, _playbackEnd);
@@ -7648,6 +7797,10 @@ final class EditorRoot : VBox
             PreviewFrame frame;
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
                 _playbackAwaitingFirstFrame &&
+                // Start from a small real buffer instead of a single frame.
+                // This prevents the transport from immediately pausing again
+                // on machines where FFmpeg needs a few frames to settle.
+                _videoStream.hasBufferedDuration(playbackPrerollSeconds()) &&
                 _videoStream.takeReady(frame))
             {
                 receivedFrame = true;
@@ -7711,16 +7864,47 @@ final class EditorRoot : VBox
                 }
             }
             else if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame)
+                !_playbackAwaitingFirstFrame && _playbackVideoWaiting)
+            {
+                const bufferedClock = _playbackAudioRequired ?
+                    clockPlaybackPosition() : _playbackVideoWaitClock;
+                const maximumFrameTime = playbackSourceClockTime(bufferedClock) +
+                    playbackVideoLeadSeconds;
+                if (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame) &&
+                    frame.valid())
+                {
+                    const framePlaybackTime = playbackTimeForFrame(frame);
+                    _preview.setFrame(frame);
+                    _playbackPosition = framePlaybackTime;
+                    if (bufferedClock - framePlaybackTime <=
+                        playbackVideoLeadSeconds)
+                    {
+                        _playbackPosition = clampValue(bufferedClock,
+                            _playbackStart, _playbackEnd);
+                        resumeAfterVideoBuffer();
+                    }
+                }
+            }
+            else if (_playbackRunning && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
             {
                 const maximumFrameTime = playbackSourceClockTime(_playbackPosition) +
                     playbackVideoLeadSeconds;
-                if (_videoStream.takeReadyUpTo(maximumFrameTime, frame))
+                if (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame))
                 {
                     receivedFrame = true;
                     _preview.setFrame(frame);
                     _preview.setPlaying(true);
                 }
+            }
+            if (_playbackRunning && _playbackVideoWaiting &&
+                _videoStream.finished())
+            {
+                const error = _videoStream.error();
+                const detail = error.length > 0 ?
+                    " " ~ outputTail(error, 500) : "";
+                haltPlaybackForSync(
+                    "Video decoder ended before the next frame was ready." ~ detail);
             }
             else if (_playbackRunning && _videoStream.finished() &&
                 _playbackAsset.hasVideo)
@@ -7740,16 +7924,10 @@ final class EditorRoot : VBox
             }
 
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && _playbackAsset.hasVideo &&
-                _playbackAudioRequired && _preview.hasFrame())
-            {
-                if (displayedVideoBehindPlaybackClock())
-                {
-                    restartPlaybackForSync(
-                        "Video could not keep up with audio; waiting to resync playback.");
-                    return;
-                }
-            }
+                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting &&
+                _playbackAsset.hasVideo && _preview.hasFrame() &&
+                displayedVideoBehindPlaybackClock())
+                waitForVideoBuffer();
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
                 _playbackPosition >= _playbackEnd - 0.001)
@@ -7808,6 +7986,19 @@ final class EditorRoot : VBox
                 _preview.setFrame(staticFrame);
                 _preview.setPlaying(_playbackRunning);
                 _lastPreviewClockPaint = _playbackPosition;
+                _preview.setPlaybackTime(_playbackPosition);
+            }
+            else if (_playbackKind == PlaybackKind.sequence &&
+                _sequencePlaybackStaticVisual)
+            {
+                // Static-image timelines still render their picture through
+                // PreviewService once. Do not discard that frame merely
+                // because audio playback has already started; otherwise the
+                // transport can be live indefinitely while the preview stays
+                // blank.
+                _preview.setFrame(staticFrame);
+                _preview.setPlaying(_playbackRunning &&
+                    !_playbackAwaitingFirstFrame && !_playbackAwaitingAudioClock);
                 _preview.setPlaybackTime(_playbackPosition);
             }
         }

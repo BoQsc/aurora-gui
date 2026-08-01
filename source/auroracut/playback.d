@@ -215,6 +215,7 @@ final class PcmAudioPlayer
     private bool _shutdown;
     private bool _requestedRunning;
     private bool _resumeRequested;
+    private bool _transportPaused;
     private ulong _generation;
     private PlaybackWorkerStats _stats;
     private string _error;
@@ -348,6 +349,7 @@ final class PcmAudioPlayer
         _hasPending = true;
         _requestedRunning = true;
         _resumeRequested = false;
+        _transportPaused = false;
         _error = "";
         version (Windows)
         {
@@ -379,11 +381,50 @@ final class PcmAudioPlayer
 
     bool resume()
     {
+        version (Windows) HWAVEOUT handle;
         _mutex.lock();
-        scope (exit) _mutex.unlock();
-        if (!_requestedRunning) return false;
+        if (!_requestedRunning)
+        {
+            _mutex.unlock();
+            return false;
+        }
+        _transportPaused = false;
         _resumeRequested = true;
         _condition.notifyAll();
+        version (Windows) handle = _clockHandle;
+        _mutex.unlock();
+        version (Windows)
+        {
+            if (handle !is null)
+            {
+                try waveOutRestart(handle);
+                catch (Throwable) {}
+            }
+        }
+        return true;
+    }
+
+    /** Pause an already-started audio transport without discarding its clock. */
+    bool pause()
+    {
+        version (Windows) HWAVEOUT handle;
+        _mutex.lock();
+        if (!_requestedRunning)
+        {
+            _mutex.unlock();
+            return false;
+        }
+        _transportPaused = true;
+        version (Windows) handle = _clockHandle;
+        _mutex.unlock();
+        version (Windows)
+        {
+            if (handle !is null)
+            {
+                try waveOutPause(handle);
+                catch (Throwable) {}
+            }
+        }
         return true;
     }
 
@@ -399,6 +440,7 @@ final class PcmAudioPlayer
         _hasPending = false;
         _requestedRunning = false;
         _resumeRequested = false;
+        _transportPaused = false;
         process = _process;
         version (Windows)
         {
@@ -438,6 +480,7 @@ final class PcmAudioPlayer
             _hasPending = false;
             _requestedRunning = false;
             _resumeRequested = false;
+            _transportPaused = false;
             process = _process;
             version (Windows)
             {
@@ -564,6 +607,15 @@ final class PcmAudioPlayer
         return !_shutdown && generation == _generation;
     }
 
+    private bool waitForTransportResume(ulong generation)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        while (!_shutdown && generation == _generation && _transportPaused)
+            _condition.wait();
+        return !_shutdown && generation == _generation;
+    }
+
     private void playRequest(AudioRequest request)
     {
         ProcessPipes pipes;
@@ -609,6 +661,7 @@ final class PcmAudioPlayer
                 stale = request.generation != _generation || _shutdown;
                 _mutex.unlock();
                 if (stale) break;
+                if (!waitForTransportResume(request.generation)) break;
 
                 size_t received;
                 try
@@ -696,6 +749,11 @@ final class PcmAudioPlayer
                 stale = request.generation != _generation || _shutdown;
                 _mutex.unlock();
                 if (stale)
+                {
+                    drainSink = false;
+                    break;
+                }
+                if (!waitForTransportResume(request.generation))
                 {
                     drainSink = false;
                     break;
@@ -1223,24 +1281,34 @@ final class VideoFrameStream
         return true;
     }
 
-    /** Return the newest queued frame whose timestamp is not ahead of the
-     * caller's clock. Older due frames are dropped here so audio remains the
-     * master clock when the UI cannot present every decoded frame. */
-    bool takeReadyUpTo(double maximumSourceTime, out PreviewFrame frame)
+    /** Return the next queued frame whose timestamp is not ahead of the
+     * caller's clock. Frames are consumed strictly in decode order; callers
+     * that need a frame-accurate transport must wait instead of dropping old
+     * frames to catch up. */
+    bool takeReadyAtOrBefore(double maximumSourceTime, out PreviewFrame frame)
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        bool found;
-        while (_readyFrames.length > 0 &&
-            readySourceTime(_readyFrames[0]) <= maximumSourceTime)
-        {
-            if (found) ++_stats.framesDropped;
-            auto ready = popReadyFront();
-            frame = previewFrame(ready);
-            found = true;
-        }
-        if (found) _condition.notifyAll();
-        return found;
+        if (_readyFrames.length == 0 ||
+            readySourceTime(_readyFrames[0]) > maximumSourceTime)
+            return false;
+        frame = previewFrame(popReadyFront());
+        _condition.notifyAll();
+        return true;
+    }
+
+    /** Whether the decoder has accumulated a contiguous preroll window. */
+    bool hasBufferedDuration(double minimumSeconds)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_readyFrames.length == 0) return false;
+        if (minimumSeconds <= 0.0) return true;
+        const first = readySourceTime(_readyFrames[0]);
+        const last = readySourceTime(_readyFrames[$ - 1]);
+        const fps = _readyFrames[$ - 1].fps > 0 ?
+            _readyFrames[$ - 1].fps : 1;
+        return last - first + (1.0 / fps) >= minimumSeconds;
     }
 
     private ReadyVideoFrame popReadyFront()

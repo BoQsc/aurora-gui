@@ -32,6 +32,9 @@ final class MediaAsset
     double duration = 0.0;
     bool hasVideo;
     bool hasAudio;
+    // Codec name is persisted so playback can avoid applying a hardware
+    // accelerator that was only validated against a different codec.
+    string videoCodec;
     int width;
     int height;
     double frameRate = 0.0;

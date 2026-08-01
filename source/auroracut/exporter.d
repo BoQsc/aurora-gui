@@ -49,6 +49,7 @@ struct ExportClip
     double cropHeight = 1.0;
     bool hasVideo;
     bool hasAudio;
+    string videoCodec;
     int sourceWidth;
     int sourceHeight;
     size_t trackIndex;
@@ -827,6 +828,7 @@ private ExportClip cloneExportClip(const ref ExportClip source)
     result.cropHeight = source.cropHeight;
     result.hasVideo = source.hasVideo;
     result.hasAudio = source.hasAudio;
+    result.videoCodec = source.videoCodec.idup;
     result.sourceWidth = source.sourceWidth;
     result.sourceHeight = source.sourceHeight;
     result.trackIndex = source.trackIndex;
@@ -1287,8 +1289,20 @@ private void appendInputArguments(ref string[] arguments, const InputClip[] inpu
         }
         const stillImage = isStillImagePath(input.clip.path);
         if (stillImage) arguments ~= ["-loop", "1"];
-        else if (input.decodeInputOptions.length > 0)
-            arguments ~= input.decodeInputOptions;
+        else
+        {
+            string[] decodeOptions = input.decodeInputOptions.dup;
+            const codec = input.clip.videoCodec.toLower();
+            // D3D11VA was probed with H.264 at startup, but can hang forever
+            // when handed AV1 on systems without AV1-capable video hardware.
+            // dav1d keeps high-resolution AV1 preview decoding deterministic;
+            // the stream worker can still fall back to FFmpeg's default
+            // decoder if this optional decoder is unavailable.
+            if (codec == "av1" || (codec.length == 0 &&
+                input.clip.sourceWidth >= 2560 && input.clip.sourceHeight >= 1440))
+                decodeOptions = ["-c:v", "libdav1d"];
+            if (decodeOptions.length > 0) arguments ~= decodeOptions;
+        }
         arguments ~= [
             "-ss", formatSeconds(input.clip.inPoint),
             "-t", formatSeconds(max(0.0, input.clip.outPoint - input.clip.inPoint)),

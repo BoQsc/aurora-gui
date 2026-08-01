@@ -144,6 +144,7 @@ private JSONValue assetJson(const MediaAsset value, size_t index)
         "duration": jsonNumber(value.duration, 0.0, path ~ ".duration"),
         "hasVideo": JSONValue(value.hasVideo),
         "hasAudio": JSONValue(value.hasAudio),
+        "videoCodec": JSONValue(value.videoCodec),
         "width": JSONValue(cast(long) value.width),
         "height": JSONValue(cast(long) value.height),
         "frameRate": jsonNumber(value.frameRate, 0.0, path ~ ".frameRate"),
@@ -385,6 +386,7 @@ ProjectData loadProjectFile(string path)
             asset.duration = numberValue(entry, "duration");
             asset.hasVideo = boolValue(entry, "hasVideo");
             asset.hasAudio = boolValue(entry, "hasAudio");
+            asset.videoCodec = stringValue(entry, "videoCodec");
             asset.width = cast(int) integerValue(entry, "width");
             asset.height = cast(int) integerValue(entry, "height");
             asset.frameRate = numberValue(entry, "frameRate");

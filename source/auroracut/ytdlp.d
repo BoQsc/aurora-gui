@@ -90,6 +90,7 @@ struct YtDlpDownloadRequest
     string command;
     string url;
     YtDlpDownloadKind kind;
+    int maxHeight = 1080;
 }
 
 struct YtDlpDownloadResult
@@ -401,7 +402,9 @@ private string[] downloadArguments(YtDlpDownloadRequest request,
     {
         case YtDlpDownloadKind.video:
             arguments ~= [
-                "-f", "bv*+ba/b",
+                "-f", ytDlpVideoFormatForHeight(request.maxHeight),
+                "--format-sort", ytDlpVideoSortForHeight(request.maxHeight),
+                "--format-sort-force",
                 "--merge-output-format", "mp4"
             ];
             break;
@@ -415,6 +418,53 @@ private string[] downloadArguments(YtDlpDownloadRequest request,
 
     arguments ~= request.url;
     return arguments;
+}
+
+/** Keep video downloads within a predictable preview-friendly ceiling. */
+int normalizeYtDlpMaxHeight(int value)
+{
+    switch (value)
+    {
+        case 240:
+        case 360:
+        case 480:
+        case 720:
+        case 1080:
+            return value;
+        default:
+            return 1080;
+    }
+}
+
+int ytDlpMaxWidthForHeight(int maxHeight)
+{
+    final switch (normalizeYtDlpMaxHeight(maxHeight))
+    {
+        case 240: return 426;
+        case 360: return 640;
+        case 480: return 854;
+        case 720: return 1280;
+        case 1080: return 1920;
+    }
+}
+
+/** Prefer editor-friendly 16:9 media at the selected preview ceiling. */
+string ytDlpVideoSortForHeight(int maxHeight)
+{
+    const height = normalizeYtDlpMaxHeight(maxHeight);
+    const width = ytDlpMaxWidthForHeight(height);
+    return format("res:%d,width:%d,fps,vcodec:h264,acodec:m4a,ext:mp4:m4a",
+        height, width);
+}
+
+/** Select exact 16:9 first, then the best video/audio within the selected box. */
+string ytDlpVideoFormatForHeight(int maxHeight)
+{
+    const height = normalizeYtDlpMaxHeight(maxHeight);
+    const width = ytDlpMaxWidthForHeight(height);
+    return format("bv*[height=%d][width=%d]+ba/b[height=%d][width=%d]/" ~
+        "bv*[height<=%d][width<=%d]+ba/b[height<=%d][width<=%d]",
+        height, width, height, width, height, width, height, width);
 }
 
 final class YtDlpDownloadService
@@ -440,7 +490,8 @@ final class YtDlpDownloadService
         _worker.start();
     }
 
-    bool enqueue(string command, string url, YtDlpDownloadKind kind)
+    bool enqueue(string command, string url, YtDlpDownloadKind kind,
+        int maxHeight = 1080)
     {
         if (command.length == 0 || url.length == 0) return false;
 
@@ -452,6 +503,7 @@ final class YtDlpDownloadService
         request.command = command.idup;
         request.url = url.idup;
         request.kind = kind;
+        request.maxHeight = normalizeYtDlpMaxHeight(maxHeight);
         _queue ~= request;
         ++_stats.queued;
         _condition.notify();
