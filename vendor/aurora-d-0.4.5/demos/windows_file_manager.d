@@ -729,6 +729,7 @@ final class WindowsFileManagerRoot : Widget
     private enum quickAccessRecentFileLimit = 20;
     private enum maximumSearchDepth = 64;
     private enum maximumSearchResults = 10000;
+    private enum double autoRefreshIntervalSeconds = 1.0;
     private enum sidebarRowHeight = 27;
     private enum headerHeight = 34;
     private enum scrollbarWidth = 12;
@@ -762,6 +763,13 @@ final class WindowsFileManagerRoot : Widget
     private bool _groupAscending;
     private int _scrollY;
     private int _sidebarScrollY;
+    private double _autoRefreshClock;
+    private string _watchedFolderPath;
+    private ulong _watchedFolderFingerprint;
+    private size_t _watchedFolderCount;
+    private bool _watchedFolderValid;
+    version (Windows)
+        private HANDLE _folderChangeHandle;
     private CommandButton _pressedCommand = CommandButton.none;
     private bool _draggingListScrollbar;
     private int _listScrollbarGrabY;
@@ -845,6 +853,12 @@ final class WindowsFileManagerRoot : Widget
         navigate(initialPath.length > 0 ? initialPath : getcwd(), true, true);
     }
 
+    ~this()
+    {
+        version (Windows)
+            closeFolderChangeNotification();
+    }
+
     protected override Size onMeasure(Size available)
     {
         return Size(scaled(1180), scaled(720));
@@ -866,6 +880,11 @@ final class WindowsFileManagerRoot : Widget
         drawDetailsView(canvas);
         drawStatusBar(canvas);
         drawDragPreview(canvas);
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        pollFolderAutoRefresh(deltaSeconds);
     }
 
     override bool onMouseDown(ref Event event)
@@ -1076,6 +1095,9 @@ final class WindowsFileManagerRoot : Widget
             goUp();
             return true;
         }
+        if (!event.control() && !event.meta() && !event.alt() &&
+            handleListNavigationKey(event.key))
+            return true;
         if (event.key == Key.enter && _selectedVisibleIndex >= 0)
         {
             activateEntry(_selectedVisibleIndex);
@@ -1302,6 +1324,97 @@ final class WindowsFileManagerRoot : Widget
             if (row.entryIndex >= 0)
                 ++count;
         return count;
+    }
+
+    private bool handleListNavigationKey(Key key)
+    {
+        if (visibleItemCount() == 0) return false;
+
+        int target = -1;
+        switch (key)
+        {
+            case Key.up:
+                target = _selectedVisibleIndex < 0
+                    ? lastEntryVisibleIndex()
+                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, -1);
+                break;
+            case Key.down:
+                target = _selectedVisibleIndex < 0
+                    ? firstEntryVisibleIndex()
+                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, 1);
+                break;
+            case Key.pageUp:
+                target = pageEntryVisibleIndex(-1);
+                break;
+            case Key.pageDown:
+                target = pageEntryVisibleIndex(1);
+                break;
+            case Key.home:
+                target = firstEntryVisibleIndex();
+                break;
+            case Key.end:
+                target = lastEntryVisibleIndex();
+                break;
+            default:
+                return false;
+        }
+
+        if (target < 0) return true;
+        selectVisibleEntryByKeyboard(target);
+        return true;
+    }
+
+    private int firstEntryVisibleIndex() const
+    {
+        foreach (index, row; _visibleRows)
+            if (row.entryIndex >= 0)
+                return cast(int) index;
+        return -1;
+    }
+
+    private int lastEntryVisibleIndex() const
+    {
+        for (size_t index = _visibleRows.length; index > 0; --index)
+            if (_visibleRows[index - 1].entryIndex >= 0)
+                return cast(int) index - 1;
+        return -1;
+    }
+
+    private int adjacentEntryVisibleIndex(int start, int direction) const
+    {
+        int index = start + direction;
+        while (index >= 0 && index < cast(int) _visibleRows.length)
+        {
+            if (_visibleRows[cast(size_t) index].entryIndex >= 0)
+                return index;
+            index += direction;
+        }
+        return direction < 0 ? firstEntryVisibleIndex() : lastEntryVisibleIndex();
+    }
+
+    private int pageEntryVisibleIndex(int direction) const
+    {
+        int current = _selectedVisibleIndex;
+        if (current < 0)
+            return direction < 0 ? lastEntryVisibleIndex() : firstEntryVisibleIndex();
+
+        const stepCount = maxInt(1, _rowsRect.height / rowHeightPx());
+        foreach (_; 0 .. stepCount)
+        {
+            const next = adjacentEntryVisibleIndex(current, direction);
+            if (next == current || next < 0) break;
+            current = next;
+        }
+        return current;
+    }
+
+    private void selectVisibleEntryByKeyboard(int visibleIndex)
+    {
+        if (entryIndexForVisibleRow(visibleIndex) < 0) return;
+        _selectedVisibleIndex = visibleIndex;
+        ensureSelectionVisible();
+        updateSelectedStatus();
+        invalidate();
     }
 
     private bool hasDragSource() const
@@ -1732,6 +1845,7 @@ final class WindowsFileManagerRoot : Widget
             _currentPath = path;
             _selectedVisibleIndex = -1;
             _scrollY = 0;
+            resetFolderWatch(path);
 
             if (clearSearch)
             {
@@ -1809,6 +1923,245 @@ final class WindowsFileManagerRoot : Widget
         if (!_showQuickAccess)
             sortEntries(_entries);
         rebuildVisibleEntries();
+    }
+
+    private void clearFolderWatch()
+    {
+        version (Windows)
+            closeFolderChangeNotification();
+        _autoRefreshClock = 0.0;
+        _watchedFolderPath = "";
+        _watchedFolderFingerprint = 0;
+        _watchedFolderCount = 0;
+        _watchedFolderValid = false;
+    }
+
+    private void resetFolderWatch(string path)
+    {
+        clearFolderWatch();
+        ulong fingerprint;
+        size_t count;
+        if (folderSnapshot(path, fingerprint, count))
+        {
+            setFolderWatchBaseline(path, fingerprint, count);
+            version (Windows)
+                startFolderChangeNotification(path);
+        }
+    }
+
+    private void setFolderWatchBaseline(string path, ulong fingerprint, size_t count)
+    {
+        _watchedFolderPath = path;
+        _watchedFolderFingerprint = fingerprint;
+        _watchedFolderCount = count;
+        _watchedFolderValid = true;
+    }
+
+    private void pollFolderAutoRefresh(double deltaSeconds)
+    {
+        if (_showQuickAccess || _showThisPc || _currentPath.length == 0)
+        {
+            if (_watchedFolderValid) clearFolderWatch();
+            return;
+        }
+        if (_pendingEntryDrag || _draggingEntry)
+            return;
+
+        bool shouldCheck;
+        bool forceRefresh;
+        version (Windows)
+        {
+            if (folderChangeNotificationActive())
+            {
+                if (!folderChangeNotificationPending())
+                    return;
+                shouldCheck = true;
+                forceRefresh = _searchQuery.length > 0;
+            }
+            else
+            {
+                _autoRefreshClock += deltaSeconds;
+                if (_autoRefreshClock < autoRefreshIntervalSeconds)
+                    return;
+                _autoRefreshClock = 0.0;
+                shouldCheck = true;
+            }
+        }
+        else
+        {
+            _autoRefreshClock += deltaSeconds;
+            if (_autoRefreshClock < autoRefreshIntervalSeconds)
+                return;
+            _autoRefreshClock = 0.0;
+            shouldCheck = true;
+        }
+        if (!shouldCheck) return;
+
+        ulong fingerprint;
+        size_t count;
+        const valid = folderSnapshot(_currentPath, fingerprint, count);
+        if (!valid)
+        {
+            if (_watchedFolderValid)
+            {
+                _watchedFolderValid = false;
+                _statusText = "Folder is no longer available: " ~ _currentPath;
+                invalidate();
+            }
+            return;
+        }
+
+        if (!_watchedFolderValid || !pathsEqual(_watchedFolderPath, _currentPath))
+        {
+            setFolderWatchBaseline(_currentPath, fingerprint, count);
+            return;
+        }
+
+        if (forceRefresh || fingerprint != _watchedFolderFingerprint ||
+            count != _watchedFolderCount)
+            autoRefreshCurrentFolder(fingerprint, count);
+    }
+
+    private void autoRefreshCurrentFolder(ulong fingerprint, size_t count)
+    {
+        const path = _currentPath;
+        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        const savedScroll = _scrollY;
+        const savedSidebarScroll = _sidebarScrollY;
+        navigate(path, false, false);
+        setFolderWatchBaseline(path, fingerprint, count);
+        if (selectedPath.length > 0)
+            selectPath(selectedPath);
+        setListScroll(savedScroll);
+        setSidebarScroll(savedSidebarScroll);
+    }
+
+    version (Windows)
+    private void startFolderChangeNotification(string path)
+    {
+        closeFolderChangeNotification();
+        if (path.length == 0) return;
+        const filter = FILE_NOTIFY_CHANGE_FILE_NAME |
+            FILE_NOTIFY_CHANGE_DIR_NAME |
+            FILE_NOTIFY_CHANGE_ATTRIBUTES |
+            FILE_NOTIFY_CHANGE_SIZE |
+            FILE_NOTIFY_CHANGE_LAST_WRITE |
+            FILE_NOTIFY_CHANGE_CREATION;
+        auto handle = FindFirstChangeNotificationW(path.toUTF16z, FALSE, filter);
+        if (handle !is null && handle != INVALID_HANDLE_VALUE)
+            _folderChangeHandle = handle;
+    }
+
+    version (Windows)
+    private void closeFolderChangeNotification()
+    {
+        if (_folderChangeHandle !is null &&
+            _folderChangeHandle != INVALID_HANDLE_VALUE)
+            FindCloseChangeNotification(_folderChangeHandle);
+        _folderChangeHandle = null;
+    }
+
+    version (Windows)
+    private bool folderChangeNotificationActive() const @safe pure nothrow @nogc
+    {
+        return _folderChangeHandle !is null &&
+            _folderChangeHandle != INVALID_HANDLE_VALUE;
+    }
+
+    version (Windows)
+    private bool folderChangeNotificationPending()
+    {
+        if (!folderChangeNotificationActive()) return false;
+        const waitResult = WaitForSingleObject(_folderChangeHandle, 0);
+        if (waitResult == WAIT_OBJECT_0)
+        {
+            if (FindNextChangeNotification(_folderChangeHandle) == FALSE)
+                closeFolderChangeNotification();
+            return true;
+        }
+        if (waitResult == WAIT_FAILED)
+        {
+            closeFolderChangeNotification();
+            return true;
+        }
+        return false;
+    }
+
+    private static bool folderSnapshot(string path, out ulong fingerprint,
+        out size_t count)
+    {
+        fingerprint = 14695981039346656037UL;
+        count = 0;
+        if (path.length == 0) return false;
+        try
+        {
+            if (!exists(path) || !isDir(path))
+                return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        string[] signatures;
+        try
+        {
+            foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
+            {
+                signatures ~= folderSnapshotEntry(item);
+                ++count;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        sort(signatures);
+        foreach (signature; signatures)
+            mixFolderHash(fingerprint, signature);
+        mixFolderHash(fingerprint, cast(ulong) count);
+        return true;
+    }
+
+    private static string folderSnapshotEntry(DirEntry item)
+    {
+        bool directory;
+        ulong size;
+        string modified;
+        try
+        {
+            directory = item.isDir;
+            if (!directory) size = item.size;
+            modified = format("%s", item.timeLastModified);
+        }
+        catch (Exception)
+        {
+        }
+        return item.name ~ "\t" ~ (directory ? "d" : "f") ~ "\t" ~
+            format("%d", size) ~ "\t" ~ modified;
+    }
+
+    private static void mixFolderHash(ref ulong hash, const(char)[] value)
+        @safe pure nothrow @nogc
+    {
+        foreach (ch; value)
+        {
+            hash ^= cast(ubyte) ch;
+            hash *= 1099511628211UL;
+        }
+        hash ^= 0xFF;
+        hash *= 1099511628211UL;
+    }
+
+    private static void mixFolderHash(ref ulong hash, ulong value)
+        @safe pure nothrow @nogc
+    {
+        foreach (shift; 0 .. 64 / 8)
+        {
+            hash ^= cast(ubyte) (value >> (shift * 8));
+            hash *= 1099511628211UL;
+        }
     }
 
     private static ExplorerEntry[] recursiveSearchEntries(string root, string loweredQuery)
@@ -2141,6 +2494,7 @@ final class WindowsFileManagerRoot : Widget
         _showQuickAccess = true;
         _showThisPc = false;
         _currentPath = "";
+        clearFolderWatch();
         _groupBy = GroupBy.none;
         _sortColumn = SortColumn.name;
         _sortAscending = true;
@@ -2161,6 +2515,7 @@ final class WindowsFileManagerRoot : Widget
         _showQuickAccess = false;
         _showThisPc = true;
         _currentPath = "";
+        clearFolderWatch();
         _groupBy = GroupBy.none;
         _sortColumn = SortColumn.name;
         _sortAscending = true;
@@ -3595,7 +3950,7 @@ final class WindowsFileManagerRoot : Widget
         const color = enabled ? explorerText : explorerDisabled;
         const midY = rect.y + rect.height / 2;
         const midX = rect.x + rect.width / 2;
-        const dir = command == CommandButton.back ? -1 : 1;
+        const dir = command == CommandButton.back ? 1 : -1;
         canvas.drawLine(Point(midX + dir * scaled(5), midY - scaled(6)),
             Point(midX - dir * scaled(3), midY),
             color, 2);
