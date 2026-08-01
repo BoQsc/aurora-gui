@@ -115,6 +115,7 @@ private struct NavigationItem
     NavigationKind kind;
     bool enabled = true;
     bool pinned;
+    int indentLevel;
 }
 
 version (Windows)
@@ -1762,11 +1763,13 @@ final class WindowsFileManagerRoot : Widget
         addNavigation("OneDrive - Personal", buildNormalizedPath(home, "OneDrive"), IconKind.drive, false);
         addNavigation("This PC", "", IconKind.computer, false,
             NavigationKind.thisPc, true);
+        addThisPcNavigationChildren();
         addNavigation("Network", "", IconKind.drive, false, NavigationKind.network, true);
     }
 
     private void addNavigation(string label, string path, IconKind icon, bool pinned,
-        NavigationKind kind = NavigationKind.folder, bool forceEnabled = false)
+        NavigationKind kind = NavigationKind.folder, bool forceEnabled = false,
+        int indentLevel = -1)
     {
         NavigationItem item;
         item.label = label;
@@ -1774,8 +1777,60 @@ final class WindowsFileManagerRoot : Widget
         item.icon = icon;
         item.kind = kind;
         item.pinned = pinned;
+        item.indentLevel = indentLevel >= 0 ? indentLevel : (pinned ? 1 : 0);
         item.enabled = forceEnabled || (path.length > 0 && exists(path) && isDir(path));
         _navigation ~= item;
+    }
+
+    private void addThisPcNavigationChildren()
+    {
+        const entries = buildThisPcEntries();
+        bool[] added;
+        added.length = entries.length;
+
+        foreach (label; [
+            "3D Objects",
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Music",
+            "Pictures",
+            "Videos"
+        ])
+        {
+            foreach (index, entry; entries)
+            {
+                if (added[index] || icmp(entry.name, label) != 0) continue;
+                addThisPcNavigationEntry(entry);
+                added[index] = true;
+                break;
+            }
+        }
+
+        foreach (index, entry; entries)
+        {
+            if (added[index]) continue;
+            addThisPcNavigationEntry(entry);
+        }
+    }
+
+    private void addThisPcNavigationEntry(ExplorerEntry entry)
+    {
+        if (entry.path.length == 0) return;
+        addNavigation(entry.name, entry.path, thisPcNavigationIcon(entry), false,
+            NavigationKind.folder, true, 1);
+    }
+
+    private static IconKind thisPcNavigationIcon(ExplorerEntry entry)
+    {
+        if (entry.drive) return IconKind.drive;
+        if (icmp(entry.name, "Desktop") == 0) return IconKind.computer;
+        if (icmp(entry.name, "Documents") == 0) return IconKind.notepad;
+        if (icmp(entry.name, "Downloads") == 0) return IconKind.open;
+        if (icmp(entry.name, "Music") == 0) return IconKind.music;
+        if (icmp(entry.name, "Pictures") == 0) return IconKind.image;
+        if (icmp(entry.name, "Videos") == 0) return IconKind.music;
+        return IconKind.folder;
     }
 
     private void addDocumentFolders(string documents, int limit)
@@ -1799,6 +1854,7 @@ final class WindowsFileManagerRoot : Widget
                     nav.kind = NavigationKind.folder;
                     nav.enabled = true;
                     nav.pinned = true;
+                    nav.indentLevel = 1;
                     added ~= nav;
                 }
                 catch (Exception)
@@ -3819,7 +3875,15 @@ final class WindowsFileManagerRoot : Widget
                 content.fillRect(row, Color.rgba(0, 0, 0, 20));
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
-            const nestedOffset = item.pinned ? scaled(14) : 0;
+            const nestedOffset = scaled(14 * item.indentLevel);
+            if (item.kind == NavigationKind.thisPc)
+                drawIcon(content, IconKind.chevronDown,
+                    Rect(row.x + scaled(9), row.y + scaled(8),
+                        scaled(10), scaled(10)), textColor, textColor);
+            else if (item.indentLevel > 0 && !item.pinned)
+                drawIcon(content, IconKind.chevronRight,
+                    Rect(row.x + scaled(22), row.y + scaled(8),
+                        scaled(10), scaled(10)), textColor, textColor);
             drawIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
                 row.y + scaled(5),
                 scaled(17), scaled(17)),
