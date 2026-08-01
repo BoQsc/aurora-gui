@@ -717,7 +717,7 @@ final class WindowsFileManagerRoot : Widget
     private enum defaultUiZoomPercent = 80;
     private enum minimumUiZoomPercent = 80;
     private enum maximumUiZoomPercent = 125;
-    private enum ribbonHeight = 66;
+    private enum ribbonHeight = 34;
     private enum addressHeight = 40;
     private enum statusHeight = 26;
     private enum sidebarMinimumWidth = 228;
@@ -736,6 +736,7 @@ final class WindowsFileManagerRoot : Widget
     private GuiWindow _window;
     private TextField _addressField;
     private TextField _searchField;
+    private ContextMenu _homeMenu;
     private DragPreviewOverlay _dragPreviewOverlay;
     version (Windows)
         private PropertiesWindow _propertiesWindow;
@@ -784,6 +785,7 @@ final class WindowsFileManagerRoot : Widget
     private Rect _newTextFileRect;
     private Rect _openSelectedRect;
     private Rect _copyPathRect;
+    private Rect _homeTabRect;
     private Rect _sidebarRect;
     private Rect _sidebarRowsRect;
     private Rect _mainRect;
@@ -877,6 +879,12 @@ final class WindowsFileManagerRoot : Widget
         }
         if (event.button != MouseButton.left) return false;
         requestFocus();
+
+        if (_homeTabRect.contains(event.position))
+        {
+            showHomeMenu();
+            return true;
+        }
 
         const command = commandAt(event.position);
         if (command != CommandButton.none && commandEnabled(command))
@@ -1588,21 +1596,11 @@ final class WindowsFileManagerRoot : Widget
         _searchTextRect = Rect(_searchRect.x + scaled(32), _searchRect.y + scaled(2),
             maxInt(0, _searchRect.width - scaled(38)),
             maxInt(0, _searchRect.height - scaled(4)));
-        const commandY = scaled(38);
-        const commandHeight = scaled(24);
-        const commandGap = scaled(8);
-        int commandX = scaled(84);
-        _newFolderRect = Rect(commandX, commandY, commandButtonWidth("New folder"),
-            commandHeight);
-        commandX = _newFolderRect.right() + commandGap;
-        _newTextFileRect = Rect(commandX, commandY, commandButtonWidth("New file"),
-            commandHeight);
-        commandX = _newTextFileRect.right() + commandGap;
-        _openSelectedRect = Rect(commandX, commandY, commandButtonWidth("Open"),
-            commandHeight);
-        commandX = _openSelectedRect.right() + commandGap;
-        _copyPathRect = Rect(commandX, commandY, commandButtonWidth("Copy path"),
-            commandHeight);
+        _homeTabRect = Rect(scaled(82), 0, scaled(62), ribbon);
+        _newFolderRect = Rect.init;
+        _newTextFileRect = Rect.init;
+        _openSelectedRect = Rect.init;
+        _copyPathRect = Rect.init;
 
         updateColumnGeometry();
         rebuildScrollbars();
@@ -2969,6 +2967,52 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
+    private void showHomeMenu()
+    {
+        if (homeMenuOpen())
+        {
+            _homeMenu.dismiss();
+            _homeMenu = null;
+            invalidate();
+            return;
+        }
+
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("New folder", IconKind.folder,
+            delegate() { activateCommand(CommandButton.newFolder); }, "Ctrl+N",
+            commandEnabled(CommandButton.newFolder));
+        items ~= ContextMenuItem.command("New text file", IconKind.newDocument,
+            delegate() { activateCommand(CommandButton.newTextFile); }, "",
+            commandEnabled(CommandButton.newTextFile));
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Open", IconKind.open,
+            delegate() { activateCommand(CommandButton.openSelected); }, "Enter",
+            commandEnabled(CommandButton.openSelected));
+        items ~= ContextMenuItem.command("Copy path", IconKind.file,
+            delegate() { activateCommand(CommandButton.copyPath); }, "Ctrl+C",
+            commandEnabled(CommandButton.copyPath));
+        _homeMenu = showContextMenu(this,
+            localToGlobal(Point(_homeTabRect.x, _homeTabRect.bottom())),
+            items);
+        if (_homeMenu !is null)
+        {
+            const homeOrigin = localToGlobal(Point(_homeTabRect.x, _homeTabRect.y));
+            _homeMenu.setConsumeAnchorPress(Rect(homeOrigin.x, homeOrigin.y,
+                _homeTabRect.width, _homeTabRect.height));
+            _homeMenu.onDismissed = delegate()
+            {
+                _homeMenu = null;
+                invalidate();
+            };
+        }
+        invalidate();
+    }
+
+    private bool homeMenuOpen() const
+    {
+        return _homeMenu !is null && !_homeMenu.dismissed();
+    }
+
     private void showContextMenuFor(Point localPosition)
     {
         const globalPosition = localToGlobal(localPosition);
@@ -3345,7 +3389,7 @@ final class WindowsFileManagerRoot : Widget
     private void drawRibbon(ref Canvas canvas)
     {
         const ribbon = ribbonHeightPx();
-        const tabHeight = scaled(34);
+        const tabHeight = ribbon;
         canvas.fillRect(Rect(0, 0, bounds().width, ribbon), explorerBlack);
         canvas.fillRect(Rect(0, tabHeight, bounds().width, 1), explorerLine);
         canvas.fillRect(Rect(0, ribbon - 1, bounds().width, 1), explorerLine);
@@ -3354,23 +3398,18 @@ final class WindowsFileManagerRoot : Widget
         drawText(canvas, Rect(0, 0, scaled(70), tabHeight), "File", explorerText,
             HorizontalAlign.center);
 
-        drawText(canvas, Rect(scaled(82), 0, scaled(62), tabHeight), "Home", explorerText,
-            HorizontalAlign.left);
+        if (homeMenuOpen())
+        {
+            canvas.fillRect(_homeTabRect, Color.rgba(255, 255, 255, 12));
+            canvas.fillRect(Rect(_homeTabRect.x, _homeTabRect.bottom() - scaled(2),
+                _homeTabRect.width, scaled(2)), explorerBlue);
+        }
+        drawText(canvas, _homeTabRect.inset(scaled(8), 0, scaled(8), 0),
+            "Home", explorerText, HorizontalAlign.left);
         drawText(canvas, Rect(scaled(150), 0, scaled(62), tabHeight), "Share", explorerText,
             HorizontalAlign.left);
         drawText(canvas, Rect(scaled(218), 0, scaled(62), tabHeight), "View", explorerText,
             HorizontalAlign.left);
-
-        canvas.fillRect(Rect(0, scaled(35), bounds().width, maxInt(0, ribbon - scaled(35))),
-            explorerBlack);
-        drawCommandButton(canvas, _newFolderRect, CommandButton.newFolder,
-            IconKind.folder, "New folder", true);
-        drawCommandButton(canvas, _newTextFileRect, CommandButton.newTextFile,
-            IconKind.newDocument, "New file", true);
-        drawCommandButton(canvas, _openSelectedRect, CommandButton.openSelected,
-            IconKind.open, "Open", hasSelection());
-        drawCommandButton(canvas, _copyPathRect, CommandButton.copyPath,
-            IconKind.file, "Copy path", hasSelection());
     }
 
     private void drawAddressBar(ref Canvas canvas)

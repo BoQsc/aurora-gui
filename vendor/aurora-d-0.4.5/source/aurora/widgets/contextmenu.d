@@ -66,6 +66,8 @@ class ContextMenu : TransientPopup
     private Point _requestedOrigin;
     private Rect _requestedAnchor;
     private bool _hasRequestedAnchor;
+    private Rect _consumeAnchorGlobal;
+    private bool _consumeAnchorPress;
     private Rect _menuRect;
     private int _hot = -1;
     private int _pressed = -1;
@@ -102,6 +104,20 @@ class ContextMenu : TransientPopup
         const origin = globalOrigin();
         return _menuRect.contains(Point(globalPoint.x - origin.x,
             globalPoint.y - origin.y));
+    }
+
+    /** Keep an anchor toggle from closing and immediately reopening this menu. */
+    void setConsumeAnchorPress(Rect globalAnchor)
+    {
+        _consumeAnchorGlobal = globalAnchor;
+        _consumeAnchorPress = true;
+    }
+
+    override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
+    {
+        const consume = _consumeAnchorPress && _consumeAnchorGlobal.contains(globalPoint);
+        dismiss();
+        return consume;
     }
 
     void openAt(Point localPosition)
