@@ -360,8 +360,10 @@ version (Windows)
 private final class PropertiesWindow
 {
     private static immutable wchar[] fontName = "Segoe UI"w;
+    private enum int titleBarHeight = 40;
     private HWND _hwnd;
     private string _path;
+    private wstring _wideTitle;
     private wstring _wideName;
     private wstring _wideType;
     private wstring _wideLocation;
@@ -371,7 +373,7 @@ private final class PropertiesWindow
     private string _copyStatus;
     private int _hoverButton = -1;
     private int _width = 560;
-    private int _height = 370;
+    private int _height = 410;
 
     bool visible() const @safe pure nothrow @nogc
     {
@@ -382,6 +384,7 @@ private final class PropertiesWindow
         string modified)
     {
         _path = path;
+        _wideTitle = toUTF16("Properties");
         _wideName = toUTF16(name);
         _wideType = toUTF16(type);
         _wideLocation = toUTF16(location);
@@ -406,7 +409,7 @@ private final class PropertiesWindow
                 y = ownerRect.top + (ownerRect.bottom - ownerRect.top - _height) / 2;
             }
 
-            const style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+            const style = WS_POPUP | WS_SYSMENU;
             _hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 propertiesWindowClassName.ptr,
@@ -465,6 +468,20 @@ private final class PropertiesWindow
                 }
                 return true;
             }
+            case WM_LBUTTONDOWN:
+            {
+                RECT client;
+                GetClientRect(hwnd, &client);
+                const x = cast(int) cast(short) (lParam & 0xffff);
+                const y = cast(int) cast(short) ((lParam >> 16) & 0xffff);
+                if (contains(titleBarDragRect(client), x, y))
+                {
+                    ReleaseCapture();
+                    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                    return true;
+                }
+                break;
+            }
             case WM_MOUSELEAVE:
                 _hoverButton = -1;
                 InvalidateRect(hwnd, null, FALSE);
@@ -478,6 +495,7 @@ private final class PropertiesWindow
                 const button = buttonAt(client, x, y);
                 if (button == 0) copyPath();
                 else if (button == 1) DestroyWindow(hwnd);
+                else if (button == 2) DestroyWindow(hwnd);
                 return true;
             }
             case WM_KEYDOWN:
@@ -507,14 +525,15 @@ private final class PropertiesWindow
             RECT client;
             GetClientRect(hwnd, &client);
             fillRect(dc, client, rgb(32, 32, 32));
+            drawTitleBar(dc, client, _wideTitle, _hoverButton == 2);
 
-            drawText(dc, _wideName, RECT(20, 18, client.right - 20, 48),
+            drawText(dc, _wideName, RECT(20, 58, client.right - 20, 88),
                 rgb(245, 247, 249), true, 17);
-            drawRow(dc, "Type"w, _wideType, 68, client.right);
-            drawRow(dc, "Location"w, _wideLocation, 104, client.right);
-            drawRow(dc, "Size"w, _wideSize, 140, client.right);
-            drawRow(dc, "Modified"w, _wideModified, 176, client.right);
-            drawRow(dc, "Path"w, _widePath, 212, client.right);
+            drawRow(dc, "Type"w, _wideType, 108, client.right);
+            drawRow(dc, "Location"w, _wideLocation, 144, client.right);
+            drawRow(dc, "Size"w, _wideSize, 180, client.right);
+            drawRow(dc, "Modified"w, _wideModified, 216, client.right);
+            drawRow(dc, "Path"w, _widePath, 252, client.right);
 
             if (_copyStatus.length > 0)
                 drawText(dc, toUTF16(_copyStatus),
@@ -551,7 +570,18 @@ private final class PropertiesWindow
     {
         if (contains(copyButtonRect(client), x, y)) return 0;
         if (contains(closeButtonRect(client), x, y)) return 1;
+        if (contains(titleCloseButtonRect(client), x, y)) return 2;
         return -1;
+    }
+
+    private static RECT titleCloseButtonRect(RECT client) @safe pure nothrow @nogc
+    {
+        return RECT(client.right - 46, 0, client.right, titleBarHeight);
+    }
+
+    private static RECT titleBarDragRect(RECT client) @safe pure nothrow @nogc
+    {
+        return RECT(0, 0, maxInt(0, client.right - 46), titleBarHeight);
     }
 
     private static RECT copyButtonRect(RECT client) @safe pure nothrow @nogc
@@ -569,6 +599,30 @@ private final class PropertiesWindow
     private static bool contains(RECT rect, int x, int y) @safe pure nothrow @nogc
     {
         return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }
+
+    private static void drawTitleBar(HDC dc, RECT client, const(wchar)[] title,
+        bool closeHovered) nothrow
+    {
+        const titleRect = RECT(0, 0, client.right, titleBarHeight);
+        fillRect(dc, titleRect, rgb(38, 38, 38));
+        fillRect(dc, RECT(0, titleBarHeight - 1, client.right, titleBarHeight),
+            rgb(58, 58, 58));
+        drawText(dc, title, RECT(14, 0, maxInt(14, client.right - 58),
+            titleBarHeight), rgb(242, 242, 242), false, 12);
+
+        const close = titleCloseButtonRect(client);
+        fillRect(dc, close, closeHovered ? rgb(196, 43, 28) : rgb(38, 38, 38));
+        auto pen = CreatePen(PS_SOLID, 1, rgb(242, 242, 242));
+        auto oldPen = SelectObject(dc, pen);
+        const cx = (close.left + close.right) / 2;
+        const cy = (close.top + close.bottom) / 2;
+        MoveToEx(dc, cx - 5, cy - 5, null);
+        LineTo(dc, cx + 6, cy + 6);
+        MoveToEx(dc, cx + 5, cy - 5, null);
+        LineTo(dc, cx - 6, cy + 6);
+        SelectObject(dc, oldPen);
+        if (pen !is null) DeleteObject(pen);
     }
 
     private static void drawRow(HDC dc, const(wchar)[] label, const(wchar)[] value,
