@@ -9,7 +9,7 @@ import std.format : format;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute,
     rootName;
 import std.process : Config, environment, spawnProcess;
-import std.string : icmp, toLower;
+import std.string : icmp, strip, toLower;
 import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 
 version (Windows)
@@ -24,10 +24,11 @@ version (Windows)
     import core.sys.windows.objidl : IPersistFile;
     import core.sys.windows.shlobj : CSIDL_DESKTOPDIRECTORY, CSIDL_MYMUSIC,
         CSIDL_MYPICTURES, CSIDL_MYVIDEO, CSIDL_PERSONAL, CSIDL_PROFILE,
-        CSIDL_RECENT, ILFree, IEnumIDList, IShellFolder, IShellLinkW,
+        CSIDL_RECENT, DROPFILES, ILFree, IEnumIDList, IShellFolder, IShellLinkW,
         LPCITEMIDLIST, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO, SHGetDesktopFolder,
         SHGetFolderPathW, SHParseDisplayName, STRRET;
-    import core.sys.windows.shellapi : ShellExecuteW;
+    import core.sys.windows.shellapi : DragQueryFileW, FO_DELETE, FOF_ALLOWUNDO,
+        HDROP, SHFILEOPSTRUCTW, SHFileOperationW, ShellExecuteW;
     import core.sys.windows.shlwapi : StrRetToBufW;
     import core.sys.windows.uuid : CLSID_ShellLink, IID_IPersistFile, IID_IShellFolder,
         IID_IShellLinkW;
@@ -51,7 +52,12 @@ private enum CommandButton
     newFolder,
     newTextFile,
     openSelected,
-    copyPath
+    copySelected,
+    cutSelected,
+    paste,
+    copyPath,
+    renameSelected,
+    deleteSelected
 }
 
 private enum SortColumn
@@ -66,6 +72,18 @@ private enum GroupBy
 {
     none,
     dateModified
+}
+
+private enum FileViewMode
+{
+    extraLargeIcons,
+    largeIcons,
+    mediumIcons,
+    smallIcons,
+    list,
+    details,
+    tiles,
+    content
 }
 
 private enum NavigationKind
@@ -116,6 +134,24 @@ private struct NavigationItem
     bool enabled = true;
     bool pinned;
     int indentLevel;
+    bool thisPcChild;
+}
+
+private final class PreviewTextField : TextField
+{
+    bool delegate(ref Event event) onPreviewKeyDown;
+
+    this()
+    {
+        super("");
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        if (onPreviewKeyDown !is null && onPreviewKeyDown(event))
+            return true;
+        return super.onKeyDown(event);
+    }
 }
 
 version (Windows)
@@ -730,7 +766,9 @@ final class WindowsFileManagerRoot : Widget
     private enum quickAccessRecentFileLimit = 20;
     private enum maximumSearchDepth = 64;
     private enum maximumSearchResults = 10000;
+    private enum wheelUnitsPerNotch = 3;
     private enum double autoRefreshIntervalSeconds = 1.0;
+    private enum double thisPcArrowFadeSpeed = 8.0;
     private enum sidebarRowHeight = 27;
     private enum headerHeight = 34;
     private enum scrollbarWidth = 12;
@@ -738,7 +776,10 @@ final class WindowsFileManagerRoot : Widget
     private GuiWindow _window;
     private TextField _addressField;
     private TextField _searchField;
+    private TextField _locateField;
+    private TextField _renameField;
     private ContextMenu _homeMenu;
+    private ContextMenu _viewMenu;
     private DragPreviewOverlay _dragPreviewOverlay;
     version (Windows)
         private PropertiesWindow _propertiesWindow;
@@ -746,24 +787,38 @@ final class WindowsFileManagerRoot : Widget
     private ExplorerEntry[] _folderEntries;
     private VisibleRow[] _visibleRows;
     private int[] _visibleRowOffsets;
+    private int[] _visibleRowColumns;
     private int _visibleContentHeight;
     private NavigationItem[] _navigation;
     private string _currentPath;
     private bool _showQuickAccess;
     private bool _showThisPc;
     private string _searchQuery;
+    private string _locateQuery;
+    private bool _locateActive;
+    private bool _renamingActive;
+    private string _renamingOriginalPath;
+    private int _renamingVisibleIndex = -1;
+    private string[] _itemClipboardPaths;
+    private bool _itemClipboardCut;
+    private uint _itemClipboardSequence;
     private string _statusText = "Ready";
     private string[] _recentFiles;
     private string[] _history;
     private int _historyIndex = -1;
     private int _uiZoomPercent = defaultUiZoomPercent;
     private int _selectedVisibleIndex = -1;
+    private FileViewMode _viewMode = FileViewMode.details;
     private SortColumn _sortColumn = SortColumn.name;
     private bool _sortAscending = true;
     private GroupBy _groupBy = GroupBy.none;
     private bool _groupAscending;
     private int _scrollY;
     private int _sidebarScrollY;
+    private int _listWheelPixelRemainder;
+    private int _sidebarWheelPixelRemainder;
+    private bool _thisPcHoverArea;
+    private double _thisPcArrowOpacity;
     private double _autoRefreshClock;
     private string _watchedFolderPath;
     private ulong _watchedFolderFingerprint;
@@ -790,11 +845,14 @@ final class WindowsFileManagerRoot : Widget
     private Rect _addressTextRect;
     private Rect _searchRect;
     private Rect _searchTextRect;
+    private Rect _locateRect;
+    private Rect _locateTextRect;
     private Rect _newFolderRect;
     private Rect _newTextFileRect;
     private Rect _openSelectedRect;
     private Rect _copyPathRect;
     private Rect _homeTabRect;
+    private Rect _viewTabRect;
     private Rect _sidebarRect;
     private Rect _sidebarRowsRect;
     private Rect _mainRect;
@@ -842,12 +900,66 @@ final class WindowsFileManagerRoot : Widget
         _searchField.setTextColor(explorerText);
         _searchField.onChanged = delegate()
         {
+            clearLocate();
             _searchQuery = _searchField.textUtf8();
             updateSearchResults();
         };
         _searchField.onSubmitted = delegate()
         {
             requestFocus();
+        };
+
+        auto locateField = new PreviewTextField();
+        locateField.onPreviewKeyDown = delegate(ref Event event)
+        {
+            if (event.key == Key.escape && !event.control() &&
+                !event.meta() && !event.alt())
+            {
+                closeLocate();
+                return true;
+            }
+            if (event.key == Key.f3 && !event.control() &&
+                !event.meta() && !event.alt())
+            {
+                updateLocateSelection(true);
+                return true;
+            }
+            return false;
+        };
+        _locateField = add(locateField);
+        _locateField.setTransparentBackground(true);
+        _locateField.setShowBorder(false);
+        _locateField.setPadding(scaled(4));
+        _locateField.setTextColor(explorerText);
+        _locateField.setVisible(false);
+        _locateField.onChanged = delegate()
+        {
+            _locateQuery = _locateField.textUtf8();
+            updateLocateSelection(false);
+        };
+        _locateField.onSubmitted = delegate()
+        {
+            updateLocateSelection(true);
+        };
+
+        auto renameField = new PreviewTextField();
+        renameField.onPreviewKeyDown = delegate(ref Event event)
+        {
+            if (event.key == Key.escape && !event.control() &&
+                !event.meta() && !event.alt())
+            {
+                cancelRename();
+                return true;
+            }
+            return false;
+        };
+        _renameField = add(renameField);
+        _renameField.setPadding(scaled(3));
+        _renameField.setTextColor(explorerText);
+        _renameField.setVisible(false);
+        _renameField.onSubmitted = delegate()
+        {
+            commitRename();
         };
 
         rebuildNavigation();
@@ -885,12 +997,19 @@ final class WindowsFileManagerRoot : Widget
 
     protected override void onTick(double deltaSeconds)
     {
+        updateThisPcArrowFade(deltaSeconds);
         pollFolderAutoRefresh(deltaSeconds);
     }
 
     override bool onMouseDown(ref Event event)
     {
         updateGeometry();
+        if (_renamingActive && (_renameField is null ||
+                !_renameField.bounds().contains(event.position)))
+        {
+            commitRename();
+            return true;
+        }
         if (event.button == MouseButton.right)
         {
             requestFocus();
@@ -903,6 +1022,11 @@ final class WindowsFileManagerRoot : Widget
         if (_homeTabRect.contains(event.position))
         {
             showHomeMenu();
+            return true;
+        }
+        if (_viewTabRect.contains(event.position))
+        {
+            showViewMenu();
             return true;
         }
 
@@ -993,6 +1117,7 @@ final class WindowsFileManagerRoot : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        updateThisPcHoverArea(event.position);
         if (_draggingListScrollbar)
         {
             dragListScrollbar(event.position.y);
@@ -1009,6 +1134,11 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
         return false;
+    }
+
+    protected override void onMouseLeave()
+    {
+        setThisPcHoverArea(false);
     }
 
     override bool onMouseUp(ref Event event)
@@ -1048,25 +1178,59 @@ final class WindowsFileManagerRoot : Widget
 
     override bool onMouseWheel(ref Event event)
     {
+        updateGeometry();
         if (event.control() || event.meta())
         {
-            if (event.wheelY != 0)
-                setUiZoomPercent(_uiZoomPercent + (event.wheelY > 0 ? 10 : -10));
+            if (event.wheelY == 0) return false;
+            setUiZoomPercent(_uiZoomPercent + (event.wheelY > 0 ? 10 : -10));
             return true;
         }
-        const sideRow = sidebarRowHeightPx();
-        const row = rowHeightPx();
+
         if (_sidebarRect.contains(event.position))
         {
-            setSidebarScroll(_sidebarScrollY - event.wheelY * sideRow / 3);
-            return true;
+            return scrollSidebarByWheel(event.wheelY, event.wheelX);
         }
         if (_mainRect.contains(event.position))
         {
-            setListScroll(_scrollY - event.wheelY * row / 3);
-            return true;
+            return scrollListByWheel(event.wheelY, event.wheelX);
         }
         return false;
+    }
+
+    private bool scrollListByWheel(int verticalUnits, int horizontalUnits)
+    {
+        const units = wheelScrollUnits(verticalUnits, horizontalUnits);
+        if (units == 0) return false;
+        const pixels = wheelPixelsFromUnits(units, rowHeightPx(), _listWheelPixelRemainder);
+        if (pixels != 0)
+            setListScroll(_scrollY - pixels);
+        return true;
+    }
+
+    private bool scrollSidebarByWheel(int verticalUnits, int horizontalUnits)
+    {
+        const units = wheelScrollUnits(verticalUnits, horizontalUnits);
+        if (units == 0) return false;
+        const pixels = wheelPixelsFromUnits(units, sidebarRowHeightPx(),
+            _sidebarWheelPixelRemainder);
+        if (pixels != 0)
+            setSidebarScroll(_sidebarScrollY - pixels);
+        return true;
+    }
+
+    private static int wheelScrollUnits(int verticalUnits, int horizontalUnits)
+        @safe pure nothrow @nogc
+    {
+        return verticalUnits != 0 ? verticalUnits : horizontalUnits;
+    }
+
+    private static int wheelPixelsFromUnits(int units, int pixelsPerNotch,
+        ref int remainder) @safe pure nothrow @nogc
+    {
+        const scaledPixels = units * pixelsPerNotch + remainder;
+        const pixels = scaledPixels / wheelUnitsPerNotch;
+        remainder = scaledPixels - pixels * wheelUnitsPerNotch;
+        return pixels;
     }
 
     override bool onKeyDown(ref Event event)
@@ -1097,11 +1261,28 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
         if (!event.control() && !event.meta() && !event.alt() &&
+            event.key == Key.f2)
+        {
+            beginRenameSelected();
+            return true;
+        }
+        if (!event.control() && !event.meta() && !event.alt() &&
+            event.key == Key.deleteKey)
+        {
+            deleteSelectedItem();
+            return true;
+        }
+        if (!event.control() && !event.meta() && !event.alt() &&
             handleListNavigationKey(event.key))
             return true;
         if (event.key == Key.enter && _selectedVisibleIndex >= 0)
         {
             activateEntry(_selectedVisibleIndex);
+            return true;
+        }
+        if (event.key == Key.escape && _locateActive)
+        {
+            closeLocate();
             return true;
         }
         if (event.key == Key.escape && _searchQuery.length > 0)
@@ -1136,8 +1317,7 @@ final class WindowsFileManagerRoot : Widget
             }
             if (event.key == Key.f)
             {
-                _searchField.requestFocus();
-                _searchField.selectAll();
+                beginLocate();
                 return true;
             }
             if (event.key == Key.n)
@@ -1145,9 +1325,24 @@ final class WindowsFileManagerRoot : Widget
                 createNewFolder();
                 return true;
             }
-            if (event.key == Key.c && _selectedVisibleIndex >= 0)
+            if (event.key == Key.c && event.shift() && _selectedVisibleIndex >= 0)
             {
                 copySelectedPath();
+                return true;
+            }
+            if (event.key == Key.c)
+            {
+                copySelectedItem();
+                return true;
+            }
+            if (event.key == Key.x)
+            {
+                cutSelectedItem();
+                return true;
+            }
+            if (event.key == Key.v)
+            {
+                pasteClipboardToDefaultTarget();
                 return true;
             }
         }
@@ -1334,15 +1529,25 @@ final class WindowsFileManagerRoot : Widget
         int target = -1;
         switch (key)
         {
+            case Key.left:
+                target = _selectedVisibleIndex < 0
+                    ? firstEntryVisibleIndex()
+                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, -1);
+                break;
+            case Key.right:
+                target = _selectedVisibleIndex < 0
+                    ? firstEntryVisibleIndex()
+                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, 1);
+                break;
             case Key.up:
                 target = _selectedVisibleIndex < 0
                     ? lastEntryVisibleIndex()
-                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, -1);
+                    : verticalEntryVisibleIndex(_selectedVisibleIndex, -1);
                 break;
             case Key.down:
                 target = _selectedVisibleIndex < 0
                     ? firstEntryVisibleIndex()
-                    : adjacentEntryVisibleIndex(_selectedVisibleIndex, 1);
+                    : verticalEntryVisibleIndex(_selectedVisibleIndex, 1);
                 break;
             case Key.pageUp:
                 target = pageEntryVisibleIndex(-1);
@@ -1391,6 +1596,46 @@ final class WindowsFileManagerRoot : Widget
             index += direction;
         }
         return direction < 0 ? firstEntryVisibleIndex() : lastEntryVisibleIndex();
+    }
+
+    private int verticalEntryVisibleIndex(int start, int direction) const
+    {
+        if (!usesMultiColumnView())
+            return adjacentEntryVisibleIndex(start, direction);
+
+        const blockStart = entryBlockStart(start);
+        const blockEnd = entryBlockEnd(start);
+        if (blockStart < 0 || blockEnd <= blockStart)
+            return adjacentEntryVisibleIndex(start, direction);
+
+        const columns = viewColumnCount();
+        const target = start + direction * columns;
+        if (target >= blockStart && target < blockEnd &&
+            entryIndexForVisibleRow(target) >= 0)
+            return target;
+
+        return direction < 0
+            ? adjacentEntryVisibleIndex(blockStart, -1)
+            : adjacentEntryVisibleIndex(blockEnd - 1, 1);
+    }
+
+    private int entryBlockStart(int visibleIndex) const
+    {
+        if (entryIndexForVisibleRow(visibleIndex) < 0) return -1;
+        int index = visibleIndex;
+        while (index > 0 && entryIndexForVisibleRow(index - 1) >= 0)
+            --index;
+        return index;
+    }
+
+    private int entryBlockEnd(int visibleIndex) const
+    {
+        if (entryIndexForVisibleRow(visibleIndex) < 0) return -1;
+        int index = visibleIndex + 1;
+        while (index < cast(int) _visibleRows.length &&
+            entryIndexForVisibleRow(index) >= 0)
+            ++index;
+        return index;
     }
 
     private int pageEntryVisibleIndex(int direction) const
@@ -1566,6 +1811,51 @@ final class WindowsFileManagerRoot : Widget
         }
     }
 
+    private string copyPathIntoDirectory(string sourcePath, string targetDirectory)
+    {
+        try
+        {
+            const source = buildNormalizedPath(sourcePath);
+            const target = buildNormalizedPath(targetDirectory);
+            if (!exists(source))
+            {
+                _statusText = "Cannot copy missing item: " ~ source;
+                return "";
+            }
+            if (!exists(target) || !isDir(target))
+            {
+                _statusText = "Cannot copy to unavailable folder: " ~ target;
+                return "";
+            }
+            if (pathsEqual(source, target))
+            {
+                _statusText = "Cannot copy a folder into itself.";
+                return "";
+            }
+            if (isDir(source) && isSameOrDescendantPath(target, source))
+            {
+                _statusText = "Cannot copy a folder into itself.";
+                return "";
+            }
+
+            const name = baseName(source);
+            if (name.length == 0)
+            {
+                _statusText = "Cannot copy a drive root.";
+                return "";
+            }
+
+            const destination = uniqueDestinationPath(target, name);
+            copyPathRecursive(source, destination);
+            return destination;
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot copy item: " ~ error.msg;
+            return "";
+        }
+    }
+
     int uiZoomPercent() const @safe pure nothrow @nogc
     {
         return _uiZoomPercent;
@@ -1600,6 +1890,10 @@ final class WindowsFileManagerRoot : Widget
             _addressField.setPadding(scaled(4));
         if (_searchField !is null)
             _searchField.setPadding(scaled(5));
+        if (_locateField !is null)
+            _locateField.setPadding(scaled(4));
+        if (_renameField !is null)
+            _renameField.setPadding(scaled(3));
     }
 
     private void layoutTextFields()
@@ -1608,6 +1902,9 @@ final class WindowsFileManagerRoot : Widget
             _addressField.setBounds(_addressTextRect);
         if (_searchField !is null)
             _searchField.setBounds(_searchTextRect);
+        if (_locateField !is null)
+            _locateField.setBounds(_locateTextRect);
+        updateRenameFieldBounds();
     }
 
     private int commandButtonWidth(string label) const @safe pure nothrow @nogc
@@ -1640,7 +1937,66 @@ final class WindowsFileManagerRoot : Widget
 
     private int rowHeightPx() const @safe pure nothrow @nogc
     {
-        return maxInt(22, scaled(rowHeight));
+        final switch (_viewMode)
+        {
+            case FileViewMode.extraLargeIcons:
+                return maxInt(128, scaled(132));
+            case FileViewMode.largeIcons:
+                return maxInt(106, scaled(108));
+            case FileViewMode.mediumIcons:
+                return maxInt(84, scaled(86));
+            case FileViewMode.smallIcons:
+                return maxInt(28, scaled(30));
+            case FileViewMode.list:
+                return maxInt(24, scaled(26));
+            case FileViewMode.details:
+                return maxInt(22, scaled(rowHeight));
+            case FileViewMode.tiles:
+                return maxInt(58, scaled(62));
+            case FileViewMode.content:
+                return maxInt(54, scaled(58));
+        }
+    }
+
+    private int viewIconSizePx() const @safe pure nothrow @nogc
+    {
+        final switch (_viewMode)
+        {
+            case FileViewMode.extraLargeIcons:
+                return scaled(72);
+            case FileViewMode.largeIcons:
+                return scaled(56);
+            case FileViewMode.mediumIcons:
+                return scaled(40);
+            case FileViewMode.smallIcons:
+            case FileViewMode.list:
+            case FileViewMode.details:
+                return scaled(17);
+            case FileViewMode.tiles:
+            case FileViewMode.content:
+                return scaled(34);
+        }
+    }
+
+    private int viewCellWidthPx() const @safe pure nothrow @nogc
+    {
+        final switch (_viewMode)
+        {
+            case FileViewMode.extraLargeIcons:
+                return scaled(152);
+            case FileViewMode.largeIcons:
+                return scaled(132);
+            case FileViewMode.mediumIcons:
+                return scaled(112);
+            case FileViewMode.smallIcons:
+            case FileViewMode.list:
+                return scaled(190);
+            case FileViewMode.details:
+            case FileViewMode.content:
+                return maxInt(scaled(120), _usableListWidth - scaled(24));
+            case FileViewMode.tiles:
+                return scaled(250);
+        }
     }
 
     private int groupHeaderHeightPx() const @safe pure nothrow @nogc
@@ -1683,7 +2039,7 @@ final class WindowsFileManagerRoot : Widget
         const ribbon = ribbonHeightPx();
         const address = addressHeightPx();
         const status = statusHeightPx();
-        const header = headerHeightPx();
+        const header = _viewMode == FileViewMode.details ? headerHeightPx() : 0;
         const contentTop = ribbon + address;
         const contentHeight = maxInt(0, h - contentTop - status);
         _statusRect = Rect(0, maxInt(contentTop, h - status), w, status);
@@ -1710,13 +2066,25 @@ final class WindowsFileManagerRoot : Widget
         _searchTextRect = Rect(_searchRect.x + scaled(32), _searchRect.y + scaled(2),
             maxInt(0, _searchRect.width - scaled(38)),
             maxInt(0, _searchRect.height - scaled(4)));
+        const locateWidth = clampInt(w / 4, scaled(190), scaled(340));
+        const locateHeight = maxInt(scaled(20), status - scaled(6));
+        _locateRect = Rect(maxInt(_statusRect.x + scaled(180),
+                _statusRect.right() - locateWidth - scaled(12)),
+            _statusRect.y + maxInt(0, (status - locateHeight) / 2),
+            locateWidth, locateHeight);
+        _locateTextRect = Rect(_locateRect.x + scaled(54), _locateRect.y + scaled(1),
+            maxInt(0, _locateRect.width - scaled(62)),
+            maxInt(0, _locateRect.height - scaled(2)));
         _homeTabRect = Rect(scaled(82), 0, scaled(62), ribbon);
+        _viewTabRect = Rect(scaled(218), 0, scaled(62), ribbon);
         _newFolderRect = Rect.init;
         _newTextFileRect = Rect.init;
         _openSelectedRect = Rect.init;
         _copyPathRect = Rect.init;
 
         updateColumnGeometry();
+        rebuildVisibleRowOffsets();
+        _scrollY = clampInt(_scrollY, 0, maxListScroll());
         rebuildScrollbars();
     }
 
@@ -1747,20 +2115,11 @@ final class WindowsFileManagerRoot : Widget
     private void rebuildNavigation()
     {
         _navigation.length = 0;
-        const current = getcwd();
-        const home = environment.get("USERPROFILE", environment.get("HOME", current));
-        const documents = buildNormalizedPath(home, "Documents");
 
         addNavigation("Quick Access", "", IconKind.open, false,
             NavigationKind.quickAccess, true);
-        addNavigation("Personal", home, IconKind.folder, true);
-        addNavigation("Desktop", buildNormalizedPath(home, "Desktop"), IconKind.computer, true);
-        addNavigation("Downloads", buildNormalizedPath(home, "Downloads"), IconKind.open, true);
-        addNavigation("Documents", documents, IconKind.notepad, true);
-        addNavigation("Pictures", buildNormalizedPath(home, "Pictures"), IconKind.image, true);
-        addNavigation("Videos", buildNormalizedPath(home, "Videos"), IconKind.music, true);
-        addDocumentFolders(documents, 12);
-        addNavigation("OneDrive - Personal", buildNormalizedPath(home, "OneDrive"), IconKind.drive, false);
+        if (!addNativeQuickAccessNavigationFolders())
+            addDefaultQuickAccessNavigationFolders();
         addNavigation("This PC", "", IconKind.computer, false,
             NavigationKind.thisPc, true);
         addThisPcNavigationChildren();
@@ -1778,8 +2137,85 @@ final class WindowsFileManagerRoot : Widget
         item.kind = kind;
         item.pinned = pinned;
         item.indentLevel = indentLevel >= 0 ? indentLevel : (pinned ? 1 : 0);
-        item.enabled = forceEnabled || (path.length > 0 && exists(path) && isDir(path));
+        item.enabled = forceEnabled || filesystemFolderExists(path);
         _navigation ~= item;
+    }
+
+    private bool addNativeQuickAccessNavigationFolders()
+    {
+        version (Windows)
+        {
+            size_t count;
+            foreach (item; windowsQuickAccessItems())
+            {
+                if (!item.isFolder) continue;
+                if (count >= quickAccessFrequentFolderLimit) break;
+                if (addQuickAccessNavigationFolder(item.displayName, item.path,
+                        quickAccessNavigationIcon(item.displayName, item.path)))
+                    ++count;
+            }
+            return count > 0;
+        }
+        else
+            return false;
+    }
+
+    private void addDefaultQuickAccessNavigationFolders()
+    {
+        addQuickAccessNavigationFolder("Desktop", defaultDesktopFolder(),
+            IconKind.computer);
+        addQuickAccessNavigationFolder("Downloads", defaultDownloadsFolder(),
+            IconKind.open);
+        addQuickAccessNavigationFolder("Documents", defaultDocumentsFolder(),
+            IconKind.notepad);
+        addQuickAccessNavigationFolder("Pictures", defaultPicturesFolder(),
+            IconKind.image);
+        addQuickAccessNavigationFolder("Videos", defaultVideosFolder(),
+            IconKind.music);
+        addQuickAccessNavigationFolder("Music", defaultMusicFolder(),
+            IconKind.music);
+        addQuickAccessNavigationFolder("OneDrive - Personal",
+            defaultOneDriveFolder(), IconKind.drive);
+    }
+
+    private bool addQuickAccessNavigationFolder(string label, string path,
+        IconKind icon)
+    {
+        if (!filesystemFolderExists(path)) return false;
+        if (navigationContainsFolderPath(path)) return false;
+        const displayName = label.length > 0 ? label : folderDisplayName(path);
+        addNavigation(displayName, path, icon, true, NavigationKind.folder, false, 1);
+        return true;
+    }
+
+    private bool navigationContainsFolderPath(string path) const
+    {
+        foreach (item; _navigation)
+        {
+            if (item.kind == NavigationKind.folder && item.path.length > 0 &&
+                pathsEqual(item.path, path))
+                return true;
+        }
+        return false;
+    }
+
+    private static IconKind quickAccessNavigationIcon(string label, string path)
+    {
+        if (icmp(label, "Desktop") == 0 || pathsEqual(path, defaultDesktopFolder()))
+            return IconKind.computer;
+        if (icmp(label, "Downloads") == 0 || pathsEqual(path, defaultDownloadsFolder()))
+            return IconKind.open;
+        if (icmp(label, "Documents") == 0 || pathsEqual(path, defaultDocumentsFolder()))
+            return IconKind.notepad;
+        if (icmp(label, "Pictures") == 0 || pathsEqual(path, defaultPicturesFolder()))
+            return IconKind.image;
+        if (icmp(label, "Music") == 0 || pathsEqual(path, defaultMusicFolder()))
+            return IconKind.music;
+        if (icmp(label, "Videos") == 0 || pathsEqual(path, defaultVideosFolder()))
+            return IconKind.music;
+        if (containsInsensitive(label, "onedrive"))
+            return IconKind.drive;
+        return IconKind.folder;
     }
 
     private void addThisPcNavigationChildren()
@@ -1819,6 +2255,7 @@ final class WindowsFileManagerRoot : Widget
         if (entry.path.length == 0) return;
         addNavigation(entry.name, entry.path, thisPcNavigationIcon(entry), false,
             NavigationKind.folder, true, 1);
+        _navigation[$ - 1].thisPcChild = true;
     }
 
     private static IconKind thisPcNavigationIcon(ExplorerEntry entry)
@@ -1833,49 +2270,12 @@ final class WindowsFileManagerRoot : Widget
         return IconKind.folder;
     }
 
-    private void addDocumentFolders(string documents, int limit)
-    {
-        if (!exists(documents) || !isDir(documents)) return;
-        NavigationItem[] added;
-        try
-        {
-            foreach (DirEntry item; dirEntries(documents, SpanMode.shallow))
-            {
-                if (cast(int) added.length >= limit) break;
-                try
-                {
-                    if (!item.isDir) continue;
-                    const name = baseName(item.name);
-                    if (name.length == 0) continue;
-                    NavigationItem nav;
-                    nav.label = name;
-                    nav.path = item.name;
-                    nav.icon = IconKind.folder;
-                    nav.kind = NavigationKind.folder;
-                    nav.enabled = true;
-                    nav.pinned = true;
-                    nav.indentLevel = 1;
-                    added ~= nav;
-                }
-                catch (Exception)
-                {
-                    continue;
-                }
-            }
-        }
-        catch (Exception)
-        {
-            return;
-        }
-        sort!((a, b) => a.label < b.label)(added);
-        foreach (item; added)
-            _navigation ~= item;
-    }
-
     private void navigate(string candidate, bool addHistory, bool clearSearch)
     {
         const path = resolvePath(candidate);
         const enteringNewFolder = _currentPath.length == 0 || !pathsEqual(_currentPath, path);
+        if (enteringNewFolder)
+            clearLocate();
         try
         {
             if (!exists(path) || !isDir(path))
@@ -1943,9 +2343,8 @@ final class WindowsFileManagerRoot : Widget
 
     private static bool isDownloadsPath(string path)
     {
-        const current = getcwd();
-        const home = environment.get("USERPROFILE", environment.get("HOME", current));
-        return pathsEqual(path, buildNormalizedPath(home, "Downloads"));
+        const downloads = defaultDownloadsFolder();
+        return downloads.length > 0 && pathsEqual(path, downloads);
     }
 
     private string resolvePath(string candidate) const
@@ -1979,6 +2378,159 @@ final class WindowsFileManagerRoot : Widget
         if (!_showQuickAccess)
             sortEntries(_entries);
         rebuildVisibleEntries();
+    }
+
+    private void beginLocate()
+    {
+        if (_locateField is null) return;
+        _locateActive = true;
+        _locateField.setVisible(true);
+        _locateField.requestFocus();
+        _locateField.selectAll();
+        if (_locateQuery.length == 0)
+        {
+            _statusText = "Type to locate an item in " ~ locateScopeText() ~ ".";
+            invalidate();
+        }
+        else
+            updateLocateSelection(false);
+    }
+
+    private void clearLocate()
+    {
+        _locateActive = false;
+        _locateQuery = "";
+        if (_locateField !is null)
+        {
+            _locateField.setText("", false);
+            _locateField.setVisible(false);
+        }
+    }
+
+    private void closeLocate()
+    {
+        const hadSelection = hasSelection();
+        clearLocate();
+        requestFocus();
+        if (hadSelection)
+            updateSelectedStatus();
+        else
+            updateStatus();
+        invalidate();
+    }
+
+    private void updateLocateSelection(bool findNext)
+    {
+        if (!_locateActive) return;
+        const loweredQuery = _locateQuery.toLower();
+        if (loweredQuery.length == 0)
+        {
+            _statusText = "Type to locate an item in " ~ locateScopeText() ~ ".";
+            invalidate();
+            return;
+        }
+
+        const matchCount = locateMatchCount(loweredQuery);
+        if (matchCount == 0)
+        {
+            _statusText = "No matches for \"" ~ _locateQuery ~ "\" in " ~
+                locateScopeText() ~ ".";
+            invalidate();
+            return;
+        }
+
+        if (!findNext && hasSelection() &&
+            containsInsensitive(selectedEntry().name, loweredQuery))
+        {
+            updateLocateStatus(loweredQuery, matchCount);
+            invalidate();
+            return;
+        }
+
+        const startVisibleIndex = findNext ? _selectedVisibleIndex : -1;
+        int match = locateVisibleMatch(loweredQuery, startVisibleIndex, true);
+        if (match < 0)
+            match = locateVisibleMatch(loweredQuery, startVisibleIndex, false);
+        if (match < 0)
+        {
+            _statusText = "No visible matches for \"" ~ _locateQuery ~ "\" in " ~
+                locateScopeText() ~ ".";
+            invalidate();
+            return;
+        }
+
+        _selectedVisibleIndex = match;
+        ensureSelectionVisible();
+        updateLocateStatus(loweredQuery, matchCount);
+        invalidate();
+    }
+
+    private int locateVisibleMatch(string loweredQuery, int startVisibleIndex,
+        bool prefixOnly) const
+    {
+        if (_visibleRows.length == 0) return -1;
+        const rowCount = cast(int) _visibleRows.length;
+        int start = startVisibleIndex >= 0 ? startVisibleIndex + 1 : 0;
+        if (start >= rowCount) start = 0;
+        foreach (offset; 0 .. rowCount)
+        {
+            const visibleIndex = (start + cast(int) offset) % rowCount;
+            const entryIndex = entryIndexForVisibleRow(visibleIndex);
+            if (entryIndex < 0) continue;
+            const entry = _entries[cast(size_t) entryIndex];
+            const matches = prefixOnly
+                ? startsWithInsensitive(entry.name, loweredQuery)
+                : containsInsensitive(entry.name, loweredQuery);
+            if (matches) return visibleIndex;
+        }
+        return -1;
+    }
+
+    private size_t locateMatchCount(string loweredQuery) const
+    {
+        size_t count;
+        foreach (row; _visibleRows)
+        {
+            if (row.entryIndex < 0) continue;
+            if (containsInsensitive(_entries[cast(size_t) row.entryIndex].name,
+                    loweredQuery))
+                ++count;
+        }
+        return count;
+    }
+
+    private void updateLocateStatus(string loweredQuery, size_t matchCount)
+    {
+        if (!hasSelection()) return;
+        const entry = selectedEntry();
+        const ordinal = locateSelectedOrdinal(loweredQuery);
+        const matchText = matchCount == 1 ? "match" : "matches";
+        _statusText = format("Located %s (%d of %d %s)",
+            entry.name, ordinal, matchCount, matchText);
+    }
+
+    private size_t locateSelectedOrdinal(string loweredQuery) const
+    {
+        size_t ordinal;
+        foreach (visibleIndex, row; _visibleRows)
+        {
+            if (row.entryIndex < 0) continue;
+            if (!containsInsensitive(_entries[cast(size_t) row.entryIndex].name,
+                    loweredQuery))
+                continue;
+            ++ordinal;
+            if (cast(int) visibleIndex == _selectedVisibleIndex)
+                return ordinal;
+        }
+        return ordinal;
+    }
+
+    private string locateScopeText() const
+    {
+        if (_showQuickAccess) return "Quick Access";
+        if (_showThisPc) return "This PC";
+        return _currentPath.length > 0 ? folderDisplayName(_currentPath) :
+            "current folder";
     }
 
     private void clearFolderWatch()
@@ -2450,12 +3002,62 @@ final class WindowsFileManagerRoot : Widget
     private void rebuildVisibleRowOffsets()
     {
         _visibleRowOffsets.length = _visibleRows.length;
+        _visibleRowColumns.length = _visibleRows.length;
         _visibleContentHeight = 0;
-        foreach (index, row; _visibleRows)
+        size_t index;
+        while (index < _visibleRows.length)
         {
-            _visibleRowOffsets[index] = _visibleContentHeight;
-            _visibleContentHeight += row.entryIndex >= 0 ? rowHeightPx() :
-                (row.separator ? quickAccessSeparatorHeightPx() : groupHeaderHeightPx());
+            const row = _visibleRows[index];
+            if (row.entryIndex < 0)
+            {
+                _visibleRowOffsets[index] = _visibleContentHeight;
+                _visibleRowColumns[index] = 0;
+                _visibleContentHeight += row.separator
+                    ? quickAccessSeparatorHeightPx() : groupHeaderHeightPx();
+                ++index;
+                continue;
+            }
+
+            const start = index;
+            while (index < _visibleRows.length &&
+                _visibleRows[index].entryIndex >= 0)
+                ++index;
+
+            const columns = viewColumnCount();
+            const height = rowHeightPx();
+            foreach (itemIndex; start .. index)
+            {
+                const relative = cast(int) (itemIndex - start);
+                _visibleRowColumns[itemIndex] = relative % columns;
+                _visibleRowOffsets[itemIndex] =
+                    _visibleContentHeight + relative / columns * height;
+            }
+            const count = cast(int) (index - start);
+            _visibleContentHeight += ((count + columns - 1) / columns) * height;
+        }
+    }
+
+    private int viewColumnCount() const @safe pure nothrow @nogc
+    {
+        if (!usesMultiColumnView()) return 1;
+        const contentWidth = maxInt(1, _usableListWidth - scaled(24));
+        return maxInt(1, contentWidth / maxInt(1, viewCellWidthPx()));
+    }
+
+    private bool usesMultiColumnView() const @safe pure nothrow @nogc
+    {
+        final switch (_viewMode)
+        {
+            case FileViewMode.extraLargeIcons:
+            case FileViewMode.largeIcons:
+            case FileViewMode.mediumIcons:
+            case FileViewMode.smallIcons:
+            case FileViewMode.list:
+            case FileViewMode.tiles:
+                return true;
+            case FileViewMode.details:
+            case FileViewMode.content:
+                return false;
         }
     }
 
@@ -2499,6 +3101,7 @@ final class WindowsFileManagerRoot : Widget
 
     private int sortColumnAt(Point point) const
     {
+        if (_viewMode != FileViewMode.details) return -1;
         if (_nameHeaderRect.contains(point)) return cast(int) SortColumn.name;
         if (_dateHeaderRect.contains(point)) return cast(int) SortColumn.modified;
         if (_typeHeaderRect.contains(point)) return cast(int) SortColumn.type;
@@ -2545,8 +3148,65 @@ final class WindowsFileManagerRoot : Widget
             selectPath(selectedPath);
     }
 
+    private void setViewMode(FileViewMode mode)
+    {
+        if (_viewMode == mode) return;
+        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        _viewMode = mode;
+        _listWheelPixelRemainder = 0;
+        updateGeometry();
+        setListScroll(_scrollY);
+        updateRenameFieldBounds();
+        if (selectedPath.length > 0)
+            selectPath(selectedPath);
+        else
+            invalidate();
+    }
+
+    private void appendViewModeItems(ref ContextMenuItem[] items)
+    {
+        appendViewModeItem(items, FileViewMode.extraLargeIcons);
+        appendViewModeItem(items, FileViewMode.largeIcons);
+        appendViewModeItem(items, FileViewMode.mediumIcons);
+        appendViewModeItem(items, FileViewMode.smallIcons);
+        appendViewModeItem(items, FileViewMode.list);
+        appendViewModeItem(items, FileViewMode.details);
+        appendViewModeItem(items, FileViewMode.tiles);
+        appendViewModeItem(items, FileViewMode.content);
+    }
+
+    private void appendViewModeItem(ref ContextMenuItem[] items, FileViewMode mode)
+    {
+        items ~= ContextMenuItem.check(fileViewModeLabel(mode), _viewMode == mode,
+            delegate() { setViewMode(mode); });
+    }
+
+    private static string fileViewModeLabel(FileViewMode mode)
+    {
+        final switch (mode)
+        {
+            case FileViewMode.extraLargeIcons:
+                return "Extra large icons";
+            case FileViewMode.largeIcons:
+                return "Large icons";
+            case FileViewMode.mediumIcons:
+                return "Medium icons";
+            case FileViewMode.smallIcons:
+                return "Small icons";
+            case FileViewMode.list:
+                return "List";
+            case FileViewMode.details:
+                return "Details";
+            case FileViewMode.tiles:
+                return "Tiles";
+            case FileViewMode.content:
+                return "Content";
+        }
+    }
+
     private void openQuickAccess()
     {
+        clearLocate();
         _showQuickAccess = true;
         _showThisPc = false;
         _currentPath = "";
@@ -2568,6 +3228,7 @@ final class WindowsFileManagerRoot : Widget
 
     private void openThisPc()
     {
+        clearLocate();
         _showQuickAccess = false;
         _showThisPc = true;
         _currentPath = "";
@@ -2604,30 +3265,13 @@ final class WindowsFileManagerRoot : Widget
 
             if (entries.length == 0)
             {
-                const current = getcwd();
-                auto home = windowsCsidlFolder(CSIDL_PROFILE);
-                if (home.length == 0)
-                    home = environment.get("USERPROFILE", environment.get("HOME", current));
-
-                appendThisPcFolder(entries, "Desktop",
-                    windowsCsidlFolder(CSIDL_DESKTOPDIRECTORY));
-                appendThisPcFolder(entries, "Documents",
-                    windowsCsidlFolder(CSIDL_PERSONAL));
-
-                auto downloads = windowsKnownFolderPath(&folderIdDownloads);
-                if (downloads.length == 0)
-                    downloads = buildNormalizedPath(home, "Downloads");
-                appendThisPcFolder(entries, "Downloads", downloads);
-
-                appendThisPcFolder(entries, "Music",
-                    windowsCsidlFolder(CSIDL_MYMUSIC));
-                appendThisPcFolder(entries, "Pictures",
-                    windowsCsidlFolder(CSIDL_MYPICTURES));
-                appendThisPcFolder(entries, "Videos",
-                    windowsCsidlFolder(CSIDL_MYVIDEO));
-
-                const threeDObjects = buildNormalizedPath(home, "3D Objects");
-                appendThisPcFolder(entries, "3D Objects", threeDObjects);
+                appendThisPcFolder(entries, "Desktop", defaultDesktopFolder());
+                appendThisPcFolder(entries, "Documents", defaultDocumentsFolder());
+                appendThisPcFolder(entries, "Downloads", defaultDownloadsFolder());
+                appendThisPcFolder(entries, "Music", defaultMusicFolder());
+                appendThisPcFolder(entries, "Pictures", defaultPicturesFolder());
+                appendThisPcFolder(entries, "Videos", defaultVideosFolder());
+                appendThisPcFolder(entries, "3D Objects", defaultThreeDObjectsFolder());
 
                 const mask = GetLogicalDrives();
                 foreach (index; 0 .. 26)
@@ -2750,15 +3394,12 @@ final class WindowsFileManagerRoot : Widget
 
         if (quickAccessFolderCount(entries) == 0)
         {
-            const current = getcwd();
-            const home = environment.get("USERPROFILE", environment.get("HOME", current));
-            const documents = buildNormalizedPath(home, "Documents");
             foreach (path; [
-                buildNormalizedPath(home, "Desktop"),
-                buildNormalizedPath(home, "Downloads"),
-                documents,
-                buildNormalizedPath(home, "Pictures"),
-                buildNormalizedPath(home, "Videos")
+                defaultDesktopFolder(),
+                defaultDownloadsFolder(),
+                defaultDocumentsFolder(),
+                defaultPicturesFolder(),
+                defaultVideosFolder()
             ])
             {
                 if (quickAccessFolderCount(entries) >= quickAccessFrequentFolderLimit)
@@ -2963,8 +3604,23 @@ final class WindowsFileManagerRoot : Widget
             case CommandButton.openSelected:
                 if (_selectedVisibleIndex >= 0) activateEntry(_selectedVisibleIndex);
                 break;
+            case CommandButton.copySelected:
+                copySelectedItem();
+                break;
+            case CommandButton.cutSelected:
+                cutSelectedItem();
+                break;
+            case CommandButton.paste:
+                pasteClipboardToDefaultTarget();
+                break;
             case CommandButton.copyPath:
                 copySelectedPath();
+                break;
+            case CommandButton.renameSelected:
+                beginRenameSelected();
+                break;
+            case CommandButton.deleteSelected:
+                deleteSelectedItem();
                 break;
         }
     }
@@ -3037,6 +3693,26 @@ final class WindowsFileManagerRoot : Widget
         return _entries[cast(size_t) entryIndexForVisibleRow(_selectedVisibleIndex)];
     }
 
+    private bool canModifySelection() const
+    {
+        return hasSelection() && canModifyPath(selectedEntry().path);
+    }
+
+    private bool canClipboardSelection() const
+    {
+        return hasSelection() && canClipboardPath(selectedEntry().path);
+    }
+
+    private static bool canModifyPath(string path)
+    {
+        return filesystemPathExists(path) && !isDriveRootPath(path);
+    }
+
+    private static bool canClipboardPath(string path)
+    {
+        return filesystemPathExists(path) && !isDriveRootPath(path);
+    }
+
     private void createNewFolder()
     {
         createDirectoryItem(uniqueChildPath("New folder", ""));
@@ -3093,6 +3769,464 @@ final class WindowsFileManagerRoot : Widget
             _statusText = "Cannot create file: " ~ error.msg;
             invalidate();
         }
+    }
+
+    private void beginRenameSelected()
+    {
+        if (!canModifySelection())
+        {
+            _statusText = "Select a file or folder to rename.";
+            invalidate();
+            return;
+        }
+        beginRenamePath(selectedEntry().path);
+    }
+
+    private void beginRenamePath(string path)
+    {
+        if (!canModifyPath(path))
+        {
+            _statusText = "Cannot rename this item.";
+            invalidate();
+            return;
+        }
+
+        if (!hasSelection() || !pathsEqual(selectedEntry().path, path))
+        {
+            if (!selectPathIfVisible(path))
+            {
+                const parent = dirName(path);
+                if (!filesystemFolderExists(parent))
+                {
+                    _statusText = "Cannot rename this item.";
+                    invalidate();
+                    return;
+                }
+                navigate(parent, true, true);
+                selectPath(path);
+            }
+        }
+
+        if (!hasSelection() || !pathsEqual(selectedEntry().path, path))
+        {
+            _statusText = "Cannot show rename editor for this item.";
+            invalidate();
+            return;
+        }
+
+        clearLocate();
+        resetEntryDrag(false);
+        _renamingActive = true;
+        _renamingOriginalPath = path;
+        _renamingVisibleIndex = _selectedVisibleIndex;
+        ensureSelectionVisible();
+        updateRenameFieldBounds();
+        if (_renameField !is null)
+        {
+            _renameField.setText(baseName(path), false);
+            updateRenameFieldBounds();
+            _renameField.requestFocus();
+            _renameField.selectAll();
+        }
+        _statusText = "Rename " ~ baseName(path);
+        invalidate();
+    }
+
+    private bool commitRename()
+    {
+        if (!_renamingActive) return true;
+        if (_renameField is null)
+        {
+            finishRenameState();
+            return true;
+        }
+
+        const source = _renamingOriginalPath;
+        const oldName = baseName(source);
+        const newName = _renameField.textUtf8().strip();
+        string validationError;
+        if (!validItemName(newName, validationError))
+        {
+            _statusText = validationError;
+            _renameField.requestFocus();
+            _renameField.selectAll();
+            invalidate();
+            return false;
+        }
+        if (newName == oldName)
+        {
+            cancelRename();
+            return true;
+        }
+
+        const destination = buildNormalizedPath(dirName(source), newName);
+        if (filesystemPathExists(destination) && !pathsEqual(source, destination))
+        {
+            _statusText = "An item named " ~ newName ~ " already exists.";
+            _renameField.requestFocus();
+            _renameField.selectAll();
+            invalidate();
+            return false;
+        }
+
+        try
+        {
+            renameFile(source, destination);
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot rename " ~ oldName ~ ": " ~ error.msg;
+            _renameField.requestFocus();
+            _renameField.selectAll();
+            invalidate();
+            return false;
+        }
+
+        finishRenameState();
+        refreshAfterFilesystemMutation(destination);
+        selectPath(destination);
+        _statusText = "Renamed " ~ oldName ~ " to " ~ newName ~ ".";
+        invalidate();
+        return true;
+    }
+
+    private void cancelRename()
+    {
+        if (!_renamingActive) return;
+        finishRenameState();
+        requestFocus();
+        if (hasSelection())
+            updateSelectedStatus();
+        else
+            updateStatus();
+        invalidate();
+    }
+
+    private void finishRenameState()
+    {
+        _renamingActive = false;
+        _renamingOriginalPath = "";
+        _renamingVisibleIndex = -1;
+        if (_renameField !is null)
+        {
+            _renameField.setText("", false);
+            _renameField.setVisible(false);
+        }
+    }
+
+    private void deleteSelectedItem()
+    {
+        if (!canModifySelection())
+        {
+            _statusText = "Select a file or folder to delete.";
+            invalidate();
+            return;
+        }
+        const entry = selectedEntry();
+        deletePathFromUi(entry.path, entry.name);
+    }
+
+    private void deletePathFromUi(string path, string displayName = "")
+    {
+        if (!canModifyPath(path))
+        {
+            _statusText = "Cannot delete this item.";
+            invalidate();
+            return;
+        }
+
+        clearLocate();
+        if (_renamingActive)
+            finishRenameState();
+        resetEntryDrag(false);
+
+        const shownName = displayName.length > 0 ? displayName : baseName(path);
+        string fallbackPath;
+        if (!_showQuickAccess && !_showThisPc && _currentPath.length > 0 &&
+            isSameOrDescendantPath(_currentPath, path))
+            fallbackPath = dirName(path);
+
+        try
+        {
+            version (Windows)
+            {
+                bool aborted;
+                const deleted = recyclePath(path, aborted);
+                if (!deleted)
+                {
+                    _statusText = aborted ? "Delete canceled." :
+                        "Cannot move " ~ shownName ~ " to the Recycle Bin.";
+                    invalidate();
+                    return;
+                }
+                if (fallbackPath.length > 0 && filesystemFolderExists(fallbackPath))
+                    navigate(fallbackPath, true, true);
+                else
+                    refreshAfterFilesystemMutation();
+                _statusText = "Moved " ~ shownName ~ " to the Recycle Bin.";
+            }
+            else
+            {
+                removePathRecursive(path);
+                if (fallbackPath.length > 0 && filesystemFolderExists(fallbackPath))
+                    navigate(fallbackPath, true, true);
+                else
+                    refreshAfterFilesystemMutation();
+                _statusText = "Deleted " ~ shownName ~ ".";
+            }
+        }
+        catch (Exception error)
+        {
+            _statusText = "Cannot delete " ~ shownName ~ ": " ~ error.msg;
+        }
+        invalidate();
+    }
+
+    private void copySelectedItem()
+    {
+        if (!canClipboardSelection())
+        {
+            _statusText = "Select a file or folder to copy.";
+            invalidate();
+            return;
+        }
+        setItemClipboard([selectedEntry().path], false);
+    }
+
+    private void cutSelectedItem()
+    {
+        if (!canClipboardSelection())
+        {
+            _statusText = "Select a file or folder to cut.";
+            invalidate();
+            return;
+        }
+        setItemClipboard([selectedEntry().path], true);
+    }
+
+    private void copyPathToItemClipboard(string path, bool cut, string displayName = "")
+    {
+        if (!canClipboardPath(path))
+        {
+            _statusText = cut ? "Cannot cut this item." : "Cannot copy this item.";
+            invalidate();
+            return;
+        }
+        setItemClipboard([path], cut, displayName);
+    }
+
+    private void setItemClipboard(string[] paths, bool cut, string displayName = "")
+    {
+        clearLocate();
+        if (_renamingActive)
+            finishRenameState();
+
+        _itemClipboardPaths.length = 0;
+        foreach (path; paths)
+        {
+            if (canClipboardPath(path))
+                _itemClipboardPaths ~= buildNormalizedPath(path);
+        }
+        _itemClipboardCut = cut;
+        version (Windows)
+        {
+            if (writeSystemFileClipboard(_itemClipboardPaths, cut))
+                _itemClipboardSequence = GetClipboardSequenceNumber();
+        }
+
+        if (_itemClipboardPaths.length == 0)
+        {
+            _statusText = cut ? "No item cut." : "No item copied.";
+            invalidate();
+            return;
+        }
+
+        const name = displayName.length > 0 ? displayName :
+            baseName(_itemClipboardPaths[0]);
+        if (_itemClipboardPaths.length == 1)
+            _statusText = (cut ? "Cut " : "Copied ") ~ name ~ ".";
+        else
+            _statusText = format("%s %d items.",
+                cut ? "Cut" : "Copied", _itemClipboardPaths.length);
+        invalidate();
+    }
+
+    private void refreshItemClipboardFromSystem()
+    {
+        version (Windows)
+        {
+            const sequence = GetClipboardSequenceNumber();
+            if (_itemClipboardSequence != 0 && sequence == _itemClipboardSequence)
+                return;
+
+            string[] paths;
+            bool cut;
+            if (readSystemFileClipboard(paths, cut))
+            {
+                _itemClipboardPaths.length = 0;
+                foreach (path; paths)
+                    if (canClipboardPath(path))
+                        _itemClipboardPaths ~= buildNormalizedPath(path);
+                _itemClipboardCut = cut;
+                _itemClipboardSequence = sequence;
+            }
+            else if (_itemClipboardSequence != 0)
+            {
+                _itemClipboardPaths.length = 0;
+                _itemClipboardCut = false;
+                _itemClipboardSequence = sequence;
+            }
+        }
+    }
+
+    private bool itemClipboardAvailable()
+    {
+        refreshItemClipboardFromSystem();
+        foreach (path; _itemClipboardPaths)
+            if (canClipboardPath(path))
+                return true;
+        return false;
+    }
+
+    private string defaultPasteTargetDirectory() const
+    {
+        if (!_showQuickAccess && !_showThisPc && filesystemFolderExists(_currentPath))
+            return _currentPath;
+        if (hasSelection())
+        {
+            const entry = selectedEntry();
+            if (entry.directory && filesystemFolderExists(entry.path))
+                return entry.path;
+        }
+        return "";
+    }
+
+    private bool canPasteIntoDefaultTarget()
+    {
+        const target = defaultPasteTargetDirectory();
+        return target.length > 0 && canPasteIntoDirectory(target);
+    }
+
+    private bool canPasteIntoDirectory(string targetDirectory)
+    {
+        if (!filesystemFolderExists(targetDirectory) || !itemClipboardAvailable())
+            return false;
+        foreach (path; _itemClipboardPaths)
+            if (canPastePathIntoDirectory(path, targetDirectory, _itemClipboardCut))
+                return true;
+        return false;
+    }
+
+    private bool canPastePathIntoDirectory(string sourcePath, string targetDirectory,
+        bool move) const
+    {
+        const source = buildNormalizedPath(sourcePath);
+        const target = buildNormalizedPath(targetDirectory);
+        if (!canClipboardPath(source) || !filesystemFolderExists(target))
+            return false;
+        if (pathsEqual(source, target))
+            return false;
+        if (isDir(source) && isSameOrDescendantPath(target, source))
+            return false;
+        if (move && pathsEqual(dirName(source), target))
+            return false;
+        return true;
+    }
+
+    private void pasteClipboardToDefaultTarget()
+    {
+        refreshItemClipboardFromSystem();
+        const target = defaultPasteTargetDirectory();
+        if (target.length == 0)
+        {
+            _statusText = "Choose a folder to paste into.";
+            invalidate();
+            return;
+        }
+        pasteClipboardIntoDirectory(target);
+    }
+
+    private void pasteClipboardIntoDirectory(string targetDirectory)
+    {
+        refreshItemClipboardFromSystem();
+        if (!canPasteIntoDirectory(targetDirectory))
+        {
+            _statusText = itemClipboardAvailable()
+                ? "Cannot paste into " ~ folderDisplayName(targetDirectory) ~ "."
+                : "Nothing to paste.";
+            invalidate();
+            return;
+        }
+
+        clearLocate();
+        if (_renamingActive)
+            finishRenameState();
+        resetEntryDrag(false);
+
+        const move = _itemClipboardCut;
+        int pasted;
+        string lastPastedPath;
+        foreach (path; _itemClipboardPaths)
+        {
+            string pastedPath;
+            if (move)
+                pastedPath = movePathIntoDirectory(path, targetDirectory);
+            else
+                pastedPath = copyPathIntoDirectory(path, targetDirectory);
+            if (pastedPath.length > 0)
+            {
+                ++pasted;
+                lastPastedPath = pastedPath;
+            }
+        }
+
+        if (pasted == 0)
+        {
+            if (_statusText.length == 0)
+                _statusText = "Nothing pasted.";
+            invalidate();
+            return;
+        }
+
+        if (move)
+        {
+            _itemClipboardPaths.length = 0;
+            _itemClipboardCut = false;
+            version (Windows)
+            {
+                clearSystemClipboard();
+                _itemClipboardSequence = GetClipboardSequenceNumber();
+            }
+        }
+
+        const selectPathAfterPaste = pasted == 1 &&
+            !_showQuickAccess && !_showThisPc &&
+            pathsEqual(targetDirectory, _currentPath) ? lastPastedPath : "";
+        refreshAfterFilesystemMutation(selectPathAfterPaste);
+        if (pasted == 1)
+            _statusText = (move ? "Moved " : "Copied ") ~
+                baseName(lastPastedPath) ~ " to " ~
+                folderDisplayName(targetDirectory) ~ ".";
+        else
+            _statusText = format("%s %d items to %s.",
+                move ? "Moved" : "Copied", pasted,
+                folderDisplayName(targetDirectory));
+        invalidate();
+    }
+
+    private void refreshAfterFilesystemMutation(string preferredPath = "")
+    {
+        const savedSidebarScroll = _sidebarScrollY;
+        if (_showQuickAccess)
+            openQuickAccess();
+        else if (_showThisPc)
+            openThisPc();
+        else
+            navigate(_currentPath, false, false);
+        rebuildNavigation();
+        setSidebarScroll(savedSidebarScroll);
+        if (preferredPath.length > 0)
+            selectPath(preferredPath);
     }
 
     private string uniqueChildPath(string stem, string suffix) const
@@ -3166,6 +4300,11 @@ final class WindowsFileManagerRoot : Widget
 
     private void selectPath(string path)
     {
+        selectPathIfVisible(path);
+    }
+
+    private bool selectPathIfVisible(string path)
+    {
         foreach (visibleIndex, row; _visibleRows)
         {
             if (row.entryIndex >= 0 &&
@@ -3175,9 +4314,10 @@ final class WindowsFileManagerRoot : Widget
                 ensureSelectionVisible();
                 updateSelectedStatus();
                 invalidate();
-                return;
+                return true;
             }
         }
+        return false;
     }
 
     private void ensureSelectionVisible()
@@ -3380,6 +4520,8 @@ final class WindowsFileManagerRoot : Widget
 
     private void showHomeMenu()
     {
+        if (viewMenuOpen())
+            _viewMenu.dismiss();
         if (homeMenuOpen())
         {
             _homeMenu.dismiss();
@@ -3399,8 +4541,25 @@ final class WindowsFileManagerRoot : Widget
         items ~= ContextMenuItem.command("Open", IconKind.open,
             delegate() { activateCommand(CommandButton.openSelected); }, "Enter",
             commandEnabled(CommandButton.openSelected));
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Cut", IconKind.file,
+            delegate() { activateCommand(CommandButton.cutSelected); }, "Ctrl+X",
+            commandEnabled(CommandButton.cutSelected));
+        items ~= ContextMenuItem.command("Copy", IconKind.file,
+            delegate() { activateCommand(CommandButton.copySelected); }, "Ctrl+C",
+            commandEnabled(CommandButton.copySelected));
+        items ~= ContextMenuItem.command("Paste", IconKind.file,
+            delegate() { activateCommand(CommandButton.paste); }, "Ctrl+V",
+            commandEnabled(CommandButton.paste));
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Rename", IconKind.file,
+            delegate() { activateCommand(CommandButton.renameSelected); }, "F2",
+            commandEnabled(CommandButton.renameSelected));
+        items ~= ContextMenuItem.command("Delete", IconKind.trash,
+            delegate() { activateCommand(CommandButton.deleteSelected); }, "Delete",
+            commandEnabled(CommandButton.deleteSelected));
         items ~= ContextMenuItem.command("Copy path", IconKind.file,
-            delegate() { activateCommand(CommandButton.copyPath); }, "Ctrl+C",
+            delegate() { activateCommand(CommandButton.copyPath); }, "Ctrl+Shift+C",
             commandEnabled(CommandButton.copyPath));
         _homeMenu = showContextMenu(this,
             localToGlobal(Point(_homeTabRect.x, _homeTabRect.bottom())),
@@ -3422,6 +4581,49 @@ final class WindowsFileManagerRoot : Widget
     private bool homeMenuOpen() const
     {
         return _homeMenu !is null && !_homeMenu.dismissed();
+    }
+
+    private void showViewMenu()
+    {
+        if (homeMenuOpen())
+            _homeMenu.dismiss();
+        if (viewMenuOpen())
+        {
+            _viewMenu.dismiss();
+            _viewMenu = null;
+            invalidate();
+            return;
+        }
+
+        ContextMenuItem[] items;
+        appendViewModeItems(items);
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command(
+            _groupBy == GroupBy.dateModified ? "Ungroup" : "Group by date modified",
+            IconKind.file,
+            delegate() { setGroupBy(_groupBy == GroupBy.dateModified
+                ? GroupBy.none : GroupBy.dateModified); },
+            "", !_showQuickAccess && !_showThisPc);
+        _viewMenu = showContextMenu(this,
+            localToGlobal(Point(_viewTabRect.x, _viewTabRect.bottom())),
+            items);
+        if (_viewMenu !is null)
+        {
+            const viewOrigin = localToGlobal(Point(_viewTabRect.x, _viewTabRect.y));
+            _viewMenu.setConsumeAnchorPress(Rect(viewOrigin.x, viewOrigin.y,
+                _viewTabRect.width, _viewTabRect.height));
+            _viewMenu.onDismissed = delegate()
+            {
+                _viewMenu = null;
+                invalidate();
+            };
+        }
+        invalidate();
+    }
+
+    private bool viewMenuOpen() const
+    {
+        return _viewMenu !is null && !_viewMenu.dismissed();
     }
 
     private void showContextMenuFor(Point localPosition)
@@ -3461,6 +4663,31 @@ final class WindowsFileManagerRoot : Widget
                 ContextMenuItem[] navigationItems;
                 navigationItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { navigate(navigationItem.path, true, true); });
+                if (canClipboardPath(navigationItem.path))
+                {
+                    navigationItems ~= ContextMenuItem.separatorItem();
+                    navigationItems ~= ContextMenuItem.command("Cut", IconKind.file,
+                        delegate() { copyPathToItemClipboard(navigationItem.path,
+                            true, navigationItem.label); }, "Ctrl+X");
+                    navigationItems ~= ContextMenuItem.command("Copy", IconKind.file,
+                        delegate() { copyPathToItemClipboard(navigationItem.path,
+                            false, navigationItem.label); }, "Ctrl+C");
+                }
+                if (canPasteIntoDirectory(navigationItem.path))
+                    navigationItems ~= ContextMenuItem.command("Paste into folder",
+                        IconKind.file,
+                        delegate() { pasteClipboardIntoDirectory(navigationItem.path); },
+                        "Ctrl+V");
+                if (canModifyPath(navigationItem.path))
+                {
+                    navigationItems ~= ContextMenuItem.separatorItem();
+                    navigationItems ~= ContextMenuItem.command("Rename", IconKind.file,
+                        delegate() { beginRenamePath(navigationItem.path); }, "F2");
+                    navigationItems ~= ContextMenuItem.command("Delete", IconKind.trash,
+                        delegate() { deletePathFromUi(navigationItem.path,
+                            navigationItem.label); }, "Delete");
+                }
+                navigationItems ~= ContextMenuItem.separatorItem();
                 navigationItems ~= ContextMenuItem.command("Properties", IconKind.file,
                     delegate() { showProperties(navigationItem.path); });
                 showContextMenu(this, globalPosition, navigationItems);
@@ -3470,14 +4697,15 @@ final class WindowsFileManagerRoot : Widget
         if (_showQuickAccess)
         {
             const visibleIndex = visibleEntryIndexAt(localPosition);
-            if (visibleIndex >= 0)
+            const clickedEntry = visibleIndex >= 0;
+            if (clickedEntry)
             {
                 _selectedVisibleIndex = visibleIndex;
                 updateSelectedStatus();
                 invalidate();
             }
             ContextMenuItem[] quickAccessItems;
-            if (hasSelection())
+            if (clickedEntry && hasSelection())
             {
                 auto entry = selectedEntry();
                 quickAccessItems ~= ContextMenuItem.command("Open", IconKind.open,
@@ -3485,10 +4713,36 @@ final class WindowsFileManagerRoot : Widget
                 if (!entry.directory)
                     quickAccessItems ~= ContextMenuItem.command("Open with system", IconKind.open,
                         delegate() { openPath(entry.path); });
+                if (canClipboardPath(entry.path))
+                {
+                    quickAccessItems ~= ContextMenuItem.separatorItem();
+                    quickAccessItems ~= ContextMenuItem.command("Cut", IconKind.file,
+                        delegate() { cutSelectedItem(); }, "Ctrl+X");
+                    quickAccessItems ~= ContextMenuItem.command("Copy", IconKind.file,
+                        delegate() { copySelectedItem(); }, "Ctrl+C");
+                }
+                if (entry.directory && canPasteIntoDirectory(entry.path))
+                    quickAccessItems ~= ContextMenuItem.command("Paste into folder",
+                        IconKind.file,
+                        delegate() { pasteClipboardIntoDirectory(entry.path); },
+                        "Ctrl+V");
+                if (canModifyPath(entry.path))
+                {
+                    quickAccessItems ~= ContextMenuItem.separatorItem();
+                    quickAccessItems ~= ContextMenuItem.command("Rename", IconKind.file,
+                        delegate() { beginRenameSelected(); }, "F2");
+                    quickAccessItems ~= ContextMenuItem.command("Delete", IconKind.trash,
+                        delegate() { deleteSelectedItem(); }, "Delete");
+                }
+                quickAccessItems ~= ContextMenuItem.separatorItem();
                 quickAccessItems ~= ContextMenuItem.command("Properties", IconKind.file,
                     delegate() { showEntryProperties(entry); });
+                quickAccessItems ~= ContextMenuItem.command("Copy path", IconKind.file,
+                    delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 quickAccessItems ~= ContextMenuItem.separatorItem();
             }
+            appendViewModeItems(quickAccessItems);
+            quickAccessItems ~= ContextMenuItem.separatorItem();
             quickAccessItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
                 delegate() { refresh(); }, "F5");
             showContextMenu(this, globalPosition, quickAccessItems);
@@ -3497,24 +4751,49 @@ final class WindowsFileManagerRoot : Widget
         if (_showThisPc)
         {
             const visibleIndex = visibleEntryIndexAt(localPosition);
-            if (visibleIndex >= 0)
+            const clickedEntry = visibleIndex >= 0;
+            if (clickedEntry)
             {
                 _selectedVisibleIndex = visibleIndex;
                 updateSelectedStatus();
                 invalidate();
             }
             ContextMenuItem[] thisPcItems;
-            if (hasSelection())
+            if (clickedEntry && hasSelection())
             {
                 auto entry = selectedEntry();
                 thisPcItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+                if (canClipboardPath(entry.path))
+                {
+                    thisPcItems ~= ContextMenuItem.separatorItem();
+                    thisPcItems ~= ContextMenuItem.command("Cut", IconKind.file,
+                        delegate() { cutSelectedItem(); }, "Ctrl+X");
+                    thisPcItems ~= ContextMenuItem.command("Copy", IconKind.file,
+                        delegate() { copySelectedItem(); }, "Ctrl+C");
+                }
+                if (entry.directory && canPasteIntoDirectory(entry.path))
+                    thisPcItems ~= ContextMenuItem.command("Paste into folder",
+                        IconKind.file,
+                        delegate() { pasteClipboardIntoDirectory(entry.path); },
+                        "Ctrl+V");
+                if (canModifyPath(entry.path))
+                {
+                    thisPcItems ~= ContextMenuItem.separatorItem();
+                    thisPcItems ~= ContextMenuItem.command("Rename", IconKind.file,
+                        delegate() { beginRenameSelected(); }, "F2");
+                    thisPcItems ~= ContextMenuItem.command("Delete", IconKind.trash,
+                        delegate() { deleteSelectedItem(); }, "Delete");
+                }
+                thisPcItems ~= ContextMenuItem.separatorItem();
                 thisPcItems ~= ContextMenuItem.command("Properties", IconKind.file,
                     delegate() { showEntryProperties(entry); });
                 thisPcItems ~= ContextMenuItem.command("Copy path", IconKind.file,
-                    delegate() { copySelectedPath(); }, "Ctrl+C");
+                    delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 thisPcItems ~= ContextMenuItem.separatorItem();
             }
+            appendViewModeItems(thisPcItems);
+            thisPcItems ~= ContextMenuItem.separatorItem();
             thisPcItems ~= ContextMenuItem.command("Open This PC with system", IconKind.open,
                 delegate() { openThisPcWithSystem(); });
             thisPcItems ~= ContextMenuItem.command("This PC properties", IconKind.file,
@@ -3526,7 +4805,8 @@ final class WindowsFileManagerRoot : Widget
             return;
         }
         const visibleIndex = visibleEntryIndexAt(localPosition);
-        if (visibleIndex >= 0)
+        const clickedEntry = visibleIndex >= 0;
+        if (clickedEntry)
         {
             _selectedVisibleIndex = visibleIndex;
             updateSelectedStatus();
@@ -3534,7 +4814,7 @@ final class WindowsFileManagerRoot : Widget
         }
 
         ContextMenuItem[] items;
-        if (hasSelection())
+        if (clickedEntry && hasSelection())
         {
             auto entry = selectedEntry();
             items ~= ContextMenuItem.command("Open", IconKind.open,
@@ -3542,16 +4822,45 @@ final class WindowsFileManagerRoot : Widget
             if (!entry.directory)
                 items ~= ContextMenuItem.command("Open with system", IconKind.open,
                     delegate() { openPath(entry.path); });
+            if (canClipboardPath(entry.path))
+            {
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Cut", IconKind.file,
+                    delegate() { cutSelectedItem(); }, "Ctrl+X");
+                items ~= ContextMenuItem.command("Copy", IconKind.file,
+                    delegate() { copySelectedItem(); }, "Ctrl+C");
+            }
+            if (entry.directory && canPasteIntoDirectory(entry.path))
+                items ~= ContextMenuItem.command("Paste into folder", IconKind.file,
+                    delegate() { pasteClipboardIntoDirectory(entry.path); },
+                    "Ctrl+V");
+            if (canModifyPath(entry.path))
+            {
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Rename", IconKind.file,
+                    delegate() { beginRenameSelected(); }, "F2");
+                items ~= ContextMenuItem.command("Delete", IconKind.trash,
+                    delegate() { deleteSelectedItem(); }, "Delete");
+            }
+            items ~= ContextMenuItem.separatorItem();
             items ~= ContextMenuItem.command("Properties", IconKind.file,
                 delegate() { showEntryProperties(entry); });
             items ~= ContextMenuItem.command("Copy path", IconKind.file,
-                delegate() { copySelectedPath(); }, "Ctrl+C");
+                delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
+            items ~= ContextMenuItem.separatorItem();
+        }
+        if (!clickedEntry && canPasteIntoDirectory(_currentPath))
+        {
+            items ~= ContextMenuItem.command("Paste", IconKind.file,
+                delegate() { pasteClipboardIntoDirectory(_currentPath); }, "Ctrl+V");
             items ~= ContextMenuItem.separatorItem();
         }
         items ~= ContextMenuItem.command("New folder", IconKind.folder,
             delegate() { createNewFolder(); }, "Ctrl+N");
         items ~= ContextMenuItem.command("New text file", IconKind.newDocument,
             delegate() { createNewTextFile(); });
+        items ~= ContextMenuItem.separatorItem();
+        appendViewModeItems(items);
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command(
             _groupBy == GroupBy.dateModified ? "Ungroup" : "Group by date modified",
@@ -3648,7 +4957,7 @@ final class WindowsFileManagerRoot : Widget
         return CommandButton.none;
     }
 
-    private bool commandEnabled(CommandButton command) const
+    private bool commandEnabled(CommandButton command)
     {
         final switch (command)
         {
@@ -3668,8 +4977,17 @@ final class WindowsFileManagerRoot : Widget
             case CommandButton.newTextFile:
                 return _currentPath.length > 0 && exists(_currentPath) && isDir(_currentPath);
             case CommandButton.openSelected:
+                return hasSelection();
+            case CommandButton.copySelected:
+            case CommandButton.cutSelected:
+                return canClipboardSelection();
+            case CommandButton.paste:
+                return canPasteIntoDefaultTarget();
             case CommandButton.copyPath:
                 return hasSelection();
+            case CommandButton.renameSelected:
+            case CommandButton.deleteSelected:
+                return canModifySelection();
         }
     }
 
@@ -3680,6 +4998,44 @@ final class WindowsFileManagerRoot : Widget
         const y = point.y - _sidebarRowsRect.y + _sidebarScrollY;
         const index = y / row;
         return index >= 0 && index < cast(int) _navigation.length ? index : -1;
+    }
+
+    private void updateThisPcHoverArea(Point point)
+    {
+        const index = navigationIndexAt(point);
+        setThisPcHoverArea(navigationIndexInThisPcBlock(index));
+    }
+
+    private bool navigationIndexInThisPcBlock(int index) const
+    {
+        if (index < 0 || index >= cast(int) _navigation.length) return false;
+        const item = _navigation[cast(size_t) index];
+        return item.kind == NavigationKind.thisPc || item.thisPcChild;
+    }
+
+    private void setThisPcHoverArea(bool value)
+    {
+        if (_thisPcHoverArea == value) return;
+        _thisPcHoverArea = value;
+        invalidate();
+    }
+
+    private void updateThisPcArrowFade(double deltaSeconds)
+    {
+        const target = _thisPcHoverArea ? 1.0 : 0.0;
+        if (_thisPcArrowOpacity == target) return;
+        const step = deltaSeconds * thisPcArrowFadeSpeed;
+        if (_thisPcArrowOpacity < target)
+        {
+            _thisPcArrowOpacity += step;
+            if (_thisPcArrowOpacity > target) _thisPcArrowOpacity = target;
+        }
+        else
+        {
+            _thisPcArrowOpacity -= step;
+            if (_thisPcArrowOpacity < target) _thisPcArrowOpacity = target;
+        }
+        invalidate();
     }
 
     // Returns the visual row index. The visual index includes group headers;
@@ -3701,15 +5057,76 @@ final class WindowsFileManagerRoot : Widget
     {
         if (visibleIndex < 0 || visibleIndex >= cast(int) _visibleRows.length)
             return Rect.init;
-        return Rect(_rowsRect.x + scaled(20),
-            _rowsRect.y + _visibleRowOffsets[cast(size_t) visibleIndex] - _scrollY,
-            maxInt(0, _usableListWidth - scaled(24)), visibleRowHeight(visibleIndex));
+        const y = _rowsRect.y + _visibleRowOffsets[cast(size_t) visibleIndex] - _scrollY;
+        const height = visibleRowHeight(visibleIndex);
+        if (entryIndexForVisibleRow(visibleIndex) < 0 || !usesMultiColumnView())
+        {
+            const x = _viewMode == FileViewMode.details
+                ? _rowsRect.x + scaled(20) : _rowsRect.x + scaled(12);
+            return Rect(x, y, maxInt(0, _usableListWidth - scaled(24)), height);
+        }
+
+        const cellWidth = viewCellWidthPx();
+        const column = _visibleRowColumns.length > cast(size_t) visibleIndex
+            ? _visibleRowColumns[cast(size_t) visibleIndex] : 0;
+        const x = _rowsRect.x + scaled(12) + column * cellWidth;
+        const right = _mainRect.x + _usableListWidth - scaled(8);
+        return Rect(x, y, maxInt(0, minInt(cellWidth - scaled(8), right - x)), height);
+    }
+
+    private Rect renameFieldRect(int visibleIndex) const
+    {
+        const row = visibleRowRect(visibleIndex);
+        if (row.width <= 0 || row.height <= 0) return Rect.init;
+        if (_viewMode == FileViewMode.details)
+        {
+            const x = row.x + scaled(27);
+            const right = minInt(row.right() - scaled(6), _dateX - scaled(8));
+            return Rect(x, row.y + scaled(2), maxInt(0, right - x),
+                maxInt(0, row.height - scaled(4)));
+        }
+        if (_viewMode == FileViewMode.content || _viewMode == FileViewMode.tiles)
+        {
+            const x = row.x + viewIconSizePx() + scaled(14);
+            return Rect(x, row.y + scaled(6), maxInt(0, row.right() - x - scaled(8)),
+                maxInt(scaled(20), scaled(24)));
+        }
+        if (_viewMode == FileViewMode.smallIcons || _viewMode == FileViewMode.list)
+        {
+            const x = row.x + scaled(26);
+            return Rect(x, row.y + scaled(2), maxInt(0, row.width - scaled(32)),
+                maxInt(0, row.height - scaled(4)));
+        }
+
+        const top = row.y + viewIconSizePx() + scaled(9);
+        return Rect(row.x + scaled(6), top, maxInt(0, row.width - scaled(12)),
+            maxInt(scaled(20), row.bottom() - top - scaled(4)));
+    }
+
+    private void updateRenameFieldBounds()
+    {
+        if (_renameField is null) return;
+        if (!_renamingActive)
+        {
+            _renameField.setVisible(false);
+            return;
+        }
+        const rect = renameFieldRect(_renamingVisibleIndex);
+        if (rect.width <= 0 || rect.height <= 0 ||
+            rect.bottom() <= _rowsRect.y || rect.y >= _rowsRect.bottom())
+        {
+            _renameField.setVisible(false);
+            return;
+        }
+        _renameField.setBounds(rect);
+        _renameField.setVisible(true);
     }
 
     private void setListScroll(int value)
     {
         _scrollY = clampInt(value, 0, maxListScroll());
         rebuildScrollbars();
+        updateRenameFieldBounds();
         invalidate();
     }
 
@@ -3819,7 +5236,13 @@ final class WindowsFileManagerRoot : Widget
             "Home", explorerText, HorizontalAlign.left);
         drawText(canvas, Rect(scaled(150), 0, scaled(62), tabHeight), "Share", explorerText,
             HorizontalAlign.left);
-        drawText(canvas, Rect(scaled(218), 0, scaled(62), tabHeight), "View", explorerText,
+        if (viewMenuOpen())
+        {
+            canvas.fillRect(_viewTabRect, Color.rgba(255, 255, 255, 12));
+            canvas.fillRect(Rect(_viewTabRect.x, _viewTabRect.bottom() - scaled(2),
+                _viewTabRect.width, scaled(2)), explorerBlue);
+        }
+        drawText(canvas, _viewTabRect.inset(scaled(8), 0, scaled(8), 0), "View", explorerText,
             HorizontalAlign.left);
     }
 
@@ -3876,14 +5299,21 @@ final class WindowsFileManagerRoot : Widget
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
             const nestedOffset = scaled(14 * item.indentLevel);
-            if (item.kind == NavigationKind.thisPc)
+            const thisPcArrowAlpha = cast(int) (textColor.a * _thisPcArrowOpacity + 0.5);
+            if (thisPcArrowAlpha > 0 && item.kind == NavigationKind.thisPc)
+            {
+                const arrowColor = textColor.withAlpha(thisPcArrowAlpha);
                 drawIcon(content, IconKind.chevronDown,
                     Rect(row.x + scaled(9), row.y + scaled(8),
-                        scaled(10), scaled(10)), textColor, textColor);
-            else if (item.indentLevel > 0 && !item.pinned)
+                        scaled(10), scaled(10)), arrowColor, arrowColor);
+            }
+            else if (thisPcArrowAlpha > 0 && item.thisPcChild)
+            {
+                const arrowColor = textColor.withAlpha(thisPcArrowAlpha);
                 drawIcon(content, IconKind.chevronRight,
                     Rect(row.x + scaled(22), row.y + scaled(8),
-                        scaled(10), scaled(10)), textColor, textColor);
+                        scaled(10), scaled(10)), arrowColor, arrowColor);
+            }
             drawIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
                 row.y + scaled(5),
                 scaled(17), scaled(17)),
@@ -3904,19 +5334,22 @@ final class WindowsFileManagerRoot : Widget
     private void drawDetailsView(ref Canvas canvas)
     {
         canvas.fillRect(_mainRect, explorerContent);
-        canvas.fillRect(_headerRect, explorerHeader);
-        canvas.fillRect(Rect(_headerRect.x, _headerRect.bottom() - 1,
-            _headerRect.width, 1), explorerLine);
+        if (_viewMode == FileViewMode.details)
+        {
+            canvas.fillRect(_headerRect, explorerHeader);
+            canvas.fillRect(Rect(_headerRect.x, _headerRect.bottom() - 1,
+                _headerRect.width, 1), explorerLine);
 
-        drawHeaderCell(canvas, _nameHeaderRect, "Name", SortColumn.name);
-        drawHeaderCell(canvas, _dateHeaderRect, "Date modified", SortColumn.modified);
-        drawHeaderCell(canvas, _typeHeaderRect, "Type", SortColumn.type);
-        drawHeaderCell(canvas, _sizeHeaderRect, "Size", SortColumn.size);
-        canvas.fillRect(Rect(_dateX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(_typeX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(_sizeX, _headerRect.y, 1, _headerRect.height), explorerLine);
-        canvas.fillRect(Rect(_sizeX + _sizeWidth, _headerRect.y, 1, _headerRect.height),
-            explorerLine);
+            drawHeaderCell(canvas, _nameHeaderRect, "Name", SortColumn.name);
+            drawHeaderCell(canvas, _dateHeaderRect, "Date modified", SortColumn.modified);
+            drawHeaderCell(canvas, _typeHeaderRect, "Type", SortColumn.type);
+            drawHeaderCell(canvas, _sizeHeaderRect, "Size", SortColumn.size);
+            canvas.fillRect(Rect(_dateX, _headerRect.y, 1, _headerRect.height), explorerLine);
+            canvas.fillRect(Rect(_typeX, _headerRect.y, 1, _headerRect.height), explorerLine);
+            canvas.fillRect(Rect(_sizeX, _headerRect.y, 1, _headerRect.height), explorerLine);
+            canvas.fillRect(Rect(_sizeX + _sizeWidth, _headerRect.y, 1, _headerRect.height),
+                explorerLine);
+        }
 
         auto rows = canvas.clipped(_rowsRect);
         foreach (visibleIndex, visibleRow; _visibleRows)
@@ -3933,8 +5366,8 @@ final class WindowsFileManagerRoot : Widget
                     continue;
                 }
                 rows.fillRect(row, explorerHeader);
-                const headerLabel = _showQuickAccess ? visibleRow.groupLabel :
-                    "Date modified: " ~ visibleRow.groupLabel;
+                const headerLabel = (_showQuickAccess || _showThisPc)
+                    ? visibleRow.groupLabel : "Date modified: " ~ visibleRow.groupLabel;
                 drawText(rows, Rect(row.x + scaled(8), row.y, row.width - scaled(16),
                     row.height), headerLabel,
                     explorerMuted, HorizontalAlign.left);
@@ -3944,35 +5377,174 @@ final class WindowsFileManagerRoot : Widget
             const entry = _entries[cast(size_t) visibleRow.entryIndex];
             if (_draggingEntry && visibleIndex == _dropTargetVisibleIndex)
             {
-                rows.fillRect(row, explorerDropTarget);
+                fillEntrySelection(rows, row, explorerDropTarget);
                 rows.strokeRect(row, explorerBlue, 1);
             }
             else if (visibleIndex == _selectedVisibleIndex)
             {
-                rows.fillRect(row, explorerSelection);
+                fillEntrySelection(rows, row, explorerSelection);
                 rows.strokeRect(row, explorerSelectionBorder, 1);
             }
 
-            const icon = entry.drive ? IconKind.drive :
-                (entry.directory ? IconKind.folder : iconForFile(entry.name));
-            drawIcon(rows, icon, Rect(row.x + scaled(6), row.y + scaled(4),
-                scaled(17), scaled(17)), explorerText,
-                entry.directory ? folderAccent : fileAccent);
-            drawText(rows, Rect(row.x + scaled(28), row.y,
-                maxInt(0, _dateX - row.x - scaled(35)), row.height), entry.name,
-                explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_dateX + scaled(8), row.y,
-                maxInt(0, _typeX - _dateX - scaled(14)), row.height), entry.modified,
-                explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_typeX + scaled(8), row.y,
-                maxInt(0, _sizeX - _typeX - scaled(14)), row.height), entry.type,
-                explorerText, HorizontalAlign.left);
-            drawText(rows, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
-                row.height), entrySizeText(entry),
-                explorerText, HorizontalAlign.right);
+            drawEntryForCurrentView(rows, row, cast(int) visibleIndex, entry);
         }
 
         drawScrollbar(canvas, _listScrollbarRect, _listScrollbarThumbRect);
+    }
+
+    private void fillEntrySelection(ref Canvas canvas, Rect row, Color color)
+    {
+        if (_viewMode == FileViewMode.details || _viewMode == FileViewMode.content)
+            canvas.fillRect(row, color);
+        else
+            canvas.fillRoundedRect(row.inset(scaled(1)), scaled(3), color);
+    }
+
+    private void drawEntryForCurrentView(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        final switch (_viewMode)
+        {
+            case FileViewMode.details:
+                drawDetailsEntry(canvas, row, visibleIndex, entry);
+                break;
+            case FileViewMode.extraLargeIcons:
+            case FileViewMode.largeIcons:
+            case FileViewMode.mediumIcons:
+                drawIconEntry(canvas, row, visibleIndex, entry);
+                break;
+            case FileViewMode.smallIcons:
+            case FileViewMode.list:
+                drawListEntry(canvas, row, visibleIndex, entry);
+                break;
+            case FileViewMode.tiles:
+                drawTileEntry(canvas, row, visibleIndex, entry);
+                break;
+            case FileViewMode.content:
+                drawContentEntry(canvas, row, visibleIndex, entry);
+                break;
+        }
+    }
+
+    private void drawDetailsEntry(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(6), row.y + scaled(4),
+            scaled(17), scaled(17)), explorerText,
+            entry.directory ? folderAccent : fileAccent);
+        if (!drawRenameFieldBackground(canvas, visibleIndex))
+            drawText(canvas, Rect(row.x + scaled(28), row.y,
+                maxInt(0, _dateX - row.x - scaled(35)), row.height),
+                entry.name, explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(_dateX + scaled(8), row.y,
+            maxInt(0, _typeX - _dateX - scaled(14)), row.height), entry.modified,
+            explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(_typeX + scaled(8), row.y,
+            maxInt(0, _sizeX - _typeX - scaled(14)), row.height), entry.type,
+            explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(_sizeX + scaled(8), row.y, maxInt(0, _sizeWidth - scaled(16)),
+            row.height), entrySizeText(entry),
+            explorerText, HorizontalAlign.right);
+    }
+
+    private void drawListEntry(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(6), row.y + scaled(5),
+            scaled(17), scaled(17)), explorerText,
+            entry.directory ? folderAccent : fileAccent);
+        if (!drawRenameFieldBackground(canvas, visibleIndex))
+            drawText(canvas, Rect(row.x + scaled(28), row.y,
+                maxInt(0, row.width - scaled(34)), row.height), entry.name,
+                explorerText, HorizontalAlign.left);
+    }
+
+    private void drawIconEntry(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        const iconSize = viewIconSizePx();
+        const iconX = row.x + maxInt(0, (row.width - iconSize) / 2);
+        drawIcon(canvas, entryIcon(entry), Rect(iconX, row.y + scaled(10),
+            iconSize, iconSize), explorerText,
+            entry.directory ? folderAccent : fileAccent);
+        if (!drawRenameFieldBackground(canvas, visibleIndex))
+        {
+            const textTop = row.y + iconSize + scaled(12);
+            canvas.drawTextInRect(Rect(row.x + scaled(4), textTop,
+                    maxInt(0, row.width - scaled(8)), maxInt(0, row.bottom() - textTop)),
+                toUTF32(entry.name), explorerText, textScale(),
+                HorizontalAlign.center, VerticalAlign.top, true);
+        }
+    }
+
+    private void drawTileEntry(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        const iconSize = viewIconSizePx();
+        const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
+        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(8), iconY,
+            iconSize, iconSize), explorerText,
+            entry.directory ? folderAccent : fileAccent);
+        const textX = row.x + iconSize + scaled(16);
+        if (!drawRenameFieldBackground(canvas, visibleIndex))
+            drawText(canvas, Rect(textX, row.y + scaled(6),
+                maxInt(0, row.right() - textX - scaled(8)), scaled(24)),
+                entry.name, explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(textX, row.y + scaled(29),
+            maxInt(0, row.right() - textX - scaled(8)), scaled(22)),
+            entryMetadataText(entry), explorerMuted, HorizontalAlign.left);
+    }
+
+    private void drawContentEntry(ref Canvas canvas, Rect row,
+        int visibleIndex, ExplorerEntry entry)
+    {
+        const iconSize = viewIconSizePx();
+        const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
+        drawIcon(canvas, entryIcon(entry), Rect(row.x + scaled(8), iconY,
+            iconSize, iconSize), explorerText,
+            entry.directory ? folderAccent : fileAccent);
+        const textX = row.x + iconSize + scaled(18);
+        if (!drawRenameFieldBackground(canvas, visibleIndex))
+            drawText(canvas, Rect(textX, row.y + scaled(6),
+                maxInt(0, row.right() - textX - scaled(12)), scaled(24)),
+                entry.name, explorerText, HorizontalAlign.left);
+        drawText(canvas, Rect(textX, row.y + scaled(29),
+            maxInt(0, row.right() - textX - scaled(12)), scaled(22)),
+            entryMetadataText(entry), explorerMuted, HorizontalAlign.left);
+    }
+
+    private bool drawRenameFieldBackground(ref Canvas canvas, int visibleIndex)
+    {
+        if (!_renamingActive || visibleIndex != _renamingVisibleIndex) return false;
+        const renameRect = renameFieldRect(visibleIndex);
+        if (renameRect.width > 0 && renameRect.height > 0)
+            canvas.drawRoundedRect(renameRect, 0, explorerField,
+                explorerFieldBorder, 1);
+        return true;
+    }
+
+    private IconKind entryIcon(ExplorerEntry entry) const
+    {
+        return entry.drive ? IconKind.drive :
+            (entry.directory ? IconKind.folder : iconForFile(entry.name));
+    }
+
+    private string entryMetadataText(ExplorerEntry entry) const
+    {
+        string text;
+        if (entry.type.length > 0)
+            text = entry.type;
+        if (entry.modified.length > 0)
+            text = appendMetadataPart(text, entry.modified);
+        const sizeText = entrySizeText(entry);
+        if (sizeText.length > 0)
+            text = appendMetadataPart(text, sizeText);
+        return text;
+    }
+
+    private static string appendMetadataPart(string text, string part)
+    {
+        return text.length == 0 ? part : text ~ " • " ~ part;
     }
 
     private void drawDragPreview(ref Canvas canvas)
@@ -4000,9 +5572,19 @@ final class WindowsFileManagerRoot : Widget
         canvas.fillRect(_statusRect, explorerStatus);
         canvas.fillRect(Rect(_statusRect.x, _statusRect.y, _statusRect.width, 1),
             explorerLine);
+        const rightInset = _locateActive
+            ? maxInt(scaled(40), _statusRect.right() - _locateRect.x + scaled(10))
+            : scaled(40);
         drawText(canvas, Rect(_statusRect.x + scaled(20), _statusRect.y,
-            maxInt(0, _statusRect.width - scaled(40)), _statusRect.height), _statusText,
+            maxInt(0, _statusRect.width - scaled(20) - rightInset), _statusRect.height), _statusText,
             explorerText, HorizontalAlign.left);
+        if (_locateActive)
+        {
+            canvas.drawRoundedRect(_locateRect, 0, explorerField, explorerFieldBorder, 1);
+            drawText(canvas, Rect(_locateRect.x + scaled(8), _locateRect.y,
+                scaled(42), _locateRect.height), "Find:", explorerMuted,
+                HorizontalAlign.left);
+        }
     }
 
     private void drawNavButton(ref Canvas canvas, Rect rect, CommandButton command,
@@ -4191,6 +5773,91 @@ final class WindowsFileManagerRoot : Widget
         return name.length > 0 ? name : displayRoot(path);
     }
 
+    private static string defaultUserProfileFolder()
+    {
+        version (Windows)
+        {
+            auto home = windowsCsidlFolder(CSIDL_PROFILE);
+            if (home.length > 0) return home;
+        }
+        return environment.get("USERPROFILE", environment.get("HOME", getcwd()));
+    }
+
+    private static string defaultDesktopFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsCsidlFolder(CSIDL_DESKTOPDIRECTORY);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Desktop");
+    }
+
+    private static string defaultDocumentsFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsCsidlFolder(CSIDL_PERSONAL);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Documents");
+    }
+
+    private static string defaultDownloadsFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsKnownFolderPath(&folderIdDownloads);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Downloads");
+    }
+
+    private static string defaultMusicFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsCsidlFolder(CSIDL_MYMUSIC);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Music");
+    }
+
+    private static string defaultPicturesFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsCsidlFolder(CSIDL_MYPICTURES);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Pictures");
+    }
+
+    private static string defaultVideosFolder()
+    {
+        version (Windows)
+        {
+            auto path = windowsCsidlFolder(CSIDL_MYVIDEO);
+            if (path.length > 0) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "Videos");
+    }
+
+    private static string defaultThreeDObjectsFolder()
+    {
+        return buildNormalizedPath(defaultUserProfileFolder(), "3D Objects");
+    }
+
+    private static string defaultOneDriveFolder()
+    {
+        foreach (name; ["OneDriveConsumer", "OneDrive", "OneDriveCommercial"])
+        {
+            const path = environment.get(name, "");
+            if (filesystemFolderExists(path)) return path;
+        }
+        return buildNormalizedPath(defaultUserProfileFolder(), "OneDrive");
+    }
+
     private static string driveDisplayName(string path)
     {
         const root = rootName(path);
@@ -4224,6 +5891,101 @@ final class WindowsFileManagerRoot : Widget
     {
         if (totalBytes == 0) return "";
         return humanSize(freeBytes) ~ " free of " ~ humanSize(totalBytes);
+    }
+
+    private static bool filesystemFolderExists(string path)
+    {
+        try
+        {
+            return path.length > 0 && exists(path) && isDir(path);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool filesystemPathExists(string path)
+    {
+        try
+        {
+            return path.length > 0 && exists(path);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool validItemName(string name, out string error)
+    {
+        if (name.length == 0)
+        {
+            error = "Name cannot be empty.";
+            return false;
+        }
+        if (name == "." || name == "..")
+        {
+            error = "Name cannot be " ~ name ~ ".";
+            return false;
+        }
+        if (name[$ - 1] == '.')
+        {
+            error = "Name cannot end with a period.";
+            return false;
+        }
+        foreach (ch; name)
+        {
+            if (ch < 32 || ch == '\\' || ch == '/' || ch == ':' ||
+                ch == '*' || ch == '?' || ch == '"' || ch == '<' ||
+                ch == '>' || ch == '|')
+            {
+                error = "Name contains a character that is not allowed.";
+                return false;
+            }
+        }
+
+        const reserved = reservedDeviceNameStem(name);
+        foreach (device; ["CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"])
+        {
+            if (icmp(reserved, device) == 0)
+            {
+                error = "Name is reserved by Windows.";
+                return false;
+            }
+        }
+
+        error = "";
+        return true;
+    }
+
+    private static string reservedDeviceNameStem(string name)
+    {
+        foreach (index, ch; name)
+            if (ch == '.')
+                return name[0 .. index];
+        return name;
+    }
+
+    version (Windows)
+    private static bool recyclePath(string path, out bool aborted)
+    {
+        aborted = false;
+        if (path.length == 0) return false;
+
+        wchar[] from = toUTF16(path).dup;
+        from ~= cast(wchar) 0;
+        from ~= cast(wchar) 0;
+
+        SHFILEOPSTRUCTW operation;
+        operation.wFunc = FO_DELETE;
+        operation.pFrom = from.ptr;
+        operation.fFlags = FOF_ALLOWUNDO;
+        const result = SHFileOperationW(&operation);
+        aborted = operation.fAnyOperationsAborted != FALSE;
+        return result == 0 && !aborted;
     }
 
     version (Windows)
@@ -4313,6 +6075,14 @@ final class WindowsFileManagerRoot : Widget
             if (haystack[index .. index + loweredNeedle.length] == loweredNeedle)
                 return true;
         return false;
+    }
+
+    private static bool startsWithInsensitive(string value, string loweredNeedle)
+    {
+        if (loweredNeedle.length == 0) return true;
+        const haystack = value.toLower();
+        return haystack.length >= loweredNeedle.length &&
+            haystack[0 .. loweredNeedle.length] == loweredNeedle;
     }
 
     private static string modifiedSortKey(DirEntry item)
@@ -4448,6 +6218,136 @@ private bool writeSystemClipboardText(string value)
         return false;
     }
     return true;
+}
+
+version (Windows)
+private bool writeSystemFileClipboard(const string[] paths, bool cut)
+{
+    if (paths.length == 0) return false;
+    if (!OpenClipboard(null)) return false;
+    scope (exit) CloseClipboard();
+    if (!EmptyClipboard()) return false;
+
+    auto fileList = encodedDropFileList(paths);
+    if (fileList.length == 0) return false;
+
+    const bytes = DROPFILES.sizeof + fileList.length * wchar.sizeof;
+    auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory is null) return false;
+    auto raw = GlobalLock(memory);
+    if (raw is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+
+    auto drop = cast(DROPFILES*) raw;
+    *drop = DROPFILES.init;
+    drop.pFiles = cast(DWORD) DROPFILES.sizeof;
+    drop.fWide = TRUE;
+
+    auto target = cast(wchar*) (cast(ubyte*) raw + DROPFILES.sizeof);
+    foreach (index, ch; fileList)
+        target[index] = ch;
+    GlobalUnlock(memory);
+
+    if (SetClipboardData(CF_HDROP, memory) is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+
+    writeSystemDropEffect(cut);
+    return true;
+}
+
+version (Windows)
+private wchar[] encodedDropFileList(const string[] paths)
+{
+    wchar[] encoded;
+    foreach (path; paths)
+    {
+        if (path.length == 0) continue;
+        encoded ~= toUTF16(path);
+        encoded ~= cast(wchar) 0;
+    }
+    if (encoded.length == 0) return encoded;
+    encoded ~= cast(wchar) 0;
+    return encoded;
+}
+
+version (Windows)
+private bool writeSystemDropEffect(bool cut)
+{
+    const format = RegisterClipboardFormatW("Preferred DropEffect".toUTF16z);
+    if (format == 0) return false;
+    auto memory = GlobalAlloc(GMEM_MOVEABLE, DWORD.sizeof);
+    if (memory is null) return false;
+    auto raw = GlobalLock(memory);
+    if (raw is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    *cast(DWORD*) raw = cut ? 2u : 1u;
+    GlobalUnlock(memory);
+    if (SetClipboardData(format, memory) is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    return true;
+}
+
+version (Windows)
+private bool readSystemFileClipboard(out string[] paths, out bool cut)
+{
+    paths.length = 0;
+    cut = false;
+    if (!IsClipboardFormatAvailable(CF_HDROP)) return false;
+    if (!OpenClipboard(null)) return false;
+    scope (exit) CloseClipboard();
+
+    auto handle = GetClipboardData(CF_HDROP);
+    if (handle is null) return false;
+    auto drop = cast(HDROP) handle;
+    const count = DragQueryFileW(drop, uint.max, null, 0);
+    foreach (index; 0 .. count)
+    {
+        const length = DragQueryFileW(drop, index, null, 0);
+        if (length == 0) continue;
+        wchar[] buffer;
+        buffer.length = length + 1;
+        const written = DragQueryFileW(drop, index, buffer.ptr,
+            cast(UINT) buffer.length);
+        if (written > 0)
+            paths ~= toUTF8(buffer[0 .. written]);
+    }
+    cut = readSystemDropEffect();
+    return paths.length > 0;
+}
+
+version (Windows)
+private bool readSystemDropEffect()
+{
+    const format = RegisterClipboardFormatW("Preferred DropEffect".toUTF16z);
+    if (format == 0 || !IsClipboardFormatAvailable(format))
+        return false;
+    auto handle = GetClipboardData(format);
+    if (handle is null) return false;
+    auto raw = GlobalLock(handle);
+    if (raw is null) return false;
+    const effect = *cast(DWORD*) raw;
+    GlobalUnlock(handle);
+    return (effect & 2u) != 0;
+}
+
+version (Windows)
+private void clearSystemClipboard()
+{
+    if (!OpenClipboard(null)) return;
+    scope (exit) CloseClipboard();
+    EmptyClipboard();
 }
 
 version (Windows)
