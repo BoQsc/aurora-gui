@@ -384,19 +384,22 @@ final class SoftwareRenderer : RenderBackend
 
         if (destWidth == sourceRect.width && destHeight == sourceRect.height)
         {
-            const firstSourceX = sourceRect.x + clip.x - image.destination.x;
+            const firstLocalX = clip.x - image.destination.x;
             foreach (y; clip.y .. clip.bottom())
             {
                 const sourceY = sourceRect.y + y - image.destination.y;
-                auto source = (cast(size_t) sourceY * sourceImageWidth +
-                    cast(size_t) firstSourceX) * 4;
                 auto outIndex = cast(size_t) y * surfaceWidth + cast(size_t) clip.x;
+                int localX = firstLocalX;
                 foreach (_; clip.x .. clip.right())
                 {
+                    const sourceX = image.mirrorX ?
+                        sourceRect.right() - 1 - localX : sourceRect.x + localX;
+                    const source = (cast(size_t) sourceY * sourceImageWidth +
+                        cast(size_t) sourceX) * 4;
                     blendRgbaPixel(destination[outIndex++], pixels[source],
                         pixels[source + 1], pixels[source + 2], pixels[source + 3],
                         image.tint);
-                    source += 4;
+                    ++localX;
                 }
             }
             return;
@@ -418,7 +421,9 @@ final class SoftwareRenderer : RenderBackend
                 foreach (_; clip.x .. clip.right())
                 {
                     int sx = cast(int) (sourceXFixed >> 32);
-                    sx = sourceRect.x + minInt(sourceWidth - 1, maxInt(0, sx));
+                    sx = minInt(sourceWidth - 1, maxInt(0, sx));
+                    if (image.mirrorX) sx = sourceWidth - 1 - sx;
+                    sx += sourceRect.x;
                     const source = (cast(size_t) sy * sourceImageWidth +
                         cast(size_t) sx) * 4;
                     blendRgbaPixel(destination[outIndex++], pixels[source],
@@ -492,6 +497,11 @@ final class SoftwareRenderer : RenderBackend
                         x1 = x0 + 1;
                         fx = cast(uint) ((sourceXFixed >> 24) & 0xff);
                     }
+                }
+                if (image.mirrorX)
+                {
+                    x0 = sourceWidth - 1 - x0;
+                    x1 = sourceWidth - 1 - x1;
                 }
                 x0 += sourceRect.x;
                 x1 += sourceRect.x;

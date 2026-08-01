@@ -142,8 +142,15 @@ struct Canvas
             linearFiltering);
     }
 
-    void drawImage(Rect destination, RgbaImage image, Rect source,
+    void drawImageMirroredX(Rect destination, RgbaImage image, Rect source,
         Color tint = Color(255, 255, 255, 255), bool linearFiltering = true)
+    {
+        drawImage(destination, image, source, tint, linearFiltering, true);
+    }
+
+    void drawImage(Rect destination, RgbaImage image, Rect source,
+        Color tint = Color(255, 255, 255, 255), bool linearFiltering = true,
+        bool mirrorX = false)
     {
         if (image is null || destination.empty() || tint.a == 0) return;
         source = source.intersection(image.bounds());
@@ -152,7 +159,7 @@ struct Canvas
         if (_drawList !is null)
         {
             _drawList.addRgbaImage(absolute, image, source, tint, _clip,
-                linearFiltering);
+                linearFiltering, mirrorX);
             return;
         }
         if (_surface is null) return;
@@ -166,8 +173,10 @@ struct Canvas
                 maxInt(1, absolute.height), 0, source.height - 1);
             foreach (x; clipped.x .. clipped.right())
             {
-                const sourceX = source.x + clampInt((x - absolute.x) * source.width /
+                const localSourceX = clampInt((x - absolute.x) * source.width /
                     maxInt(1, absolute.width), 0, source.width - 1);
+                const sourceX = source.x + (mirrorX ?
+                    source.width - 1 - localSourceX : localSourceX);
                 const offset = (cast(size_t) sourceY * cast(size_t) image.width() +
                     cast(size_t) sourceX) * 4;
                 auto color = Color(pixels[offset], pixels[offset + 1],

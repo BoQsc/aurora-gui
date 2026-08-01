@@ -45,6 +45,7 @@ struct RgbaImageCommand
     RgbaImage image;
     Color tint = Color(255, 255, 255, 255);
     bool linearFiltering = true;
+    bool mirrorX;
 }
 
 struct DrawBatch
@@ -129,7 +130,7 @@ final class DrawList
 
     /** Add a straight-alpha RGBA image in logical coordinates while preserving draw order. */
     void addRgbaImage(Rect destination, RgbaImage image, Rect source,
-        Color tint, Rect clip, bool linearFiltering = true)
+        Color tint, Rect clip, bool linearFiltering = true, bool mirrorX = false)
     {
         if (image is null || destination.empty() || tint.a == 0) return;
         source = source.intersection(image.bounds());
@@ -145,18 +146,21 @@ final class DrawList
         command.image = image;
         command.tint = tint;
         command.linearFiltering = linearFiltering;
+        command.mirrorX = mirrorX;
         const imageIndex = cast(uint) rgbaImages.length;
         rgbaImages ~= command;
 
+        const u0 = cast(float) (mirrorX ? source.right() : source.x);
+        const u1 = cast(float) (mirrorX ? source.x : source.right());
         DrawVertex[4] quad;
         quad[0] = vertex(deviceDestination.x, deviceDestination.y,
-            cast(float) source.x, cast(float) source.y, tint);
+            u0, cast(float) source.y, tint);
         quad[1] = vertex(deviceDestination.right(), deviceDestination.y,
-            cast(float) source.right(), cast(float) source.y, tint);
+            u1, cast(float) source.y, tint);
         quad[2] = vertex(deviceDestination.right(), deviceDestination.bottom(),
-            cast(float) source.right(), cast(float) source.bottom(), tint);
+            u1, cast(float) source.bottom(), tint);
         quad[3] = vertex(deviceDestination.x, deviceDestination.bottom(),
-            cast(float) source.x, cast(float) source.bottom(), tint);
+            u0, cast(float) source.bottom(), tint);
         const firstIndex = appendQuadVertices(quad);
 
         DrawBatch batch;

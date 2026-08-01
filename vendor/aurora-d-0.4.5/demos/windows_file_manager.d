@@ -5549,7 +5549,8 @@ final class WindowsFileManagerRoot : Widget
             entry.directory ? folderAccent : fileAccent);
     }
 
-    private bool drawAtlasIcon(ref Canvas canvas, string name, Rect rect)
+    private bool drawAtlasIcon(ref Canvas canvas, string name, Rect rect,
+        bool mirrorX = false, Color tint = Color(255, 255, 255, 255))
     {
         if (name.length == 0 || rect.empty()) return false;
         auto atlas = iconAtlas();
@@ -5557,7 +5558,7 @@ final class WindowsFileManagerRoot : Widget
         Rect source;
         if (!atlas.frameFor(name, source)) return false;
         canvas.drawImage(fitImageRect(rect, source), atlas.image, source,
-            Color.rgb(255, 255, 255), true);
+            tint, true, mirrorX);
         return true;
     }
 
@@ -5823,6 +5824,12 @@ final class WindowsFileManagerRoot : Widget
         if (pressed)
             canvas.fillRect(rect, explorerPressed);
         const color = enabled ? explorerText : explorerDisabled;
+        const iconRect = Rect(rect.x + scaled(5), rect.y + scaled(5),
+            scaled(18), scaled(18));
+        if (drawAtlasIcon(canvas, "forward", iconRect,
+                command == CommandButton.back,
+                Color(color.r, color.g, color.b, color.a)))
+            return;
         const midY = rect.y + rect.height / 2;
         const midX = rect.x + rect.width / 2;
         const dir = command == CommandButton.back ? 1 : -1;
