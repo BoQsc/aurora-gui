@@ -200,9 +200,10 @@ class ContextMenu : TransientPopup
         {
             x = clampInt(_requestedOrigin.x + 2, 4, maxInt(4, bounds().width - 84));
 
-            int availableWidth = maxInt(80, bounds().width - x - 4);
+            const availableWidth = maxInt(80, bounds().width - x - 4);
             width = minInt(preferredWidth, availableWidth);
-            if (width < 180 && bounds().width >= 188)
+            if (preferredWidth > availableWidth && width < 180 &&
+                bounds().width >= 188)
             {
                 width = minInt(preferredWidth, bounds().width - 8);
                 x = bounds().width - width - 4;

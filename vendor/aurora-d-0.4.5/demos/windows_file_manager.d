@@ -384,7 +384,6 @@ private final class PropertiesWindow
         string modified)
     {
         _path = path;
-        _wideTitle = toUTF16("Properties");
         _wideName = toUTF16(name);
         _wideType = toUTF16(type);
         _wideLocation = toUTF16(location);
@@ -394,6 +393,7 @@ private final class PropertiesWindow
         _copyStatus = "";
 
         const title = "Properties - " ~ name;
+        _wideTitle = toUTF16(title);
         if (_hwnd is null)
         {
             if (!registerPropertiesWindowClass()) return;
@@ -544,6 +544,7 @@ private final class PropertiesWindow
             const close = closeButtonRect(client);
             drawButton(dc, copy, "Copy path"w, _hoverButton == 0);
             drawButton(dc, close, "Close"w, _hoverButton == 1);
+            drawWindowBorder(dc, client);
         }
         EndPaint(hwnd, &ps);
     }
@@ -646,6 +647,17 @@ private final class PropertiesWindow
         SelectObject(dc, oldPen);
         if (pen !is null) DeleteObject(pen);
         drawText(dc, label, rect, rgb(242, 242, 242), false, 12);
+    }
+
+    private static void drawWindowBorder(HDC dc, RECT client) nothrow
+    {
+        auto pen = CreatePen(PS_SOLID, 1, rgb(74, 74, 74));
+        auto oldPen = SelectObject(dc, pen);
+        auto oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, 0, 0, client.right, client.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        if (pen !is null) DeleteObject(pen);
     }
 
     private static void drawText(HDC dc, const(wchar)[] text, RECT rect,
@@ -2208,10 +2220,15 @@ final class WindowsFileManagerRoot : Widget
                 return false;
 
         ExplorerEntry entry;
-        entry.path = path;
-        entry.name = baseName(path);
-        if (entry.name.length == 0) entry.name = path;
-        entry.type = typeText(entry.name, false);
+        try
+        {
+            if (!populateExplorerEntry(DirEntry(path), "", entry))
+                return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
         entry.quickAccessRecent = true;
         entries ~= entry;
         return true;
@@ -2660,6 +2677,16 @@ final class WindowsFileManagerRoot : Widget
         if (navigationIndex >= 0)
         {
             const navigationItem = _navigation[cast(size_t) navigationIndex];
+            if (navigationItem.kind == NavigationKind.quickAccess && navigationItem.enabled)
+            {
+                ContextMenuItem[] navigationItems;
+                navigationItems ~= ContextMenuItem.command("Open", IconKind.open,
+                    delegate() { openQuickAccess(); });
+                navigationItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
+                    delegate() { openQuickAccess(); }, "F5");
+                showContextMenu(this, globalPosition, navigationItems);
+                return;
+            }
             if (navigationItem.kind == NavigationKind.thisPc && navigationItem.enabled)
             {
                 ContextMenuItem[] navigationItems;
