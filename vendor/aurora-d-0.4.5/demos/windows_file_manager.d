@@ -2061,6 +2061,11 @@ final class WindowsFileManagerRoot : Widget
         return maxInt(23, scaled(sidebarRowHeight));
     }
 
+    private int sidebarIconSizePx() const @safe pure nothrow @nogc
+    {
+        return maxInt(18, scaled(20));
+    }
+
     private int headerHeightPx() const @safe pure nothrow @nogc
     {
         return maxInt(29, scaled(headerHeight));
@@ -5346,6 +5351,8 @@ final class WindowsFileManagerRoot : Widget
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
             const nestedOffset = scaled(14 * item.indentLevel);
+            const sidebarIcon = sidebarIconSizePx();
+            const sidebarIconY = row.y + maxInt(0, (row.height - sidebarIcon) / 2);
             const thisPcArrowAlpha = cast(int) (textColor.a * _thisPcArrowOpacity + 0.5);
             if (thisPcArrowAlpha > 0 && item.kind == NavigationKind.thisPc)
             {
@@ -5361,9 +5368,8 @@ final class WindowsFileManagerRoot : Widget
                     Rect(row.x + scaled(22), row.y + scaled(8),
                         scaled(10), scaled(10)), arrowColor, arrowColor);
             }
-            drawFileManagerIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
-                row.y + scaled(5),
-                scaled(17), scaled(17)),
+            drawFileManagerIcon(content, item.icon, Rect(row.x + scaled(34) + nestedOffset,
+                sidebarIconY, sidebarIcon, sidebarIcon),
                 textColor, folderAccent);
             drawText(content, Rect(row.x + scaled(60) + nestedOffset, row.y,
                 maxInt(0, row.width - scaled(86) - nestedOffset), row.height),
