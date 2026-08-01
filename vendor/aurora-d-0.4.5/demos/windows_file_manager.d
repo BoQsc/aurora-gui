@@ -3425,12 +3425,14 @@ final class WindowsFileManagerRoot : Widget
                 content.fillRect(row, Color.rgba(0, 0, 0, 20));
 
             const textColor = item.enabled ? explorerText : explorerDisabled;
-            drawIcon(content, item.icon, Rect(row.x + scaled(36), row.y + scaled(5),
+            const nestedOffset = item.pinned ? scaled(14) : 0;
+            drawIcon(content, item.icon, Rect(row.x + scaled(36) + nestedOffset,
+                row.y + scaled(5),
                 scaled(17), scaled(17)),
                 textColor, folderAccent);
-            drawText(content, Rect(row.x + scaled(60), row.y,
-                maxInt(0, row.width - scaled(86)), row.height), item.label, textColor,
-                HorizontalAlign.left);
+            drawText(content, Rect(row.x + scaled(60) + nestedOffset, row.y,
+                maxInt(0, row.width - scaled(86) - nestedOffset), row.height),
+                item.label, textColor, HorizontalAlign.left);
 
             if (item.pinned)
                 drawPin(content, Rect(row.right() - scaled(22), row.y + scaled(7),
