@@ -40,6 +40,10 @@ final class MediaAsset
     double frameRate = 0.0;
     int audioChannels;
     int sampleRate;
+    string playbackProxyPath;
+    int playbackProxyWidth;
+    int playbackProxyHeight;
+    double playbackProxyFrameRate = 0.0;
 
     this(string path)
     {

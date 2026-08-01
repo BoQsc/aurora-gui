@@ -1,20 +1,21 @@
 module auroracut.media;
 
 import auroracut.model : MediaAsset;
-import auroracut.util : absoluteNormalized, commandAvailable, createWorkspace,
-    formatTimecode, isSupportedMediaPath, outputTail, removePathQuietly,
-    runChecked;
+import auroracut.util : absoluteNormalized, applicationCacheDirectory,
+    commandAvailable, createWorkspace, formatTimecode, isSupportedMediaPath,
+    outputTail, removePathQuietly, runChecked;
 import auroracut.ytdlp : detectYtDlpCommand;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.conv : to;
-import std.file : exists, isDir;
+import std.file : exists, isDir, mkdirRecurse, remove, rename;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
-import std.string : indexOf, strip;
+import std.string : indexOf, strip, toLower;
+import std.uuid : randomUUID;
 
 struct ToolStatus
 {
@@ -543,6 +544,400 @@ final class MediaImportService
             result.asset = null;
             result.error = outputTail(error.msg, 1_000);
         }
+        return result;
+    }
+}
+
+string playbackProxyDirectory()
+{
+    const root = buildPath(applicationCacheDirectory(), "Playback Proxies");
+    if (!exists(root)) mkdirRecurse(root);
+    return absoluteNormalized(root);
+}
+
+private int evenProxyDimension(int value)
+{
+    if (value < 2) return 2;
+    return (value & 1) == 0 ? value : value - 1;
+}
+
+void playbackProxyDimensions(const MediaAsset asset, out int width, out int height)
+{
+    width = 1280;
+    height = 720;
+    if (asset is null || asset.width <= 0 || asset.height <= 0) return;
+
+    double scale = 1.0;
+    if (asset.width > 1280)
+        scale = 1280.0 / cast(double) asset.width;
+    if (asset.height > 720)
+    {
+        const heightScale = 720.0 / cast(double) asset.height;
+        if (heightScale < scale) scale = heightScale;
+    }
+
+    width = evenProxyDimension(cast(int) (asset.width * scale + 0.5));
+    height = evenProxyDimension(cast(int) (asset.height * scale + 0.5));
+}
+
+int playbackProxyFrameRate(const MediaAsset asset)
+{
+    if (asset is null || asset.frameRate <= 0.0) return 30;
+    const rounded = cast(int) (asset.frameRate + 0.5);
+    if (rounded < 1) return 1;
+    return rounded > 30 ? 30 : rounded;
+}
+
+bool playbackProxyReady(const MediaAsset asset)
+{
+    return asset !is null && asset.playbackProxyPath.length > 0 &&
+        exists(asset.playbackProxyPath);
+}
+
+private bool h264LikeCodec(string codec)
+{
+    codec = codec.toLower();
+    return codec == "h264" || codec == "avc1";
+}
+
+bool assetNeedsPlaybackProxy(const MediaAsset asset)
+{
+    if (asset is null || !asset.hasVideo || asset.isStillImage())
+        return false;
+    if (playbackProxyReady(asset)) return false;
+    if (!h264LikeCodec(asset.videoCodec)) return true;
+    if (asset.width > 1280 || asset.height > 720) return true;
+    if (asset.frameRate > 30.5) return true;
+    if (asset.hasAudio &&
+        (asset.sampleRate != 48_000 || asset.audioChannels != 2))
+        return true;
+    return false;
+}
+
+struct MediaProxyRequest
+{
+    ulong generation;
+    size_t assetIndex;
+    string sourcePath;
+    bool hasAudio;
+    int targetWidth;
+    int targetHeight;
+    int targetFrameRate;
+}
+
+struct MediaProxyResult
+{
+    size_t assetIndex;
+    string sourcePath;
+    string proxyPath;
+    int width;
+    int height;
+    double frameRate;
+    string error;
+
+    bool success() const @safe pure nothrow @nogc
+    {
+        return proxyPath.length > 0 && error.length == 0;
+    }
+}
+
+struct MediaProxyStats
+{
+    ulong queued;
+    ulong processesStarted;
+    ulong completed;
+    ulong failed;
+    ulong cancelled;
+}
+
+/**
+ * Background editor-proxy generator for smooth direct playback.
+ *
+ * The original source remains the export authority. Proxies are only cached
+ * H.264/AAC preview media used by Composition Preview when available.
+ */
+final class MediaProxyService
+{
+    private Mutex _mutex;
+    private Condition _condition;
+    private Thread _worker;
+    private MediaProxyRequest[] _queue;
+    private size_t _head;
+    private MediaProxyResult[] _ready;
+    private size_t _readyHead;
+    private Pid _process;
+    private bool _busy;
+    private bool _shutdown;
+    private ulong _generation;
+    private MediaProxyStats _stats;
+
+    this()
+    {
+        _mutex = new Mutex();
+        _condition = new Condition(_mutex);
+        _worker = new Thread({ workerLoop(); });
+        _worker.isDaemon = true;
+        _worker.start();
+    }
+
+    bool enqueue(size_t assetIndex, const MediaAsset asset)
+    {
+        if (!assetNeedsPlaybackProxy(asset)) return false;
+
+        MediaProxyRequest request;
+        request.assetIndex = assetIndex;
+        request.sourcePath = asset.path.idup;
+        request.hasAudio = asset.hasAudio;
+        playbackProxyDimensions(asset, request.targetWidth,
+            request.targetHeight);
+        request.targetFrameRate = playbackProxyFrameRate(asset);
+
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_shutdown) return false;
+        foreach (queued; _queue[_head .. $])
+            if (queued.sourcePath == request.sourcePath) return false;
+        request.generation = ++_generation;
+        _queue ~= request;
+        ++_stats.queued;
+        _condition.notify();
+        return true;
+    }
+
+    bool takeReady(out MediaProxyResult result)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_readyHead >= _ready.length) return false;
+        result = _ready[_readyHead++];
+        if (_readyHead >= _ready.length)
+        {
+            _ready.length = 0;
+            _readyHead = 0;
+        }
+        return true;
+    }
+
+    bool busy()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _busy || _head < _queue.length;
+    }
+
+    MediaProxyStats stats()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _stats;
+    }
+
+    void cancel()
+    {
+        Pid process;
+        _mutex.lock();
+        ++_generation;
+        _queue.length = 0;
+        _head = 0;
+        _ready.length = 0;
+        _readyHead = 0;
+        process = _process;
+        if (process !is null) ++_stats.cancelled;
+        _condition.notifyAll();
+        _mutex.unlock();
+
+        if (process !is null)
+        {
+            try kill(process);
+            catch (Exception) {}
+        }
+    }
+
+    void shutdown()
+    {
+        Pid process;
+        _mutex.lock();
+        if (!_shutdown)
+        {
+            _shutdown = true;
+            ++_generation;
+            _queue.length = 0;
+            _head = 0;
+            _ready.length = 0;
+            _readyHead = 0;
+            process = _process;
+            if (process !is null) ++_stats.cancelled;
+            _condition.notifyAll();
+        }
+        _mutex.unlock();
+
+        if (process !is null)
+        {
+            try kill(process);
+            catch (Exception) {}
+        }
+        if (_worker !is null)
+        {
+            try _worker.join();
+            catch (Exception) {}
+        }
+    }
+
+    private void workerLoop()
+    {
+        while (true)
+        {
+            MediaProxyRequest request;
+            _mutex.lock();
+            while (!_shutdown && _head >= _queue.length)
+                _condition.wait();
+            if (_shutdown)
+            {
+                _mutex.unlock();
+                break;
+            }
+            request = _queue[_head++];
+            if (_head >= _queue.length)
+            {
+                _queue.length = 0;
+                _head = 0;
+            }
+            _busy = true;
+            _mutex.unlock();
+
+            auto result = buildProxy(request);
+
+            _mutex.lock();
+            _busy = false;
+            if (!_shutdown && request.generation == _generation)
+            {
+                _ready ~= result;
+                if (result.success()) ++_stats.completed;
+                else ++_stats.failed;
+            }
+            _mutex.unlock();
+        }
+    }
+
+    private string[] proxyArguments(const MediaProxyRequest request,
+        string outputPath)
+    {
+        string[] arguments = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-threads", "1",
+            "-i", request.sourcePath,
+            "-map", "0:v:0"
+        ];
+        if (request.hasAudio)
+            arguments ~= ["-map", "0:a:0?"];
+        else
+            arguments ~= ["-an"];
+
+        arguments ~= [
+            "-vf", format("scale=w='min(%d,iw)':h='min(%d,ih)':" ~
+                "force_original_aspect_ratio=decrease:force_divisible_by=2:" ~
+                "flags=fast_bilinear,fps=%d,format=yuv420p",
+                request.targetWidth, request.targetHeight,
+                request.targetFrameRate),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-threads", "1",
+            "-g", "15",
+            "-keyint_min", "15",
+            "-sc_threshold", "0"
+        ];
+        if (request.hasAudio)
+            arguments ~= [
+                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"
+            ];
+        arguments ~= ["-movflags", "+faststart", outputPath];
+        return arguments;
+    }
+
+    private MediaProxyResult buildProxy(MediaProxyRequest request)
+    {
+        MediaProxyResult result;
+        result.assetIndex = request.assetIndex;
+        result.sourcePath = request.sourcePath;
+        result.width = request.targetWidth;
+        result.height = request.targetHeight;
+        result.frameRate = request.targetFrameRate;
+
+        string temporary;
+        try
+        {
+            const directory = playbackProxyDirectory();
+            const target = buildPath(directory,
+                "proxy-" ~ randomUUID().toString() ~ ".mp4");
+            temporary = target ~ ".partial.mp4";
+            if (exists(temporary)) remove(temporary);
+
+            auto pipes = pipeProcess(proxyArguments(request, temporary),
+                Redirect.stdout | Redirect.stderrToStdout,
+                cast(const string[string]) null, Config.suppressConsole);
+
+            bool cancelNow;
+            _mutex.lock();
+            _process = pipes.pid;
+            cancelNow = _shutdown || request.generation != _generation;
+            if (!cancelNow) ++_stats.processesStarted;
+            _mutex.unlock();
+            if (cancelNow)
+            {
+                try kill(pipes.pid);
+                catch (Exception) {}
+            }
+
+            string output;
+            try
+            {
+                foreach (rawLine; pipes.stdout.byLine())
+                {
+                    output ~= rawLine;
+                    output ~= "\n";
+                    if (output.length > 2 * 1024 * 1024)
+                        output = outputTail(output, 256 * 1024);
+                }
+            }
+            catch (Exception error)
+            {
+                if (!_shutdown) result.error = error.msg;
+            }
+
+            int status;
+            try status = wait(pipes.pid);
+            catch (Exception error)
+            {
+                if (!_shutdown && result.error.length == 0)
+                    result.error = error.msg;
+            }
+            _mutex.lock();
+            if (_process is pipes.pid) _process = null;
+            const cancelled = _shutdown || request.generation != _generation;
+            _mutex.unlock();
+            if (cancelled) return result;
+
+            if (status != 0)
+                throw new Exception("Build playback proxy failed with exit code " ~
+                    format("%d", status) ~ ".\n" ~ outputTail(output, 8 * 1024));
+            if (result.error.length > 0) throw new Exception(result.error);
+            if (!exists(temporary))
+                throw new Exception("FFmpeg finished but did not create a proxy file.");
+            rename(temporary, target);
+            result.proxyPath = absoluteNormalized(target);
+        }
+        catch (Exception error)
+        {
+            result.proxyPath = "";
+            result.error = outputTail(error.msg, 1_000);
+            if (temporary.length > 0)
+            {
+                try if (exists(temporary)) remove(temporary);
+                catch (Exception) {}
+            }
+        }
+
         return result;
     }
 }

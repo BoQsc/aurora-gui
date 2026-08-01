@@ -149,7 +149,12 @@ private JSONValue assetJson(const MediaAsset value, size_t index)
         "height": JSONValue(cast(long) value.height),
         "frameRate": jsonNumber(value.frameRate, 0.0, path ~ ".frameRate"),
         "audioChannels": JSONValue(cast(long) value.audioChannels),
-        "sampleRate": JSONValue(cast(long) value.sampleRate)
+        "sampleRate": JSONValue(cast(long) value.sampleRate),
+        "playbackProxyPath": JSONValue(value.playbackProxyPath),
+        "playbackProxyWidth": JSONValue(cast(long) value.playbackProxyWidth),
+        "playbackProxyHeight": JSONValue(cast(long) value.playbackProxyHeight),
+        "playbackProxyFrameRate": jsonNumber(value.playbackProxyFrameRate,
+            0.0, path ~ ".playbackProxyFrameRate")
     ]);
 }
 
@@ -392,6 +397,13 @@ ProjectData loadProjectFile(string path)
             asset.frameRate = numberValue(entry, "frameRate");
             asset.audioChannels = cast(int) integerValue(entry, "audioChannels");
             asset.sampleRate = cast(int) integerValue(entry, "sampleRate");
+            asset.playbackProxyPath = stringValue(entry, "playbackProxyPath");
+            asset.playbackProxyWidth = cast(int) integerValue(entry,
+                "playbackProxyWidth");
+            asset.playbackProxyHeight = cast(int) integerValue(entry,
+                "playbackProxyHeight");
+            asset.playbackProxyFrameRate = numberValue(entry,
+                "playbackProxyFrameRate");
             result.assets ~= asset;
         }
 

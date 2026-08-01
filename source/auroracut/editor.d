@@ -7,8 +7,9 @@ import auroracut.clipboardimage : clipboardImageAvailable, clipboardSequenceNumb
 import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     ExportRequest, compositeAudioArguments, compositeStreamArguments;
 import auroracut.filedialog : FileDialogController;
-import auroracut.media : MediaImportResult, MediaImportService, ToolStatus,
-    inspectToolStatus, mediaSecondaryText;
+import auroracut.media : MediaImportResult, MediaImportService,
+    MediaProxyResult, MediaProxyService, ToolStatus, inspectToolStatus,
+    mediaSecondaryText, playbackProxyReady;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation,
     MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
     TrackKind, textAlignmentLabel;
@@ -619,6 +620,7 @@ final class EditorRoot : VBox
     private EditorModel _model;
     private ToolStatus _tools;
     private MediaImportService _importService;
+    private MediaProxyService _proxyService;
     private YtDlpDownloadService _downloadService;
     private YtDlpInstallService _ytDlpInstallService;
     private FileDialogController _fileDialog;
@@ -745,6 +747,8 @@ final class EditorRoot : VBox
     private size_t _importFailedCount;
     private string _importLastError;
     private PendingTimelineDrop[] _pendingTimelineDrops;
+    private size_t[] _pendingProxyAssetIndices;
+    private double _proxyIdleDelay;
     private PopupOverlay _downloadPopup;
     private PopupOverlay _resolutionPopup;
     private PopupOverlay _compressOutputPopup;
@@ -867,6 +871,7 @@ final class EditorRoot : VBox
         _window = window;
         _model = new EditorModel();
         _importService = new MediaImportService();
+        _proxyService = new MediaProxyService();
         _downloadService = new YtDlpDownloadService();
         _ytDlpInstallService = new YtDlpInstallService();
         _previewService = new PreviewService();
@@ -921,6 +926,7 @@ final class EditorRoot : VBox
         _downloadService.shutdown();
         _ytDlpInstallService.shutdown();
         _importService.shutdown();
+        _proxyService.shutdown();
         _exportJob.shutdown();
         _videoStream.shutdown();
         _audioPlayer.shutdown();
@@ -2235,6 +2241,9 @@ final class EditorRoot : VBox
             const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             stopPlayback(false);
+            _pendingProxyAssetIndices.length = 0;
+            _proxyIdleDelay = 0.0;
+            if (_proxyService !is null) _proxyService.cancel();
             auto data = loadProjectFile(path);
             _model.assets = data.assets;
             _model.restoreTimeline(data.videoTracks, data.audioTracks);
@@ -2277,6 +2286,7 @@ final class EditorRoot : VBox
             updateCompositionResolutionUi();
             updateQualityUi();
             updateProjectTitle();
+            queueMissingPlaybackProxies();
             scheduleTimelineFrame();
             setStatus("Project opened: " ~ normalizedPath);
         }
@@ -2835,6 +2845,7 @@ final class EditorRoot : VBox
                         _previewService.requestWarmAsset(result.asset, 0.0,
                             warmSize.width, warmSize.height);
                     }
+                    queuePlaybackProxy(cast(size_t) lastIndex);
                 }
                 if (lastIndex >= 0)
                     placePendingTimelineDrops(result.asset.path,
@@ -2855,6 +2866,108 @@ final class EditorRoot : VBox
         }
         if (lastIndex >= 0) _mediaList.setSelectedIndex(lastIndex);
         finishImportBatchIfIdle();
+    }
+
+    private void queuePlaybackProxy(size_t assetIndex)
+    {
+        if (!_tools.ffmpeg || assetIndex >= _model.assets.length ||
+            _proxyService is null)
+            return;
+        foreach (pending; _pendingProxyAssetIndices)
+            if (pending == assetIndex) return;
+        _pendingProxyAssetIndices ~= assetIndex;
+        _proxyIdleDelay = 0.0;
+    }
+
+    private void queueMissingPlaybackProxies()
+    {
+        foreach (index, asset; _model.assets)
+            queuePlaybackProxy(index);
+    }
+
+    private void cancelPlaybackProxyWork()
+    {
+        _proxyIdleDelay = 0.0;
+        if (_proxyService !is null) _proxyService.cancel();
+    }
+
+    private void startIdlePlaybackProxy(double deltaSeconds)
+    {
+        if (_proxyService is null) return;
+        if (_playbackKind != PlaybackKind.none || _seekPending ||
+            _exportJob.state().running || _downloadService.busy() ||
+            _importService.busy())
+        {
+            _proxyIdleDelay = 0.0;
+            if (_playbackKind != PlaybackKind.none && _proxyService.busy())
+                _proxyService.cancel();
+            return;
+        }
+        if (_pendingProxyAssetIndices.length == 0 || _proxyService.busy())
+            return;
+
+        _proxyIdleDelay += deltaSeconds;
+        if (_proxyIdleDelay < 1.5) return;
+        _proxyIdleDelay = 0.0;
+
+        while (_pendingProxyAssetIndices.length > 0)
+        {
+            const assetIndex = _pendingProxyAssetIndices[0];
+            _pendingProxyAssetIndices = _pendingProxyAssetIndices[1 .. $];
+            if (assetIndex >= _model.assets.length) continue;
+            auto asset = _model.assets[assetIndex];
+            if (_proxyService.enqueue(assetIndex, asset))
+            {
+                appLog("Queued idle playback proxy: " ~ asset.path);
+                break;
+            }
+        }
+    }
+
+    private void drainPlaybackProxies()
+    {
+        MediaProxyResult result;
+        bool changed;
+        while (_proxyService.takeReady(result))
+        {
+            int assetIndex = -1;
+            if (result.assetIndex < _model.assets.length &&
+                filenameCmp(_model.assets[result.assetIndex].path,
+                    result.sourcePath) == 0)
+                assetIndex = cast(int) result.assetIndex;
+            else
+                assetIndex = _model.assetIndexForPath(result.sourcePath);
+            if (assetIndex < 0) continue;
+
+            auto asset = _model.assets[cast(size_t) assetIndex];
+            if (result.success())
+            {
+                asset.playbackProxyPath = result.proxyPath;
+                asset.playbackProxyWidth = result.width;
+                asset.playbackProxyHeight = result.height;
+                asset.playbackProxyFrameRate = result.frameRate;
+                changed = true;
+                appLog("Playback proxy ready: " ~ asset.path ~ " -> " ~
+                    result.proxyPath);
+            }
+            else
+            {
+                appLog("Playback proxy failed for " ~ result.sourcePath ~ ": " ~
+                    result.error);
+                if (_mediaList.selectedIndex() == assetIndex)
+                    setStatus("Playback proxy failed: " ~
+                        outputTail(result.error, 700));
+            }
+        }
+
+        if (!changed) return;
+        syncMediaList();
+        const selected = _mediaList.selectedIndex();
+        if (selected >= 0 && selected < cast(int) _model.assets.length)
+            _mediaDetails.setText(mediaSecondaryText(
+                _model.assets[cast(size_t) selected]));
+        syncInspector();
+        setStatus("Playback proxy ready. Next playback will use the smoother preview file.");
     }
 
     private void drainDownloadedMedia()
@@ -5373,6 +5486,7 @@ final class EditorRoot : VBox
             return;
         }
         if (asset is null || asset.duration <= 0.0) return;
+        cancelPlaybackProxyWork();
         stopPlayback(false);
         _previewService.cancel();
         _pendingPreviewKind = PendingPreviewKind.none;
@@ -5573,6 +5687,28 @@ final class EditorRoot : VBox
                 return ["-c:v", "libdav1d"];
         }
         return _tools.videoDecodeInputOptions.dup;
+    }
+
+    private MediaAsset playbackAssetForPreview(MediaAsset asset)
+    {
+        if (!playbackProxyReady(asset)) return asset;
+
+        auto proxy = new MediaAsset(asset.playbackProxyPath);
+        proxy.name = asset.name ~ " (playback proxy)";
+        proxy.duration = asset.duration;
+        proxy.hasVideo = asset.hasVideo;
+        proxy.hasAudio = asset.hasAudio;
+        proxy.videoCodec = "h264";
+        proxy.width = asset.playbackProxyWidth > 0 ?
+            asset.playbackProxyWidth : min(asset.width, 1280);
+        proxy.height = asset.playbackProxyHeight > 0 ?
+            asset.playbackProxyHeight : min(asset.height, 720);
+        proxy.frameRate = asset.playbackProxyFrameRate > 0.0 ?
+            asset.playbackProxyFrameRate :
+            (asset.frameRate > 30.0 ? 30.0 : asset.frameRate);
+        proxy.audioChannels = asset.hasAudio ? 2 : 0;
+        proxy.sampleRate = asset.hasAudio ? 48_000 : 0;
+        return proxy;
     }
 
     private string playbackRunningStatus() const
@@ -5803,6 +5939,7 @@ final class EditorRoot : VBox
     {
         if (_playbackAsset is null || !_playbackRunning) return;
 
+        cancelPlaybackProxyWork();
         _videoStream.stop();
         _audioPlayer.stop();
         _playbackAudioStarted = false;
@@ -6052,10 +6189,12 @@ final class EditorRoot : VBox
             const decode = _preview.recommendedDecodeSize(limit);
             if (_sequencePlaybackDirect)
             {
-                _previewService.requestAsset(_playbackAsset,
+                auto playbackAsset = playbackAssetForPreview(_playbackAsset);
+                _previewService.requestAsset(playbackAsset,
                     clampValue(_playbackPosition + _playbackMediaOffset,
                         0.0, _playbackAsset.duration),
-                    decode.width, decode.height);
+                    decode.width, decode.height,
+                    playbackDecodeInputOptions(playbackAsset));
                 return;
             }
             MediaAsset directFrameAsset;
@@ -6063,8 +6202,10 @@ final class EditorRoot : VBox
             if (resolveDirectSequenceFrame(_playbackPosition,
                 directFrameAsset, directFrameSourceTime))
             {
-                _previewService.requestAsset(directFrameAsset,
-                    directFrameSourceTime, decode.width, decode.height);
+                auto playbackAsset = playbackAssetForPreview(directFrameAsset);
+                _previewService.requestAsset(playbackAsset,
+                    directFrameSourceTime, decode.width, decode.height,
+                    playbackDecodeInputOptions(playbackAsset));
                 return;
             }
             // Never seek a possibly stale/black proxy for a paused composition.
@@ -6188,7 +6329,9 @@ final class EditorRoot : VBox
             TimelineClip directClip;
             MediaAsset directAsset;
             if (!resolveDirectSequence(directTrack, directClip, directAsset) ||
-                directAsset.path != _playbackAsset.path) return;
+                (directAsset.path != _playbackAsset.path &&
+                 playbackAssetForPreview(directAsset).path != _playbackAsset.path))
+                return;
             volume = directClip.volume;
             muted = directClip.muted || _model.trackValue(directTrack).muted;
         }
@@ -6455,7 +6598,8 @@ final class EditorRoot : VBox
         double start = clampValue(_timeline.playhead(), clip.start, clip.end());
         if (start >= clip.end() - 0.001) start = clip.start;
         const track = _model.trackValue(address);
-        startPlayback(asset, start, clip.end(), PlaybackKind.sequence,
+        auto playbackAsset = playbackAssetForPreview(asset);
+        startPlayback(playbackAsset, start, clip.end(), PlaybackKind.sequence,
             clip.volume, clip.muted || track.muted,
             clip.inPoint - clip.start, true);
     }
@@ -7644,8 +7788,10 @@ final class EditorRoot : VBox
                 if (!_inlineTextEditing && resolveDirectSequenceFrame(
                     _pendingPreviewTime, directAsset, directSourceTime))
                 {
-                    _previewService.requestAsset(directAsset, directSourceTime,
-                        decode.width, decode.height);
+                    auto playbackAsset = playbackAssetForPreview(directAsset);
+                    _previewService.requestAsset(playbackAsset, directSourceTime,
+                        decode.width, decode.height,
+                        playbackDecodeInputOptions(playbackAsset));
                     break;
                 }
                 // Only actual overlays/transforms/text use the compositor.
@@ -7666,6 +7812,8 @@ final class EditorRoot : VBox
         drainYtDlpAddonInstall();
         drainDownloadedMedia();
         drainImportedMedia();
+        drainPlaybackProxies();
+        startIdlePlaybackProxy(deltaSeconds);
         _audioPlayer.poll();
 
         if (_sourceAudioRefreshPending)

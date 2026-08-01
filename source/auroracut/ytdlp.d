@@ -467,6 +467,58 @@ string ytDlpVideoFormatForHeight(int maxHeight)
         height, width, height, width, height, width, height, width);
 }
 
+string ytDlpVideoNormalizeFilterForHeight(int maxHeight)
+{
+    const height = normalizeYtDlpMaxHeight(maxHeight);
+    const width = ytDlpMaxWidthForHeight(height);
+    return format("scale=w='min(%d,iw)':h='min(%d,ih)':" ~
+        "force_original_aspect_ratio=decrease:force_divisible_by=2:" ~
+        "flags=fast_bilinear,pad=%d:%d:(ow-iw)/2:(oh-ih)/2," ~
+        "setsar=1,fps=30,format=yuv420p", width, height, width, height);
+}
+
+string[] ytDlpNormalizedVideoArguments(string inputPath, string outputPath,
+    int maxHeight)
+{
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", inputPath, "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", ytDlpVideoNormalizeFilterForHeight(maxHeight),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-g", "15", "-keyint_min", "15", "-sc_threshold", "0",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart", outputPath
+    ];
+}
+
+private void runCaptured(string[] arguments, string description)
+{
+    const result = execute(arguments, null, Config.suppressConsole,
+        16 * 1024 * 1024);
+    if (result.status != 0)
+        throw new Exception(format("%s failed with exit code %d.%s%s",
+            description, result.status, result.output.length > 0 ? "\n" : "",
+            outputTail(result.output, 16 * 1024)));
+}
+
+private string normalizeDownloadedVideo(string sourcePath, string directory,
+    string prefix, int maxHeight)
+{
+    const target = buildPath(directory, prefix ~ ".normalized.mp4");
+    const temporary = target ~ ".partial.mp4";
+    if (exists(temporary)) remove(temporary);
+    if (exists(target)) remove(target);
+
+    runCaptured(ytDlpNormalizedVideoArguments(sourcePath, temporary, maxHeight),
+        "Normalize yt-dlp video");
+    if (!exists(temporary))
+        throw new Exception("FFmpeg finished but did not create the normalized MP4.");
+    rename(temporary, target);
+    try if (exists(sourcePath)) remove(sourcePath);
+    catch (Exception) {}
+    return absoluteNormalized(target);
+}
+
 final class YtDlpDownloadService
 {
     private Mutex _mutex;
@@ -676,6 +728,9 @@ final class YtDlpDownloadService
             result.path = downloadedPathForPrefix(directory, prefix);
             if (result.path.length == 0)
                 throw new Exception("yt-dlp finished but did not produce an Aurora-supported media file.");
+            if (request.kind == YtDlpDownloadKind.video)
+                result.path = normalizeDownloadedVideo(result.path, directory,
+                    prefix, request.maxHeight);
         }
         catch (Exception error)
         {
