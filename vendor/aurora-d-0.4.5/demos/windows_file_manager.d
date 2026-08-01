@@ -22,7 +22,7 @@ version (Windows)
     import core.sys.windows.objbase : STGM_READ;
     import core.sys.windows.objidl : IPersistFile;
     import core.sys.windows.shlobj : CSIDL_RECENT, ILFree, IEnumIDList, IShellFolder,
-        IShellLinkW, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO,
+        IShellLinkW, LPCITEMIDLIST, LPITEMIDLIST, SFGAOF, SHCONTF, SHGNO,
         SHGetDesktopFolder, SHGetFolderPathW, SHParseDisplayName, STRRET;
     import core.sys.windows.shellapi : ShellExecuteW;
     import core.sys.windows.shlwapi : StrRetToBufW;
@@ -78,6 +78,7 @@ private struct ExplorerEntry
     string modifiedDay;
     string modifiedSortKey;
     string type;
+    bool sizeKnown;
     bool quickAccessRecent;
 }
 
@@ -86,6 +87,14 @@ private struct VisibleRow
     int entryIndex;
     string groupLabel;
     bool separator;
+}
+
+version (Windows)
+private struct WindowsQuickAccessItem
+{
+    string path;
+    string displayName;
+    bool isFolder;
 }
 
 private struct NavigationItem
@@ -706,6 +715,8 @@ final class WindowsFileManagerRoot : Widget
     private enum rowHeight = 25;
     private enum groupHeaderHeight = 28;
     private enum quickAccessSeparatorHeight = 12;
+    private enum quickAccessFrequentFolderLimit = 24;
+    private enum quickAccessRecentFileLimit = 20;
     private enum maximumSearchDepth = 64;
     private enum maximumSearchResults = 10000;
     private enum sidebarRowHeight = 27;
@@ -1841,7 +1852,11 @@ final class WindowsFileManagerRoot : Widget
         try
         {
             entry.directory = item.isDir;
-            if (!entry.directory) entry.size = item.size;
+            if (!entry.directory)
+            {
+                entry.size = item.size;
+                entry.sizeKnown = true;
+            }
             entry.modified = modifiedText(item);
             entry.modifiedSortKey = modifiedSortKey(item);
             entry.modifiedDay = entry.modifiedSortKey.length >= 10
@@ -1880,9 +1895,11 @@ final class WindowsFileManagerRoot : Widget
 
         if (_showQuickAccess)
         {
+            const frequentCount = quickAccessVisibleCount(false, query);
+            const recentCount = quickAccessVisibleCount(true, query);
             VisibleRow frequentHeader;
             frequentHeader.entryIndex = -1;
-            frequentHeader.groupLabel = "Frequent folders";
+            frequentHeader.groupLabel = format("Frequent folders (%d)", frequentCount);
             _visibleRows ~= frequentHeader;
             foreach (index, entry; _entries)
             {
@@ -1902,7 +1919,7 @@ final class WindowsFileManagerRoot : Widget
 
             VisibleRow recentHeader;
             recentHeader.entryIndex = -1;
-            recentHeader.groupLabel = "Recent files";
+            recentHeader.groupLabel = format("Recent files (%d)", recentCount);
             _visibleRows ~= recentHeader;
             foreach (index, entry; _entries)
             {
@@ -1948,6 +1965,18 @@ final class WindowsFileManagerRoot : Widget
         setListScroll(_scrollY);
         updateStatus();
         invalidate();
+    }
+
+    private size_t quickAccessVisibleCount(bool recent, string query) const
+    {
+        size_t count;
+        foreach (entry; _entries)
+        {
+            if (entry.quickAccessRecent != recent) continue;
+            if (query.length == 0 || containsInsensitive(entry.name, query))
+                ++count;
+        }
+        return count;
     }
 
     private void rebuildVisibleRowOffsets()
@@ -2136,54 +2165,62 @@ final class WindowsFileManagerRoot : Widget
         {
             size_t frequentFolderCount;
             size_t recentFileCount;
-            foreach (path; windowsQuickAccessPaths())
+            foreach (item; windowsQuickAccessItems())
             {
-                if (path.length == 0 || !exists(path)) continue;
-                if (isDir(path))
+                const path = item.path;
+                if (path.length == 0) continue;
+                if (item.isFolder)
                 {
-                    if (frequentFolderCount < 12 && appendQuickAccessFolder(entries, path))
+                    if (frequentFolderCount < quickAccessFrequentFolderLimit &&
+                        appendQuickAccessFolder(entries, path, item.displayName, true))
                         ++frequentFolderCount;
                 }
-                else if (recentFileCount < 20 &&
-                    appendQuickAccessRecentFile(entries, path))
+                else if (recentFileCount < quickAccessRecentFileLimit &&
+                    appendQuickAccessRecentFile(entries, path, item.displayName, true))
                     ++recentFileCount;
             }
 
-            foreach (path; windowsRecentShortcutPaths())
+            if (recentFileCount == 0)
             {
-                if (path.length == 0 || !exists(path)) continue;
-                if (isDir(path))
+                foreach (path; windowsRecentShortcutPaths())
                 {
-                    if (frequentFolderCount < 12 && appendQuickAccessFolder(entries, path))
-                        ++frequentFolderCount;
+                    if (path.length == 0 || !exists(path)) continue;
+                    if (!isDir(path) && recentFileCount < quickAccessRecentFileLimit &&
+                        appendQuickAccessRecentFile(entries, path))
+                        ++recentFileCount;
                 }
-                else if (recentFileCount < 20 &&
-                    appendQuickAccessRecentFile(entries, path))
-                    ++recentFileCount;
             }
         }
 
-        const current = getcwd();
-        const home = environment.get("USERPROFILE", environment.get("HOME", current));
-        const documents = buildNormalizedPath(home, "Documents");
-        foreach (path; [
-            buildNormalizedPath(home, "Desktop"),
-            buildNormalizedPath(home, "Downloads"),
-            documents,
-            buildNormalizedPath(home, "Pictures"),
-            buildNormalizedPath(home, "Videos")
-        ])
+        if (quickAccessFolderCount(entries) == 0)
         {
-            if (quickAccessFolderCount(entries) >= 12) break;
-            appendQuickAccessFolder(entries, path);
+            const current = getcwd();
+            const home = environment.get("USERPROFILE", environment.get("HOME", current));
+            const documents = buildNormalizedPath(home, "Documents");
+            foreach (path; [
+                buildNormalizedPath(home, "Desktop"),
+                buildNormalizedPath(home, "Downloads"),
+                documents,
+                buildNormalizedPath(home, "Pictures"),
+                buildNormalizedPath(home, "Videos")
+            ])
+            {
+                if (quickAccessFolderCount(entries) >= quickAccessFrequentFolderLimit)
+                    break;
+                appendQuickAccessFolder(entries, path);
+            }
+
+            for (int index = cast(int) _history.length - 1;
+                index >= 0 && quickAccessFolderCount(entries) < quickAccessFrequentFolderLimit;
+                --index)
+                appendQuickAccessFolder(entries, _history[cast(size_t) index]);
         }
 
-        for (int index = cast(int) _history.length - 1;
-            index >= 0 && quickAccessFolderCount(entries) < 12; --index)
-            appendQuickAccessFolder(entries, _history[cast(size_t) index]);
-
-        foreach (path; _recentFiles)
-            appendQuickAccessRecentFile(entries, path);
+        if (quickAccessRecentFileCount(entries) == 0)
+        {
+            foreach (path; _recentFiles)
+                appendQuickAccessRecentFile(entries, path);
+        }
         return entries;
     }
 
@@ -2195,43 +2232,101 @@ final class WindowsFileManagerRoot : Widget
         return count;
     }
 
-    private static bool appendQuickAccessFolder(ref ExplorerEntry[] entries, string path)
+    private static size_t quickAccessRecentFileCount(const ExplorerEntry[] entries)
     {
-        if (path.length == 0 || !exists(path) || !isDir(path)) return false;
+        size_t count;
+        foreach (entry; entries)
+            if (entry.quickAccessRecent) ++count;
+        return count;
+    }
+
+    private static bool appendQuickAccessFolder(ref ExplorerEntry[] entries, string path,
+        string displayName = "", bool nativeShellItem = false)
+    {
+        bool filesystemFolder;
+        try
+        {
+            filesystemFolder = exists(path) && isDir(path);
+        }
+        catch (Exception)
+        {
+            filesystemFolder = false;
+        }
+        if (path.length == 0 || (!filesystemFolder && !nativeShellItem)) return false;
         foreach (entry; entries)
             if (!entry.quickAccessRecent && pathsEqual(entry.path, path))
                 return false;
 
         ExplorerEntry entry;
-        entry.path = path;
-        entry.name = baseName(path);
-        if (entry.name.length == 0) entry.name = path;
-        entry.directory = true;
-        entry.type = "File folder";
+        if (filesystemFolder)
+        {
+            try
+            {
+                if (!populateExplorerEntry(DirEntry(path), displayName, entry))
+                    return false;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            populateNativeQuickAccessEntry(path, displayName, true, entry);
+        }
         entries ~= entry;
         return true;
     }
 
-    private static bool appendQuickAccessRecentFile(ref ExplorerEntry[] entries, string path)
+    private static bool appendQuickAccessRecentFile(ref ExplorerEntry[] entries, string path,
+        string displayName = "", bool nativeShellItem = false)
     {
-        if (path.length == 0 || !exists(path) || isDir(path)) return false;
+        bool filesystemFile;
+        try
+        {
+            filesystemFile = exists(path) && !isDir(path);
+        }
+        catch (Exception)
+        {
+            filesystemFile = false;
+        }
+        if (path.length == 0 || (!filesystemFile && !nativeShellItem)) return false;
         foreach (entry; entries)
             if (pathsEqual(entry.path, path))
                 return false;
 
         ExplorerEntry entry;
-        try
+        if (filesystemFile)
         {
-            if (!populateExplorerEntry(DirEntry(path), "", entry))
+            try
+            {
+                if (!populateExplorerEntry(DirEntry(path), displayName, entry))
+                    return false;
+            }
+            catch (Exception)
+            {
                 return false;
+            }
         }
-        catch (Exception)
+        else
         {
-            return false;
+            populateNativeQuickAccessEntry(path, displayName, false, entry);
         }
         entry.quickAccessRecent = true;
         entries ~= entry;
         return true;
+    }
+
+    private static void populateNativeQuickAccessEntry(string path, string displayName,
+        bool directory, out ExplorerEntry entry)
+    {
+        entry = ExplorerEntry.init;
+        entry.path = path;
+        entry.name = displayName.length > 0 ? displayName : baseName(path);
+        if (entry.name.length == 0) entry.name = path;
+        entry.directory = directory;
+        entry.modifiedDay = "Unknown date";
+        entry.type = typeText(entry.name, directory);
     }
 
     private void activateNavigation(int index)
@@ -3426,7 +3521,8 @@ final class WindowsFileManagerRoot : Widget
     private static string entrySizeText(ExplorerEntry entry)
     {
         if (entry.sizeText.length > 0) return entry.sizeText;
-        return entry.directory ? "" : humanSize(entry.size);
+        if (entry.directory || !entry.sizeKnown) return "";
+        return humanSize(entry.size);
     }
 
     private static string diskSizeText(ulong freeBytes, ulong totalBytes)
@@ -3736,12 +3832,34 @@ private string[] windowsRecentShortcutPaths()
 }
 
 version (Windows)
-private string[] windowsQuickAccessPaths()
+private string shellFolderDisplayName(IShellFolder folder, LPITEMIDLIST child, DWORD flags)
 {
-    string[] paths;
+    STRRET displayName;
+    if (folder.GetDisplayNameOf(child, flags, &displayName) != S_OK)
+        return "";
+    wchar[MAX_PATH] buffer;
+    if (StrRetToBufW(&displayName, child, buffer.ptr, cast(UINT) buffer.length) != S_OK)
+        return "";
+    return windowsWideBufferString(buffer[]);
+}
+
+version (Windows)
+private bool shellFolderItemIsFolder(IShellFolder folder, LPITEMIDLIST child)
+{
+    LPCITEMIDLIST childConst = cast(LPCITEMIDLIST) child;
+    ULONG attributes = cast(ULONG) SFGAOF.SFGAO_FOLDER;
+    if (folder.GetAttributesOf(1, &childConst, &attributes) != S_OK)
+        return false;
+    return (attributes & cast(ULONG) SFGAOF.SFGAO_FOLDER) != 0;
+}
+
+version (Windows)
+private WindowsQuickAccessItem[] windowsQuickAccessItems()
+{
+    WindowsQuickAccessItem[] items;
     const initResult = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
     if (initResult != S_OK && initResult != S_FALSE && initResult != RPC_E_CHANGED_MODE)
-        return paths;
+        return items;
     const shouldUninitialize = initResult == S_OK || initResult == S_FALSE;
     scope (exit)
     {
@@ -3754,28 +3872,28 @@ private string[] windowsQuickAccessPaths()
     if (SHParseDisplayName(quickAccessNamespace.toUTF16z, null,
             cast(LPITEMIDLIST) &quickAccessPidl, SFGAOF.init,
             null) != S_OK || quickAccessPidl is null)
-        return paths;
+        return items;
     scope (exit) ILFree(quickAccessPidl);
 
     IShellFolder desktopFolder;
     if (SHGetDesktopFolder(&desktopFolder) != S_OK || desktopFolder is null)
-        return paths;
+        return items;
     scope (exit) desktopFolder.Release();
 
     IShellFolder quickAccessFolder;
     if (desktopFolder.BindToObject(quickAccessPidl, null, &IID_IShellFolder,
             cast(void**) &quickAccessFolder) != S_OK || quickAccessFolder is null)
-        return paths;
+        return items;
     scope (exit) quickAccessFolder.Release();
 
     IEnumIDList enumerator;
     const enumFlags = SHCONTF.SHCONTF_FOLDERS | SHCONTF.SHCONTF_NONFOLDERS;
     if (quickAccessFolder.EnumObjects(null, enumFlags, &enumerator) != S_OK ||
         enumerator is null)
-        return paths;
+        return items;
     scope (exit) enumerator.Release();
 
-    while (paths.length < 64)
+    while (items.length < 96)
     {
         LPITEMIDLIST child;
         ULONG fetched;
@@ -3783,17 +3901,19 @@ private string[] windowsQuickAccessPaths()
             break;
         scope (exit) ILFree(child);
 
-        STRRET displayName;
-        if (quickAccessFolder.GetDisplayNameOf(child, SHGNO.SHGDN_FORPARSING, &displayName) != S_OK)
-            continue;
-        wchar[MAX_PATH] path;
-        if (StrRetToBufW(&displayName, child, path.ptr, cast(UINT) path.length) != S_OK)
-            continue;
-        const resolvedPath = windowsWideBufferString(path[]);
+        const resolvedPath = shellFolderDisplayName(quickAccessFolder, child,
+            SHGNO.SHGDN_FORPARSING);
         if (resolvedPath.length > 0)
-            paths ~= resolvedPath;
+        {
+            WindowsQuickAccessItem item;
+            item.path = resolvedPath;
+            item.displayName = shellFolderDisplayName(quickAccessFolder, child,
+                SHGNO.SHGDN_NORMAL);
+            item.isFolder = shellFolderItemIsFolder(quickAccessFolder, child);
+            items ~= item;
+        }
     }
-    return paths;
+    return items;
 }
 
 private bool openPathWithSystem(string path)
