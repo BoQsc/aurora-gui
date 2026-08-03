@@ -71,6 +71,7 @@ private struct GpuVertex
 }
 
 enum uint imageDescriptorSetLimit = 1024;
+private enum ulong resizedSwapchainAcquireTimeoutNs = 16_000_000UL;
 
 private bool supportsPresentMode(const(int)[] modes, int expected)
     @safe pure nothrow @nogc
@@ -240,7 +241,9 @@ final class VulkanRenderer : RenderBackend
 
     override void resize(Size size)
     {
-        _requestedSize = Size(maxInt(1, size.width), maxInt(1, size.height));
+        const requested = Size(maxInt(1, size.width), maxInt(1, size.height));
+        if (_requestedSize == requested) return;
+        _requestedSize = requested;
         _swapchainDirty = true;
     }
 
@@ -256,8 +259,12 @@ final class VulkanRenderer : RenderBackend
     {
         if (_closed || scene is null || scene.base is null) return true;
         if (_requestedSize.width <= 0 || _requestedSize.height <= 0) return true;
+        bool recreatedSwapchain;
         if (_swapchainDirty || _swapchain == VK_NULL_HANDLE)
+        {
             recreateSwapchain();
+            recreatedSwapchain = true;
+        }
         if (_swapchain == VK_NULL_HANDLE || _extent.width == 0 || _extent.height == 0)
             return true;
 
@@ -275,8 +282,20 @@ final class VulkanRenderer : RenderBackend
         }
 
         uint imageIndex;
-        auto acquire = _vk.vkAcquireNextImageKHR(_device, _swapchain, 0,
-            frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        VkResult acquire;
+        foreach (attempt; 0 .. 2)
+        {
+            const timeout = recreatedSwapchain ? resizedSwapchainAcquireTimeoutNs : 0UL;
+            acquire = _vk.vkAcquireNextImageKHR(_device, _swapchain, timeout,
+                frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+            if (acquire == VK_ERROR_OUT_OF_DATE_KHR && attempt == 0)
+            {
+                recreateSwapchain();
+                recreatedSwapchain = true;
+                continue;
+            }
+            break;
+        }
         if (acquire == VK_NOT_READY || acquire == VK_TIMEOUT)
         {
             ++_stats.frameDeferrals;
@@ -284,7 +303,6 @@ final class VulkanRenderer : RenderBackend
         }
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
         {
-            recreateSwapchain();
             ++_stats.frameDeferrals;
             return false;
         }
@@ -374,9 +392,9 @@ final class VulkanRenderer : RenderBackend
         {
             foreach (ref frame; _frames)
             {
-                const status = _vk.vkGetFenceStatus(_device, frame.fence);
-                if (status == VK_NOT_READY) return null;
-                check(status, "checking Vulkan content-mutation fences");
+                if (frame.fence == VK_NULL_HANDLE) continue;
+                check(_vk.vkWaitForFences(_device, 1, &frame.fence, VK_TRUE,
+                    ulong.max), "waiting for Vulkan content-mutation fences");
             }
         }
 
@@ -858,7 +876,13 @@ final class VulkanRenderer : RenderBackend
             chosen.format = VK_FORMAT_B8G8R8A8_UNORM;
             chosen.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
         }
-        _swapchainFormat = chosen.format;
+        const nextFormat = chosen.format;
+        const needsFormatResources = _renderPass == VK_NULL_HANDLE ||
+            _pipeline == VK_NULL_HANDLE || _imagePipeline == VK_NULL_HANDLE ||
+            _swapchainFormat != nextFormat;
+        if (needsFormatResources)
+            destroyFormatResources();
+        _swapchainFormat = nextFormat;
         if (capabilities.currentExtent.width != uint.max)
             _extent = capabilities.currentExtent;
         else
@@ -907,8 +931,11 @@ final class VulkanRenderer : RenderBackend
             "retrieving Vulkan swapchain images");
         createPresentSemaphores();
         createSwapchainViews();
-        createRenderPass();
-        createPipelines();
+        if (needsFormatResources)
+        {
+            createRenderPass();
+            createPipelines();
+        }
         createFramebuffers();
         _swapchainDirty = false;
     }
@@ -916,8 +943,8 @@ final class VulkanRenderer : RenderBackend
     private void recreateSwapchain()
     {
         if (_device is null) return;
-        _vk.vkDeviceWaitIdle(_device);
-        destroySwapchain();
+        waitForSubmittedFrames();
+        destroySwapchainImages();
         createSwapchain();
     }
 
@@ -1758,7 +1785,24 @@ final class VulkanRenderer : RenderBackend
         texture.initialized = false;
     }
 
+    private void waitForSubmittedFrames()
+    {
+        if (_device is null || _vk is null || _vk.vkWaitForFences is null) return;
+        foreach (ref frame; _frames)
+        {
+            if (frame.fence == VK_NULL_HANDLE) continue;
+            check(_vk.vkWaitForFences(_device, 1, &frame.fence, VK_TRUE,
+                ulong.max), "waiting for submitted Vulkan resize work");
+        }
+    }
+
     private void destroySwapchain()
+    {
+        destroySwapchainImages();
+        destroyFormatResources();
+    }
+
+    private void destroySwapchainImages()
     {
         if (_device is null || _vk is null) return;
         destroyPresentSemaphores();
@@ -1766,15 +1810,6 @@ final class VulkanRenderer : RenderBackend
             if (framebuffer != VK_NULL_HANDLE && _vk.vkDestroyFramebuffer !is null)
                 _vk.vkDestroyFramebuffer(_device, framebuffer, null);
         _framebuffers.length = 0;
-        if (_pipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
-            _vk.vkDestroyPipeline(_device, _pipeline, null);
-        _pipeline = VK_NULL_HANDLE;
-        if (_imagePipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
-            _vk.vkDestroyPipeline(_device, _imagePipeline, null);
-        _imagePipeline = VK_NULL_HANDLE;
-        if (_renderPass != VK_NULL_HANDLE && _vk.vkDestroyRenderPass !is null)
-            _vk.vkDestroyRenderPass(_device, _renderPass, null);
-        _renderPass = VK_NULL_HANDLE;
         foreach (view; _swapchainViews)
             if (view != VK_NULL_HANDLE && _vk.vkDestroyImageView !is null)
                 _vk.vkDestroyImageView(_device, view, null);
@@ -1784,6 +1819,20 @@ final class VulkanRenderer : RenderBackend
             _vk.vkDestroySwapchainKHR(_device, _swapchain, null);
         _swapchain = VK_NULL_HANDLE;
         _frameCursor = 0;
+    }
+
+    private void destroyFormatResources()
+    {
+        if (_device is null || _vk is null) return;
+        if (_pipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
+            _vk.vkDestroyPipeline(_device, _pipeline, null);
+        _pipeline = VK_NULL_HANDLE;
+        if (_imagePipeline != VK_NULL_HANDLE && _vk.vkDestroyPipeline !is null)
+            _vk.vkDestroyPipeline(_device, _imagePipeline, null);
+        _imagePipeline = VK_NULL_HANDLE;
+        if (_renderPass != VK_NULL_HANDLE && _vk.vkDestroyRenderPass !is null)
+            _vk.vkDestroyRenderPass(_device, _renderPass, null);
+        _renderPass = VK_NULL_HANDLE;
     }
 
     private uint findMemoryType(uint allowedBits, VkFlags required) const

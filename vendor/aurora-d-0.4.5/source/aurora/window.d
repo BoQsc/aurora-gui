@@ -4,6 +4,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.font : FontFace, FontRenderMode, FontRole;
+import aurora.image : RgbaImage;
 import aurora.platform.select : NativeWindow, NativeWindowSink, PlatformWindow, WindowOptions;
 import aurora.render.base : RenderBackend, RendererPreference, RendererStats;
 import aurora.render.drawlist : DrawList;
@@ -18,6 +19,7 @@ import aurora.widget : PopupSurface, Widget, WidgetHost;
 import std.process : environment;
 
 private enum ulong synchronizedPointerLayerId = ulong.max;
+private enum double liveResizeExactFrameIntervalSeconds = 0.080;
 
 
 /**
@@ -86,8 +88,13 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private FontSystem _fonts;
     private DrawList _baseDrawList;
     private DrawList _pointerDrawList;
+    private DrawList _resizeProxyDrawList;
     private RenderScene _scene;
+    private RenderScene _resizeProxyScene;
+    private Surface _resizeSnapshot;
+    private RgbaImage _resizeProxyImage;
     private ulong _pointerRevision;
+    private ulong _resizeProxyRevision;
     private Size _pointerFramebufferSize;
     private PointF _pointerPosition;
     private PointF _lastPointerPosition;
@@ -106,6 +113,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private bool _buildingBase;
     private bool _sceneStructureDirty = true;
     private bool _frameDirty = true;
+    private bool _nativeResizeActive;
+    private bool _resizeProxyActive;
+    private bool _resizeRenderExactNow;
+    private bool _resizeExactDirty;
+    private double _resizeExactAccumulator;
     private CompositorStats _compositorStats;
     private RenderBackend _renderer;
     private string _rendererFallbackReason;
@@ -145,8 +157,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         applyThemeFonts();
         _baseDrawList = new DrawList(_fonts);
         _pointerDrawList = new DrawList(_fonts);
+        _resizeProxyDrawList = new DrawList(_fonts);
         _scene = new RenderScene();
+        _resizeProxyScene = new RenderScene();
         _snapshot = new Surface(_framebufferSize.width, _framebufferSize.height);
+        _resizeSnapshot = new Surface(_framebufferSize.width, _framebufferSize.height);
         _native = new PlatformWindow(_options, this);
         synchronizeNativeMetrics();
         _snapshot.resize(_framebufferSize.width, _framebufferSize.height);
@@ -157,6 +172,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     Surface surface()
     {
         ensureScene();
+        _snapshot.resize(_framebufferSize.width, _framebufferSize.height);
         SoftwareRenderer.renderSceneInto(_scene, _snapshot);
         return _snapshot;
     }
@@ -491,13 +507,32 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override bool onNativePaint()
     {
-        ensureScene();
+        if (_nativeResizeActive && _resizeProxyActive && !_resizeRenderExactNow)
+            return renderResizeProxyFrame();
 
+        ensureScene();
+        const exactResizeFrame = _nativeResizeActive && _resizeRenderExactNow;
+        const completed = renderSceneToNative(_scene);
+        if (completed && exactResizeFrame)
+        {
+            _resizeRenderExactNow = false;
+            refreshResizeProxyFromScene();
+        }
+        if (!completed && _nativeResizeActive && _resizeProxyActive)
+        {
+            _resizeRenderExactNow = false;
+            return renderResizeProxyFrame();
+        }
+        return completed && !continuousPointerFrames();
+    }
+
+    private bool renderSceneToNative(RenderScene scene)
+    {
         // RGB24 video frames are currently a software-renderer capability.
         // Switch before drawing the first such frame instead of letting Vulkan
         // ignore the image batch and present an apparently valid black frame.
         if (_renderer !is null && _renderer.hardwareAccelerated() &&
-            sceneContainsRgbImages(_scene))
+            sceneContainsRgbImages(scene))
         {
             _renderer.shutdown();
             _rendererFallbackReason =
@@ -508,7 +543,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
         bool completed;
         try
-            completed = _renderer.renderScene(_scene);
+            completed = _renderer.renderScene(scene);
         catch (Exception error)
         {
             if (_options.renderer != RendererPreference.automatic ||
@@ -517,23 +552,26 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _renderer.shutdown();
             _rendererFallbackReason = error.msg;
             _renderer = new SoftwareRenderer(_framebufferSize);
-            completed = _renderer.renderScene(_scene);
+            completed = _renderer.renderScene(scene);
         }
         if (!completed) return false;
         auto software = _renderer.softwareSurface();
         if (software !is null)
             _native.present(software.pixels(), software.width(), software.height());
-        // During transform drags, keep a render opportunity pending even when
-        // Windows has not delivered another WM_MOUSEMOVE yet. The renderer
-        // latches GetCursorPos after image acquisition, like a game loop, so
-        // every available presentation slot uses the newest pointer position.
-        return !continuousPointerFrames();
+        return true;
     }
 
     override void onNativeTick(double deltaSeconds)
     {
         if (_root !is null)
             _root.tickTree(deltaSeconds);
+        if (_nativeResizeActive && _resizeExactDirty && !_resizeRenderExactNow)
+        {
+            _resizeExactAccumulator += deltaSeconds;
+            if (_resizeExactAccumulator >= liveResizeExactFrameIntervalSeconds ||
+                !_resizeProxyActive)
+                scheduleLiveResizeExactFrame();
+        }
     }
 
     override bool onNativeCloseRequested()
@@ -561,6 +599,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         {
             case EventType.resized:
                 handleResize(event);
+                break;
+            case EventType.resizeStarted:
+                beginNativeResize(event);
+                break;
+            case EventType.resizeEnded:
+                endNativeResize(event);
                 break;
             case EventType.mouseMove:
                 handleMouseMove(event);
@@ -616,18 +660,125 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             scale = DisplayScale.init;
         const width = maxInt(1, event.size.width);
         const height = maxInt(1, event.size.height);
+        const previousClientSize = _clientSize;
+        const previousFramebufferSize = _framebufferSize;
+        const previousScale = _displayScale;
         _clientSize = Size(width, height);
         _displayScale = scale;
         if (framebuffer.empty()) framebuffer = scale.logicalToPhysical(_clientSize);
         _framebufferSize = Size(maxInt(1, framebuffer.width), maxInt(1, framebuffer.height));
-        _snapshot.resize(_framebufferSize.width, _framebufferSize.height);
-        if (_renderer !is null) _renderer.resize(_framebufferSize);
-        if (_root !is null)
+        if (_clientSize == previousClientSize &&
+            _framebufferSize == previousFramebufferSize &&
+            _displayScale == previousScale)
+            return;
+
+        if (_renderer !is null && _framebufferSize != previousFramebufferSize)
+            _renderer.resize(_framebufferSize);
+        if (_nativeResizeActive)
         {
-            _root.setBounds(Rect(0, 0, width, height));
-            _root.layoutTree();
+            _resizeExactDirty = true;
+            if (_resizeProxyActive)
+                requestFrame();
+            else
+                scheduleLiveResizeExactFrame();
+            return;
         }
-        invalidate();
+        if (_root !is null && _clientSize != previousClientSize)
+            _root.setBounds(Rect(0, 0, width, height));
+
+        // A native resize changes the base viewport, but it does not by itself
+        // mean every retained layer's content changed. The next scene rebuild
+        // runs layout once and dirties only layers whose layout actually changed.
+        _baseDirty = true;
+        requestFrame();
+    }
+
+    private void beginNativeResize(ref Event event)
+    {
+        if (_nativeResizeActive) return;
+        ensureScene();
+        refreshResizeProxyFromScene();
+        _nativeResizeActive = true;
+        _resizeRenderExactNow = false;
+        _resizeExactDirty = false;
+        _resizeExactAccumulator = 0.0;
+    }
+
+    private void endNativeResize(ref Event event)
+    {
+        if (!_nativeResizeActive) return;
+        const needsExactFrame = _resizeExactDirty || _resizeRenderExactNow;
+        _nativeResizeActive = false;
+        _resizeProxyActive = false;
+        _resizeRenderExactNow = false;
+        _resizeExactDirty = false;
+        _resizeExactAccumulator = 0.0;
+        if (!needsExactFrame) return;
+        if (_root !is null)
+            _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
+        _baseDirty = true;
+        requestFrame();
+    }
+
+    private void scheduleLiveResizeExactFrame()
+    {
+        if (!_nativeResizeActive) return;
+        if (_root !is null)
+            _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
+        _baseDirty = true;
+        _resizeRenderExactNow = true;
+        _resizeExactDirty = false;
+        _resizeExactAccumulator = 0.0;
+        requestFrame();
+    }
+
+    private bool renderResizeProxyFrame()
+    {
+        if (_resizeProxyImage is null) return false;
+        _resizeProxyDrawList.reset(_clientSize, _framebufferSize, _displayScale,
+            _theme.windowBackground);
+        auto canvas = Canvas(_resizeProxyDrawList, _clientSize.width, _clientSize.height);
+        canvas.drawImage(Rect(0, 0, _clientSize.width, _clientSize.height),
+            _resizeProxyImage, true);
+        ++_resizeProxyRevision;
+        if (_resizeProxyRevision == 0) ++_resizeProxyRevision;
+        _resizeProxyScene.reset(_resizeProxyDrawList, _resizeProxyRevision,
+            _framebufferSize);
+        return renderSceneToNative(_resizeProxyScene);
+    }
+
+    private void refreshResizeProxyFromScene()
+    {
+        if (_scene is null || _scene.base is null) return;
+        SoftwareRenderer.renderSceneInto(_scene, _resizeSnapshot);
+        auto rgba = surfaceToRgba(_resizeSnapshot);
+        if (rgba.length == 0) return;
+        if (_resizeProxyImage is null)
+            _resizeProxyImage = new RgbaImage(_resizeSnapshot.width(),
+                _resizeSnapshot.height(), rgba);
+        else
+            _resizeProxyImage.reset(_resizeSnapshot.width(),
+                _resizeSnapshot.height(), rgba);
+        _resizeProxyActive = true;
+    }
+
+    private static ubyte[] surfaceToRgba(Surface surface)
+    {
+        ubyte[] rgba;
+        if (surface is null) return rgba;
+        const count = cast(size_t) surface.width() * cast(size_t) surface.height();
+        if (count == 0) return rgba;
+        rgba.length = count * 4;
+        const pixels = surface.pixels();
+        foreach (index, pixel; pixels[0 .. count])
+        {
+            const offset = index * 4;
+            rgba[offset] = cast(ubyte) ((pixel >> 16) & 0xff);
+            rgba[offset + 1] = cast(ubyte) ((pixel >> 8) & 0xff);
+            rgba[offset + 2] = cast(ubyte) (pixel & 0xff);
+            rgba[offset + 3] = cast(ubyte) ((pixel >> 24) & 0xff);
+        }
+        return rgba;
     }
 
     private LayerCache layerCache(Widget widget)

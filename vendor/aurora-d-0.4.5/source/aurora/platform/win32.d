@@ -738,6 +738,8 @@ else version (Windows)
             {
                 case WM_ENTERSIZEMOVE:
                     _inSizeMove = true;
+                    updateClientSize();
+                    notifyResizeLifecycle(EventType.resizeStarted);
                     SetTimer(_hwnd, liveResizeTimerId, 16, null);
                     return 0;
                 case WM_EXITSIZEMOVE:
@@ -745,6 +747,7 @@ else version (Windows)
                     _inSizeMove = false;
                     updateClientSize();
                     notifyResize();
+                    notifyResizeLifecycle(EventType.resizeEnded);
                     invalidate();
                     paintNow();
                     return 0;
@@ -817,9 +820,15 @@ else version (Windows)
                     updateClientSize(cast(int) unsignedLowWord(lParam),
                         cast(int) unsignedHighWord(lParam));
                     if (!_inDpiChange)
+                    {
                         notifyResize();
-                    _needsPaint = true;
-                    if (_inSizeMove) paintNow();
+                        _needsPaint = true;
+                        paintNow();
+                    }
+                    else
+                    {
+                        _needsPaint = true;
+                    }
                     return 0;
                 case wmDpiChanged:
                 {
@@ -1020,6 +1029,14 @@ else version (Windows)
         {
             Event event;
             fillResizeEvent(event);
+            sink.onNativeEvent(event);
+        }
+
+        private void notifyResizeLifecycle(EventType type)
+        {
+            Event event;
+            fillResizeEvent(event);
+            event.type = type;
             sink.onNativeEvent(event);
         }
 

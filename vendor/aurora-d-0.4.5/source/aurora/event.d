@@ -6,7 +6,9 @@ enum EventType : ubyte
 {
     none,
     paint,
+    resizeStarted,
     resized,
+    resizeEnded,
     mouseMove,
     mouseDown,
     mouseUp,
