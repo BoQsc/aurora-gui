@@ -784,6 +784,7 @@ final class WindowsFileManagerRoot : Widget
     private enum wheelUnitsPerNotch = 3;
     private enum double autoRefreshIntervalSeconds = 1.0;
     private enum double thisPcArrowFadeSpeed = 8.0;
+    private enum double wheelSmoothScrollSpeed = 18.0;
     private enum sidebarRowHeight = 27;
     private enum headerHeight = 34;
     private enum scrollbarWidth = 12;
@@ -806,6 +807,10 @@ final class WindowsFileManagerRoot : Widget
     private int[] _visibleRowOffsets;
     private int[] _visibleRowColumns;
     private int _visibleContentHeight;
+    private bool _visibleRowOffsetsDirty = true;
+    private FileViewMode _visibleRowOffsetsViewMode = FileViewMode.details;
+    private int _visibleRowOffsetsUsableListWidth = -1;
+    private int _visibleRowOffsetsUiZoomPercent = -1;
     private NavigationItem[] _navigation;
     private string _currentPath;
     private bool _showQuickAccess;
@@ -825,6 +830,8 @@ final class WindowsFileManagerRoot : Widget
     private int _historyIndex = -1;
     private int _uiZoomPercent = defaultUiZoomPercent;
     private int _selectedVisibleIndex = -1;
+    private bool[int] _selectedVisibleRows;
+    private int _selectionAnchorVisibleIndex = -1;
     private FileViewMode _viewMode = FileViewMode.details;
     private SortColumn _sortColumn = SortColumn.name;
     private bool _sortAscending = true;
@@ -832,6 +839,10 @@ final class WindowsFileManagerRoot : Widget
     private bool _groupAscending;
     private int _scrollY;
     private int _sidebarScrollY;
+    private int _listSmoothScrollTargetY;
+    private int _sidebarSmoothScrollTargetY;
+    private bool _listSmoothScrollActive;
+    private bool _sidebarSmoothScrollActive;
     private int _listWheelPixelRemainder;
     private int _sidebarWheelPixelRemainder;
     private bool _thisPcHoverArea;
@@ -852,6 +863,10 @@ final class WindowsFileManagerRoot : Widget
     private int _sidebarScrollbarGrabScrollY;
     private bool _pendingEntryDrag;
     private bool _draggingEntry;
+    private bool _rubberBandSelecting;
+    private Point _rubberBandStart;
+    private Point _rubberBandCurrent;
+    private bool[int] _rubberBandBaseSelection;
     private int _dragSourceVisibleIndex = -1;
     private int _dropTargetVisibleIndex = -1;
     private int _dropTargetNavigationIndex = -1;
@@ -1015,6 +1030,7 @@ final class WindowsFileManagerRoot : Widget
     protected override void onTick(double deltaSeconds)
     {
         updateThisPcArrowFade(deltaSeconds);
+        updateSmoothScrolling(deltaSeconds);
         pollFolderAutoRefresh(deltaSeconds);
     }
 
@@ -1107,13 +1123,19 @@ final class WindowsFileManagerRoot : Widget
         const visibleIndex = visibleEntryIndexAt(event.position);
         if (visibleIndex >= 0)
         {
-            _selectedVisibleIndex = visibleIndex;
+            const individualSelection = event.shift() || event.control() || event.meta();
+            if (individualSelection)
+                toggleVisibleRowSelection(visibleIndex);
+            else if (visibleRowSelected(visibleIndex) && selectedVisibleCount() > 1)
+                _selectedVisibleIndex = visibleIndex;
+            else
+                selectSingleVisibleRow(visibleIndex);
             updateSelectedStatus();
-            if (event.clickCount >= 2)
+            if (event.clickCount >= 2 && !individualSelection)
             {
                 activateEntry(visibleIndex);
             }
-            else
+            else if (!individualSelection)
             {
                 beginEntryDrag(visibleIndex, event.position);
             }
@@ -1123,8 +1145,8 @@ final class WindowsFileManagerRoot : Widget
 
         if (_rowsRect.contains(event.position))
         {
-            _selectedVisibleIndex = -1;
-            updateStatus();
+            beginRubberBandSelection(event.position, event.shift() ||
+                event.control() || event.meta());
             invalidate();
             return true;
         }
@@ -1148,6 +1170,11 @@ final class WindowsFileManagerRoot : Widget
         if (_pendingEntryDrag || _draggingEntry)
         {
             updateEntryDrag(event.position);
+            return true;
+        }
+        if (_rubberBandSelecting)
+        {
+            updateRubberBandSelection(event.position);
             return true;
         }
         return false;
@@ -1190,6 +1217,12 @@ final class WindowsFileManagerRoot : Widget
             resetEntryDrag(false);
             return true;
         }
+        if (_rubberBandSelecting)
+        {
+            finishRubberBandSelection();
+            releaseMouse();
+            return true;
+        }
         return false;
     }
 
@@ -1220,7 +1253,8 @@ final class WindowsFileManagerRoot : Widget
         if (units == 0) return false;
         const pixels = wheelPixelsFromUnits(units, rowHeightPx(), _listWheelPixelRemainder);
         if (pixels != 0)
-            setListScroll(_scrollY - pixels);
+            animateListScrollTo((_listSmoothScrollActive ? _listSmoothScrollTargetY :
+                _scrollY) - pixels);
         return true;
     }
 
@@ -1231,7 +1265,8 @@ final class WindowsFileManagerRoot : Widget
         const pixels = wheelPixelsFromUnits(units, sidebarRowHeightPx(),
             _sidebarWheelPixelRemainder);
         if (pixels != 0)
-            setSidebarScroll(_sidebarScrollY - pixels);
+            animateSidebarScrollTo((_sidebarSmoothScrollActive ? _sidebarSmoothScrollTargetY :
+                _sidebarScrollY) - pixels);
         return true;
     }
 
@@ -1290,7 +1325,7 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
         if (!event.control() && !event.meta() && !event.alt() &&
-            handleListNavigationKey(event.key))
+            handleListNavigationKey(event.key, event.shift()))
             return true;
         if (event.key == Key.enter && _selectedVisibleIndex >= 0)
         {
@@ -1410,6 +1445,68 @@ final class WindowsFileManagerRoot : Widget
         _dragStart = position;
         _dragCurrent = position;
         captureMouse();
+    }
+
+    private void beginRubberBandSelection(Point position, bool additive)
+    {
+        resetEntryDrag(false);
+        _rubberBandSelecting = true;
+        _rubberBandStart = position;
+        _rubberBandCurrent = position;
+        _rubberBandBaseSelection = additive ? _selectedVisibleRows.dup : null;
+        if (!additive)
+            clearSelection();
+        updateRubberBandSelection(position);
+        captureMouse();
+    }
+
+    private void updateRubberBandSelection(Point position)
+    {
+        if (!_rubberBandSelecting) return;
+        _rubberBandCurrent = Point(
+            clampInt(position.x, _rowsRect.x, _rowsRect.right()),
+            clampInt(position.y, _rowsRect.y, _rowsRect.bottom()));
+        _selectedVisibleRows = _rubberBandBaseSelection.dup;
+
+        const selectionRect = rubberBandRect();
+        foreach (visibleIndex; cast(size_t) firstViewportVisibleRowIndex() .. _visibleRows.length)
+        {
+            const row = visibleRowRect(cast(int) visibleIndex);
+            if (row.bottom() <= _rowsRect.y) continue;
+            if (row.y >= _rowsRect.bottom()) break;
+            if (!visibleRowSelectable(cast(int) visibleIndex)) continue;
+            if (!row.intersection(selectionRect).empty())
+            {
+                _selectedVisibleRows[cast(int) visibleIndex] = true;
+                _selectedVisibleIndex = cast(int) visibleIndex;
+                if (!visibleRowSelectable(_selectionAnchorVisibleIndex))
+                    _selectionAnchorVisibleIndex = cast(int) visibleIndex;
+            }
+        }
+        if (selectedVisibleCount() == 0)
+            _selectedVisibleIndex = -1;
+        updateSelectedStatus();
+        invalidate();
+    }
+
+    private void finishRubberBandSelection()
+    {
+        _rubberBandSelecting = false;
+        _rubberBandBaseSelection = null;
+        if (selectedVisibleCount() == 0)
+            clearSelection();
+        updateSelectedStatus();
+        invalidate();
+    }
+
+    private Rect rubberBandRect() const
+    {
+        const left = minInt(_rubberBandStart.x, _rubberBandCurrent.x);
+        const top = minInt(_rubberBandStart.y, _rubberBandCurrent.y);
+        const right = maxInt(_rubberBandStart.x, _rubberBandCurrent.x);
+        const bottom = maxInt(_rubberBandStart.y, _rubberBandCurrent.y);
+        return Rect(left, top, maxInt(1, right - left), maxInt(1, bottom - top))
+            .intersection(_rowsRect);
     }
 
     private void updateEntryDrag(Point position)
@@ -1539,7 +1636,7 @@ final class WindowsFileManagerRoot : Widget
         return count;
     }
 
-    private bool handleListNavigationKey(Key key)
+    private bool handleListNavigationKey(Key key, bool extendSelection)
     {
         if (visibleItemCount() == 0) return false;
 
@@ -1583,7 +1680,7 @@ final class WindowsFileManagerRoot : Widget
         }
 
         if (target < 0) return true;
-        selectVisibleEntryByKeyboard(target);
+        selectVisibleEntryByKeyboard(target, extendSelection);
         return true;
     }
 
@@ -1671,10 +1768,18 @@ final class WindowsFileManagerRoot : Widget
         return current;
     }
 
-    private void selectVisibleEntryByKeyboard(int visibleIndex)
+    private void selectVisibleEntryByKeyboard(int visibleIndex, bool extendSelection)
     {
         if (entryIndexForVisibleRow(visibleIndex) < 0) return;
-        _selectedVisibleIndex = visibleIndex;
+        if (extendSelection)
+        {
+            const anchor = visibleRowSelectable(_selectionAnchorVisibleIndex)
+                ? _selectionAnchorVisibleIndex
+                : (_selectedVisibleIndex >= 0 ? _selectedVisibleIndex : visibleIndex);
+            selectVisibleRange(anchor, visibleIndex);
+        }
+        else
+            selectSingleVisibleRow(visibleIndex);
         ensureSelectionVisible();
         updateSelectedStatus();
         invalidate();
@@ -1700,7 +1805,7 @@ final class WindowsFileManagerRoot : Widget
     }
 
     private string dropTargetDirectoryAt(Point point, string sourcePath,
-        bool allowCurrentFolder) const
+        bool allowCurrentFolder)
     {
         const navIndex = navigationIndexAt(point);
         if (isNavigationDropTarget(navIndex, sourcePath))
@@ -1887,7 +1992,6 @@ final class WindowsFileManagerRoot : Widget
         _uiZoomPercent = next;
         applyZoomMetrics();
         updateGeometry();
-        rebuildVisibleRowOffsets();
         if (previousRow > 0)
             _scrollY = _scrollY * rowHeightPx() / previousRow;
         if (previousSidebarRow > 0)
@@ -2056,6 +2160,12 @@ final class WindowsFileManagerRoot : Widget
         return maxInt(8, scaled(quickAccessSeparatorHeight));
     }
 
+    private int maximumVisibleRowHeightPx() const @safe pure nothrow @nogc
+    {
+        return maxInt(rowHeightPx(), maxInt(groupHeaderHeightPx(),
+            quickAccessSeparatorHeightPx()));
+    }
+
     private int sidebarRowHeightPx() const @safe pure nothrow @nogc
     {
         return maxInt(23, scaled(sidebarRowHeight));
@@ -2135,7 +2245,7 @@ final class WindowsFileManagerRoot : Widget
         _copyPathRect = Rect.init;
 
         updateColumnGeometry();
-        rebuildVisibleRowOffsets();
+        ensureVisibleRowOffsets();
         _scrollY = clampInt(_scrollY, 0, maxListScroll());
         rebuildScrollbars();
     }
@@ -2351,7 +2461,7 @@ final class WindowsFileManagerRoot : Widget
             _folderEntries = entries;
             _entries = entries;
             _currentPath = path;
-            _selectedVisibleIndex = -1;
+            clearSelection();
             _scrollY = 0;
             resetFolderWatch(path);
 
@@ -2419,7 +2529,7 @@ final class WindowsFileManagerRoot : Widget
 
     private void updateSearchResults()
     {
-        _selectedVisibleIndex = -1;
+        clearSelection();
         _scrollY = 0;
         if (_showQuickAccess || _showThisPc)
             _entries = _folderEntries.dup;
@@ -2511,7 +2621,7 @@ final class WindowsFileManagerRoot : Widget
             return;
         }
 
-        _selectedVisibleIndex = match;
+        selectSingleVisibleRow(match);
         ensureSelectionVisible();
         updateLocateStatus(loweredQuery, matchCount);
         invalidate();
@@ -3021,10 +3131,22 @@ final class WindowsFileManagerRoot : Widget
         }
         rebuildVisibleRowOffsets();
         if (!hasSelection())
-            _selectedVisibleIndex = -1;
+            clearSelection();
         setListScroll(_scrollY);
         updateStatus();
         invalidate();
+    }
+
+    private void ensureVisibleRowOffsets()
+    {
+        if (!_visibleRowOffsetsDirty &&
+            _visibleRowOffsetsViewMode == _viewMode &&
+            _visibleRowOffsetsUsableListWidth == _usableListWidth &&
+            _visibleRowOffsetsUiZoomPercent == _uiZoomPercent &&
+            _visibleRowOffsets.length == _visibleRows.length &&
+            _visibleRowColumns.length == _visibleRows.length)
+            return;
+        rebuildVisibleRowOffsets();
     }
 
     private size_t quickAccessVisibleCount(bool recent, string query) const
@@ -3087,6 +3209,41 @@ final class WindowsFileManagerRoot : Widget
             const count = cast(int) (index - start);
             _visibleContentHeight += ((count + columns - 1) / columns) * height;
         }
+        _visibleRowOffsetsDirty = false;
+        _visibleRowOffsetsViewMode = _viewMode;
+        _visibleRowOffsetsUsableListWidth = _usableListWidth;
+        _visibleRowOffsetsUiZoomPercent = _uiZoomPercent;
+    }
+
+    private int firstViewportVisibleRowIndex() const
+    {
+        const rowCount = cast(int) _visibleRows.length;
+        if (rowCount <= 0 || _visibleRowOffsets.length == 0) return 0;
+
+        const threshold = maxInt(0, _scrollY - maximumVisibleRowHeightPx());
+        int low;
+        int high = rowCount;
+        while (low < high)
+        {
+            const mid = low + (high - low) / 2;
+            const offset = _visibleRowOffsets[cast(size_t) mid];
+            if (offset < threshold)
+                low = mid + 1;
+            else
+                high = mid;
+        }
+
+        if (low >= rowCount)
+            low = rowCount - 1;
+
+        // Multi-column icon/list rows share the same vertical offset. Back up
+        // to the first item in that visual row so the left columns are not
+        // skipped when a binary search lands in the middle of a grid row.
+        while (low > 0 &&
+            _visibleRowOffsets[cast(size_t) (low - 1)] ==
+            _visibleRowOffsets[cast(size_t) low])
+            --low;
+        return low;
     }
 
     private int viewColumnCount() const @safe pure nothrow @nogc
@@ -3164,7 +3321,8 @@ final class WindowsFileManagerRoot : Widget
     private void setSortColumn(SortColumn column)
     {
         if (_showQuickAccess) return;
-        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        auto selected = selectedPaths();
+        const focusedPath = hasSelection() ? selectedEntry().path : "";
         if (_groupBy == GroupBy.dateModified && column == SortColumn.modified)
         {
             _groupAscending = !_groupAscending;
@@ -3180,13 +3338,14 @@ final class WindowsFileManagerRoot : Widget
         }
         sortEntries(_entries);
         rebuildVisibleEntries();
-        if (selectedPath.length > 0)
-            selectPath(selectedPath);
+        if (selected.length > 0)
+            selectPathsIfVisible(selected, focusedPath);
     }
 
     private void setGroupBy(GroupBy groupBy)
     {
-        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        auto selected = selectedPaths();
+        const focusedPath = hasSelection() ? selectedEntry().path : "";
         _groupBy = groupBy;
         if (_groupBy == GroupBy.dateModified)
         {
@@ -3196,21 +3355,22 @@ final class WindowsFileManagerRoot : Widget
         }
         sortEntries(_entries);
         rebuildVisibleEntries();
-        if (selectedPath.length > 0)
-            selectPath(selectedPath);
+        if (selected.length > 0)
+            selectPathsIfVisible(selected, focusedPath);
     }
 
     private void setViewMode(FileViewMode mode)
     {
         if (_viewMode == mode) return;
-        const selectedPath = hasSelection() ? selectedEntry().path : "";
+        auto selected = selectedPaths();
+        const focusedPath = hasSelection() ? selectedEntry().path : "";
         _viewMode = mode;
         _listWheelPixelRemainder = 0;
         updateGeometry();
         setListScroll(_scrollY);
         updateRenameFieldBounds();
-        if (selectedPath.length > 0)
-            selectPath(selectedPath);
+        if (selected.length > 0)
+            selectPathsIfVisible(selected, focusedPath);
         else
             invalidate();
     }
@@ -3272,7 +3432,7 @@ final class WindowsFileManagerRoot : Widget
         _addressField.setText("Quick Access", false);
         _folderEntries = buildQuickAccessEntries();
         _entries = _folderEntries.dup;
-        _selectedVisibleIndex = -1;
+        clearSelection();
         _scrollY = 0;
         rebuildVisibleEntries();
         updateWindowTitle();
@@ -3294,7 +3454,7 @@ final class WindowsFileManagerRoot : Widget
         _addressField.setText("This PC", false);
         _folderEntries = buildThisPcEntries();
         _entries = _folderEntries.dup;
-        _selectedVisibleIndex = -1;
+        clearSelection();
         _scrollY = 0;
         updateSearchResults();
         updateWindowTitle();
@@ -3734,25 +3894,167 @@ final class WindowsFileManagerRoot : Widget
         requestFocus();
     }
 
+    private void clearSelection()
+    {
+        _selectedVisibleRows = null;
+        _selectedVisibleIndex = -1;
+        _selectionAnchorVisibleIndex = -1;
+    }
+
+    private bool visibleRowSelectable(int visibleIndex) const
+    {
+        return entryIndexForVisibleRow(visibleIndex) >= 0;
+    }
+
+    private bool visibleRowSelected(int visibleIndex) const
+    {
+        if (!visibleRowSelectable(visibleIndex)) return false;
+        return (visibleIndex in _selectedVisibleRows) !is null;
+    }
+
+    private int selectedVisibleCount() const
+    {
+        int count;
+        foreach (visibleIndex, selected; _selectedVisibleRows)
+            if (selected && visibleRowSelectable(visibleIndex))
+                ++count;
+        return count;
+    }
+
+    private void selectSingleVisibleRow(int visibleIndex, bool updateAnchor = true)
+    {
+        clearSelection();
+        if (!visibleRowSelectable(visibleIndex)) return;
+        _selectedVisibleRows[visibleIndex] = true;
+        _selectedVisibleIndex = visibleIndex;
+        if (updateAnchor)
+            _selectionAnchorVisibleIndex = visibleIndex;
+    }
+
+    private void toggleVisibleRowSelection(int visibleIndex)
+    {
+        if (!visibleRowSelectable(visibleIndex)) return;
+        if (visibleRowSelected(visibleIndex))
+        {
+            _selectedVisibleRows.remove(visibleIndex);
+            if (_selectedVisibleIndex == visibleIndex)
+                _selectedVisibleIndex = lastSelectedVisibleIndex();
+            if (_selectionAnchorVisibleIndex == visibleIndex)
+                _selectionAnchorVisibleIndex = _selectedVisibleIndex;
+        }
+        else
+        {
+            _selectedVisibleRows[visibleIndex] = true;
+            _selectedVisibleIndex = visibleIndex;
+            _selectionAnchorVisibleIndex = visibleIndex;
+        }
+        if (selectedVisibleCount() == 0)
+            clearSelection();
+    }
+
+    private void focusVisibleRowForContextMenu(int visibleIndex)
+    {
+        if (!visibleRowSelectable(visibleIndex)) return;
+        if (!visibleRowSelected(visibleIndex))
+            selectSingleVisibleRow(visibleIndex);
+        else
+            _selectedVisibleIndex = visibleIndex;
+        if (!visibleRowSelectable(_selectionAnchorVisibleIndex))
+            _selectionAnchorVisibleIndex = visibleIndex;
+    }
+
+    private int lastSelectedVisibleIndex() const
+    {
+        int result = -1;
+        foreach (visibleIndex, selected; _selectedVisibleRows)
+        {
+            if (!selected || !visibleRowSelectable(visibleIndex)) continue;
+            if (result < 0 || visibleIndex > result)
+                result = visibleIndex;
+        }
+        return result;
+    }
+
+    private void selectVisibleRange(int anchorVisibleIndex, int targetVisibleIndex)
+    {
+        if (!visibleRowSelectable(targetVisibleIndex)) return;
+        if (!visibleRowSelectable(anchorVisibleIndex))
+            anchorVisibleIndex = targetVisibleIndex;
+        clearSelection();
+        const low = minInt(anchorVisibleIndex, targetVisibleIndex);
+        const high = maxInt(anchorVisibleIndex, targetVisibleIndex);
+        foreach (visibleIndex; low .. high + 1)
+            if (visibleRowSelectable(visibleIndex))
+                _selectedVisibleRows[visibleIndex] = true;
+        _selectedVisibleIndex = targetVisibleIndex;
+        _selectionAnchorVisibleIndex = anchorVisibleIndex;
+    }
+
+    private string[] selectedPaths() const
+    {
+        string[] paths;
+        foreach (visibleIndex; 0 .. cast(int) _visibleRows.length)
+        {
+            if (!visibleRowSelected(visibleIndex)) continue;
+            const entryIndex = entryIndexForVisibleRow(visibleIndex);
+            if (entryIndex >= 0)
+                paths ~= _entries[cast(size_t) entryIndex].path;
+        }
+        return paths;
+    }
+
+    private ExplorerEntry[] selectedEntries() const
+    {
+        ExplorerEntry[] entries;
+        foreach (visibleIndex; 0 .. cast(int) _visibleRows.length)
+        {
+            if (!visibleRowSelected(visibleIndex)) continue;
+            const entryIndex = entryIndexForVisibleRow(visibleIndex);
+            if (entryIndex >= 0)
+                entries ~= _entries[cast(size_t) entryIndex];
+        }
+        return entries;
+    }
+
+    private bool allSelectedPathsCanModify() const
+    {
+        auto entries = selectedEntries();
+        if (entries.length == 0) return false;
+        foreach (entry; entries)
+            if (!canModifyPath(entry.path))
+                return false;
+        return true;
+    }
+
+    private bool allSelectedPathsCanClipboard() const
+    {
+        auto entries = selectedEntries();
+        if (entries.length == 0) return false;
+        foreach (entry; entries)
+            if (!canClipboardPath(entry.path))
+                return false;
+        return true;
+    }
+
     private bool hasSelection() const
     {
-        return entryIndexForVisibleRow(_selectedVisibleIndex) >= 0;
+        return selectedVisibleCount() > 0;
     }
 
     private ExplorerEntry selectedEntry() const
     {
-        if (!hasSelection()) return ExplorerEntry.init;
+        if (!visibleRowSelected(_selectedVisibleIndex)) return ExplorerEntry.init;
         return _entries[cast(size_t) entryIndexForVisibleRow(_selectedVisibleIndex)];
     }
 
     private bool canModifySelection() const
     {
-        return hasSelection() && canModifyPath(selectedEntry().path);
+        return selectedVisibleCount() == 1 && canModifyPath(selectedEntry().path);
     }
 
     private bool canClipboardSelection() const
     {
-        return hasSelection() && canClipboardPath(selectedEntry().path);
+        return allSelectedPathsCanClipboard();
     }
 
     private static bool canModifyPath(string path)
@@ -3825,6 +4127,14 @@ final class WindowsFileManagerRoot : Widget
 
     private void beginRenameSelected()
     {
+        if (selectedVisibleCount() != 1)
+        {
+            _statusText = selectedVisibleCount() == 0
+                ? "Select a file or folder to rename."
+                : "Select exactly one item to rename.";
+            invalidate();
+            return;
+        }
         if (!canModifySelection())
         {
             _statusText = "Select a file or folder to rename.";
@@ -3968,14 +4278,73 @@ final class WindowsFileManagerRoot : Widget
 
     private void deleteSelectedItem()
     {
-        if (!canModifySelection())
+        const entries = selectedEntries();
+        if (entries.length == 0)
         {
             _statusText = "Select a file or folder to delete.";
             invalidate();
             return;
         }
-        const entry = selectedEntry();
-        deletePathFromUi(entry.path, entry.name);
+        foreach (entry; entries)
+        {
+            if (!canModifyPath(entry.path))
+            {
+                _statusText = "Cannot delete one or more selected items.";
+                invalidate();
+                return;
+            }
+        }
+        if (entries.length == 1)
+        {
+            const entry = entries[0];
+            deletePathFromUi(entry.path, entry.name);
+            return;
+        }
+        deleteSelectedPathsFromUi(entries);
+    }
+
+    private void deleteSelectedPathsFromUi(const ExplorerEntry[] entries)
+    {
+        clearLocate();
+        if (_renamingActive)
+            finishRenameState();
+        resetEntryDrag(false);
+
+        int deleted;
+        foreach (entry; entries)
+        {
+            try
+            {
+                version (Windows)
+                {
+                    bool aborted;
+                    const removed = recyclePath(entry.path, aborted);
+                    if (!removed)
+                    {
+                        _statusText = aborted ? "Delete canceled." :
+                            "Cannot move " ~ entry.name ~ " to the Recycle Bin.";
+                        invalidate();
+                        return;
+                    }
+                }
+                else
+                    removePathRecursive(entry.path);
+                ++deleted;
+            }
+            catch (Exception error)
+            {
+                _statusText = "Cannot delete " ~ entry.name ~ ": " ~ error.msg;
+                invalidate();
+                return;
+            }
+        }
+
+        refreshAfterFilesystemMutation();
+        version (Windows)
+            _statusText = format("Moved %d items to the Recycle Bin.", deleted);
+        else
+            _statusText = format("Deleted %d items.", deleted);
+        invalidate();
     }
 
     private void deletePathFromUi(string path, string displayName = "")
@@ -4042,7 +4411,7 @@ final class WindowsFileManagerRoot : Widget
             invalidate();
             return;
         }
-        setItemClipboard([selectedEntry().path], false);
+        setItemClipboard(selectedPaths(), false);
     }
 
     private void cutSelectedItem()
@@ -4053,7 +4422,7 @@ final class WindowsFileManagerRoot : Widget
             invalidate();
             return;
         }
-        setItemClipboard([selectedEntry().path], true);
+        setItemClipboard(selectedPaths(), true);
     }
 
     private void copyPathToItemClipboard(string path, bool cut, string displayName = "")
@@ -4144,7 +4513,7 @@ final class WindowsFileManagerRoot : Widget
     {
         if (!_showQuickAccess && !_showThisPc && filesystemFolderExists(_currentPath))
             return _currentPath;
-        if (hasSelection())
+        if (selectedVisibleCount() == 1)
         {
             const entry = selectedEntry();
             if (entry.directory && filesystemFolderExists(entry.path))
@@ -4362,7 +4731,7 @@ final class WindowsFileManagerRoot : Widget
             if (row.entryIndex >= 0 &&
                 pathsEqual(_entries[cast(size_t) row.entryIndex].path, path))
             {
-                _selectedVisibleIndex = cast(int) visibleIndex;
+                selectSingleVisibleRow(cast(int) visibleIndex);
                 ensureSelectionVisible();
                 updateSelectedStatus();
                 invalidate();
@@ -4372,9 +4741,53 @@ final class WindowsFileManagerRoot : Widget
         return false;
     }
 
+    private bool selectPathsIfVisible(string[] paths, string focusedPath = "")
+    {
+        clearSelection();
+        if (paths.length == 0) return false;
+
+        int preferredVisibleIndex = -1;
+        foreach (visibleIndex, row; _visibleRows)
+        {
+            if (row.entryIndex < 0) continue;
+            const entry = _entries[cast(size_t) row.entryIndex];
+            bool selected;
+            foreach (path; paths)
+            {
+                if (pathsEqual(entry.path, path))
+                {
+                    selected = true;
+                    break;
+                }
+            }
+            if (!selected) continue;
+
+            const index = cast(int) visibleIndex;
+            _selectedVisibleRows[index] = true;
+            _selectedVisibleIndex = index;
+            if (preferredVisibleIndex < 0 &&
+                focusedPath.length > 0 && pathsEqual(entry.path, focusedPath))
+                preferredVisibleIndex = index;
+        }
+
+        if (selectedVisibleCount() == 0)
+        {
+            clearSelection();
+            return false;
+        }
+        if (preferredVisibleIndex >= 0)
+            _selectedVisibleIndex = preferredVisibleIndex;
+        _selectionAnchorVisibleIndex = _selectedVisibleIndex;
+        ensureSelectionVisible();
+        updateSelectedStatus();
+        invalidate();
+        return true;
+    }
+
     private void ensureSelectionVisible()
     {
         if (!hasSelection()) return;
+        ensureVisibleRowOffsets();
         const top = _visibleRowOffsets[cast(size_t) _selectedVisibleIndex];
         const bottom = top + visibleRowHeight(_selectedVisibleIndex);
         if (top < _scrollY)
@@ -4546,9 +4959,20 @@ final class WindowsFileManagerRoot : Widget
     private void copySelectedPath()
     {
         if (!hasSelection()) return;
-        const entry = selectedEntry();
-        if (writeClipboardText(entry.path))
-            _statusText = "Copied path for " ~ entry.name;
+        const paths = selectedPaths();
+        string text;
+        foreach (index, path; paths)
+        {
+            if (index > 0) text ~= "\r\n";
+            text ~= path;
+        }
+        if (writeClipboardText(text))
+        {
+            if (paths.length == 1)
+                _statusText = "Copied path for " ~ selectedEntry().name;
+            else
+                _statusText = format("Copied paths for %d items.", paths.length);
+        }
         else
             _statusText = "Clipboard is not available.";
         invalidate();
@@ -4752,7 +5176,7 @@ final class WindowsFileManagerRoot : Widget
             const clickedEntry = visibleIndex >= 0;
             if (clickedEntry)
             {
-                _selectedVisibleIndex = visibleIndex;
+                focusVisibleRowForContextMenu(visibleIndex);
                 updateSelectedStatus();
                 invalidate();
             }
@@ -4765,7 +5189,7 @@ final class WindowsFileManagerRoot : Widget
                 if (!entry.directory)
                     quickAccessItems ~= ContextMenuItem.command("Open with system", IconKind.open,
                         delegate() { openPath(entry.path); });
-                if (canClipboardPath(entry.path))
+                if (canClipboardSelection())
                 {
                     quickAccessItems ~= ContextMenuItem.separatorItem();
                     quickAccessItems ~= ContextMenuItem.command("Cut", IconKind.file,
@@ -4773,22 +5197,28 @@ final class WindowsFileManagerRoot : Widget
                     quickAccessItems ~= ContextMenuItem.command("Copy", IconKind.file,
                         delegate() { copySelectedItem(); }, "Ctrl+C");
                 }
-                if (entry.directory && canPasteIntoDirectory(entry.path))
+                if (selectedVisibleCount() == 1 && entry.directory &&
+                    canPasteIntoDirectory(entry.path))
                     quickAccessItems ~= ContextMenuItem.command("Paste into folder",
                         IconKind.file,
                         delegate() { pasteClipboardIntoDirectory(entry.path); },
                         "Ctrl+V");
-                if (canModifyPath(entry.path))
+                if (canModifySelection() || allSelectedPathsCanModify())
                 {
                     quickAccessItems ~= ContextMenuItem.separatorItem();
-                    quickAccessItems ~= ContextMenuItem.command("Rename", IconKind.file,
-                        delegate() { beginRenameSelected(); }, "F2");
-                    quickAccessItems ~= ContextMenuItem.command("Delete", IconKind.trash,
-                        delegate() { deleteSelectedItem(); }, "Delete");
+                    if (canModifySelection())
+                        quickAccessItems ~= ContextMenuItem.command("Rename", IconKind.file,
+                            delegate() { beginRenameSelected(); }, "F2");
+                    if (allSelectedPathsCanModify())
+                        quickAccessItems ~= ContextMenuItem.command("Delete", IconKind.trash,
+                            delegate() { deleteSelectedItem(); }, "Delete");
                 }
-                quickAccessItems ~= ContextMenuItem.separatorItem();
-                quickAccessItems ~= ContextMenuItem.command("Properties", IconKind.file,
-                    delegate() { showEntryProperties(entry); });
+                if (selectedVisibleCount() == 1)
+                {
+                    quickAccessItems ~= ContextMenuItem.separatorItem();
+                    quickAccessItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                        delegate() { showEntryProperties(entry); });
+                }
                 quickAccessItems ~= ContextMenuItem.command("Copy path", IconKind.file,
                     delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 quickAccessItems ~= ContextMenuItem.separatorItem();
@@ -4806,7 +5236,7 @@ final class WindowsFileManagerRoot : Widget
             const clickedEntry = visibleIndex >= 0;
             if (clickedEntry)
             {
-                _selectedVisibleIndex = visibleIndex;
+                focusVisibleRowForContextMenu(visibleIndex);
                 updateSelectedStatus();
                 invalidate();
             }
@@ -4816,7 +5246,7 @@ final class WindowsFileManagerRoot : Widget
                 auto entry = selectedEntry();
                 thisPcItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
-                if (canClipboardPath(entry.path))
+                if (canClipboardSelection())
                 {
                     thisPcItems ~= ContextMenuItem.separatorItem();
                     thisPcItems ~= ContextMenuItem.command("Cut", IconKind.file,
@@ -4824,22 +5254,28 @@ final class WindowsFileManagerRoot : Widget
                     thisPcItems ~= ContextMenuItem.command("Copy", IconKind.file,
                         delegate() { copySelectedItem(); }, "Ctrl+C");
                 }
-                if (entry.directory && canPasteIntoDirectory(entry.path))
+                if (selectedVisibleCount() == 1 && entry.directory &&
+                    canPasteIntoDirectory(entry.path))
                     thisPcItems ~= ContextMenuItem.command("Paste into folder",
                         IconKind.file,
                         delegate() { pasteClipboardIntoDirectory(entry.path); },
                         "Ctrl+V");
-                if (canModifyPath(entry.path))
+                if (canModifySelection() || allSelectedPathsCanModify())
                 {
                     thisPcItems ~= ContextMenuItem.separatorItem();
-                    thisPcItems ~= ContextMenuItem.command("Rename", IconKind.file,
-                        delegate() { beginRenameSelected(); }, "F2");
-                    thisPcItems ~= ContextMenuItem.command("Delete", IconKind.trash,
-                        delegate() { deleteSelectedItem(); }, "Delete");
+                    if (canModifySelection())
+                        thisPcItems ~= ContextMenuItem.command("Rename", IconKind.file,
+                            delegate() { beginRenameSelected(); }, "F2");
+                    if (allSelectedPathsCanModify())
+                        thisPcItems ~= ContextMenuItem.command("Delete", IconKind.trash,
+                            delegate() { deleteSelectedItem(); }, "Delete");
                 }
-                thisPcItems ~= ContextMenuItem.separatorItem();
-                thisPcItems ~= ContextMenuItem.command("Properties", IconKind.file,
-                    delegate() { showEntryProperties(entry); });
+                if (selectedVisibleCount() == 1)
+                {
+                    thisPcItems ~= ContextMenuItem.separatorItem();
+                    thisPcItems ~= ContextMenuItem.command("Properties", IconKind.file,
+                        delegate() { showEntryProperties(entry); });
+                }
                 thisPcItems ~= ContextMenuItem.command("Copy path", IconKind.file,
                     delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 thisPcItems ~= ContextMenuItem.separatorItem();
@@ -4860,7 +5296,7 @@ final class WindowsFileManagerRoot : Widget
         const clickedEntry = visibleIndex >= 0;
         if (clickedEntry)
         {
-            _selectedVisibleIndex = visibleIndex;
+            focusVisibleRowForContextMenu(visibleIndex);
             updateSelectedStatus();
             invalidate();
         }
@@ -4874,7 +5310,7 @@ final class WindowsFileManagerRoot : Widget
             if (!entry.directory)
                 items ~= ContextMenuItem.command("Open with system", IconKind.open,
                     delegate() { openPath(entry.path); });
-            if (canClipboardPath(entry.path))
+            if (canClipboardSelection())
             {
                 items ~= ContextMenuItem.separatorItem();
                 items ~= ContextMenuItem.command("Cut", IconKind.file,
@@ -4882,21 +5318,27 @@ final class WindowsFileManagerRoot : Widget
                 items ~= ContextMenuItem.command("Copy", IconKind.file,
                     delegate() { copySelectedItem(); }, "Ctrl+C");
             }
-            if (entry.directory && canPasteIntoDirectory(entry.path))
+            if (selectedVisibleCount() == 1 && entry.directory &&
+                canPasteIntoDirectory(entry.path))
                 items ~= ContextMenuItem.command("Paste into folder", IconKind.file,
                     delegate() { pasteClipboardIntoDirectory(entry.path); },
                     "Ctrl+V");
-            if (canModifyPath(entry.path))
+            if (canModifySelection() || allSelectedPathsCanModify())
             {
                 items ~= ContextMenuItem.separatorItem();
-                items ~= ContextMenuItem.command("Rename", IconKind.file,
-                    delegate() { beginRenameSelected(); }, "F2");
-                items ~= ContextMenuItem.command("Delete", IconKind.trash,
-                    delegate() { deleteSelectedItem(); }, "Delete");
+                if (canModifySelection())
+                    items ~= ContextMenuItem.command("Rename", IconKind.file,
+                        delegate() { beginRenameSelected(); }, "F2");
+                if (allSelectedPathsCanModify())
+                    items ~= ContextMenuItem.command("Delete", IconKind.trash,
+                        delegate() { deleteSelectedItem(); }, "Delete");
             }
-            items ~= ContextMenuItem.separatorItem();
-            items ~= ContextMenuItem.command("Properties", IconKind.file,
-                delegate() { showEntryProperties(entry); });
+            if (selectedVisibleCount() == 1)
+            {
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Properties", IconKind.file,
+                    delegate() { showEntryProperties(entry); });
+            }
             items ~= ContextMenuItem.command("Copy path", IconKind.file,
                 delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
             items ~= ContextMenuItem.separatorItem();
@@ -4946,6 +5388,22 @@ final class WindowsFileManagerRoot : Widget
 
     private void updateSelectedStatus()
     {
+        const selectionCount = selectedVisibleCount();
+        if (selectionCount > 1)
+        {
+            ulong totalSize;
+            bool hasKnownSize;
+            foreach (entry; selectedEntries())
+            {
+                if (entry.directory || !entry.sizeKnown) continue;
+                totalSize += entry.size;
+                hasKnownSize = true;
+            }
+            _statusText = hasKnownSize
+                ? format("%d items selected  %s", selectionCount, humanSize(totalSize))
+                : format("%d items selected", selectionCount);
+            return;
+        }
         const entryIndex = entryIndexForVisibleRow(_selectedVisibleIndex);
         if (entryIndex < 0)
         {
@@ -5038,8 +5496,9 @@ final class WindowsFileManagerRoot : Widget
             case CommandButton.copyPath:
                 return hasSelection();
             case CommandButton.renameSelected:
-            case CommandButton.deleteSelected:
                 return canModifySelection();
+            case CommandButton.deleteSelected:
+                return allSelectedPathsCanModify();
         }
     }
 
@@ -5092,14 +5551,17 @@ final class WindowsFileManagerRoot : Widget
 
     // Returns the visual row index. The visual index includes group headers;
     // it must not be confused with the underlying _entries index.
-    private int visibleEntryIndexAt(Point point) const
+    private int visibleEntryIndexAt(Point point)
     {
         if (!_rowsRect.contains(point)) return -1;
-        foreach (index; 0 .. _visibleRows.length)
+        ensureVisibleRowOffsets();
+        foreach (index; cast(size_t) firstViewportVisibleRowIndex() .. _visibleRows.length)
         {
             const visibleIndex = cast(int) index;
+            const row = visibleRowRect(visibleIndex);
+            if (row.y >= _rowsRect.bottom()) break;
             if (entryIndexForVisibleRow(visibleIndex) >= 0 &&
-                visibleRowRect(visibleIndex).contains(point))
+                row.contains(point))
                 return visibleIndex;
         }
         return -1;
@@ -5176,7 +5638,10 @@ final class WindowsFileManagerRoot : Widget
 
     private void setListScroll(int value)
     {
+        ensureVisibleRowOffsets();
         _scrollY = clampInt(value, 0, maxListScroll());
+        _listSmoothScrollTargetY = _scrollY;
+        _listSmoothScrollActive = false;
         rebuildScrollbars();
         updateRenameFieldBounds();
         invalidate();
@@ -5185,8 +5650,91 @@ final class WindowsFileManagerRoot : Widget
     private void setSidebarScroll(int value)
     {
         _sidebarScrollY = clampInt(value, 0, maxSidebarScroll());
+        _sidebarSmoothScrollTargetY = _sidebarScrollY;
+        _sidebarSmoothScrollActive = false;
         rebuildScrollbars();
         invalidate();
+    }
+
+    private void animateListScrollTo(int value)
+    {
+        ensureVisibleRowOffsets();
+        _listSmoothScrollTargetY = clampInt(value, 0, maxListScroll());
+        _listSmoothScrollActive = _listSmoothScrollTargetY != _scrollY;
+        if (!_listSmoothScrollActive)
+            _listSmoothScrollTargetY = _scrollY;
+        invalidate();
+    }
+
+    private void animateSidebarScrollTo(int value)
+    {
+        _sidebarSmoothScrollTargetY = clampInt(value, 0, maxSidebarScroll());
+        _sidebarSmoothScrollActive = _sidebarSmoothScrollTargetY != _sidebarScrollY;
+        if (!_sidebarSmoothScrollActive)
+            _sidebarSmoothScrollTargetY = _sidebarScrollY;
+        invalidate();
+    }
+
+    private void updateSmoothScrolling(double deltaSeconds)
+    {
+        bool changed;
+        if (_listSmoothScrollActive)
+        {
+            ensureVisibleRowOffsets();
+            _listSmoothScrollTargetY = clampInt(_listSmoothScrollTargetY, 0,
+                maxListScroll());
+            const next = smoothScrollStep(_scrollY, _listSmoothScrollTargetY,
+                deltaSeconds);
+            if (next != _scrollY)
+            {
+                _scrollY = next;
+                changed = true;
+            }
+            if (_scrollY == _listSmoothScrollTargetY)
+                _listSmoothScrollActive = false;
+        }
+
+        if (_sidebarSmoothScrollActive)
+        {
+            _sidebarSmoothScrollTargetY = clampInt(_sidebarSmoothScrollTargetY, 0,
+                maxSidebarScroll());
+            const next = smoothScrollStep(_sidebarScrollY, _sidebarSmoothScrollTargetY,
+                deltaSeconds);
+            if (next != _sidebarScrollY)
+            {
+                _sidebarScrollY = next;
+                changed = true;
+            }
+            if (_sidebarScrollY == _sidebarSmoothScrollTargetY)
+                _sidebarSmoothScrollActive = false;
+        }
+
+        if (changed)
+        {
+            rebuildScrollbars();
+            updateRenameFieldBounds();
+            invalidate();
+        }
+    }
+
+    private static int smoothScrollStep(int current, int target, double deltaSeconds)
+    {
+        const distance = target - current;
+        const magnitude = absInt(distance);
+        if (magnitude <= 1) return target;
+
+        double factor = deltaSeconds * wheelSmoothScrollSpeed;
+        if (factor <= 0.0)
+            factor = 1.0;
+        else if (factor > 1.0)
+            factor = 1.0;
+
+        int step = cast(int) (cast(double) distance * factor);
+        if (step == 0)
+            step = distance > 0 ? 1 : -1;
+        if (absInt(step) >= magnitude)
+            return target;
+        return current + step;
     }
 
     private int maxListScroll() const
@@ -5405,8 +5953,9 @@ final class WindowsFileManagerRoot : Widget
         }
 
         auto rows = canvas.clipped(_rowsRect);
-        foreach (visibleIndex, visibleRow; _visibleRows)
+        foreach (visibleIndex; cast(size_t) firstViewportVisibleRowIndex() .. _visibleRows.length)
         {
+            const visibleRow = _visibleRows[visibleIndex];
             const row = visibleRowRect(cast(int) visibleIndex);
             if (row.bottom() <= _rowsRect.y) continue;
             if (row.y >= _rowsRect.bottom()) break;
@@ -5433,16 +5982,27 @@ final class WindowsFileManagerRoot : Widget
                 fillEntrySelection(rows, row, explorerDropTarget);
                 rows.strokeRect(row, explorerBlue, 1);
             }
-            else if (visibleIndex == _selectedVisibleIndex)
+            else if (visibleRowSelected(cast(int) visibleIndex))
             {
                 fillEntrySelection(rows, row, explorerSelection);
-                rows.strokeRect(row, explorerSelectionBorder, 1);
+                if (visibleIndex == cast(size_t) _selectedVisibleIndex)
+                    rows.strokeRect(row, explorerSelectionBorder, 1);
             }
 
             drawEntryForCurrentView(rows, row, cast(int) visibleIndex, entry);
         }
 
+        drawRubberBandSelection(rows);
         drawScrollbar(canvas, _listScrollbarRect, _listScrollbarThumbRect);
+    }
+
+    private void drawRubberBandSelection(ref Canvas canvas)
+    {
+        if (!_rubberBandSelecting) return;
+        const rect = rubberBandRect();
+        if (rect.empty()) return;
+        canvas.fillRect(rect, Color.rgba(0, 90, 158, 38));
+        canvas.strokeRect(rect, explorerBlue, 1);
     }
 
     private void fillEntrySelection(ref Canvas canvas, Rect row, Color color)
