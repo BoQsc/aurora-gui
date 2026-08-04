@@ -115,6 +115,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private bool _frameDirty = true;
     private bool _nativeResizeActive;
     private bool _resizeProxyActive;
+    private bool _resizeProxyOneShotActive;
     private bool _resizeRenderExactNow;
     private bool _resizeExactDirty;
     private double _resizeExactAccumulator;
@@ -507,18 +508,30 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override bool onNativePaint()
     {
-        if (_nativeResizeActive && _resizeProxyActive && !_resizeRenderExactNow)
-            return renderResizeProxyFrame();
+        if ((_nativeResizeActive || _resizeProxyOneShotActive) &&
+            _resizeProxyActive && !_resizeRenderExactNow)
+        {
+            const completed = renderResizeProxyFrame();
+            if (_resizeProxyOneShotActive)
+            {
+                _resizeProxyOneShotActive = false;
+                scheduleOneShotResizeExactFrame();
+            }
+            return completed;
+        }
 
         ensureScene();
-        const exactResizeFrame = _nativeResizeActive && _resizeRenderExactNow;
+        const exactResizeFrame = _resizeRenderExactNow;
         const completed = renderSceneToNative(_scene);
         if (completed && exactResizeFrame)
         {
             _resizeRenderExactNow = false;
-            refreshResizeProxyFromScene();
+            if (_nativeResizeActive)
+                refreshResizeProxyFromScene();
+            else
+                _resizeProxyActive = false;
         }
-        if (!completed && _nativeResizeActive && _resizeProxyActive)
+        if (!completed && _resizeProxyActive)
         {
             _resizeRenderExactNow = false;
             return renderResizeProxyFrame();
@@ -672,17 +685,27 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _displayScale == previousScale)
             return;
 
-        if (_renderer !is null && _framebufferSize != previousFramebufferSize)
-            _renderer.resize(_framebufferSize);
         if (_nativeResizeActive)
         {
             _resizeExactDirty = true;
+            _resizeExactAccumulator = 0.0;
             if (_resizeProxyActive)
                 requestFrame();
             else
                 scheduleLiveResizeExactFrame();
             return;
         }
+        refreshResizeProxyFromScene();
+        if (_resizeProxyActive)
+        {
+            _resizeProxyOneShotActive = true;
+            _resizeRenderExactNow = false;
+            _resizeExactDirty = false;
+            requestFrame();
+            return;
+        }
+        if (_renderer !is null && _framebufferSize != previousFramebufferSize)
+            _renderer.resize(_framebufferSize);
         if (_root !is null && _clientSize != previousClientSize)
             _root.setBounds(Rect(0, 0, width, height));
 
@@ -699,6 +722,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         ensureScene();
         refreshResizeProxyFromScene();
         _nativeResizeActive = true;
+        _resizeProxyOneShotActive = false;
         _resizeRenderExactNow = false;
         _resizeExactDirty = false;
         _resizeExactAccumulator = 0.0;
@@ -710,6 +734,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         const needsExactFrame = _resizeExactDirty || _resizeRenderExactNow;
         _nativeResizeActive = false;
         _resizeProxyActive = false;
+        _resizeProxyOneShotActive = false;
         _resizeRenderExactNow = false;
         _resizeExactDirty = false;
         _resizeExactAccumulator = 0.0;
@@ -717,6 +742,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_root !is null)
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
         _baseDirty = true;
+        if (_renderer !is null)
+            _renderer.resize(_framebufferSize);
         requestFrame();
     }
 
@@ -726,6 +753,21 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_root !is null)
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
         _baseDirty = true;
+        if (_renderer !is null)
+            _renderer.resize(_framebufferSize);
+        _resizeRenderExactNow = true;
+        _resizeExactDirty = false;
+        _resizeExactAccumulator = 0.0;
+        requestFrame();
+    }
+
+    private void scheduleOneShotResizeExactFrame()
+    {
+        if (_root !is null)
+            _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
+        _baseDirty = true;
+        if (_renderer !is null)
+            _renderer.resize(_framebufferSize);
         _resizeRenderExactNow = true;
         _resizeExactDirty = false;
         _resizeExactAccumulator = 0.0;
@@ -734,7 +776,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private bool renderResizeProxyFrame()
     {
-        if (_resizeProxyImage is null) return false;
+        if (presentNativeResizeProxyFrame())
+            return true;
+        if (!ensureResizeProxyImage())
+            return false;
+        if (_renderer !is null)
+            _renderer.resize(_framebufferSize);
         _resizeProxyDrawList.reset(_clientSize, _framebufferSize, _displayScale,
             _theme.windowBackground);
         auto canvas = Canvas(_resizeProxyDrawList, _clientSize.width, _clientSize.height);
@@ -751,15 +798,37 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         if (_scene is null || _scene.base is null) return;
         SoftwareRenderer.renderSceneInto(_scene, _resizeSnapshot);
+        _resizeProxyActive = _resizeSnapshot !is null &&
+            _resizeSnapshot.width() > 0 && _resizeSnapshot.height() > 0;
+        if (_resizeProxyActive && _resizeProxyImage !is null)
+            ensureResizeProxyImage();
+    }
+
+    private bool presentNativeResizeProxyFrame()
+    {
+        if (_native is null || _resizeSnapshot is null ||
+            _resizeSnapshot.width() <= 0 || _resizeSnapshot.height() <= 0 ||
+            _framebufferSize.width <= 0 || _framebufferSize.height <= 0)
+            return false;
+        return _native.presentScaledResizeFrame(_resizeSnapshot.pixels(),
+            _resizeSnapshot.width(), _resizeSnapshot.height(),
+            _framebufferSize.width, _framebufferSize.height);
+    }
+
+    private bool ensureResizeProxyImage()
+    {
+        if (_resizeSnapshot is null ||
+            _resizeSnapshot.width() <= 0 || _resizeSnapshot.height() <= 0)
+            return false;
         auto rgba = surfaceToRgba(_resizeSnapshot);
-        if (rgba.length == 0) return;
+        if (rgba.length == 0) return false;
         if (_resizeProxyImage is null)
             _resizeProxyImage = new RgbaImage(_resizeSnapshot.width(),
                 _resizeSnapshot.height(), rgba);
         else
             _resizeProxyImage.reset(_resizeSnapshot.width(),
                 _resizeSnapshot.height(), rgba);
-        _resizeProxyActive = true;
+        return true;
     }
 
     private static ubyte[] surfaceToRgba(Surface surface)

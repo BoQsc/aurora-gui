@@ -51,6 +51,8 @@ else version (Windows)
     private enum int wheelUnitDelta = wheelDelta / 3;
     private enum uint defaultDpi = 96;
     private enum int processPerMonitorDpiAware = 2;
+    private enum int auroraColorOnColor = 3;
+    private enum DWORD auroraSrcCopy = 0x00CC0020;
 
     private alias SetProcessDpiAwarenessContextFn =
         extern(Windows) BOOL function(HANDLE value) nothrow;
@@ -528,6 +530,48 @@ else version (Windows)
                 &info,
                 DIB_RGB_COLORS);
             ReleaseDC(_hwnd, dc);
+        }
+
+        override bool presentScaledResizeFrame(const(uint)[] pixels, int sourceWidth,
+            int sourceHeight, int targetWidth, int targetHeight)
+        {
+            if (_closed || _hwnd is null || pixels.length == 0 ||
+                sourceWidth <= 0 || sourceHeight <= 0 ||
+                targetWidth <= 0 || targetHeight <= 0)
+                return false;
+
+            const requiredPixels = cast(size_t) sourceWidth * cast(size_t) sourceHeight;
+            if (pixels.length < requiredPixels)
+                return false;
+
+            HDC dc = GetDC(_hwnd);
+            if (dc is null) return false;
+            scope(exit) ReleaseDC(_hwnd, dc);
+
+            BITMAPINFO info;
+            info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+            info.bmiHeader.biWidth = sourceWidth;
+            info.bmiHeader.biHeight = -sourceHeight;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+
+            SetStretchBltMode(dc, auroraColorOnColor);
+            const result = StretchDIBits(
+                dc,
+                0,
+                0,
+                targetWidth,
+                targetHeight,
+                0,
+                0,
+                sourceWidth,
+                sourceHeight,
+                cast(const(void)*) pixels.ptr,
+                &info,
+                DIB_RGB_COLORS,
+                auroraSrcCopy);
+            return result != 0;
         }
 
         override void setTitle(string title)

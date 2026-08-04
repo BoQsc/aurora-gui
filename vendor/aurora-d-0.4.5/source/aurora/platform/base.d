@@ -76,6 +76,16 @@ abstract class NativeWindow
     abstract int run();
     abstract void invalidate();
     abstract void present(const(uint)[] pixels, int width, int height);
+    /**
+     * Present a cached framebuffer scaled to the current native framebuffer.
+     * Backends can override this to bypass expensive GPU resize paths during
+     * live native resizing. Returning false falls back to the normal renderer.
+     */
+    bool presentScaledResizeFrame(const(uint)[] pixels, int sourceWidth,
+        int sourceHeight, int targetWidth, int targetHeight)
+    {
+        return false;
+    }
     abstract void setTitle(string title);
     abstract void setCursor(CursorKind cursor);
     /** Hide/show the host cursor; false means the backend cannot guarantee it. */
