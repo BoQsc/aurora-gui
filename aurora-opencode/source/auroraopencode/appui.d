@@ -544,10 +544,6 @@ public final class OpenCodeRoot : VBox
 
         _messageColumn = new VBox(6, Insets(12));
         _messageColumn.setId("oc-messages");
-        // Keep the whole conversation in a single retained layer: scrolling the
-        // message list then moves a cached layer (transform-only) instead of
-        // re-shaping and re-drawing every message bubble each frame.
-        _messageColumn.setComposited(true);
         _messagesScroll = new ChatScrollView(_messageColumn);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
