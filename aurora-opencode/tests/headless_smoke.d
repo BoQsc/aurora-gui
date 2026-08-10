@@ -8,6 +8,7 @@ import core.time : msecs, MonoTime, seconds;
 import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;
 import std.path : buildPath;
 import std.stdio : writeln;
+import std.conv : to;
 import std.utf : toUTF8;
 
 private Widget findById(Widget root, string requestedId)
@@ -141,6 +142,47 @@ int main(string[] args)
     // Dismiss it.
     popup.dismiss();
     root.tickTree(0.02);
+
+    // Scrollbar: a long conversation overflows the chat area; auto-follow pins
+    // the view to the bottom, and dragging the scrollbar must let the user
+    // scroll up without being snapped back down.
+    {
+        string[] roles;
+        string[] contents;
+        foreach (index; 0 .. 40)
+        {
+            roles ~= index % 2 == 0 ? "user" : "assistant";
+            contents ~= "Message number " ~ to!string(index);
+        }
+        root.addConversationForTesting(roles, contents);
+        assert(driver.paint(), "Long conversation did not paint");
+        auto scrollWidget = requireWidget!ScrollView(root, "oc-scroll");
+        assert(scrollWidget.maxScroll() > 0,
+            "Long conversation did not overflow the chat area");
+        assert(scrollWidget.scrollY() == scrollWidget.maxScroll(),
+            "Auto-follow did not pin the view to the bottom");
+        writeln("Auto-follow at bottom: ", scrollWidget.scrollY(), "/",
+            scrollWidget.maxScroll());
+
+        // Drag the scrollbar thumb from near the bottom to near the top.
+        const origin = scrollWidget.localToGlobal(Point(0, 0));
+        const scrollbarX = origin.x + scrollWidget.bounds().width - 12;
+        const from = Point(scrollbarX, origin.y + scrollWidget.bounds().height - 12);
+        const to = Point(scrollbarX, origin.y + 12);
+        driver.drag(from, to, 8);
+        root.tickTree(0.02);
+        assert(driver.paint(), "Scrollbar drag did not repaint");
+        writeln("Scroll after drag: ", scrollWidget.scrollY(), "/",
+            scrollWidget.maxScroll());
+        assert(scrollWidget.scrollY() < scrollWidget.maxScroll() - 20,
+            "Scrollbar drag could not scroll away from the bottom");
+
+        // The next layout pass must not snap back to the bottom.
+        assert(driver.paint(), "Post-drag layout paint failed");
+        assert(scrollWidget.scrollY() < scrollWidget.maxScroll() - 20,
+            "Auto-follow snapped the scrollbar back after the user scrolled up");
+        writeln("Scroll position persisted after layout");
+    }
 
     // Sessions persisted.
     const sessionsPath = buildPath(stateDir, "sessions.json");

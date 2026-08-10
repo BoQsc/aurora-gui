@@ -375,11 +375,14 @@ private final class ChatScrollView : ScrollView
         if (follow) setScrollY(maxScroll());
     }
 
-    override bool onMouseWheel(ref Event event)
+    override void setScrollY(int value)
     {
-        const result = super.onMouseWheel(event);
+        super.setScrollY(value);
+        // Any user scroll (thumb drag, track click, wheel, keys) moves away
+        // from the auto-follow position. Re-engage follow only once the view
+        // is back at the bottom; otherwise onLayout keeps snapping the
+        // scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
-        return result;
     }
 }
 
@@ -478,6 +481,7 @@ public final class OpenCodeRoot : VBox
         _messageColumn = new VBox(6, Insets(12));
         _messageColumn.setId("oc-messages");
         _messagesScroll = new ChatScrollView(_messageColumn);
+        _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
         auto inputRow = new HBox(8, Insets(12, 8));
@@ -1030,6 +1034,23 @@ public final class OpenCodeRoot : VBox
     public size_t sessionCountForTesting() const
     {
         return _sessions.length;
+    }
+
+    /// Test-only: append a conversation (parallel role/content arrays) without
+    /// network activity, then rebuild the message column.
+    public void addConversationForTesting(const(string)[] roles,
+        const(string)[] contents)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        foreach (index; 0 .. roles.length)
+        {
+            ChatMessage message;
+            message.role = roles[index];
+            message.content = contents[index];
+            session.messages ~= message;
+        }
+        rebuildMessageColumn();
     }
 }
 
