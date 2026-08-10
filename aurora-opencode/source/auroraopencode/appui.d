@@ -269,7 +269,13 @@ private final class MessageBubble : Widget
         if (_failed)
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
-        return Size(minInt(measuredWidth, available.width), height);
+        const result = Size(minInt(measuredWidth, available.width), height);
+        // VBox layout sizes children from layoutHints, not from the intrinsic
+        // measure result, so publish the computed size back into the hints or
+        // the bubble is laid out with zero height and never becomes visible.
+        layoutHints().preferredWidth = result.width;
+        layoutHints().preferredHeight = result.height;
+        return result;
     }
 
     private Size measureText(const(dchar)[] text, int width,

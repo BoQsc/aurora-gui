@@ -4,6 +4,8 @@ import aurora;
 import auroraopencode.appui : OpenCodeRoot, opencodeTheme;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
+import std.conv : to;
+import std.stdio : writeln;
 import std.utf : toUTF32;
 
 private int runScreenshot(string path, bool withChat, string message)
@@ -24,9 +26,7 @@ private int runScreenshot(string path, bool withChat, string message)
 
     if (withChat && message.length > 0)
     {
-        Widget inputWidget;
-        foreach (child; root.children())
-            inputWidget = findById(child, "oc-input");
+        auto inputWidget = findById(root, "oc-input");
         if (inputWidget !is null)
         {
             auto input = cast(TextArea) inputWidget;
@@ -34,31 +34,49 @@ private int runScreenshot(string path, bool withChat, string message)
             root.tickTree(0.02);
             driver.text(toUTF32(message));
             root.tickTree(0.02);
+            writeln("typed: ", input.textUtf8());
             driver.pressKey(Key.enter);
         }
+        root.tickTree(0.02);
+        printDiagnostics(root, "after send");
         const deadline = MonoTime.currTime + seconds(120);
         while (MonoTime.currTime < deadline)
         {
             root.tickTree(0.03);
             Thread.sleep(30.msecs);
             driver.paint();
-            bool send = true;
-            foreach (child; root.children())
+            auto sendWidget = findById(root, "oc-send");
+            if (sendWidget !is null)
             {
-                if (child.id() == "oc-send")
-                {
-                    auto button = cast(Button) child;
-                    send = button.text() == "Send";
-                }
+                auto button = cast(Button) sendWidget;
+                if (button.text() == "Send") break;
             }
-            if (send) break;
         }
+        printDiagnostics(root, "after done");
     }
 
     driver.paint();
     window.saveScreenshot(path);
     window.close();
     return 0;
+}
+
+private void printDiagnostics(OpenCodeRoot root, string stage)
+{
+    import std.stdio : writeln;
+    auto statusLabel = cast(Label) findById(root, "oc-status");
+    auto messagesVBox = cast(VBox) findById(root, "oc-messages");
+    writeln("[", stage, "] status: ",
+        statusLabel is null ? "?" : statusLabel.text());
+    writeln("[", stage, "] bubbles: ",
+        messagesVBox is null ? "?" : to!string(messagesVBox.children().length));
+    if (messagesVBox !is null)
+    {
+        foreach (child; messagesVBox.children())
+            writeln("[", stage, "] bubble bounds: ", child.bounds());
+    }
+    writeln("[", stage, "] last assistant content: ",
+        root.lastAssistantContentForTesting());
 }
 
 private Widget findById(Widget widget, string requestedId)

@@ -113,6 +113,20 @@ int main(string[] args)
     writeln("Final bubble count: ", finalBubbles);
     assert(finalBubbles >= 2, "Assistant bubble missing after reply");
 
+    // Layout (and therefore bounds) is applied during paint.
+    assert(driver.paint(), "Final paint failed");
+    root.tickTree(0.02);
+
+    // Bubbles must be laid out with real size, otherwise text is invisible.
+    foreach (child; messages.children())
+    {
+        assert(child.bounds().height > 0,
+            "A message bubble has zero height and is not visible");
+        assert(child.bounds().width > 0,
+            "A message bubble has zero width and is not visible");
+    }
+    writeln("All bubbles have non-zero layout size");
+
     const lastContent = root.lastAssistantContentForTesting();
     writeln("Last assistant content length: ", lastContent.length);
     assert(lastContent.length > 0, "Assistant reply was empty");
