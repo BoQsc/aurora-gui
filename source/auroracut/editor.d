@@ -3003,7 +3003,7 @@ final class EditorRoot : VBox
         {
             any = true;
             latest = progress.fraction;
-            label = "Download " ~ progress.percentText;
+            label = progress.label;
         }
         if (any)
         {

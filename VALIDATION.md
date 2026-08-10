@@ -160,6 +160,7 @@ no D compiler is installed and package-network access is unavailable.
 
 - The download service previously ran yt-dlp with --no-progress and only surfaced a final result, so the UI never showed progress.
 - Removed --no-progress (keeping --newline) and parse each '[download] NN%' stdout line in the worker, pushing YtDlpDownloadProgress samples through a mutex-guarded queue.
-- The editor drains the progress queue each tick and updates the shared status-bar ProgressBar with 'Download NN%'; it returns the bar to Idle once the queue drains (unless an export job is using it).
-- Verified with a real download: 11 monotonic progress samples reaching 100.0%, then a successful normalized MP4 import. Added tests/ytdlp_progress_smoke.d for this.
+- The editor drains the progress queue each tick and updates the shared status-bar ProgressBar with the phase label; it returns the bar to Idle once the queue drains (unless an export job is using it).
+- The bar is phase-accurate so it never sits at a false 100% for minutes: `[download] NN%` drives the download phase, a "Processing…" state covers yt-dlp post-processing (merge/extract), and the app's FFmpeg normalization runs with `-progress` and reports "Normalizing NN%" against the probed source duration.
+- Verified with a real video download: 11 monotonic download samples to 100%, a Processing state, then 5 monotonic Normalizing samples to 100%, and a successful normalized MP4 import. Added `tests/ytdlp_progress_smoke.d` for this.
 - DMD/DUB native Windows build succeeds; the pre-existing editor-smoke compression assertion failure at line 432 is unrelated and reproduces on the clean base commit.

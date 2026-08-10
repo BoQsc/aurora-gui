@@ -29,7 +29,7 @@ Aurora Cut 0.13.5
 - Older projects containing only an Out marker are normalized to the same visible start-to-Out range when opened.
 - Added an editor regression requiring Out-first marking to create both markers and preserve the requested Out time.
 - yt-dlp video downloads now keep the source resolution instead of being padded onto the selected ceiling canvas (for example 1920×1080). A 640×360 download stays 640×360; only sources larger than the chosen ceiling are downscaled to fit. Updated the normalization smoke test to forbid upscaling and letterboxing.
-- yt-dlp downloads now show a live progress bar in the status bar (percentage read from yt-dlp's `[download]` progress lines) instead of only reporting after completion.
+- yt-dlp downloads now show a live progress bar in the status bar. The bar is phase-accurate: "Download NN%" from yt-dlp's progress lines, "Processing…" while yt-dlp merges/extracts, then "Normalizing NN%" for the FFmpeg re-encode, so it no longer sits at 100% for minutes after the download itself finishes.
 
 Aurora Cut 0.13.4
 

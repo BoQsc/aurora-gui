@@ -112,8 +112,8 @@ struct YtDlpDownloadResult
 struct YtDlpDownloadProgress
 {
     string url;
-    double fraction;   /// 0.0 .. 1.0
-    string percentText; /// e.g. "45.6%"
+    double fraction;    /// 0.0 .. 1.0
+    string label;       /// e.g. "Download 45.6%", "Processing…", "Normalizing 12%"
 }
 
 struct YtDlpDownloadStats
@@ -533,16 +533,103 @@ private void runCaptured(string[] arguments, string description)
             outputTail(result.output, 16 * 1024)));
 }
 
+private void probeDurationSeconds(string path, out double seconds)
+{
+    seconds = 0.0;
+    try
+    {
+        const result = execute([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "csv=p=0", path
+        ], null, Config.suppressConsole, 1024 * 1024);
+        if (result.status == 0)
+        {
+            const text = result.output.strip();
+            if (text.length > 0) seconds = to!double(text);
+        }
+    }
+    catch (Exception) {}
+}
+
+/**
+ * Run the normalization FFmpeg encode while streaming its `-progress`
+ * output, reporting "Normalizing NN%" against the source duration so the
+ * long re-encode phase never sits at a false 100%.
+ */
+private void runNormalizeCaptured(string[] baseArguments, string description,
+    double durationSeconds, void delegate(double fraction, string label) onProgress)
+{
+    // ffmpeg -hide_banner -loglevel error -nostdin -y  then progress options.
+    string[] arguments;
+    arguments ~= baseArguments[0 .. 6];
+    arguments ~= ["-progress", "pipe:1", "-nostats"];
+    arguments ~= baseArguments[6 .. $];
+
+    auto pipes = pipeProcess(arguments, Redirect.stdout | Redirect.stderrToStdout,
+        cast(const string[string]) null, Config.suppressConsole);
+    string output;
+    int lastPercent = -1;
+    try
+    {
+        foreach (rawLine; pipes.stdout.byLine())
+        {
+            const line = cast(string) rawLine;
+            output ~= line;
+            output ~= "\n";
+            if (output.length > 4 * 1024 * 1024)
+                output = outputTail(output, 512 * 1024);
+
+            if (durationSeconds > 0 && onProgress !is null &&
+                (startsWith(line, "out_time_us=") || startsWith(line, "out_time_ms=")))
+            {
+                const equals = indexOf(line, '=');
+                if (equals >= 0)
+                {
+                    long micros;
+                    try micros = to!long(line[cast(size_t) equals + 1 .. $].strip());
+                    catch (Exception) micros = 0;
+                    double fraction = micros / (durationSeconds * 1_000_000.0);
+                    if (fraction < 0.0) fraction = 0.0;
+                    else if (fraction > 1.0) fraction = 1.0;
+                    const percent = cast(int) (fraction * 100.0 + 0.5);
+                    if (percent != lastPercent)
+                    {
+                        lastPercent = percent;
+                        onProgress(fraction, format("Normalizing %d%%", percent));
+                    }
+                }
+            }
+        }
+    }
+    catch (Exception) {}
+
+    int status;
+    try status = wait(pipes.pid);
+    catch (Exception error)
+    {
+        throw new Exception(description ~ " could not wait: " ~ error.msg);
+    }
+    if (status != 0)
+        throw new Exception(format("%s failed with exit code %d.%s%s",
+            description, status, output.length > 0 ? "\n" : "",
+            outputTail(output, 16 * 1024)));
+    if (onProgress !is null && durationSeconds > 0)
+        onProgress(1.0, "Normalizing 100%");
+}
+
 private string normalizeDownloadedVideo(string sourcePath, string directory,
-    string prefix, int maxHeight)
+    string prefix, int maxHeight,
+    void delegate(double fraction, string label) onProgress = null)
 {
     const target = buildPath(directory, prefix ~ ".normalized.mp4");
     const temporary = target ~ ".partial.mp4";
     if (exists(temporary)) remove(temporary);
     if (exists(target)) remove(target);
 
-    runCaptured(ytDlpNormalizedVideoArguments(sourcePath, temporary, maxHeight),
-        "Normalize yt-dlp video");
+    double durationSeconds;
+    probeDurationSeconds(sourcePath, durationSeconds);
+    runNormalizeCaptured(ytDlpNormalizedVideoArguments(sourcePath, temporary,
+        maxHeight), "Normalize yt-dlp video", durationSeconds, onProgress);
     if (!exists(temporary))
         throw new Exception("FFmpeg finished but did not create the normalized MP4.");
     rename(temporary, target);
@@ -740,8 +827,22 @@ final class YtDlpDownloadService
             }
 
             string output;
+            size_t downloadedFiles;
+            size_t completedFiles;
+            bool downloadPhaseDone;
             try
             {
+                void pushProgress(string label, double fraction)
+                {
+                    YtDlpDownloadProgress progress;
+                    progress.url = request.url;
+                    progress.fraction = fraction;
+                    progress.label = label;
+                    _mutex.lock();
+                    if (!_shutdown) _progressQueue ~= progress;
+                    _mutex.unlock();
+                }
+
                 foreach (rawLine; pipes.stdout.byLine())
                 {
                     const line = cast(string) rawLine;
@@ -750,17 +851,26 @@ final class YtDlpDownloadService
                     if (output.length > 4 * 1024 * 1024)
                         output = outputTail(output, 512 * 1024);
 
+                    if (startsWith(line, "[download] Destination:"))
+                        ++downloadedFiles;
+
                     double fraction;
                     if (parseDownloadPercent(line, fraction))
                     {
-                        YtDlpDownloadProgress progress;
-                        progress.url = request.url;
-                        progress.fraction = fraction;
-                        progress.percentText = format("%.1f%%",
-                            fraction * 100.0);
-                        _mutex.lock();
-                        if (!_shutdown) _progressQueue ~= progress;
-                        _mutex.unlock();
+                        pushProgress(
+                            format("Download %.1f%%", fraction * 100.0),
+                            fraction);
+                        if (fraction >= 1.0) ++completedFiles;
+                    }
+
+                    // With --no-playlist each selected format produces its own
+                    // [download] run; only after every file reaches 100% is the
+                    // yt-dlp download phase over and post-processing begins.
+                    if (downloadedFiles > 0 && completedFiles >= downloadedFiles &&
+                        !downloadPhaseDone)
+                    {
+                        downloadPhaseDone = true;
+                        pushProgress("Processing…", 1.0);
                     }
                 }
             }
@@ -792,8 +902,20 @@ final class YtDlpDownloadService
             if (result.path.length == 0)
                 throw new Exception("yt-dlp finished but did not produce an Aurora-supported media file.");
             if (request.kind == YtDlpDownloadKind.video)
+            {
                 result.path = normalizeDownloadedVideo(result.path, directory,
-                    prefix, request.maxHeight);
+                    prefix, request.maxHeight,
+                    delegate(double fraction, string label)
+                    {
+                        YtDlpDownloadProgress progress;
+                        progress.url = request.url;
+                        progress.fraction = fraction;
+                        progress.label = label;
+                        _mutex.lock();
+                        if (!_shutdown) _progressQueue ~= progress;
+                        _mutex.unlock();
+                    });
+            }
         }
         catch (Exception error)
         {
