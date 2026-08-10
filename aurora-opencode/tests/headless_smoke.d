@@ -152,7 +152,8 @@ int main(string[] args)
         foreach (index; 0 .. 40)
         {
             roles ~= index % 2 == 0 ? "user" : "assistant";
-            contents ~= "Message number " ~ to!string(index);
+            contents ~= "Message number " ~ to!string(index) ~
+                " with enough text to wrap across a couple of lines.";
         }
         root.addConversationForTesting(roles, contents);
         assert(driver.paint(), "Long conversation did not paint");
@@ -164,7 +165,9 @@ int main(string[] args)
         writeln("Auto-follow at bottom: ", scrollWidget.scrollY(), "/",
             scrollWidget.maxScroll());
 
-        // Drag the scrollbar thumb from near the bottom to near the top.
+        // Dragging the scrollbar must not re-shape every message: the bubble
+        // layout cache should keep the shape count flat across scroll frames.
+        const shapesBeforeScroll = root.bubbleShapeCountForTesting();
         const origin = scrollWidget.localToGlobal(Point(0, 0));
         const scrollbarX = origin.x + scrollWidget.bounds().width - 12;
         const from = Point(scrollbarX, origin.y + scrollWidget.bounds().height - 12);
@@ -182,6 +185,12 @@ int main(string[] args)
         assert(scrollWidget.scrollY() < scrollWidget.maxScroll() - 20,
             "Auto-follow snapped the scrollbar back after the user scrolled up");
         writeln("Scroll position persisted after layout");
+
+        const shapesAfterScroll = root.bubbleShapeCountForTesting();
+        writeln("Text shapes before scroll: ", shapesBeforeScroll,
+            ", after scroll: ", shapesAfterScroll);
+        assert(shapesAfterScroll <= shapesBeforeScroll + 8,
+            "Scrolling re-shapes message text (layout cache ineffective)");
     }
 
     // Sessions persisted.

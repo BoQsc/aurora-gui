@@ -211,6 +211,26 @@ private final class MessageBubble : Widget
     private bool _failed;
     private string _error;
 
+    // Shaped text is expensive and wrapped layouts are never cached by the
+    // text engine, so each bubble caches its own layout and reuses it across
+    // measures and repaints. The ScrollView measures its content twice per
+    // layout (once with and once without the scrollbar width), so a single
+    // slot would thrash and re-shape every frame while dragging; a small
+    // width-keyed set covers both measure widths.
+    private static immutable int shapeCacheSize = 3;
+    private int[shapeCacheSize] _contentWidths;
+    private TextLayout[shapeCacheSize] _contentLayouts;
+    private size_t[shapeCacheSize] _contentShapedGen;
+    private size_t _contentCacheCount;
+    private size_t _contentGen = 1;
+    private TextLayout _thinkingLayout;
+    private int _thinkingLayoutWidth = -1;
+    private size_t _thinkingShapedGen;
+    private size_t _thinkingGen = 1;
+
+    /// Diagnostic: total number of text shapes performed by all bubbles.
+    static __gshared size_t shapeCount;
+
     void setRole(string role)
     {
         _role = role;
@@ -220,24 +240,30 @@ private final class MessageBubble : Widget
     void setThinking(string value)
     {
         _thinking = toUTF32(value);
+        ++_thinkingGen;
         invalidate();
     }
 
     void setContent(string value)
     {
         _content = toUTF32(value);
+        ++_contentGen;
+        _contentCacheCount = 0;
         invalidate();
     }
 
     void appendThinking(string chunk)
     {
         _thinking ~= toUTF32(chunk);
+        ++_thinkingGen;
         invalidate();
     }
 
     void appendContent(string chunk)
     {
         _content ~= toUTF32(chunk);
+        ++_contentGen;
+        _contentCacheCount = 0;
         invalidate();
     }
 
@@ -250,20 +276,75 @@ private final class MessageBubble : Widget
 
     void setStreaming(bool value)
     {
+        if (_streaming == value) return;
         _streaming = value;
+        ++_contentGen;
+        _contentCacheCount = 0;
         invalidate();
+    }
+
+    private TextLayout shapedThinking(int width)
+    {
+        if (_thinkingLayout !is null && _thinkingLayoutWidth == width &&
+            _thinkingShapedGen == _thinkingGen)
+            return _thinkingLayout;
+        _thinkingLayout = shape(_thinking, width);
+        _thinkingLayoutWidth = width;
+        _thinkingShapedGen = _thinkingGen;
+        return _thinkingLayout;
+    }
+
+    private TextLayout shapedContent(int width)
+    {
+        foreach (index; 0 .. _contentCacheCount)
+        {
+            if (_contentShapedGen[index] == _contentGen &&
+                _contentWidths[index] == width)
+                return _contentLayouts[index];
+        }
+
+        dstring display = _content;
+        if (_streaming) display ~= "▌"d;
+        auto layout = shape(display, width);
+
+        if (_contentCacheCount == shapeCacheSize)
+        {
+            for (size_t shift = 1; shift < shapeCacheSize; ++shift)
+            {
+                _contentWidths[shift - 1] = _contentWidths[shift];
+                _contentLayouts[shift - 1] = _contentLayouts[shift];
+                _contentShapedGen[shift - 1] = _contentShapedGen[shift];
+            }
+            --_contentCacheCount;
+        }
+        _contentWidths[_contentCacheCount] = width;
+        _contentLayouts[_contentCacheCount] = layout;
+        _contentShapedGen[_contentCacheCount] = _contentGen;
+        ++_contentCacheCount;
+        return layout;
+    }
+
+    private TextLayout shape(const(dchar)[] text, int width)
+    {
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast(FontFace) theme().uiFont;
+        options.pixelSize = fontPixelSize(2);
+        options.maxWidth = maxInt(1, width);
+        options.wrap = true;
+        ++shapeCount;
+        return fontSystem().textEngine.layout(text, options);
     }
 
     protected override Size onMeasure(Size available)
     {
         const innerWidth = maxInt(24, available.width - 2 * padH);
-        const face = cast(FontFace) theme().uiFont;
         const pixelSize = fontPixelSize(2);
         int height = 2 * padV;
         if (_thinking.length > 0)
-            height += measureText(_thinking, innerWidth, face, pixelSize).height + gap;
+            height += shapedThinking(innerWidth).measuredSize().height + gap;
         if (_content.length > 0)
-            height += measureText(_content, innerWidth, face, pixelSize).height;
+            height += shapedContent(innerWidth).measuredSize().height;
         else if (_streaming)
             height += pixelSize + 2;
         if (_failed)
@@ -278,18 +359,6 @@ private final class MessageBubble : Widget
         return result;
     }
 
-    private Size measureText(const(dchar)[] text, int width,
-        const(FontFace) face, int pixelSize)
-    {
-        TextLayoutOptions options;
-        options.role = FontRole.ui;
-        options.overrideFace = cast(FontFace) face;
-        options.pixelSize = pixelSize;
-        options.maxWidth = maxInt(1, width);
-        options.wrap = true;
-        return fontSystem().textEngine.layout(text, options).measuredSize();
-    }
-
     protected override void onPaint(ref Canvas canvas)
     {
         const palette = theme();
@@ -302,23 +371,18 @@ private final class MessageBubble : Widget
             canvas.strokeRect(Rect(0, 0, width, height), opencodeErrorRed, 1);
 
         const innerWidth = maxInt(1, width - 2 * padH);
-        const face = cast(FontFace) palette.uiFont;
         int y = padV;
 
         if (_thinking.length > 0)
         {
-            auto layout = canvas.layoutText(_thinking, 2, FontRole.ui, face,
-                innerWidth, true);
+            auto layout = shapedThinking(innerWidth);
             canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
             y += layout.measuredSize().height + gap;
         }
 
         if (_content.length > 0 || _streaming)
         {
-            dstring display = _content;
-            if (_streaming) display ~= "▌"d;
-            auto layout = canvas.layoutText(display, 2, FontRole.ui, face,
-                innerWidth, true);
+            auto layout = shapedContent(innerWidth);
             canvas.drawLayout(Point(padH, y), layout,
                 _role == "user" ? opencodeText : palette.text);
         }
@@ -326,7 +390,7 @@ private final class MessageBubble : Widget
         if (_failed && _error.length > 0)
         {
             auto layout = canvas.layoutText(toUTF32(_error), 1, FontRole.ui,
-                face, innerWidth, true);
+                cast(FontFace) palette.uiFont, innerWidth, true);
             canvas.drawLayout(Point(padH, y + 4), layout, opencodeErrorRed);
         }
     }
@@ -480,6 +544,10 @@ public final class OpenCodeRoot : VBox
 
         _messageColumn = new VBox(6, Insets(12));
         _messageColumn.setId("oc-messages");
+        // Keep the whole conversation in a single retained layer: scrolling the
+        // message list then moves a cached layer (transform-only) instead of
+        // re-shaping and re-drawing every message bubble each frame.
+        _messageColumn.setComposited(true);
         _messagesScroll = new ChatScrollView(_messageColumn);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
@@ -558,6 +626,9 @@ public final class OpenCodeRoot : VBox
         }
         _messagesScroll.follow = true;
         _messageColumn.invalidate();
+        // The column is a retained layer; let the ScrollView re-measure and
+        // update the content height / auto-follow after the message set changes.
+        _messagesScroll.invalidate();
     }
 
     private void addUserBubble(string text)
@@ -567,6 +638,7 @@ public final class OpenCodeRoot : VBox
         bubble.setContent(text);
         _messageColumn.add(bubble);
         _messagesScroll.follow = true;
+        _messagesScroll.invalidate();
     }
 
     private void beginAssistantMessage()
@@ -582,6 +654,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble.setStreaming(true);
         _messageColumn.add(_streamBubble);
         _messagesScroll.follow = true;
+        _messagesScroll.invalidate();
     }
 
     private void appendStreamDelta(string text, bool reasoning)
@@ -600,6 +673,9 @@ public final class OpenCodeRoot : VBox
             message.content ~= text;
             _streamBubble.appendContent(text);
         }
+        // The streamed text changes the bubble height, so the ScrollView must
+        // re-measure to keep auto-follow at the bottom as the reply grows.
+        _messagesScroll.invalidate();
     }
 
     private void finishAssistantMessage(bool cancelled)
@@ -610,6 +686,7 @@ public final class OpenCodeRoot : VBox
             _streamBubble = null;
         }
         updateStatus(cancelled ? "Stopped." : "Done.");
+        _messagesScroll.invalidate();
         markDirty();
     }
 
@@ -635,6 +712,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble.setStreaming(false);
         _streamBubble.setFailed(error);
         _streamBubble = null;
+        _messagesScroll.invalidate();
         updateStatus("Error: " ~ error);
         markDirty();
     }
@@ -1051,6 +1129,12 @@ public final class OpenCodeRoot : VBox
             session.messages ~= message;
         }
         rebuildMessageColumn();
+    }
+
+    /// Test-only: number of text shapes performed by message bubbles.
+    public size_t bubbleShapeCountForTesting() const
+    {
+        return MessageBubble.shapeCount;
     }
 }
 
