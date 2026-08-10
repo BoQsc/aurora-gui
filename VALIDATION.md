@@ -139,3 +139,18 @@ no D compiler is installed and package-network access is unavailable.
 - Verified keyboard O, the export context-menu action, and timeline requests all use the same `setWorkOut` path.
 - Added project-load normalization for older Out-only work areas.
 - DMD/DUB are unavailable in this container, so native Windows compilation still requires `RUN-WINDOWS.bat`.
+
+
+## 0.13.5 yt-dlp native-resolution download validation
+
+- Confirmed the download normalization previously padded every yt-dlp video onto a fixed canvas
+  (`pad=1920:1080:(ow-iw)/2:(oh-ih)/2`), so a source with a small native width (or a non-16:9
+  aspect) was delivered at the selected ceiling's frame size instead of its own resolution.
+- Removed the `pad` from `ytDlpVideoNormalizeFilterForHeight`; the scale filter now only downscales
+  when a dimension exceeds the selected ceiling and otherwise keeps the source resolution and aspect.
+- Verified with real FFmpeg encodes that 640×360, 720×1280 portrait, 2560×1440, and 1024×768
+  sources now produce 640×360, 608×1080, 1920×1080, and 1024×768 outputs respectively — never
+  upscaled, never letterboxed, always divisible by two.
+- Updated `tests/ytdlp_format_smoke.d` to assert the filter contains no `pad=` and that the optional
+  end-to-end normalization run must never upscale the input and must stay within the ceiling.
+- Rebuilt with DMD/DUB on Windows and ran the updated smoke test against all four fixture videos.

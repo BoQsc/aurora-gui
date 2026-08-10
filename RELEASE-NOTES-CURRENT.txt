@@ -28,6 +28,7 @@ Aurora Cut 0.13.5
 - The timeline immediately shows a complete export zone from the sequence start to the chosen Out point.
 - Older projects containing only an Out marker are normalized to the same visible start-to-Out range when opened.
 - Added an editor regression requiring Out-first marking to create both markers and preserve the requested Out time.
+- yt-dlp video downloads now keep the source resolution instead of being padded onto the selected ceiling canvas (for example 1920×1080). A 640×360 download stays 640×360; only sources larger than the chosen ceiling are downscaled to fit. Updated the normalization smoke test to forbid upscaling and letterboxing.
 
 Aurora Cut 0.13.4
 

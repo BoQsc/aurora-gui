@@ -473,8 +473,8 @@ string ytDlpVideoNormalizeFilterForHeight(int maxHeight)
     const width = ytDlpMaxWidthForHeight(height);
     return format("scale=w='min(%d,iw)':h='min(%d,ih)':" ~
         "force_original_aspect_ratio=decrease:force_divisible_by=2:" ~
-        "flags=fast_bilinear,pad=%d:%d:(ow-iw)/2:(oh-ih)/2," ~
-        "setsar=1,fps=30,format=yuv420p", width, height, width, height);
+        "flags=fast_bilinear,setsar=1,fps=30,format=yuv420p",
+        width, height);
 }
 
 string[] ytDlpNormalizedVideoArguments(string inputPath, string outputPath,
