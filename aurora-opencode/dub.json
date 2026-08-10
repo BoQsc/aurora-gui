@@ -19,6 +19,10 @@
     "shell32",
     "wininet"
   ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
   "libs-linux": [
     "X11",
     "dl"
