@@ -1911,11 +1911,17 @@ final class PreviewWidget : Widget
     {
         const palette = theme();
         const full = Rect(0, 0, bounds().width, bounds().height);
-        canvas.fillVerticalGradient(full, Color.fromHex(0x101216), Color.fromHex(0x07080a));
+        // Neutral gray surround so the sequence frame edges stand out from the
+        // video's own black padding and its aspect ratio is easy to see.
+        canvas.fillVerticalGradient(full, Color.fromHex(0x3c3c3c),
+            Color.fromHex(0x2a2a2a));
 
         const outer = full.inset(10);
         if (outer.empty()) return;
-        canvas.drawRoundedRect(outer, 7, Color.fromHex(0x060708),
+        // Gray monitor surround: the letterbox/pillarbox area around the frame
+        // stays clearly lighter than the video's black padding, so the actual
+        // sequence aspect and resolution borders are easy to see.
+        canvas.drawRoundedRect(outer, 7, Color.fromHex(0x343434),
             palette.border.withAlpha(190), 1);
 
         if (!_frame.valid())
@@ -1941,6 +1947,9 @@ final class PreviewWidget : Widget
         // titles are retained child widgets painted after this background.
         canvas.drawRgbImage(destination, _frame.width, _frame.height,
             _frame.rgb, true);
+        // Hairline around the exact frame bounds so the sequence resolution
+        // and aspect ratio stay visible regardless of the surround contrast.
+        canvas.strokeRect(destination, Color.rgba(235, 235, 240, 130), 1);
 
         canvas.fillRect(Rect(destination.x, destination.y, destination.width, 28),
             Color.rgba(0, 0, 0, 125));
