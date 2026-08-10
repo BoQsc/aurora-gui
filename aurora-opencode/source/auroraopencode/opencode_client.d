@@ -116,6 +116,8 @@ final class OpenCodeClient
     private bool _cancel;
     private HINTERNET _chatHandle;
     private HINTERNET _modelsHandle;
+    private HINTERNET _session;
+    private bool _sessionClosed;
     private string _baseUrl;
     private string _apiKey;
     private string _streamReasoning;
@@ -212,6 +214,21 @@ final class OpenCodeClient
         _worker.start();
     }
 
+    /** Release the shared session. Call once on shutdown. */
+    void closeSession()
+    {
+        _mutex.lock();
+        _sessionClosed = true;
+        auto session = _session;
+        _session = null;
+        _mutex.unlock();
+        if (session !is null)
+        {
+            try InternetCloseHandle(session);
+            catch (Exception) {}
+        }
+    }
+
     /** Move all pending events into `output` and clear the queue. */
     void drain(ref OpenCodeEvent[] output)
     {
@@ -247,20 +264,31 @@ final class OpenCodeClient
 
     private HINTERNET openSession()
     {
-        auto session = InternetOpenW(toUTF16z("Aurora OpenCode"),
-            INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
-        if (session is null)
-            throw new Exception("Could not open an internet session.");
-        DWORD connectTimeout = defaultConnectTimeoutMs;
-        InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT,
-            &connectTimeout, cast(DWORD) connectTimeout.sizeof);
-        DWORD sendTimeout = defaultSendTimeoutMs;
-        InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT,
-            &sendTimeout, cast(DWORD) sendTimeout.sizeof);
-        DWORD receiveTimeout = defaultReceiveTimeoutMs;
-        InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT,
-            &receiveTimeout, cast(DWORD) receiveTimeout.sizeof);
-        return session;
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_session is null && !_sessionClosed)
+        {
+            auto session = InternetOpenW(toUTF16z("Aurora OpenCode"),
+                INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
+            if (session !is null)
+            {
+                DWORD connectTimeout = defaultConnectTimeoutMs;
+                InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT,
+                    &connectTimeout, cast(DWORD) connectTimeout.sizeof);
+                DWORD sendTimeout = defaultSendTimeoutMs;
+                InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT,
+                    &sendTimeout, cast(DWORD) sendTimeout.sizeof);
+                DWORD receiveTimeout = defaultReceiveTimeoutMs;
+                InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT,
+                    &receiveTimeout, cast(DWORD) receiveTimeout.sizeof);
+                _session = session;
+            }
+        }
+        if (_session is null)
+            throw new Exception(_sessionClosed
+                ? "The network client is closed."
+                : "Could not open an internet session.");
+        return _session;
     }
 
     private HINTERNET registerRequest(HINTERNET handle, bool chat)
@@ -300,7 +328,6 @@ final class OpenCodeClient
             _streamContent = "";
 
             auto session = openSession();
-            scope (exit) InternetCloseHandle(session);
 
             auto connection = InternetConnectW(session, toUTF16z(target.host),
                 target.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
@@ -404,7 +431,6 @@ final class OpenCodeClient
         {
             const target = parseHttpTarget(_baseUrl, "/models");
             auto session = openSession();
-            scope (exit) InternetCloseHandle(session);
 
             const headers = "Authorization: Bearer " ~ _apiKey ~ "\r\n";
             const flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD |

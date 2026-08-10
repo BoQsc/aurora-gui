@@ -57,6 +57,7 @@ private int runScreenshot(string path, bool withChat, string message)
 
     driver.paint();
     window.saveScreenshot(path);
+    root.shutdownClient();
     window.close();
     return 0;
 }
@@ -104,6 +105,9 @@ int main(string[] args)
     options.height = 800;
     options.darkTitleBar = true;
     auto window = new GuiWindow(options, opencodeTheme());
-    window.setRoot(new OpenCodeRoot(window));
-    return window.run();
+    auto root = new OpenCodeRoot(window);
+    window.setRoot(root);
+    const exitCode = window.run();
+    root.shutdownClient();
+    return exitCode;
 }

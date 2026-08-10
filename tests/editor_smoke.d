@@ -773,6 +773,23 @@ int main(string[] arguments)
         "Composition resolution did not match the visible video content");
     editor.setCompositionResolutionForTesting(1920, 1080);
 
+    // A timeline item's own resolution can become the sequence resolution from
+    // its context menu. MP4 output follows automatically because export uses
+    // the same composition canvas.
+    driver.rightClick(clipCenter(timeline, v1, 0));
+    auto clipResolutionMenu = findOpenContextMenu(editor);
+    assert(clipResolutionMenu !is null,
+        "Timeline item right-click did not open a context menu");
+    assert(menuHasLabel(clipResolutionMenu, "Set sequence resolution to 320×180"d),
+        "Timeline item context menu is missing the sequence-resolution command");
+    driver.pressKey(Key.escape);
+    assert(clipResolutionMenu.dismissed());
+    editor.matchClipResolutionForTesting(v1, 0);
+    assert(editor.compositionWidthForTesting() == 320 &&
+        editor.compositionHeightForTesting() == 180,
+        "Matching the sequence resolution to a clip did not apply its canvas");
+    editor.setCompositionResolutionForTesting(1920, 1080);
+
     const selectionPlayheadBefore = timeline.playhead();
     driver.click(clipCenter(timeline, v1, 0));
     assert(fabs(timeline.playhead() - selectionPlayheadBefore) < 0.0001,
@@ -978,6 +995,8 @@ int main(string[] arguments)
     assert(menuHasLabel(timelineMenu, "Add video track"d));
     assert(menuHasLabel(timelineMenu, "Add audio track"d));
     assert(menuHasLabel(timelineMenu, "Mute V3"d));
+    assert(menuHasLabel(timelineMenu, "Set sequence resolution to 160×90"d),
+        "Overlay clip context menu is missing the sequence-resolution command");
     assert(menuHasLabel(timelineMenu, "Reset transform"d));
     // A long menu must remain scrollable rather than losing lower commands.
     driver.wheel(Point(timelineMenu.menuRect().x + 20,

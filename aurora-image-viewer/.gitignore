@@ -1,6 +1,6 @@
 /.dub/
-/aurora-opencode.exe
 /build/
+/aurora-image-viewer.exe
 *.o
 *.obj
 *.pdb

@@ -973,6 +973,10 @@ final class EditorRoot : VBox
     {
         setCompositionResolution(width, height);
     }
+    void matchClipResolutionForTesting(TrackAddress track, int index)
+    {
+        applySequenceResolutionToClip(track, index);
+    }
     int mp4CompressionCrfForTesting() const { return _mp4CompressionCrf; }
     string projectPathForTesting() const { return _projectPath; }
     bool hasWorkInForTesting() const { return _hasWorkIn; }
@@ -1222,6 +1226,44 @@ final class EditorRoot : VBox
             }
         }
         return bestArea > 0;
+    }
+
+    /** Effective source resolution of one video clip, reduced by its crop.
+     * Returns false when the clip has no resolvable video canvas. */
+    private bool clipSourceResolution(TrackAddress track, int index,
+        out int width, out int height) const
+    {
+        if (track.kind != TrackKind.video || !_model.validTrack(track)) return false;
+        const clips = _model.trackValue(track).clips;
+        if (index < 0 || index >= cast(int) clips.length) return false;
+        const clip = clips[cast(size_t) index];
+        if (clip.isText() || clip.muted || clip.opacity <= 0.000_001) return false;
+        auto asset = _model.assetForClip(clip);
+        if (asset is null || !asset.hasVideo ||
+            asset.width <= 0 || asset.height <= 0) return false;
+        width = asset.width;
+        height = asset.height;
+        if (clip.cropEnabled)
+        {
+            width = cast(int) (cast(double) width *
+                max(0.005, min(1.0, clip.cropWidth)) + 0.5);
+            height = cast(int) (cast(double) height *
+                max(0.005, min(1.0, clip.cropHeight)) + 0.5);
+        }
+        width = normalizedCompositionDimension(width, defaultCompositionWidth);
+        height = normalizedCompositionDimension(height, defaultCompositionHeight);
+        return true;
+    }
+
+    /** Match the sequence composition/output resolution to one clip's source. */
+    private void applySequenceResolutionToClip(TrackAddress track, int index)
+    {
+        int width;
+        int height;
+        if (!clipSourceResolution(track, index, width, height)) return;
+        _timeline.setSelection(track, index, false);
+        setCompositionResolution(width, height,
+            "Sequence resolution matched to clip");
     }
 
     private void closeCompositionResolutionPopup()
@@ -7516,6 +7558,17 @@ final class EditorRoot : VBox
                     syncInspector();
                     beginCutoutAdjustment();
                 });
+            int clipWidth;
+            int clipHeight;
+            if (clipSourceResolution(track, index, clipWidth, clipHeight))
+            {
+                items ~= ContextMenuItem.separatorItem();
+                const resolutionLabel = format("Set sequence resolution to %d×%d",
+                    clipWidth, clipHeight);
+                items ~= ContextMenuItem.command(resolutionLabel, delegate() {
+                    applySequenceResolutionToClip(track, index);
+                });
+            }
             items ~= ContextMenuItem.command("Reset transform", delegate() {
                 _timeline.setSelection(track, index, false);
                 resetSelectedTransform();

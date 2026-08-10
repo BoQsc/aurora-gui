@@ -3,7 +3,7 @@ module auroraopencode.appui;
 import aurora;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
-import core.time : msecs;
+import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText, write;
@@ -476,6 +476,10 @@ public final class OpenCodeRoot : VBox
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
 
+    private MonoTime _chatStartedAt;
+    private bool _receivedFirstDelta;
+    private int _lastColdStartSeconds = -1;
+
     this(GuiWindow window)
     {
         super(0);
@@ -489,6 +493,12 @@ public final class OpenCodeRoot : VBox
         updateSendButton();
         _client.fetchModels();
         _input.requestFocus();
+    }
+
+    /// Test-only / shutdown hook: release the shared network session.
+    public void shutdownClient()
+    {
+        _client.closeSession();
     }
 
     private void buildUi()
@@ -656,6 +666,11 @@ public final class OpenCodeRoot : VBox
     private void appendStreamDelta(string text, bool reasoning)
     {
         if (_current < 0 || _streamBubble is null) return;
+        if (!_receivedFirstDelta)
+        {
+            _receivedFirstDelta = true;
+            updateStatus("Generating…");
+        }
         auto session = &_sessions[_current];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
@@ -753,6 +768,9 @@ public final class OpenCodeRoot : VBox
         }
 
         _client.startChat(roles, contents, _settings.model, _settings.thinking);
+        _chatStartedAt = MonoTime.currTime;
+        _receivedFirstDelta = false;
+        _lastColdStartSeconds = -1;
         markDirty();
         updateStatus("Generating…");
         updateSendButton();
@@ -896,7 +914,8 @@ public final class OpenCodeRoot : VBox
             if (model == _settings.model) found = true;
         if (!found && _models.length > 0)
             _settings.model = _models[0];
-        updateStatus("Models refreshed.");
+        if (!_client.busy())
+            updateStatus("Models refreshed.");
     }
 
     private void updateModelButton()
@@ -1058,7 +1077,8 @@ public final class OpenCodeRoot : VBox
     // -- tick -------------------------------------------------------------
 
     protected override void onTick(double deltaSeconds)
-    {        OpenCodeEvent[] events;
+    {
+        OpenCodeEvent[] events;
         _client.drain(events);
         foreach (event; events)
         {
@@ -1079,6 +1099,22 @@ public final class OpenCodeRoot : VBox
                 case OpenCodeEventKind.models:
                     applyModels(event.modelIds);
                     break;
+            }
+        }
+
+        // The upstream model can take several seconds to return its first
+        // token (cold start). Surface that as a live countdown so the UI
+        // never looks frozen, and switch back to a normal status the moment
+        // the first streamed fragment arrives.
+        if (_client.busy() && !_receivedFirstDelta)
+        {
+            const elapsed = MonoTime.currTime - _chatStartedAt;
+            const seconds = cast(int) elapsed.total!"seconds";
+            if (seconds >= 2 && seconds != _lastColdStartSeconds)
+            {
+                _lastColdStartSeconds = seconds;
+                updateStatus("Cold-starting the model… " ~
+                    to!string(seconds) ~ "s — first reply can take a while");
             }
         }
 

@@ -1,0 +1,42 @@
+{
+  "name": "aurora-image-viewer",
+  "description": "A lightweight image viewer built with Aurora-D using a custom mipmapped CPU scaler for fast high-quality pan and zoom",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-image-viewer",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "../vendor/aurora-d-0.4.5/source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "version": "0.1.0"
+}
