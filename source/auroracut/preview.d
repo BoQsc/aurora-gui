@@ -1889,18 +1889,28 @@ final class PreviewWidget : Widget
     }
 
     /** Efficient decode size matched to the visible surface, capped by quality. */
-    Size recommendedDecodeSize(int maximumHeight = 1080) const
+    /**
+     * Choose the RGB decode canvas for the current monitor, matching the
+     * sequence/composition aspect (falling back to 16:9) so non-16:9
+     * sequences are not padded onto a 16:9 frame with black bars.
+     */
+    Size recommendedDecodeSize(int maximumHeight = 1080,
+        int compositionWidth = 0, int compositionHeight = 0) const
     {
         maximumHeight = clampValue(maximumHeight, 180, 2160);
+        double aspect = 16.0 / 9.0;
+        if (compositionWidth > 0 && compositionHeight > 0)
+            aspect = cast(double) compositionWidth /
+                cast(double) compositionHeight;
         int availableWidth = bounds().width > 40 ? bounds().width - 24 : 960;
         int availableHeight = bounds().height > 40 ? bounds().height - 24 : 540;
         availableHeight = availableHeight < maximumHeight ? availableHeight : maximumHeight;
         int height = availableHeight < 180 ? 180 : availableHeight;
-        int width = height * 16 / 9;
+        int width = cast(int) (height * aspect + 0.5);
         if (width > availableWidth)
         {
             width = availableWidth < 320 ? 320 : availableWidth;
-            height = width * 9 / 16;
+            height = cast(int) (width / aspect + 0.5);
         }
         if ((width & 1) != 0) --width;
         if ((height & 1) != 0) --height;

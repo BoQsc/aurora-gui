@@ -1166,6 +1166,24 @@ final class EditorRoot : VBox
         return ExportPreset.custom(_compositionWidth, _compositionHeight);
     }
 
+    /**
+     * Interactive preview render preset at the sequence aspect, scaled to a
+     * target height, so non-16:9 compositions are not padded onto a 16:9
+     * canvas with black bars.
+     */
+    private ExportPreset previewCompositionPreset(int targetHeight) const
+    {
+        const aspect = cast(double) _compositionWidth /
+            cast(double) max(1, _compositionHeight);
+        int width = cast(int) (targetHeight * aspect + 0.5);
+        if ((width & 1) != 0) ++width;
+        auto preset = ExportPreset.custom(width, targetHeight);
+        preset.crf = 23;
+        preset.videoPreset = "ultrafast";
+        preset.previewOptimized = true;
+        return preset;
+    }
+
     private void updateCompositionResolutionUi()
     {
         if (_resolutionButton !is null)
@@ -2890,7 +2908,8 @@ final class EditorRoot : VBox
                     if (result.asset.hasVideo && _preview !is null)
                     {
                         const warmSize = _preview.recommendedDecodeSize(
-                            _previewQualityHeight);
+                            _previewQualityHeight, _compositionWidth,
+                            _compositionHeight);
                         _previewService.requestWarmAsset(result.asset, 0.0,
                             warmSize.width, warmSize.height);
                     }
@@ -6030,7 +6049,8 @@ final class EditorRoot : VBox
         const remaining = _playbackEnd - _playbackPosition;
         if (remaining <= 0.001) return;
 
-        const decode = _preview.recommendedDecodeSize(liveDecodeHeight());
+        const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
+            _compositionWidth, _compositionHeight);
         const fps = livePlaybackFps(decode);
         bool videoStarted;
         if (_sequencePlaybackLive && _sequencePlaybackStaticVisual)
@@ -6263,7 +6283,8 @@ final class EditorRoot : VBox
         {
             syncPreviewTitleLayers(_playbackPosition);
             const limit = maximumHeight > 0 ? maximumHeight : liveDecodeHeight();
-            const decode = _preview.recommendedDecodeSize(limit);
+            const decode = _preview.recommendedDecodeSize(limit,
+                _compositionWidth, _compositionHeight);
             if (_sequencePlaybackDirect)
             {
                 auto playbackAsset = playbackAssetForPreview(_playbackAsset);
@@ -6302,7 +6323,8 @@ final class EditorRoot : VBox
         if (_playbackAsset.hasVideo)
         {
             const limit = maximumHeight > 0 ? maximumHeight : liveDecodeHeight();
-            const decode = _preview.recommendedDecodeSize(limit);
+            const decode = _preview.recommendedDecodeSize(limit,
+                _compositionWidth, _compositionHeight);
             _previewService.requestAsset(_playbackAsset, _playbackPosition,
                 decode.width, decode.height);
         }
@@ -7858,7 +7880,8 @@ final class EditorRoot : VBox
 
     private void dispatchPendingPreview()
     {
-        const decode = _preview.recommendedDecodeSize(_previewQualityHeight);
+        const decode = _preview.recommendedDecodeSize(_previewQualityHeight,
+            _compositionWidth, _compositionHeight);
         final switch (_pendingPreviewKind)
         {
             case PendingPreviewKind.none:
@@ -7886,7 +7909,7 @@ final class EditorRoot : VBox
                 // Plain V1 footage follows the faster source-frame path.
                 const renderHeight = liveDecodeHeight();
                 auto request = buildFrameRequest(_pendingPreviewTime,
-                    ExportPreset.previewForHeight(renderHeight));
+                    previewCompositionPreset(renderHeight));
                 scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
                 _previewService.requestComposition(request, _pendingPreviewTime,
                     decode.width, decode.height);
