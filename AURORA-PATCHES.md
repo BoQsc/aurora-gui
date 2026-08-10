@@ -1,3 +1,13 @@
+## Aurora GUI-subsystem link (no attached console window)
+
+- DMD links executables as console-subsystem binaries by default, so Windows
+  attaches a cmd/console window to every Aurora GUI program on launch.
+- GUI packages should link with `/SUBSYSTEM:WINDOWS` **and** keep
+  `/ENTRY:mainCRTStartup` so `main(string[] args)` still runs (without the
+  explicit entry, the linker looks for `WinMain` and fails).
+- Documented in the top-level `README.md`; applied in `aurora-opencode/dub.json`.
+- Console-subsystem CLI/tests stay console so their stdout still works.
+
 ## Aurora Cut 0.13.3 title-layer opacity
 
 - Title opacity is now represented explicitly as final layer opacity.

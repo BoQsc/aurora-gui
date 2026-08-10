@@ -37,6 +37,34 @@ ffprobe -version
 ffplay -version
 ```
 
+## Windows: keep GUI programs console-free
+
+DMD builds executables as **console-subsystem** binaries by default. Windows
+then allocates a cmd/console window for the program on every launch, even
+though the app opens a GUI. Any new Aurora-D GUI package on Windows should link
+as a GUI-subsystem app by adding this to its `dub.json`:
+
+```json
+"lflags-windows": [
+  "/SUBSYSTEM:WINDOWS",
+  "/ENTRY:mainCRTStartup"
+]
+```
+
+Two things to keep in mind:
+
+- Keep `/ENTRY:mainCRTStartup`. With only `/SUBSYSTEM:WINDOWS`, the linker
+  looks for `WinMain` and fails (`undefined symbol: WinMain`). The console CRT
+  entry still runs `main(string[] args)` normally, but because the subsystem is
+  now GUI, Windows allocates no console.
+- Once switched, the exe has no attached stdout, so diagnostic `writeln`
+  output from the GUI exe goes nowhere (file-based output such as the
+  `--screenshot` modes still works). Standalone test/CLI programs compiled
+  directly (for example the headless smoke tests) should stay **console**
+  subsystem so their console output still appears.
+
+Example: `aurora-opencode/dub.json` already carries this adjustment.
+
 ## Timeline-first workflow
 
 - Import MP4 and MP3 using `Ctrl+I`, the Project Media right-click menu, or Windows File Explorer drag-and-drop.
