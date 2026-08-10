@@ -154,3 +154,12 @@ no D compiler is installed and package-network access is unavailable.
 - Updated `tests/ytdlp_format_smoke.d` to assert the filter contains no `pad=` and that the optional
   end-to-end normalization run must never upscale the input and must stay within the ceiling.
 - Rebuilt with DMD/DUB on Windows and ran the updated smoke test against all four fixture videos.
+
+
+## 0.13.5 yt-dlp download progress validation
+
+- The download service previously ran yt-dlp with --no-progress and only surfaced a final result, so the UI never showed progress.
+- Removed --no-progress (keeping --newline) and parse each '[download] NN%' stdout line in the worker, pushing YtDlpDownloadProgress samples through a mutex-guarded queue.
+- The editor drains the progress queue each tick and updates the shared status-bar ProgressBar with 'Download NN%'; it returns the bar to Idle once the queue drains (unless an export job is using it).
+- Verified with a real download: 11 monotonic progress samples reaching 100.0%, then a successful normalized MP4 import. Added tests/ytdlp_progress_smoke.d for this.
+- DMD/DUB native Windows build succeeds; the pre-existing editor-smoke compression assertion failure at line 432 is unrelated and reproduces on the clean base commit.

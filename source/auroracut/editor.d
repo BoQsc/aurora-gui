@@ -27,9 +27,10 @@ import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
 import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory, clampValue,
     formatTimecode, isSupportedMediaPath, outputTail, unnamedProjectAutosavePath;
-import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadResult,
-    YtDlpDownloadService, YtDlpInstallResult, YtDlpInstallService,
-    normalizeYtDlpMaxHeight, ytDlpImportDirectory, ytDlpMaxWidthForHeight;
+import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
+    YtDlpDownloadResult, YtDlpDownloadService, YtDlpInstallResult,
+    YtDlpInstallService, normalizeYtDlpMaxHeight, ytDlpImportDirectory,
+    ytDlpMaxWidthForHeight;
 import core.time : MonoTime;
 import std.algorithm : max, min;
 import std.file : exists;
@@ -2988,6 +2989,34 @@ final class EditorRoot : VBox
             }
             else
                 setStatus("yt-dlp download failed: " ~ outputTail(result.error, 700));
+        }
+    }
+
+    /// Update the shared status-bar progress widget with live yt-dlp progress.
+    private void drainDownloadProgress()
+    {
+        YtDlpDownloadProgress progress;
+        double latest = -1.0;
+        string label;
+        bool any;
+        while (_downloadService.takeProgress(progress))
+        {
+            any = true;
+            latest = progress.fraction;
+            label = "Download " ~ progress.percentText;
+        }
+        if (any)
+        {
+            _progress.setValue(latest);
+            _progress.setLabel(label);
+        }
+        // When the queue drains and nothing else is using the bar, return it to
+        // its idle label.
+        if (!_downloadService.busy() && !_exportJob.state().running &&
+            _progress.value() > 0.0)
+        {
+            _progress.setValue(0.0);
+            _progress.setLabel("Idle");
         }
     }
 
@@ -7817,6 +7846,7 @@ final class EditorRoot : VBox
     {
         drainYtDlpAddonInstall();
         drainDownloadedMedia();
+        drainDownloadProgress();
         drainImportedMedia();
         drainPlaybackProxies();
         startIdlePlaybackProxy(deltaSeconds);

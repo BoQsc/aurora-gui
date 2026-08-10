@@ -5,12 +5,14 @@ import auroracut.util : absoluteNormalized, applicationStateDirectory,
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import std.conv : to;
 import std.file : DirEntry, SpanMode, dirEntries, exists, mkdirRecurse,
     remove, rename, thisExePath;
 import std.format : format;
 import std.path : baseName, buildPath, dirName;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.stdio : File;
+import std.string : indexOf, startsWith, strip;
 import std.uuid : randomUUID;
 
 version (Windows)
@@ -104,6 +106,14 @@ struct YtDlpDownloadResult
     {
         return path.length > 0 && error.length == 0;
     }
+}
+
+/** Streamed progress for one active yt-dlp download. */
+struct YtDlpDownloadProgress
+{
+    string url;
+    double fraction;   /// 0.0 .. 1.0
+    string percentText; /// e.g. "45.6%"
 }
 
 struct YtDlpDownloadStats
@@ -392,7 +402,6 @@ private string[] downloadArguments(YtDlpDownloadRequest request,
     string[] arguments = [
         request.command,
         "--no-playlist",
-        "--no-progress",
         "--newline",
         "--restrict-filenames",
         "-o", outputTemplate
@@ -418,6 +427,29 @@ private string[] downloadArguments(YtDlpDownloadRequest request,
 
     arguments ~= request.url;
     return arguments;
+}
+
+/**
+ * Parse a yt-dlp progress line such as
+ * `[download]  45.6% of 12.34MiB at 1.23MiB/s ETA 00:05`
+ * into a 0..1 fraction. Returns false for non-progress lines.
+ */
+private bool parseDownloadPercent(string line, out double fraction)
+{
+    fraction = 0.0;
+    if (!startsWith(line, "[download]")) return false;
+    const percentIndex = indexOf(line, '%');
+    if (percentIndex < 0) return false;
+    // Skip the "[download]" prefix and any leading spaces before the number.
+    const numberText = line[10 .. cast(size_t) percentIndex].strip();
+    if (numberText.length == 0) return false;
+    double percent;
+    try percent = to!double(numberText);
+    catch (Exception) return false;
+    if (percent < 0.0) return false;
+    percent = percent > 100.0 ? 100.0 : percent;
+    fraction = percent / 100.0;
+    return true;
 }
 
 /** Keep video downloads within a predictable preview-friendly ceiling. */
@@ -528,6 +560,8 @@ final class YtDlpDownloadService
     private size_t _head;
     private YtDlpDownloadResult[] _ready;
     private size_t _readyHead;
+    private YtDlpDownloadProgress[] _progressQueue;
+    private size_t _progressHead;
     private Pid _process;
     private bool _busy;
     private bool _shutdown;
@@ -572,6 +606,21 @@ final class YtDlpDownloadService
         {
             _ready.length = 0;
             _readyHead = 0;
+        }
+        return true;
+    }
+
+    /** Drain the latest streamed download progress samples. */
+    bool takeProgress(out YtDlpDownloadProgress progress)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_progressHead >= _progressQueue.length) return false;
+        progress = _progressQueue[_progressHead++];
+        if (_progressHead >= _progressQueue.length)
+        {
+            _progressQueue.length = 0;
+            _progressHead = 0;
         }
         return true;
     }
@@ -695,10 +744,24 @@ final class YtDlpDownloadService
             {
                 foreach (rawLine; pipes.stdout.byLine())
                 {
-                    output ~= rawLine;
+                    const line = cast(string) rawLine;
+                    output ~= line;
                     output ~= "\n";
                     if (output.length > 4 * 1024 * 1024)
                         output = outputTail(output, 512 * 1024);
+
+                    double fraction;
+                    if (parseDownloadPercent(line, fraction))
+                    {
+                        YtDlpDownloadProgress progress;
+                        progress.url = request.url;
+                        progress.fraction = fraction;
+                        progress.percentText = format("%.1f%%",
+                            fraction * 100.0);
+                        _mutex.lock();
+                        if (!_shutdown) _progressQueue ~= progress;
+                        _mutex.unlock();
+                    }
                 }
             }
             catch (Exception error)
