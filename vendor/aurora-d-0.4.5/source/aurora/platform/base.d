@@ -1,5 +1,6 @@
 module aurora.platform.base;
 
+import aurora.color : Color;
 import aurora.event : Event;
 import aurora.font : FontRenderMode;
 public import aurora.render.base : RendererPreference;
@@ -72,6 +73,15 @@ abstract class NativeWindow
         this.sink = sink;
     }
 
+    /**
+     * Give a native backend an opportunity to submit the complete first frame
+     * while its top-level window is still hidden. Backends that cannot safely
+     * present while hidden leave the normal show/paint path unchanged.
+     */
+    bool prepareFirstFrame(Color background)
+    {
+        return false;
+    }
     abstract void show();
     abstract int run();
     abstract void invalidate();

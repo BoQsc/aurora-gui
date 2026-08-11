@@ -317,6 +317,13 @@ dub run --config=latency-test
 dub run --config=dpi-rendering-test
 ```
 
+On Windows, sample the client area from its first visible instant and reject a
+full-window white startup frame:
+
+```sh
+python tools/startup_flash_probe.py path\to\your-app.exe --title "Your window title" --renderer vulkan
+```
+
 PowerShell equivalents are provided in `scripts/`.
 
 The package version is available to applications at compile time:

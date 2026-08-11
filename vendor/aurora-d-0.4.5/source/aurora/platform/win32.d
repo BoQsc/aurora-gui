@@ -6,6 +6,7 @@ version (AuroraHeadless)
 }
 else version (Windows)
 {
+    import aurora.color : Color;
     import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
     import aurora.platform.base : NativeSurfaceInfo, NativeSurfaceKind, NativeWindow, NativeWindowSink, WindowOptions;
     import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
@@ -322,6 +323,8 @@ else version (Windows)
         private HCURSOR _cursor;
         private HICON _largeIcon;
         private HICON _smallIcon;
+        private HBRUSH _startupBrush;
+        private bool _startupBackgroundPending;
         private bool _pointerVisible = true;
         private int _wheelRemainderX;
         private int _wheelRemainderY;
@@ -390,10 +393,32 @@ else version (Windows)
             setCursor(CursorKind.arrow);
         }
 
+        override bool prepareFirstFrame(Color background)
+        {
+            setStartupBackground(background);
+            seedStartupBackground();
+
+            // A newly-created Win32 swapchain normally has an image available
+            // immediately. Keep retries bounded for low-latency configurations
+            // that use a zero-timeout acquire after the initial attempt.
+            foreach (_; 0 .. 4)
+            {
+                paintNow();
+                if (!_needsPaint) return true;
+                SwitchToThread();
+            }
+            return false;
+        }
+
         override void show()
         {
             if (options.startFullscreen && !_fullscreen)
                 setFullscreen(true);
+            // Seed the Win32 redirection surface as a final safety net. The
+            // prepared Vulkan frame normally replaces this before the first
+            // composition; drivers that defer hidden presentation show the
+            // application theme color instead of the system's white default.
+            seedStartupBackground();
             _shown = true;
             const command = _fullscreen ? SW_SHOWNORMAL :
                 (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
@@ -490,6 +515,7 @@ else version (Windows)
             if (_hwnd !is null && IsWindow(_hwnd))
                 DestroyWindow(_hwnd);
             releaseWindowIcons();
+            releaseStartupBrush();
             _hwnd = null;
             return cast(int) exitCode;
         }
@@ -855,6 +881,7 @@ else version (Windows)
                 {
                     PAINTSTRUCT paint;
                     BeginPaint(_hwnd, &paint);
+                    paintStartupBackground(paint.hdc, &paint.rcPaint);
                     EndPaint(_hwnd, &paint);
                     _needsPaint = true;
                     paintNow();
@@ -865,6 +892,7 @@ else version (Windows)
                     if (_inSizeMove) paintNow();
                     return 0;
                 case WM_ERASEBKGND:
+                    paintStartupBackground(cast(HDC) wParam);
                     return 1;
                 case WM_SIZE:
                     updateClientSize(cast(int) unsignedLowWord(lParam),
@@ -1052,6 +1080,7 @@ else version (Windows)
                     _inSizeMove = false;
                     _closed = true;
                     releaseWindowIcons();
+                    releaseStartupBrush();
                     _hwnd = null;
                     return 0;
                 default:
@@ -1066,7 +1095,59 @@ else version (Windows)
             _needsPaint = false;
             _painting = true;
             scope (exit) _painting = false;
-            _needsPaint = !sink.onNativePaint();
+            const completed = sink.onNativePaint();
+            _needsPaint = !completed;
+            if (completed && _shown && _startupBackgroundPending)
+            {
+                _startupBackgroundPending = false;
+                releaseStartupBrush();
+            }
+        }
+
+        private void setStartupBackground(Color background) nothrow
+        {
+            releaseStartupBrush();
+            const color = cast(COLORREF) background.r |
+                (cast(COLORREF) background.g << 8) |
+                (cast(COLORREF) background.b << 16);
+            _startupBrush = CreateSolidBrush(color);
+            _startupBackgroundPending = _startupBrush !is null;
+        }
+
+        private void seedStartupBackground() nothrow
+        {
+            if (!_startupBackgroundPending || _startupBrush is null ||
+                _hwnd is null)
+                return;
+            HDC dc = GetDC(_hwnd);
+            if (dc is null) return;
+            scope (exit) ReleaseDC(_hwnd, dc);
+            paintStartupBackground(dc);
+        }
+
+        private void paintStartupBackground(HDC dc,
+            const(RECT)* dirty = null) nothrow
+        {
+            if (!_startupBackgroundPending || _startupBrush is null ||
+                dc is null || _hwnd is null)
+                return;
+            RECT area;
+            if (dirty !is null)
+                area = *dirty;
+            else if (!GetClientRect(_hwnd, &area))
+                return;
+            if (area.right > area.left && area.bottom > area.top)
+                FillRect(dc, &area, _startupBrush);
+        }
+
+        private void releaseStartupBrush() nothrow
+        {
+            if (_startupBrush !is null)
+            {
+                DeleteObject(cast(HGDIOBJ) _startupBrush);
+                _startupBrush = null;
+            }
+            _startupBackgroundPending = false;
         }
 
         private bool nearestMonitorRect(out RECT result) nothrow

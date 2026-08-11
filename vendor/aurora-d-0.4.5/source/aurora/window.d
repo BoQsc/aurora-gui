@@ -294,6 +294,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
             _root.layoutTree();
         }
+        // Win32 can retain a Vulkan presentation while its HWND is hidden.
+        // Build that first complete frame before exposing the client area so
+        // DWM never has to compose an uninitialized window surface. Native
+        // backends where hidden presentation is not reliable simply return
+        // false and continue through their existing first-paint path.
+        _native.prepareFirstFrame(_theme.windowBackground);
         _native.show();
         invalidate();
         return _native.run();
