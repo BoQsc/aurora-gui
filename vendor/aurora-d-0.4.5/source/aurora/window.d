@@ -479,6 +479,13 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         close();
     }
 
+    override void synchronizeVerticalScrollInfo(int position, int maximum,
+        int pageSize)
+    {
+        if (_native !is null)
+            _native.setVerticalScrollInfo(position, maximum, pageSize);
+    }
+
     override void detachSubtree(Widget subtree)
     {
         if (subtree is null) return;

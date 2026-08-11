@@ -1,5 +1,39 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Windows File Manager wheel / touchpad scrolling (2026-08-11)
+
+The file manager now uses the reusable retained-mode
+`aurora.widgets.scrollbar.Scrollbar` control for both its list and sidebar.
+The widget owns range/value state, Aurora rendering, wheel accumulation,
+keyboard input, page clicks, thumb hit-testing, and pointer capture. The main
+scrollbar synchronizes its range with the Win32 host so legacy pointing-device
+drivers recognize the custom window as scrollable; Windows does not draw the
+control or move the file-manager content.
+
+### 1. Deterministic widget and file-manager contracts
+```
+cd vendor\aurora-d-0.4.5
+dub run --config=file-manager-scroll-test --compiler=dmd
+```
+
+Pass = `Windows file manager wheel/touchpad scroll contracts passed.` The test
+covers standalone widget geometry, track paging, thumb capture/dragging,
+standard wheel input, fine-grained touchpad deltas, native absolute scroll
+commands, sidebar routing, ignored non-scroll areas, and independent windows.
+
+### 2. Win32 focus, range, and exact-delta probe
+```
+cd vendor\aurora-d-0.4.5
+python tools\file_manager_focus_scroll_probe.py ^
+  aurora-windows-file-manager.exe build\fm-scroll-test
+```
+
+The probe checks that the HWND advertises a synchronized native scroll range,
+a client click establishes foreground focus, `WM_VSCROLL` updates the real
+widget, four standard notches move exactly 104 px, and twelve `-20` precision
+deltas accumulate to exactly 52 additional px. Pass marker:
+`NATIVE FOCUS + SCROLL VERIFIED`.
+
 ## Live resize verification (2026-08-11)
 
 Use the checked-in Python probe to launch an app and drive the native window:

@@ -45,6 +45,13 @@ struct WindowOptions
     bool lowLatency = true;
     /** Render a frame-synchronized Aurora cursor during transform drags. */
     bool synchronizedDragPointer = true;
+    /** Register the Windows pointer-wheel, scroll-command, and pan-gesture
+        paths used by custom scrollable windows. */
+    bool extendedScrollInput;
+    /** Advertise a native vertical scroll range without replacing a
+        client-drawn scrollbar. This lets Windows and legacy pointing-device
+        drivers recognize a custom window as a scroll target. */
+    bool nativeVerticalScrollHost;
     RendererPreference renderer = RendererPreference.automatic;
     bool vulkanValidation;
     bool vsync = true;
@@ -146,6 +153,11 @@ abstract class NativeWindow
     {
         position = PointF.init;
         return false;
+    }
+
+    /** Synchronize a custom view's pixel scroll range with its native host. */
+    void setVerticalScrollInfo(int position, int maximum, int pageSize)
+    {
     }
 
     NativeSurfaceInfo nativeSurfaceInfo()

@@ -41,6 +41,8 @@ interface WidgetHost
     void updateCursor(CursorKind cursor);
     void bringToFront(Widget widget);
     void closeHostWindow();
+    /** Synchronize a custom vertical scrollbar with the native window host. */
+    void synchronizeVerticalScrollInfo(int position, int maximum, int pageSize);
     /** Forget focus/capture/hover references before a subtree is detached. */
     void detachSubtree(Widget widget);
 }

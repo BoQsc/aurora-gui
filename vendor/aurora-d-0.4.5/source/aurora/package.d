@@ -43,6 +43,7 @@ public import aurora.widgets.label;
 public import aurora.widgets.listview;
 public import aurora.widgets.popup;
 public import aurora.widgets.scrollview;
+public import aurora.widgets.scrollbar;
 public import aurora.widgets.startmenu;
 public import aurora.widgets.splitpane;
 public import aurora.widgets.texteditor;

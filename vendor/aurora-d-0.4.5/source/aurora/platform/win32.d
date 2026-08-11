@@ -18,12 +18,52 @@ else version (Windows)
     pragma(lib, "shell32");
 
     private alias HDROP = HANDLE;
+    private alias HGESTUREINFO = HANDLE;
+    private struct AuroraGestureInfo
+    {
+        UINT size;
+        DWORD flags;
+        DWORD id;
+        HWND target;
+        short x;
+        short y;
+        DWORD instanceId;
+        DWORD sequenceId;
+        ulong arguments;
+        UINT extraArgsSize;
+    }
+
+    private struct AuroraGestureConfig
+    {
+        DWORD id;
+        DWORD want;
+        DWORD block;
+    }
+
+    private struct AuroraScrollInfo
+    {
+        UINT size;
+        UINT mask;
+        int minimum;
+        int maximum;
+        UINT page;
+        int position;
+        int trackPosition;
+    }
+
     private extern(Windows) nothrow
     {
         void DragAcceptFiles(HWND hwnd, BOOL accept);
         UINT DragQueryFileW(HDROP drop, UINT index, LPWSTR buffer, UINT capacity);
         BOOL DragQueryPoint(HDROP drop, POINT* point);
         void DragFinish(HDROP drop);
+        BOOL GetGestureInfo(HGESTUREINFO gesture, AuroraGestureInfo* info);
+        BOOL CloseGestureInfoHandle(HGESTUREINFO gesture);
+        BOOL SetGestureConfig(HWND hwnd, DWORD reserved, UINT count,
+            AuroraGestureConfig* config, UINT size);
+        int SetScrollInfo(HWND hwnd, int bar, const(AuroraScrollInfo)* info,
+            BOOL redraw);
+        BOOL GetScrollInfo(HWND hwnd, int bar, AuroraScrollInfo* info);
     }
 
     private enum : int
@@ -40,6 +80,21 @@ else version (Windows)
     }
 
     private enum UINT wmMouseHWheel = 0x020E;
+    private enum UINT wmPointerWheel = 0x024E;
+    private enum UINT wmPointerHWheel = 0x024F;
+    private enum UINT wmGesture = 0x0119;
+    private enum UINT wmVScroll = 0x0115;
+    private enum DWORD gestureIdPan = 4;
+    private enum DWORD gestureFlagBegin = 0x0001;
+    private enum DWORD gestureFlagEnd = 0x0004;
+    private enum DWORD gesturePanConfiguration = 0x0001 | 0x0002 |
+        0x0004 | 0x0008 | 0x0010;
+    private enum int scrollBarVertical = 1;
+    private enum UINT scrollInfoRange = 0x0001;
+    private enum UINT scrollInfoPage = 0x0002;
+    private enum UINT scrollInfoPosition = 0x0004;
+    private enum UINT scrollInfoDisableNoScroll = 0x0008;
+    private enum UINT scrollInfoTrackPosition = 0x0010;
     private enum UINT wmUniChar = 0x0109;
     private enum UINT wmDpiChanged = 0x02E0;
     private enum UINT wmDropFiles = 0x0233;
@@ -328,6 +383,9 @@ else version (Windows)
         private bool _pointerVisible = true;
         private int _wheelRemainderX;
         private int _wheelRemainderY;
+        private bool _gesturePanActive;
+        private int _gestureLastY;
+        private int _gestureWheelPixelRemainder;
         private wchar _pendingHighSurrogate;
 
         this(WindowOptions options, NativeWindowSink sink)
@@ -344,6 +402,8 @@ else version (Windows)
                 style |= WS_THICKFRAME;
             if (!options.resizable)
                 style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+            if (options.nativeVerticalScrollHost)
+                style |= WS_VSCROLL;
             DWORD exStyle = options.alwaysOnTop ? WS_EX_TOPMOST : 0;
 
             const requestedClient = _displayScale.logicalToPhysical(
@@ -373,6 +433,8 @@ else version (Windows)
                 cast(void*) this);
             if (_hwnd is null)
                 throw new Exception("Aurora could not create a Win32 window.");
+            if (options.extendedScrollInput)
+                initializeExtendedScrollInput();
             if (options.decorated && options.darkTitleBar)
                 applyDarkTitleBar(_hwnd);
 
@@ -796,6 +858,25 @@ else version (Windows)
             return true;
         }
 
+        override void setVerticalScrollInfo(int position, int maximum,
+            int pageSize)
+        {
+            if (_hwnd is null || !options.nativeVerticalScrollHost) return;
+            const range = maximum > 0 ? maximum : 0;
+            const page = pageSize > 0 ? pageSize : 1;
+            const current = position < 0 ? 0 :
+                (position > range ? range : position);
+            AuroraScrollInfo info;
+            info.size = AuroraScrollInfo.sizeof;
+            info.mask = scrollInfoRange | scrollInfoPage | scrollInfoPosition |
+                scrollInfoDisableNoScroll;
+            info.minimum = 0;
+            info.maximum = range + page - 1;
+            info.page = cast(UINT) page;
+            info.position = current;
+            SetScrollInfo(_hwnd, scrollBarVertical, &info, TRUE);
+        }
+
         override NativeSurfaceInfo nativeSurfaceInfo()
         {
             NativeSurfaceInfo info;
@@ -840,6 +921,22 @@ else version (Windows)
                 case WM_NCCALCSIZE:
                     if (!options.decorated)
                         return 0;
+                    if (options.nativeVerticalScrollHost)
+                    {
+                        const result = DefWindowProcW(_hwnd, message, wParam, lParam);
+                        const scrollbarWidth = GetSystemMetrics(SM_CXVSCROLL);
+                        if (wParam != 0)
+                        {
+                            auto parameters = cast(NCCALCSIZE_PARAMS*) lParam;
+                            parameters.rgrc[0].right += scrollbarWidth;
+                        }
+                        else
+                        {
+                            auto client = cast(RECT*) lParam;
+                            client.right += scrollbarWidth;
+                        }
+                        return result;
+                    }
                     break;
                 case WM_NCHITTEST:
                     if (!options.decorated && options.resizable && !_fullscreen)
@@ -977,6 +1074,13 @@ else version (Windows)
                     }
                     invalidate();
                     return 0;
+                case WM_MOUSEACTIVATE:
+                    // Wheel messages are routed to the focused/foreground
+                    // window by Windows and by some precision-touchpad drivers.
+                    // Make a real pointer press establish native activation;
+                    // never change foreground focus merely because of hover.
+                    activateFromPointerInteraction();
+                    return MA_ACTIVATE;
                 case WM_SETFOCUS:
                     event.type = EventType.focusGained;
                     sink.onNativeEvent(event);
@@ -995,6 +1099,10 @@ else version (Windows)
                 case WM_MBUTTONDOWN:
                 case WM_RBUTTONDOWN:
                 case WM_XBUTTONDOWN:
+                    // WM_MOUSEACTIVATE is normally sent first. Repeat the
+                    // activation here as a defensive path for synthesized or
+                    // device-specific button input that skips that message.
+                    activateFromPointerInteraction();
                     SetCapture(_hwnd);
                     event.type = EventType.mouseDown;
                     fillMouseEvent(event, lParam);
@@ -1016,24 +1124,33 @@ else version (Windows)
                 {
                     POINT point = POINT(signedLowWord(lParam), signedHighWord(lParam));
                     ScreenToClient(_hwnd, &point);
-                    event.type = EventType.mouseWheel;
-                    const physical = Point(point.x, point.y);
-                    event.position = _displayScale.physicalToLogical(physical);
-                    event.globalPosition = event.position;
-                    event.precisePosition = _displayScale.physicalToLogicalPrecise(physical);
-                    event.preciseGlobalPosition = event.precisePosition;
-                    event.hasPrecisePosition = true;
-                    event.modifiers = currentModifiers();
-                    const rawDelta = cast(int) highWordSigned(wParam);
-                    if (message == WM_MOUSEWHEEL)
-                        event.wheelY = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderY);
-                    else
-                        event.wheelX = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderX);
-                    if (event.wheelX == 0 && event.wheelY == 0) return 0;
-                    event.timestampMs = cast(long) GetTickCount();
-                    sink.onNativeEvent(event);
+                    emitWheelFromRawDelta(message == WM_MOUSEWHEEL,
+                        cast(int) highWordSigned(wParam), point);
                     return 0;
                 }
+                case wmPointerWheel:
+                case wmPointerHWheel:
+                {
+                    POINT point = POINT(signedLowWord(lParam), signedHighWord(lParam));
+                    ScreenToClient(_hwnd, &point);
+                    emitWheelFromRawDelta(message == wmPointerWheel,
+                        cast(int) highWordSigned(wParam), point);
+                    return 0;
+                }
+                case wmGesture:
+                    if (options.extendedScrollInput)
+                    {
+                        handlePanGesture(cast(HGESTUREINFO) lParam);
+                        return 0;
+                    }
+                    break;
+                case wmVScroll:
+                    if (options.nativeVerticalScrollHost || options.extendedScrollInput)
+                    {
+                        handleVerticalScrollCommand(wParam);
+                        return 0;
+                    }
+                    break;
                 case WM_KEYDOWN:
                 case WM_SYSKEYDOWN:
                 case WM_KEYUP:
@@ -1193,6 +1310,10 @@ else version (Windows)
                 case WM_XBUTTONUP:
                 case WM_MOUSEWHEEL:
                 case wmMouseHWheel:
+                case wmPointerWheel:
+                case wmPointerHWheel:
+                case wmGesture:
+                case wmVScroll:
                 case WM_SIZE:
                 case WM_PAINT:
                 case wmDpiChanged:
@@ -1424,5 +1545,147 @@ else version (Windows)
         {
             return a > b ? a : b;
         }
+
+        private void initializeExtendedScrollInput() nothrow
+        {
+            AuroraGestureConfig pan;
+            pan.id = gestureIdPan;
+            pan.want = gesturePanConfiguration;
+            SetGestureConfig(_hwnd, 0, 1, &pan, AuroraGestureConfig.sizeof);
+        }
+
+        private POINT cursorClientPoint() nothrow
+        {
+            POINT point;
+            GetCursorPos(&point);
+            ScreenToClient(_hwnd, &point);
+            return point;
+        }
+
+        private void emitWheelFromRawDelta(bool vertical, int rawDelta,
+            POINT clientPoint)
+        {
+            int units;
+            if (vertical)
+                units = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderY);
+            else
+                units = wheelUnitsFromRawDelta(rawDelta, _wheelRemainderX);
+            emitWheelUnits(vertical, units, clientPoint);
+        }
+
+        private void emitWheelUnits(bool vertical, int units, POINT clientPoint)
+        {
+            if (units == 0) return;
+            Event event;
+            event.type = EventType.mouseWheel;
+            const physical = Point(clientPoint.x, clientPoint.y);
+            event.position = _displayScale.physicalToLogical(physical);
+            event.globalPosition = event.position;
+            event.precisePosition = _displayScale.physicalToLogicalPrecise(physical);
+            event.preciseGlobalPosition = event.precisePosition;
+            event.hasPrecisePosition = true;
+            event.modifiers = currentModifiers();
+            if (vertical)
+                event.wheelY = units;
+            else
+                event.wheelX = units;
+            event.timestampMs = cast(long) GetTickCount();
+            sink.onNativeEvent(event);
+        }
+
+        private void handlePanGesture(HGESTUREINFO handle)
+        {
+            AuroraGestureInfo info;
+            info.size = AuroraGestureInfo.sizeof;
+            if (!GetGestureInfo(handle, &info))
+            {
+                CloseGestureInfoHandle(handle);
+                return;
+            }
+
+            if (info.id == gestureIdPan)
+            {
+                POINT point = POINT(info.x, info.y);
+                ScreenToClient(_hwnd, &point);
+                if ((info.flags & gestureFlagBegin) != 0 || !_gesturePanActive)
+                {
+                    _gesturePanActive = true;
+                    _gestureLastY = point.y;
+                    _gestureWheelPixelRemainder = 0;
+                }
+                else
+                {
+                    const delta = point.y - _gestureLastY;
+                    _gestureLastY = point.y;
+                    const logicalDelta = _displayScale.physicalToLogical(
+                        Point(0, delta)).y;
+                    _gestureWheelPixelRemainder += logicalDelta;
+                    const units = _gestureWheelPixelRemainder / 8;
+                    _gestureWheelPixelRemainder -= units * 8;
+                    emitWheelUnits(true, units, point);
+                }
+                if ((info.flags & gestureFlagEnd) != 0)
+                    _gesturePanActive = false;
+            }
+            CloseGestureInfoHandle(handle);
+        }
+
+        private void handleVerticalScrollCommand(WPARAM wParam)
+        {
+            AuroraScrollInfo info;
+            info.size = AuroraScrollInfo.sizeof;
+            info.mask = scrollInfoRange | scrollInfoPage | scrollInfoPosition |
+                scrollInfoTrackPosition;
+            if (!GetScrollInfo(_hwnd, scrollBarVertical, &info)) return;
+
+            const maxPosition = maxIntLocal(0,
+                info.maximum - cast(int) info.page + 1);
+            const line = maxIntLocal(1, cast(int) info.page / 12);
+            const command = cast(uint) (cast(size_t) wParam & 0xffff);
+            int target = info.position;
+            switch (command)
+            {
+                case 0: target -= line; break;                  // SB_LINEUP
+                case 1: target += line; break;                  // SB_LINEDOWN
+                case 2: target -= cast(int) info.page; break;   // SB_PAGEUP
+                case 3: target += cast(int) info.page; break;   // SB_PAGEDOWN
+                case 4: target = info.trackPosition; break;     // SB_THUMBPOSITION
+                case 5: target = info.trackPosition; break;     // SB_THUMBTRACK
+                case 6: target = 0; break;                      // SB_TOP
+                case 7: target = maxPosition; break;            // SB_BOTTOM
+                default: return;                                // SB_ENDSCROLL
+            }
+            if (target < 0) target = 0;
+            if (target > maxPosition) target = maxPosition;
+            emitVerticalScrollPosition(target);
+        }
+
+        private void emitVerticalScrollPosition(int position)
+        {
+            Event event;
+            event.type = EventType.mouseWheel;
+            const point = cursorClientPoint();
+            const physical = Point(point.x, point.y);
+            event.position = _displayScale.physicalToLogical(physical);
+            event.globalPosition = event.position;
+            event.precisePosition = _displayScale.physicalToLogicalPrecise(physical);
+            event.preciseGlobalPosition = event.precisePosition;
+            event.hasPrecisePosition = true;
+            event.verticalScrollPosition = position;
+            event.hasVerticalScrollPosition = true;
+            event.timestampMs = cast(long) GetTickCount();
+            sink.onNativeEvent(event);
+        }
+
+        private void activateFromPointerInteraction() nothrow
+        {
+            if (GetForegroundWindow() !is _hwnd)
+                SetForegroundWindow(_hwnd);
+            if (GetActiveWindow() !is _hwnd)
+                SetActiveWindow(_hwnd);
+            if (GetFocus() !is _hwnd)
+                SetFocus(_hwnd);
+        }
+
     }
 }

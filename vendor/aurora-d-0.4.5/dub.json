@@ -293,6 +293,23 @@
       ]
     },
     {
+      "name": "file-manager-scroll-test",
+      "targetType": "executable",
+      "targetName": "aurora-file-manager-scroll-test",
+      "mainSourceFile": "tests/windows_file_manager_scroll.d",
+      "sourceFiles": [
+        "demos/windows_file_manager.d"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    },
+    {
       "name": "shell-visual-test",
       "targetType": "executable",
       "targetName": "aurora-shell-visual-test",

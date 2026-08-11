@@ -794,6 +794,8 @@ final class WindowsFileManagerRoot : Widget
     private TextField _searchField;
     private TextField _locateField;
     private TextField _renameField;
+    private Scrollbar _listScrollbar;
+    private Scrollbar _sidebarScrollbar;
     private ContextMenu _homeMenu;
     private ContextMenu _viewMenu;
     private DragPreviewOverlay _dragPreviewOverlay;
@@ -855,12 +857,6 @@ final class WindowsFileManagerRoot : Widget
     version (Windows)
         private HANDLE _folderChangeHandle;
     private CommandButton _pressedCommand = CommandButton.none;
-    private bool _draggingListScrollbar;
-    private int _listScrollbarGrabY;
-    private int _listScrollbarGrabScrollY;
-    private bool _draggingSidebarScrollbar;
-    private int _sidebarScrollbarGrabY;
-    private int _sidebarScrollbarGrabScrollY;
     private bool _pendingEntryDrag;
     private bool _draggingEntry;
     private bool _rubberBandSelecting;
@@ -872,7 +868,6 @@ final class WindowsFileManagerRoot : Widget
     private int _dropTargetNavigationIndex = -1;
     private Point _dragStart;
     private Point _dragCurrent;
-
     private Rect _addressRect;
     private Rect _addressTextRect;
     private Rect _searchRect;
@@ -895,10 +890,6 @@ final class WindowsFileManagerRoot : Widget
     private Rect _forwardRect;
     private Rect _upRect;
     private Rect _refreshRect;
-    private Rect _listScrollbarRect;
-    private Rect _listScrollbarThumbRect;
-    private Rect _sidebarScrollbarRect;
-    private Rect _sidebarScrollbarThumbRect;
     private Rect _nameHeaderRect;
     private Rect _dateHeaderRect;
     private Rect _typeHeaderRect;
@@ -911,7 +902,7 @@ final class WindowsFileManagerRoot : Widget
 
     void delegate(string title) onTitleChanged;
 
-    this(GuiWindow window, string initialPath = "")
+    this(GuiWindow window, string initialPath = "", bool nativeScrollHost = false)
     {
         _window = window;
         setFocusable(true);
@@ -992,6 +983,21 @@ final class WindowsFileManagerRoot : Widget
         _renameField.onSubmitted = delegate()
         {
             commitRename();
+        };
+
+        _listScrollbar = add(new Scrollbar());
+        _listScrollbar.setColors(explorerScrollbarTrack, explorerScrollbarThumb);
+        _listScrollbar.setSynchronizeNativeHost(nativeScrollHost);
+        _listScrollbar.onValueChanged = delegate(int value)
+        {
+            setListScroll(value);
+        };
+
+        _sidebarScrollbar = add(new Scrollbar());
+        _sidebarScrollbar.setColors(explorerScrollbarTrack, explorerScrollbarThumb);
+        _sidebarScrollbar.onValueChanged = delegate(int value)
+        {
+            setSidebarScroll(value);
         };
 
         rebuildNavigation();
@@ -1086,33 +1092,6 @@ final class WindowsFileManagerRoot : Widget
             return true;
         }
 
-        if (_listScrollbarThumbRect.contains(event.position))
-        {
-            _draggingListScrollbar = true;
-            _listScrollbarGrabY = event.position.y;
-            _listScrollbarGrabScrollY = _scrollY;
-            captureMouse();
-            return true;
-        }
-        if (_listScrollbarRect.contains(event.position) && maxListScroll() > 0)
-        {
-            pageListScroll(event.position.y < _listScrollbarThumbRect.y ? -1 : 1);
-            return true;
-        }
-        if (_sidebarScrollbarThumbRect.contains(event.position))
-        {
-            _draggingSidebarScrollbar = true;
-            _sidebarScrollbarGrabY = event.position.y;
-            _sidebarScrollbarGrabScrollY = _sidebarScrollY;
-            captureMouse();
-            return true;
-        }
-        if (_sidebarScrollbarRect.contains(event.position) && maxSidebarScroll() > 0)
-        {
-            pageSidebarScroll(event.position.y < _sidebarScrollbarThumbRect.y ? -1 : 1);
-            return true;
-        }
-
         const navIndex = navigationIndexAt(event.position);
         if (navIndex >= 0)
         {
@@ -1157,16 +1136,6 @@ final class WindowsFileManagerRoot : Widget
     override bool onMouseMove(ref Event event)
     {
         updateThisPcHoverArea(event.position);
-        if (_draggingListScrollbar)
-        {
-            dragListScrollbar(event.position.y);
-            return true;
-        }
-        if (_draggingSidebarScrollbar)
-        {
-            dragSidebarScrollbar(event.position.y);
-            return true;
-        }
         if (_pendingEntryDrag || _draggingEntry)
         {
             updateEntryDrag(event.position);
@@ -1188,14 +1157,6 @@ final class WindowsFileManagerRoot : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
-        if (_draggingListScrollbar || _draggingSidebarScrollbar)
-        {
-            _draggingListScrollbar = false;
-            _draggingSidebarScrollbar = false;
-            releaseMouse();
-            invalidate();
-            return true;
-        }
         if (_pressedCommand != CommandButton.none)
         {
             const pressed = _pressedCommand;
@@ -1229,6 +1190,11 @@ final class WindowsFileManagerRoot : Widget
     override bool onMouseWheel(ref Event event)
     {
         updateGeometry();
+        if (event.hasVerticalScrollPosition)
+        {
+            setListScroll(event.verticalScrollPosition);
+            return true;
+        }
         if (event.control() || event.meta())
         {
             if (event.wheelY == 0) return false;
@@ -5748,70 +5714,34 @@ final class WindowsFileManagerRoot : Widget
             _sidebarRowsRect.height);
     }
 
-    private void pageListScroll(int direction)
-    {
-        const row = rowHeightPx();
-        setListScroll(_scrollY + direction * maxInt(row, _rowsRect.height - row));
-    }
-
-    private void pageSidebarScroll(int direction)
-    {
-        const row = sidebarRowHeightPx();
-        setSidebarScroll(_sidebarScrollY +
-            direction * maxInt(row, _sidebarRowsRect.height - row));
-    }
-
-    private void dragListScrollbar(int pointerY)
-    {
-        const maxScroll = maxListScroll();
-        const travel = maxInt(1, _listScrollbarRect.height - _listScrollbarThumbRect.height);
-        const delta = pointerY - _listScrollbarGrabY;
-        setListScroll(_listScrollbarGrabScrollY + delta * maxScroll / travel);
-    }
-
-    private void dragSidebarScrollbar(int pointerY)
-    {
-        const maxScroll = maxSidebarScroll();
-        const travel = maxInt(1, _sidebarScrollbarRect.height - _sidebarScrollbarThumbRect.height);
-        const delta = pointerY - _sidebarScrollbarGrabY;
-        setSidebarScroll(_sidebarScrollbarGrabScrollY + delta * maxScroll / travel);
-    }
-
     private void rebuildScrollbars()
     {
         const listMax = maxListScroll();
         const scrollbar = scrollbarWidthPx();
-        _listScrollbarRect = Rect(_rowsRect.right() - scrollbar, _rowsRect.y,
-            scrollbar, _rowsRect.height);
-        if (listMax > 0)
-        {
-            const contentHeight = _visibleContentHeight;
-            const thumbHeight = clampInt(_rowsRect.height * _rowsRect.height /
-                maxInt(1, contentHeight), scaled(34), maxInt(scaled(34), _rowsRect.height));
-            const travel = maxInt(1, _rowsRect.height - thumbHeight);
-            const thumbY = _rowsRect.y + _scrollY * travel / listMax;
-            _listScrollbarThumbRect = Rect(_listScrollbarRect.x + scaled(2), thumbY,
-                maxInt(1, scrollbar - scaled(4)), thumbHeight);
-        }
-        else
-            _listScrollbarThumbRect = Rect.init;
+        _listScrollbar.setBounds(Rect(_rowsRect.right() - scrollbar, _rowsRect.y,
+            scrollbar, _rowsRect.height));
+        _listScrollbar.setMinimumThumbLength(scaled(34));
+        _listScrollbar.setThumbCrossInset(scaled(2));
+        _listScrollbar.setCornerRadii(0, scaled(2));
+        _listScrollbar.setLineStep(rowHeightPx());
+        _listScrollbar.setPageStep(maxInt(rowHeightPx(),
+            _rowsRect.height - rowHeightPx()));
+        _listScrollbar.setRange(0, listMax, _rowsRect.height);
+        _listScrollbar.setValue(_scrollY, false);
+        _listScrollbar.setVisible(listMax > 0);
 
         const navMax = maxSidebarScroll();
-        _sidebarScrollbarRect = Rect(_sidebarRowsRect.right() - scrollbar,
-            _sidebarRowsRect.y, scrollbar, _sidebarRowsRect.height);
-        if (navMax > 0)
-        {
-            const contentHeight = cast(int) _navigation.length * sidebarRowHeightPx();
-            const thumbHeight = clampInt(_sidebarRowsRect.height * _sidebarRowsRect.height /
-                maxInt(1, contentHeight), scaled(34),
-                maxInt(scaled(34), _sidebarRowsRect.height));
-            const travel = maxInt(1, _sidebarRowsRect.height - thumbHeight);
-            const thumbY = _sidebarRowsRect.y + _sidebarScrollY * travel / navMax;
-            _sidebarScrollbarThumbRect = Rect(_sidebarScrollbarRect.x + scaled(2), thumbY,
-                maxInt(1, scrollbar - scaled(4)), thumbHeight);
-        }
-        else
-            _sidebarScrollbarThumbRect = Rect.init;
+        _sidebarScrollbar.setBounds(Rect(_sidebarRowsRect.right() - scrollbar,
+            _sidebarRowsRect.y, scrollbar, _sidebarRowsRect.height));
+        _sidebarScrollbar.setMinimumThumbLength(scaled(34));
+        _sidebarScrollbar.setThumbCrossInset(scaled(2));
+        _sidebarScrollbar.setCornerRadii(0, scaled(2));
+        _sidebarScrollbar.setLineStep(sidebarRowHeightPx());
+        _sidebarScrollbar.setPageStep(maxInt(sidebarRowHeightPx(),
+            _sidebarRowsRect.height - sidebarRowHeightPx()));
+        _sidebarScrollbar.setRange(0, navMax, _sidebarRowsRect.height);
+        _sidebarScrollbar.setValue(_sidebarScrollY, false);
+        _sidebarScrollbar.setVisible(navMax > 0);
     }
 
     private void drawRibbon(ref Canvas canvas)
@@ -5929,7 +5859,6 @@ final class WindowsFileManagerRoot : Widget
                     explorerMuted);
         }
 
-        drawScrollbar(canvas, _sidebarScrollbarRect, _sidebarScrollbarThumbRect);
     }
 
     private void drawDetailsView(ref Canvas canvas)
@@ -5993,7 +5922,6 @@ final class WindowsFileManagerRoot : Widget
         }
 
         drawRubberBandSelection(rows);
-        drawScrollbar(canvas, _listScrollbarRect, _listScrollbarThumbRect);
     }
 
     private void drawRubberBandSelection(ref Canvas canvas)
@@ -6521,13 +6449,6 @@ final class WindowsFileManagerRoot : Widget
             color, 1);
     }
 
-    private void drawScrollbar(ref Canvas canvas, Rect track, Rect thumb)
-    {
-        if (track.empty() || thumb.empty()) return;
-        canvas.fillRect(track, explorerScrollbarTrack);
-        canvas.fillRoundedRect(thumb, scaled(2), explorerScrollbarThumb);
-    }
-
     private bool canGoBack() const
     {
         return _historyIndex > 0;
@@ -7018,6 +6939,30 @@ final class WindowsFileManagerRoot : Widget
         }
         return result;
     }
+
+    version (AuroraHeadless)
+    {
+        int testListScrollY() const @safe pure nothrow @nogc { return _scrollY; }
+        int testSidebarScrollY() const @safe pure nothrow @nogc { return _sidebarScrollY; }
+        int testMaxListScroll() const { return maxListScroll(); }
+        int testMaxSidebarScroll() const { return maxSidebarScroll(); }
+        int testVisibleEntryCount() const @safe pure nothrow @nogc
+        {
+            return cast(int) _visibleRows.length;
+        }
+        bool testListSmoothScrollActive() const @safe pure nothrow @nogc
+        {
+            return _listSmoothScrollActive;
+        }
+        Scrollbar testListScrollbar() @safe pure nothrow @nogc
+        {
+            return _listScrollbar;
+        }
+        Scrollbar testSidebarScrollbar() @safe pure nothrow @nogc
+        {
+            return _sidebarScrollbar;
+        }
+    }
 }
 
 private string toUpperAscii(string value)
@@ -7501,9 +7446,11 @@ int main(string[] args)
     options.width = 1280;
     options.height = 760;
     options.darkTitleBar = true;
+    options.extendedScrollInput = true;
+    options.nativeVerticalScrollHost = true;
     options.iconPath = windowsFileManagerIconPath();
     auto window = new GuiWindow(options, explorerTheme());
     const initial = args.length > 1 ? args[1] : "";
-    window.setRoot(new WindowsFileManagerRoot(window, initial));
+    window.setRoot(new WindowsFileManagerRoot(window, initial, true));
     return window.run();
 }

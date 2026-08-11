@@ -1,5 +1,19 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-11 — Windows File Manager mouse/touchpad scroll (user complaint)
+- [x] Added a real reusable `aurora.widgets.scrollbar.Scrollbar` widget.
+- [x] Replaced the file manager's embedded list/sidebar scrollbar painting and
+      drag logic with retained child scrollbar widgets.
+- [x] Added Win32 wheel, pointer-wheel, gesture, and `WM_VSCROLL` input paths.
+- [x] Added a synchronized native scroll-range contract for legacy drivers;
+      `WM_NCCALCSIZE` leaves no visible native scrollbar area, so Aurora's
+      custom widget remains the only rendered control.
+- [x] Kept ordinary click-to-focus behavior and removed hover activation,
+      synthetic focus input, raw-input duplication, and registry workarounds.
+- [x] Added deterministic widget/file-manager tests and a native focus/range/
+      exact-delta probe. Release build and both verification paths pass.
+
+
 ## 2026-08-11 — Window resize: stretched image / white blinking / freeze (user complaint)
 - [x] Diagnosed the complete OpenCode path rather than only the native border
       message. Three independent problems were involved: the Windows launcher

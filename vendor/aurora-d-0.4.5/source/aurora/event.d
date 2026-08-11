@@ -145,6 +145,9 @@ struct Event
     MouseButton button;
     int wheelX;
     int wheelY;
+    /** Absolute vertical scroll position supplied by a native scrollbar. */
+    int verticalScrollPosition;
+    bool hasVerticalScrollPosition;
     Key key;
     uint modifiers;
     dstring text;
