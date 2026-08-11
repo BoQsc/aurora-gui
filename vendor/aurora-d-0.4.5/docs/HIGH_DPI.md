@@ -59,17 +59,27 @@ logical widget tree
 Windows therefore does not need to bitmap-enlarge a 96-DPI Aurora frame at
 125%, 150%, 175%, or 200% scaling.
 
-## Windows SDK independence and optional manifest embedding
+## Standalone builds, portable CRT, and optional manifest embedding
 
 Aurora's default DUB configurations deliberately do **not** pass
 `/manifest:embed` or `/manifestinput`. DMD's bundled `lld-link` can delegate
-that operation to the Windows SDK Manifest Tool (`mt.exe`), which is not part
-of a standalone DMD installation. Ordinary builds therefore require only DMD
-and DUB:
+that operation to the Windows SDK Manifest Tool (`mt.exe`). The normal local
+link does not invoke `mt.exe` and works with standalone DMD:
 
 ```powershell
 dub run --config=desktop
 ```
+
+Normal local builds use DMD's bundled dynamic runtime. To create a standalone
+distributable executable, use the `portable-release` build type:
+
+```powershell
+dub build --config=desktop --build=portable-release --compiler=dmd --root=.
+```
+
+That build uses `-mscrtlib=libcmt` and needs the MSVC x64/x86 tools and
+Universal CRT SDK individual components. The complete Visual Studio C++
+workload is not required.
 
 Per-Monitor-V2 remains active because the Win32 module constructor calls
 `SetProcessDpiAwarenessContext` before `main`, with older API fallbacks. This
@@ -90,7 +100,7 @@ DUB normally places build outputs in its cache. To create a conveniently named
 local executable first, use:
 
 ```powershell
-dub build --config=desktop --build=release --compiler=dmd --root=.
+dub build --config=desktop --build=portable-release --compiler=dmd --root=.
 .\scripts\embed-windows-manifest.ps1 .\aurora-desktop.exe
 ```
 

@@ -220,7 +220,7 @@ These sizes are logical, not fixed device pixels. At 150% Windows scaling, a 17-
 
 Aurora defines widget geometry in logical units at 96 DPI. On Windows it enables Per-Monitor-V2 awareness before creating a window, reports the monitor scale through `DisplayScale`, converts native pointer coordinates back to logical units, and records the draw list in physical pixels. `WM_DPICHANGED` applies the operating system's suggested window rectangle and rebuilds the software surface or Vulkan swapchain at the new physical extent.
 
-The default Windows DUB configurations do not invoke `mt.exe` or require the Windows SDK. The backend requests Per-Monitor-V2 awareness dynamically before `main`, so standalone DMD installations can build and run the demos directly. A manifest and resource script remain available for applications that choose manifest-first deployment; see [`docs/HIGH_DPI.md`](docs/HIGH_DPI.md).
+The default Windows DUB configurations do not invoke `mt.exe`. The backend requests Per-Monitor-V2 awareness dynamically before `main`, so a manifest remains optional and ordinary builds work with standalone DMD. The optional `portable-release` build type statically links the release C runtime with `-mscrtlib=libcmt`; it needs the MSVC x64/x86 tools and Universal CRT SDK individual components. A manifest and resource script remain available for applications that choose manifest-first deployment; see [`docs/HIGH_DPI.md`](docs/HIGH_DPI.md).
 
 ```d
 auto scale = window.displayScale();
@@ -250,7 +250,7 @@ On Windows, fullscreen is borderless monitor fullscreen rather than an exclusive
 
 - A recent D compiler and DUB. LDC is recommended.
 - Linux: X11 and `dl` for native GUI builds.
-- Windows: `user32` and `gdi32`; the default DUB build does not require Visual Studio or the Windows SDK.
+- Windows: `user32` and `gdi32`. Portable release linking additionally needs the MSVC x64/x86 tools and Universal CRT SDK individual components; they are not runtime dependencies.
 - macOS: AppKit, Core Graphics, Core Foundation, QuartzCore, and Objective-C.
 - Vulkan is optional at runtime.
 
@@ -266,12 +266,22 @@ dub run --config=taskbar
 dub run --config=font-gallery
 ```
 
-On Windows, these default configurations work with the standalone DMD ZIP and do not invoke `mt.exe`. A Windows SDK is needed only for the optional post-link manifest step documented in [High-DPI rendering](docs/HIGH_DPI.md). DUB uses a debug build unless told otherwise; for interactive demos—especially when automatic selection reports the `Software` backend—use an optimized build:
+On Windows, ordinary debug and release builds work with the standalone DMD ZIP and use its bundled dynamic runtime. DUB uses a debug build unless told otherwise; for interactive demos—especially when automatic selection reports the `Software` backend—use an optimized local build:
 
 ```powershell
 dub clean
 dub run --build=release --config=desktop --force
 ```
+
+For a standalone distributable executable, select the portable build type:
+
+```powershell
+dub build --build=portable-release --config=desktop --force
+```
+
+That optional build needs the MSVC x64/x86 tools and Universal CRT SDK from the
+Visual Studio Installer's **Individual components** tab, not the complete
+**Desktop development with C++** workload.
 
 The Desktop Environment title includes the selected renderer. To require Vulkan during a latency check:
 

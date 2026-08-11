@@ -443,6 +443,13 @@ dub --version
 ffmpeg -version
 ```
 
+Those ordinary local builds need only DMD and DUB. To make a standalone
+distributable executable, use `dub build --build=portable-release`. This
+optional build needs the MSVC x64/x86 tools and Universal CRT SDK individual
+components, not the complete **Desktop development with C++** workload. The
+resulting executable does not need those tools or the Visual C++ Redistributable
+at runtime.
+
 ## Not implemented yet
 
 - Editable Twitch output resolutions beyond the locked normal 1080p60 profile

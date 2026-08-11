@@ -432,10 +432,25 @@ def verify_windows_manifest(root: Path) -> None:
     if "mt.exe" not in embed_text or "-outputresource:" not in embed_text:
         raise VerificationError("optional Windows manifest script is incomplete")
 
-    # The default DMD ZIP contains lld-link but not the Windows SDK Manifest
-    # Tool. Keep ordinary `dub run` independent of mt.exe; manifest-first
-    # deployment remains an explicit opt-in through the script above.
+    # Keep ordinary `dub run` independent of mt.exe and the MSVC static
+    # libraries. Manifest-first deployment and portable CRT linkage remain
+    # explicit opt-ins.
     metadata = json.loads((root / "dub.json").read_text(encoding="utf-8"))
+    static_crt_flag = "-mscrtlib=libcmt"
+    portable_build = metadata.get("buildTypes", {}).get("portable-release", {})
+    required_options = {"releaseMode", "optimize", "inline"}
+    missing_options = required_options - set(portable_build.get("buildOptions", []))
+    if missing_options:
+        raise VerificationError(
+            "portable-release build type is missing options: "
+            + ", ".join(sorted(missing_options))
+        )
+    for compiler in ("dmd", "ldc"):
+        field = f"dflags-windows-{compiler}"
+        if static_crt_flag not in portable_build.get(field, []):
+            raise VerificationError(
+                f"portable-release DUB field {field} must select the static Windows CRT"
+            )
     executable_configs = {
         "notepad",
         "file-explorer",

@@ -16,6 +16,11 @@ AURORA CUT 0.11.2 — WINDOWS RUNNING INSTRUCTIONS
    ffmpeg and ffprobe are required. ffplay is optional, but audible Preview
    output is unavailable without it.
 
+   These ordinary local builds need only DMD and DUB. To produce a standalone
+   distributable executable, use `dub build --build=portable-release`; that
+   optional build needs the individual MSVC x64/x86 tools and Universal CRT SDK
+   components described in README.md, not the complete C++ workload.
+
 4. First clean build and run:
 
    BUILD-WINDOWS.bat

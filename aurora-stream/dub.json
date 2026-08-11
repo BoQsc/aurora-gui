@@ -24,6 +24,21 @@
     "ole32",
     "avrt"
   ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
   "lflags-osx": [
     "-framework",
     "AppKit",

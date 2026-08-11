@@ -1,3 +1,17 @@
+## Portable Windows CRT linkage
+
+- Every Aurora DUB package provides a `portable-release` build type that passes
+  `-mscrtlib=libcmt` for Windows DMD and LDC builds.
+- Portable release executables therefore contain the Microsoft C runtime instead of
+  importing `MSVCR120.dll` or requiring the Visual C++ Redistributable.
+- Ordinary local builds remain compatible with standalone DMD. Portable builds
+  need only the individual MSVC x64/x86 tools and Universal CRT SDK components;
+  the complete Desktop development workload is unnecessary.
+- `scripts/verify-windows-portability.py` enforces the manifest setting and can
+  inspect final PE imports.
+- `scripts/build-portable-windows.py` provides the same build-and-verify path
+  locally and in the manually triggered GitHub Actions workflow.
+
 ## Aurora GUI-subsystem link (no attached console window)
 
 - DMD links executables as console-subsystem binaries by default, so Windows

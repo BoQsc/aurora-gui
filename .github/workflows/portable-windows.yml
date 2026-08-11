@@ -1,0 +1,36 @@
+name: Portable Windows executables
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install DMD and DUB
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-2.112.0
+
+      - name: Build and verify portable executables
+        run: python -X utf8 scripts/build-portable-windows.py --compiler dmd
+
+      - name: Upload portable executables
+        uses: actions/upload-artifact@v7
+        with:
+          name: aurora-windows-portable
+          path: |
+            aurora-cut.exe
+            aurora-image-viewer/aurora-image-viewer.exe
+            aurora-opencode/aurora-opencode.exe
+            aurora-stream/aurora-stream.exe
+          if-no-files-found: error
+          retention-days: 14

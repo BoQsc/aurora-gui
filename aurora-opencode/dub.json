@@ -19,6 +19,21 @@
     "shell32",
     "wininet"
   ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
   "lflags-windows": [
     "/SUBSYSTEM:WINDOWS",
     "/ENTRY:mainCRTStartup"

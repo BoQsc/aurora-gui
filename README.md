@@ -37,6 +37,64 @@ ffprobe -version
 ffplay -version
 ```
 
+## Windows: portable executables
+
+Ordinary local debug and release builds continue to work with standalone DMD:
+
+```bat
+dub build
+dub build --build=release
+```
+
+Those development builds use DMD's bundled dynamic runtime. They run normally
+while the DMD `bin64` directory is on `PATH`, but they are not the executables
+to distribute by themselves.
+
+Every Aurora DUB recipe also defines a `portable-release` build type for DMD
+and LDC:
+
+```json
+"buildTypes": {
+  "portable-release": {
+    "buildOptions": ["releaseMode", "optimize", "inline"],
+    "dflags-windows-dmd": ["-mscrtlib=libcmt"],
+    "dflags-windows-ldc": ["-mscrtlib=libcmt"]
+  }
+}
+```
+
+This incorporates the release CRT into DMD- and LDC-built executables instead
+of importing `MSVCR120.dll`. New Aurora packages must keep both settings. After
+linking a Windows release, verify its PE imports with:
+
+```bat
+dub build --build=portable-release
+python scripts\verify-windows-portability.py aurora-cut.exe
+```
+
+The portable build requires the MSVC static libraries, but not the entire
+**Desktop development with C++** workload. The repository's
+`portable-windows.vsconfig` selects only the x64/x86 MSVC tools and Universal
+CRT SDK from the Visual Studio Installer's **Individual components**. GitHub's
+Windows runners already provide an equivalent toolchain. These components are
+needed only to create a portable executable, never to run it.
+
+To build and verify all four applications on a suitably equipped local machine:
+
+```bat
+python scripts\build-portable-windows.py
+```
+
+Alternatively, run the manually triggered **Portable Windows executables**
+GitHub Actions workflow. It invokes the same Python command and publishes the
+four verified executables as one workflow artifact; normal local build and run
+scripts remain completely independent of GitHub Actions.
+
+Running the verifier without an executable checks that every `dub.json` in the
+repository carries the policy. A successful portable executable may still
+import ordinary Windows system DLLs, but it must not import an MSVC, VCRuntime,
+or UCRT DLL.
+
 ## Windows: keep GUI programs console-free
 
 DMD builds executables as **console-subsystem** binaries by default. Windows

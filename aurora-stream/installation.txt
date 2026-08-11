@@ -10,4 +10,14 @@ winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-a
 
 https://dlang.org/
 
-These dependencies are not installed automatically. Install them before running BUILD-WINDOWS.bat or RUN-WINDOWS.bat.
+3. Optional portable-release link libraries
+
+Normal local builds need only DMD and DUB. For a standalone distributable build,
+run `dub build --build=portable-release`. That build needs the MSVC x64/x86
+tools and Universal CRT SDK from the Visual Studio Installer's Individual
+components tab. The complete Desktop development with C++ workload is not
+required.
+
+These optional link libraries are not installed automatically and are not
+required by BUILD-WINDOWS.bat, RUN-WINDOWS.bat, or a machine that only runs the
+finished portable executable.
