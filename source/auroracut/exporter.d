@@ -873,6 +873,7 @@ private TitleVisual titleVisualFromClip(const ref ExportClip clip)
     visual.italic = clip.textItalic;
     visual.underline = clip.textUnderline;
     visual.textAlignment = clip.textAlignment;
+    visual.baseTextSize = clip.textSize;
     visual.textSize = clip.textSize;
     visual.textColor = clip.textColor;
     visual.box = clip.textBox;

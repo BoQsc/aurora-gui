@@ -24,6 +24,11 @@ struct TitleVisual
     bool italic;
     bool underline;
     TextAlignment textAlignment = TextAlignment.left;
+    // The unanimated authored size used to create the export raster. Preview
+    // uses it to scale strokes, shadows, and boxes by the same transform that
+    // FFmpeg applies to that raster. A zero value falls back to textSize for
+    // callers that provide an already-evaluated, static visual.
+    double baseTextSize;
     double textSize = 96.0;
     uint textColor = 0xffffffff;
     bool box;
@@ -41,6 +46,16 @@ struct TitleVisual
     double positionY;
     double rotation;
     size_t trackIndex;
+}
+
+/** Scale applied to the authored export raster at this visual's current time. */
+double titleRasterScale(const TitleVisual visual)
+{
+    const baseSize = visual.baseTextSize > 0.000_001 ?
+        visual.baseTextSize : visual.textSize;
+    const safeBase = baseSize > 0.000_001 ? baseSize : 96.0;
+    const factor = visual.scale * visual.textSize / safeBase;
+    return factor > 0.01 ? factor : 0.01;
 }
 
 struct TitleRaster

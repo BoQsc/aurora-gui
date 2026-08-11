@@ -3,7 +3,8 @@ module auroracut.preview;
 import aurora;
 import auroracut.exporter : ExportRequest, compositeFrameArguments;
 import auroracut.model : MediaAsset, TextAlignment;
-import auroracut.titlelayer : TitleVisual, loadTitleFace, titlePaintStyle;
+import auroracut.titlelayer : TitleVisual, loadTitleFace, titlePaintStyle,
+    titleRasterScale;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
 import auroracut.util : clampValue, formatSeconds, formatTimecode;
@@ -1091,6 +1092,24 @@ final class PreviewWidget : Widget
         return _titleLayers.length;
     }
 
+    int titleAuthoredHeightForTesting() const @safe pure nothrow @nogc
+    {
+        return _titleAuthoredHeight;
+    }
+
+    int titlePixelSizeForTesting(ulong clipId) const
+    {
+        if (auto visual = clipId in _titleVisuals)
+        {
+            const destination = displayedImageRect();
+            const pixelFactor = _titleAuthoredHeight > 0 ?
+                cast(double) destination.height / _titleAuthoredHeight : 1.0;
+            return maxInt(1, cast(int)
+                (visual.textSize * visual.scale * pixelFactor + 0.5));
+        }
+        return 0;
+    }
+
     TextEditor titleEditorForTesting(ulong clipId)
     {
         if (auto layer = clipId in _titleLayers) return *layer;
@@ -1170,9 +1189,13 @@ final class PreviewWidget : Widget
 
         const pixelFactor = _titleAuthoredHeight > 0 ?
             cast(double) destination.height / _titleAuthoredHeight : 1.0;
-        layer.setPixelSizeOverride(maxInt(8, cast(int)
+        layer.setPixelSizeOverride(maxInt(1, cast(int)
             (visual.textSize * visual.scale * pixelFactor + 0.5)));
-        const style = titlePaintStyle(visual, pixelFactor);
+        // Export scales the complete raster, including its effects. Apply the
+        // same evaluated raster factor to the live layer instead of scaling
+        // only its glyphs.
+        const style = titlePaintStyle(visual,
+            pixelFactor * titleRasterScale(visual));
         layer.setTextColor(style.foreground);
         layer.setTitleLayerOpacity(style.layerOpacity);
         layer.setTitleHorizontalAlignment(titleHorizontalAlign(
@@ -1401,6 +1424,7 @@ final class PreviewWidget : Widget
         double shadowOffsetY, string shadowColor,
         int authoredHeight = 1080)
     {
+        _titleAuthoredHeight = maxInt(1, authoredHeight);
         _inlineOpacity = opacity;
         _inlineTextBox = textBox;
         _inlineTextBoxColor = textBoxColor;
@@ -1419,6 +1443,7 @@ final class PreviewWidget : Widget
         double textSize, string textColor, bool bold, bool italic,
         bool underline, TextAlignment alignment, int authoredHeight = 1080)
     {
+        _titleAuthoredHeight = maxInt(1, authoredHeight);
         _inlineTextEditing = true;
         _inlineClipId = clipId;
         _inlineText = titleLayer(clipId);
@@ -1431,6 +1456,7 @@ final class PreviewWidget : Widget
             visual.clipId = clipId;
             visual.text = text;
             visual.fontName = fontName;
+            visual.baseTextSize = textSize;
             visual.textSize = textSize;
             visual.textColor = inlineColor(textColor).argb();
             visual.bold = bold;
@@ -1476,6 +1502,7 @@ final class PreviewWidget : Widget
         TextAlignment alignment, int authoredHeight = 1080)
     {
         if (!_inlineTextEditing || _inlineText is null) return;
+        _titleAuthoredHeight = maxInt(1, authoredHeight);
         _inlineSyncing = true;
         if (!_inlineText.focused() && _inlineText.textUtf8() != text)
             _inlineText.setText(text, false);

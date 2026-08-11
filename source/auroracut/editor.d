@@ -1201,6 +1201,15 @@ final class EditorRoot : VBox
         _compositionHeight = height;
         markProjectDirty();
         updateCompositionResolutionUi();
+        // Title geometry is authored against the composition canvas, not the
+        // independently selected preview-quality height. Refresh both layers
+        // immediately so the monitor remains a faithful export preview.
+        if (_preview !is null && _timeline !is null)
+        {
+            syncPreviewTitleLayers(_timeline.playhead());
+            updatePreviewSelectionOverlay();
+            scheduleTimelineFrame();
+        }
         setStatus(format("%s set to %d×%d.", statusPrefix, width, height));
     }
 
@@ -3757,7 +3766,7 @@ final class EditorRoot : VBox
             clip.strokeWidth, formatArgb(clip.strokeColor),
             clip.shadowOpacity, clip.shadowBlur, clip.shadowOffsetX,
             clip.shadowOffsetY, formatArgb(clip.shadowColor),
-            _previewQualityHeight);
+            _compositionHeight);
     }
 
     private TitleVisual previewTitleVisual(const TimelineClip clip,
@@ -3780,6 +3789,7 @@ final class EditorRoot : VBox
         visual.italic = clip.textItalic;
         visual.underline = clip.textUnderline;
         visual.textAlignment = clip.textAlignment;
+        visual.baseTextSize = clip.textSize;
         visual.textSize = clip.evaluatedValue(EffectProperty.textSize, localTime);
         visual.textColor = clip.textColor;
         visual.box = clip.textBox;
@@ -3816,8 +3826,7 @@ final class EditorRoot : VBox
             if (!clip.isText()) continue;
             titles ~= previewTitleVisual(clip, lane, sequenceTime);
         }
-        const preset = ExportPreset.previewForHeight(_previewQualityHeight);
-        _preview.setTitleLayers(titles, preset.width, preset.height);
+        _preview.setTitleLayers(titles, _compositionWidth, _compositionHeight);
     }
 
     private void focusSelectedTextField()
@@ -3841,7 +3850,7 @@ final class EditorRoot : VBox
             _preview.beginInlineTextEditing(clip.id, clip.text, clip.fontName,
                 clip.evaluatedValue(EffectProperty.textSize, localTime),
                 formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-                clip.textUnderline, clip.textAlignment, _previewQualityHeight);
+                clip.textUnderline, clip.textAlignment, _compositionHeight);
             syncInlineTextEffectsForClip(clip, localTime);
             scheduleTimelineFrame();
             return;
@@ -3860,7 +3869,7 @@ final class EditorRoot : VBox
         _preview.beginInlineTextEditing(clip.id, clip.text, clip.fontName,
             clip.evaluatedValue(EffectProperty.textSize, localTime),
             formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-            clip.textUnderline, clip.textAlignment, _previewQualityHeight);
+            clip.textUnderline, clip.textAlignment, _compositionHeight);
         syncInlineTextEffectsForClip(clip, localTime);
         scheduleTimelineFrame();
         setStatus("Edit the live title directly in Composition Preview.");
@@ -4003,7 +4012,7 @@ final class EditorRoot : VBox
         centerX = clip.evaluatedValue(EffectProperty.positionX, localTime);
         centerY = clip.evaluatedValue(EffectProperty.positionY, localTime);
         rotation = clip.evaluatedValue(EffectProperty.rotation, localTime);
-        const preset = ExportPreset.previewForHeight(_previewQualityHeight);
+        const preset = compositionExportPreset();
         if (clip.isText())
         {
             size_t lineCount = 1;
@@ -4963,7 +4972,7 @@ final class EditorRoot : VBox
                     clip.evaluatedValue(EffectProperty.textSize, localTime),
                     formatArgb(clip.textColor), clip.textBold, clip.textItalic,
                     clip.textUnderline, clip.textAlignment,
-                    _previewQualityHeight);
+                    _compositionHeight);
             }
             if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
             setStatus(resolvedPath.length > 0 ?
@@ -5293,7 +5302,7 @@ final class EditorRoot : VBox
         {
             _preview.syncInlineTextStyle(clip.text, clip.fontName, evaluatedTextSize,
                 formatArgb(clip.textColor), clip.textBold, clip.textItalic,
-                clip.textUnderline, clip.textAlignment, _previewQualityHeight);
+                clip.textUnderline, clip.textAlignment, _compositionHeight);
             syncInlineTextEffectsForClip(clip, localTime);
         }
         updatePreviewSelectionOverlay();

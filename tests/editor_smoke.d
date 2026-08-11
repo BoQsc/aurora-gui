@@ -1244,6 +1244,29 @@ int main(string[] arguments)
     assert(textField.focused() && textField.visible() &&
         preview.inlineTextEditing(),
         "New text did not focus its persistent live title layer");
+    // Text is authored in composition pixels. Preview quality controls only
+    // background decode cost and must not become the title's coordinate space.
+    assert(preview.titleAuthoredHeightForTesting() == 1080,
+        "Preview title geometry used preview quality instead of composition height");
+    const fullHdTitlePixels = preview.titlePixelSizeForTesting(firstTitleId);
+    const fullHdTitleBounds = textField.bounds();
+    const fullHdTitleCenter = Point(fullHdTitleBounds.x + fullHdTitleBounds.width / 2,
+        fullHdTitleBounds.y + fullHdTitleBounds.height / 2);
+    editor.setCompositionResolutionForTesting(1280, 720);
+    const hdTitleBounds = textField.bounds();
+    assert(preview.titleAuthoredHeightForTesting() == 720 &&
+        preview.titlePixelSizeForTesting(firstTitleId) > fullHdTitlePixels,
+        "720p output did not enlarge the authored title in the live preview");
+    assert(Point(hdTitleBounds.x + hdTitleBounds.width / 2,
+            hdTitleBounds.y + hdTitleBounds.height / 2) == fullHdTitleCenter,
+        "Changing output resolution shifted the title's normalized position");
+    editor.setCompositionResolutionForTesting(3840, 2160);
+    assert(preview.titleAuthoredHeightForTesting() == 2160 &&
+        preview.titlePixelSizeForTesting(firstTitleId) < fullHdTitlePixels,
+        "2160p output did not shrink the authored title in the live preview");
+    editor.setCompositionResolutionForTesting(1920, 1080);
+    assert(preview.titlePixelSizeForTesting(firstTitleId) == fullHdTitlePixels,
+        "Restoring 1080p did not restore matching live title geometry");
     assert(!inspectorTextField.visible(),
         "A duplicate text-content input remained visible in Effects / Properties");
     // Exercise real text-input dispatch rather than directly mutating the
