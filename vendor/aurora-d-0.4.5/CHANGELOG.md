@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — Unified scrolling and native drag/drop
+
+- Made extended precision/pointer/gesture scrolling and the hidden native
+  vertical-range contract default Win32 capabilities instead of demo flags.
+  `GuiWindow` now activates the range of the scrollable widget beneath the
+  pointer before processing a native scroll command and rejects native-range
+  updates from inactive sibling scrollbars.
+- Migrated `ScrollView`, `ListView`, and multiline `TextEditor` from embedded
+  thumb painting/state to retained child `Scrollbar` widgets.
+- Added platform-neutral `DragPayload`, `DragFormat`, `DragAction`, drag event
+  routing, `Widget.beginDrag`, and deterministic rich-drag test injection.
+- Added Win32 OLE source/target support for outbound and inbound files, Unicode
+  text, URI lists, HTML/custom MIME data, and copy/move/link negotiation.
+- Windows File Manager now enters a real OS drag session when a retained file
+  drag crosses the host-window boundary.
+
 ## 0.4.5 — Pointer-locked taskbar reordering
 
 - Replaced slot-bound task dragging with a root-level retained `TaskDragProxy` that displays the actual icon, label, running state, and active state under the pointer.

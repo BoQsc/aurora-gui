@@ -26,6 +26,16 @@ int main()
 
     auto standardList = new ListView();
     assert(standardList.rowHeight() >= 44);
+    assert(standardList.verticalScrollbar() !is null);
+
+    DragPayload dragPayload;
+    dragPayload.paths = ["example.txt"];
+    dragPayload.text = "Aurora"d;
+    dragPayload.formats ~= DragFormat("application/x-aurora-public",
+        cast(const(ubyte)[]) "data");
+    const dragCapabilities = dragActions(DragAction.copy, DragAction.move);
+    assert(allowsDragAction(dragCapabilities, DragAction.move));
+    assert(dragPayload.hasFormat("application/x-aurora-public"));
 
     auto surface = new Surface(8, 8);
     surface.clear(Color.rgb(12, 34, 56));
@@ -48,6 +58,7 @@ int main()
     options.renderer = RendererPreference.software;
     options.startFullscreen = true;
     assert(options.lowLatency);
+    assert(options.extendedScrollInput && options.nativeVerticalScrollHost);
     auto window = new GuiWindow(options);
     assert(window.fullscreen());
 

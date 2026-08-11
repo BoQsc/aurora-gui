@@ -200,6 +200,21 @@ def main() -> int:
             raise RuntimeError("file manager window did not appear")
         time.sleep(1.0)
 
+        # Expose the probe subject without activating it, even when the current
+        # foreground application is temporarily topmost. The subsequent real
+        # client click must still establish foreground focus; topmost is removed
+        # immediately after that assertion.
+        if not user32.SetWindowPos(
+            file_manager_hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        ):
+            raise RuntimeError("could not expose file manager probe window")
+
         style = user32.GetWindowLongPtrW(file_manager_hwnd, GWL_STYLE)
         print(f"native_vertical_scrollbar={bool(style & WS_VSCROLL)}")
         if not style & WS_VSCROLL:
@@ -245,6 +260,15 @@ def main() -> int:
         )
         if foreground_after_hover != file_manager_hwnd:
             raise RuntimeError("client click did not activate the file manager")
+        user32.SetWindowPos(
+            file_manager_hwnd,
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
 
         user32.SendMessageW(file_manager_hwnd, WM_VSCROLL, 1, 0)
         time.sleep(0.3)

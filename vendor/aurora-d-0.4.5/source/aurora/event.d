@@ -1,6 +1,7 @@
 module aurora.event;
 
 import aurora.types : DisplayScale, Point, PointF, Size;
+import aurora.dragdrop : DragAction, DragActions, DragPayload;
 
 enum EventType : ubyte
 {
@@ -21,6 +22,10 @@ enum EventType : ubyte
     focusGained,
     focusLost,
     tick,
+    dragEntered,
+    dragMoved,
+    dragLeft,
+    dropped,
     filesDropped,
     closeRequested
 }
@@ -153,6 +158,14 @@ struct Event
     dstring text;
     /** Native file paths dropped into the host window, when supported. */
     string[] paths;
+    /** Rich platform-neutral data associated with a drag/drop event. */
+    DragPayload dragPayload;
+    /** Source operations available for this drag. */
+    DragActions allowedDragActions;
+    /** Platform/modifier-derived preferred operation before target policy. */
+    DragAction suggestedDragAction;
+    /** Operation selected by the target; leave as none to reject. */
+    DragAction dragAction;
     bool repeat;
     int clickCount = 1;
     long timestampMs;

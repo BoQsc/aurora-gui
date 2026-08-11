@@ -7,15 +7,35 @@ version (AuroraHeadless)
 else version (Windows)
 {
     import aurora.color : Color;
+    import aurora.dragdrop : DragAction, DragActions, DragFormat, DragPayload,
+        allowsDragAction;
     import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
     import aurora.platform.base : NativeSurfaceInfo, NativeSurfaceKind, NativeWindow, NativeWindowSink, WindowOptions;
     import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
     import core.sys.windows.windows;
-    import std.utf : toUTF16z, toUTF8;
+    import core.sys.windows.objidl : CLIPFORMAT, DATADIR, FORMATETC, IAdviseSink,
+        IDataObject, IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM, TYMED;
+    import core.sys.windows.ole2 : DoDragDrop, OleInitialize, OleUninitialize,
+        RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop;
+    import core.sys.windows.oleidl : DROPEFFECT, IDropSource, IDropTarget;
+    import core.sys.windows.shlobj : DROPFILES;
+    import core.sys.windows.uuid : IID_IDataObject, IID_IDropSource,
+        IID_IDropTarget, IID_IEnumFORMATETC, IID_IUnknown;
+    import core.sys.windows.winerror : DATA_S_SAMEFORMATETC, DRAGDROP_S_CANCEL,
+        DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
+        DV_E_TYMED, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_OUTOFMEMORY,
+        E_POINTER,
+        OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK;
+    import core.sys.windows.wtypes : DVASPECT;
+    import core.stdc.string : memcpy, memcmp;
+    import std.array : split;
+    import std.string : fromStringz, startsWith, strip;
+    import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 
     pragma(lib, "user32");
     pragma(lib, "gdi32");
     pragma(lib, "shell32");
+    pragma(lib, "ole32");
 
     private alias HDROP = HANDLE;
     private alias HGESTUREINFO = HANDLE;
@@ -356,6 +376,533 @@ else version (Windows)
         classRegistered = true;
     }
 
+    private bool sameIid(const(IID)* left, ref const IID right) nothrow @nogc
+    {
+        return left !is null && memcmp(left, &right, IID.sizeof) == 0;
+    }
+
+    private DragActions actionsFromDropEffect(DWORD effect) nothrow @nogc
+    {
+        DragActions result;
+        if ((effect & DROPEFFECT.DROPEFFECT_COPY) != 0)
+            result |= cast(DragActions) DragAction.copy;
+        if ((effect & DROPEFFECT.DROPEFFECT_MOVE) != 0)
+            result |= cast(DragActions) DragAction.move;
+        if ((effect & DROPEFFECT.DROPEFFECT_LINK) != 0)
+            result |= cast(DragActions) DragAction.link;
+        return result;
+    }
+
+    private DWORD dropEffectFromActions(DragActions actions) nothrow @nogc
+    {
+        DWORD result;
+        if (allowsDragAction(actions, DragAction.copy))
+            result |= DROPEFFECT.DROPEFFECT_COPY;
+        if (allowsDragAction(actions, DragAction.move))
+            result |= DROPEFFECT.DROPEFFECT_MOVE;
+        if (allowsDragAction(actions, DragAction.link))
+            result |= DROPEFFECT.DROPEFFECT_LINK;
+        return result;
+    }
+
+    private DWORD dropEffectFromAction(DragAction action) nothrow @nogc
+    {
+        final switch (action)
+        {
+            case DragAction.none: return DROPEFFECT.DROPEFFECT_NONE;
+            case DragAction.copy: return DROPEFFECT.DROPEFFECT_COPY;
+            case DragAction.move: return DROPEFFECT.DROPEFFECT_MOVE;
+            case DragAction.link: return DROPEFFECT.DROPEFFECT_LINK;
+        }
+    }
+
+    private DragAction suggestedAction(DragActions allowed, DWORD keyState)
+        nothrow @nogc
+    {
+        if ((keyState & MK_CONTROL) != 0 && (keyState & MK_SHIFT) != 0 &&
+            allowsDragAction(allowed, DragAction.link))
+            return DragAction.link;
+        if ((keyState & MK_CONTROL) != 0 &&
+            allowsDragAction(allowed, DragAction.copy))
+            return DragAction.copy;
+        if ((keyState & MK_SHIFT) != 0 &&
+            allowsDragAction(allowed, DragAction.move))
+            return DragAction.move;
+        if (allowsDragAction(allowed, DragAction.copy)) return DragAction.copy;
+        if (allowsDragAction(allowed, DragAction.move)) return DragAction.move;
+        if (allowsDragAction(allowed, DragAction.link)) return DragAction.link;
+        return DragAction.none;
+    }
+
+    private struct NativeDragEntry
+    {
+        CLIPFORMAT format;
+        ubyte[] bytes;
+    }
+
+    private ubyte[] unicodeTextBytes(const(dchar)[] value)
+    {
+        const encoded = toUTF16(value);
+        ubyte[] bytes;
+        bytes.length = (encoded.length + 1) * wchar.sizeof;
+        if (encoded.length != 0)
+            memcpy(bytes.ptr, encoded.ptr, encoded.length * wchar.sizeof);
+        return bytes;
+    }
+
+    private ubyte[] fileDropBytes(const(string)[] paths)
+    {
+        size_t characterCount = 1;
+        foreach (path; paths) characterCount += toUTF16(path).length + 1;
+        ubyte[] bytes;
+        bytes.length = DROPFILES.sizeof + characterCount * wchar.sizeof;
+        auto header = cast(DROPFILES*) bytes.ptr;
+        *header = DROPFILES.init;
+        header.pFiles = DROPFILES.sizeof;
+        header.fWide = TRUE;
+        auto output = cast(wchar*) (bytes.ptr + DROPFILES.sizeof);
+        size_t cursor;
+        foreach (path; paths)
+        {
+            const encoded = toUTF16(path);
+            if (encoded.length != 0)
+                memcpy(output + cursor, encoded.ptr, encoded.length * wchar.sizeof);
+            cursor += encoded.length;
+            output[cursor++] = 0;
+        }
+        output[cursor] = 0;
+        return bytes;
+    }
+
+    private CLIPFORMAT registeredDragFormat(string mimeType)
+    {
+        string nativeName;
+        if (mimeType == "text/html") nativeName = "HTML Format";
+        else if (mimeType == "text/uri-list") nativeName = "text/uri-list";
+        else nativeName = "Aurora MIME " ~ mimeType;
+        return cast(CLIPFORMAT) RegisterClipboardFormatW(toUTF16z(nativeName));
+    }
+
+    private final class WindowsFormatEnumerator : IEnumFORMATETC
+    {
+        private FORMATETC[] _formats;
+        private size_t _index;
+        private ULONG _references = 1;
+
+        this(FORMATETC[] formats, size_t index = 0)
+        {
+            _formats = formats.dup;
+            _index = index;
+        }
+
+        override HRESULT QueryInterface(IID* iid, void** output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = null;
+            if (!sameIid(iid, IID_IUnknown) &&
+                !sameIid(iid, IID_IEnumFORMATETC))
+                return cast(HRESULT) E_NOINTERFACE;
+            *output = cast(void*) cast(IEnumFORMATETC) this;
+            AddRef();
+            return S_OK;
+        }
+
+        override ULONG AddRef() { return ++_references; }
+        override ULONG Release()
+        {
+            if (_references != 0) --_references;
+            return _references;
+        }
+
+        override HRESULT Next(ULONG count, FORMATETC* output, ULONG* fetched)
+        {
+            if (output is null || (count != 1 && fetched is null))
+                return cast(HRESULT) E_INVALIDARG;
+            ULONG written;
+            while (written < count && _index < _formats.length)
+                output[written++] = _formats[_index++];
+            if (fetched !is null) *fetched = written;
+            return written == count ? S_OK : S_FALSE;
+        }
+
+        override HRESULT Skip(ULONG count)
+        {
+            const remaining = _formats.length - _index;
+            const advance = count < remaining ? count : cast(ULONG) remaining;
+            _index += advance;
+            return advance == count ? S_OK : S_FALSE;
+        }
+
+        override HRESULT Reset()
+        {
+            _index = 0;
+            return S_OK;
+        }
+
+        override HRESULT Clone(IEnumFORMATETC* output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = new WindowsFormatEnumerator(_formats, _index);
+            return S_OK;
+        }
+    }
+
+    private final class WindowsDragDataObject : IDataObject
+    {
+        private NativeDragEntry[] _entries;
+        private ULONG _references = 1;
+
+        this(DragPayload payload)
+        {
+            if (payload.paths.length != 0)
+                addEntry(cast(CLIPFORMAT) CF_HDROP,
+                    fileDropBytes(payload.paths));
+            if (payload.text.length != 0)
+                addEntry(cast(CLIPFORMAT) CF_UNICODETEXT,
+                    unicodeTextBytes(payload.text));
+            if (payload.uris.length != 0)
+            {
+                string list;
+                foreach (uri; payload.uris) list ~= uri ~ "\r\n";
+                addEntry(registeredDragFormat("text/uri-list"),
+                    cast(const(ubyte)[]) list);
+                addEntry(cast(CLIPFORMAT) RegisterClipboardFormatW(
+                    toUTF16z("UniformResourceLocatorW")),
+                    unicodeTextBytes(toUTF32(payload.uris[0])));
+            }
+            foreach (format; payload.formats)
+                addEntry(registeredDragFormat(format.mimeType), format.data);
+        }
+
+        private void addEntry(CLIPFORMAT format, const(ubyte)[] bytes)
+        {
+            if (format == 0 || bytes.length == 0) return;
+            foreach (entry; _entries)
+                if (entry.format == format) return;
+            NativeDragEntry entry;
+            entry.format = format;
+            entry.bytes = bytes.dup;
+            _entries ~= entry;
+        }
+
+        override HRESULT QueryInterface(IID* iid, void** output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = null;
+            if (!sameIid(iid, IID_IUnknown) && !sameIid(iid, IID_IDataObject))
+                return cast(HRESULT) E_NOINTERFACE;
+            *output = cast(void*) cast(IDataObject) this;
+            AddRef();
+            return S_OK;
+        }
+
+        override ULONG AddRef() { return ++_references; }
+        override ULONG Release()
+        {
+            if (_references != 0) --_references;
+            return _references;
+        }
+
+        private const(NativeDragEntry)* matching(FORMATETC* format)
+        {
+            if (format is null || format.dwAspect != DVASPECT.DVASPECT_CONTENT)
+                return null;
+            foreach (ref const entry; _entries)
+                if (entry.format == format.cfFormat) return &entry;
+            return null;
+        }
+
+        override HRESULT GetData(FORMATETC* format, STGMEDIUM* medium)
+        {
+            if (medium is null) return cast(HRESULT) E_POINTER;
+            *medium = STGMEDIUM.init;
+            if (format is null || (format.tymed & TYMED.TYMED_HGLOBAL) == 0)
+                return cast(HRESULT) DV_E_TYMED;
+            auto entry = matching(format);
+            if (entry is null) return cast(HRESULT) DV_E_FORMATETC;
+            auto memory = GlobalAlloc(GMEM_MOVEABLE, entry.bytes.length);
+            if (memory is null) return cast(HRESULT) E_OUTOFMEMORY;
+            auto target = GlobalLock(memory);
+            if (target is null)
+            {
+                GlobalFree(memory);
+                return cast(HRESULT) E_OUTOFMEMORY;
+            }
+            memcpy(target, entry.bytes.ptr, entry.bytes.length);
+            GlobalUnlock(memory);
+            medium.tymed = TYMED.TYMED_HGLOBAL;
+            medium.hGlobal = memory;
+            medium.pUnkForRelease = null;
+            return S_OK;
+        }
+
+        override HRESULT GetDataHere(FORMATETC*, STGMEDIUM*)
+        {
+            return cast(HRESULT) E_NOTIMPL;
+        }
+
+        override HRESULT QueryGetData(FORMATETC* format)
+        {
+            if (format is null) return cast(HRESULT) E_INVALIDARG;
+            if ((format.tymed & TYMED.TYMED_HGLOBAL) == 0)
+                return cast(HRESULT) DV_E_TYMED;
+            return matching(format) is null ? cast(HRESULT) DV_E_FORMATETC : S_OK;
+        }
+
+        override HRESULT GetCanonicalFormatEtc(FORMATETC*, FORMATETC* output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            output.ptd = null;
+            return cast(HRESULT) DATA_S_SAMEFORMATETC;
+        }
+
+        override HRESULT SetData(FORMATETC*, STGMEDIUM*, BOOL)
+        {
+            return cast(HRESULT) E_NOTIMPL;
+        }
+
+        override HRESULT EnumFormatEtc(DWORD direction, IEnumFORMATETC* output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = null;
+            if (direction != DATADIR.DATADIR_GET) return cast(HRESULT) E_NOTIMPL;
+            FORMATETC[] formats;
+            formats.reserve(_entries.length);
+            foreach (entry; _entries)
+            {
+                FORMATETC format;
+                format.cfFormat = entry.format;
+                format.dwAspect = DVASPECT.DVASPECT_CONTENT;
+                format.lindex = -1;
+                format.tymed = TYMED.TYMED_HGLOBAL;
+                formats ~= format;
+            }
+            *output = new WindowsFormatEnumerator(formats);
+            return S_OK;
+        }
+
+        override HRESULT DAdvise(FORMATETC*, DWORD, IAdviseSink, PDWORD)
+        {
+            return cast(HRESULT) OLE_E_ADVISENOTSUPPORTED;
+        }
+        override HRESULT DUnadvise(DWORD)
+        {
+            return cast(HRESULT) OLE_E_ADVISENOTSUPPORTED;
+        }
+        override HRESULT EnumDAdvise(IEnumSTATDATA*)
+        {
+            return cast(HRESULT) OLE_E_ADVISENOTSUPPORTED;
+        }
+    }
+
+    private final class WindowsDropSource : IDropSource
+    {
+        private ULONG _references = 1;
+
+        override HRESULT QueryInterface(IID* iid, void** output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = null;
+            if (!sameIid(iid, IID_IUnknown) && !sameIid(iid, IID_IDropSource))
+                return cast(HRESULT) E_NOINTERFACE;
+            *output = cast(void*) cast(IDropSource) this;
+            AddRef();
+            return S_OK;
+        }
+        override ULONG AddRef() { return ++_references; }
+        override ULONG Release()
+        {
+            if (_references != 0) --_references;
+            return _references;
+        }
+        override HRESULT QueryContinueDrag(BOOL escapePressed, DWORD keyState)
+        {
+            if (escapePressed) return cast(HRESULT) DRAGDROP_S_CANCEL;
+            if ((keyState & MK_LBUTTON) == 0)
+                return cast(HRESULT) DRAGDROP_S_DROP;
+            return S_OK;
+        }
+        override HRESULT GiveFeedback(DWORD)
+        {
+            return cast(HRESULT) DRAGDROP_S_USEDEFAULTCURSORS;
+        }
+    }
+
+    private DragPayload payloadFromDataObject(IDataObject data)
+    {
+        DragPayload payload;
+        if (data is null) return payload;
+
+        FORMATETC filesFormat;
+        filesFormat.cfFormat = cast(CLIPFORMAT) CF_HDROP;
+        filesFormat.dwAspect = DVASPECT.DVASPECT_CONTENT;
+        filesFormat.lindex = -1;
+        filesFormat.tymed = TYMED.TYMED_HGLOBAL;
+        STGMEDIUM medium;
+        if (data.GetData(&filesFormat, &medium) == S_OK)
+        {
+            scope(exit) ReleaseStgMedium(&medium);
+            const count = DragQueryFileW(cast(HDROP) medium.hGlobal,
+                dragQueryFileCount, null, 0);
+            foreach (index; 0 .. count)
+            {
+                const length = DragQueryFileW(cast(HDROP) medium.hGlobal,
+                    index, null, 0);
+                wchar[] buffer;
+                buffer.length = length + 1;
+                const written = DragQueryFileW(cast(HDROP) medium.hGlobal,
+                    index, buffer.ptr, cast(UINT) buffer.length);
+                payload.paths ~= toUTF8(buffer[0 .. written]).dup;
+            }
+        }
+
+        FORMATETC textFormat;
+        textFormat.cfFormat = cast(CLIPFORMAT) CF_UNICODETEXT;
+        textFormat.dwAspect = DVASPECT.DVASPECT_CONTENT;
+        textFormat.lindex = -1;
+        textFormat.tymed = TYMED.TYMED_HGLOBAL;
+        medium = STGMEDIUM.init;
+        if (data.GetData(&textFormat, &medium) == S_OK)
+        {
+            scope(exit) ReleaseStgMedium(&medium);
+            auto text = cast(const(wchar)*) GlobalLock(medium.hGlobal);
+            if (text !is null)
+            {
+                scope(exit) GlobalUnlock(medium.hGlobal);
+                try payload.text = toUTF32(fromStringz(text)).idup;
+                catch (Exception) {}
+            }
+        }
+
+        IEnumFORMATETC enumerator;
+        if (data.EnumFormatEtc(DATADIR.DATADIR_GET, &enumerator) == S_OK &&
+            enumerator !is null)
+        {
+            scope(exit) enumerator.Release();
+            FORMATETC format;
+            ULONG fetched;
+            while (enumerator.Next(1, &format, &fetched) == S_OK && fetched == 1)
+            {
+                if (format.cfFormat == CF_HDROP ||
+                    format.cfFormat == CF_UNICODETEXT ||
+                    (format.tymed & TYMED.TYMED_HGLOBAL) == 0)
+                    continue;
+                wchar[256] nameBuffer;
+                const length = GetClipboardFormatNameW(format.cfFormat,
+                    nameBuffer.ptr, cast(int) nameBuffer.length);
+                if (length <= 0) continue;
+                const nativeName = toUTF8(nameBuffer[0 .. length]);
+                string mimeType;
+                if (nativeName.startsWith("Aurora MIME "))
+                    mimeType = nativeName[12 .. $].dup;
+                else if (nativeName == "text/uri-list")
+                    mimeType = "text/uri-list";
+                else if (nativeName == "HTML Format")
+                    mimeType = "text/html";
+                else
+                    continue;
+
+                STGMEDIUM richMedium;
+                if (data.GetData(&format, &richMedium) != S_OK) continue;
+                scope(exit) ReleaseStgMedium(&richMedium);
+                const lengthBytes = GlobalSize(richMedium.hGlobal);
+                auto raw = cast(const(ubyte)*) GlobalLock(richMedium.hGlobal);
+                if (raw is null || lengthBytes == 0) continue;
+                scope(exit) GlobalUnlock(richMedium.hGlobal);
+                auto bytes = raw[0 .. lengthBytes].dup;
+                payload.formats ~= DragFormat(mimeType, bytes);
+                if (mimeType == "text/uri-list")
+                {
+                    const text = cast(string) bytes;
+                    foreach (line; text.split("\n"))
+                    {
+                        const uri = line.strip();
+                        if (uri.length != 0 && uri[0] != '#')
+                            payload.uris ~= uri.dup;
+                    }
+                }
+            }
+        }
+        return payload;
+    }
+
+    private final class WindowsDropTarget : IDropTarget
+    {
+        private PlatformWindow _owner;
+        private IDataObject _data;
+        private DragPayload _payload;
+        private ULONG _references = 1;
+
+        this(PlatformWindow owner) { _owner = owner; }
+
+        override HRESULT QueryInterface(IID* iid, void** output)
+        {
+            if (output is null) return cast(HRESULT) E_POINTER;
+            *output = null;
+            if (!sameIid(iid, IID_IUnknown) && !sameIid(iid, IID_IDropTarget))
+                return cast(HRESULT) E_NOINTERFACE;
+            *output = cast(void*) cast(IDropTarget) this;
+            AddRef();
+            return S_OK;
+        }
+        override ULONG AddRef() { return ++_references; }
+        override ULONG Release()
+        {
+            if (_references != 0) --_references;
+            return _references;
+        }
+
+        override HRESULT DragEnter(IDataObject data, DWORD keyState,
+            POINTL point, PDWORD effect)
+        {
+            releaseData();
+            _data = data;
+            if (_data !is null) _data.AddRef();
+            _payload = payloadFromDataObject(data);
+            return emit(EventType.dragEntered, keyState, point, effect, _payload);
+        }
+
+        override HRESULT DragOver(DWORD keyState, POINTL point, PDWORD effect)
+        {
+            return emit(EventType.dragMoved, keyState, point, effect, _payload);
+        }
+
+        override HRESULT DragLeave()
+        {
+            if (_owner !is null) _owner.emitNativeDragLeave(_payload);
+            releaseData();
+            return S_OK;
+        }
+
+        override HRESULT Drop(IDataObject data, DWORD keyState,
+            POINTL point, PDWORD effect)
+        {
+            auto payload = payloadFromDataObject(data);
+            const result = emit(EventType.dropped, keyState, point, effect,
+                payload);
+            releaseData();
+            return result;
+        }
+
+        private HRESULT emit(EventType type, DWORD keyState, POINTL point,
+            PDWORD effect, DragPayload payload)
+        {
+            if (effect is null) return cast(HRESULT) E_POINTER;
+            const allowed = actionsFromDropEffect(*effect);
+            const action = _owner is null ? DragAction.none :
+                _owner.emitNativeDrag(type, payload, allowed, keyState, point);
+            *effect = dropEffectFromAction(action);
+            return S_OK;
+        }
+
+        private void releaseData()
+        {
+            if (_data !is null) _data.Release();
+            _data = null;
+            _payload = DragPayload.init;
+        }
+    }
+
     final class PlatformWindow : NativeWindow
     {
         private HWND _hwnd;
@@ -387,6 +934,9 @@ else version (Windows)
         private int _gestureLastY;
         private int _gestureWheelPixelRemainder;
         private wchar _pendingHighSurrogate;
+        private bool _oleInitialized;
+        private bool _oleDropRegistered;
+        private WindowsDropTarget _dropTarget;
 
         this(WindowOptions options, NativeWindowSink sink)
         {
@@ -451,7 +1001,7 @@ else version (Windows)
             }
             updateClientSize();
             setWindowIcon(options.iconPath);
-            DragAcceptFiles(_hwnd, TRUE);
+            initializeDragDrop();
             setCursor(CursorKind.arrow);
         }
 
@@ -574,6 +1124,7 @@ else version (Windows)
             if (_hwnd !is null && _inSizeMove)
                 KillTimer(_hwnd, liveResizeTimerId);
             sink.onNativeShutdown();
+            shutdownDragDrop();
             if (_hwnd !is null && IsWindow(_hwnd))
                 DestroyWindow(_hwnd);
             releaseWindowIcons();
@@ -812,6 +1363,7 @@ else version (Windows)
             if (sink.onNativeCloseRequested())
             {
                 _closed = true;
+                shutdownDragDrop();
                 if (_hwnd !is null) DestroyWindow(_hwnd);
             }
         }
@@ -875,6 +1427,91 @@ else version (Windows)
             info.page = cast(UINT) page;
             info.position = current;
             SetScrollInfo(_hwnd, scrollBarVertical, &info, TRUE);
+        }
+
+        override DragAction beginDrag(DragPayload payload,
+            DragActions allowedActions)
+        {
+            if (!_oleInitialized || payload.empty() || allowedActions == 0)
+                return DragAction.none;
+            auto data = new WindowsDragDataObject(payload);
+            auto source = new WindowsDropSource();
+            DWORD performed;
+            const result = DoDragDrop(cast(IDataObject) data,
+                cast(IDropSource) source, dropEffectFromActions(allowedActions),
+                &performed);
+            if (result != DRAGDROP_S_DROP) return DragAction.none;
+            if ((performed & DROPEFFECT.DROPEFFECT_MOVE) != 0)
+                return DragAction.move;
+            if ((performed & DROPEFFECT.DROPEFFECT_COPY) != 0)
+                return DragAction.copy;
+            if ((performed & DROPEFFECT.DROPEFFECT_LINK) != 0)
+                return DragAction.link;
+            return DragAction.none;
+        }
+
+        private void initializeDragDrop()
+        {
+            const initialized = OleInitialize(null);
+            _oleInitialized = initialized >= 0;
+            if (_oleInitialized)
+            {
+                _dropTarget = new WindowsDropTarget(this);
+                const registered = RegisterDragDrop(_hwnd,
+                    cast(IDropTarget) _dropTarget);
+                _oleDropRegistered = registered >= 0;
+            }
+            // WM_DROPFILES preserves compatibility on hosts where OLE cannot
+            // initialize because the embedding thread selected another COM mode.
+            DragAcceptFiles(_hwnd, _oleDropRegistered ? FALSE : TRUE);
+        }
+
+        private void shutdownDragDrop()
+        {
+            if (_oleDropRegistered && _hwnd !is null && IsWindow(_hwnd))
+                RevokeDragDrop(_hwnd);
+            _oleDropRegistered = false;
+            _dropTarget = null;
+            if (_oleInitialized) OleUninitialize();
+            _oleInitialized = false;
+        }
+
+        private DragAction emitNativeDrag(EventType type, DragPayload payload,
+            DragActions allowedActions, DWORD keyState, POINTL screenPoint)
+        {
+            POINT point = POINT(screenPoint.x, screenPoint.y);
+            ScreenToClient(_hwnd, &point);
+            Event event;
+            event.type = type;
+            const physical = Point(point.x, point.y);
+            event.position = _displayScale.physicalToLogical(physical);
+            event.globalPosition = event.position;
+            event.precisePosition = _displayScale.physicalToLogicalPrecise(physical);
+            event.preciseGlobalPosition = event.precisePosition;
+            event.hasPrecisePosition = true;
+            event.dragPayload = payload.duplicate();
+            event.paths = event.dragPayload.paths;
+            event.allowedDragActions = allowedActions;
+            event.suggestedDragAction = suggestedAction(allowedActions, keyState);
+            event.modifiers = currentModifiers();
+            if ((keyState & MK_SHIFT) != 0)
+                event.modifiers |= cast(uint) KeyModifier.shift;
+            if ((keyState & MK_CONTROL) != 0)
+                event.modifiers |= cast(uint) KeyModifier.control;
+            event.timestampMs = cast(long) GetTickCount();
+            sink.onNativeEvent(event);
+            return event.dragAction;
+        }
+
+        private void emitNativeDragLeave(DragPayload payload)
+        {
+            const point = cursorClientPoint();
+            POINTL screenPoint;
+            POINT screen = point;
+            ClientToScreen(_hwnd, &screen);
+            screenPoint.x = screen.x;
+            screenPoint.y = screen.y;
+            emitNativeDrag(EventType.dragLeft, payload, 0, 0, screenPoint);
         }
 
         override NativeSurfaceInfo nativeSurfaceInfo()
@@ -969,6 +1606,9 @@ else version (Windows)
                     event.preciseGlobalPosition = event.precisePosition;
                     event.hasPrecisePosition = true;
                     event.paths = paths;
+                    event.dragPayload.paths = paths;
+                    event.allowedDragActions = cast(DragActions) DragAction.copy;
+                    event.dragAction = DragAction.copy;
                     event.modifiers = currentModifiers();
                     event.timestampMs = cast(long) GetTickCount();
                     sink.onNativeEvent(event);
@@ -1632,6 +2272,9 @@ else version (Windows)
 
         private void handleVerticalScrollCommand(WPARAM wParam)
         {
+            const cursor = cursorClientPoint();
+            sink.onNativeScrollTarget(_displayScale.physicalToLogicalPrecise(
+                Point(cursor.x, cursor.y)));
             AuroraScrollInfo info;
             info.size = AuroraScrollInfo.sizeof;
             info.mask = scrollInfoRange | scrollInfoPage | scrollInfoPosition |
@@ -1687,5 +2330,23 @@ else version (Windows)
                 SetFocus(_hwnd);
         }
 
+    }
+
+    unittest
+    {
+        DragPayload source;
+        source.paths = ["C:\\Aurora drag test.txt"];
+        source.text = "Aurora Unicode ✓"d;
+        source.uris = ["https://example.com/aurora"];
+        source.formats ~= DragFormat("application/x-aurora-test",
+            cast(const(ubyte)[]) "rich-data");
+        auto data = new WindowsDragDataObject(source);
+        auto decoded = payloadFromDataObject(cast(IDataObject) data);
+        assert(decoded.paths == source.paths);
+        assert(decoded.text == source.text);
+        assert(decoded.uris == source.uris);
+        assert(decoded.hasFormat("application/x-aurora-test"));
+        assert(decoded.formatData("application/x-aurora-test")[0 .. 9] ==
+            cast(const(ubyte)[]) "rich-data");
     }
 }

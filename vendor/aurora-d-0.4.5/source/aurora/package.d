@@ -8,6 +8,7 @@ module aurora;
 public import aurora.canvas;
 public import aurora.color;
 public import aurora.diagnostics;
+public import aurora.dragdrop;
 public import aurora.event;
 public import aurora.font;
 public import aurora.image;

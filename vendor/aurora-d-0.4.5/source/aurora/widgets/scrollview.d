@@ -1,19 +1,17 @@
 module aurora.widgets.scrollview;
 
-import aurora.canvas : Canvas;
-import aurora.event : Event, Key, MouseButton;
-import aurora.types : CursorKind, Point, Rect, Size, clampInt, maxInt, minInt;
+import aurora.event : Event;
+import aurora.types : Point, Rect, Size, maxInt, minInt;
 import aurora.widget : Widget;
+import aurora.widgets.scrollbar : Scrollbar;
 
-/** Single-child vertical viewport with wheel, keyboard, and thumb scrolling. */
+/** Single-child vertical viewport backed by the reusable Scrollbar widget. */
 class ScrollView : Widget
 {
     private Widget _content;
+    private Scrollbar _verticalScrollbar;
     private int _scrollY;
     private int _contentHeight;
-    private bool _showScrollbar;
-    private bool _draggingThumb;
-    private int _thumbGrabOffset;
     private int _scrollbarWidth = 10;
 
     this(Widget content = null)
@@ -23,9 +21,22 @@ class ScrollView : Widget
         layoutHints().minHeight = 64;
         layoutHints().allowOverflow = true;
         if (content !is null) setContent(content);
+
+        _verticalScrollbar = new Scrollbar();
+        _verticalScrollbar.layoutHints().excludeFromLayout = true;
+        _verticalScrollbar.setLineStep(42);
+        _verticalScrollbar.onValueChanged = delegate(int value)
+        {
+            applyScrollY(value);
+        };
+        add(_verticalScrollbar);
     }
 
     Widget content() @safe pure nothrow @nogc { return _content; }
+    Scrollbar verticalScrollbar() @safe pure nothrow @nogc
+    {
+        return _verticalScrollbar;
+    }
     int scrollY() const @safe pure nothrow @nogc { return _scrollY; }
     int contentHeight() const @safe pure nothrow @nogc { return _contentHeight; }
     int maxScroll() const @safe pure nothrow @nogc
@@ -44,18 +55,19 @@ class ScrollView : Widget
             _content.layoutHints().excludeFromLayout = true;
             _content.layoutHints().allowOverflow = true;
             add(_content);
+            if (_verticalScrollbar !is null)
+                bringChildToFront(_verticalScrollbar);
         }
+        synchronizeScrollbar();
         invalidate();
     }
 
     void setScrollY(int value)
     {
-        const next = clampInt(value, 0, maxScroll());
-        if (_scrollY == next) return;
-        _scrollY = next;
-        if (_content !is null)
-            _content.setBounds(Rect(0, -_scrollY, contentViewportWidth(), _contentHeight));
-        invalidate();
+        if (_verticalScrollbar is null)
+            applyScrollY(value);
+        else
+            _verticalScrollbar.setValue(value);
     }
 
     void scrollBy(int delta)
@@ -71,6 +83,21 @@ class ScrollView : Widget
             setScrollY(contentRect.bottom() - bounds().height);
     }
 
+    override bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
+        out int position, out int maximum, out int pageSize)
+    {
+        if (_verticalScrollbar is null || !_verticalScrollbar.visible())
+        {
+            source = null;
+            position = 0;
+            maximum = 0;
+            pageSize = 1;
+            return false;
+        }
+        return _verticalScrollbar.nativeVerticalScrollInfo(localPosition, source,
+            position, maximum, pageSize);
+    }
+
     protected override Size onMeasure(Size available)
     {
         if (_content is null) return Size(0, 0);
@@ -81,7 +108,8 @@ class ScrollView : Widget
 
     private int contentViewportWidth() const @safe pure nothrow @nogc
     {
-        return maxInt(0, bounds().width - (_showScrollbar ? _scrollbarWidth + 4 : 0));
+        return maxInt(0, bounds().width -
+            (maxScroll() > 0 ? _scrollbarWidth + 4 : 0));
     }
 
     protected override void onLayout()
@@ -89,127 +117,57 @@ class ScrollView : Widget
         if (_content is null)
         {
             _contentHeight = 0;
-            _showScrollbar = false;
             _scrollY = 0;
+            synchronizeScrollbar();
             return;
         }
 
         auto measured = _content.measure(Size(maxInt(0, bounds().width), int.max));
-        _showScrollbar = measured.height > bounds().height;
-        const width = contentViewportWidth();
-        if (_showScrollbar)
+        const needsScrollbar = measured.height > bounds().height;
+        const width = maxInt(0, bounds().width -
+            (needsScrollbar ? _scrollbarWidth + 4 : 0));
+        if (needsScrollbar)
             measured = _content.measure(Size(width, int.max));
         _contentHeight = maxInt(bounds().height, measured.height);
-        _scrollY = clampInt(_scrollY, 0, maxScroll());
+        _scrollY = _scrollY < 0 ? 0 : minInt(_scrollY, maxScroll());
         _content.setBounds(Rect(0, -_scrollY, width, _contentHeight));
-    }
-
-    private Rect scrollbarTrack() const @safe pure nothrow @nogc
-    {
-        return _showScrollbar ? Rect(maxInt(0, bounds().width - _scrollbarWidth - 2),
-            3, _scrollbarWidth, maxInt(1, bounds().height - 6)) : Rect.init;
-    }
-
-    private Rect scrollbarThumb() const @safe pure nothrow @nogc
-    {
-        const track = scrollbarTrack();
-        if (track.empty()) return Rect.init;
-        const minimumThumb = 24;
-        const height = clampInt(bounds().height * track.height /
-            maxInt(1, _contentHeight), minimumThumb, track.height);
-        const travel = maxInt(0, track.height - height);
-        const y = track.y + (maxScroll() == 0 ? 0 : travel * _scrollY / maxScroll());
-        return Rect(track.x, y, track.width, height);
-    }
-
-    protected override void onPaint(ref Canvas canvas)
-    {
-        if (!_showScrollbar) return;
-        const track = scrollbarTrack();
-        const thumb = scrollbarThumb();
-        canvas.fillRoundedRect(track, track.width / 2,
-            theme().border.withAlpha(75));
-        canvas.fillRoundedRect(thumb, thumb.width / 2,
-            (_draggingThumb || hovered() ? theme().textMuted : theme().disabled)
-                .withAlpha(_draggingThumb ? 220 : 165));
-    }
-
-    override bool onMouseDown(ref Event event)
-    {
-        if (event.button != MouseButton.left || !_showScrollbar) return false;
-        const track = scrollbarTrack();
-        if (!track.contains(event.position)) return false;
-        requestFocus();
-        const thumb = scrollbarThumb();
-        _draggingThumb = true;
-        _thumbGrabOffset = thumb.contains(event.position) ? event.position.y - thumb.y :
-            thumb.height / 2;
-        captureMouse();
-        updateThumb(event.position.y);
-        setCursor(CursorKind.hand);
-        return true;
-    }
-
-    override bool onMouseMove(ref Event event)
-    {
-        if (!_draggingThumb) return false;
-        updateThumb(event.position.y);
-        return true;
-    }
-
-    override bool onMouseUp(ref Event event)
-    {
-        if (event.button != MouseButton.left || !_draggingThumb) return false;
-        updateThumb(event.position.y);
-        _draggingThumb = false;
-        releaseMouse();
-        setCursor(CursorKind.arrow);
-        invalidate();
-        return true;
+        synchronizeScrollbar();
     }
 
     override bool onMouseWheel(ref Event event)
     {
-        if (!_showScrollbar || event.wheelY == 0) return false;
-        scrollBy(-event.wheelY * 42);
-        return true;
+        return _verticalScrollbar !is null && _verticalScrollbar.visible() &&
+            _verticalScrollbar.onMouseWheel(event);
     }
 
     override bool onKeyDown(ref Event event)
     {
-        switch (event.key)
-        {
-            case Key.pageUp:
-                scrollBy(-maxInt(42, bounds().height - 42));
-                return true;
-            case Key.pageDown:
-                scrollBy(maxInt(42, bounds().height - 42));
-                return true;
-            case Key.home:
-                setScrollY(0);
-                return true;
-            case Key.end:
-                setScrollY(maxScroll());
-                return true;
-            case Key.up:
-                scrollBy(-42);
-                return true;
-            case Key.down:
-                scrollBy(42);
-                return true;
-            default:
-                return false;
-        }
+        return _verticalScrollbar !is null && _verticalScrollbar.visible() &&
+            _verticalScrollbar.onKeyDown(event);
     }
 
-    private void updateThumb(int pointerY)
+    private void synchronizeScrollbar()
     {
-        const track = scrollbarTrack();
-        const thumb = scrollbarThumb();
-        const travel = maxInt(1, track.height - thumb.height);
-        const y = clampInt(pointerY - _thumbGrabOffset, track.y,
-            track.bottom() - thumb.height);
-        setScrollY((y - track.y) * maxScroll() / travel);
+        if (_verticalScrollbar is null) return;
+        const maximum = maxScroll();
+        _verticalScrollbar.setBounds(Rect(
+            maxInt(0, bounds().width - _scrollbarWidth - 2), 3,
+            _scrollbarWidth, maxInt(1, bounds().height - 6)));
+        _verticalScrollbar.setPageStep(maxInt(42, bounds().height - 42));
+        _verticalScrollbar.setRange(0, maximum, maxInt(1, bounds().height));
+        _verticalScrollbar.setValue(_scrollY, false);
+        _verticalScrollbar.setVisible(maximum > 0);
+    }
+
+    private void applyScrollY(int value)
+    {
+        const next = value < 0 ? 0 : minInt(value, maxScroll());
+        if (_scrollY == next) return;
+        _scrollY = next;
+        if (_content !is null)
+            _content.setBounds(Rect(0, -_scrollY, contentViewportWidth(),
+                _contentHeight));
+        invalidate();
     }
 }
 
@@ -227,7 +185,9 @@ unittest
     view.setBounds(Rect(0, 0, 200, 180));
     view.layoutTree();
     assert(view.maxScroll() == 420);
+    assert(view.verticalScrollbar().visible());
     view.setScrollY(999);
     assert(view.scrollY() == 420);
+    assert(view.verticalScrollbar().value() == 420);
     assert(view.content().bounds().y == -420);
 }

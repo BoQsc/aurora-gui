@@ -182,4 +182,10 @@ Menus are full-window Aurora overlay layers. They clamp to the client area, draw
 
 ## Scope
 
-This release implements drag/drop among Aurora desktop icons and positional taskbar reordering. It does not yet expose native inter-process drag formats, shell file-operation integration, drag images crossing the host-window boundary, or operating-system clipboard data objects. Those are separate platform-integration layers and are not required for the in-Aurora desktop interaction path.
+Aurora implements drag/drop among desktop icons and positional taskbar
+reordering independently of the host OS. The public `DragPayload` and
+`Widget.beginDrag` APIs additionally carry files, Unicode text, URI lists, and
+custom MIME bytes across the native boundary. Win32 maps that contract to OLE
+`IDataObject`, `IDropSource`, and `IDropTarget`, including copy/move/link
+negotiation. Native inter-process adapters for X11 and macOS, shell file
+operation policy, and native drag-image customization remain separate work.

@@ -51,13 +51,14 @@ The Vulkan path does not upload a CPU-rendered window image. Widgets and `Canvas
 
 ### GUI and demos
 
-- Retained widget tree, layouts, focus, content/transform/composition invalidation, z-order, event bubbling, mouse capture, and keyboard traversal.
-- Labels, buttons, icon buttons, text fields/areas, list views, checkboxes, sliders, progress indicators, separators, split panes, desktop icons, floating windows, and taskbar controls.
+- Retained widget tree, layouts, focus, content/transform/composition invalidation, z-order, event bubbling, mouse capture, keyboard traversal, and rich drag/drop routing.
+- Labels, buttons, icon buttons, text fields/areas, list views, reusable vertical/horizontal scrollbars, scroll views, checkboxes, sliders, progress indicators, separators, split panes, desktop icons, floating windows, and taskbar controls.
 - Light and dark themes.
 - Semantic desktop typography tiers: 13 px caption, 17 px body, 22 px heading, and 30 px display text at 96 DPI.
 - Text-measured button widths and roomier control, list-row, title-bar, desktop-icon, and taskbar metrics.
 - Notepad, File Explorer, Desktop Environment, Taskbar, and Font Gallery applications.
-- Text editor with grapheme-safe movement/deletion, Unicode wrapping, bidi-aware hit testing, visual arrow movement, discontiguous bidi selection rectangles, undo/redo, scrolling, and a process-local clipboard.
+- Text editor with grapheme-safe movement/deletion, Unicode wrapping, bidi-aware hit testing, visual arrow movement, discontiguous bidi selection rectangles, undo/redo, unified widget scrolling, and Windows system-clipboard integration with a process-local fallback elsewhere.
+- Platform-neutral files/text/URI/custom-MIME drag payloads. Win32 uses OLE for real inbound/outbound inter-process drag sessions and negotiated copy/move/link actions.
 
 ## Architecture
 
@@ -558,7 +559,7 @@ Not implemented:
 - Full script-specific syllable preprocessing/reordering for every Indic and Southeast Asian shaping model; generic OpenType lookups and Unicode clustering are present, but not every script engine is specialized.
 - Vertical writing, justification, language-specific hyphenation, dictionary line breaking, and locale tailoring.
 - UAX #29 word/sentence segmentation; editor word commands use a grapheme-safe heuristic.
-- IME composition, native clipboard integration, accessibility APIs, rich text, printing, native inter-process/file drag-and-drop, and touch input. In-Aurora desktop-icon drag/drop and task reordering are implemented.
+- IME composition, accessibility APIs, rich text, printing, native clipboard integration outside Windows, native inter-process drag/drop outside Windows, and direct touch/pen contact events. Windows pan/pointer gestures already feed the unified scrolling path; in-Aurora desktop-icon drag/drop and task reordering are also implemented.
 - Vulkan device-loss recovery. Aurora uses two frame contexts only for non-queued MAILBOX/IMMEDIATE interaction, retains a single submit context for ordered FIFO modes, and never queues stored application drag states.
 
 The glyph-cache key now uses render flags for `sharp` versus `smooth` coverage and still reserves a variation-instance hash for future variable-font work.

@@ -31,7 +31,7 @@ class Scrollbar : Widget
     private int _wheelRemainder;
     private bool _draggingThumb;
     private int _thumbGrabOffset;
-    private bool _synchronizeNativeHost;
+    private bool _synchronizeNativeHost = true;
     private bool _customColors;
     private Color _trackColor;
     private Color _thumbColor;
@@ -72,6 +72,24 @@ class Scrollbar : Widget
     bool scrollable() const @safe pure nothrow @nogc
     {
         return _maximum > _minimum;
+    }
+
+    override bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
+        out int position, out int maximum, out int pageSize)
+    {
+        if (_orientation != Orientation.vertical || !visible())
+        {
+            source = null;
+            position = 0;
+            maximum = 0;
+            pageSize = 1;
+            return false;
+        }
+        source = this;
+        position = _value - _minimum;
+        maximum = _maximum - _minimum;
+        pageSize = _pageSize;
+        return true;
     }
 
     void setRange(int minimum, int maximum, int pageSize, bool notify = false)
@@ -166,9 +184,9 @@ class Scrollbar : Widget
     }
 
     /**
-     * Synchronize this vertical control's range with the platform host. This
-     * exposes native scroll semantics while Aurora remains responsible for the
-     * visible widget and content movement.
+     * Opt out of automatic native-host synchronization. Vertical controls are
+     * synchronized by default; the host accepts updates only from the retained
+     * scroll target under the pointer.
      */
     void setSynchronizeNativeHost(bool value)
     {
@@ -398,7 +416,7 @@ class Scrollbar : Widget
         if (!_synchronizeNativeHost || _orientation != Orientation.vertical ||
             host() is null)
             return;
-        host().synchronizeVerticalScrollInfo(_value - _minimum,
+        host().synchronizeVerticalScrollInfo(this, _value - _minimum,
             _maximum - _minimum, _pageSize);
     }
 }

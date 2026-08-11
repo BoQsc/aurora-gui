@@ -1,6 +1,7 @@
 module aurora.platform.base;
 
 import aurora.color : Color;
+import aurora.dragdrop : DragAction, DragActions, DragPayload;
 import aurora.event : Event;
 import aurora.font : FontRenderMode;
 public import aurora.render.base : RendererPreference;
@@ -47,11 +48,11 @@ struct WindowOptions
     bool synchronizedDragPointer = true;
     /** Register the Windows pointer-wheel, scroll-command, and pan-gesture
         paths used by custom scrollable windows. */
-    bool extendedScrollInput;
+    bool extendedScrollInput = true;
     /** Advertise a native vertical scroll range without replacing a
         client-drawn scrollbar. This lets Windows and legacy pointing-device
         drivers recognize a custom window as a scroll target. */
-    bool nativeVerticalScrollHost;
+    bool nativeVerticalScrollHost = true;
     RendererPreference renderer = RendererPreference.automatic;
     bool vulkanValidation;
     bool vsync = true;
@@ -63,6 +64,8 @@ struct WindowOptions
 interface NativeWindowSink
 {
     void onNativeEvent(ref Event event);
+    /** Let a native scroll command activate the retained target before range lookup. */
+    void onNativeScrollTarget(PointF position);
     bool onNativePaint();
     void onNativeTick(double deltaSeconds);
     bool onNativeCloseRequested();
@@ -158,6 +161,12 @@ abstract class NativeWindow
     /** Synchronize a custom view's pixel scroll range with its native host. */
     void setVerticalScrollInfo(int position, int maximum, int pageSize)
     {
+    }
+
+    /** Begin an outbound native drag; unsupported backends return none. */
+    DragAction beginDrag(DragPayload payload, DragActions allowedActions)
+    {
+        return DragAction.none;
     }
 
     NativeSurfaceInfo nativeSurfaceInfo()

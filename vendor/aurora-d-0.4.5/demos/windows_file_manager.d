@@ -902,7 +902,7 @@ final class WindowsFileManagerRoot : Widget
 
     void delegate(string title) onTitleChanged;
 
-    this(GuiWindow window, string initialPath = "", bool nativeScrollHost = false)
+    this(GuiWindow window, string initialPath = "")
     {
         _window = window;
         setFocusable(true);
@@ -987,7 +987,6 @@ final class WindowsFileManagerRoot : Widget
 
         _listScrollbar = add(new Scrollbar());
         _listScrollbar.setColors(explorerScrollbarTrack, explorerScrollbarThumb);
-        _listScrollbar.setSynchronizeNativeHost(nativeScrollHost);
         _listScrollbar.onValueChanged = delegate(int value)
         {
             setListScroll(value);
@@ -1187,6 +1186,26 @@ final class WindowsFileManagerRoot : Widget
         return false;
     }
 
+    override bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
+        out int position, out int maximum, out int pageSize)
+    {
+        Scrollbar target;
+        if (_sidebarRowsRect.contains(localPosition))
+            target = _sidebarScrollbar;
+        else if (_rowsRect.contains(localPosition))
+            target = _listScrollbar;
+        if (target is null || !target.visible())
+        {
+            source = null;
+            position = 0;
+            maximum = 0;
+            pageSize = 1;
+            return false;
+        }
+        return target.nativeVerticalScrollInfo(localPosition, source, position,
+            maximum, pageSize);
+    }
+
     override bool onMouseWheel(ref Event event)
     {
         updateGeometry();
@@ -1367,6 +1386,47 @@ final class WindowsFileManagerRoot : Widget
         return false;
     }
 
+    override bool onDragEnter(ref Event event)
+    {
+        if (event.dragPayload.paths.length == 0) return false;
+        event.dragAction = fileDropAction(event);
+        return event.dragAction != DragAction.none;
+    }
+
+    override bool onDragMove(ref Event event)
+    {
+        return onDragEnter(event);
+    }
+
+    override bool onDrop(ref Event event)
+    {
+        if (event.dragPayload.paths.length == 0)
+            return super.onDrop(event);
+        const targetDirectory = dropTargetDirectoryAt(event.position, "", true);
+        if (targetDirectory.length == 0)
+            return super.onDrop(event);
+        event.dragAction = fileDropAction(event);
+        if (event.dragAction == DragAction.move)
+            moveDroppedPaths(event.dragPayload.paths, targetDirectory);
+        else if (event.dragAction == DragAction.copy)
+            copyDroppedPaths(event.dragPayload.paths, targetDirectory);
+        else
+            return false;
+        return true;
+    }
+
+    private DragAction fileDropAction(ref Event event) const
+    {
+        if (event.suggestedDragAction == DragAction.move &&
+            allowsDragAction(event.allowedDragActions, DragAction.move))
+            return DragAction.move;
+        if (allowsDragAction(event.allowedDragActions, DragAction.copy))
+            return DragAction.copy;
+        if (allowsDragAction(event.allowedDragActions, DragAction.move))
+            return DragAction.move;
+        return DragAction.none;
+    }
+
     override bool onFilesDropped(ref Event event)
     {
         if (event.paths.length == 0) return false;
@@ -1486,10 +1546,31 @@ final class WindowsFileManagerRoot : Widget
         }
         if (_draggingEntry)
         {
+            if (!Rect(0, 0, bounds().width, bounds().height).contains(position))
+            {
+                beginOutboundEntryDrag();
+                return;
+            }
             updateDropTargets(position);
             updateExternalDragPreview();
         }
         invalidate();
+    }
+
+    private void beginOutboundEntryDrag()
+    {
+        if (!hasDragSource()) return;
+        auto paths = selectedPaths();
+        if (paths.length == 0) paths = [dragSourceEntry().path];
+        DragPayload payload;
+        payload.paths = paths;
+        payload.text = toUTF32(paths[0]).idup;
+        hideExternalDragPreview();
+        const action = beginDrag(payload, dragActions(DragAction.copy,
+            DragAction.move, DragAction.link));
+        _statusText = action == DragAction.none ? "Drag canceled." :
+            "External drag completed.";
+        resetEntryDrag(true);
     }
 
     private void updateDropTargets(Point position)
@@ -1846,6 +1927,33 @@ final class WindowsFileManagerRoot : Widget
         }
         else if (_statusText.length == 0)
             _statusText = "No items moved.";
+        invalidate();
+    }
+
+    private void copyDroppedPaths(string[] paths, string targetDirectory)
+    {
+        int copied;
+        string lastCopiedPath;
+        foreach (path; paths)
+        {
+            const copiedPath = copyPathIntoDirectory(path, targetDirectory);
+            if (copiedPath.length > 0)
+            {
+                ++copied;
+                lastCopiedPath = copiedPath;
+            }
+        }
+
+        if (copied > 0)
+        {
+            navigate(_currentPath, false, false);
+            if (copied == 1 && pathsEqual(dirName(lastCopiedPath), _currentPath))
+                selectPath(lastCopiedPath);
+            _statusText = copied == 1 ? "Copied " ~ baseName(lastCopiedPath) ~ "." :
+                format("Copied %d items.", copied);
+        }
+        else if (_statusText.length == 0)
+            _statusText = "No items copied.";
         invalidate();
     }
 
@@ -7451,6 +7559,6 @@ int main(string[] args)
     options.iconPath = windowsFileManagerIconPath();
     auto window = new GuiWindow(options, explorerTheme());
     const initial = args.length > 1 ? args[1] : "";
-    window.setRoot(new WindowsFileManagerRoot(window, initial, true));
+    window.setRoot(new WindowsFileManagerRoot(window, initial));
     return window.run();
 }

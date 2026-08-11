@@ -15,12 +15,14 @@ import aurora.text.unicode.grapheme : ceilGraphemeBoundary,
 import aurora.types : CursorKind, HorizontalAlign, Point, Rect, Size,
     clampInt, maxInt;
 import aurora.widget : Widget;
+import aurora.widgets.scrollbar : Scrollbar;
 import std.algorithm.comparison : max, min;
 import std.math : ceil, floor;
 import std.utf : toUTF32, toUTF8;
 
 version (Windows)
 {
+    pragma(lib, "user32");
     import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
         EmptyClipboard, GetClipboardData, GlobalAlloc, GlobalFree,
         GlobalLock, GlobalUnlock, GMEM_MOVEABLE, HGLOBAL,
@@ -120,6 +122,7 @@ class TextEditor : Widget
     private bool _dragSelecting;
     private int _scrollLine;
     private int _scrollX;
+    private Scrollbar _verticalScrollbar;
     private int _preferredX = -1;
     private CaretAffinity _caretAffinity = CaretAffinity.downstream;
     private double _caretClock = 0.0;
@@ -177,6 +180,16 @@ class TextEditor : Widget
         layoutHints().minHeight = multiline ? 80 : 38;
         layoutHints().preferredHeight = multiline ? 180 : 40;
         if (multiline) layoutHints().flex = 1.0;
+        _verticalScrollbar = new Scrollbar();
+        _verticalScrollbar.layoutHints().excludeFromLayout = true;
+        _verticalScrollbar.setLineStep(3);
+        _verticalScrollbar.onValueChanged = delegate(int value)
+        {
+            if (_scrollLine == value) return;
+            _scrollLine = value;
+            invalidate();
+        };
+        add(_verticalScrollbar);
         setText(text, false);
     }
 
@@ -194,6 +207,10 @@ class TextEditor : Widget
     }
     size_t selectionAnchor() const @safe pure nothrow @nogc { return _anchor; }
     bool hasSelection() const @safe pure nothrow @nogc { return _cursor != _anchor; }
+    Scrollbar verticalScrollbar() @safe pure nothrow @nogc
+    {
+        return _verticalScrollbar;
+    }
     const(dchar)[] textView() const @safe pure nothrow @nogc { return _buffer; }
 
     string textUtf8() const
@@ -854,6 +871,40 @@ class TextEditor : Widget
         return maxInt(0, cast(int) layout.lines.length - visibleLineCount());
     }
 
+    override bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
+        out int position, out int maximum, out int pageSize)
+    {
+        if (_verticalScrollbar is null || !_verticalScrollbar.visible())
+        {
+            source = null;
+            position = 0;
+            maximum = 0;
+            pageSize = 1;
+            return false;
+        }
+        return _verticalScrollbar.nativeVerticalScrollInfo(localPosition, source,
+            position, maximum, pageSize);
+    }
+
+    protected override void onLayout()
+    {
+        synchronizeVerticalScrollbar();
+    }
+
+    private void synchronizeVerticalScrollbar()
+    {
+        if (_verticalScrollbar is null) return;
+        const maximum = (!_canvasTextMode && _multiline) ? maxScrollLine() : 0;
+        const rows = visibleLineCount();
+        _scrollLine = clampInt(_scrollLine, 0, maximum);
+        _verticalScrollbar.setBounds(Rect(maxInt(0, bounds().width - 10), 4,
+            8, maxInt(1, bounds().height - 8)));
+        _verticalScrollbar.setPageStep(maxInt(1, rows - 1));
+        _verticalScrollbar.setRange(0, maximum, rows);
+        _verticalScrollbar.setValue(_scrollLine, false);
+        _verticalScrollbar.setVisible(maximum > 0);
+    }
+
     private double scrollOriginY(TextLayout layout) const
     {
         if (layout.lines.length == 0) return 0.0;
@@ -992,6 +1043,7 @@ class TextEditor : Widget
         auto content = canvas.clipped(full.inset(inset));
         auto layout = ensureLayout(canvas);
         ensureCursorVisible();
+        synchronizeVerticalScrollbar();
         const originX = _padding - _scrollX;
         const originY = _padding - cast(int) floor(scrollOriginY(layout));
 
@@ -1041,19 +1093,6 @@ class TextEditor : Widget
             const height = maxInt(2, cast(int) ceil(caret.height) - 2);
             content.fillRect(Rect(x, y, 2, height),
                 _customTextColor ? _textColor : palette.text);
-        }
-
-        const rows = visibleLineCount();
-        const totalLines = cast(int) layout.lines.length;
-        if (!_canvasTextMode && _multiline && totalLines > rows)
-        {
-            const track = maxInt(1, bounds().height - 10);
-            const thumb = maxInt(20, track * rows / totalLines);
-            const travel = maxInt(1, track - thumb);
-            const denominator = maxInt(1, totalLines - rows);
-            const y = 5 + travel * _scrollLine / denominator;
-            content.fillRoundedRect(Rect(bounds().width - 8, y, 4, thumb),
-                2, palette.textMuted.withAlpha(120));
         }
     }
 
@@ -1107,23 +1146,18 @@ class TextEditor : Widget
     {
         if (_canvasTextMode) return false;
         if (!_multiline && event.wheelX == 0 && !event.shift()) return false;
-        if (_wordWrap)
-        {
-            const delta = event.wheelY != 0 ? event.wheelY : event.wheelX;
-            _scrollLine = clampInt(_scrollLine - delta, 0, maxScrollLine());
-        }
-        else if (event.shift() || event.wheelX != 0)
+        if (!_wordWrap && (event.shift() || event.wheelX != 0))
         {
             const delta = event.wheelX != 0 ? event.wheelX : event.wheelY;
             _scrollX = maxInt(0, _scrollX - delta * maxInt(8,
                 _layoutPixelSize));
             ensureCursorVisible();
+            invalidate();
+            return true;
         }
-        else
-            _scrollLine = clampInt(_scrollLine - event.wheelY, 0,
-                maxScrollLine());
-        invalidate();
-        return true;
+        synchronizeVerticalScrollbar();
+        return _verticalScrollbar.visible() &&
+            _verticalScrollbar.onMouseWheel(event);
     }
 
     override bool onKeyDown(ref Event event)

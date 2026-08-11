@@ -310,6 +310,18 @@
       ]
     },
     {
+      "name": "widget-infrastructure-test",
+      "targetType": "executable",
+      "targetName": "aurora-widget-infrastructure-test",
+      "mainSourceFile": "tests/widget_infrastructure.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32"
+      ]
+    },
+    {
       "name": "shell-visual-test",
       "targetType": "executable",
       "targetName": "aurora-shell-visual-test",

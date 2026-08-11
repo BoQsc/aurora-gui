@@ -1,6 +1,7 @@
 module aurora.widget;
 
 import aurora.canvas : Canvas;
+import aurora.dragdrop : DragAction, DragActions, DragPayload;
 import aurora.event : Event, MouseButton;
 import aurora.theme : Theme;
 import aurora.text.atlas : FontSystem;
@@ -41,8 +42,11 @@ interface WidgetHost
     void updateCursor(CursorKind cursor);
     void bringToFront(Widget widget);
     void closeHostWindow();
-    /** Synchronize a custom vertical scrollbar with the native window host. */
-    void synchronizeVerticalScrollInfo(int position, int maximum, int pageSize);
+    /** Synchronize the active retained scrollbar with the native window host. */
+    void synchronizeVerticalScrollInfo(Widget source, int position, int maximum,
+        int pageSize);
+    /** Start a platform drag session from a retained Aurora widget. */
+    DragAction beginDrag(Widget source, DragPayload payload, DragActions allowedActions);
     /** Forget focus/capture/hover references before a subtree is detached. */
     void detachSubtree(Widget widget);
 }
@@ -403,6 +407,17 @@ abstract class Widget
             _host.closeHostWindow();
     }
 
+    /**
+     * Start an operating-system drag using files, text, URIs, and/or custom
+     * MIME data. The call returns after the native drag session ends.
+     */
+    DragAction beginDrag(DragPayload payload,
+        DragActions allowedActions = cast(DragActions) DragAction.copy)
+    {
+        return _host is null ? DragAction.none :
+            _host.beginDrag(this, payload, allowedActions);
+    }
+
     PointF preciseGlobalOrigin() const @safe pure nothrow @nogc
     {
         const local = precisePosition();
@@ -555,6 +570,21 @@ abstract class Widget
             child.collectFocusable(output);
     }
 
+    /**
+     * Expose this widget's active vertical range to the top-level native host.
+     * GuiWindow asks the nearest hovered ancestor, allowing one HWND scrollbar
+     * contract to follow nested retained scroll views without application flags.
+     */
+    bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
+        out int position, out int maximum, out int pageSize)
+    {
+        source = null;
+        position = 0;
+        maximum = 0;
+        pageSize = 1;
+        return false;
+    }
+
     void setFocusedInternal(bool value)
     {
         if (_focused == value) return;
@@ -608,6 +638,22 @@ abstract class Widget
     bool onMouseDown(ref Event event) { return false; }
     bool onMouseUp(ref Event event) { return false; }
     bool onMouseWheel(ref Event event) { return false; }
+    bool onDragEnter(ref Event event)
+    {
+        return event.paths.length != 0 || event.dragPayload.paths.length != 0;
+    }
+    bool onDragMove(ref Event event)
+    {
+        return event.paths.length != 0 || event.dragPayload.paths.length != 0;
+    }
+    void onDragLeave(ref Event event) {}
+    /** Legacy file-only handlers remain valid through this default adapter. */
+    bool onDrop(ref Event event)
+    {
+        if (event.paths.length == 0 && event.dragPayload.paths.length != 0)
+            event.paths = event.dragPayload.paths;
+        return event.paths.length != 0 && onFilesDropped(event);
+    }
     /** Receives native file drops routed to this widget and then bubbled to ancestors. */
     bool onFilesDropped(ref Event event) { return false; }
     bool onKeyDown(ref Event event) { return false; }

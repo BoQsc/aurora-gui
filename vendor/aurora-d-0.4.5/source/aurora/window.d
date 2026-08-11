@@ -2,6 +2,7 @@ module aurora.window;
 
 import aurora.canvas : Canvas;
 import aurora.color : Color;
+import aurora.dragdrop : DragAction, DragActions, DragPayload, preferredDragAction;
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.font : FontFace, FontRenderMode, FontRole;
 import aurora.image : RgbaImage;
@@ -112,6 +113,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private Widget _focused;
     private Widget _hovered;
     private Widget _captured;
+    private Widget _dragTarget;
+    private Widget _nativeScrollSource;
     private bool _nativeFocused = true;
     private Widget _lastClickTarget;
     private MouseButton _lastClickButton;
@@ -479,11 +482,29 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         close();
     }
 
-    override void synchronizeVerticalScrollInfo(int position, int maximum,
-        int pageSize)
+    override void synchronizeVerticalScrollInfo(Widget source, int position,
+        int maximum, int pageSize)
     {
-        if (_native !is null)
+        if (_native is null || source is null || source.host() !is this)
+            return;
+        // Establish an initial HWND range before the first pointer event. Once
+        // routing selects a source, sibling controls cannot overwrite it while
+        // they animate or relayout.
+        if (_nativeScrollSource is null)
+            _nativeScrollSource = source;
+        if (source is _nativeScrollSource)
             _native.setVerticalScrollInfo(position, maximum, pageSize);
+    }
+
+    override DragAction beginDrag(Widget source, DragPayload payload,
+        DragActions allowedActions)
+    {
+        if (_native is null || source is null || source.host() !is this ||
+            payload.empty())
+            return DragAction.none;
+        endSynchronizedPointer();
+        _captured = null;
+        return _native.beginDrag(payload.duplicate(), allowedActions);
     }
 
     override void detachSubtree(Widget subtree)
@@ -502,6 +523,10 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _hovered = null;
             if (_native !is null) _native.setCursor(CursorKind.arrow);
         }
+        if (subtree.containsWidget(_dragTarget))
+            _dragTarget = null;
+        if (subtree.containsWidget(_nativeScrollSource))
+            _nativeScrollSource = null;
         if (subtree.containsWidget(_lastClickTarget))
         {
             _lastClickTarget = null;
@@ -662,6 +687,16 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             case EventType.mouseWheel:
                 handleMouseWheel(event);
                 break;
+            case EventType.dragEntered:
+            case EventType.dragMoved:
+                handleDragMotion(event);
+                break;
+            case EventType.dragLeft:
+                handleDragLeave(event);
+                break;
+            case EventType.dropped:
+                handleDrop(event);
+                break;
             case EventType.keyDown:
                 handleKey(event, true);
                 break;
@@ -689,6 +724,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             default:
                 break;
         }
+    }
+
+    override void onNativeScrollTarget(PointF position)
+    {
+        const logical = position.rounded();
+        synchronizeNativeScrollTarget(targetAt(logical), logical);
     }
 
     private void handleResize(ref Event event)
@@ -1184,6 +1225,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private void updateHover(Point point)
     {
         auto next = targetAt(point);
+        synchronizeNativeScrollTarget(next, point);
         if (next is _hovered) return;
         if (_hovered !is null) _hovered.setHoveredInternal(false);
         _hovered = next;
@@ -1196,6 +1238,30 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         {
             _native.setCursor(CursorKind.arrow);
         }
+    }
+
+    private void synchronizeNativeScrollTarget(Widget target, Point globalPosition)
+    {
+        if (_native is null || !_options.nativeVerticalScrollHost) return;
+        auto current = target;
+        while (current !is null)
+        {
+            Widget source;
+            int position;
+            int maximum;
+            int pageSize;
+            if (current.nativeVerticalScrollInfo(
+                current.globalToLocal(globalPosition), source, position, maximum,
+                pageSize))
+            {
+                _nativeScrollSource = source is null ? current : source;
+                _native.setVerticalScrollInfo(position, maximum, pageSize);
+                return;
+            }
+            current = current.parent();
+        }
+        _nativeScrollSource = null;
+        _native.setVerticalScrollInfo(0, 0, 1);
     }
 
     private Widget nearestFocusable(Widget widget)
@@ -1240,6 +1306,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
                 case EventType.mouseDown: handled = current.onMouseDown(event); break;
                 case EventType.mouseUp: handled = current.onMouseUp(event); break;
                 case EventType.mouseWheel: handled = current.onMouseWheel(event); break;
+                case EventType.dragEntered: handled = current.onDragEnter(event); break;
+                case EventType.dragMoved: handled = current.onDragMove(event); break;
+                case EventType.dropped: handled = current.onDrop(event); break;
                 case EventType.filesDropped: handled = current.onFilesDropped(event); break;
                 case EventType.keyDown: handled = current.onKeyDown(event); break;
                 case EventType.keyUp: handled = current.onKeyUp(event); break;
@@ -1300,6 +1369,79 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         updateHover(event.globalPosition);
         if (_hovered !is null)
             dispatchToBubble(_hovered, event);
+    }
+
+    private void handleDragMotion(ref Event event)
+    {
+        auto next = targetAt(event.globalPosition);
+        if (next !is _dragTarget)
+        {
+            if (_dragTarget !is null)
+            {
+                auto leave = event;
+                leave.type = EventType.dragLeft;
+                dispatchDragLeave(_dragTarget, leave);
+            }
+            _dragTarget = next;
+            if (_dragTarget !is null)
+            {
+                event.type = EventType.dragEntered;
+                event.dragAction = DragAction.none;
+                const handled = dispatchToBubble(_dragTarget, event);
+                if (handled && event.dragAction == DragAction.none)
+                    event.dragAction = preferredDragAction(
+                        event.allowedDragActions, DragAction.copy);
+            }
+            return;
+        }
+        if (_dragTarget !is null)
+        {
+            event.type = EventType.dragMoved;
+            event.dragAction = DragAction.none;
+            const handled = dispatchToBubble(_dragTarget, event);
+            if (handled && event.dragAction == DragAction.none)
+                event.dragAction = preferredDragAction(
+                    event.allowedDragActions, DragAction.copy);
+        }
+    }
+
+    private void handleDragLeave(ref Event event)
+    {
+        if (_dragTarget is null) return;
+        dispatchDragLeave(_dragTarget, event);
+        _dragTarget = null;
+    }
+
+    private void dispatchDragLeave(Widget target, ref Event event)
+    {
+        auto current = target;
+        while (current !is null)
+        {
+            event.position = current.globalToLocal(event.globalPosition);
+            current.onDragLeave(event);
+            current = current.parent();
+        }
+    }
+
+    private void handleDrop(ref Event event)
+    {
+        auto target = targetAt(event.globalPosition);
+        if (target is null) target = _dragTarget;
+        event.dragAction = DragAction.none;
+        if (target !is null)
+        {
+            const handled = dispatchToBubble(target, event);
+            if (handled && event.dragAction == DragAction.none)
+                event.dragAction = preferredDragAction(
+                    event.allowedDragActions, DragAction.copy);
+        }
+        if (_dragTarget !is null)
+        {
+            auto leave = event;
+            leave.type = EventType.dragLeft;
+            dispatchDragLeave(_dragTarget, leave);
+        }
+        _dragTarget = null;
     }
 
     private void handleFilesDropped(ref Event event)

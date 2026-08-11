@@ -1,5 +1,7 @@
 module aurora.testing;
 
+import aurora.dragdrop : DragAction, DragActions, DragPayload,
+    preferredDragAction;
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.types : DisplayScale, Point, PointF, Size, maxInt;
 import aurora.window : GuiWindow;
@@ -108,6 +110,31 @@ final class UiTestDriver
         _window.onNativeEvent(event);
     }
 
+    DragAction dragEnter(Point position, DragPayload payload,
+        DragActions allowedActions)
+    {
+        return dragEvent(EventType.dragEntered, position, payload,
+            allowedActions);
+    }
+
+    DragAction dragMove(Point position, DragPayload payload,
+        DragActions allowedActions)
+    {
+        return dragEvent(EventType.dragMoved, position, payload,
+            allowedActions);
+    }
+
+    DragAction drop(Point position, DragPayload payload,
+        DragActions allowedActions)
+    {
+        return dragEvent(EventType.dropped, position, payload, allowedActions);
+    }
+
+    void dragLeave(Point position, DragPayload payload = DragPayload.init)
+    {
+        dragEvent(EventType.dragLeft, position, payload, 0);
+    }
+
     void keyDown(Key key, uint modifiers = cast(uint) KeyModifier.none,
         bool repeat = false)
     {
@@ -180,6 +207,20 @@ final class UiTestDriver
         event.button = button;
         event.timestampMs = nextTimestamp();
         return event;
+    }
+
+    private DragAction dragEvent(EventType type, Point position,
+        DragPayload payload, DragActions allowedActions)
+    {
+        _pointer = position;
+        auto event = pointerEvent(type, MouseButton.none);
+        event.dragPayload = payload.duplicate();
+        event.paths = event.dragPayload.paths;
+        event.allowedDragActions = allowedActions;
+        event.suggestedDragAction = preferredDragAction(allowedActions,
+            DragAction.copy);
+        _window.onNativeEvent(event);
+        return event.dragAction;
     }
 
     private long nextTimestamp() @safe nothrow @nogc

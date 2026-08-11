@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-11 — Aurora-wide scrolling and native drag/drop
+- [x] Enabled extended Windows scroll input and native range semantics by
+      default; native scroll commands activate the retained scroll target under
+      the pointer before reading its range.
+- [x] Migrated `ScrollView`, `ListView`, and multiline `TextEditor` to real
+      retained child `Scrollbar` widgets.
+- [x] Added a platform-neutral rich drag/drop payload, action negotiation,
+      widget dispatch, outbound API, and deterministic test-driver support.
+- [x] Added Windows OLE inbound/outbound files, Unicode text, URI list,
+      HTML/custom MIME, and copy/move/link support. File Manager transitions to
+      the OS drag session when a file drag crosses its host-window boundary.
+- [ ] Fundamental widgets (`RadioButton`/group, `ComboBox`, `TabView`,
+      `TreeView`, `TableView`/data grid, tooltip, menu bar) are deliberately
+      deferred until Aurora has an agreed styling/perspective. Revisit directly
+      after the scrolling/drag-drop stabilization pass; do not let this remain
+      an open-ended postponement.
+
 ## 2026-08-11 — Windows File Manager mouse/touchpad scroll (user complaint)
 - [x] Added a real reusable `aurora.widgets.scrollbar.Scrollbar` widget.
 - [x] Replaced the file manager's embedded list/sidebar scrollbar painting and

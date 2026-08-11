@@ -1,14 +1,33 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Unified scrolling and rich drag/drop (2026-08-11)
+
+Run the retained control and event-routing contracts:
+
+```
+cd vendor\aurora-d-0.4.5
+dub run --config=widget-infrastructure-test --compiler=dmd
+```
+
+Pass = `Unified scrolling and rich drag/drop contracts passed.` Coverage
+includes `ScrollView`, `ListView`, and `TextArea` using child `Scrollbar`
+widgets, ordinary wheel and native absolute-position input, rich payload
+enter/move/drop/leave dispatch, custom MIME preservation, and action
+negotiation.
+
+Run `dub test --compiler=dmd` on Windows to exercise the OLE data-object
+round-trip for file paths, Unicode text, URI lists, and custom MIME bytes.
+
 ## Windows File Manager wheel / touchpad scrolling (2026-08-11)
 
 The file manager now uses the reusable retained-mode
 `aurora.widgets.scrollbar.Scrollbar` control for both its list and sidebar.
 The widget owns range/value state, Aurora rendering, wheel accumulation,
-keyboard input, page clicks, thumb hit-testing, and pointer capture. The main
-scrollbar synchronizes its range with the Win32 host so legacy pointing-device
-drivers recognize the custom window as scrollable; Windows does not draw the
-control or move the file-manager content.
+keyboard input, page clicks, thumb hit-testing, and pointer capture. Aurora's
+window host tracks the scrollable widget beneath the pointer and synchronizes
+only that widget's range/value with Win32, so sibling list/sidebar controls
+cannot overwrite one another. Windows does not draw the control or move the
+file-manager content.
 
 ### 1. Deterministic widget and file-manager contracts
 ```
