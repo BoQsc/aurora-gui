@@ -62,6 +62,8 @@ private struct PreviewRequest
     int width;
     int height;
     string[] decodeInputOptions;
+    int stepDirection;
+    bool centeredStepBatch;
     bool publish = true;
 }
 
@@ -132,6 +134,10 @@ final class PreviewService
     private ulong _generation;
 
     private ubyte[][3] _slots;
+    // Worker-owned buffer for one directional frame neighborhood. The frame
+    // presented to the UI is copied into a normal slot; adjacent frames go to
+    // the bounded asset cache for instant arrow-key stepping.
+    private ubyte[] _batchPixels;
     private int _displayedSlot = -1;
     private int _readySlot = -1;
     private int _writingSlot = -1;
@@ -145,8 +151,10 @@ final class PreviewService
 
     private enum size_t maximumCacheBytes = 48 * 1024 * 1024;
     private enum size_t maximumCacheEntries = 12;
-    private enum size_t maximumAssetCacheBytes = 24 * 1024 * 1024;
-    private enum size_t maximumAssetCacheEntries = 6;
+    private enum size_t maximumAssetCacheBytes = 80 * 1024 * 1024;
+    private enum size_t maximumAssetCacheEntries = 12;
+    private enum int stepBatchFrames = 6;
+    private enum size_t maximumStepBatchBytes = 48 * 1024 * 1024;
 
     this()
     {
@@ -163,7 +171,7 @@ final class PreviewService
     }
 
     void requestAsset(MediaAsset asset, double sourceTime, int width, int height,
-        string[] decodeInputOptions = null)
+        string[] decodeInputOptions = null, int stepDirection = 0)
     {
         if (asset is null) return;
         normalizeSize(width, height);
@@ -175,6 +183,8 @@ final class PreviewService
         request.height = height;
         if (asset.hasVideo && isHardwareDecodeCandidatePath(asset.path))
             request.decodeInputOptions = decodeInputOptions.dup;
+        request.stepDirection = stepDirection < 0 ? -1 :
+            (stepDirection > 0 ? 1 : 0);
         request.publish = true;
         enqueue(request);
     }
@@ -310,6 +320,74 @@ final class PreviewService
         if ((height & 1) != 0) ++height;
     }
 
+    /** Select a small directional decode window for keyboard frame stepping.
+     * The requested frame remains first for forward stepping. For reverse
+     * stepping it is the last frame, leaving the preceding frames cached. */
+    private static int configureStepBatch(const PreviewRequest request,
+        out int requestedFrameIndex, out double decodeStart,
+        out double frameRate)
+    {
+        requestedFrameIndex = 0;
+        decodeStart = request.time;
+        frameRate = request.asset !is null && request.asset.frameRate > 0.001 ?
+            request.asset.frameRate : 30.0;
+        const validVideoAsset = request.kind == PreviewRequestKind.asset &&
+            request.asset !is null && request.asset.hasVideo &&
+            !request.asset.isStillImage();
+        const frameBytes = cast(size_t) request.width *
+            cast(size_t) request.height * 3;
+
+        if (validVideoAsset && request.centeredStepBatch)
+        {
+            int batchFrames = stepBatchFrames * 2 - 1;
+            while (batchFrames > 3 && frameBytes * cast(size_t) batchFrames >
+                maximumStepBatchBytes)
+                batchFrames -= 2;
+            if (batchFrames < 3) return 1;
+            requestedFrameIndex = batchFrames / 2;
+            decodeStart = request.time - requestedFrameIndex / frameRate;
+            if (decodeStart < 0.0)
+            {
+                requestedFrameIndex = cast(int) (request.time * frameRate);
+                if (requestedFrameIndex < 0) requestedFrameIndex = 0;
+                else if (requestedFrameIndex >= batchFrames)
+                    requestedFrameIndex = batchFrames - 1;
+                decodeStart = request.time - requestedFrameIndex / frameRate;
+                if (decodeStart < 0.0) decodeStart = 0.0;
+            }
+            return batchFrames;
+        }
+
+        if (request.kind != PreviewRequestKind.asset || request.asset is null ||
+            !request.asset.hasVideo || request.asset.isStillImage() ||
+            request.stepDirection == 0 ||
+            // Publish reverse steps through a one-frame exact seek first. A
+            // background request fills the preceding neighborhood afterwards.
+            request.publish && request.stepDirection < 0)
+            return 1;
+
+        int batchFrames = stepBatchFrames;
+        while (batchFrames > 2 && frameBytes * cast(size_t) batchFrames >
+            maximumStepBatchBytes)
+            --batchFrames;
+
+        if (request.stepDirection < 0)
+        {
+            requestedFrameIndex = batchFrames - 1;
+            decodeStart = request.time - requestedFrameIndex / frameRate;
+            if (decodeStart < 0.0)
+            {
+                requestedFrameIndex = cast(int) (request.time * frameRate);
+                if (requestedFrameIndex < 0) requestedFrameIndex = 0;
+                else if (requestedFrameIndex >= batchFrames)
+                    requestedFrameIndex = batchFrames - 1;
+                decodeStart = request.time - requestedFrameIndex / frameRate;
+                if (decodeStart < 0.0) decodeStart = 0.0;
+            }
+        }
+        return batchFrames;
+    }
+
     private void workerLoop()
     {
         while (true)
@@ -339,13 +417,20 @@ final class PreviewService
     private void renderRequest(PreviewRequest request)
     {
         if (request.kind == PreviewRequestKind.asset &&
-            tryPublishCachedAsset(request)) return;
+            !request.centeredStepBatch &&
+            tryPublishCachedAsset(request))
+            return;
         if (request.kind == PreviewRequestKind.composition &&
             tryPublishCachedComposition(request)) return;
 
         string[] arguments;
         string title;
         double renderedTime;
+        int requestedFrameIndex;
+        double decodeStart;
+        double batchFrameRate;
+        const outputFrameCount = configureStepBatch(request,
+            requestedFrameIndex, decodeStart, batchFrameRate);
 
         final switch (request.kind)
         {
@@ -373,8 +458,9 @@ final class PreviewService
                     if (request.decodeInputOptions.length > 0)
                         arguments ~= request.decodeInputOptions;
                     arguments ~= [
-                        "-ss", formatSeconds(renderedTime, 6), "-i", request.asset.path,
-                        "-frames:v", "1", "-an", "-sn", "-dn",
+                        "-ss", formatSeconds(decodeStart, 6), "-i", request.asset.path,
+                        "-frames:v", format("%d", outputFrameCount),
+                        "-an", "-sn", "-dn",
                         "-vf", filter, "-pix_fmt", "rgb24",
                         "-f", "rawvideo", "pipe:1"
                     ];
@@ -415,6 +501,16 @@ final class PreviewService
             cast(size_t) request.height * 3;
         const slot = acquireWriteSlot(request.generation, frameBytes);
         if (slot < 0) return;
+        const expectedBytes = frameBytes * cast(size_t) outputFrameCount;
+        ubyte[] receiveBuffer;
+        if (outputFrameCount > 1)
+        {
+            if (_batchPixels.length != expectedBytes)
+                _batchPixels = new ubyte[expectedBytes];
+            receiveBuffer = _batchPixels[0 .. expectedBytes];
+        }
+        else
+            receiveBuffer = _slots[slot];
 
         ProcessPipes pipes;
         try
@@ -457,13 +553,27 @@ final class PreviewService
         }
 
         size_t received;
+        bool publishedEarly;
+        const requestedFrameEnd =
+            (cast(size_t) requestedFrameIndex + 1) * frameBytes;
         try
         {
-            while (received < frameBytes)
+            while (received < expectedBytes)
             {
-                auto chunk = pipes.stdout.rawRead(_slots[slot][received .. frameBytes]);
+                auto chunk = pipes.stdout.rawRead(receiveBuffer[received .. expectedBytes]);
                 if (chunk.length == 0) break;
                 received += chunk.length;
+                if (!publishedEarly && request.publish &&
+                    received >= requestedFrameEnd)
+                {
+                    if (outputFrameCount > 1)
+                    {
+                        const start = cast(size_t) requestedFrameIndex * frameBytes;
+                        _slots[slot][] = receiveBuffer[start .. start + frameBytes];
+                    }
+                    publishedEarly = publishReadyFrame(request, slot, title,
+                        renderedTime);
+                }
             }
         }
         catch (Exception)
@@ -475,15 +585,25 @@ final class PreviewService
         try wait(pipes.pid);
         catch (Exception) {}
 
-        bool acceptedFrame;
+        bool acceptedFrame = publishedEarly;
         bool retryWithoutHardwareDecode;
+        const completeFrames = received / frameBytes;
+        const requestedFrameComplete = completeFrames >
+            cast(size_t) requestedFrameIndex;
+        if (outputFrameCount > 1 && requestedFrameComplete && !publishedEarly)
+        {
+            const start = cast(size_t) requestedFrameIndex * frameBytes;
+            _slots[slot][] = receiveBuffer[start .. start + frameBytes];
+        }
         _mutex.lock();
         if (_process is pipes.pid) _process = null;
         const current = request.generation == _generation && !_shutdown;
         if (_writingSlot == slot) _writingSlot = -1;
-        retryWithoutHardwareDecode = current && received != frameBytes &&
+        retryWithoutHardwareDecode = current && !acceptedFrame &&
+            !requestedFrameComplete &&
             canRetryWithoutHardwareDecode(request);
-        if (!retryWithoutHardwareDecode && current && received == frameBytes)
+        if (!acceptedFrame && !retryWithoutHardwareDecode && current &&
+            requestedFrameComplete)
         {
             if (request.publish)
             {
@@ -497,9 +617,9 @@ final class PreviewService
             ++_stats.framesRendered;
             acceptedFrame = true;
         }
-        else if (!current)
+        else if (!acceptedFrame && !current)
             ++_stats.staleFrames;
-        else if (request.publish)
+        else if (!acceptedFrame && request.publish)
         {
             _ready = PreviewFrame.init;
             _ready.error = "FFmpeg did not return a complete preview frame.";
@@ -512,12 +632,54 @@ final class PreviewService
             renderRequest(cpuDecodeFallbackRequest(request));
             return;
         }
-        if (acceptedFrame && request.kind == PreviewRequestKind.asset &&
-            request.asset !is null)
-            storeAssetCache(request, _slots[slot]);
+        if (request.kind == PreviewRequestKind.asset && request.asset !is null &&
+            (acceptedFrame || !request.publish && completeFrames > 0))
+        {
+            if (outputFrameCount > 1)
+            {
+                foreach (index; 0 .. completeFrames)
+                {
+                    const start = index * frameBytes;
+                    const sourceTime = request.time +
+                        (cast(double) index - requestedFrameIndex) /
+                        batchFrameRate;
+                    storeAssetCache(request, sourceTime < 0.0 ? 0.0 : sourceTime,
+                        receiveBuffer[start .. start + frameBytes]);
+                }
+            }
+            else
+                storeAssetCache(request, request.time, _slots[slot]);
+        }
         else if (acceptedFrame && request.kind == PreviewRequestKind.composition &&
             request.composition.cacheKey != 0)
             storeCompositionCache(request, _slots[slot]);
+        if (acceptedFrame && request.kind == PreviewRequestKind.asset &&
+            request.publish)
+        {
+            if (request.stepDirection != 0)
+                extendDirectionalAssetCache(request);
+            else
+                prefetchCenteredAssetCache(request);
+        }
+    }
+
+    /** Publish as soon as the requested frame bytes arrive. FFmpeg may continue
+     * filling the adjacent-frame cache without holding up the UI. */
+    private bool publishReadyFrame(const PreviewRequest request, int slot,
+        string title, double renderedTime)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (request.generation != _generation || _shutdown) return false;
+        if (_writingSlot == slot) _writingSlot = -1;
+        _readySlot = slot;
+        _ready = PreviewFrame.init;
+        _ready.width = request.width;
+        _ready.height = request.height;
+        _ready.title = title;
+        _ready.sourceTime = renderedTime;
+        ++_stats.framesRendered;
+        return true;
     }
 
     private bool canRetryWithoutHardwareDecode(const PreviewRequest request) const
@@ -584,11 +746,82 @@ final class PreviewService
         return current;
     }
 
-    private void storeAssetCache(PreviewRequest request, const ubyte[] pixels)
+    private bool hasCachedAssetFrame(const PreviewRequest request,
+        double sourceTime) const
+    {
+        if (request.asset is null) return false;
+        const timeMilliseconds = cast(long) (sourceTime * 1000.0 + 0.5);
+        foreach (const ref entry; _assetCache)
+            if (entry.path == request.asset.path &&
+                entry.timeMilliseconds == timeMilliseconds &&
+                entry.width == request.width && entry.height == request.height)
+                return true;
+        return false;
+    }
+
+    /** While a cached step is already visible, extend the cache beyond its
+     * current edge. This keeps a held arrow key moving without a hitch every
+     * sixth frame. A newer request cancels this background FFmpeg process. */
+    private void extendDirectionalAssetCache(PreviewRequest request)
+    {
+        if (!request.publish || request.stepDirection == 0 ||
+            request.asset is null || !request.asset.hasVideo ||
+            request.asset.isStillImage()) return;
+
+        _mutex.lock();
+        const current = request.generation == _generation && !_shutdown;
+        _mutex.unlock();
+        if (!current) return;
+
+        PreviewRequest warm = request;
+        warm.publish = false;
+        int requestedIndex;
+        double decodeStart;
+        double frameRate;
+        const batchFrames = configureStepBatch(warm, requestedIndex,
+            decodeStart, frameRate);
+        // If only the requested frame exists (the exact-seek reverse path),
+        // begin with its immediate neighbor. Otherwise start at the first frame
+        // beyond the existing directional batch.
+        const adjacentTime = request.time + request.stepDirection / frameRate;
+        const haveAdjacent = adjacentTime >= 0.0 &&
+            hasCachedAssetFrame(request, adjacentTime);
+        double edgeTime = request.time + request.stepDirection *
+            cast(double) (haveAdjacent ? batchFrames : 1) / frameRate;
+        if (edgeTime < 0.0) edgeTime = 0.0;
+        else if (request.asset.duration > 0.0 && edgeTime > request.asset.duration)
+            edgeTime = request.asset.duration;
+        if (edgeTime == request.time || hasCachedAssetFrame(request, edgeTime))
+            return;
+
+        warm.time = edgeTime;
+        renderRequest(warm);
+    }
+
+    /** After an ordinary paused/scrubbed frame settles, cache nearby frames on
+     * both sides. The first Left or Right press can then be a memory hit too. */
+    private void prefetchCenteredAssetCache(PreviewRequest request)
+    {
+        if (!request.publish || request.asset is null ||
+            !request.asset.hasVideo || request.asset.isStillImage()) return;
+
+        _mutex.lock();
+        const current = request.generation == _generation && !_shutdown;
+        _mutex.unlock();
+        if (!current) return;
+
+        PreviewRequest warm = request;
+        warm.publish = false;
+        warm.centeredStepBatch = true;
+        renderRequest(warm);
+    }
+
+    private void storeAssetCache(PreviewRequest request, double sourceTime,
+        const ubyte[] pixels)
     {
         if (request.asset is null || request.asset.path.length == 0 ||
             pixels.length == 0 || pixels.length > maximumAssetCacheBytes) return;
-        const timeMilliseconds = cast(long) (request.time * 1000.0 + 0.5);
+        const timeMilliseconds = cast(long) (sourceTime * 1000.0 + 0.5);
         foreach (ref entry; _assetCache)
         {
             if (entry.path == request.asset.path &&

@@ -171,7 +171,7 @@ final class TimelineWidget : Widget
 
     void delegate(double time) onPlayheadChanged;
     double delegate(double time) onFrameStepSecondsRequested;
-    void delegate() onImmediatePreviewRequested;
+    void delegate(int direction) onImmediatePreviewRequested;
     void delegate() onHorizontalViewportChanged;
     void delegate() onScrubStarted;
     void delegate() onScrubEnded;
@@ -2262,7 +2262,7 @@ final class TimelineWidget : Widget
                      onFrameStepSecondsRequested(_playhead));
                 setPlayhead(_playhead - step);
                 if (!event.shift() && onImmediatePreviewRequested !is null)
-                    onImmediatePreviewRequested();
+                    onImmediatePreviewRequested(-1);
                 return true;
             }
             case Key.right:
@@ -2272,7 +2272,7 @@ final class TimelineWidget : Widget
                      onFrameStepSecondsRequested(_playhead));
                 setPlayhead(_playhead + step);
                 if (!event.shift() && onImmediatePreviewRequested !is null)
-                    onImmediatePreviewRequested();
+                    onImmediatePreviewRequested(1);
                 return true;
             }
             case Key.home:

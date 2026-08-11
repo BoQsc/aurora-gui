@@ -734,6 +734,7 @@ final class EditorRoot : VBox
     private bool _lastSelectionIsMedia;
     private PendingPreviewKind _pendingPreviewKind;
     private double _pendingPreviewDelay = 0.0;
+    private int _pendingPreviewStepDirection;
     private size_t _pendingAssetIndex;
     private double _pendingPreviewTime = 0.0;
 
@@ -2170,7 +2171,7 @@ final class EditorRoot : VBox
         _timeline.onFrameStepSecondsRequested =
             delegate(double value) { return frameStepSecondsAt(value); };
         _timeline.onImmediatePreviewRequested =
-            delegate() { dispatchPendingPreviewNow(); };
+            delegate(int direction) { dispatchPendingPreviewNow(direction); };
         _timeline.onScrubStarted = delegate() { beginSeekGesture(); };
         _timeline.onScrubEnded = delegate() { endSeekGesture(); };
         _timeline.onSelectionChanged = delegate(TrackAddress track, int index) {
@@ -5446,17 +5447,20 @@ final class EditorRoot : VBox
             fabs(_pendingPreviewTime - nextTime) < 0.000_5;
         _pendingPreviewKind = PendingPreviewKind.sequence;
         _pendingPreviewTime = nextTime;
+        _pendingPreviewStepDirection = 0;
         // Do not restart the debounce timer on every slider pixel or keystroke.
         // Long gestures therefore refresh repeatedly (roughly 16 fps at most),
         // while short edits still coalesce into one background composition frame.
         if (!samePendingFrame) _pendingPreviewDelay = 0.0;
     }
 
-    private void dispatchPendingPreviewNow()
+    private void dispatchPendingPreviewNow(int stepDirection = 0)
     {
         if (_playbackKind != PlaybackKind.none ||
             _pendingPreviewKind == PendingPreviewKind.none)
             return;
+        _pendingPreviewStepDirection = stepDirection < 0 ? -1 :
+            (stepDirection > 0 ? 1 : 0);
         _pendingPreviewDelay = 0.0;
         dispatchPendingPreview();
     }
@@ -5467,6 +5471,7 @@ final class EditorRoot : VBox
         _pendingAssetIndex = assetIndex;
         _pendingPreviewTime = sourceTime;
         _pendingPreviewKind = PendingPreviewKind.asset;
+        _pendingPreviewStepDirection = 0;
         _pendingPreviewDelay = 0.0;
     }
 
@@ -7891,6 +7896,7 @@ final class EditorRoot : VBox
     {
         const decode = _preview.recommendedDecodeSize(_previewQualityHeight,
             _compositionWidth, _compositionHeight);
+        const stepDirection = _pendingPreviewStepDirection;
         final switch (_pendingPreviewKind)
         {
             case PendingPreviewKind.none:
@@ -7911,7 +7917,7 @@ final class EditorRoot : VBox
                     auto playbackAsset = playbackAssetForPreview(directAsset);
                     _previewService.requestAsset(playbackAsset, directSourceTime,
                         decode.width, decode.height,
-                        playbackDecodeInputOptions(playbackAsset));
+                        playbackDecodeInputOptions(playbackAsset), stepDirection);
                     break;
                 }
                 // Only actual overlays/transforms/text use the compositor.
@@ -7925,6 +7931,7 @@ final class EditorRoot : VBox
                 break;
         }
         _pendingPreviewKind = PendingPreviewKind.none;
+        _pendingPreviewStepDirection = 0;
     }
 
     protected override void onTick(double deltaSeconds)
