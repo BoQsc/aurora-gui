@@ -167,8 +167,12 @@ class ScrollView : Widget
         if (_content !is null)
             _content.setBounds(Rect(0, -_scrollY, contentViewportWidth(),
                 _contentHeight));
+        onScrollChanged();
         invalidate();
     }
+
+    /** Called after a wheel, key, thumb, or programmatic scroll changes value. */
+    protected void onScrollChanged() {}
 }
 
 unittest

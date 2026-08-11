@@ -1,5 +1,12 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-11 — Aurora OpenCode startup conversation scrollbar (user complaint)
+- [x] Diagnosed the restored active conversation being selected before the
+      sidebar had a real viewport. Selection visibility used height zero and
+      initialized the conversation list offset near its bottom.
+- [x] Restored the active selection without pre-layout auto-reveal and added a
+      regression covering 25 restored sessions with the last one active.
+
 ## 2026-08-11 — Aurora-wide scrolling and native drag/drop
 - [x] Enabled extended Windows scroll input and native range semantics by
       default; native scroll commands activate the retained scroll target under

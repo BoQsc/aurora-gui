@@ -1,5 +1,20 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode startup conversation scrollbar (2026-08-11)
+
+The OpenCode headless smoke test now creates an isolated persisted state with
+25 conversations and the last conversation selected before constructing the
+window. It paints the initial tree and asserts the restored selection remains
+selected while the conversation `ListView` scroll offset is still zero. Run:
+
+```
+dmd -version=AuroraHeadless -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-smoke.exe
+build\headless-smoke.exe
+```
+
+The test also retains the existing OpenCode interaction, persistence, model
+picker, message auto-follow, scrollbar drag, and scrolling shape-cache checks.
+
 ## Unified scrolling and rich drag/drop (2026-08-11)
 
 Run the retained control and event-routing contracts:

@@ -102,13 +102,13 @@ class ListView : Widget
         invalidate();
     }
 
-    void setSelectedIndex(int value, bool notify = true)
+    void setSelectedIndex(int value, bool notify = true, bool ensureVisible = true)
     {
         if (_items.length == 0) value = -1;
         else value = clampInt(value, -1, cast(int) _items.length - 1);
         if (_selected == value) return;
         _selected = value;
-        ensureSelectionVisible();
+        if (ensureVisible) ensureSelectionVisible();
         invalidate();
         if (notify && onSelectionChanged !is null)
             onSelectionChanged(_selected);

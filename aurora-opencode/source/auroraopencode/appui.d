@@ -505,9 +505,8 @@ private final class ChatScrollView : ScrollView
         if (follow) setScrollY(maxScroll());
     }
 
-    override void setScrollY(int value)
+    protected override void onScrollChanged()
     {
-        super.setScrollY(value);
         // Any user scroll (thumb drag, track click, wheel, keys) moves away
         // from the auto-follow position. Re-engage follow only once the view
         // is back at the bottom; otherwise onLayout keeps snapping the
@@ -554,7 +553,10 @@ public final class OpenCodeRoot : VBox
         _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
         buildUi();
         restoreSessions();
-        updateSessionList();
+        // The restored selection is applied before the first layout. Revealing
+        // it at that point would measure against a zero-height viewport and
+        // seed the list's scroll offset at the bottom.
+        updateSessionList(false);
         updateKeyBadge();
         updateSendButton();
         _client.fetchModels();
@@ -1008,7 +1010,7 @@ public final class OpenCodeRoot : VBox
         _sendButton.setAccent(!busy);
     }
 
-    private void updateSessionList()
+    private void updateSessionList(bool revealCurrent = true)
     {
         ListItem[] items;
         foreach (session; _sessions)
@@ -1021,7 +1023,7 @@ public final class OpenCodeRoot : VBox
         }
         _sessionList.setItems(items);
         if (_current >= 0)
-            _sessionList.setSelectedIndex(_current, false);
+            _sessionList.setSelectedIndex(_current, false, revealCurrent);
     }
 
     // -- persistence ------------------------------------------------------

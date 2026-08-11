@@ -5,7 +5,8 @@ import auroraopencode.appui : OpenCodeRoot, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
-import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;
+import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+import std.json : JSONValue;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.conv : to;
@@ -37,8 +38,53 @@ private Point globalCenter(Widget widget)
         origin.y + widget.bounds().height / 2);
 }
 
+private void writeRestoredSessions(string stateDir, size_t count, int current)
+{
+    JSONValue root;
+    JSONValue sessions = JSONValue(string[].init);
+    foreach (index; 0 .. count)
+    {
+        JSONValue session;
+        session["title"] = "Conversation " ~ to!string(index);
+        session["model"] = "deepseek-v4-flash";
+        session["thinking"] = false;
+        session["messages"] = JSONValue(string[].init);
+        sessions.array ~= session;
+    }
+    root["sessions"] = sessions;
+    root["current"] = current;
+    write(buildPath(stateDir, "sessions.json"), root.toString());
+}
+
 int main(string[] args)
 {
+    // A restored last conversation must not make the pre-layout ListView
+    // calculate selection visibility against a zero-height viewport.
+    const startupStateDir = buildPath(tempDir(), "aurora-opencode-startup-state");
+    if (exists(startupStateDir)) rmdirRecurse(startupStateDir);
+    mkdirRecurse(startupStateDir);
+    writeRestoredSessions(startupStateDir, 25, 24);
+    setOpencodeStateDirectoryForTesting(startupStateDir);
+
+    WindowOptions startupOptions;
+    startupOptions.title = "Aurora OpenCode startup scroll smoke";
+    startupOptions.width = 1200;
+    startupOptions.height = 800;
+    startupOptions.renderer = RendererPreference.software;
+    auto startupWindow = new GuiWindow(startupOptions, opencodeTheme());
+    auto startupRoot = new OpenCodeRoot(startupWindow);
+    startupWindow.setRoot(startupRoot);
+    auto startupDriver = new UiTestDriver(startupWindow);
+    assert(startupDriver.paint(), "Startup session list did not paint");
+    auto startupSessions = requireWidget!ListView(startupRoot, "oc-sessions");
+    assert(startupSessions.selectedIndex() == 24,
+        "Restored conversation selection was not preserved");
+    assert(startupSessions.scrollOffset() == 0,
+        "Restored conversation list started scrolled at the bottom");
+    startupRoot.shutdownClient();
+    startupWindow.close();
+    rmdirRecurse(startupStateDir);
+
     const stateDir = buildPath(tempDir(), "aurora-opencode-smoke-state");
     if (exists(stateDir)) rmdirRecurse(stateDir);
     mkdirRecurse(stateDir);
@@ -168,10 +214,13 @@ int main(string[] args)
         // Dragging the scrollbar must not re-shape every message: the bubble
         // layout cache should keep the shape count flat across scroll frames.
         const shapesBeforeScroll = root.bubbleShapeCountForTesting();
-        const origin = scrollWidget.localToGlobal(Point(0, 0));
-        const scrollbarX = origin.x + scrollWidget.bounds().width - 12;
-        const from = Point(scrollbarX, origin.y + scrollWidget.bounds().height - 12);
-        const to = Point(scrollbarX, origin.y + 12);
+        auto scrollbar = scrollWidget.verticalScrollbar();
+        const thumb = scrollbar.thumbRect();
+        const scrollbarOrigin = scrollbar.localToGlobal(Point(0, 0));
+        const from = Point(scrollbarOrigin.x + thumb.x + thumb.width / 2,
+            scrollbarOrigin.y + thumb.y + thumb.height / 2);
+        const to = Point(scrollbarOrigin.x + thumb.x + thumb.width / 2,
+            scrollbarOrigin.y + 8);
         driver.drag(from, to, 8);
         root.tickTree(0.02);
         assert(driver.paint(), "Scrollbar drag did not repaint");
