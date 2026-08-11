@@ -51,6 +51,9 @@ final class SoftwareRenderer : RenderBackend
 
     override string name() const { return "Software"; }
     override bool hardwareAccelerated() const { return false; }
+    override bool supportsLiveResizeScaling() const { return false; }
+    override void setLiveResize(bool active) {}
+    override bool finalizeLiveResize() { return true; }
     override Surface softwareSurface() { return _surface; }
     override RendererStats stats() const { return _stats; }
     override void resetStats() { _stats = RendererStats.init; }

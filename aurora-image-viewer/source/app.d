@@ -13,7 +13,7 @@ private int runScreenshot(string imagePath, string outputPath)
     options.width = 1280;
     options.height = 800;
     options.darkTitleBar = true;
-    options.renderer = RendererPreference.software;
+    options.renderer = RendererPreference.automatic;
     auto window = new GuiWindow(options, imageViewerTheme());
     auto root = new ViewerRoot(window, imagePath);
     window.setRoot(root);

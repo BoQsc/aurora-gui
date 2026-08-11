@@ -1,5 +1,24 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Live resize verification (2026-08-11)
+
+Use the checked-in Python probe to launch an app and drive the native window:
+
+- `python vendor\aurora-d-0.4.5\tools\resize_latency_probe.py
+  aurora-opencode\aurora-opencode.exe --renderer vulkan --iterations 120
+  --step-delay 0.016 --profile-frame`
+- The probe sends `WM_ENTERSIZEMOVE`, changes the window through
+  `SetWindowPos`, and ends with `WM_EXITSIZEMOVE`. It reports median/p95/max
+  native-call latency and the number of calls over 16 and 50 ms.
+- `--profile-frame` reports final scene/layout/paint/render time plus the number
+  of exact live-reflow frames completed during the drag.
+- The default settle probe also reports p95/max message latency after
+  `WM_EXITSIZEMOVE`, covering deferred native-resolution swapchain recreation.
+
+OpenCode uses the automatic renderer (Vulkan by default when available).
+`RUN-WINDOWS.bat` builds/runs release; `RUN-WINDOWS-SOFTWARE.bat` is the explicit
+software fallback.
+
 ## How to build and test on Windows
 
 ### Build the app

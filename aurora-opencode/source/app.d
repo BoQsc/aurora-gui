@@ -15,7 +15,7 @@ private int runScreenshot(string path, bool withChat, string message)
     options.width = 1200;
     options.height = 800;
     options.darkTitleBar = true;
-    options.renderer = RendererPreference.software;
+    options.renderer = RendererPreference.automatic;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);

@@ -3,7 +3,8 @@ module aurora.render.vulkan;
 import aurora.platform.base : NativeSurfaceInfo, NativeSurfaceKind, WindowOptions;
 import aurora.image : RgbaImage;
 import aurora.render.base : RenderBackend, RendererStats;
-import aurora.render.drawlist : DrawBatchKind, DrawList, DrawVertex;
+import aurora.render.drawlist : DrawBatchKind, DrawList, DrawVertex,
+    RgbImageCommand;
 import aurora.render.scene : RenderScene;
 import aurora.surface : Surface;
 import aurora.types : Rect, Size, maxInt, minInt;
@@ -28,12 +29,30 @@ private final class GpuLayerGeometry
 {
     HostBuffer vertexBuffer;
     HostBuffer indexBuffer;
+    RetiredBuffer[] retired;
     ulong revision;
     Size viewport;
     int atlasWidth;
     int atlasHeight;
     uint indexCount;
     ulong lastSeenScene;
+}
+
+private struct RetiredBuffer
+{
+    HostBuffer vertex;
+    HostBuffer index;
+    ulong retiredScene;
+}
+
+private struct RetiredSwapchain
+{
+    VkSwapchainKHR swapchain;
+    VkImageView[] views;
+    VkFramebuffer[] framebuffers;
+    VkSemaphore[] presentSemaphores;
+    VkFence[] presentFences;
+    bool[] presentFencePending;
 }
 
 private final class GpuImageTexture
@@ -49,6 +68,13 @@ private final class GpuImageTexture
     int width;
     int height;
     bool initialized;
+}
+
+private struct RgbTextureKey
+{
+    ulong layerId;
+    uint imageIndex;
+    uint frameIndex;
 }
 
 private struct FrameResources
@@ -71,7 +97,11 @@ private struct GpuVertex
 }
 
 enum uint imageDescriptorSetLimit = 1024;
-private enum ulong resizedSwapchainAcquireTimeoutNs = 16_000_000UL;
+// After a live-resize swapchain recreation the new images are available
+// immediately (the old swapchain was handed to the driver as oldSwapchain),
+// so a short timeout bounds the worst-case acquire stall instead of freezing
+// the UI thread for a full 16 ms frame during a fast drag.
+private enum ulong resizedSwapchainAcquireTimeoutNs = 2_000_000UL;
 
 private bool supportsPresentMode(const(int)[] modes, int expected)
     @safe pure nothrow @nogc
@@ -169,6 +199,16 @@ final class VulkanRenderer : RenderBackend
     private int _swapchainFormat;
     private bool _swapchainDirty;
 
+    // A resize can retire several generations before presentation catches up.
+    // Keep all of them until presentation fences prove the WSI no longer owns
+    // their semaphores or swapchain images.
+    private RetiredSwapchain[] _retiredSwapchains;
+    private bool _surfaceMaintenanceSupported;
+    private bool _swapchainMaintenanceSupported;
+    private bool _presentScalingEnabled;
+    private bool _liveResizeActive;
+    private bool _liveResizeFinalizePending;
+
     private VkRenderPass _renderPass;
     private VkDescriptorSetLayout _descriptorSetLayout;
     private VkPipelineLayout _pipelineLayout;
@@ -180,6 +220,8 @@ final class VulkanRenderer : RenderBackend
     private VkCommandPool _commandPool;
     private FrameResources[] _frames;
     private VkSemaphore[] _presentSemaphores;
+    private VkFence[] _presentFences;
+    private bool[] _presentFencePending;
     private uint _frameCursor;
     private int _presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
@@ -201,6 +243,8 @@ final class VulkanRenderer : RenderBackend
     private VkImage _submittedAtlasImage;
     private bool _atlasInitialized;
     private GpuImageTexture[ulong] _imageTextures;
+    private GpuImageTexture[RgbTextureKey] _rgbTextures;
+    private uint _recordingFrameIndex;
     private bool _closed;
     private bool _usingXcb;
 
@@ -235,6 +279,32 @@ final class VulkanRenderer : RenderBackend
 
     override string name() const { return "Vulkan"; }
     override bool hardwareAccelerated() const { return true; }
+    override bool supportsLiveResizeScaling() const
+    {
+        return _presentScalingEnabled && _swapchainMaintenanceSupported;
+    }
+    override void setLiveResize(bool active)
+    {
+        if (_liveResizeActive == active) return;
+        _liveResizeActive = active;
+        if (active)
+            _liveResizeFinalizePending = false;
+        else if (_presentScalingEnabled &&
+            (_extent.width != cast(uint) maxInt(1, _requestedSize.width) ||
+             _extent.height != cast(uint) maxInt(1, _requestedSize.height)))
+            _liveResizeFinalizePending = true;
+    }
+    override bool finalizeLiveResize()
+    {
+        if (!_liveResizeFinalizePending) return true;
+        if (!_swapchainMaintenanceSupported || !submittedFramesIdle() ||
+            !currentPresentationIdle())
+            return false;
+        _liveResizeFinalizePending = false;
+        _swapchainDirty = true;
+        recreateSwapchain();
+        return true;
+    }
     override Surface softwareSurface() { return null; }
     override RendererStats stats() const { return _stats; }
     override void resetStats() { _stats = RendererStats.init; }
@@ -244,6 +314,11 @@ final class VulkanRenderer : RenderBackend
         const requested = Size(maxInt(1, size.width), maxInt(1, size.height));
         if (_requestedSize == requested) return;
         _requestedSize = requested;
+        // A scaling-enabled Win32 swapchain remains valid while the surface is
+        // being dragged. Render the newest layout into the existing extent and
+        // let WSI stretch it; rebuild once at WM_EXITSIZEMOVE.
+        if (_liveResizeActive && _presentScalingEnabled)
+            return;
         _swapchainDirty = true;
     }
 
@@ -267,6 +342,7 @@ final class VulkanRenderer : RenderBackend
         }
         if (_swapchain == VK_NULL_HANDLE || _extent.width == 0 || _extent.height == 0)
             return true;
+        reclaimRetiredSwapchains(false);
 
         // Content changes may rewrite or destroy retained buffers and atlas
         // resources. Wait until every in-flight draw has completed before that
@@ -280,6 +356,7 @@ final class VulkanRenderer : RenderBackend
             ++_stats.frameDeferrals;
             return false;
         }
+        _recordingFrameIndex = frameIndex;
 
         uint imageIndex;
         VkResult acquire;
@@ -308,9 +385,29 @@ final class VulkanRenderer : RenderBackend
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
             check(acquire, "acquiring a swapchain image");
-        if (acquire == VK_SUBOPTIMAL_KHR) _swapchainDirty = true;
+        // A size mismatch is intentionally suboptimal while a
+        // scaling-enabled swapchain is serving live resize. Recreating here
+        // defeats surface maintenance and puts a driver-sized stall back in
+        // the Win32 sizing loop. Rebuild once setLiveResize(false) observes the
+        // final requested extent.
+        if (acquire == VK_SUBOPTIMAL_KHR &&
+            !(_liveResizeActive && _presentScalingEnabled))
+            _swapchainDirty = true;
         if (imageIndex >= _presentSemaphores.length)
             throw new Exception("Vulkan returned an invalid swapchain image index");
+        if (_swapchainMaintenanceSupported &&
+            imageIndex < _presentFences.length &&
+            _presentFencePending[imageIndex])
+        {
+            // Reacquiring the same swapchain image means its previous present
+            // has completed. The maintenance fence makes that ownership
+            // transfer explicit before its semaphore/fence pair is reused.
+            check(_vk.vkWaitForFences(_device, 1, &_presentFences[imageIndex],
+                VK_TRUE, ulong.max), "waiting for a Vulkan presentation fence");
+            check(_vk.vkResetFences(_device, 1, &_presentFences[imageIndex]),
+                "resetting a Vulkan presentation fence");
+            _presentFencePending[imageIndex] = false;
+        }
 
         // Acquire first, then sample the captured native pointer at the last
         // practical moment before command recording. This removes event-queue
@@ -357,16 +454,29 @@ final class VulkanRenderer : RenderBackend
 
         VkPresentInfoKHR present;
         present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        VkSwapchainPresentFenceInfoEXT presentFence;
+        if (_swapchainMaintenanceSupported && imageIndex < _presentFences.length)
+        {
+            presentFence.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT;
+            presentFence.swapchainCount = 1;
+            presentFence.pFences = &_presentFences[imageIndex];
+            present.pNext = &presentFence;
+        }
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &_presentSemaphores[imageIndex];
         present.swapchainCount = 1;
         present.pSwapchains = &_swapchain;
         present.pImageIndices = &imageIndex;
         const presented = _vk.vkQueuePresentKHR(_presentQueue, &present);
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
+        if (presented == VK_ERROR_OUT_OF_DATE_KHR ||
+            (presented == VK_SUBOPTIMAL_KHR &&
+             !(_liveResizeActive && _presentScalingEnabled)))
             _swapchainDirty = true;
-        else
+        else if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR)
             check(presented, "presenting the Vulkan frame");
+        if (_swapchainMaintenanceSupported && imageIndex < _presentFencePending.length &&
+            (presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR))
+            _presentFencePending[imageIndex] = true;
         _frameCursor = (frameIndex + 1) % activeFrameCount();
         ++_stats.frames;
         return true;
@@ -427,17 +537,21 @@ final class VulkanRenderer : RenderBackend
 
     private bool sceneRequiresGpuMutation(RenderScene scene)
     {
+        // Geometry re-upload no longer counts as a GPU mutation: the buffers
+        // are versioned (fresh allocation per revision, old buffers destroyed
+        // after every in-flight frame has passed them), so a live resize can
+        // upload the base at the new size without waiting for the GPU. Only
+        // atlas rewrites, image-texture rewrites, and retained-layer removal
+        // mutate shared resources that in-flight command buffers may read.
         const atlas = scene.base.fonts.atlas;
         if (_atlasImage == VK_NULL_HANDLE || _atlasWidth != atlas.width() ||
             _atlasHeight != atlas.height() || _atlasRevision != atlas.revision() ||
             _submittedAtlasRevision != atlas.revision())
             return true;
         if (drawListRequiresImageMutation(scene.base)) return true;
-        if (geometryNeedsUpload(scene.base, 0, scene.baseRevision)) return true;
         foreach (layer; scene.layers)
             if (layer.visible && layer.drawList !is null &&
-                (drawListRequiresImageMutation(layer.drawList) ||
-                geometryNeedsUpload(layer.drawList, layer.id, layer.revision)))
+                drawListRequiresImageMutation(layer.drawList))
                 return true;
 
         // Removing a retained layer destroys its buffers, so it is also a GPU
@@ -566,6 +680,13 @@ final class VulkanRenderer : RenderBackend
             extensions ~= "VK_KHR_portability_enumeration";
             instanceFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
         }
+        if (contains(availableExtensions, "VK_EXT_surface_maintenance1") &&
+            contains(availableExtensions, "VK_KHR_get_surface_capabilities2"))
+        {
+            extensions ~= "VK_EXT_surface_maintenance1";
+            extensions ~= "VK_KHR_get_surface_capabilities2";
+            _surfaceMaintenanceSupported = true;
+        }
 
         string[] layers;
         if (_options.vulkanValidation && contains(enumerateInstanceLayers(), "VK_LAYER_KHRONOS_validation"))
@@ -652,20 +773,36 @@ final class VulkanRenderer : RenderBackend
         devices.length = count;
         check(_vk.vkEnumeratePhysicalDevices(_instance, &count, devices.ptr),
             "enumerating Vulkan physical devices");
+        int bestScore = int.min;
         foreach (device; devices)
         {
             uint graphics;
             uint present;
-            if (findQueueFamilies(device, graphics, present) &&
-                contains(enumerateDeviceExtensions(device), "VK_KHR_swapchain"))
-            {
-                _physicalDevice = device;
-                _graphicsFamily = graphics;
-                _presentFamily = present;
-                return;
-            }
+            if (!findQueueFamilies(device, graphics, present)) continue;
+            auto extensions = enumerateDeviceExtensions(device);
+            if (!contains(extensions, "VK_KHR_swapchain")) continue;
+            const modes = presentModes(device);
+            const formats = surfaceFormats(device);
+            if (modes.length == 0 || formats.length == 0) continue;
+            int score = cast(int) modes.length;
+            if (_options.lowLatency &&
+                supportsPresentMode(modes, VK_PRESENT_MODE_MAILBOX_KHR))
+                score += 100;
+            if (_surfaceMaintenanceSupported &&
+                contains(extensions, "VK_EXT_swapchain_maintenance1"))
+                score += 50;
+            if (score <= bestScore) continue;
+            bestScore = score;
+            _physicalDevice = device;
+            _graphicsFamily = graphics;
+            _presentFamily = present;
         }
-        throw new Exception("No Vulkan device supports graphics, presentation, and VK_KHR_swapchain");
+        if (_physicalDevice is null)
+            throw new Exception("No Vulkan device supports graphics, presentation, and VK_KHR_swapchain");
+
+        auto selectedExtensions = enumerateDeviceExtensions(_physicalDevice);
+        _swapchainMaintenanceSupported = _surfaceMaintenanceSupported &&
+            contains(selectedExtensions, "VK_EXT_swapchain_maintenance1");
     }
 
     private bool findQueueFamilies(VkPhysicalDevice device, out uint graphics, out uint present)
@@ -709,11 +846,20 @@ final class VulkanRenderer : RenderBackend
         }
         auto available = enumerateDeviceExtensions(_physicalDevice);
         string[] extensions = ["VK_KHR_swapchain"];
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance;
+        if (_swapchainMaintenanceSupported)
+        {
+            extensions ~= "VK_EXT_swapchain_maintenance1";
+            maintenance.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+            maintenance.swapchainMaintenance1 = VK_TRUE;
+        }
         if (contains(available, "VK_KHR_portability_subset"))
             extensions ~= "VK_KHR_portability_subset";
         auto pointers = makePointers(extensions);
         VkDeviceCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        info.pNext = _swapchainMaintenanceSupported ? &maintenance : null;
         info.queueCreateInfoCount = cast(uint) queues.length;
         info.pQueueCreateInfos = queues.ptr;
         info.enabledExtensionCount = cast(uint) pointers.length;
@@ -833,11 +979,22 @@ final class VulkanRenderer : RenderBackend
     private void createPresentSemaphores()
     {
         _presentSemaphores.length = _swapchainImages.length;
+        _presentFences.length = _swapchainMaintenanceSupported ?
+            _swapchainImages.length : 0;
+        _presentFencePending.length = _presentFences.length;
         VkSemaphoreCreateInfo semaphore;
         semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         foreach (ref value; _presentSemaphores)
             check(_vk.vkCreateSemaphore(_device, &semaphore, null, &value),
                 "creating a per-image Vulkan present semaphore");
+        if (_swapchainMaintenanceSupported)
+        {
+            VkFenceCreateInfo fence;
+            fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            foreach (ref value; _presentFences)
+                check(_vk.vkCreateFence(_device, &fence, null, &value),
+                    "creating a per-image Vulkan presentation fence");
+        }
     }
 
     private void destroyPresentSemaphores()
@@ -845,15 +1002,22 @@ final class VulkanRenderer : RenderBackend
         if (_device is null || _vk is null)
         {
             _presentSemaphores.length = 0;
+            _presentFences.length = 0;
+            _presentFencePending.length = 0;
             return;
         }
         foreach (value; _presentSemaphores)
             if (value != VK_NULL_HANDLE && _vk.vkDestroySemaphore !is null)
                 _vk.vkDestroySemaphore(_device, value, null);
         _presentSemaphores.length = 0;
+        foreach (value; _presentFences)
+            if (value != VK_NULL_HANDLE && _vk.vkDestroyFence !is null)
+                _vk.vkDestroyFence(_device, value, null);
+        _presentFences.length = 0;
+        _presentFencePending.length = 0;
     }
 
-    private void createSwapchain()
+    private void createSwapchain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE)
     {
         VkSurfaceCapabilitiesKHR capabilities;
         check(_vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_physicalDevice, _surface, &capabilities),
@@ -881,7 +1045,12 @@ final class VulkanRenderer : RenderBackend
             _pipeline == VK_NULL_HANDLE || _imagePipeline == VK_NULL_HANDLE ||
             _swapchainFormat != nextFormat;
         if (needsFormatResources)
+        {
+            // Pipelines/render passes may still be referenced by submitted
+            // command buffers even though the old swapchain itself is retired.
+            waitForSubmittedFrames();
             destroyFormatResources();
+        }
         _swapchainFormat = nextFormat;
         if (capabilities.currentExtent.width != uint.max)
             _extent = capabilities.currentExtent;
@@ -894,11 +1063,21 @@ final class VulkanRenderer : RenderBackend
         }
         _presentMode = choosePresentMode(modes, _options.vsync,
             _options.lowLatency);
+        VkSwapchainPresentScalingCreateInfoEXT scaling;
+        _presentScalingEnabled = queryStretchScaling(_presentMode);
+        if (_presentScalingEnabled)
+        {
+            scaling.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT;
+            scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
+            scaling.presentGravityX = VK_PRESENT_GRAVITY_CENTERED_BIT_EXT;
+            scaling.presentGravityY = VK_PRESENT_GRAVITY_CENTERED_BIT_EXT;
+        }
         const imageCount = chooseSwapchainImageCount(capabilities.minImageCount,
             capabilities.maxImageCount, _presentMode, _options.lowLatency);
         uint[2] queueIndices = [_graphicsFamily, _presentFamily];
         VkSwapchainCreateInfoKHR info;
         info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        info.pNext = _presentScalingEnabled ? &scaling : null;
         info.surface = _surface;
         info.minImageCount = imageCount;
         info.imageFormat = chosen.format;
@@ -920,8 +1099,14 @@ final class VulkanRenderer : RenderBackend
             VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
         info.presentMode = _presentMode;
         info.clipped = VK_TRUE;
-        check(_vk.vkCreateSwapchainKHR(_device, &info, null, &_swapchain),
+        // Passing the previous swapchain keeps its images presentable while
+        // the new one is created, so a live resize never leaves the surface
+        // without an image (the classic white flash while dragging a border).
+        info.oldSwapchain = oldSwapchain;
+        VkSwapchainKHR nextSwapchain;
+        check(_vk.vkCreateSwapchainKHR(_device, &info, null, &nextSwapchain),
             "creating the Vulkan swapchain");
+        _swapchain = nextSwapchain;
 
         uint actualCount;
         check(_vk.vkGetSwapchainImagesKHR(_device, _swapchain, &actualCount, null),
@@ -943,9 +1128,111 @@ final class VulkanRenderer : RenderBackend
     private void recreateSwapchain()
     {
         if (_device is null) return;
-        waitForSubmittedFrames();
-        destroySwapchainImages();
-        createSwapchain();
+        reclaimRetiredSwapchains(false);
+        // Retire every generation instead of keeping only the latest one. A
+        // rendering fence does not prove presentation has finished using a
+        // swapchain image or its wait semaphore. On maintenance1 drivers the
+        // per-present fences below provide that proof; elsewhere generations
+        // stay alive until shutdown rather than risking a white surface.
+        const previousSwapchain = _swapchain;
+        if (previousSwapchain != VK_NULL_HANDLE)
+        {
+            RetiredSwapchain retired;
+            retired.swapchain = previousSwapchain;
+            retired.views = _swapchainViews;
+            retired.framebuffers = _framebuffers;
+            retired.presentSemaphores = _presentSemaphores;
+            retired.presentFences = _presentFences;
+            retired.presentFencePending = _presentFencePending;
+            _retiredSwapchains ~= retired;
+            _swapchain = VK_NULL_HANDLE;
+            _swapchainViews = null;
+            _framebuffers = null;
+            _presentSemaphores = null;
+            _presentFences = null;
+            _presentFencePending = null;
+        }
+        createSwapchain(previousSwapchain);
+    }
+
+    private bool submittedFramesIdle()
+    {
+        foreach (ref frame; _frames)
+        {
+            if (frame.fence == VK_NULL_HANDLE) continue;
+            const status = _vk.vkGetFenceStatus(_device, frame.fence);
+            if (status == VK_NOT_READY) return false;
+            check(status, "checking a Vulkan frame fence");
+        }
+        return true;
+    }
+
+    private bool currentPresentationIdle()
+    {
+        foreach (index, pending; _presentFencePending)
+        {
+            if (!pending || index >= _presentFences.length) continue;
+            const status = _vk.vkGetFenceStatus(_device,
+                _presentFences[index]);
+            if (status == VK_NOT_READY) return false;
+            check(status, "checking live-resize presentation fences");
+        }
+        return true;
+    }
+
+    private bool retiredPresentationIdle(ref RetiredSwapchain retired, bool wait)
+    {
+        if (!_swapchainMaintenanceSupported) return wait;
+        foreach (index, pending; retired.presentFencePending)
+        {
+            if (!pending || index >= retired.presentFences.length) continue;
+            auto fence = retired.presentFences[index];
+            const status = wait ?
+                _vk.vkWaitForFences(_device, 1, &fence, VK_TRUE, ulong.max) :
+                _vk.vkGetFenceStatus(_device, fence);
+            if (status == VK_NOT_READY) return false;
+            check(status, "waiting for retired Vulkan presentation work");
+        }
+        return true;
+    }
+
+    private void reclaimRetiredSwapchains(bool force)
+    {
+        if (_device is null || _vk is null) return;
+        size_t index;
+        while (index < _retiredSwapchains.length)
+        {
+            auto retired = &_retiredSwapchains[index];
+            if ((!force && !submittedFramesIdle()) ||
+                !retiredPresentationIdle(*retired, force))
+            {
+                ++index;
+                continue;
+            }
+            destroyRetiredSwapchain(*retired);
+            _retiredSwapchains[index] = _retiredSwapchains[$ - 1];
+            _retiredSwapchains.length -= 1;
+        }
+    }
+
+    private void destroyRetiredSwapchain(ref RetiredSwapchain retired)
+    {
+        foreach (value; retired.presentSemaphores)
+            if (value != VK_NULL_HANDLE && _vk.vkDestroySemaphore !is null)
+                _vk.vkDestroySemaphore(_device, value, null);
+        foreach (value; retired.presentFences)
+            if (value != VK_NULL_HANDLE && _vk.vkDestroyFence !is null)
+                _vk.vkDestroyFence(_device, value, null);
+        foreach (framebuffer; retired.framebuffers)
+            if (framebuffer != VK_NULL_HANDLE && _vk.vkDestroyFramebuffer !is null)
+                _vk.vkDestroyFramebuffer(_device, framebuffer, null);
+        foreach (view; retired.views)
+            if (view != VK_NULL_HANDLE && _vk.vkDestroyImageView !is null)
+                _vk.vkDestroyImageView(_device, view, null);
+        if (retired.swapchain != VK_NULL_HANDLE &&
+            _vk.vkDestroySwapchainKHR !is null)
+            _vk.vkDestroySwapchainKHR(_device, retired.swapchain, null);
+        retired = RetiredSwapchain.init;
     }
 
     private void createSwapchainViews()
@@ -1157,8 +1444,26 @@ final class VulkanRenderer : RenderBackend
             cast(VkDeviceSize) list.vertices.length * GpuVertex.sizeof);
         const indexBytes = max(cast(VkDeviceSize) 256,
             cast(VkDeviceSize) list.indices.length * uint.sizeof);
-        ensureHostBuffer(cache.vertexBuffer, vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        ensureHostBuffer(cache.indexBuffer, indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+        // Version geometry that is still referenced by an in-flight frame, but
+        // reuse drained versions. A resize changes the base viewport on every
+        // frame; allocating new Vulkan buffers forever makes the UI thread pay
+        // for driver allocation and destruction during the drag.
+        HostBuffer vertexBuffer;
+        HostBuffer indexBuffer;
+        if (!takeRetiredGeometry(cache, vertexBytes, indexBytes,
+            vertexBuffer, indexBuffer))
+        {
+            ensureHostBuffer(vertexBuffer, vertexBytes,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            ensureHostBuffer(indexBuffer, indexBytes,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        }
+        if (cache.vertexBuffer.buffer != VK_NULL_HANDLE)
+            cache.retired ~= RetiredBuffer(cache.vertexBuffer, cache.indexBuffer,
+                _sceneGeneration);
+        cache.vertexBuffer = vertexBuffer;
+        cache.indexBuffer = indexBuffer;
 
         auto destination = cast(GpuVertex*) cache.vertexBuffer.mapped;
         const width = cast(float) maxInt(1, list.viewport.width);
@@ -1182,13 +1487,25 @@ final class VulkanRenderer : RenderBackend
         }
         foreach (batch; list.batches)
         {
-            if (batch.kind != DrawBatchKind.rgbaImage ||
-                batch.imageIndex >= list.rgbaImages.length)
+            float imageWidth;
+            float imageHeight;
+            if (batch.kind == DrawBatchKind.rgbaImage)
+            {
+                if (batch.imageIndex >= list.rgbaImages.length) continue;
+                auto command = list.rgbaImages[batch.imageIndex];
+                if (command.image is null) continue;
+                imageWidth = cast(float) maxInt(1, command.image.width());
+                imageHeight = cast(float) maxInt(1, command.image.height());
+            }
+            else if (batch.kind == DrawBatchKind.rgbImage)
+            {
+                if (batch.imageIndex >= list.rgbImages.length) continue;
+                auto command = list.rgbImages[batch.imageIndex];
+                imageWidth = cast(float) maxInt(1, command.width);
+                imageHeight = cast(float) maxInt(1, command.height);
+            }
+            else
                 continue;
-            auto command = list.rgbaImages[batch.imageIndex];
-            if (command.image is null) continue;
-            const imageWidth = cast(float) maxInt(1, command.image.width());
-            const imageHeight = cast(float) maxInt(1, command.image.height());
             foreach (offset; 0 .. batch.indexCount)
             {
                 const indexOffset = cast(size_t) batch.firstIndex + cast(size_t) offset;
@@ -1229,9 +1546,48 @@ final class VulkanRenderer : RenderBackend
         }
     }
 
+    private bool takeRetiredGeometry(GpuLayerGeometry cache,
+        VkDeviceSize vertexBytes, VkDeviceSize indexBytes,
+        out HostBuffer vertex, out HostBuffer indices)
+    {
+        const drainGeneration = _sceneGeneration >= 2 ? _sceneGeneration - 2 : 0;
+        size_t index;
+        while (index < cache.retired.length)
+        {
+            auto retired = cache.retired[index];
+            if (retired.retiredScene > drainGeneration)
+            {
+                ++index;
+                continue;
+            }
+            cache.retired[index] = cache.retired[$ - 1];
+            cache.retired.length -= 1;
+            if (retired.vertex.buffer != VK_NULL_HANDLE &&
+                retired.index.buffer != VK_NULL_HANDLE &&
+                retired.vertex.capacity >= vertexBytes &&
+                retired.index.capacity >= indexBytes)
+            {
+                vertex = retired.vertex;
+                indices = retired.index;
+                return true;
+            }
+            destroyRetiredBuffer(retired);
+        }
+        return false;
+    }
+
+    private void destroyRetiredBuffer(RetiredBuffer retired)
+    {
+        destroyHostBuffer(retired.vertex);
+        destroyHostBuffer(retired.index);
+    }
+
     private void destroyGpuGeometry(GpuLayerGeometry cache)
     {
         if (cache is null) return;
+        foreach (retired; cache.retired)
+            destroyRetiredBuffer(retired);
+        cache.retired.length = 0;
         destroyHostBuffer(cache.vertexBuffer);
         destroyHostBuffer(cache.indexBuffer);
     }
@@ -1320,17 +1676,20 @@ final class VulkanRenderer : RenderBackend
 
     private void ensureSceneImages(RenderScene scene)
     {
-        ensureDrawListImages(scene.base);
+        ensureDrawListImages(scene.base, 0, scene.baseRevision);
         foreach (layer; scene.layers)
             if (layer.visible && layer.drawList !is null)
-                ensureDrawListImages(layer.drawList);
+                ensureDrawListImages(layer.drawList, layer.id, layer.revision);
     }
 
-    private void ensureDrawListImages(DrawList list)
+    private void ensureDrawListImages(DrawList list, ulong layerId, ulong revision)
     {
         if (list is null) return;
         foreach (command; list.rgbaImages)
             ensureImageTexture(command.image);
+        foreach (imageIndex, command; list.rgbImages)
+            ensureRgbTexture(command, RgbTextureKey(layerId,
+                cast(uint) imageIndex, _recordingFrameIndex), revision);
     }
 
     private GpuImageTexture ensureImageTexture(RgbaImage image)
@@ -1378,6 +1737,66 @@ final class VulkanRenderer : RenderBackend
     {
         if (image is null) return null;
         auto found = image.id() in _imageTextures;
+        return found is null ? null : *found;
+    }
+
+    private GpuImageTexture ensureRgbTexture(RgbImageCommand command,
+        RgbTextureKey key, ulong revision)
+    {
+        auto found = key in _rgbTextures;
+        GpuImageTexture texture;
+        if (found is null)
+        {
+            texture = new GpuImageTexture();
+            _rgbTextures[key] = texture;
+        }
+        else
+            texture = *found;
+
+        if (texture.image == VK_NULL_HANDLE || texture.width != command.width ||
+            texture.height != command.height)
+        {
+            destroyGpuImageStorage(texture);
+            texture.width = command.width;
+            texture.height = command.height;
+            createGpuImageStorage(texture);
+            texture.revision = 0;
+            texture.submittedRevision = 0;
+            texture.initialized = false;
+        }
+
+        const byteCount = cast(VkDeviceSize) command.width *
+            cast(VkDeviceSize) command.height * 4;
+        ensureHostBuffer(texture.staging, max(cast(VkDeviceSize) 256, byteCount),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        const effectiveRevision = revision == 0 ? 1 : revision;
+        if (texture.revision != effectiveRevision)
+        {
+            const pixelCount = cast(size_t) command.width *
+                cast(size_t) command.height;
+            auto destination = cast(ubyte*) texture.staging.mapped;
+            foreach (pixelIndex; 0 .. pixelCount)
+            {
+                const sourceOffset = pixelIndex * 3;
+                const destinationOffset = pixelIndex * 4;
+                destination[destinationOffset] = command.pixels[sourceOffset];
+                destination[destinationOffset + 1] = command.pixels[sourceOffset + 1];
+                destination[destinationOffset + 2] = command.pixels[sourceOffset + 2];
+                destination[destinationOffset + 3] = 255;
+            }
+            texture.revision = effectiveRevision;
+        }
+        if (texture.linearDescriptorSet == VK_NULL_HANDLE ||
+            texture.nearestDescriptorSet == VK_NULL_HANDLE)
+            allocateGpuImageDescriptors(texture);
+        updateGpuImageDescriptors(texture);
+        return texture;
+    }
+
+    private GpuImageTexture rgbTexture(ulong layerId, uint imageIndex)
+    {
+        const key = RgbTextureKey(layerId, imageIndex, _recordingFrameIndex);
+        auto found = key in _rgbTextures;
         return found is null ? null : *found;
     }
 
@@ -1496,14 +1915,16 @@ final class VulkanRenderer : RenderBackend
 
         auto baseCache = _geometryCaches[0];
         recordRetainedLayer(commandBuffer, scene.base, baseCache,
-            Rect(0, 0, cast(int) _extent.width, cast(int) _extent.height));
+            Rect(0, 0, cast(int) _extent.width, cast(int) _extent.height), 0);
+        const outputSize = Size(cast(int) _extent.width, cast(int) _extent.height);
         foreach (layer; scene.layers)
         {
             if (!layer.visible || layer.drawList is null || layer.deviceBounds.empty())
                 continue;
             auto found = layer.id in _geometryCaches;
             if (found is null) continue;
-            recordRetainedLayer(commandBuffer, layer.drawList, *found, layer.deviceBounds);
+            recordRetainedLayer(commandBuffer, layer.drawList, *found,
+                scaleRect(layer.deviceBounds, scene.viewport, outputSize), layer.id);
         }
 
         _vk.vkCmdEndRenderPass(commandBuffer);
@@ -1512,7 +1933,7 @@ final class VulkanRenderer : RenderBackend
 
     private void recordRetainedLayer(VkCommandBuffer commandBuffer, DrawList list,
         GpuLayerGeometry geometry,
-        Rect deviceBounds)
+        Rect deviceBounds, ulong layerId)
     {
         if (list is null || geometry is null || geometry.indexCount == 0 ||
             deviceBounds.empty()) return;
@@ -1555,11 +1976,23 @@ final class VulkanRenderer : RenderBackend
                     pipeline = _imagePipeline;
                     break;
                 case DrawBatchKind.rgbImage:
-                    continue;
+                    if (batch.imageIndex >= list.rgbImages.length) continue;
+                    auto rgbCommand = list.rgbImages[batch.imageIndex];
+                    auto rgbTextureValue = rgbTexture(layerId, batch.imageIndex);
+                    if (rgbTextureValue is null) continue;
+                    descriptorSet = rgbCommand.linearFiltering ?
+                        rgbTextureValue.linearDescriptorSet :
+                        rgbTextureValue.nearestDescriptorSet;
+                    if (descriptorSet == VK_NULL_HANDLE) continue;
+                    pipeline = _imagePipeline;
+                    break;
                 default:
                     continue;
             }
-            auto clipped = batch.clip.translated(deviceBounds.x, deviceBounds.y)
+            const localBounds = Rect(0, 0, deviceBounds.width, deviceBounds.height);
+            const scaledClip = scaleRect(batch.clip, list.viewport,
+                Size(deviceBounds.width, deviceBounds.height)).intersection(localBounds);
+            auto clipped = scaledClip.translated(deviceBounds.x, deviceBounds.y)
                 .intersection(deviceBounds).intersection(framebufferBounds);
             if (clipped.empty() || batch.indexCount == 0) continue;
             if (pipeline != currentPipeline)
@@ -1582,6 +2015,20 @@ final class VulkanRenderer : RenderBackend
             _vk.vkCmdDrawIndexed(commandBuffer, batch.indexCount, 1,
                 batch.firstIndex, 0, 0);
         }
+    }
+
+    private static Rect scaleRect(Rect value, Size source, Size destination)
+        @safe pure nothrow @nogc
+    {
+        const sourceWidth = maxInt(1, source.width);
+        const sourceHeight = maxInt(1, source.height);
+        const left = cast(int) (cast(long) value.x * destination.width / sourceWidth);
+        const top = cast(int) (cast(long) value.y * destination.height / sourceHeight);
+        const right = cast(int) (cast(long) (value.x + value.width) *
+            destination.width / sourceWidth);
+        const bottom = cast(int) (cast(long) (value.y + value.height) *
+            destination.height / sourceHeight);
+        return Rect(left, top, maxInt(0, right - left), maxInt(0, bottom - top));
     }
 
     private void uploadAtlas(VkCommandBuffer commandBuffer, DrawList list)
@@ -1628,18 +2075,25 @@ final class VulkanRenderer : RenderBackend
 
     private void uploadSceneImages(VkCommandBuffer commandBuffer, RenderScene scene)
     {
-        uploadDrawListImages(commandBuffer, scene.base);
+        uploadDrawListImages(commandBuffer, scene.base, 0);
         foreach (layer; scene.layers)
             if (layer.visible && layer.drawList !is null)
-                uploadDrawListImages(commandBuffer, layer.drawList);
+                uploadDrawListImages(commandBuffer, layer.drawList, layer.id);
     }
 
-    private void uploadDrawListImages(VkCommandBuffer commandBuffer, DrawList list)
+    private void uploadDrawListImages(VkCommandBuffer commandBuffer, DrawList list,
+        ulong layerId)
     {
         if (list is null) return;
         foreach (command; list.rgbaImages)
         {
             auto texture = imageTexture(command.image);
+            if (texture is null) continue;
+            uploadImageTexture(commandBuffer, texture);
+        }
+        foreach (imageIndex, command; list.rgbImages)
+        {
+            auto texture = rgbTexture(layerId, cast(uint) imageIndex);
             if (texture is null) continue;
             uploadImageTexture(commandBuffer, texture);
         }
@@ -1755,6 +2209,9 @@ final class VulkanRenderer : RenderBackend
         foreach (id, texture; _imageTextures)
             destroyGpuImageTexture(texture);
         _imageTextures = null;
+        foreach (key, texture; _rgbTextures)
+            destroyGpuImageTexture(texture);
+        _rgbTextures = null;
     }
 
     private void destroyGpuImageTexture(GpuImageTexture texture)
@@ -1798,13 +2255,24 @@ final class VulkanRenderer : RenderBackend
 
     private void destroySwapchain()
     {
+        reclaimRetiredSwapchains(true);
         destroySwapchainImages();
         destroyFormatResources();
     }
 
     private void destroySwapchainImages()
     {
+        destroySwapchainAttachmentResources();
+        if (_device !is null && _vk !is null &&
+            _swapchain != VK_NULL_HANDLE && _vk.vkDestroySwapchainKHR !is null)
+            _vk.vkDestroySwapchainKHR(_device, _swapchain, null);
+        _swapchain = VK_NULL_HANDLE;
+    }
+
+    private void destroySwapchainAttachmentResources()
+    {
         if (_device is null || _vk is null) return;
+        waitForPresentFences(_presentFences, _presentFencePending);
         destroyPresentSemaphores();
         foreach (framebuffer; _framebuffers)
             if (framebuffer != VK_NULL_HANDLE && _vk.vkDestroyFramebuffer !is null)
@@ -1815,10 +2283,21 @@ final class VulkanRenderer : RenderBackend
                 _vk.vkDestroyImageView(_device, view, null);
         _swapchainViews.length = 0;
         _swapchainImages.length = 0;
-        if (_swapchain != VK_NULL_HANDLE && _vk.vkDestroySwapchainKHR !is null)
-            _vk.vkDestroySwapchainKHR(_device, _swapchain, null);
-        _swapchain = VK_NULL_HANDLE;
         _frameCursor = 0;
+    }
+
+    private void waitForPresentFences(VkFence[] fences, bool[] pending)
+    {
+        if (!_swapchainMaintenanceSupported || _device is null || _vk is null)
+            return;
+        foreach (index, isPending; pending)
+        {
+            if (!isPending || index >= fences.length ||
+                fences[index] == VK_NULL_HANDLE) continue;
+            auto fence = fences[index];
+            check(_vk.vkWaitForFences(_device, 1, &fence, VK_TRUE, ulong.max),
+                "waiting for Vulkan presentation work");
+        }
     }
 
     private void destroyFormatResources()
@@ -1890,26 +2369,70 @@ final class VulkanRenderer : RenderBackend
 
     private VkSurfaceFormatKHR[] surfaceFormats()
     {
+        return surfaceFormats(_physicalDevice);
+    }
+
+    private VkSurfaceFormatKHR[] surfaceFormats(VkPhysicalDevice device)
+    {
         uint count;
-        check(_vk.vkGetPhysicalDeviceSurfaceFormatsKHR(_physicalDevice, _surface, &count, null),
-            "querying Vulkan surface formats");
+        const first = _vk.vkGetPhysicalDeviceSurfaceFormatsKHR(device,
+            _surface, &count, null);
+        if (first != VK_SUCCESS) return null;
         VkSurfaceFormatKHR[] values;
         values.length = count;
-        check(_vk.vkGetPhysicalDeviceSurfaceFormatsKHR(_physicalDevice, _surface, &count, values.ptr),
-            "querying Vulkan surface formats");
+        const second = _vk.vkGetPhysicalDeviceSurfaceFormatsKHR(device,
+            _surface, &count, values.ptr);
+        if (second != VK_SUCCESS && second != VK_INCOMPLETE) return null;
         return values;
     }
 
     private int[] presentModes()
     {
+        return presentModes(_physicalDevice);
+    }
+
+    private int[] presentModes(VkPhysicalDevice device)
+    {
         uint count;
-        check(_vk.vkGetPhysicalDeviceSurfacePresentModesKHR(_physicalDevice, _surface, &count, null),
-            "querying Vulkan presentation modes");
+        const first = _vk.vkGetPhysicalDeviceSurfacePresentModesKHR(device,
+            _surface, &count, null);
+        if (first != VK_SUCCESS) return null;
         int[] values;
         values.length = count;
-        check(_vk.vkGetPhysicalDeviceSurfacePresentModesKHR(_physicalDevice, _surface, &count, values.ptr),
-            "querying Vulkan presentation modes");
+        const second = _vk.vkGetPhysicalDeviceSurfacePresentModesKHR(device,
+            _surface, &count, values.ptr);
+        if (second != VK_SUCCESS && second != VK_INCOMPLETE) return null;
         return values;
+    }
+
+    private bool queryStretchScaling(int presentMode)
+    {
+        if (!_surfaceMaintenanceSupported ||
+            _vk.vkGetPhysicalDeviceSurfaceCapabilities2KHR is null)
+            return false;
+
+        VkSurfacePresentModeEXT mode;
+        mode.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT;
+        mode.presentMode = presentMode;
+        VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo;
+        surfaceInfo.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR;
+        surfaceInfo.pNext = &mode;
+        surfaceInfo.surface = _surface;
+        VkSurfacePresentScalingCapabilitiesEXT scaling;
+        scaling.sType =
+            VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_EXT;
+        VkSurfaceCapabilities2KHR capabilities;
+        capabilities.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR;
+        capabilities.pNext = &scaling;
+        const result = _vk.vkGetPhysicalDeviceSurfaceCapabilities2KHR(
+            _physicalDevice, &surfaceInfo, &capabilities);
+        if (result != VK_SUCCESS) return false;
+        return (scaling.supportedPresentScaling &
+            VK_PRESENT_SCALING_STRETCH_BIT_EXT) != 0 &&
+            (scaling.supportedPresentGravityX &
+                VK_PRESENT_GRAVITY_CENTERED_BIT_EXT) != 0 &&
+            (scaling.supportedPresentGravityY &
+                VK_PRESENT_GRAVITY_CENTERED_BIT_EXT) != 0;
     }
 
     private static const(char)*[] makePointers(string[] values)

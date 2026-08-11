@@ -42,6 +42,7 @@ struct TextLayoutOptions
     int pixelSize = 17;
     int maxWidth;                 /// 0 means unconstrained.
     int tabSpaces = 4;
+    double letterSpacing = 0.0;   /// Extra space added after every glyph (tracking).
     bool wrap = true;
     ParagraphDirection paragraphDirection = ParagraphDirection.automatic;
     uint languageTag;
@@ -465,6 +466,7 @@ private struct LayoutCacheKey
     ubyte role;
     ubyte paragraphDirection;
     ubyte featureFlags;
+    double letterSpacing;
 }
 
 private struct LayoutCacheEntry
@@ -476,7 +478,11 @@ private struct LayoutCacheEntry
 
 final class TextLayoutEngine
 {
-    private enum size_t maxCachedLayouts = 512;
+    // Rich text flows shape width-independent inline pieces once and then
+    // reuse them while the window is resized. A few hundred entries caused
+    // long documents to flush the whole cache mid-frame and immediately shape
+    // the same words again at the next width.
+    private enum size_t maxCachedLayouts = 8192;
     private enum size_t maxCachedTextLength = 256;
 
     private FontCollection _uiFonts;
@@ -536,6 +542,7 @@ final class TextLayoutEngine
             (options.enableLigatures ? 2 : 0) |
             (options.enableContextualAlternates ? 4 : 0) |
             (options.enableMarkPositioning ? 8 : 0));
+        lookup.letterSpacing = options.letterSpacing;
         const bucketHash = hashCacheKey(lookup);
         if (auto bucket = bucketHash in _layoutCache)
         {
@@ -577,6 +584,7 @@ final class TextLayoutEngine
         mixHash(value, key.role);
         mixHash(value, key.paragraphDirection);
         mixHash(value, key.featureFlags);
+        mixHash(value, cast(ulong)(key.letterSpacing * 100));
         return value;
     }
 
@@ -682,13 +690,16 @@ final class TextLayoutEngine
         foreach (ref run; runs)
         {
             run.glyphs = shapeRun(text, paragraph.clusters, run, options);
-            foreach (glyph; run.glyphs)
+            foreach (index, glyph; run.glyphs)
             {
                 run.width += glyph.advanceX;
+                if (index + 1 < run.glyphs.length)
+                    run.width += options.letterSpacing;
                 const clusterIndex = findCluster(paragraph.clusters,
                     glyph.clusterStart, run.firstCluster, run.endCluster);
                 if (clusterIndex < paragraph.clusters.length)
-                    paragraph.clusters[clusterIndex].width += max(0.0, glyph.advanceX);
+                    paragraph.clusters[clusterIndex].width +=
+                        max(0.0, glyph.advanceX) + options.letterSpacing;
                 // A ligature is indivisible for wrapping even if UAX #14 would
                 // otherwise permit a boundary inside its source cluster span.
                 for (size_t boundary = glyph.clusterStart + 1;
@@ -765,7 +776,12 @@ final class TextLayoutEngine
         {
             // Run indices are local to the line copy.
             run.glyphs = shapeRun(text, clusters, run, options);
-            foreach (glyph; run.glyphs) run.width += glyph.advanceX;
+            foreach (index, glyph; run.glyphs)
+            {
+                run.width += glyph.advanceX;
+                if (index + 1 < run.glyphs.length)
+                    run.width += options.letterSpacing;
+            }
         }
 
         double ascent = 0.0;
@@ -811,18 +827,22 @@ final class TextLayoutEngine
             const outputGlyphStart = result.glyphs.length;
             auto shaper = shaperFor(run.font);
 
-            foreach (glyph; run.glyphs)
+            foreach (index, glyph; run.glyphs)
             {
                 double origin;
                 if (rtl)
                 {
                     cursor -= glyph.advanceX;
                     origin = cursor;
+                    if (index + 1 < run.glyphs.length)
+                        cursor -= options.letterSpacing;
                 }
                 else
                 {
                     origin = cursor;
                     cursor += glyph.advanceX;
+                    if (index + 1 < run.glyphs.length)
+                        cursor += options.letterSpacing;
                 }
                 PositionedGlyph positioned;
                 positioned.font = run.font;

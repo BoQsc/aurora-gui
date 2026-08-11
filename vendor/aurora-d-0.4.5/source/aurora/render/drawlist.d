@@ -121,7 +121,21 @@ final class DrawList
         const imageIndex = cast(uint) rgbImages.length;
         rgbImages ~= command;
 
+        const white = Color(255, 255, 255, 255);
+        DrawVertex[4] quad;
+        quad[0] = vertex(deviceDestination.x, deviceDestination.y,
+            0.0f, 0.0f, white);
+        quad[1] = vertex(deviceDestination.right(), deviceDestination.y,
+            cast(float) width, 0.0f, white);
+        quad[2] = vertex(deviceDestination.right(), deviceDestination.bottom(),
+            cast(float) width, cast(float) height, white);
+        quad[3] = vertex(deviceDestination.x, deviceDestination.bottom(),
+            0.0f, cast(float) height, white);
+        const firstIndex = appendQuadVertices(quad);
+
         DrawBatch batch;
+        batch.firstIndex = firstIndex;
+        batch.indexCount = 6;
         batch.clip = deviceClip;
         batch.kind = DrawBatchKind.rgbImage;
         batch.imageIndex = imageIndex;
@@ -538,4 +552,17 @@ unittest
     assert(list.vertices[0].x == 2.0f && list.vertices[0].y == 3.0f);
     assert(list.vertices[2].x == 6.0f && list.vertices[2].y == 9.0f);
     assert(list.batches[0].clip == Rect(0, 0, 150, 120));
+
+    list.reset(Size(100, 100), Color.rgb(0, 0, 0));
+    ubyte[] rgb = [255, 0, 0, 0, 255, 0,
+        0, 0, 255, 255, 255, 255];
+    list.addRgbImage(Rect(10, 20, 30, 40), 2, 2, rgb,
+        Rect(0, 0, 100, 100), false);
+    assert(list.rgbImages.length == 1);
+    assert(list.vertices.length == 4 && list.indices.length == 6);
+    assert(list.batches.length == 1 &&
+        list.batches[0].kind == DrawBatchKind.rgbImage &&
+        list.batches[0].indexCount == 6);
+    assert(list.vertices[0].u == 0.0f && list.vertices[0].v == 0.0f);
+    assert(list.vertices[2].u == 2.0f && list.vertices[2].v == 2.0f);
 }

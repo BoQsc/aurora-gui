@@ -93,6 +93,13 @@ enum int VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR = 1000004000;
 enum int VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR = 1000005000;
 enum int VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR = 1000009000;
 enum int VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT = 1000217000;
+enum int VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR = 1000119000;
+enum int VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR = 1000119001;
+enum int VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT = 1000274000;
+enum int VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_EXT = 1000274001;
+enum int VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT = 1000275000;
+enum int VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT = 1000275001;
+enum int VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT = 1000275004;
 
 enum uint VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x00000001;
 enum uint VK_QUEUE_GRAPHICS_BIT = 0x00000001;
@@ -140,6 +147,12 @@ enum int VK_SHARING_MODE_EXCLUSIVE = 0;
 enum int VK_SHARING_MODE_CONCURRENT = 1;
 enum uint VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR = 0x1;
 enum uint VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x1;
+enum uint VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT = 0x00000001;
+enum uint VK_PRESENT_SCALING_ASPECT_RATIO_STRETCH_BIT_EXT = 0x00000002;
+enum uint VK_PRESENT_SCALING_STRETCH_BIT_EXT = 0x00000004;
+enum uint VK_PRESENT_GRAVITY_MIN_BIT_EXT = 0x00000001;
+enum uint VK_PRESENT_GRAVITY_MAX_BIT_EXT = 0x00000002;
+enum uint VK_PRESENT_GRAVITY_CENTERED_BIT_EXT = 0x00000004;
 enum int VK_IMAGE_TYPE_2D = 1;
 enum int VK_IMAGE_VIEW_TYPE_2D = 1;
 enum int VK_IMAGE_TILING_OPTIMAL = 0;
@@ -277,6 +290,44 @@ struct VkSurfaceCapabilitiesKHR
 }
 
 struct VkSurfaceFormatKHR { int format; int colorSpace; }
+
+struct VkPhysicalDeviceSurfaceInfo2KHR
+{
+    int sType; const(void)* pNext; VkSurfaceKHR surface;
+}
+
+struct VkSurfaceCapabilities2KHR
+{
+    int sType; void* pNext; VkSurfaceCapabilitiesKHR surfaceCapabilities;
+}
+
+struct VkSurfacePresentModeEXT
+{
+    int sType; const(void)* pNext; int presentMode;
+}
+
+struct VkSurfacePresentScalingCapabilitiesEXT
+{
+    int sType; void* pNext; VkFlags supportedPresentScaling;
+    VkFlags supportedPresentGravityX; VkFlags supportedPresentGravityY;
+    VkExtent2D minScaledImageExtent; VkExtent2D maxScaledImageExtent;
+}
+
+struct VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT
+{
+    int sType; void* pNext; VkBool32 swapchainMaintenance1;
+}
+
+struct VkSwapchainPresentScalingCreateInfoEXT
+{
+    int sType; const(void)* pNext; VkFlags scalingBehavior;
+    VkFlags presentGravityX; VkFlags presentGravityY;
+}
+
+struct VkSwapchainPresentFenceInfoEXT
+{
+    int sType; const(void)* pNext; uint swapchainCount; const(VkFence)* pFences;
+}
 
 struct VkSwapchainCreateInfoKHR
 {
@@ -550,6 +601,7 @@ alias PFN_vkEnumeratePhysicalDevices = extern(System) VkResult function(VkInstan
 alias PFN_vkGetPhysicalDeviceQueueFamilyProperties = extern(System) void function(VkPhysicalDevice, uint*, VkQueueFamilyProperties*);
 alias PFN_vkGetPhysicalDeviceSurfaceSupportKHR = extern(System) VkResult function(VkPhysicalDevice, uint, VkSurfaceKHR, VkBool32*);
 alias PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR = extern(System) VkResult function(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR*);
+alias PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR = extern(System) VkResult function(VkPhysicalDevice, const(VkPhysicalDeviceSurfaceInfo2KHR)*, VkSurfaceCapabilities2KHR*);
 alias PFN_vkGetPhysicalDeviceSurfaceFormatsKHR = extern(System) VkResult function(VkPhysicalDevice, VkSurfaceKHR, uint*, VkSurfaceFormatKHR*);
 alias PFN_vkGetPhysicalDeviceSurfacePresentModesKHR = extern(System) VkResult function(VkPhysicalDevice, VkSurfaceKHR, uint*, int*);
 alias PFN_vkEnumerateDeviceExtensionProperties = extern(System) VkResult function(VkPhysicalDevice, const(char)*, uint*, VkExtensionProperties*);
@@ -642,6 +694,7 @@ final class VulkanApi
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
     PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR vkGetPhysicalDeviceSurfaceCapabilities2KHR;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
     PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
@@ -740,6 +793,7 @@ final class VulkanApi
         vkGetPhysicalDeviceQueueFamilyProperties = loadInstanceFn!PFN_vkGetPhysicalDeviceQueueFamilyProperties(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
         vkGetPhysicalDeviceSurfaceSupportKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceSupportKHR(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+        vkGetPhysicalDeviceSurfaceCapabilities2KHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR(instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
         vkGetPhysicalDeviceSurfaceFormatsKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceFormatsKHR(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
         vkGetPhysicalDeviceSurfacePresentModesKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfacePresentModesKHR(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
         vkEnumerateDeviceExtensionProperties = loadInstanceFn!PFN_vkEnumerateDeviceExtensionProperties(instance, "vkEnumerateDeviceExtensionProperties");

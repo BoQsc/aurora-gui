@@ -282,7 +282,11 @@ else version (Windows)
         if (classRegistered) return;
         WNDCLASSEXW wc;
         wc.cbSize = WNDCLASSEXW.sizeof;
-        wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+        // Aurora owns invalidation and Vulkan does not need a private window
+        // DC. CS_HREDRAW/CS_VREDRAW make Windows erase/invalidate the complete
+        // client area during every sizing step, which exposes the class
+        // background before the next presented image.
+        wc.style = 0;
         wc.lpfnWndProc = &auroraWindowProc;
         wc.hInstance = GetModuleHandleW(null);
         wc.hCursor = LoadCursorW(null, cast(LPCWSTR) cursorArrow);
@@ -793,7 +797,9 @@ else version (Windows)
                     notifyResize();
                     notifyResizeLifecycle(EventType.resizeEnded);
                     invalidate();
-                    paintNow();
+                    // Return from the native sizing loop before rebuilding the
+                    // exact scene. The next queued paint replaces the stretched
+                    // final image without making border release synchronous.
                     return 0;
                 case WM_TIMER:
                     if (wParam == liveResizeTimerId && _inSizeMove)
@@ -867,7 +873,13 @@ else version (Windows)
                     {
                         notifyResize();
                         _needsPaint = true;
-                        paintNow();
+                        // WM_SIZE is sent synchronously by SetWindowPos. Keep
+                        // programmatic/maximize changes non-blocking; interactive
+                        // sizing uses the cheap WSI/proxy frame immediately.
+                        if (_inSizeMove)
+                            paintNow();
+                        else
+                            InvalidateRect(_hwnd, null, FALSE);
                     }
                     else
                     {

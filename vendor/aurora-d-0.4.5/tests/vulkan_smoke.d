@@ -21,6 +21,7 @@ private final class VulkanSmokeRoot : Widget
     private double _elapsed;
     private size_t _phase;
     private size_t _stableWarmupTicks;
+    private size_t _rgbWarmupUpdates;
     private ulong _lastBaseBuilds;
     private ulong _lastLayerBuilds;
     private ulong _lastGeometryUploads;
@@ -29,6 +30,7 @@ private final class VulkanSmokeRoot : Widget
     private bool _hidLayer;
     private bool _restoredLayer;
     private RgbaImage _testImage;
+    private ubyte[] _testRgb;
 
     this(GuiWindow window)
     {
@@ -41,6 +43,8 @@ private final class VulkanSmokeRoot : Widget
         _testImage = new RgbaImage(2, 2, [
             255, 80, 80, 255, 80, 255, 80, 255,
             80, 120, 255, 255, 255, 220, 80, 255]);
+        _testRgb = [255, 40, 40, 40, 255, 40,
+            40, 80, 255, 255, 220, 40];
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -54,11 +58,18 @@ private final class VulkanSmokeRoot : Widget
             "office ffi  A\u0301  Ελληνικά  Кириллица  العربية  עברית"d,
             palette.accent, 2);
         canvas.drawImage(Rect(650, 26, 36, 36), _testImage, false);
+        canvas.drawRgbImage(Rect(600, 26, 36, 36), 2, 2, _testRgb, false);
     }
 
     protected override void onTick(double deltaSeconds)
     {
         _elapsed += deltaSeconds;
+        if (!_baselineCaptured && _rgbWarmupUpdates < 3)
+        {
+            _testRgb[0] = cast(ubyte) (160 + _rgbWarmupUpdates * 30);
+            ++_rgbWarmupUpdates;
+            invalidate();
+        }
 
         // Native map/configure events can legitimately rebuild the initial
         // scene. Wait until those counters are stable, then measure only the
@@ -153,6 +164,8 @@ int main()
     mkdirRecurse("build");
     window.saveScreenshot("build/aurora-vulkan-text-smoke.ppm");
     writefln("Vulkan renderer: %s", window.rendererName());
+    writefln("Vulkan live-resize scaling: %s",
+        window.rendererSupportsLiveResizeScaling());
     writefln("Warm-up geometry uploads: %s", root.warmupGeometryUploads());
     writefln("Measured interaction: %s transform-only frames, %s content rebuilds, "
         ~ "%s geometry uploads", stats.transformOnlyFrames,

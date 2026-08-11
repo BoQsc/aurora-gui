@@ -313,8 +313,10 @@ struct SystemFonts
 {
     private __gshared FontFace cachedSans;
     private __gshared FontFace cachedMonospace;
+    private __gshared FontFace cachedSansBold;
     private __gshared bool triedSans;
     private __gshared bool triedMonospace;
+    private __gshared bool triedSansBold;
 
     static FontFace sans()
     {
@@ -336,6 +338,18 @@ struct SystemFonts
             if (cachedMonospace is null) cachedMonospace = sans();
         }
         return cachedMonospace;
+    }
+
+    static FontFace sansBold()
+    {
+        if (!triedSansBold)
+        {
+            triedSansBold = true;
+            cachedSansBold = findFirst(sansBoldCandidates(),
+                "AURORA_UI_BOLD_FONT");
+            if (cachedSansBold is null) cachedSansBold = sans();
+        }
+        return cachedSansBold;
     }
 
     private static FontFace findFirst(string[] candidates, string roleVariable)
@@ -408,6 +422,34 @@ struct SystemFonts
             result ~= "/usr/share/fonts/truetype/croscore/Cousine-Regular.ttf";
             const home = environment.get("HOME", "");
             if (home.length > 0) result ~= buildPath(home, ".fonts", "DejaVuSansMono.ttf");
+        }
+        return result;
+    }
+
+    private static string[] sansBoldCandidates()
+    {
+        string[] result;
+        version (Windows)
+        {
+            const root = environment.get("WINDIR", `C:\Windows`);
+            result ~= buildPath(root, "Fonts", "segoeuib.ttf");
+            result ~= buildPath(root, "Fonts", "arialbd.ttf");
+            result ~= buildPath(root, "Fonts", "calibrib.ttf");
+        }
+        else version (OSX)
+        {
+            result ~= "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
+            result ~= "/Library/Fonts/Arial Bold.ttf";
+            result ~= "/System/Library/Fonts/Supplemental/Verdana Bold.ttf";
+        }
+        else
+        {
+            result ~= "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+            result ~= "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf";
+            result ~= "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
+            result ~= "/usr/share/fonts/truetype/croscore/Arimo-Bold.ttf";
+            const home = environment.get("HOME", "");
+            if (home.length > 0) result ~= buildPath(home, ".fonts", "DejaVuSans-Bold.ttf");
         }
         return result;
     }

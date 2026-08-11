@@ -512,6 +512,10 @@ abstract class Widget
         if (skipComposited && _composited) return;
         auto canvas = parentCanvas.translated(_bounds.x, _bounds.y)
                                   .clipped(Rect(0, 0, _bounds.width, _bounds.height));
+        // Scroll containers can retain thousands of descendants outside the
+        // viewport. An empty inherited clip proves that neither this widget nor
+        // any non-composited descendant can contribute pixels this frame.
+        if (canvas.clipRect().empty()) return;
         onPaint(canvas);
         foreach (child; _children)
             child.paintTreeInternal(canvas, skipComposited);

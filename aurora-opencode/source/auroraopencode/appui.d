@@ -1,6 +1,8 @@
 module auroraopencode.appui;
 
 import aurora;
+import auroraopencode.markdown : MarkdownBlock, MdComposition,
+    composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import core.time : MonoTime, msecs;
@@ -228,6 +230,13 @@ private final class MessageBubble : Widget
     private size_t _thinkingShapedGen;
     private size_t _thinkingGen = 1;
 
+    private MarkdownBlock[] _mdBlocks;
+    private size_t _mdBlocksGen;
+    private int[2] _mdWidths;
+    private MdComposition[2] _mdCompositions;
+    private size_t[2] _mdGens;
+    private size_t _mdCount;
+
     /// Diagnostic: total number of text shapes performed by all bubbles.
     static __gshared size_t shapeCount;
 
@@ -304,7 +313,6 @@ private final class MessageBubble : Widget
         }
 
         dstring display = _content;
-        if (_streaming) display ~= "▌"d;
         auto layout = shape(display, width);
 
         if (_contentCacheCount == shapeCacheSize)
@@ -322,6 +330,38 @@ private final class MessageBubble : Widget
         _contentShapedGen[_contentCacheCount] = _contentGen;
         ++_contentCacheCount;
         return layout;
+    }
+
+    private MdComposition markdownFor(int width)
+    {
+        foreach (index; 0 .. _mdCount)
+        {
+            if (_mdGens[index] == _contentGen && _mdWidths[index] == width)
+                return _mdCompositions[index];
+        }
+
+        if (_mdBlocks is null || _mdBlocksGen != _contentGen)
+        {
+            _mdBlocks = parseMarkdown(_content);
+            _mdBlocksGen = _contentGen;
+        }
+        MdComposition composition;
+
+        if (_mdCount == 2)
+        {
+            composition = _mdCompositions[0];
+            _mdWidths[0] = _mdWidths[1];
+            _mdCompositions[0] = _mdCompositions[1];
+            _mdGens[0] = _mdGens[1];
+            --_mdCount;
+        }
+        composeMarkdownInto(composition, _mdBlocks,
+            maxInt(24, width), _streaming);
+        _mdWidths[_mdCount] = width;
+        _mdCompositions[_mdCount] = composition;
+        _mdGens[_mdCount] = _contentGen;
+        ++_mdCount;
+        return composition;
     }
 
     private TextLayout shape(const(dchar)[] text, int width)
@@ -343,10 +383,20 @@ private final class MessageBubble : Widget
         int height = 2 * padV;
         if (_thinking.length > 0)
             height += shapedThinking(innerWidth).measuredSize().height + gap;
-        if (_content.length > 0)
-            height += shapedContent(innerWidth).measuredSize().height;
-        else if (_streaming)
-            height += pixelSize + 2;
+        if (_role == "assistant")
+        {
+            if (_content.length > 0)
+                height += cast(int) markdownFor(innerWidth).height;
+            else if (_streaming)
+                height += pixelSize + 2;
+        }
+        else
+        {
+            if (_content.length > 0)
+                height += shapedContent(innerWidth).measuredSize().height;
+            else if (_streaming)
+                height += pixelSize + 2;
+        }
         if (_failed)
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
@@ -382,9 +432,25 @@ private final class MessageBubble : Widget
 
         if (_content.length > 0 || _streaming)
         {
-            auto layout = shapedContent(innerWidth);
-            canvas.drawLayout(Point(padH, y), layout,
-                _role == "user" ? opencodeText : palette.text);
+            if (_role == "assistant")
+            {
+                auto composition = markdownFor(innerWidth);
+                if (composition.items.length > 0)
+                {
+                    paintMarkdown(canvas, composition, padH, y);
+                }
+                else if (_streaming)
+                {
+                    auto layout = canvas.layoutText("▌"d, 2, FontRole.ui, null,
+                        innerWidth, false);
+                    canvas.drawLayout(Point(padH, y), layout, palette.text);
+                }
+            }
+            else
+            {
+                auto layout = shapedContent(innerWidth);
+                canvas.drawLayout(Point(padH, y), layout, opencodeText);
+            }
         }
 
         if (_failed && _error.length > 0)
@@ -1169,4 +1235,3 @@ public final class OpenCodeRoot : VBox
         return MessageBubble.shapeCount;
     }
 }
-

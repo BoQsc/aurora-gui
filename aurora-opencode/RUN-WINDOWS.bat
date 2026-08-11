@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 pushd "%~dp0" >nul
 echo Starting Aurora OpenCode...
-dub run
+dub run --build=release
 set "code=%errorlevel%"
 popd >nul
 exit /b %code%

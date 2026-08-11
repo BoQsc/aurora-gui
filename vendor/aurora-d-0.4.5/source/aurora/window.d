@@ -16,34 +16,12 @@ import aurora.text.atlas : FontSystem;
 import aurora.theme : Theme;
 import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size, maxInt;
 import aurora.widget : PopupSurface, Widget, WidgetHost;
+import core.time : MonoTime;
+import std.conv : to;
 import std.process : environment;
 
 private enum ulong synchronizedPointerLayerId = ulong.max;
-private enum double liveResizeExactFrameIntervalSeconds = 0.080;
-
-
-/**
- * The current Vulkan backend renders Aurora vector/atlas triangle batches but
- * does not yet upload retained RGB24 image commands. Video preview frames use
- * those RGB commands. Detect them before presentation so automatic or forced
- * Vulkan selection can never silently produce a black preview surface.
- */
-private bool drawListContainsRgbImages(DrawList list)
-    @safe pure nothrow @nogc
-{
-    return list !is null && list.rgbImages.length > 0;
-}
-
-private bool sceneContainsRgbImages(RenderScene scene)
-    @safe pure nothrow @nogc
-{
-    if (scene is null) return false;
-    if (drawListContainsRgbImages(scene.base)) return true;
-    foreach (layer; scene.layers)
-        if (layer.visible && drawListContainsRgbImages(layer.drawList))
-            return true;
-    return false;
-}
+private enum double liveResizeExactFrameIntervalSeconds = 1.0 / 60.0;
 
 /** Counters used to verify that transform-only interaction does no UI rebuild work. */
 struct CompositorStats
@@ -118,7 +96,15 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private bool _resizeProxyOneShotActive;
     private bool _resizeRenderExactNow;
     private bool _resizeExactDirty;
+    private bool _resizeFinalFramePending;
+    private bool _resizeFinalizePending;
     private double _resizeExactAccumulator;
+    private ulong _liveResizeExactFrames;
+    private long _maxLiveSceneMicros;
+    private long _maxLiveRenderMicros;
+    private bool _profileNextResizeFrame;
+    private long _lastLayoutMicros;
+    private long _lastPaintMicros;
     private CompositorStats _compositorStats;
     private RenderBackend _renderer;
     private string _rendererFallbackReason;
@@ -192,6 +178,10 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
+    bool rendererSupportsLiveResizeScaling() const
+    {
+        return liveResizeScalingSupported();
+    }
     string rendererFallbackReason() const { return _rendererFallbackReason; }
     RendererStats rendererStats() const
     {
@@ -508,6 +498,13 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override bool onNativePaint()
     {
+        // Surface-maintenance WSI stretches the current Vulkan image without
+        // application work. Software and older Vulkan drivers use the cached
+        // native snapshot below for the same always-filled result.
+        if (_nativeResizeActive && liveResizeScalingSupported() &&
+            !_resizeRenderExactNow)
+            return true;
+
         if ((_nativeResizeActive || _resizeProxyOneShotActive) &&
             _resizeProxyActive && !_resizeRenderExactNow)
         {
@@ -520,16 +517,41 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             return completed;
         }
 
+        const sceneStarted = MonoTime.currTime;
         ensureScene();
+        const sceneMicros = (MonoTime.currTime - sceneStarted).total!"usecs";
         const exactResizeFrame = _resizeRenderExactNow;
+        const renderStarted = MonoTime.currTime;
         const completed = renderSceneToNative(_scene);
+        const renderMicros = (MonoTime.currTime - renderStarted).total!"usecs";
+        if (_nativeResizeActive && exactResizeFrame)
+        {
+            if (sceneMicros > _maxLiveSceneMicros)
+                _maxLiveSceneMicros = sceneMicros;
+            if (renderMicros > _maxLiveRenderMicros)
+                _maxLiveRenderMicros = renderMicros;
+        }
+        if (completed && _profileNextResizeFrame)
+        {
+            _profileNextResizeFrame = false;
+            setTitle(_options.title ~ " [resize-profile scene_us=" ~
+                sceneMicros.to!string ~ " layout_us=" ~ _lastLayoutMicros.to!string ~
+                " paint_us=" ~ _lastPaintMicros.to!string ~
+                " render_us=" ~ renderMicros.to!string ~
+                " live_frames=" ~ _liveResizeExactFrames.to!string ~
+                " live_max_us=" ~ _maxLiveSceneMicros.to!string ~ "," ~
+                _maxLiveRenderMicros.to!string ~ "]");
+        }
+        if (completed && _resizeFinalFramePending && !_nativeResizeActive)
+        {
+            _resizeFinalFramePending = false;
+            _resizeFinalizePending = true;
+        }
         if (completed && exactResizeFrame)
         {
+            if (_nativeResizeActive) ++_liveResizeExactFrames;
             _resizeRenderExactNow = false;
-            if (_nativeResizeActive)
-                refreshResizeProxyFromScene();
-            else
-                _resizeProxyActive = false;
+            _resizeProxyActive = false;
         }
         if (!completed && _resizeProxyActive)
         {
@@ -541,19 +563,6 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private bool renderSceneToNative(RenderScene scene)
     {
-        // RGB24 video frames are currently a software-renderer capability.
-        // Switch before drawing the first such frame instead of letting Vulkan
-        // ignore the image batch and present an apparently valid black frame.
-        if (_renderer !is null && _renderer.hardwareAccelerated() &&
-            sceneContainsRgbImages(scene))
-        {
-            _renderer.shutdown();
-            _rendererFallbackReason =
-                "Vulkan RGB video surfaces are not implemented in Aurora-D 0.4.5; " ~
-                "switched to the software compositor for correct preview output.";
-            _renderer = new SoftwareRenderer(_framebufferSize);
-        }
-
         bool completed;
         try
             completed = _renderer.renderScene(scene);
@@ -576,13 +585,22 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override void onNativeTick(double deltaSeconds)
     {
-        if (_root !is null)
+        // Application ticks can perform arbitrary work (decoding, polling,
+        // layout invalidation). Do not let that work run inside Win32's modal
+        // border-drag loop; the exact scene catches up after sizing ends.
+        if (!_nativeResizeActive && _root !is null)
             _root.tickTree(deltaSeconds);
-        if (_nativeResizeActive && _resizeExactDirty && !_resizeRenderExactNow)
+        if (!_nativeResizeActive && _resizeFinalizePending &&
+            _renderer !is null && _renderer.finalizeLiveResize())
+        {
+            _resizeFinalizePending = false;
+            requestFrame();
+        }
+        if (_nativeResizeActive && liveResizeScalingSupported() &&
+            _resizeExactDirty && !_resizeRenderExactNow)
         {
             _resizeExactAccumulator += deltaSeconds;
-            if (_resizeExactAccumulator >= liveResizeExactFrameIntervalSeconds ||
-                !_resizeProxyActive)
+            if (_resizeExactAccumulator >= liveResizeExactFrameIntervalSeconds)
                 scheduleLiveResizeExactFrame();
         }
     }
@@ -687,12 +705,27 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
         if (_nativeResizeActive)
         {
+            // WM_SIZE itself stays constant-time. A timer-driven exact frame
+            // below reflows at the newest size, while WSI keeps the previous
+            // complete image covering the surface between those frames.
             _resizeExactDirty = true;
-            _resizeExactAccumulator = 0.0;
-            if (_resizeProxyActive)
-                requestFrame();
-            else
-                scheduleLiveResizeExactFrame();
+            if (_renderer !is null && _renderer.hardwareAccelerated() &&
+                _framebufferSize != previousFramebufferSize)
+                _renderer.resize(_framebufferSize);
+            requestFrame();
+            return;
+        }
+        if (hardwareAccelerated())
+        {
+            // A hardware renderer never needs the stretched software snapshot,
+            // even for a single instant resize (maximize, DPI change, or
+            // programmatic resize). Render the real scene at the new size.
+            if (_renderer !is null && _framebufferSize != previousFramebufferSize)
+                _renderer.resize(_framebufferSize);
+            if (_root !is null && _clientSize != previousClientSize)
+                _root.setBounds(Rect(0, 0, width, height));
+            _baseDirty = true;
+            requestFrame();
             return;
         }
         refreshResizeProxyFromScene();
@@ -720,25 +753,49 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         if (_nativeResizeActive) return;
         ensureScene();
-        refreshResizeProxyFromScene();
         _nativeResizeActive = true;
+        if (_renderer !is null)
+            _renderer.setLiveResize(true);
+        if (liveResizeScalingSupported())
+        {
+            // WSI scales the last presented image for the duration of the drag.
+            _resizeProxyActive = false;
+        }
+        else
+        {
+            // Software and Vulkan drivers without surface scaling keep a
+            // snapshot so WM_SIZE can fill the client area without waiting on
+            // rasterization or swapchain recreation.
+            refreshResizeProxyFromScene();
+        }
         _resizeProxyOneShotActive = false;
         _resizeRenderExactNow = false;
         _resizeExactDirty = false;
-        _resizeExactAccumulator = 0.0;
+        _resizeFinalFramePending = false;
+        _resizeFinalizePending = false;
+        // Make the first changed size eligible on the next native timer tick.
+        _resizeExactAccumulator = liveResizeExactFrameIntervalSeconds;
+        _liveResizeExactFrames = 0;
+        _maxLiveSceneMicros = 0;
+        _maxLiveRenderMicros = 0;
     }
 
     private void endNativeResize(ref Event event)
     {
         if (!_nativeResizeActive) return;
-        const needsExactFrame = _resizeExactDirty || _resizeRenderExactNow;
+        _profileNextResizeFrame = environment.get("AURORA_RESIZE_PROFILE", "") == "1";
+        if (_renderer !is null)
+            _renderer.setLiveResize(false);
+        _resizeFinalFramePending = liveResizeScalingSupported();
         _nativeResizeActive = false;
         _resizeProxyActive = false;
         _resizeProxyOneShotActive = false;
         _resizeRenderExactNow = false;
         _resizeExactDirty = false;
         _resizeExactAccumulator = 0.0;
-        if (!needsExactFrame) return;
+        // Present the exact final layout immediately through the stable
+        // drag-time extent. Native-resolution swapchain resources are rebuilt
+        // later, after presentation fences report idle.
         if (_root !is null)
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
         _baseDirty = true;
@@ -747,9 +804,15 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         requestFrame();
     }
 
+    private bool liveResizeScalingSupported() const
+    {
+        return _renderer !is null && _renderer.hardwareAccelerated() &&
+            _renderer.supportsLiveResizeScaling();
+    }
+
     private void scheduleLiveResizeExactFrame()
     {
-        if (!_nativeResizeActive) return;
+        if (!_nativeResizeActive || !liveResizeScalingSupported()) return;
         if (_root !is null)
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
         _baseDirty = true;
@@ -770,7 +833,6 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _renderer.resize(_framebufferSize);
         _resizeRenderExactNow = true;
         _resizeExactDirty = false;
-        _resizeExactAccumulator = 0.0;
         requestFrame();
     }
 
@@ -797,6 +859,18 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private void refreshResizeProxyFromScene()
     {
         if (_scene is null || _scene.base is null) return;
+        // The software backend already owns the exact pixels that were just
+        // presented. Reuse them directly instead of rasterizing the complete
+        // widget tree again when the user grabs a border.
+        auto softwareFrame = _renderer is null ? null : _renderer.softwareSurface();
+        if (softwareFrame !is null && softwareFrame.width() > 0 &&
+            softwareFrame.height() > 0)
+        {
+            _resizeSnapshot = softwareFrame;
+            _resizeProxyActive = true;
+            if (_resizeProxyImage !is null) ensureResizeProxyImage();
+            return;
+        }
         SoftwareRenderer.renderSceneInto(_scene, _resizeSnapshot);
         _resizeProxyActive = _resizeSnapshot !is null &&
             _resizeSnapshot.width() > 0 && _resizeSnapshot.height() > 0;
@@ -896,9 +970,13 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             {
                 _buildingBase = true;
                 scope (exit) _buildingBase = false;
+                const layoutStarted = MonoTime.currTime;
                 _root.layoutTree();
+                _lastLayoutMicros = (MonoTime.currTime - layoutStarted).total!"usecs";
                 auto canvas = Canvas(_baseDrawList, _clientSize.width, _clientSize.height);
+                const paintStarted = MonoTime.currTime;
                 _root.paintTreeSkippingComposited(canvas);
+                _lastPaintMicros = (MonoTime.currTime - paintStarted).total!"usecs";
             }
             ++_baseRevision;
             ++_compositorStats.baseBuilds;

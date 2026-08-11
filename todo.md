@@ -1,5 +1,44 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-11 — Window resize: stretched image / white blinking / freeze (user complaint)
+- [x] Diagnosed the complete OpenCode path rather than only the native border
+      message. Three independent problems were involved: the Windows launcher
+      selected a debug build, long Markdown/code conversations took about
+      650 ms to reflow, and Vulkan treated the expected live-resize
+      `VK_SUBOPTIMAL_KHR` result as a request to recreate the swapchain.
+- [x] `aurora.window`:
+  - `WM_SIZE` stays constant-time, while timer-driven exact layout/paint frames
+    reflow the newest size at a 60 Hz target on scaling-capable Vulkan drivers.
+  - WSI keeps the last complete frame covering the surface between exact
+    frames, so there is no unpainted/white client area.
+  - Application polling/ticks remain outside Win32's modal sizing loop.
+- [x] `aurora.render.vulkan`:
+  - `recreateSwapchain()` no longer calls `waitForSubmittedFrames()` (was a GPU
+    stall / freeze on every resize frame) and no longer destroys the old
+    swapchain's present semaphores/framebuffers/views while a present is in
+    flight (was the white flash). Old swapchain resources are now *retired*
+    and reclaimed only after a newer swapchain has presented (`oldSwapchain`
+    passed to `vkCreateSwapchainKHR`).
+  - Geometry buffers are versioned (fresh allocation per revision, old buffers
+    reclaimed after in-flight frames pass) so a live resize no longer forces
+    `availableFrame(requireAllIdle=true)` → `vkWaitForFences(ulong.max)`.
+  - Reduced post-recreation acquire timeout 16 ms → 2 ms.
+  - `VK_SUBOPTIMAL_KHR` is accepted during scaling-enabled live resize instead
+    of invalidating and recreating the swapchain inside the drag.
+  - The exact final frame is presented immediately through the valid scaling
+    swapchain; native-resolution recreation waits for presentation fences to
+    become idle, avoiding the driver's occasional 100–450 ms release stall.
+- [x] OpenCode Markdown flow is now width-independent at the shaping layer;
+      fenced-code line layouts and Markdown output storage persist across
+      widths. Measured reflow dropped from about 652 ms to normal 1–4 ms scene
+      builds, with the observed live maximum below 8.5 ms.
+- [x] `RUN-WINDOWS.bat` and `RUN-WINDOWS-SOFTWARE.bat` now launch release builds.
+- [x] Final automated human-paced Vulkan resize: 97 exact live frames over 120
+      size changes; resize p95 6.61 ms, max 9.40 ms, zero calls above 16 ms;
+      post-resize p95 0.31 ms and max 14.10 ms.
+- [ ] Final feel still needs confirmation from the user's real mouse drag and
+      monitor/driver combination.
+
 ## 2026-08-10 — Sequence resolution matched to a timeline item
 - [x] Implemented context-menu command "Set sequence resolution to NxN" on
       video clips (crop-aware), updating the composition/output resolution.

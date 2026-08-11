@@ -32,6 +32,12 @@ interface RenderBackend
 {
     string name() const;
     bool hardwareAccelerated() const;
+    /** Whether live native resizing can keep presenting without rebuilding the swapchain. */
+    bool supportsLiveResizeScaling() const;
+    /** Notify the backend that native interactive resizing has started or ended. */
+    void setLiveResize(bool active);
+    /** Finalize native-resolution resources once drag-time presentation is idle. */
+    bool finalizeLiveResize();
     void resize(Size size);
     bool render(DrawList list);
     bool renderScene(RenderScene scene);
