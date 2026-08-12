@@ -57,6 +57,162 @@ RgbaImage loadPngImage(string path)
     return decodePngImage(cast(const(ubyte)[]) read(path), path);
 }
 
+/**
+ * Load an ICO container, preferring a square entry closest to `targetSize`.
+ *
+ * Entries may be PNG-compressed (the common Vista+ form) or classic 24/32-bit
+ * bitmaps with an AND mask; both are decoded.
+ */
+RgbaImage loadIcoImage(string path, int targetSize = 32)
+{
+    return decodeIcoImage(cast(const(ubyte)[]) read(path), path, targetSize);
+}
+
+RgbaImage decodeIcoImage(const(ubyte)[] bytes, string label = "ICO",
+    int targetSize = 32)
+{
+    enforce(bytes.length >= 6, label ~ " is truncated");
+    enforce(bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0,
+        label ~ " is not an ICO container");
+    const count = readU16LE(bytes, 4);
+    enforce(count > 0, label ~ " contains no images");
+    enforce(6 + cast(size_t) count * 16 <= bytes.length,
+        label ~ " has a truncated image directory");
+
+    int bestScore = int.max;
+    size_t bestOffset;
+    size_t bestLength;
+    foreach (index; 0 .. count)
+    {
+        const entry = 6 + cast(size_t) index * 16;
+        const entryWidth = bytes[entry] == 0 ? 256 : cast(int) bytes[entry];
+        const offset = cast(size_t) readU32LE(bytes, entry + 12);
+        const length = cast(size_t) readU32LE(bytes, entry + 8);
+        if (offset + length > bytes.length) continue;
+        // Prefer the entry closest to the target size; entries smaller than
+        // the target are penalized so a sharp nearest-size is chosen.
+        int score = entryWidth - targetSize;
+        if (score < 0) score = -score * 2;
+        if (score < bestScore)
+        {
+            bestScore = score;
+            bestOffset = offset;
+            bestLength = length;
+        }
+    }
+    enforce(bestLength > 0, label ~ " contains no usable image");
+
+    const data = bytes[bestOffset .. bestOffset + bestLength];
+    if (data.length >= 8 && data[0] == 137 && data[1] == 80 && data[2] == 78 &&
+        data[3] == 71)
+        return decodePngImage(data, label ~ " icon entry");
+    return decodeIcoBmp(data, label ~ " icon entry");
+}
+
+private RgbaImage decodeIcoBmp(const(ubyte)[] bytes, string label)
+{
+    enforce(bytes.length >= 12, label ~ " has a truncated icon bitmap");
+    const headerSize = readU32LE(bytes, 0);
+    enforce(headerSize >= 12 && headerSize <= bytes.length,
+        label ~ " has an unsupported icon bitmap header");
+
+    int width;
+    int combinedHeight;
+    uint bitCount;
+    uint compression;
+    if (headerSize == 12)
+    {
+        width = readU16LE(bytes, 4);
+        combinedHeight = readU16LE(bytes, 6);
+        bitCount = readU16LE(bytes, 10);
+        compression = 0;
+    }
+    else
+    {
+        width = cast(int) readI32LE(bytes, 4);
+        combinedHeight = cast(int) readI32LE(bytes, 8);
+        bitCount = readU16LE(bytes, 14);
+        compression = readU32LE(bytes, 16);
+    }
+    enforce(width > 0 && combinedHeight > 0,
+        label ~ " has invalid icon dimensions");
+    enforce(combinedHeight % 2 == 0, label ~ " has an odd combined icon height");
+    const imageHeight = combinedHeight / 2;
+    enforce(bitCount == 8 || bitCount == 24 || bitCount == 32,
+        label ~ " uses unsupported icon bit depth " ~ text(bitCount));
+    enforce(compression == 0 || compression == 3,
+        label ~ " uses unsupported icon bitmap compression");
+
+    size_t cursor = headerSize;
+    if (headerSize >= 40 && compression == 3)
+    {
+        // BI_BITFIELDS: four DWORD channel masks follow the header.
+        enforce(cursor + 16 <= bytes.length, label ~ " is truncated");
+        cursor += 16;
+    }
+    const rowBytes = ((cast(size_t) width * bitCount + 31) / 32) * 4;
+    const andRowBytes = ((cast(size_t) width + 31) / 32) * 4;
+    enforce(cursor + rowBytes * cast(size_t) imageHeight +
+        andRowBytes * cast(size_t) imageHeight <= bytes.length,
+        label ~ " pixel data is truncated");
+
+    ubyte[] rgba;
+    rgba.length = cast(size_t) width * cast(size_t) imageHeight * 4;
+    // ICO bitmaps are stored bottom-up; the first scanline is the bottom row.
+    foreach (y; 0 .. imageHeight)
+    {
+        const srcRow = imageHeight - 1 - y;
+        const rowStart = cursor + cast(size_t) srcRow * rowBytes;
+        const andRowStart = cursor + cast(size_t) imageHeight * rowBytes +
+            cast(size_t) srcRow * andRowBytes;
+        foreach (x; 0 .. width)
+        {
+            uint r = 0;
+            uint g = 0;
+            uint b = 0;
+            uint a = 255;
+            if (bitCount == 32)
+            {
+                const px = rowStart + cast(size_t) x * 4;
+                b = bytes[px];
+                g = bytes[px + 1];
+                r = bytes[px + 2];
+                a = bytes[px + 3];
+            }
+            else if (bitCount == 24)
+            {
+                const px = rowStart + cast(size_t) x * 3;
+                b = bytes[px];
+                g = bytes[px + 1];
+                r = bytes[px + 2];
+            }
+            else
+            {
+                const index = bytes[rowStart + cast(size_t) x];
+                const pal = cursor + cast(size_t) index * 4;
+                enforce(pal + 3 < bytes.length, label ~ " has a truncated palette");
+                b = bytes[pal];
+                g = bytes[pal + 1];
+                r = bytes[pal + 2];
+                a = bytes[pal + 3];
+            }
+            if (a != 0)
+            {
+                const byteIndex = x / 8;
+                const bitIndex = 7 - (x % 8);
+                if ((bytes[andRowStart + byteIndex] & (1 << bitIndex)) != 0)
+                    a = 0;
+            }
+            const target = (cast(size_t) y * cast(size_t) width + cast(size_t) x) * 4;
+            rgba[target + 0] = cast(ubyte) r;
+            rgba[target + 1] = cast(ubyte) g;
+            rgba[target + 2] = cast(ubyte) b;
+            rgba[target + 3] = cast(ubyte) a;
+        }
+    }
+    return new RgbaImage(width, imageHeight, rgba);
+}
+
 RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
 {
     immutable ubyte[8] signature = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -286,6 +442,38 @@ private ushort readU16(const(ubyte)[] bytes, size_t offset)
     enforce(offset + 2 <= bytes.length, "Unexpected end of PNG data");
     return cast(ushort) ((cast(uint) bytes[offset] << 8) |
         cast(uint) bytes[offset + 1]);
+}
+
+private int readI32(const(ubyte)[] bytes, size_t offset)
+{
+    enforce(offset + 4 <= bytes.length, "Unexpected end of icon data");
+    return cast(int) ((cast(uint) bytes[offset]) |
+        (cast(uint) bytes[offset + 1] << 8) |
+        (cast(uint) bytes[offset + 2] << 16) |
+        (cast(uint) bytes[offset + 3] << 24));
+}
+
+// ICO/Windows data is little-endian, unlike the big-endian PNG readers above.
+
+private ushort readU16LE(const(ubyte)[] bytes, size_t offset)
+{
+    enforce(offset + 2 <= bytes.length, "Unexpected end of icon data");
+    return cast(ushort) (cast(uint) bytes[offset] |
+        (cast(uint) bytes[offset + 1] << 8));
+}
+
+private uint readU32LE(const(ubyte)[] bytes, size_t offset)
+{
+    enforce(offset + 4 <= bytes.length, "Unexpected end of icon data");
+    return cast(uint) bytes[offset] |
+        (cast(uint) bytes[offset + 1] << 8) |
+        (cast(uint) bytes[offset + 2] << 16) |
+        (cast(uint) bytes[offset + 3] << 24);
+}
+
+private int readI32LE(const(ubyte)[] bytes, size_t offset)
+{
+    return cast(int) readU32LE(bytes, offset);
 }
 
 private int absolute(int value) @safe pure nothrow @nogc

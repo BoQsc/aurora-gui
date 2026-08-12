@@ -4,6 +4,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, MouseButton;
 import aurora.icons : IconKind, drawIcon;
+import aurora.image : RgbaImage;
 import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Size,
     VerticalAlign, maxInt, minInt;
 import aurora.widget : Widget;
@@ -44,6 +45,7 @@ class TitleBar : Widget
 {
     private dstring _title;
     private IconKind _icon = IconKind.none;
+    private RgbaImage _iconImage;
     private Widget _content;
     private int _barHeight = 40;
     private int _captionButtonWidth = 46;
@@ -108,6 +110,7 @@ class TitleBar : Widget
 
     dstring title() const @safe pure nothrow @nogc { return _title; }
     IconKind iconKind() const @safe pure nothrow @nogc { return _icon; }
+    RgbaImage iconImage() @safe pure nothrow @nogc { return _iconImage; }
     Widget content() @safe pure nothrow @nogc { return _content; }
     int barHeight() const @safe pure nothrow @nogc { return _barHeight; }
     bool active() const @safe pure nothrow @nogc { return _active; }
@@ -144,6 +147,21 @@ class TitleBar : Widget
     {
         if (_icon == value) return;
         _icon = value;
+        invalidate();
+    }
+
+    /** Show a raster icon (for example the application's own ICO/PNG). */
+    void setIconImage(RgbaImage value)
+    {
+        if (_iconImage is value) return;
+        _iconImage = value;
+        invalidate();
+    }
+
+    void clearIconImage()
+    {
+        if (_iconImage is null) return;
+        _iconImage = null;
         invalidate();
     }
 
@@ -374,7 +392,8 @@ class TitleBar : Widget
 
     Rect iconRect() const @safe pure nothrow @nogc
     {
-        if (!_showIcon || _icon == IconKind.none) return Rect.init;
+        if (!_showIcon || (_icon == IconKind.none && _iconImage is null))
+            return Rect.init;
         const size = minInt(_iconSize, maxInt(1, bounds().height - 8));
         return Rect(_spacing, (bounds().height - size) / 2, size, size);
     }
@@ -494,7 +513,12 @@ class TitleBar : Widget
 
         const icon = iconRect();
         if (!icon.empty)
-            drawIcon(canvas, _icon, icon, _active ? text : muted);
+        {
+            if (_iconImage !is null)
+                canvas.drawImage(icon, _iconImage, true);
+            else
+                drawIcon(canvas, _icon, icon, _active ? text : muted);
+        }
 
         const titleArea = titleRect();
         if (!titleArea.empty && !titleEmpty())

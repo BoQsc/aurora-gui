@@ -34,7 +34,19 @@ final class TitleBarStreamRoot : Widget
         _window = window;
         _titleBar = add(new TitleBar());
         _titleBar.setTitle(appDisplayName);
-        _titleBar.setIcon(IconKind.terminal);
+        // Show the application's own icon (from assets or beside the exe).
+        const iconPath = applicationIconPath();
+        try
+        {
+            auto icon = loadIcoImage(iconPath, 24);
+            if (icon !is null) _titleBar.setIconImage(icon);
+        }
+        catch (Exception)
+        {
+            _titleBar.setIcon(IconKind.terminal);
+        }
+        if (_titleBar.iconImage() is null)
+            _titleBar.setIcon(IconKind.terminal);
         _titleBar.setBarHeight(40);
         _titleBar.setCornerRadius(6);
         _titleBar.setBackground(Color.fromHex(0x1b2026));
