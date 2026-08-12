@@ -46,8 +46,12 @@
 - [x] Shared client pushes a live `usage` event when the provider reports token
       counts mid-stream; the `done` event records final
       prompt/completion/total on `ChatMessage` (persisted in `sessions.json`).
-      `contextLimitForModel()` in core mirrors `model.limit.context` with a
-      local catalog (128K fallback) — the only approximation.
+      `contextLimitForModel()` in core mirrors `model.limit.context` from the
+      **official opencode catalog** (`https://models.opencode.ai/api.json`,
+      what the CLI itself fetches): deepseek-v4-flash/pro = 1M (user caught the
+      old 128K fallback), gpt-5.6-luna 1.05M, qwen3.8-max/glm-5.2 1M, grok-4.5
+      500K, kimi-k3 1,048,576, minimax-m3 512K, mimo-v2.5-pro 1,048,576,
+      hy3 256K, unknown 128K.
 - [x] Badge refreshes on `usage`/`done`, session switch, model picker, restore,
       and delete; shows `ctx` until usage is recorded. Covered by the Pro
       headless smoke test (empty state, 37% at 47213/128000, hover tooltip

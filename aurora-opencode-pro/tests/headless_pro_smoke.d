@@ -228,12 +228,14 @@ int main(string[] args)
 
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip
-    // with the full breakdown (mirrors the real opencode indicator).
+    // with the full breakdown (mirrors the real opencode indicator). The
+    // limit comes from the official opencode model catalog: deepseek-v4-flash
+    // has a 1,000,000-token context window.
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
-    root.recordContextUsageForTesting(47000, 213, 47213);
+    root.recordContextUsageForTesting(240000, 10000, 250000);
     assert(driver.paint(), "Context badge did not paint after usage");
-    assert(root.contextUsageTextForTesting() == "37%",
-        "Badge should show 47213/128000 rounded to 37%");
+    assert(root.contextUsageTextForTesting() == "25%",
+        "Badge should show 250000/1000000 = 25%");
     writeln("Context badge after usage: ", root.contextUsageTextForTesting());
 
     assert(!root.isContextTooltipOpenForTesting(),
@@ -247,10 +249,10 @@ int main(string[] args)
     assert(tooltip.length > 0, "Context tooltip text is empty");
     assert(tooltip.indexOf("Context usage") >= 0, "Tooltip lacks the title");
     assert(tooltip.indexOf("deepseek-v4-flash") >= 0, "Tooltip lacks the model");
-    assert(tooltip.indexOf("128,000") >= 0, "Tooltip lacks the context limit");
-    assert(tooltip.indexOf("47,213") >= 0, "Tooltip lacks the used tokens");
-    assert(tooltip.indexOf("37%") >= 0, "Tooltip lacks the usage percent");
-    assert(tooltip.indexOf("47,000") >= 0, "Tooltip lacks the prompt tokens");
+    assert(tooltip.indexOf("1,000,000") >= 0, "Tooltip lacks the context limit");
+    assert(tooltip.indexOf("250,000") >= 0, "Tooltip lacks the used tokens");
+    assert(tooltip.indexOf("25%") >= 0, "Tooltip lacks the usage percent");
+    assert(tooltip.indexOf("240,000") >= 0, "Tooltip lacks the prompt tokens");
     writeln("Context tooltip shows the usage breakdown on hover");
 
     // Moving away from the badge dismisses the tooltip.
@@ -268,7 +270,7 @@ int main(string[] args)
         "Badge should reset for a session without usage");
     sessions.onSelectionChanged(0);
     root.tickTree(0.02);
-    assert(root.contextUsageTextForTesting() == "37%",
+    assert(root.contextUsageTextForTesting() == "25%",
         "Badge should restore the persisted usage for the session");
     writeln("Context meter follows the active session");
 

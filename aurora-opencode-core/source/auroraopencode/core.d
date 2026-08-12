@@ -41,27 +41,29 @@ private immutable string[] defaultKeyFileCandidates = [
 private immutable int defaultContextLimit = 128_000;
 
 /**
- * Approximate context window (tokens) for a model.
+ * Context window (tokens) for a model.
  *
  * The real opencode reads `model.limit.context` from provider metadata and
- * meters context as `tokens.used / limit.context`. This client only receives
- * model IDs from the mirror, so the GUI mirrors that behaviour with a local
- * catalog and a conservative fallback for unknown models.
+ * meters context as `tokens.used / limit.context`. The values below mirror the
+ * official opencode model catalog (`https://models.opencode.ai/api.json`, the
+ * source the opencode CLI itself fetches) for the models the mirror serves.
+ * The fallback is a conservative estimate for unknown models.
  */
 public int contextLimitForModel(string model)
 {
     switch (model)
     {
-        case "deepseek-v4-pro":  return 256_000;
-        case "gpt-5.6-luna":     return 256_000;
-        case "qwen3.8-max":      return 1_000_000;
-        case "glm-5.2":          return 256_000;
-        case "grok-4.5":         return 256_000;
-        case "kimi-k3":          return 512_000;
-        case "minimax-m3":       return 256_000;
-        case "mimo-v2.5-pro":    return 256_000;
-        case "hy3":              return 256_000;
-        default:                 return defaultContextLimit;
+        case "deepseek-v4-flash":  return 1_000_000;
+        case "deepseek-v4-pro":    return 1_000_000;
+        case "gpt-5.6-luna":       return 1_050_000;
+        case "qwen3.8-max":        return 1_000_000;
+        case "glm-5.2":            return 1_000_000;
+        case "grok-4.5":           return 500_000;
+        case "kimi-k3":            return 1_048_576;
+        case "minimax-m3":         return 512_000;
+        case "mimo-v2.5-pro":      return 1_048_576;
+        case "hy3":                return 256_000;
+        default:                   return defaultContextLimit;
     }
 }
 

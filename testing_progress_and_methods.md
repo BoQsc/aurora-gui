@@ -109,16 +109,22 @@ breaks the usage down (mirrors how the real opencode app meters context):
   event records the final `prompt/completion/total` on the `ChatMessage`
   (persisted in `sessions.json`).
 - **Context limit**: `contextLimitForModel()` in `aurora-opencode-core/core.d`
-  mirrors `model.limit.context` with a local catalog (fallback 128K). This is
-  the only approximation; the used-token count itself is exact from the API.
+  mirrors `model.limit.context` with the **official opencode model catalog**
+  (`https://models.opencode.ai/api.json` — the exact source the opencode CLI
+  fetches). Verified live against that catalog: deepseek-v4-flash and
+  deepseek-v4-pro are 1,000,000 tokens, gpt-5.6-luna 1,050,000, qwen3.8-max
+  and glm-5.2 1,000,000, grok-4.5 500,000, kimi-k3 1,048,576, minimax-m3
+  512,000, mimo-v2.5-pro 1,048,576, hy3 256,000. Unknown models fall back to
+  128K. The used-token count itself is always exact from the API.
 - **Badge lifecycle**: updates live during streaming (`usage` event), on
   `done`, on session switch, model picker, restore, and delete. Shows `ctx`
   until usage is recorded.
 
-Covered by `headless_pro_smoke.d`: initial empty state, 37% after recording
-47213/128000, hover opens the tooltip (title/model/limit/used/prompt rows),
-leave dismisses it, and the meter follows the active session. Verified visually
-via a PPM screenshot (badge region: 24 distinct colors, tooltip region: 29).
+Covered by `headless_pro_smoke.d`: initial empty state, 25% after recording
+250000/1000000 (deepseek-v4-flash limit from the official catalog), hover
+opens the tooltip (title/model/limit/used/prompt rows), leave dismisses it,
+and the meter follows the active session. Verified visually via a PPM
+screenshot (badge region: 24 distinct colors, tooltip region: 29).
 
 ## Aurora OpenCode Pro chat-quality actions (2026-08-12)
 
