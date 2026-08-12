@@ -115,7 +115,7 @@ echo "::group::ffmpeg"
 if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
   fetch "$src/ffmpeg" https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_tag"
   ( cd "$src/ffmpeg"
-    export PKG_CONFIG_LIBDIR="$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
+    export PKG_CONFIG_LIBDIR="$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
     ./configure \
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
