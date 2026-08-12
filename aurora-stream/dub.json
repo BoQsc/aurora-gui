@@ -6,23 +6,9 @@
   ],
   "copyright": "Copyright \u00a9 2026 OpenAI",
   "license": "BSL-1.0",
-  "targetType": "executable",
-  "targetName": "aurora-stream",
-  "mainSourceFile": "source/app.d",
   "sourcePaths": [
     "source",
     "../vendor/aurora-d-0.4.5/source"
-  ],
-  "libs-linux": [
-    "X11",
-    "dl"
-  ],
-  "libs-windows": [
-    "user32",
-    "gdi32",
-    "shell32",
-    "ole32",
-    "avrt"
   ],
   "buildTypes": {
     "portable-release": {
@@ -39,16 +25,63 @@
       ]
     }
   },
-  "lflags-osx": [
-    "-framework",
-    "AppKit",
-    "-framework",
-    "CoreGraphics",
-    "-framework",
-    "CoreFoundation",
-    "-framework",
-    "QuartzCore",
-    "-lobjc"
+  "configurations": [
+    {
+      "name": "application",
+      "targetType": "executable",
+      "targetName": "aurora-stream",
+      "mainSourceFile": "source/app.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32",
+        "ole32",
+        "avrt"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "titlebar",
+      "targetType": "executable",
+      "targetName": "aurora-stream-titlebar",
+      "mainSourceFile": "source/app_titlebar.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32",
+        "ole32",
+        "avrt"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    }
   ],
   "version": "0.4.9"
 }
