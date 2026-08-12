@@ -189,6 +189,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         return _native !is null && _native.redrawWindow();
     }
+
+    bool queryPointerScreenPosition(out PointF position)
+    {
+        return _native !is null && _native.queryPointerScreenPosition(position);
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     bool rendererSupportsLiveResizeScaling() const

@@ -170,6 +170,13 @@ abstract class NativeWindow
         return false;
     }
 
+    /** Absolute screen position of the native pointer in logical units. */
+    bool queryPointerScreenPosition(out PointF position)
+    {
+        position = PointF.init;
+        return false;
+    }
+
     /** Synchronize a custom view's pixel scroll range with its native host. */
     void setVerticalScrollInfo(int position, int maximum, int pageSize)
     {

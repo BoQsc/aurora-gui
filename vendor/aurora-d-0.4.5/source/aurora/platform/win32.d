@@ -1438,6 +1438,16 @@ else version (Windows)
             return true;
         }
 
+        override bool queryPointerScreenPosition(out PointF position)
+        {
+            position = PointF.init;
+            if (_hwnd is null) return false;
+            POINT point;
+            if (!GetCursorPos(&point)) return false;
+            position = _displayScale.physicalToLogicalPrecise(Point(point.x, point.y));
+            return true;
+        }
+
         override void setVerticalScrollInfo(int position, int maximum,
             int pageSize)
         {

@@ -21,7 +21,11 @@ final class TitleBarDemoRoot : Widget
     private int _eventCount;
     private bool _maximized;
     private GuiWindow _window;
-    private PointF _dragStartPointer;
+    private PointF _dragStartWindowOrigin;
+    private PointF _dragStartScreenPointer;
+    private bool _anchorReady;
+    private PointF _pendingOrigin;
+    private PointF _pendingPointer;
 
     this(GuiWindow window)
     {
@@ -76,51 +80,90 @@ final class TitleBarDemoRoot : Widget
     private void restoreFromDrag(PointF pointer, PointF pressPointer)
     {
         if (!_maximized) return;
-        Rect fullscreenBounds;
-        const hadBounds = _window.windowBounds(fullscreenBounds);
+        Rect fullscreen;
+        const hadFullscreen = _window.windowBounds(fullscreen);
+        PointF screen;
+        const hasScreen = _window.queryPointerScreenPosition(screen);
         _maximized = false;
         _titleBar.setMaximized(false);
         _window.toggleFullscreen();
-        if (hadBounds)
-        {
-            const grabOffset = pressPointer - PointF(fullscreenBounds.x,
-                fullscreenBounds.y);
-            const topLeft = pointer - grabOffset;
-            _window.setWindowPosition(topLeft.rounded());
-        }
+        Rect restored;
+        _window.windowBounds(restored);
+        // Map the grab point from the fullscreen titlebar into the restored
+        // titlebar by preserving its FRACTIONAL position (the maximized window
+        // is wider than the restored one, so keeping the raw client offset
+        // leaves the cursor noticeably off — e.g. grabbing the middle would
+        // land past center). The titlebar height is unchanged, so only X is
+        // scaled; both are clamped to the restored size.
+        double grabX = pressPointer.x;
+        double grabY = pressPointer.y;
+        if (hadFullscreen && fullscreen.width > 0 && restored.width > 0)
+            grabX = pressPointer.x * restored.width / fullscreen.width;
+        grabX = clampDouble(grabX, 0.0, cast(double) maxInt(0, restored.width - 1));
+        grabY = clampDouble(grabY, 0.0, cast(double) maxInt(0, restored.height - 1));
+        // Capture the cursor ONCE and reuse it as the drag anchor, so the
+        // restore position and the continuing drag agree exactly.
+        const origin = (hasScreen ? screen : pointer) -
+            PointF(cast(double) grabX, cast(double) grabY);
+        _window.setWindowPosition(origin.rounded());
+        _pendingOrigin = origin;
+        _pendingPointer = hasScreen ? screen : pointer;
+        _anchorReady = true;
         announce("Restored (drag)");
     }
 
     /**
-     * Owner-driven drag. Aurora pointer positions are window-relative, while
-     * window bounds are screen positions; the window must be moved by the
-     * pointer DELTA from the drag start (deltas are identical in both spaces).
-     * Using an absolute grab offset here would feed the synthesized mouse-move
-     * back into the move and make the window hunt/shake.
+     * Owner-driven drag. Aurora pointer positions are window-relative, so the
+     * grab's absolute screen position is captured here and every move re-applies
+     * the delta against the FIXED drag-start window origin. Computing from the
+     * current window bounds would accumulate each move's full delta and make
+     * the window drift away from the cursor. Using the real screen cursor
+     * position (GetCursorPos) also keeps synthesized mouse-moves — generated
+     * while the captured window moves under the pointer — from feeding back.
      */
     private void beginDrag(PointF startPointer, PointF startPosition)
     {
-        _dragStartPointer = startPointer;
+        if (_anchorReady)
+        {
+            // Restore-on-drag already sampled the cursor and positioned the
+            // window; reuse that exact sample as the drag anchor.
+            _dragStartWindowOrigin = _pendingOrigin;
+            _dragStartScreenPointer = _pendingPointer;
+            _anchorReady = false;
+            return;
+        }
+        // Anchor the grab to the REAL screen cursor position, never to the
+        // event's window-relative pointer combined with the current bounds.
+        PointF screen;
+        if (_window.queryPointerScreenPosition(screen))
+        {
+            Rect bounds;
+            if (_window.windowBounds(bounds))
+                _dragStartWindowOrigin = PointF(bounds.x, bounds.y);
+            else
+                _dragStartWindowOrigin = startPosition;
+            _dragStartScreenPointer = screen;
+        }
+        else
+        {
+            _dragStartWindowOrigin = startPosition;
+            _dragStartScreenPointer = startPointer;
+        }
     }
 
     private bool moveDrag(PointF pointer, bool requestFrame)
     {
-        // The pointer arrives in window-relative coordinates, and moving the
-        // window synthesizes further mouse-moves inside it. Apply the pointer
-        // delta against the CURRENT window origin: a real cursor move yields
-        // the true delta, while a synthesized event yields delta 0 (the cursor
-        // sits at the same grab offset), so the loop closes instead of
-        // bouncing the window between two spots.
-        Rect bounds;
-        if (!_window.windowBounds(bounds)) return false;
-        const delta = pointer - _dragStartPointer;
-        const target = PointF(bounds.x, bounds.y) + delta;
+        PointF screen;
+        if (!_window.queryPointerScreenPosition(screen)) return false;
+        const target = _dragStartWindowOrigin + (screen - _dragStartScreenPointer);
         const rounded = target.rounded();
-        if (rounded.x == bounds.x && rounded.y == bounds.y) return true;
+        Rect bounds;
+        if (_window.windowBounds(bounds) &&
+            rounded.x == bounds.x && rounded.y == bounds.y)
+            return true;
         _window.setWindowPosition(rounded);
-        // Synchronously repaint after each move so DWM re-captures the surface
-        // immediately: regions dragged back from off-screen would otherwise
-        // stay white until a deferred paint reached them.
+        // Synchronously repaint after each move so regions dragged back from
+        // off-screen are filled instead of showing stale DWM composition.
         _window.redrawWindow();
         return true;
     }
