@@ -1,5 +1,47 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Model still reached for legacy words (pwd/ls/stat); advertise only natural words (user feedback)
+- [x] User asked "where we are now?" and saw `where`, `list`, and `pwd`. The
+      `pwd`/`ls`/`stat` were reaching the model because the dshell tool
+      DESCRIPTION taught the aliases ("where prints the workspace path (alias
+      `pwd`)") and the JSON schema enum listed them as valid command values.
+- [x] The advertised dshell schema now lists ONLY the natural words
+      (`where`/`list`/`info`) and the description no longer mentions the
+      legacy abbreviations. The dispatcher still accepts pwd/ls/dir/stat as a
+      runtime safety net so calls never fail, but the model is no longer
+      taught them.
+- [x] Steering prompt explicitly says "Never use shell command words such as
+      pwd, ls, dir, or stat".
+- [x] Verified live: "where are we now?" now calls only `dshell where` (+ a
+      helpful `list`), never `pwd`/`ls`, in both modes. Tools test asserts the
+      advertised schema contains no legacy words. Baseline + Pro debug/release
+      builds and smoke tests pass.
+
+## 2026-08-12 — Tool output must be valid UTF-8 for session persistence (bug)
+- [x] Found in the app log: `restore sessions failed: Invalid UTF-8 sequence`.
+      The lenient OEM-codepage decode wrote bytes 0x80-0xFF directly into a
+      `string` (invalid UTF-8 continuation bytes). When a tool result with
+      those bytes (e.g. `dir`'s free-space comma) was persisted to
+      `sessions.json`, the JSON was invalid UTF-8 and restore crashed on the
+      next launch.
+- [x] Fixed: the decode now maps each raw byte to its own `dchar` and UTF-8
+      encodes it (`toUTF8`), so every tool output is always valid UTF-8 and
+      safe to persist/restore. Verified `dir` output is valid UTF-8, the tools
+      test validates it, and a clean app restart produces zero log errors.
+
+## 2026-08-12 — dshell uses natural words, not legacy shell abbreviations (user feedback)
+- [x] User: "our entire idea with dshell was to have short single words
+      commands instead of legacy obscure letters made words for commands so
+      it's easy to read in natural english language what is going on."
+- [x] Reworked `dshell` so its canonical commands are natural English words:
+      `where` (workspace path, was `pwd`), `list` (directory listing, was
+      `ls`/`dir`), `info` (file/directory metadata, was `stat`). The legacy
+      words (pwd/ls/dir/stat) still work as aliases so calls never fail.
+- [x] Updated the tool description and the steering prompt to present the
+      natural words; verified live that the model calls `dshell where` +
+      `dshell list` (not pwd/ls). Tools test covers the natural words + alias
+      fallback; baseline + Pro debug/release builds and smoke tests pass.
+
 ## 2026-08-12 — dshell: D-native replacement for pwd/ls/stat (user request)
 - [x] User: "the last missing piece would be to have dshell so we don't use
       all these pwd and other commands." The model still reached for bash for

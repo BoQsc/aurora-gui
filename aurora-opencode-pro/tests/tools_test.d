@@ -111,29 +111,70 @@ int main()
         writeln("D-native run tool executes a program directly");
     }
 
-    // The D-native `dshell` tool covers pwd/ls/stat without any shell.
-    auto pwdResult = executeTool(makeCall("dshell",
+    // The D-native `dshell` tool uses short natural words: where / list /
+    // info (the legacy pwd/ls/dir/stat words still work as aliases).
+    auto whereResult = executeTool(makeCall("dshell",
+        `{"command":"where"}`), dir);
+    assert(!whereResult.failed, "dshell where failed: " ~ whereResult.output);
+    assert(whereResult.output.indexOf(dir) >= 0,
+        "dshell where did not return the workspace path: " ~
+        whereResult.output);
+
+    auto listResult = executeTool(makeCall("dshell",
+        `{"command":"list"}`), dir);
+    assert(!listResult.failed, "dshell list failed: " ~ listResult.output);
+    assert(listResult.output.indexOf("README.md") >= 0,
+        "dshell list did not show the directory: " ~ listResult.output);
+    assert(listResult.output.indexOf("[f]") >= 0,
+        "dshell list did not tag file entries: " ~ listResult.output);
+    assert(listResult.output.indexOf("[d]") >= 0,
+        "dshell list did not tag directory entries: " ~ listResult.output);
+
+    auto infoResult = executeTool(makeCall("dshell",
+        `{"command":"info","path":"src/main.d"}`), dir);
+    assert(!infoResult.failed, "dshell info failed: " ~ infoResult.output);
+    assert(infoResult.output.indexOf("<type>file</type>") >= 0,
+        "dshell info did not report a file: " ~ infoResult.output);
+
+    // Legacy aliases (pwd/ls/stat) still resolve to the same operations.
+    auto aliasPwd = executeTool(makeCall("dshell",
         `{"command":"pwd"}`), dir);
-    assert(!pwdResult.failed, "dshell pwd failed: " ~ pwdResult.output);
-    assert(pwdResult.output.indexOf(dir) >= 0,
-        "dshell pwd did not return the workspace path: " ~ pwdResult.output);
-
-    auto lsResult = executeTool(makeCall("dshell",
+    assert(!aliasPwd.failed && aliasPwd.output.indexOf(dir) >= 0,
+        "dshell pwd alias failed: " ~ aliasPwd.output);
+    auto aliasLs = executeTool(makeCall("dshell",
         `{"command":"ls"}`), dir);
-    assert(!lsResult.failed, "dshell ls failed: " ~ lsResult.output);
-    assert(lsResult.output.indexOf("README.md") >= 0,
-        "dshell ls did not list the directory: " ~ lsResult.output);
-    assert(lsResult.output.indexOf("[f]") >= 0,
-        "dshell ls did not tag file entries: " ~ lsResult.output);
-    assert(lsResult.output.indexOf("[d]") >= 0,
-        "dshell ls did not tag directory entries: " ~ lsResult.output);
-
-    auto statResult = executeTool(makeCall("dshell",
+    assert(!aliasLs.failed && aliasLs.output.indexOf("README.md") >= 0,
+        "dshell ls alias failed: " ~ aliasLs.output);
+    auto aliasStat = executeTool(makeCall("dshell",
         `{"command":"stat","path":"src/main.d"}`), dir);
-    assert(!statResult.failed, "dshell stat failed: " ~ statResult.output);
-    assert(statResult.output.indexOf("<type>file</type>") >= 0,
-        "dshell stat did not report a file: " ~ statResult.output);
-    writeln("D-native dshell pwd / ls / stat OK");
+    assert(!aliasStat.failed &&
+        aliasStat.output.indexOf("<type>file</type>") >= 0,
+        "dshell stat alias failed: " ~ aliasStat.output);
+    writeln("D-native dshell where / list / info (+ aliases) OK");
+
+    // The advertised dshell schema must teach ONLY the natural words. Legacy
+    // abbreviations stay accepted at runtime but must never be offered to the
+    // model (otherwise it keeps reaching for pwd/ls/stat).
+    foreach (toolset; [builtinToolDefinitions(), nativeOnlyToolDefinitions()])
+    {
+        foreach (tool; toolset)
+        {
+            if (tool.name != "dshell") continue;
+            assert(tool.description.indexOf("pwd") < 0,
+                "dshell description must not teach pwd");
+            assert(tool.description.indexOf("ls") < 0,
+                "dshell description must not teach ls");
+            assert(tool.description.indexOf("stat") < 0,
+                "dshell description must not teach stat");
+            assert(tool.parametersJson.indexOf("pwd") < 0,
+                "dshell schema must not advertise pwd");
+            assert(tool.parametersJson.indexOf("\"ls\"") < 0,
+                "dshell schema must not advertise ls");
+            assert(tool.parametersJson.indexOf("\"stat\"") < 0,
+                "dshell schema must not advertise stat");
+        }
+    }
+    writeln("dshell advertises only the natural words");
 
     // Toolset shapes: default has the shell tool, native-only does not.
     auto defaults = builtinToolDefinitions();
@@ -162,13 +203,40 @@ int main()
     assert(nativeHasDshell, "Native toolset must include dshell");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
-    assert(toolSteeringPrompt(false).indexOf("dshell") >= 0,
-        "Default steering prompt must steer toward dshell");
+    assert(toolSteeringPrompt(false).indexOf("where") >= 0,
+        "Default steering prompt must steer toward the natural dshell words");
+    assert(toolSteeringPrompt(true).indexOf("list") >= 0,
+        "Native steering prompt must mention the list operation");
     writeln("Default vs native-only toolset shapes OK");
 
     // unknown tools report a clear error rather than crashing
     auto unknownResult = executeTool(makeCall("nope", "{}"), dir);
     assert(unknownResult.failed, "unknown tool should fail");
+
+    version (Windows)
+    {
+        // Regression: console tools (e.g. cmd `dir`) emit the OEM codepage.
+        // The tool output must be valid UTF-8 so it can be persisted into the
+        // JSON sessions file and restored on the next launch without an
+        // "Invalid UTF-8 sequence" crash.
+        auto oemResult = executeTool(makeCall("bash",
+            `{"command":"dir","shell":"cmd"}`), dir);
+        assert(!oemResult.failed, "dir failed: " ~ oemResult.output);
+        import std.utf : validate;
+        try
+        {
+            validate(oemResult.output);
+        }
+        catch (Exception error)
+        {
+            assert(false, "Tool output is not valid UTF-8: " ~ error.msg);
+        }
+        // The free-space line in `dir` contains the OEM thousands separator,
+        // which must decode to a valid UTF-8 character (not a raw byte).
+        assert(oemResult.output.indexOf("bytes free") >= 0,
+            "dir did not produce its full listing: " ~ oemResult.output);
+        writeln("Tool output is valid UTF-8 (safe to persist)");
+    }
 
     writeln("Aurora OpenCode Pro tools module test passed.");
     try rmdirRecurse(dir);

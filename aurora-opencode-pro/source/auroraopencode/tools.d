@@ -9,6 +9,7 @@ import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin;
 import std.string : replace, strip;
+import std.utf : toUTF8;
 import std.conv : to;
 import std.exception : collectException;
 import core.time : seconds, Duration, MonoTime, msecs;
@@ -61,18 +62,21 @@ private string shellUsageNotes(string shell)
 }
 
 /// The D-native `dshell` tool definition, shared by both tool sets: it covers
-/// the plain directory-introspection commands (pwd/ls/dir/stat) natively so
-/// the model never needs a shell for them.
+/// the plain directory-introspection operations with short natural-English
+/// words (`where`, `list`, `info`) so conversations stay easy to read. The
+/// schema only advertises the natural words; the legacy abbreviations
+/// (pwd/ls/dir/stat) are still accepted by the dispatcher as a safety net so
+/// calls never fail, but they are deliberately not taught to the model.
 private OpenCodeToolDef dshellToolDefinition()
 {
     return OpenCodeToolDef(
         "dshell",
         "A tiny shell implemented natively in this application (no external " ~
-        "shell). Use it for plain directory introspection: `pwd` prints the " ~
-        "workspace path, `ls`/`dir` lists a directory with types and sizes, " ~
-        "and `stat` shows file/directory metadata. Prefer this over the " ~
-        "bash/cmd/powershell tool for these commands.",
-        `{"type":"object","properties":{"command":{"type":"string","enum":["pwd","ls","dir","stat"],"description":"The command to run"},"path":{"type":"string","description":"Optional path (relative to the workspace or absolute); defaults to the workspace"}},"required":["command"]}`
+        "shell). Use short natural words: `where` prints the workspace path, " ~
+        "`list` shows a directory with types and sizes, and `info` shows " ~
+        "file/directory metadata. Prefer this over the bash/cmd/powershell " ~
+        "tool for these operations.",
+        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info"],"description":"The operation: where (workspace path), list (directory listing), info (file metadata)"},"path":{"type":"string","description":"Optional path (relative to the workspace or absolute); defaults to the workspace"}},"required":["command"]}`
     );
 }
 
@@ -161,24 +165,31 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
 /// System-prompt steering that mirrors the original opencode app: the model is
 /// told to prefer the native tools for file work and reserve the shell for
 /// things the native tools cannot do. In native-only mode there is no shell at
-/// all, so the model is steered exclusively to the D tools.
+/// all, so the model is steered exclusively to the D tools. The natural dshell
+/// words are presented as the only vocabulary; legacy shell words are never
+/// offered.
 public string toolSteeringPrompt(bool nativeOnly)
 {
     if (nativeOnly)
         return "You have access to tools implemented natively in this " ~
             "application; there is no shell and no bash/cmd/powershell. " ~
-            "Use `dshell` for directory introspection (pwd, ls/dir, stat), " ~
-            "`glob` to list files by pattern, `read` to read them, `write` to " ~
-            "create them, `grep` to search contents, and `run` to execute a " ~
-            "program with an explicit argument list. Always prefer these tools " ~
-            "over trying to reconstruct shell commands.";
+            "Use `dshell` with these natural words only: `where` for the " ~
+            "workspace path, `list` to show a directory, `info` for file " ~
+            "metadata. Use `glob` to list files by pattern, `read` to read " ~
+            "them, `write` to create them, `grep` to search contents, and " ~
+            "`run` to execute a program with an explicit argument list. " ~
+            "Never use shell command words such as pwd, ls, dir, or stat; " ~
+            "always prefer these tools over trying to reconstruct shell " ~
+            "commands.";
     return "You have access to tools. For file and content operations prefer " ~
-        "the dedicated native tools: `dshell` for directory introspection " ~
-        "(pwd, ls/dir, stat), `glob` to list files by pattern, `read` to read " ~
-        "them, `write` to create them, and `grep` to search contents. Use the " ~
-        "`bash` tool only for running build commands, git, package managers, " ~
-        "or other executables that the native tools cannot perform. Avoid " ~
-        "using bash for pwd, listing, or reading files.";
+        "the dedicated native tools: `dshell` with these natural words only " ~
+        "(`where` for the workspace path, `list` to show a directory, `info` " ~
+        "for file metadata), `glob` to list files by pattern, `read` to read " ~
+        "them, `write` to create them, and `grep` to search contents. Never " ~
+        "use shell command words such as pwd, ls, dir, or stat for these " ~
+        "operations. Use the `bash` tool only for running build commands, " ~
+        "git, package managers, or other executables that the native tools " ~
+        "cannot perform.";
 }
 
 public struct ToolExecution
@@ -395,13 +406,15 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         {
             // Read raw bytes and decode leniently: console tools emit the OEM
             // codepage, which is not valid UTF-8. Strict decoding would throw
-            // and the output would be swallowed as "(no output)".
+            // and the output would be swallowed as "(no output)". Map each
+            // byte to its own code point and UTF-8 encode it, so the result is
+            // always valid UTF-8 and safe to persist into JSON sessions.
             auto raw = read(outPath);
             auto bytes = cast(ubyte[]) raw;
-            auto decoded = new char[](bytes.length);
+            auto chars = new dchar[](bytes.length);
             for (size_t index; index < bytes.length; ++index)
-                decoded[index] = cast(char) bytes[index];
-            output = cast(string) decoded;
+                chars[index] = cast(dchar) bytes[index];
+            output = toUTF8(chars);
         }
         catch (Exception) {}
         try remove(outPath);
@@ -711,7 +724,7 @@ private ToolExecution runDshell(string args, string workspace)
     }
     if (command.length == 0)
         return ToolExecution("dshell",
-            "Error: dshell requires a `command` (pwd, ls, dir, or stat).",
+            "Error: dshell requires a `command` (where, list, or info).",
             true);
 
     const resolved = path.length > 0
@@ -719,18 +732,21 @@ private ToolExecution runDshell(string args, string workspace)
 
     switch (command)
     {
+        case "where":
         case "pwd":
             return ToolExecution("dshell",
                 "<path>" ~ workspace ~ "</path>", false);
+        case "list":
         case "ls":
         case "dir":
             return dshellList(resolved, workspace);
+        case "info":
         case "stat":
             return dshellStat(resolved, workspace);
         default:
             return ToolExecution("dshell",
                 "Error: unknown dshell command '" ~ command ~
-                "' (expected pwd, ls, dir, or stat).", true);
+                "' (expected where, list, or info).", true);
     }
 }
 

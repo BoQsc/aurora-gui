@@ -1,5 +1,62 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro dshell advertises only natural words (2026-08-12)
+
+The model sometimes emitted `pwd`/`ls`/`stat` because the dshell tool
+description and JSON schema enum TAUGHT those aliases. Fixed:
+
+- The advertised `dshell` schema `command` enum is now exactly
+  `["where","list","info"]` and the description never mentions pwd/ls/stat.
+- The runtime dispatcher still accepts pwd/ls/dir/stat as a safety net (calls
+  never fail), but the model is never offered them.
+- The steering prompt explicitly forbids shell command words.
+
+Verify: `tools_test.d` runs `dir` through the shell tool, checks `where/list/
+info` plus alias fallback, AND asserts the advertised schema/description
+contain no legacy words (`dshell advertises only the natural words`). Live
+probe: "where are we now?" calls `dshell where` (+ `list`) only, both modes.
+
+## Aurora OpenCode Pro tool-output UTF-8 safety (2026-08-12)
+
+The shell/run tools read console output as raw bytes (cmd emits the OEM
+codepage, not UTF-8). A bug wrote those bytes straight into a `string`, which
+is invalid UTF-8 and broke `sessions.json` persistence → `restore sessions
+failed: Invalid UTF-8 sequence` on the next launch.
+
+Fix in `runProcess`: each raw byte is mapped to its own `dchar` and UTF-8
+encoded (`std.utf.toUTF8`), so tool output is always valid UTF-8.
+
+Regression: `tools_test.d` runs `dir` (which emits the OEM thousands
+separator), asserts `std.utf.validate` passes and the listing is complete.
+Verified a clean app restart logs zero errors.
+
+## Aurora OpenCode Pro dshell natural words (2026-08-12)
+
+`dshell` deliberately uses short natural-English words instead of the legacy
+shell abbreviations, so conversations read clearly:
+
+- `where` — prints the workspace path (alias `pwd`).
+- `list` — shows a directory with `[f]`/`[d]` tags and byte sizes (aliases
+  `ls`/`dir`).
+- `info` — file/directory metadata: type, size, modified time (alias `stat`).
+
+Legacy words still work as aliases so a model that reaches for `ls`/`pwd`/
+`stat` never fails. All implemented natively in D (`std.file`), no shell.
+
+Verify with the tools test:
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+```
+Pass = `D-native dshell where / list / info (+ aliases) OK`, `Default vs
+native-only toolset shapes OK`, then `Aurora OpenCode Pro tools module test
+passed.`
+
+Live (temp probe): "where am I and what's in the workspace?" now answers via
+`dshell where` + `dshell list` then `read` in 3 rounds — the model uses the
+natural words.
+
 ## Aurora OpenCode Pro dshell tool (2026-08-12)
 
 The model still reached for bash for plain directory introspection
