@@ -2,6 +2,11 @@ name: Build minimal ffmpeg (Windows x64)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-minimal-ffmpeg-win64.sh
+      - .github/workflows/minimal-ffmpeg.yml
 
 permissions:
   contents: read

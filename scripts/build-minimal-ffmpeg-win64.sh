@@ -195,7 +195,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-encoder=libx264,h264_nvenc,h264_qsv,h264_amf,aac,libmp3lame,ppm \
       --enable-parser=h264,hevc,vp8,vp9,av1,mpeg4video,mpegvideo,mjpeg,png,webp,bmp,gif \
       --enable-parser=aac,mp3,flac,vorbis,opus,mpegaudio,ac3,eac3 \
-      --enable-filter=color,anullsrc,testsrc2,format,scale,pad,crop,overlay,setpts \
+      --enable-filter=color,anullsrc,testsrc2,sine,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
