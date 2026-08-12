@@ -792,23 +792,18 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             requestFrame();
             return;
         }
-        refreshResizeProxyFromScene();
-        if (_resizeProxyActive)
-        {
-            _resizeProxyOneShotActive = true;
-            _resizeRenderExactNow = false;
-            _resizeExactDirty = false;
-            requestFrame();
-            return;
-        }
+
+        // Software renderer: a programmatic resize (maximize, restore, DPI
+        // change) must render the exact scene at the new size immediately. The
+        // stretched resize-proxy snapshot would otherwise present one distorted
+        // frame (e.g. oversized text) during the maximize/restore transition.
+        // The proxy is only needed while the user is interactively dragging a
+        // border, and that path is armed by beginNativeResize; WM_SIZE during
+        // that drag already returned above.
         if (_renderer !is null && _framebufferSize != previousFramebufferSize)
             _renderer.resize(_framebufferSize);
         if (_root !is null && _clientSize != previousClientSize)
             _root.setBounds(Rect(0, 0, width, height));
-
-        // A native resize changes the base viewport, but it does not by itself
-        // mean every retained layer's content changed. The next scene rebuild
-        // runs layout once and dirties only layers whose layout actually changed.
         _baseDirty = true;
         requestFrame();
     }
