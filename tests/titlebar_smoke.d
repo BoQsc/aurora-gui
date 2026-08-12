@@ -110,11 +110,76 @@ int main()
     assert(!maximized, "Double-click did not restore with systemMoveOnDrag");
     bar.setSystemMoveOnDrag(false);
 
+    // --- Drag down while maximized restores, then continues the drag. ---
+    // In-canvas self-move: restore fires on drag, the bar leaves maximize and
+    // keeps moving from the re-anchored pointer.
+    bool restoredRequested;
+    PointF restorePointer;
+    PointF restorePress;
+    bar.onRestoreRequested = delegate(PointF pointer, PointF pressPointer)
+    {
+        restoredRequested = true;
+        restorePointer = pointer;
+        restorePress = pressPointer;
+        maximized = false;
+        bar.setMaximized(false);
+    };
+    resetClickState(driver);
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setMaximized(true);
+    maximized = true;
+    const maximizedStart = bar.bounds();
+    driver.drag(Point(300, 40), Point(300, 120));
+    assert(restoredRequested, "Restore-on-drag was not requested");
+    assert(restorePress == PointF(300, 40),
+        "Restore-on-drag press pointer mismatch");
+    assert(!bar.maximized() && !maximized,
+        "Bar did not leave the maximized state on drag");
+    assert(bar.bounds().y > maximizedStart.y,
+        "Drag did not continue after restore");
+    assert(bar.bounds().y == maximizedStart.y + 70,
+        "Drag did not re-anchor after restore");
+    assert(!bar.dragging(), "Drag did not end after restore-on-drag");
+
+    // System-move mode: restore is requested too, then the native move loop is
+    // started (returns false headlessly) and the state is cleared.
+    bar.setSystemMoveOnDrag(true);
+    resetClickState(driver);
+    restoredRequested = false;
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setMaximized(true);
+    maximized = true;
+    driver.drag(Point(300, 40), Point(300, 120));
+    assert(restoredRequested,
+        "System-move restore-on-drag was not requested");
+    assert(!bar.maximized() && !maximized,
+        "System-move restore did not clear maximize state");
+    bar.setSystemMoveOnDrag(false);
+    bar.onRestoreRequested = null;
+    bar.setMaximized(false);
+    maximized = false;
+
+    // --- Hover visuals freeze while dragging (no cursor flicker). ---
+    bar.setBounds(Rect(20, 20, 760, 40));
+    resetClickState(driver);
+    driver.moveTo(Point(300, 40));
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(300, 45)); // cross the drag threshold
+    assert(bar.dragging(), "Drag did not start for hover-freeze test");
+    driver.moveTo(captionCenter(bar, TitleBarControl.close)); // over the button
+    assert(bar.hotControl() != TitleBarControl.close,
+        "Hover cursor changed while dragging");
+    driver.moveTo(Point(300, 110));
+    driver.mouseUp(MouseButton.left);
+    assert(!bar.dragging(), "Drag did not end for hover-freeze test");
+
     // --- Right-click on the title requests the system menu. ---
     driver.rightClick(titleCenter(bar));
     assert(systemMenuRequested, "System menu request not fired");
 
     // --- Drag moves the bar itself by the exact pointer delta. ---
+    bar.setBounds(Rect(20, 20, 760, 40));
+    resetClickState(driver);
     const start = bar.bounds();
     driver.drag(Point(120, 40), Point(220, 90));
     assert(bar.bounds() == Rect(start.x + 100, start.y + 50,
@@ -173,6 +238,27 @@ int main()
     bar.setMaximized(true);
     assert(bar.maximized());
     bar.setMaximized(false);
+
+    // --- Clicking a non-focusable area releases hosted-field focus. ---
+    auto searchField = new TextField();
+    searchField.setPlaceholder("Search clips, tracks, effects…");
+    searchField.setContentCentered(true);
+    bar.setContent(searchField);
+    driver.paint();
+    const fieldRect = searchField.bounds();
+    const fieldCenter = searchField.localToGlobal(Point(
+        fieldRect.width / 2, fieldRect.height / 2));
+    driver.click(fieldCenter);
+    assert(searchField.focused(), "Search field did not gain focus");
+    driver.click(Point(60, 30)); // titlebar empty strip
+    assert(!searchField.focused(),
+        "Clicking the titlebar did not release field focus");
+    driver.click(fieldCenter);
+    assert(searchField.focused(), "Search field did not regain focus");
+    driver.click(Point(20, 350)); // window background
+    assert(!searchField.focused(),
+        "Clicking the window background did not release field focus");
+    bar.clearContent();
 
     // --- Reset to the default layout and capture a visual. ---
     bar.setTitle("My Custom Window");

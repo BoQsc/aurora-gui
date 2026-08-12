@@ -23,6 +23,37 @@
   and `aurora-opencode-pro/dub.json`.
 - Console-subsystem CLI/tests stay console so their stdout still works.
 
+## Aurora frameless-window drag fixes
+
+- `aurora.window.refreshResizeProxyFromScene` now copies the software
+  renderer's surface pixels into the privately-owned `_resizeSnapshot` instead
+  of aliasing the live surface. The resize proxy previously presented garbage/
+  black frames during the modal move/resize loop once the renderer reallocated
+  that surface for the next framebuffer size.
+- Frameless windows should move owner-side (`onDragMoved` +
+  `setWindowPosition`) rather than through the OS caption loop
+  (`beginSystemMove`): the caption loop's aero-snap flashes the native frame on
+  drag-to-top, and it armed the fragile proxy path during the move. The demo
+  (`demos/titlebar.d`) now drags with a pointer-DELTA formulation
+  (`windowOrigin + (pointer − startPointer)`) because Aurora pointer positions
+  are window-relative while window bounds are screen positions; the delta-based
+  form keeps the synthesized WM_MOUSEMOVE feedback loop at zero delta (no
+  shaking).
+
+## Aurora TitleBar restore-on-drag (drag down to leave maximize)
+
+- `aurora.widgets.titlebar.TitleBar` now supports restore-on-drag: pressing the
+  title while `_maximized` and dragging past the movement threshold fires
+  `onRestoreRequested(pointer, pressPointer)` (owner leaves maximized/
+  fullscreen), clears the bar's maximized state, re-anchors the drag to the
+  current pointer/position, and continues moving. Works for both in-canvas
+  owner/self-move drags and native system move (`systemMoveOnDrag`): the system
+  move loop is now deferred until real movement when the bar is maximized so it
+  can restore first.
+- Added `NativeWindow.setWindowPosition(Point)` / `GuiWindow.setWindowPosition`
+  (Win32 `SetWindowPos`, headless/base return false) so the owner can re-anchor
+  a restored window under the pointer before the move loop resumes.
+
 ## Aurora frameless-window white frame border
 
 Frameless resizable Aurora windows are created as `WS_POPUP | WS_THICKFRAME`

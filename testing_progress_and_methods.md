@@ -1,5 +1,80 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Titlebar polish: native cursor + centered search text (2026-08-12)
+
+- The demo disabled Aurora's synchronized (drawn) cursor during titlebar drags
+  with `WindowOptions.synchronizedDragPointer = false`; the native pointer stays
+  visible while dragging the window (the drawn cursor is meant for retained
+  compositor-layer drags).
+- `aurora.widgets.texteditor` gained `setContentCentered(bool)`: single-line
+  content that fits the viewport is horizontally centered. `contentOriginX()`
+  is the single source for paint, caret, selection, and hit-testing, so editing
+  stays consistent; content wider than the viewport keeps normal
+  `_padding - _scrollX` scrolling. The demo search box is now an empty
+  `TextField` with a centered grey placeholder.
+
+Verify: drag the titlebar (native cursor, no shake/black), and the search
+placeholder is centered in the middle of the titlebar.
+
+## Titlebar dragging: black window, snap border, shaking (2026-08-12)
+
+Three drag artifacts were reported on the frameless demo and fixed:
+
+1. **Black window while dragging.** The OS caption move loop (`beginSystemMove`)
+   arms the resize proxy, whose snapshot ALIASED the software renderer's live
+   surface. `_renderer.resize()` then reallocates that same surface in place,
+   so the proxy presented garbage/black frames during the modal loop. Fix in
+   `aurora.window.refreshResizeProxyFromScene`: the renderer surface's pixels
+   are now COPIED into the privately-owned `_resizeSnapshot` surface instead of
+   aliased.
+
+2. **White border when dragging to the top and releasing.** The OS caption move
+   loop triggers aero-snap maximize, which flashes the native (system-light)
+   frame during the transition. The demo now drags owner-side instead of using
+   the OS loop: `onDragStarted`/`onDragMoved` call
+   `GuiWindow.setWindowPosition` (SetWindowPos), which never snaps.
+
+3. **Entire window shaking while dragging.** Aurora mouse-event positions are
+   window-relative (client) coordinates, but the first owner-drag mixed them
+   with screen bounds. After each SetWindowPos, Windows synthesizes a
+   WM_MOUSEMOVE inside the moved window; the recomputed absolute position then
+   moved the window back → hunting/oscillation. Fixed by dragging with the
+   pointer DELTA from the drag start:
+   `windowOrigin + (pointer − startPointer)` — deltas are identical in
+   window-relative and screen space, so the synthesized event yields zero delta
+   and the loop is stable.
+
+Verify manually in the demo: drag the titlebar (should be smooth, no black, no
+shake), drag to the top edge and release (no white border / no snap), and
+restore-on-drag (drag down from maximized) still works.
+
+## TitleBar restore-on-drag: drag down to leave maximize (2026-08-12)
+
+While a TitleBar is maximized, pressing the title and dragging past the 5px
+movement threshold now leaves the maximized/fullscreen state and continues the
+drag. Implementation: `TitleBar` fires `onRestoreRequested(pointer,
+pressPointer)` at threshold crossing, clears its own `_maximized`, re-anchors
+the drag (`_dragStartPointer`/`_dragStartPosition`) to the current pointer and
+position, and proceeds. Two modes:
+
+- **In-canvas** (self-move or owner `onDragMoved`): after restore the drag
+  continues from the re-anchored pointer.
+- **Native system move** (`systemMoveOnDrag`): while maximized the OS move loop
+  is deferred until real movement (armed on mouse-down instead of calling
+  `beginSystemMove()` immediately), so the owner can restore first; then
+  `beginSystemMove()` starts the OS loop.
+
+Added `NativeWindow.setWindowPosition(Point)` / `GuiWindow.setWindowPosition`
+(Win32 `SetWindowPos`; base/headless return false). The demo's
+`restoreFromDrag` exits fullscreen and re-anchors the window so the grabbed
+titlebar spot stays under the pointer before the OS loop resumes.
+
+Covered by `tests/titlebar_smoke.d`: in-canvas restore-on-drag asserts the
+press pointer, the state clear, and the re-anchored final Y (start + 70 for a
+40→120 downward drag); system-move restore-on-drag asserts the restore fires
+and the state clears. Verify manually in the demo: maximize (double-click), then
+click the titlebar and drag down — the window should restore and follow.
+
 ## Titlebar fixes: double-click maximize + white frame border (2026-08-12)
 
 Two user-reported issues with the frameless TitleBar demo:

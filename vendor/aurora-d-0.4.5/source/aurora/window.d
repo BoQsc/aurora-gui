@@ -179,6 +179,16 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         bounds = Rect.init;
         return _native !is null && _native.windowBounds(bounds);
     }
+
+    bool setWindowPosition(Point logicalPosition)
+    {
+        return _native !is null && _native.setWindowPosition(logicalPosition);
+    }
+
+    bool redrawWindow()
+    {
+        return _native !is null && _native.redrawWindow();
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     bool rendererSupportsLiveResizeScaling() const
@@ -915,12 +925,20 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_scene is null || _scene.base is null) return;
         // The software backend already owns the exact pixels that were just
         // presented. Reuse them directly instead of rasterizing the complete
-        // widget tree again when the user grabs a border.
+        // widget tree again when the user grabs a border. The pixels must be
+        // COPIED into the privately-owned snapshot surface: aliasing the
+        // renderer's live surface here means the snapshot silently becomes
+        // garbage when the renderer resizes that surface to the next
+        // framebuffer size during the resize/move loop.
         auto softwareFrame = _renderer is null ? null : _renderer.softwareSurface();
         if (softwareFrame !is null && softwareFrame.width() > 0 &&
             softwareFrame.height() > 0)
         {
-            _resizeSnapshot = softwareFrame;
+            _resizeSnapshot.resize(softwareFrame.width(), softwareFrame.height());
+            const count = cast(size_t) softwareFrame.width() *
+                cast(size_t) softwareFrame.height();
+            _resizeSnapshot.pixels()[0 .. count] =
+                softwareFrame.pixels()[0 .. count];
             _resizeProxyActive = true;
             if (_resizeProxyImage !is null) ensureResizeProxyImage();
             return;
@@ -1342,7 +1360,10 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (target !is null)
         {
             auto focusTarget = nearestFocusable(target);
+            // Clicking a widget that has no focusable ancestor must release
+            // keyboard focus (e.g. an empty title bar or window background).
             if (focusTarget !is null) requestFocus(focusTarget);
+            else requestFocus(null);
             dispatchToBubble(target, event);
         }
         else

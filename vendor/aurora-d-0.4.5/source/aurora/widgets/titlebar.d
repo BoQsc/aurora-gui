@@ -84,8 +84,17 @@ class TitleBar : Widget
     void delegate() onMaximizeToggle;
     void delegate() onClose;
     void delegate() onDoubleClick;
-    /** Owner-drawn system menu, opened by a right click on the title area. */
+    /**
+     * Owner-drawn system menu, opened by a right click on the title area.
+     */
     void delegate(Point globalPosition) onSystemMenu;
+    /**
+     * Restore-on-drag: fired once a real drag is detected while the bar is
+     * maximized. The owner should leave the maximized/fullscreen state and, if
+     * it wants the drag to continue under the pointer, reposition the window.
+     * `pointer` is the current pointer and `pressPointer` the original press.
+     */
+    void delegate(PointF pointer, PointF pressPointer) onRestoreRequested;
     void delegate(PointF startPointer, PointF startPosition) onDragStarted;
     /** Owner-driven window move; return whether the position changed. */
     bool delegate(PointF pointer, bool requestFrame) onDragMoved;
@@ -564,14 +573,26 @@ class TitleBar : Widget
             if (onMaximizeToggle !is null) onMaximizeToggle();
             return true;
         }
-        if (_systemMoveOnDrag && !_maximized)
+        if (_systemMoveOnDrag)
         {
-            // The OS move loop owns capture (it releases any held capture and
-            // swallows the mouse-up), so no logical capture is taken here.
-            beginSystemMove();
+            // While maximized the OS move loop cannot run yet (the owner must
+            // restore the window first). Arm the drag and start the loop once
+            // real movement is detected so restore-on-drag can leave maximize
+            // and follow the pointer.
+            if (_maximized)
+            {
+                _armDrag = true;
+                _dragStartPointer = pointerPosition(event);
+                _dragStartPosition = precisePosition();
+                invalidate();
+            }
+            else
+            {
+                beginSystemMove();
+            }
             return true;
         }
-        if (_draggable && !_maximized)
+        if (_draggable)
         {
             _armDrag = true;
             _dragStartPointer = pointerPosition(event);
@@ -584,6 +605,14 @@ class TitleBar : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_dragging)
+        {
+            // While dragging, keep the move cursor and the hover visuals frozen:
+            // synthesized mouse-moves arrive as the window moves under the
+            // pointer, and re-running the hot control would flicker the cursor.
+            const pointer = pointerPosition(event);
+            return updateDrag(pointer, true);
+        }
         const control = controlAt(event.position);
         if (control != _hotControl)
         {
@@ -593,11 +622,6 @@ class TitleBar : Widget
                 control == TitleBarControl.close ? CursorKind.hand : CursorKind.arrow);
             invalidate();
         }
-        if (_dragging)
-        {
-            const pointer = pointerPosition(event);
-            return updateDrag(pointer, true);
-        }
         if (_armDrag && _draggable)
         {
             const pointer = pointerPosition(event);
@@ -606,6 +630,25 @@ class TitleBar : Widget
             if (dx * dx + dy * dy >= 25.0)
             {
                 _armDrag = false;
+                if (_maximized)
+                {
+                    // Restore-on-drag: leave maximize before moving so the
+                    // window drops back to its restored size and follows the
+                    // pointer. Re-anchor the drag to the current pointer and
+                    // position because the owner's restore may have moved or
+                    // resized the window.
+                    _maximized = false;
+                    invalidate();
+                    if (onRestoreRequested !is null)
+                        onRestoreRequested(pointer, _dragStartPointer);
+                    _dragStartPointer = pointer;
+                    _dragStartPosition = precisePosition();
+                }
+                if (_systemMoveOnDrag)
+                {
+                    beginSystemMove();
+                    return true;
+                }
                 _dragging = true;
                 setCursor(CursorKind.move);
                 // Re-enter capture now that wantsContinuousPointerFrames() is

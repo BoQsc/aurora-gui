@@ -1394,6 +1394,26 @@ else version (Windows)
             return true;
         }
 
+        override bool setWindowPosition(Point logicalPosition)
+        {
+            if (_hwnd is null || _fullscreen) return false;
+            const physical = _displayScale.logicalToPhysical(logicalPosition);
+            return SetWindowPos(_hwnd, null, physical.x, physical.y, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+        }
+
+        override bool redrawWindow()
+        {
+            if (_hwnd is null || _closed) return false;
+            // Synchronously invalidate and repaint without erasing the
+            // background (RDW_NOERASE): erasing the whole window here would
+            // flash the background brush on every drag step. The paint below
+            // presents the full surface, covering freshly exposed regions.
+            RedrawWindow(_hwnd, null, null,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
+            return true;
+        }
+
         override Size framebufferSize() const
         {
             return _framebufferSize;
@@ -1631,7 +1651,8 @@ else version (Windows)
                 {
                     PAINTSTRUCT paint;
                     BeginPaint(_hwnd, &paint);
-                    paintStartupBackground(paint.hdc, &paint.rcPaint);
+                    if (paint.fErase)
+                        paintStartupBackground(paint.hdc, &paint.rcPaint);
                     EndPaint(_hwnd, &paint);
                     _needsPaint = true;
                     paintNow();
@@ -1869,8 +1890,10 @@ else version (Windows)
             _needsPaint = !completed;
             if (completed && _shown && _startupBackgroundPending)
             {
+                // Stop re-seeding, but keep the brush alive so exposed regions
+                // (dragged back from off-screen) are filled with the app
+                // background instead of the system's white.
                 _startupBackgroundPending = false;
-                releaseStartupBrush();
             }
         }
 
@@ -1898,13 +1921,18 @@ else version (Windows)
         private void paintStartupBackground(HDC dc,
             const(RECT)* dirty = null) nothrow
         {
-            if (!_startupBackgroundPending || _startupBrush is null ||
-                dc is null || _hwnd is null)
+            // Fill ONLY the region being erased/exposed with the application
+            // background for the whole window lifetime. The window class has no
+            // background brush, so without this DWM/GDI shows white in regions
+            // newly exposed when the window is dragged back from off-screen.
+            // Filling the whole client (rather than just the dirty rect) would
+            // flash the background on every drag step.
+            if (_startupBrush is null || dc is null || _hwnd is null)
                 return;
             RECT area;
             if (dirty !is null)
                 area = *dirty;
-            else if (!GetClientRect(_hwnd, &area))
+            else if (!GetUpdateRect(_hwnd, &area, FALSE))
                 return;
             if (area.right > area.left && area.bottom > area.top)
                 FillRect(dc, &area, _startupBrush);

@@ -156,6 +156,7 @@ class TextEditor : Widget
     private double _titleLayerOpacity = 1.0;
     private HorizontalAlign _titleHorizontal = HorizontalAlign.left;
     private int _padding = 8;
+    private bool _contentCentered;
 
     private TextLayout _textLayout;
     private bool _layoutDirty = true;
@@ -437,6 +438,20 @@ class TextEditor : Widget
         if (_wordWrap) markLayoutDirty();
         ensureCursorVisible();
         invalidate();
+    }
+
+    /** Center single-line content within the field when it fits the viewport. */
+    void setContentCentered(bool value)
+    {
+        if (_contentCentered == value) return;
+        _contentCentered = value;
+        ensureCursorVisible();
+        invalidate();
+    }
+
+    bool contentCentered() const @safe pure nothrow @nogc
+    {
+        return _contentCentered;
     }
 
     /** Measured glyph layout size for live composition-title placement. */
@@ -947,10 +962,24 @@ class TextEditor : Widget
         }
     }
 
+    /// Horizontal content origin: centered single-line content that fits the
+    /// viewport is shifted toward the middle; overflowing or multi-line content
+    /// keeps the normal scrolled `_padding - _scrollX` origin so caret math and
+    /// hit testing stay consistent.
+    private int contentOriginX(TextLayout layout) const
+    {
+        const base = _padding - _scrollX;
+        if (!_contentCentered || _multiline) return base;
+        const viewport = maxInt(1, bounds().width - _padding * 2);
+        const width = cast(int) (layout.width + 0.5);
+        if (width >= viewport) return base;
+        return _padding + (viewport - width) / 2;
+    }
+
     private CaretPosition caretAtPoint(Point point)
     {
         auto layout = ensureLayout();
-        const x = point.x - _padding + _scrollX;
+        const x = point.x - contentOriginX(layout);
         const y = point.y - _padding + scrollOriginY(layout);
         return layout.hitTestCaret(x, y);
     }
@@ -1044,12 +1073,20 @@ class TextEditor : Widget
         auto layout = ensureLayout(canvas);
         ensureCursorVisible();
         synchronizeVerticalScrollbar();
-        const originX = _padding - _scrollX;
+        const originX = contentOriginX(layout);
         const originY = _padding - cast(int) floor(scrollOriginY(layout));
 
         if (_buffer.length == 0 && _placeholder.length > 0 && !focused())
         {
-            content.drawText(Point(_padding, _padding), _placeholder,
+            int placeholderX = _padding;
+            if (_contentCentered)
+            {
+                const viewport = maxInt(1, bounds().width - _padding * 2);
+                const measured = canvas.measureText(_placeholder,
+                    palette.fontScale, FontRole.monospace, palette.monospaceFont);
+                placeholderX = _padding + (viewport - measured.width) / 2;
+            }
+            content.drawText(Point(placeholderX, _padding), _placeholder,
                 palette.textMuted, palette.fontScale, FontRole.monospace,
                 palette.monospaceFont);
         }

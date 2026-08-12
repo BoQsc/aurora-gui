@@ -1,5 +1,65 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Titlebar: no custom cursor + centered search text (user feedback)
+- [x] "I don't like how we use custom cursor": during titlebar drags the
+      synchronized-pointer path hid the native cursor and drew Aurora's vector
+      cursor. The demo now sets `WindowOptions.synchronizedDragPointer = false`
+      so the native pointer stays visible during drags (the synchronized cursor
+      is meant for dragging retained compositor layers, not native window
+      moves).
+- [x] "make sure to center 'Search clips, tracks, effects…'": added
+      `TextEditor.setContentCentered(bool)` — single-line content that fits the
+      viewport is centered (paint, caret, selection, and hit-testing all use
+      the same `contentOriginX`), overflowing text falls back to normal
+      scrolling. The demo search box now uses an empty `TextField` with a
+      centered grey placeholder.
+- [x] titlebar smoke, module unittests, full aurora suite, demo + app builds
+      all pass.
+
+## 2026-08-12 — Titlebar drag: black window, snap white border, window shake (user feedback)
+- [x] "while dragging the entire window becomes black": the OS caption move
+      loop (`beginSystemMove`, `WM_NCLBUTTONDOWN HTCAPTION`) on a frameless
+      `WS_POPUP|WS_THICKFRAME` window runs a modal loop that arms the resize
+      proxy; the proxy snapshot ALIASED the software renderer's live surface,
+      which `_renderer.resize` then reallocates in place → stale/garbage
+      frames (black). Fixed: `refreshResizeProxyFromScene` now COPIES the
+      renderer surface's pixels into the privately-owned `_resizeSnapshot`
+      instead of aliasing.
+- [x] "drag to top, release, white border appears above then resolves": the OS
+      caption loop triggers aero-snap maximize, which flashes the native
+      (system-light) frame. The demo no longer uses the OS move loop: it now
+      drags owner-side via `onDragStarted`/`onDragMoved` +
+      `GuiWindow.setWindowPosition` (SetWindowPos), so no snap artifacts.
+- [x] "entire window and program shaking while dragging": the owner-driven drag
+      originally mixed Aurora's window-relative pointer positions with screen
+      bounds, so after each SetWindowPos the synthesized WM_MOUSEMOVE in the
+      moved window produced a different absolute position → the window hunted
+      between two spots. Fixed by dragging with the pointer DELTA from the drag
+      start (`windowOrigin + (pointer − startPointer)`); deltas are identical
+      in window-relative and screen space, so the feedback loop closes with
+      zero delta.
+- [x] Verified: titlebar smoke, module unittests, full aurora suite (30
+      modules), demo + aurora-cut builds all pass.
+
+## 2026-08-12 — Titlebar: drag down to exit maximized state (user request)
+- [x] User: "Do you think we could make it possible to click and drag down to
+      enter off the maximized state."
+- [x] `TitleBar` now restores-on-drag: press the title while maximized and
+      drag past the 5px threshold → fires `onRestoreRequested(pointer,
+      pressPointer)`, clears the bar's maximized state, re-anchors the drag to
+      the current pointer/position, and keeps moving. Works for in-canvas
+      (self/owner) drags and native system move (`systemMoveOnDrag`), where the
+      OS move loop is now deferred until real movement when maximized so the
+      owner can restore first.
+- [x] Added `NativeWindow.setWindowPosition(Point)` +
+      `GuiWindow.setWindowPosition` (Win32 `SetWindowPos`; headless/base return
+      false). The demo's `restoreFromDrag` exits fullscreen and re-anchors the
+      window so the grabbed titlebar spot stays under the pointer before the
+      OS move loop resumes.
+- [x] Smoke test covers restore-on-drag for both in-canvas self-move
+      (re-anchor math asserted) and system-move modes; module unittests, full
+      aurora suite, demo + desktop + aurora-cut builds all pass.
+
 ## 2026-08-12 — Titlebar double-click maximize + random white border (user feedback)
 - [x] User: "Double clicking the titlebar does not make it maximize." Root
       cause: in `TitleBar.onMouseDown` the `systemMoveOnDrag` branch ran before

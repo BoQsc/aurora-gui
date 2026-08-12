@@ -5,7 +5,7 @@ import aurora.dragdrop : DragAction, DragActions, DragPayload;
 import aurora.event : Event;
 import aurora.font : FontRenderMode;
 public import aurora.render.base : RendererPreference;
-import aurora.types : CursorKind, DisplayScale, PointF, Rect, Size;
+import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
 
 enum NativeSurfaceKind : ubyte
 {
@@ -128,6 +128,18 @@ abstract class NativeWindow
     bool windowBounds(out Rect bounds)
     {
         bounds = Rect.init;
+        return false;
+    }
+
+    /** Move the top-level window so its outer top-left is at `logicalPosition`. */
+    bool setWindowPosition(Point logicalPosition)
+    {
+        return false;
+    }
+
+    /** Force an immediate synchronous full repaint of the window surface. */
+    bool redrawWindow()
+    {
         return false;
     }
 
