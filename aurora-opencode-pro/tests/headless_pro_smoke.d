@@ -9,6 +9,7 @@ import core.thread : Thread;
 import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
 import std.json : JSONValue;
+import std.conv : to;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : indexOf;
@@ -315,6 +316,56 @@ int main(string[] args)
     assert(root.messageCountForTesting() >= 3,
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
+
+    // Tool outputs start collapsed (a compact header) and expand on click.
+    assert(root.firstToolBubbleCollapsedForTesting(),
+        "Tool result bubble should start collapsed");
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Expanded tool bubble did not repaint");
+    assert(!root.firstToolBubbleCollapsedForTesting(),
+        "Tool result bubble did not expand on toggle");
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Collapsed tool bubble did not repaint");
+    assert(root.firstToolBubbleCollapsedForTesting(),
+        "Tool result bubble did not collapse again");
+    writeln("Tool outputs collapse by default and expand on click");
+
+    // Regression: expanding/collapsing a tool output must NOT snap the scroll
+    // to the bottom. Scroll up, expand, and confirm the offset is preserved.
+    const beforeScroll = root.scrollYForTesting();
+    if (beforeScroll > 0)
+    {
+        root.scrollToForTesting(maxInt(0, beforeScroll / 2));
+        root.tickTree(0.02);
+        assert(driver.paint(), "Scroll-up did not repaint");
+    }
+    const midScroll = root.scrollYForTesting();
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Expand did not repaint after scroll-up");
+    const afterExpandScroll = root.scrollYForTesting();
+    // Allow a tiny clamp drift (the max may shrink), but never a jump to the
+    // bottom when the expanded bubble is above the fold.
+    assert(afterExpandScroll <= midScroll + 4,
+        "Expanding a tool output snapped the scroll down: " ~
+        to!string(midScroll) ~ " -> " ~ to!string(afterExpandScroll));
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Collapse did not repaint after scroll-up");
+    writeln("Tool collapse/expand preserves the scroll position");
+
+    const shotDir = buildPath(tempDir(), "aurora-opencode-collapse-shots");
+    if (!exists(shotDir)) mkdirRecurse(shotDir);
+    window.saveScreenshot(buildPath(shotDir, "tool-collapsed.ppm"));
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Expanded tool bubble did not repaint");
+    window.saveScreenshot(buildPath(shotDir, "tool-expanded.ppm"));
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    writeln("Collapse screenshots: ", shotDir);
 
     root.shutdownClient();
     window.close();

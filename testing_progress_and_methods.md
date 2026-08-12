@@ -1,5 +1,37 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro tool collapse UX (2026-08-12)
+
+A `tool` result bubble is now a single element: a header showing the command
+(`▸ ⚙ name(args)`) that is always visible, with the output below shown only
+when expanded (`▾` when open). Clicking the header toggles the output.
+
+Two fixes shipped:
+1. No scroll jump: the collapse/expand `onSizeChanged` handler no longer sets
+   `_messagesScroll.follow = true`; it only invalidates the column + scroll, so
+   the viewport is preserved when expanding a bubble above the fold.
+2. Command + output unified: `toolArgs` (the command's JSON arguments) is
+   stored on the tool message and persisted, and rendered compactly in the
+   header (`key=value` pairs). The separate tool-call chips were removed from
+   assistant bubbles.
+
+Verify in the Pro smoke test: tool bubbles start collapsed; expand/collapse
+toggles; and a scroll-position regression scrolls up, expands, and asserts the
+offset does not snap to the bottom.
+
+## Aurora OpenCode Pro collapsed tool outputs (2026-08-12)
+
+`tool` role result bubbles start collapsed to a compact header
+(`⚙ <name> · <first line> ▾`) and expand on click. The bubble calls
+`onSizeChanged`, which invalidates the message column and scroll view so the
+content re-measures, the scroll re-follows, and large outputs (e.g. `dir`
+listings) don't blow up the conversation view by default.
+
+Verify in the Pro smoke test: after the read+grep tool loop, the first tool
+bubble is collapsed; `toggleFirstToolBubbleForTesting` expands then collapses
+it with repaint + reflow each way. Screenshots of both states are written to
+`%TEMP%\aurora-opencode-collapse-shots`.
+
 ## Aurora OpenCode Pro dshell advertises only natural words (2026-08-12)
 
 The model sometimes emitted `pwd`/`ls`/`stat` because the dshell tool

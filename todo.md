@@ -1,5 +1,38 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Tool collapse UX: no scroll jump + command/output in one element (user feedback)
+- [x] User: "clicking it scrolls me down to the bottom of chat" and "command
+      and output should be under singular ui element, you click and you see
+      output, click again it hides".
+- [x] Fixed the scroll jump: the `onSizeChanged` handler was forcing
+      `_messagesScroll.follow = true`, which snapped to the bottom on every
+      expand/collapse. It now only invalidates the column + scroll so the
+      viewport is preserved. Regression: scroll up, expand, assert the offset
+      stays put.
+- [x] Reworked the tool result bubble into ONE element: a header showing the
+      command (`▸ ⚙ name(args)`, args parsed from the JSON and compacted) that
+      is always visible, with the output below it shown only when expanded
+      (▸/▾ indicator). Removed the separate tool-call chips from assistant
+      bubbles (the command now lives in the result header). `toolArgs` is
+      persisted so restored sessions render the command too.
+- [x] Verified by Pro smoke test: tool bubbles start collapsed, expand and
+      collapse, and preserve scroll position. Baseline + Pro debug/release
+      builds and all tests pass.
+
+## 2026-08-12 — Collapse tool-use outputs by default, click to expand (user request)
+- [x] Tool result bubbles (`tool` role) now start collapsed: a compact header
+      pill shows "⚙ <name> · <first line of output> ▾" instead of the full
+      (often large) output.
+- [x] Clicking the header expands the full output; clicking again collapses.
+      The bubble fires `onSizeChanged`, the message column re-lays out, and the
+      scroll view re-measures and re-follows, so expanding a big listing
+      doesn't jump the viewport.
+- [x] Collapsed state is per-bubble and not persisted (always starts collapsed
+      on rebuild); restored sessions render collapsed too.
+- [x] Verified by the Pro headless smoke test: tool bubbles start collapsed,
+      toggle open and closed with repaint + reflow. Baseline + Pro debug/release
+      builds and all tests pass.
+
 ## 2026-08-12 — Model still reached for legacy words (pwd/ls/stat); advertise only natural words (user feedback)
 - [x] User asked "where we are now?" and saw `where`, `list`, and `pwd`. The
       `pwd`/`ls`/`stat` were reaching the model because the dshell tool

@@ -156,6 +156,7 @@ public struct ChatMessage
     OpenCodeToolCall[] toolCalls; // assistant replies that invoked tools
     string toolCallId;  // "tool" role results, links back to an assistant call
     string toolName;    // "tool" role results: which tool produced the output
+    string toolArgs;    // "tool" role results: the command's arguments (JSON)
 }
 
 public struct ChatSession

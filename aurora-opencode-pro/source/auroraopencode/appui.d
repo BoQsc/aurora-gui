@@ -162,16 +162,16 @@ private final class MessageBubble : Widget
     private size_t[2] _mdGens;
     private size_t _mdCount;
 
-    // Tool-call chips (assistant bubbles that invoked tools) and the tool role
-    // label for `tool` result messages.
-    private string[] _toolNames;
-    private string[] _toolArgs;
-    private dstring _toolCallsText;
-    private bool _toolCallsDirty = true;
-    private TextLayout _toolCallsLayout;
-    private int _toolCallsWidth = -1;
-    private size_t _toolCallsGen;
+    // Tool result bubbles (`tool` role) are a single element: the header shows
+    // the command (⚙ name(args)) and the output below is collapsible. Clicking
+    // the header toggles the output.
     private string _toolName;
+    private string _toolArgs;
+
+    // Collapse state: tool outputs start hidden behind a compact header.
+    private bool _collapsed = true;
+    private Rect _collapseRect;
+    private bool _collapseHover;
 
     /// Diagnostic: total number of text shapes performed by all bubbles.
     static __gshared size_t shapeCount;
@@ -182,43 +182,46 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Test-only: the bubble role.
+    public string roleForTesting()
+    {
+        return _role;
+    }
+
     void setToolName(string name)
     {
         _toolName = name;
         invalidate();
     }
 
-    void setToolCalls(const OpenCodeToolCall[] calls)
+    void setToolArgs(string args)
     {
-        _toolNames.length = 0;
-        _toolArgs.length = 0;
-        foreach (call; calls)
-        {
-            _toolNames ~= call.name;
-            _toolArgs ~= call.arguments;
-        }
-        _toolCallsDirty = true;
+        _toolArgs = args;
         invalidate();
-    }    private TextLayout shapedToolCalls(int width)
+    }
+
+    void setCollapsed(bool value)
     {
-        if (!_toolCallsDirty && _toolCallsLayout !is null &&
-            _toolCallsWidth == width)
-            return _toolCallsLayout;
-        _toolCallsText.length = 0;
-        foreach (index; 0 .. _toolNames.length)
-        {
-            if (index > 0) _toolCallsText ~= "  ";
-            _toolCallsText ~= "⚙ "d;
-            _toolCallsText ~= toUTF32(_toolNames[index]);
-            const args = _toolArgs[index];
-            if (args.length > 0)
-                _toolCallsText ~= "("d ~ toUTF32(args) ~ ")"d;
-        }
-        _toolCallsLayout = shape(_toolCallsText, width);
-        _toolCallsWidth = width;
-        _toolCallsGen = _contentGen;
-        _toolCallsDirty = false;
-        return _toolCallsLayout;
+        if (_collapsed == value) return;
+        _collapsed = value;
+        if (onSizeChanged !is null) onSizeChanged();
+        invalidate();
+    }
+
+    /// Fired when the bubble's measured size changes (collapse/expand), so the
+    /// message column can re-layout and the scroll view can re-measure.
+    void delegate() onSizeChanged;
+
+    /// Test-only: current collapsed state.
+    public bool collapsedForTesting()
+    {
+        return _collapsed;
+    }
+
+    /// Test-only: toggle the collapsed state like a click would.
+    public void toggleCollapseForTesting()
+    {
+        setCollapsed(!_collapsed);
     }
 
     void setThinking(string value)
@@ -402,9 +405,15 @@ private final class MessageBubble : Widget
         int height = 2 * padV;
         if (_thinking.length > 0)
             height += shapedThinking(innerWidth).measuredSize().height + gap;
-        if (_toolNames.length > 0)
-            height += shapedToolCalls(innerWidth).measuredSize().height + gap;
-        if (_role == "assistant")
+
+        if (_role == "tool")
+        {
+            // Header (command) always; output below when expanded.
+            height += fontPixelSize(1) + 4;
+            if (!_collapsed && _content.length > 0)
+                height += shapedContent(innerWidth).measuredSize().height + gap;
+        }
+        else if (_role == "assistant")
         {
             if (_content.length > 0)
                 height += cast(int) markdownFor(innerWidth).height;
@@ -455,14 +464,6 @@ private final class MessageBubble : Widget
             y += layout.measuredSize().height + gap;
         }
 
-        if (_toolNames.length > 0)
-        {
-            shapedToolCalls(innerWidth);
-            canvas.drawLayout(Point(padH, y), _toolCallsLayout,
-                opencodeAccent);
-            y += _toolCallsLayout.measuredSize().height + gap;
-        }
-
         _copyRects.length = 0;
         _copyLabels.length = 0;
         _linkRects.length = 0;
@@ -470,7 +471,20 @@ private final class MessageBubble : Widget
 
         const contentY = y;
 
-        if (_content.length > 0 || _streaming)
+        if (_role == "tool")
+        {
+            // Always show the command header (⚙ name(args) ▸/▾); the output
+            // below it is shown only when expanded.
+            drawToolHeader(canvas, innerWidth, y);
+            y += fontPixelSize(1) + 4;
+            if (!_collapsed && _content.length > 0)
+            {
+                auto layout = shapedContent(innerWidth);
+                canvas.drawLayout(Point(padH, y), layout, opencodeText);
+                y += layout.measuredSize().height + gap;
+            }
+        }
+        else if (_content.length > 0 || _streaming)
         {
             if (_role == "assistant")
             {
@@ -525,6 +539,59 @@ private final class MessageBubble : Widget
         canvas.drawTextInRect(_actionRect, toUTF32(_actionLabel),
             _actionHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
             HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    /// Header for a tool result: the command (⚙ name(args)) with a ▸/▾ toggle
+    /// indicator. Clicking it shows or hides the output below.
+    private void drawToolHeader(ref Canvas canvas, int innerWidth, int top)
+    {
+        const label = _toolName.length > 0 ? _toolName : "tool";
+        const toggle = _collapsed ? "▸" : "▾";
+        const text = toggle ~ " ⚙ " ~ label ~ toolArgsDisplay();
+        auto layout = canvas.layoutText(toUTF32(text), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
+        const h = layout.measuredSize().height;
+        _collapseRect = Rect(padH, top, maxInt(1, innerWidth), h);
+        canvas.fillRoundedRect(_collapseRect, 4,
+            _collapseHover ? opencodeSelection : opencodeField);
+        canvas.drawLayout(Point(padH, top), layout,
+            _collapseHover ? opencodeText : opencodeMuted);
+    }
+
+    /// Compact display of the command arguments: `(name=value, ...)` for a
+    /// JSON object, otherwise the raw text, truncated.
+    private string toolArgsDisplay()
+    {
+        if (_toolArgs.length == 0) return "";
+        string args = _toolArgs;
+        JSONValue value;
+        try value = parseJSON(args);
+        catch (Exception) value = JSONValue.init;
+        if (value.type == JSONType.object)
+        {
+            string[] parts;
+            foreach (key, entry; value.object)
+            {
+                if (entry.type == JSONType.string)
+                    parts ~= key ~ "=" ~ entry.str;
+                else if (entry.type == JSONType.integer)
+                    parts ~= key ~ "=" ~ to!string(entry.integer);
+                else if (entry.type == JSONType.array)
+                    parts ~= key ~ "=[…]";
+                else
+                    parts ~= key;
+            }
+            string joined;
+            foreach (index, part; parts)
+            {
+                if (index > 0) joined ~= ", ";
+                joined ~= part;
+            }
+            if (joined.length > 50) joined = joined[0 .. 50] ~ "…";
+            return "(" ~ joined ~ ")";
+        }
+        if (args.length > 40) args = args[0 .. 40] ~ "…";
+        return "(" ~ args ~ ")";
     }
 
     private void collectMarkdownTargets(ref MdComposition composition, int contentY)
@@ -599,14 +666,17 @@ private final class MessageBubble : Widget
         }
         const overAction = _actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position);
+        const overCollapse = _role == "tool" && _collapsed &&
+            _collapseRect.contains(event.position);
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
-            overAction != _actionHover)
+            overAction != _actionHover || overCollapse != _collapseHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
             _actionHover = overAction;
-            setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ?
-                CursorKind.hand : CursorKind.arrow);
+            _collapseHover = overCollapse;
+            setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
+                overCollapse ? CursorKind.hand : CursorKind.arrow);
             invalidate();
         }
         return false;
@@ -624,6 +694,11 @@ private final class MessageBubble : Widget
             return false;
         }
         if (event.button != MouseButton.left) return false;
+        if (_role == "tool" && _collapseRect.contains(event.position))
+        {
+            setCollapsed(!_collapsed);
+            return true;
+        }
         if (_actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position))
         {
@@ -650,11 +725,13 @@ private final class MessageBubble : Widget
 
     protected override void onMouseLeave()
     {
-        if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover)
+        if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
+            _collapseHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
+            _collapseHover = false;
             setCursor(CursorKind.arrow);
             invalidate();
         }
@@ -1202,10 +1279,20 @@ public final class OpenCodeRoot : VBox
             auto bubble = new MessageBubble();
             bubble.setRole(message.role);
             bubble.setContent(message.content);
-            if (message.toolCalls.length > 0)
-                bubble.setToolCalls(message.toolCalls);
             if (message.toolName.length > 0)
                 bubble.setToolName(message.toolName);
+            if (message.toolArgs.length > 0)
+                bubble.setToolArgs(message.toolArgs);
+            if (message.role == "tool")
+            {
+                // Expanding/collapsing changes the bubble height; re-measure
+                // the column WITHOUT snapping the scroll to the bottom.
+                bubble.onSizeChanged = delegate()
+                {
+                    _messageColumn.invalidate();
+                    _messagesScroll.invalidate();
+                };
+            }
             if (message.reasoning.length > 0)
                 bubble.setThinking(message.reasoning);
             if (message.time.length > 0)
@@ -1433,7 +1520,6 @@ public final class OpenCodeRoot : VBox
         if (_streamBubble !is null)
         {
             _streamBubble.setStreaming(false);
-            _streamBubble.setToolCalls(message.toolCalls);
             _streamBubble = null;
         }
         markDirty();
@@ -1488,11 +1574,24 @@ public final class OpenCodeRoot : VBox
         if (_current < 0 || _pendingToolCalls.length == 0) return;
         auto session = &_sessions[_current];
 
+        // The command arguments come from the original tool call, matched by
+        // its id, so the result bubble can show the full command.
+        string toolArgs;
+        foreach (call; _pendingToolCalls)
+        {
+            if (call.id == event.toolCallId)
+            {
+                toolArgs = call.arguments;
+                break;
+            }
+        }
+
         ChatMessage toolMessage;
         toolMessage.role = "tool";
         toolMessage.content = event.text;
         toolMessage.toolCallId = event.toolCallId;
         toolMessage.toolName = event.toolName;
+        toolMessage.toolArgs = toolArgs;
         toolMessage.time = currentTimestamp();
         session.messages ~= toolMessage;
 
@@ -1500,8 +1599,16 @@ public final class OpenCodeRoot : VBox
         bubble.setRole("tool");
         bubble.setContent(event.text);
         bubble.setToolName(event.toolName);
+        bubble.setToolArgs(toolArgs);
         if (event.toolFailed)
             bubble.setFailed("");
+        // Expanding/collapsing changes the bubble height; re-measure the
+        // column WITHOUT snapping the scroll to the bottom.
+        bubble.onSizeChanged = delegate()
+        {
+            _messageColumn.invalidate();
+            _messagesScroll.invalidate();
+        };
         _messageColumn.add(bubble);
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
@@ -2164,6 +2271,8 @@ public final class OpenCodeRoot : VBox
                 messageJson["toolCallId"] = message.toolCallId;
             if (message.toolName.length > 0)
                 messageJson["toolName"] = message.toolName;
+            if (message.toolArgs.length > 0)
+                messageJson["toolArgs"] = message.toolArgs;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -2225,6 +2334,8 @@ public final class OpenCodeRoot : VBox
                                         message.toolCallId = f.str;
                                     if (auto f = "toolName" in messageValue.object)
                                         message.toolName = f.str;
+                                    if (auto f = "toolArgs" in messageValue.object)
+                                        message.toolArgs = f.str;
                                     if (auto f = "toolCalls" in messageValue.object)
                                     {
                                         if (f.type == JSONType.array)
@@ -2561,5 +2672,49 @@ public final class OpenCodeRoot : VBox
             ++seen;
         }
         return "";
+    }
+
+    /// Test-only: whether the first `tool` result bubble is currently
+    /// collapsed (tool outputs start collapsed by default).
+    public bool firstToolBubbleCollapsedForTesting()
+    {
+        const children = _messageColumn.children();
+        foreach (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.roleForTesting() != "tool") continue;
+            return bubble.collapsedForTesting();
+        }
+        return false;
+    }
+
+    /// Test-only: the message scroll view's current scroll offset.
+    public int scrollYForTesting()
+    {
+        return _messagesScroll.scrollY();
+    }
+
+    /// Test-only: scroll the message view to a specific offset.
+    public void scrollToForTesting(int value)
+    {
+        _messagesScroll.setScrollY(value);
+    }
+
+    /// Test-only: expand (or collapse) the first `tool` result bubble and
+    /// reflow the scroll view, exactly as a click would.
+    public void toggleFirstToolBubbleForTesting()
+    {
+        const children = _messageColumn.children();
+        foreach (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.roleForTesting() != "tool") continue;
+            bubble.toggleCollapseForTesting();
+            _messageColumn.invalidate();
+            _messagesScroll.invalidate();
+            return;
+        }
     }
 }
