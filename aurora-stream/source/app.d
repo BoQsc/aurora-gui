@@ -1,7 +1,7 @@
 module app;
 
 import aurora;
-import aurorastream.appversion : appDisplayName;
+import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audiobridge : AudioBridgeSession, runAudioBridgeHelper;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
@@ -176,7 +176,7 @@ int main(string[] arguments)
     if (arguments.length > 1 &&
         (arguments[1] == "--version" || arguments[1] == "-v"))
     {
-        writeln(appDisplayName);
+        writeln(appFullVersion);
         return 0;
     }
     if (arguments.length > 1 && arguments[1] == "--list-audio-endpoints-json")

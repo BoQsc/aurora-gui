@@ -1,7 +1,7 @@
 module app_titlebar;
 
 import aurora;
-import aurorastream.appversion : appDisplayName;
+import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audiobridge : runAudioBridgeHelper;
 import aurorastream.entry : applicationIconPath, printAudioEndpointsJson,
     recordStartupFailure, runAudioBridgeSessionTest;
@@ -228,7 +228,7 @@ int main(string[] arguments)
     if (arguments.length > 1 &&
         (arguments[1] == "--version" || arguments[1] == "-v"))
     {
-        writeln(appDisplayName);
+        writeln(appFullVersion);
         return 0;
     }
     if (arguments.length > 1 && arguments[1] == "--list-audio-endpoints-json")

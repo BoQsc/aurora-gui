@@ -23,6 +23,9 @@ jobs:
       - name: Enforce Windows GUI-subsystem policy
         run: python -X utf8 scripts/verify-windows-gui-subsystem.py
 
+      - name: Enforce single-source version policy
+        run: python -X utf8 scripts/version.py check
+
       - name: Build and verify portable executables
         run: python -X utf8 scripts/build-portable-windows.py --compiler dmd
 

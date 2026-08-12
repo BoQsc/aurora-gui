@@ -4,7 +4,7 @@
   "authors": [
     "OpenAI"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "copyright": "Copyright © 2026 OpenAI",
   "license": "BSL-1.0",
   "targetType": "executable",
   "targetName": "aurora-cut",
@@ -27,6 +27,9 @@
   "lflags-windows": [
     "/SUBSYSTEM:WINDOWS",
     "/ENTRY:mainCRTStartup"
+  ],
+  "preBuildCommands-windows": [
+    "python scripts\\version.py sync --program aurora-cut"
   ],
   "buildTypes": {
     "portable-release": {
@@ -54,5 +57,5 @@
     "QuartzCore",
     "-lobjc"
   ],
-  "version": "0.13.5"
+  "version": "0.60.0"
 }

@@ -1,7 +1,7 @@
 module app;
 
 import aurora;
-import auroracut.appversion : appDisplayName, appVersion;
+import auroracut.appversion : appDisplayName, appFullVersion, appVersion;
 import auroracut.editor : EditorRoot;
 import auroracut.util : appLog;
 import std.file : append, exists, thisExePath;
@@ -129,7 +129,7 @@ int main(string[] arguments)
                     freopen("CONIN$", "r", stdin);
                 }
             }
-            writeln(appDisplayName);
+            writeln(appFullVersion);
             return 0;
         }
     }
