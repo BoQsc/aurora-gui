@@ -20,22 +20,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mingw-w64 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-            pkg-config-mingw-w64-x86-64 nasm make cmake wget git wine64
+            pkg-config-mingw-w64-x86-64 nasm make cmake wget git wine wine64
           python3 -m pip install --user --break-system-packages meson ninja
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build minimal static ffmpeg/ffprobe
-        run: |
-          export WINE=wine64
-          bash scripts/build-minimal-ffmpeg-win64.sh
+        run: bash scripts/build-minimal-ffmpeg-win64.sh
 
       - name: Verify encoder/decoder/filter inventory
         run: |
           export WINEDEBUG=-all
-          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -version
-          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -encoders
-          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -decoders
-          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
+          if command -v wine64 >/dev/null 2>&1; then WINE=wine64; else WINE=wine; fi
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -version
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -encoders
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -decoders
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
 
       - name: Upload minimal ffmpeg
         uses: actions/upload-artifact@v7

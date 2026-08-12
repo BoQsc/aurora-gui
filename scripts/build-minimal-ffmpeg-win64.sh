@@ -216,6 +216,11 @@ du -h "$dist/bin/ffmpeg.exe" "$dist/bin/ffprobe.exe"
 echo "::endgroup::"
 
 # ---- smoke test under wine (opt-in) -----------------------------------------
+if [ -z "${WINE:-}" ]; then
+  if command -v wine64 >/dev/null 2>&1; then WINE=wine64
+  elif command -v wine >/dev/null 2>&1; then WINE=wine
+  fi
+fi
 if [ -n "${WINE:-}" ]; then
   echo "::group::smoke test"
   out="$work/smoke"
@@ -245,5 +250,5 @@ if [ -n "${WINE:-}" ]; then
   echo "smoke test passed"
   echo "::endgroup::"
 else
-  echo "Set WINE=<wine64> to run the smoke test."
+  echo "Set WINE=<wine> to run the smoke test."
 fi
