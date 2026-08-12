@@ -153,9 +153,31 @@ int main(string[] args)
     assert(driver.paint(), "Code bubble did not paint");
     writeln("Pro markdown bubble painted");
 
+    // Chat quality: edit & resend truncates the conversation at the user
+    // message and prefills the input.
+    root.editAndResendForTesting(0);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Edit & resend did not repaint");
+    assert(root.messageCountForTesting() == 0,
+        "Edit & resend did not truncate at the user message");
+    assert(root.inputTextForTesting() == "Hello",
+        "Edit & resend did not prefill the input");
+    writeln("Edit & resend prefilled input: ", root.inputTextForTesting());
+
+    // Chat quality: regenerate removes the last assistant reply.
+    root.addConversationForTesting(
+        ["assistant"], ["A reply that will be regenerated."]);
+    assert(driver.paint(), "Regenerate prep did not repaint");
+    assert(root.prepareRegenerateForTesting(),
+        "Regenerate was not offered after an assistant reply");
+    assert(root.messageCountForTesting() == 0,
+        "Regenerate did not remove the assistant reply");
+    writeln("Regenerate removed the last assistant reply");
+
     root.shutdownClient();
     window.close();
-    rmdirRecurse(stateDir);
+    try rmdirRecurse(stateDir);
+    catch (Exception) {}
     writeln("Aurora OpenCode Pro headless smoke test passed.");
     return 0;
 }

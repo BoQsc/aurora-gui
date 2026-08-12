@@ -89,6 +89,7 @@ public struct ChatMessage
     string content;
     string reasoning;
     string time;       // "HH:MM" local wall-clock, empty when unknown
+    bool failed;       // assistant reply that ended in an error
 }
 
 public struct ChatSession

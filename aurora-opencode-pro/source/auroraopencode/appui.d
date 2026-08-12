@@ -119,6 +119,14 @@ private final class MessageBubble : Widget
     private string _time;
     private string _usageText;
 
+    // Chat-quality actions (Pro): regenerate/retry the last reply, edit &
+    // resend a user message.
+    private string _actionLabel;
+    private void delegate() _actionCallback;
+    private Rect _actionRect;
+    private bool _actionHover;
+    void delegate() onEditRequested;
+
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
     private int _hoverLink = -1;
@@ -208,6 +216,13 @@ private final class MessageBubble : Widget
     {
         if (_usageText == value) return;
         _usageText = value;
+        invalidate();
+    }
+
+    void setAction(string label, void delegate() callback)
+    {
+        _actionLabel = label;
+        _actionCallback = callback;
         invalidate();
     }
 
@@ -327,7 +342,7 @@ private final class MessageBubble : Widget
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
-        if (_time.length > 0 || _usageText.length > 0)
+        if (_time.length > 0 || _usageText.length > 0 || _actionLabel.length > 0)
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
@@ -405,7 +420,23 @@ private final class MessageBubble : Widget
             drawCopyPill(canvas, _copyRects[index],
                 _hoverCopy == cast(int) index);
         }
+        drawActionPill(canvas, width, height);
         drawFooter(canvas, width, height);
+    }
+
+    private void drawActionPill(ref Canvas canvas, int width, int height)
+    {
+        _actionRect = Rect.init;
+        if (_actionLabel.length == 0 || _actionCallback is null) return;
+        auto labelLayout = canvas.layoutText(toUTF32(_actionLabel), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont, 200, false);
+        const aw = maxInt(52, cast(int) labelLayout.width + 18);
+        _actionRect = Rect(padH, height - padV - 19, aw, 18);
+        canvas.fillRoundedRect(_actionRect, 9,
+            _actionHover ? opencodeAccent.withAlpha(150) : opencodeBorder);
+        canvas.drawTextInRect(_actionRect, toUTF32(_actionLabel),
+            _actionHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
     private void collectMarkdownTargets(ref MdComposition composition, int contentY)
@@ -477,11 +508,15 @@ private final class MessageBubble : Widget
                 break;
             }
         }
-        if (nextCopy != _hoverCopy || nextLink != _hoverLink)
+        const overAction = _actionLabel.length > 0 && _actionCallback !is null &&
+            _actionRect.contains(event.position);
+        if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
+            overAction != _actionHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
-            setCursor(nextCopy >= 0 || nextLink >= 0 ?
+            _actionHover = overAction;
+            setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ?
                 CursorKind.hand : CursorKind.arrow);
             invalidate();
         }
@@ -490,7 +525,22 @@ private final class MessageBubble : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        if (event.button == MouseButton.right)
+        {
+            if (onEditRequested !is null)
+            {
+                onEditRequested();
+                return true;
+            }
+            return false;
+        }
         if (event.button != MouseButton.left) return false;
+        if (_actionLabel.length > 0 && _actionCallback !is null &&
+            _actionRect.contains(event.position))
+        {
+            _actionCallback();
+            return true;
+        }
         if (_hoverCopy >= 0 && _hoverCopy < cast(int) _copyRects.length)
         {
             const text = _copyLabels[_hoverCopy];
@@ -511,10 +561,11 @@ private final class MessageBubble : Widget
 
     protected override void onMouseLeave()
     {
-        if (_hoverCopy != -1 || _hoverLink != -1)
+        if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
+            _actionHover = false;
             setCursor(CursorKind.arrow);
             invalidate();
         }
@@ -812,7 +863,7 @@ public final class OpenCodeRoot : VBox
         _messageColumn.clearChildren();
         if (_current < 0) return;
         const session = &_sessions[_current];
-        foreach (message; session.messages)
+        foreach (index, message; session.messages)
         {
             auto bubble = new MessageBubble();
             bubble.setRole(message.role);
@@ -821,6 +872,20 @@ public final class OpenCodeRoot : VBox
                 bubble.setThinking(message.reasoning);
             if (message.time.length > 0)
                 bubble.setTime(message.time);
+            if (message.failed)
+                bubble.setFailed("");
+            if (index == session.messages.length - 1)
+            {
+                if (message.role == "assistant")
+                    bubble.setAction(message.failed ? "Retry" : "Regenerate",
+                        delegate() { regenerateLastReply(); });
+                else
+                    bubble.setAction("Edit & resend",
+                        delegate() { editAndResend(_current, cast(int) index); });
+            }
+            if (message.role == "user")
+                bubble.onEditRequested =
+                    delegate() { editAndResend(_current, cast(int) index); };
             _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
@@ -920,6 +985,7 @@ public final class OpenCodeRoot : VBox
         auto message = &session.messages[$ - 1];
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error: " ~ error;
+        message.failed = true;
         if (_streamBubble is null)
         {
             _streamBubble = new MessageBubble();
@@ -965,7 +1031,16 @@ public final class OpenCodeRoot : VBox
         session.messages ~= userMessage;
         addUserBubble(text);
         _input.setText("");
+        markDirty();
+        startChatRequest(_current);
+    }
 
+    /// Start the streaming request for the current session history.
+    private void startChatRequest(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
         string[] roles;
         string[] contents;
         foreach (message; session.messages)
@@ -973,14 +1048,55 @@ public final class OpenCodeRoot : VBox
             roles ~= message.role;
             contents ~= message.content;
         }
-
         _client.startChat(roles, contents, _settings.model, _settings.thinking);
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
-        markDirty();
         updateStatus("Generating…");
         updateSendButton();
+    }
+
+    /// Regenerate the last assistant reply (or retry it when it failed).
+    private void regenerateLastReply()
+    {
+        if (!prepareRegenerate()) return;
+        startChatRequest(_current);
+    }
+
+    /// Remove the last assistant reply so its history is ready to re-run.
+    /// Returns false when there is nothing to regenerate.
+    private bool prepareRegenerate()
+    {
+        if (_client.busy()) return false;
+        if (_current < 0) return false;
+        auto session = &_sessions[_current];
+        if (session.messages.length == 0) return false;
+        if (session.messages[$ - 1].role != "assistant") return false;
+        session.messages = session.messages[0 .. $ - 1];
+        _streamBubble = null;
+        rebuildMessageColumn();
+        return true;
+    }
+
+    /// Edit-and-resend a user message: truncate the conversation at that
+    /// message and prefill the input with its text.
+    private void editAndResend(int sessionIndex, int messageIndex)
+    {
+        if (_client.busy()) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
+            return;
+        const message = session.messages[messageIndex];
+        if (message.role != "user") return;
+        session.messages = session.messages[0 .. messageIndex];
+        _streamBubble = null;
+        rebuildMessageColumn();
+        _input.setText(message.content);
+        _input.requestFocus();
+        markDirty();
+        updateStatus("Editing — press Send to re-send.");
     }
 
     // -- model picker -----------------------------------------------------
@@ -1355,6 +1471,8 @@ public final class OpenCodeRoot : VBox
                 messageJson["reasoning"] = message.reasoning;
             if (message.time.length > 0)
                 messageJson["time"] = message.time;
+            if (message.failed)
+                messageJson["failed"] = true;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -1401,6 +1519,8 @@ public final class OpenCodeRoot : VBox
                                         message.reasoning = f.str;
                                     if (auto f = "time" in messageValue.object)
                                         message.time = f.str;
+                                    if (auto f = "failed" in messageValue.object)
+                                        message.failed = f.type == JSONType.true_;
                                     session.messages ~= message;
                                 }
                             }
@@ -1534,5 +1654,32 @@ public final class OpenCodeRoot : VBox
     public size_t bubbleShapeCountForTesting() const
     {
         return MessageBubble.shapeCount;
+    }
+
+    /// Test-only: message count of the current session.
+    public int messageCountForTesting()
+    {
+        if (_current < 0) return 0;
+        return cast(int) _sessions[_current].messages.length;
+    }
+
+    /// Test-only: current input text.
+    public string inputTextForTesting()
+    {
+        return _input.textUtf8();
+    }
+
+    /// Test-only: edit-and-resend the user message at `index` in the current
+    /// session.
+    public void editAndResendForTesting(int index)
+    {
+        editAndResend(_current, index);
+    }
+
+    /// Test-only: true when the last assistant reply was removed in
+    /// preparation for a regenerate.
+    public bool prepareRegenerateForTesting()
+    {
+        return prepareRegenerate();
     }
 }

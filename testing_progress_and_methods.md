@@ -1,5 +1,20 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro chat-quality actions (2026-08-12)
+
+Pro-only chat quality (implemented in `aurora-opencode-pro/appui.d`, shared
+`ChatMessage.failed` flag in core):
+
+- **Regenerate / Retry** — the last assistant bubble shows a footer pill. It
+  drops the last assistant reply and re-runs the request with the remaining
+  history; labelled "Retry" when that reply failed.
+- **Edit & resend** — a user bubble's footer pill (and right-click on any user
+  bubble) truncates the conversation at that message and prefills the input so
+  the edited text can be re-sent.
+
+Covered by `headless_pro_smoke.d`: `editAndResendForTesting` truncates and
+prefills, and `prepareRegenerateForTesting` removes the last assistant reply.
+
 ## Aurora OpenCode real API integration (2026-08-12)
 
 The clients now talk to the **real opencode API** (`https://opencode.ai/zen/go/v1`,

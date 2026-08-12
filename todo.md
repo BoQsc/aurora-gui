@@ -1,5 +1,14 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Aurora OpenCode Pro chat-quality actions
+- [x] Regenerate/Retry: the last assistant bubble drops the reply and re-runs
+      the request with the remaining history ("Retry" when it failed).
+- [x] Edit & resend: user bubbles (footer pill or right-click) truncate the
+      conversation at that message and prefill the input.
+- [x] `ChatMessage.failed` persisted; shutdown-induced request cancellations
+      are no longer logged as errors. Covered by the pro smoke test; baseline +
+      Pro release builds pass.
+
 ## 2026-08-12 — Aurora OpenCode must use the real opencode API, not the demo
 - [x] Clarified that `opencode-api.boqsc.eu` is only a test/demo web client;
       the real backend is the opencode API itself (`https://opencode.ai`).

@@ -253,6 +253,15 @@ final class OpenCodeClient
         _pending.length = 0;
     }
 
+    /// True when the client is being cancelled or closed, so in-flight request
+    /// failures are expected shutdown artifacts rather than reportable errors.
+    bool shuttingDown()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _cancel || _sessionClosed;
+    }
+
     private void pushEvent(OpenCodeEvent event)
     {
         _mutex.lock();
@@ -433,7 +442,9 @@ final class OpenCodeClient
         }
         catch (Exception error)
         {
-            logError("chat request failed: " ~ error.msg ~ " [" ~ _baseUrl ~ "]");
+            if (!shuttingDown())
+                logError("chat request failed: " ~ error.msg ~ " [" ~
+                    _baseUrl ~ "]");
             _mutex.lock();
             const cancelNow = _cancel;
             _mutex.unlock();
@@ -508,7 +519,9 @@ final class OpenCodeClient
         }
         catch (Exception error)
         {
-            logError("models request failed: " ~ error.msg ~ " [" ~ _baseUrl ~ "]");
+            if (!shuttingDown())
+                logError("models request failed: " ~ error.msg ~ " [" ~
+                    _baseUrl ~ "]");
             pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
     }
