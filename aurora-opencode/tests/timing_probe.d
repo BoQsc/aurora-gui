@@ -86,7 +86,7 @@ void measureChat(OpenCodeClient client, string label)
 
 int main()
 {
-    const baseUrl = "https://opencode-api.boqsc.eu/go/v1";
+    const baseUrl = "https://opencode.ai/zen/go/v1";
     const key = readKey();
     if (key.length == 0)
     {
