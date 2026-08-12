@@ -42,6 +42,8 @@ interface WidgetHost
     void updateCursor(CursorKind cursor);
     void bringToFront(Widget widget);
     void closeHostWindow();
+    /** Start the platform's native top-level window move loop, if supported. */
+    bool beginSystemMove();
     /** Synchronize the active retained scrollbar with the native window host. */
     void synchronizeVerticalScrollInfo(Widget source, int position, int maximum,
         int pageSize);
@@ -405,6 +407,15 @@ abstract class Widget
     {
         if (_host !is null)
             _host.closeHostWindow();
+    }
+
+    /**
+     * Start the operating-system window move loop through the host. Returns
+     * false when the host has no native move support (for example headless).
+     */
+    bool beginSystemMove()
+    {
+        return _host is null ? false : _host.beginSystemMove();
     }
 
     /**

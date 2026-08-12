@@ -184,6 +184,31 @@
       ]
     },
     {
+      "name": "titlebar",
+      "targetType": "executable",
+      "targetName": "aurora-titlebar",
+      "mainSourceFile": "demos/titlebar.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
       "name": "font-gallery",
       "targetType": "executable",
       "targetName": "aurora-font-gallery",

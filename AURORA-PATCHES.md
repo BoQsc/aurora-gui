@@ -23,6 +23,39 @@
   and `aurora-opencode-pro/dub.json`.
 - Console-subsystem CLI/tests stay console so their stdout still works.
 
+## Aurora frameless-window white frame border
+
+Frameless resizable Aurora windows are created as `WS_POPUP | WS_THICKFRAME`
+(WS_THICKFRAME is required for native borderless resize). DWM therefore draws a
+1px frame around the window, and because `applyDarkTitleBar` was only invoked
+for decorated windows, that frame used the **system-light** border color
+(white on light themes). It repainted on every activation change
+(`WM_NCACTIVATE`), producing a random-looking white border / blink around the
+window on click-focus.
+
+- `aurora.platform.win32` now applies the dark DWM frame attributes
+  (`DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_BORDER_COLOR`, `DWMWA_CAPTION_COLOR`,
+  `DWMWA_TEXT_COLOR`) whenever `darkTitleBar` is set **or** the window is
+  frameless, so the border is a stable dark color instead of the light frame.
+- `WM_NCACTIVATE` returns `TRUE` for frameless windows, telling DWM not to
+  repaint the frame on activation changes (the Aurora surface paints
+  active/inactive state itself).
+
+## Aurora custom TitleBar widget
+
+- Added `aurora.widgets.titlebar` with the fully customizable `TitleBar`
+  widget: title/icon/title-align, per-button caption controls (minimize /
+  maximize / close, each showable independently), drag (in-canvas self-move,
+  owner `onDragMoved`, or native OS move), double-click maximize, right-click
+  system menu, custom content widget slot, and full color control. Exported
+  from `aurora.package`.
+- `aurora.widget.WidgetHost` gained `bool beginSystemMove()` and
+  `Widget.beginSystemMove()` so a titlebar in a frameless window can start the
+  OS move loop; `GuiWindow` now exposes it as an `override`.
+- Demo: `demos/titlebar.d` (`dub build --config=titlebar`), launcher
+  `RUN-AURORA-D-TITLEBAR.cmd`.
+- Headless coverage: `tests/titlebar_smoke.d` in the aurora-gui app.
+
 ## Aurora Cut 0.13.3 title-layer opacity
 
 - Title opacity is now represented explicitly as final layer opacity.

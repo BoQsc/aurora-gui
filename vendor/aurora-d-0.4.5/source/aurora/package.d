@@ -48,4 +48,5 @@ public import aurora.widgets.scrollbar;
 public import aurora.widgets.startmenu;
 public import aurora.widgets.splitpane;
 public import aurora.widgets.texteditor;
+public import aurora.widgets.titlebar;
 public import aurora.window;

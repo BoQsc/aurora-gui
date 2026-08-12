@@ -985,7 +985,12 @@ else version (Windows)
                 throw new Exception("Aurora could not create a Win32 window.");
             if (options.extendedScrollInput)
                 initializeExtendedScrollInput();
-            if (options.decorated && options.darkTitleBar)
+            // Frameless resizable windows carry WS_THICKFRAME so DWM would
+            // otherwise draw the system-light 1px frame (white on light
+            // themes) around them. Apply the same dark frame styling as a
+            // decorated dark title bar so the border is stable and matches the
+            // Aurora surface instead of flashing on activation changes.
+            if (options.darkTitleBar || !options.decorated)
                 applyDarkTitleBar(_hwnd);
 
             const creationDpi = _dpi;
@@ -1574,6 +1579,14 @@ else version (Windows)
                         }
                         return result;
                     }
+                    break;
+                case WM_NCACTIVATE:
+                    // The Aurora surface paints active/inactive state itself.
+                    // Prevent DefWindowProc from repainting the DWM frame on
+                    // every activation change, which flashed the default
+                    // (system-light) border around frameless windows.
+                    if (!options.decorated)
+                        return TRUE;
                     break;
                 case WM_NCHITTEST:
                     if (!options.decorated && options.resizable && !_fullscreen)

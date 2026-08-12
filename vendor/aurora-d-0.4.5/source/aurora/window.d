@@ -313,7 +313,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         _native.close();
     }
 
-    bool beginSystemMove()
+    override bool beginSystemMove()
     {
         return _native !is null && _native.beginSystemMove();
     }

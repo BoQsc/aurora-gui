@@ -1,5 +1,27 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Titlebar double-click maximize + random white border (user feedback)
+- [x] User: "Double clicking the titlebar does not make it maximize." Root
+      cause: in `TitleBar.onMouseDown` the `systemMoveOnDrag` branch ran before
+      the double-click branch, so the second press of a double-click started
+      another native move loop instead of maximizing. Reordered (double-click
+      wins) and dropped the stale logical capture around `beginSystemMove`
+      (the OS caption loop owns capture and swallows the mouse-up). Regression
+      test added: double-click still maximizes/restores with
+      `systemMoveOnDrag` enabled.
+- [x] User: "we have some weird stuff where a white rectangular border
+      surrounds the window randomly… appears when I click and it gains focus…
+      sometimes gets stuck… random white border blink." Root cause: frameless
+      resizable windows are `WS_POPUP | WS_THICKFRAME`; DWM draws a 1px frame
+      which was styled with the system-LIGHT theme (white) because
+      `applyDarkTitleBar` only ran for decorated windows, and it repainted on
+      activation changes. Fixed in `aurora.platform.win32`: apply the dark DWM
+      frame attributes whenever `darkTitleBar` is set or the window is
+      frameless, and return `TRUE` from `WM_NCACTIVATE` for frameless windows
+      so DWM never repaints the frame on activation changes.
+- [x] All verification passes: titlebar smoke, module unittests, full aurora
+      suite (30 modules), demo + aurora-cut builds.
+
 ## 2026-08-12 — Native tools are the main; Legacy tools moved to Settings with tooltip (user request)
 - [x] User: "Let's have Tools named as Legacy Tools and move into settings as
       separate option in the settings with a tooltip. Native tools are the

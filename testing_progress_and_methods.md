@@ -1,5 +1,32 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Titlebar fixes: double-click maximize + white frame border (2026-08-12)
+
+Two user-reported issues with the frameless TitleBar demo:
+
+1. **Double-click did not maximize.** `TitleBar.onMouseDown` checked the
+   `systemMoveOnDrag` branch before the double-click branch, so the second
+   press of a double-click (clickCount >= 2) started another native move loop
+   instead of maximizing. Fix: double-click branch now runs first. Also removed
+   the `captureMouse()` before `beginSystemMove()` — the OS caption-drag loop
+   owns capture and swallows the mouse-up, so the logical capture leaked.
+   Covered by a smoke-test regression: with `setSystemMoveOnDrag(true)`, a
+   double-click still maximizes and restores.
+
+2. **Random white border / blink around the frameless window.** Frameless
+   resizable windows are `WS_POPUP | WS_THICKFRAME`; DWM draws a 1px frame
+   that was left at the system-LIGHT color (white) because `applyDarkTitleBar`
+   only ran for `decorated` windows, and DWM repainted it on every activation
+   change. Fix in `aurora.platform.win32`: apply the dark DWM frame attributes
+   (`DWMWA_USE_IMMERSIVE_DARK_MODE`, `DWMWA_BORDER_COLOR`,
+   `DWMWA_CAPTION_COLOR`, `DWMWA_TEXT_COLOR`) whenever `darkTitleBar` is set or
+   the window is frameless, and return `TRUE` from `WM_NCACTIVATE` for
+   frameless windows so DWM never repaints the frame on focus changes.
+
+Verify: click/focus the demo window repeatedly and watch the border stay dark
+and stable; double-click the titlebar to toggle fullscreen both ways. Headless
+coverage = `tests/titlebar_smoke.d` double-click-with-system-move regression.
+
 ## Aurora OpenCode Pro native tools main; Legacy tools in Settings (2026-08-12)
 
 The toolbar has one "Tools" checkbox (native D tools), on by default. The
