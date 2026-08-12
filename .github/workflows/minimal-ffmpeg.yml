@@ -40,6 +40,8 @@ jobs:
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -encoders
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -decoders
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -protocols
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -devices
 
       - name: Upload minimal ffmpeg
         uses: actions/upload-artifact@v7

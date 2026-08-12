@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Build a minimal static ffmpeg.exe + ffprobe.exe for Windows x64, containing
-# only the codecs/filters Aurora Cut actually uses. Runs on a Linux host and
-# cross-compiles for x86_64-w64-mingw32.
+# only the codecs/filters/devices both Aurora apps use. Runs on a Linux host
+# and cross-compiles for x86_64-w64-mingw32.
+#
+# Covers TWO surfaces from the same binary:
+# - aurora-cut: import/playback/composite/export (mp4+mp3), lavfi color/
+#   anullsrc/testsrc2, d3d11va/dxva2 decode, nvenc/qsv/amf + libx264 encode.
+# - aurora-stream: ddagrab/gdigrab/dshow capture, rawvideo+pipe:0 canvas,
+#   sdp+udp/rtp audio input, flv+fifo muxing to rtmp/rtmps (schannel TLS),
+#   settb/asetpts/hwdownload filters.
 #
 # Requires: mingw-w64, nasm, pkg-config-mingw-w64-x86-64, make, cmake, wget,
 # git, python3 + meson + ninja. Set WINE=<runner> to also smoke-test the result.
@@ -175,18 +182,19 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --target-os=mingw32 --arch=x86_64 \
       --cross-prefix="$cross-" --enable-cross-compile \
       --disable-doc --disable-debug \
-      --disable-network --disable-everything \
+      --disable-everything \
       --enable-gpl \
       --enable-static --disable-shared --enable-small \
       --enable-avcodec --enable-avformat --enable-avfilter \
       --enable-avdevice --enable-swscale --enable-swresample \
-      --enable-protocol=file,pipe \
+      --enable-schannel \
+      --enable-protocol=file,pipe,udp,rtp,rtmp,rtmps \
       --enable-libx264 --enable-libmp3lame --enable-libdav1d \
       --enable-zlib --enable-nvenc --enable-amf --enable-libvpl \
       --enable-hwaccel=d3d11va,dxva2 \
-      --enable-indev=lavfi \
-      --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
-      --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null \
+      --enable-indev=lavfi,dshow,gdigrab,ddagrab \
+      --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo,sdp \
+      --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null,flv,fifo \
       --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores,wrapped_avframe,rawvideo \
       --enable-decoder=png,mjpeg,webp,bmp,gif \
       --enable-decoder=aac,mp3,flac,vorbis,opus,ac3,eac3 \
@@ -198,7 +206,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=color,anullsrc,testsrc2,sine,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
-      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
+      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload \
       --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
       --extra-libs="-lstdc++ -lws2_32 -lpthread"; then
