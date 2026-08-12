@@ -122,6 +122,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --cross-prefix="$cross-" --enable-cross-compile \
       --disable-doc --disable-debug --disable-avdevice \
       --disable-network --disable-everything \
+      --enable-gpl \
       --enable-static --disable-shared --enable-small \
       --enable-avcodec --enable-avformat --enable-avfilter \
       --enable-swscale --enable-swresample \
