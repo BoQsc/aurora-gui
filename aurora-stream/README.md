@@ -1,4 +1,4 @@
-# Aurora Stream 0.4.9
+# Aurora Stream 0.60.0
 
 Aurora Stream is a separate side project inside the Aurora Cut archive. It does **not** import Aurora Cut's editor, timeline, preview, model, or export code. Its only shared component is the vendored Aurora-D graphics and GUI library at:
 

@@ -1,5 +1,5 @@
 @echo off
-echo Aurora Cut 0.13.5
+echo Aurora Cut 0.60.0
 setlocal
 set "AURORA_RENDERER=software"
 echo Starting Aurora Cut with the software renderer...

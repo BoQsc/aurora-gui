@@ -22,6 +22,8 @@ from pathlib import Path
 
 PROGRAMS = {
     # name -> (repo-relative dub.json, repo-relative VERSION.txt, repo-relative appversion.d, appName)
+    # Programs without an appversion.d/VERSION.txt (None) only carry their
+    # version in the DUB manifest; sync/check just report them.
     "aurora-cut": (
         "dub.json",
         "VERSION.txt",
@@ -33,6 +35,25 @@ PROGRAMS = {
         "aurora-stream/VERSION.txt",
         "aurora-stream/source/aurorastream/appversion.d",
         "Aurora Stream",
+    ),
+    "aurora-opencode": ("aurora-opencode/dub.json", None, None, "Aurora OpenCode"),
+    "aurora-opencode-pro": (
+        "aurora-opencode-pro/dub.json",
+        None,
+        None,
+        "Aurora OpenCode Pro",
+    ),
+    "aurora-opencode-core": (
+        "aurora-opencode-core/dub.json",
+        None,
+        None,
+        "Aurora OpenCode Core",
+    ),
+    "aurora-image-viewer": (
+        "aurora-image-viewer/dub.json",
+        None,
+        None,
+        "Aurora Image Viewer",
     ),
 }
 
@@ -87,6 +108,10 @@ def sync_program(repo: Path, name: str, release: bool) -> bool:
     version = read_version(recipe_path)
     build_id = "dev" if not release else git_short_head(repo)
 
+    if version_rel is None or appversion_rel is None:
+        print(f"{name}: {version} (no derived version files)")
+        return True
+
     version_path = repo / version_rel
     appversion_path = repo / appversion_rel
 
@@ -113,6 +138,10 @@ def check_program(repo: Path, name: str) -> bool:
     recipe_path = repo / recipe_rel
     version = read_version(recipe_path)
 
+    if version_rel is None or appversion_rel is None:
+        print(f"{name}: version {version} (manifest only)")
+        return True
+
     version_path = repo / version_rel
     appversion_path = repo / appversion_rel
 
@@ -132,13 +161,20 @@ def check_program(repo: Path, name: str) -> bool:
 def bump_program(repo: Path, name: str, new_version: str) -> bool:
     recipe_rel, _, _, _ = PROGRAMS[name]
     recipe_path = repo / recipe_rel
-    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
-    recipe["version"] = new_version
-    recipe_path.write_text(
-        json.dumps(recipe, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    # Update the version textually to preserve the manifest's formatting.
+    text = recipe_path.read_text(encoding="utf-8")
+    import re as _re
+
+    new_text, count = _re.subn(
+        r'("version"\s*:\s*")[^"]*(")', rf"\g<1>{new_version}\g<2>", text, count=1
     )
-    print(f"{name}: bumped dub.json version to {new_version}")
+    if count != 1:
+        raise SystemExit(f"{recipe_path}: could not locate the version field")
+    if new_text != text:
+        recipe_path.write_text(new_text, encoding="utf-8")
+        print(f"{name}: bumped dub.json version to {new_version}")
+    else:
+        print(f"{name}: already at {new_version}")
     sync_program(repo, name, False)
     return True
 

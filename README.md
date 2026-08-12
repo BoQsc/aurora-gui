@@ -1,4 +1,4 @@
-# Aurora Cut 0.13.5
+# Aurora Cut 0.60.0
 
 Aurora Cut is a lightweight multi-track MP4/MP3 editor written in D with the supplied Aurora-D 0.4.5 graphics library and FFmpeg. Aurora draws the desktop interface and RGB timeline monitor. FFmpeg supplies probing, decoding, live composition, effects, audio mixing, and final encoding.
 

@@ -1,5 +1,5 @@
 @echo off
-echo Aurora Stream 0.4.9 (custom titlebar)
+echo Aurora Stream 0.60.0 (custom titlebar)
 setlocal
 pushd "%~dp0" >nul
 set "code=0"

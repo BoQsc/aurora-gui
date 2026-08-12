@@ -1,5 +1,5 @@
 @echo off
-echo Aurora Cut 0.13.5
+echo Aurora Cut 0.60.0
 setlocal
 pushd "%~dp0" >nul
 set "code=0"

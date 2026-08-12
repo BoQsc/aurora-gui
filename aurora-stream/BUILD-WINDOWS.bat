@@ -1,5 +1,5 @@
 @echo off
-echo Aurora Stream 0.4.9
+echo Aurora Stream 0.60.0
 setlocal
 pushd "%~dp0" >nul
 set "code=0"
