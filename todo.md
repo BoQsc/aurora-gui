@@ -1,5 +1,49 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Console window flashes on every tool call (user complaint)
+- [x] User: "another window is being opened on execution of dshell or maybe
+      something else." Root cause: `runProcess` called `spawnProcess` with
+      `Config.none`, so Windows created a console window for the child
+      (cmd.exe / powershell.exe / the run target) on every bash/run/dshell
+      call — a visible flash.
+- [x] Fixed with `Config.suppressConsole` (CREATE_NO_WINDOW on Windows), so
+      child processes run headless with no flash. Tools test (bash/run/dshell)
+      and Pro smoke pass with the change; baseline + Pro debug/release builds
+      pass.
+
+## 2026-08-12 — Runaway tool loop ("where we are at" looped until the limit) (user complaint)
+- [x] User: asked "where we are at" and the app kept doing tool calls until it
+      hit the round limit. Reproduced the intermittent loop in probes: the
+      model sometimes keeps calling list/read without settling on an answer.
+- [x] The original opencode handles this with a `doom_loop` recovery: when the
+      SAME tool call repeats with identical input 3 times, it stops and asks
+      the user. Our previous behavior just hit a hard 12-round cap and stopped
+      with a status line — no final answer.
+- [x] Implemented doom-loop recovery: repeated identical tool-call signatures
+      are tracked; after 3 identical repeats the loop breaks and a recovery
+      message is injected asking the model to answer directly with what it has
+      learned. The 12-round cap now also injects a final "stop and answer"
+      message instead of silently stopping.
+- [x] Covered by the Pro smoke test: three identical tool injections accumulate
+      a repeat count and the third triggers the recovery message. Baseline +
+      Pro debug/release builds and all tests pass.
+
+## 2026-08-12 — Collapse thinking visually with animated progress (user request)
+- [x] Studied the original opencode app: the web app renders reasoning as a
+      plain streamed text part (`PacedMarkdown`) behind a `showReasoningSummaries`
+      toggle (/thinking in the TUI hides/shows thinking blocks); tools render
+      as collapsible cards. No full-spinner animation — the closest is a
+      typing reveal and shimmer on running tool titles.
+- [x] Implemented the same pattern: thinking/reasoning now renders as a slim
+      collapsed header `▸ Thinking` (muted, clickable, same style as the tool
+      headers), with the full reasoning text shown only when expanded. While
+      the assistant is still working the header shows an animated pulsing
+      `▌/▐` indicator (advanced every frame by the root tick, repainting only
+      on phase change). When the answer arrives the indicator freezes.
+- [x] Verified by Pro smoke test: thinking blocks start collapsed, expand and
+      collapse on toggle. Baseline + Pro debug/release builds and all tests
+      pass.
+
 ## 2026-08-12 — Tool collapse UX: no scroll jump + command/output in one element (user feedback)
 - [x] User: "clicking it scrolls me down to the bottom of chat" and "command
       and output should be under singular ui element, you click and you see

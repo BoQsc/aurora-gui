@@ -173,6 +173,15 @@ private final class MessageBubble : Widget
     private Rect _collapseRect;
     private bool _collapseHover;
 
+    // Thinking/reasoning block: collapsed into a slim header by default (like
+    // the original opencode app), with a pulsing "Thinking…" indicator while
+    // the assistant is still working. Click toggles the full reasoning text.
+    private bool _thinkingCollapsed = true;
+    private Rect _thinkingRect;
+    private bool _thinkingHover;
+    private double _thinkingElapsed;
+    private bool _thinkingLive;
+
     /// Diagnostic: total number of text shapes performed by all bubbles.
     static __gshared size_t shapeCount;
 
@@ -222,6 +231,46 @@ private final class MessageBubble : Widget
     public void toggleCollapseForTesting()
     {
         setCollapsed(!_collapsed);
+    }
+
+    void setThinkingCollapsed(bool value)
+    {
+        if (_thinkingCollapsed == value) return;
+        _thinkingCollapsed = value;
+        if (onSizeChanged !is null) onSizeChanged();
+        invalidate();
+    }
+
+    /// Mark whether the assistant is still working, so the thinking header can
+    /// animate a pulsing "Thinking…" indicator. Called from the root's tick.
+    void setThinkingLive(bool value)
+    {
+        if (_thinkingLive == value) return;
+        _thinkingLive = value;
+        invalidate();
+    }
+
+    /// Advance the thinking animation clock. Called every frame while the
+    /// assistant is streaming; only repaints when the indicator phase changes.
+    void tickThinking(double deltaSeconds)
+    {
+        if (!_thinkingLive) return;
+        const phase = cast(int) (_thinkingElapsed * 2);
+        _thinkingElapsed += deltaSeconds;
+        const next = cast(int) (_thinkingElapsed * 2);
+        if (next != phase) invalidate();
+    }
+
+    /// Test-only: current thinking collapsed state.
+    public bool thinkingCollapsedForTesting()
+    {
+        return _thinkingCollapsed;
+    }
+
+    /// Test-only: toggle the thinking block like a click would.
+    public void toggleThinkingForTesting()
+    {
+        setThinkingCollapsed(!_thinkingCollapsed);
     }
 
     void setThinking(string value)
@@ -404,7 +453,12 @@ private final class MessageBubble : Widget
         const pixelSize = fontPixelSize(2);
         int height = 2 * padV;
         if (_thinking.length > 0)
-            height += shapedThinking(innerWidth).measuredSize().height + gap;
+        {
+            // Thinking header (slim) always; full reasoning only when expanded.
+            height += fontPixelSize(1) + 4;
+            if (!_thinkingCollapsed)
+                height += shapedThinking(innerWidth).measuredSize().height + gap;
+        }
 
         if (_role == "tool")
         {
@@ -459,9 +513,14 @@ private final class MessageBubble : Widget
 
         if (_thinking.length > 0)
         {
-            auto layout = shapedThinking(innerWidth);
-            canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
-            y += layout.measuredSize().height + gap;
+            drawThinkingHeader(canvas, innerWidth, y);
+            y += fontPixelSize(1) + 4;
+            if (!_thinkingCollapsed)
+            {
+                auto layout = shapedThinking(innerWidth);
+                canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
+                y += layout.measuredSize().height + gap;
+            }
         }
 
         _copyRects.length = 0;
@@ -556,6 +615,30 @@ private final class MessageBubble : Widget
             _collapseHover ? opencodeSelection : opencodeField);
         canvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
+    }
+
+    /// Slim thinking header: `▸ Thinking` when collapsed (pulsing `▌` while
+    /// the assistant is still working), `▾ Thinking` when expanded. Clicking
+    /// toggles the full reasoning text.
+    private void drawThinkingHeader(ref Canvas canvas, int innerWidth, int top)
+    {
+        const toggle = _thinkingCollapsed ? "▸" : "▾";
+        string text = toggle ~ " Thinking";
+        if (_thinkingLive)
+        {
+            // Pulsing indicator: cycle between ▌ and ▐ every half second.
+            const phase = cast(int) (_thinkingElapsed * 2) & 1;
+            text ~= phase == 0 ? " ▌" : " ▐";
+        }
+        auto layout = canvas.layoutText(toUTF32(text), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
+        const h = layout.measuredSize().height;
+        _thinkingRect = Rect(padH, top, maxInt(1, innerWidth), h);
+        canvas.fillRoundedRect(_thinkingRect, 4,
+            _thinkingHover ? opencodeSelection : opencodeField);
+        canvas.drawLayout(Point(padH, top), layout,
+            _thinkingLive ? opencodeAccent :
+            (_thinkingHover ? opencodeText : opencodeMuted));
     }
 
     /// Compact display of the command arguments: `(name=value, ...)` for a
@@ -666,17 +749,21 @@ private final class MessageBubble : Widget
         }
         const overAction = _actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position);
-        const overCollapse = _role == "tool" && _collapsed &&
+        const overCollapse = _role == "tool" &&
             _collapseRect.contains(event.position);
+        const overThinking = _thinking.length > 0 &&
+            _thinkingRect.contains(event.position);
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
-            overAction != _actionHover || overCollapse != _collapseHover)
+            overAction != _actionHover || overCollapse != _collapseHover ||
+            overThinking != _thinkingHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
             _actionHover = overAction;
             _collapseHover = overCollapse;
+            _thinkingHover = overThinking;
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
-                overCollapse ? CursorKind.hand : CursorKind.arrow);
+                overCollapse || overThinking ? CursorKind.hand : CursorKind.arrow);
             invalidate();
         }
         return false;
@@ -694,6 +781,11 @@ private final class MessageBubble : Widget
             return false;
         }
         if (event.button != MouseButton.left) return false;
+        if (_thinking.length > 0 && _thinkingRect.contains(event.position))
+        {
+            setThinkingCollapsed(!_thinkingCollapsed);
+            return true;
+        }
         if (_role == "tool" && _collapseRect.contains(event.position))
         {
             setCollapsed(!_collapsed);
@@ -726,12 +818,13 @@ private final class MessageBubble : Widget
     protected override void onMouseLeave()
     {
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
-            _collapseHover)
+            _collapseHover || _thinkingHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
             _collapseHover = false;
+            _thinkingHover = false;
             setCursor(CursorKind.arrow);
             invalidate();
         }
@@ -1047,6 +1140,14 @@ public final class OpenCodeRoot : VBox
     private static immutable int maxToolRounds = 12;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
+    // Doom-loop recovery (mirrors the original opencode app): when the model
+    // repeats the same tool call with identical input, it is likely stuck in a
+    // loop. After the same signature repeats a few times, break the loop and
+    // ask the model to answer directly instead of running more tools.
+    private string _lastToolSignature;
+    private int _lastToolRepeatCount;
+    private static immutable int doomLoopRepeatThreshold = 3;
+
     private ContextUsageBadge _usageBadge;
     private ContextUsageTooltip _usageTooltip;
     private bool _usageTooltipOpen;
@@ -1235,6 +1336,8 @@ public final class OpenCodeRoot : VBox
         _pendingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         rebuildMessageColumn();
@@ -1253,6 +1356,8 @@ public final class OpenCodeRoot : VBox
         _pendingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
         _settings.thinking = _sessions[index].thinking;
@@ -1418,6 +1523,7 @@ public final class OpenCodeRoot : VBox
         {
             message.reasoning ~= text;
             _streamBubble.appendThinking(text);
+            _streamBubble.setThinkingLive(true);
         }
         else
         {
@@ -1434,6 +1540,7 @@ public final class OpenCodeRoot : VBox
     {
         if (_streamBubble !is null)
         {
+            _streamBubble.setThinkingLive(false);
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
@@ -1524,11 +1631,56 @@ public final class OpenCodeRoot : VBox
         }
         markDirty();
 
+        // Doom-loop recovery: the same tool call repeated with identical input
+        // means the model is stuck. Break the loop and ask it to answer with
+        // what it already knows instead of running more tools.
+        const signature = toolCallSignature(event.toolCalls);
+        if (signature.length > 0 && signature == _lastToolSignature)
+        {
+            ++_lastToolRepeatCount;
+        }
+        else
+        {
+            _lastToolSignature = signature;
+            _lastToolRepeatCount = 1;
+        }
+        if (_lastToolRepeatCount >= doomLoopRepeatThreshold)
+        {
+            ChatMessage recovery;
+            recovery.role = "user";
+            recovery.content = "You appear to be repeating the same tool call " ~
+                "(" ~ signature ~ ") without making progress. Stop calling " ~
+                "tools and answer the user's question directly with what you " ~
+                "have already learned.";
+            session.messages ~= recovery;
+            markDirty();
+            _toolRounds = 0;
+            _lastToolSignature = "";
+            _lastToolRepeatCount = 0;
+            updateStatus("Tool loop detected — asking the model to answer…");
+            _messagesScroll.follow = true;
+            _messagesScroll.invalidate();
+            startChatRequest(_current);
+            return;
+        }
+
         if (_toolRounds >= maxToolRounds)
         {
-            updateStatus("Stopped after " ~ to!string(_toolRounds) ~
-                " tool rounds (limit reached).");
-            refreshUsageBadge();
+            // Last-chance final request: tell the model to stop and answer.
+            ChatMessage finalize;
+            finalize.role = "user";
+            finalize.content = "You have reached the maximum number of tool " ~
+                "calls. Stop using tools now and answer the user's question " ~
+                "directly with what you have learned so far.";
+            session.messages ~= finalize;
+            markDirty();
+            _toolRounds = 0;
+            _lastToolSignature = "";
+            _lastToolRepeatCount = 0;
+            updateStatus("Finalizing — asking the model to answer…");
+            _messagesScroll.follow = true;
+            _messagesScroll.invalidate();
+            startChatRequest(_current);
             return;
         }
         ++_toolRounds;
@@ -1545,6 +1697,17 @@ public final class OpenCodeRoot : VBox
         });
         worker.isDaemon = true;
         worker.start();
+    }
+
+    /// A stable signature for a batch of tool calls (name + arguments), used
+    /// to detect the model repeating the same calls.
+    private static string toolCallSignature(const(OpenCodeToolCall)[] calls)
+    {
+        if (calls.length == 0) return "";
+        auto builder = appender!string();
+        foreach (call; calls)
+            builder.put(call.name ~ "(" ~ call.arguments ~ ");");
+        return builder.data;
     }
 
     /// Worker thread body: execute each tool in the batch and push the results
@@ -1658,6 +1821,8 @@ public final class OpenCodeRoot : VBox
         _input.setText("");
         markDirty();
         _toolRounds = 0;
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
         _pendingToolCalls.length = 0;
         _pendingToolResults = 0;
         startChatRequest(_current);
@@ -2453,6 +2618,10 @@ public final class OpenCodeRoot : VBox
             }
         }
 
+        // Animate the pulsing "Thinking…" indicator while reasoning streams.
+        if (_streamBubble !is null)
+            _streamBubble.tickThinking(deltaSeconds);
+
         updateSendButton();
     }
 
@@ -2493,6 +2662,14 @@ public final class OpenCodeRoot : VBox
     public void addConversationForTesting(const(string)[] roles,
         const(string)[] contents)
     {
+        addConversationForTestingWithReasoning(roles, contents, null);
+    }
+
+    /// Test-only: like `addConversationForTesting` but with optional reasoning
+    /// text per message (used to exercise the thinking block).
+    public void addConversationForTestingWithReasoning(const(string)[] roles,
+        const(string)[] contents, const(string)[] reasoning)
+    {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
         foreach (index; 0 .. roles.length)
@@ -2500,6 +2677,8 @@ public final class OpenCodeRoot : VBox
             ChatMessage message;
             message.role = roles[index];
             message.content = contents[index];
+            if (reasoning !is null && index < reasoning.length)
+                message.reasoning = reasoning[index];
             session.messages ~= message;
         }
         rebuildMessageColumn();
@@ -2637,6 +2816,23 @@ public final class OpenCodeRoot : VBox
         handleToolCalls(event);
     }
 
+    /// Test-only: the current doom-loop repeat count for the last tool call.
+    public int toolRepeatCountForTesting()
+    {
+        return _lastToolRepeatCount;
+    }
+
+    /// Test-only: number of `user` role messages (used to detect the injected
+    /// doom-loop recovery message).
+    public int userMessageCountForTesting()
+    {
+        if (_current < 0) return 0;
+        int count;
+        foreach (message; _sessions[_current].messages)
+            if (message.role == "user") ++count;
+        return count;
+    }
+
     /// Test-only: number of `tool` role messages in the current session.
     public int toolMessageCountForTesting()
     {
@@ -2699,6 +2895,37 @@ public final class OpenCodeRoot : VBox
     public void scrollToForTesting(int value)
     {
         _messagesScroll.setScrollY(value);
+    }
+
+    /// Test-only: whether the last assistant bubble's thinking block is
+    /// currently collapsed (thinking starts collapsed by default).
+    public bool lastThinkingCollapsedForTesting()
+    {
+        const children = _messageColumn.children();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.roleForTesting() != "assistant") continue;
+            return bubble.thinkingCollapsedForTesting();
+        }
+        return false;
+    }
+
+    /// Test-only: toggle the last assistant bubble's thinking block.
+    public void toggleLastThinkingForTesting()
+    {
+        const children = _messageColumn.children();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.roleForTesting() != "assistant") continue;
+            bubble.toggleThinkingForTesting();
+            _messageColumn.invalidate();
+            _messagesScroll.invalidate();
+            return;
+        }
     }
 
     /// Test-only: expand (or collapse) the first `tool` result bubble and

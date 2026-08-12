@@ -377,7 +377,7 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
 
     Pid pid;
     try pid = spawnProcess(argv, stdin, outFile, outFile, null,
-        Config.none, workdir);
+        Config.suppressConsole, workdir);
     catch (Exception error)
     {
         try outFile.close();

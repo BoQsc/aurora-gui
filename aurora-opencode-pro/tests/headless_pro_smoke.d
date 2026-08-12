@@ -167,6 +167,25 @@ int main(string[] args)
     assert(driver.paint(), "Code bubble did not paint");
     writeln("Pro markdown bubble painted");
 
+    // Thinking blocks: collapsed to a slim "Thinking" header by default (like
+    // the original opencode app), expand/collapse on click, and the animation
+    // clock advances while live.
+    root.addConversationForTestingWithReasoning(
+        ["assistant"], ["The answer."], ["Let me reason about this first."]);
+    assert(root.lastThinkingCollapsedForTesting(),
+        "Thinking block should start collapsed");
+    root.toggleLastThinkingForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Expanded thinking did not repaint");
+    assert(!root.lastThinkingCollapsedForTesting(),
+        "Thinking block did not expand on toggle");
+    root.toggleLastThinkingForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Collapsed thinking did not repaint");
+    assert(root.lastThinkingCollapsedForTesting(),
+        "Thinking block did not collapse again");
+    writeln("Thinking blocks collapse by default and expand on click");
+
     // Chat quality: every message bubble carries its action pill.
     root.addConversationForTesting(["user"], ["A new user message."]);
     assert(root.lastBubbleActionForTesting() == "Edit & resend",
@@ -316,6 +335,30 @@ int main(string[] args)
     assert(root.messageCountForTesting() >= 3,
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
+
+    // Doom-loop recovery: repeating the same tool call with identical input
+    // must break the loop and inject a recovery message asking for an answer,
+    // instead of running tools forever until the round cap.
+    root.addConversationForTesting(["assistant"], [""]);
+    const userCountBefore = root.userMessageCountForTesting();
+    OpenCodeToolCall loopCall;
+    loopCall.id = "call_loop";
+    loopCall.name = "dshell";
+    loopCall.arguments = `{"command":"list"}`;
+    root.injectToolCallsForTesting([loopCall]);
+    root.injectToolCallsForTesting([loopCall]);
+    assert(root.toolRepeatCountForTesting() == 2,
+        "Repeat count did not accumulate: " ~
+        to!string(root.toolRepeatCountForTesting()));
+    root.injectToolCallsForTesting([loopCall]);
+    root.tickTree(0.02);
+    // The third identical call triggers recovery: a recovery user message is
+    // injected and the loop stops running tools.
+    assert(root.userMessageCountForTesting() == userCountBefore + 1,
+        "Doom-loop recovery did not inject a recovery message");
+    assert(root.toolRepeatCountForTesting() == 0,
+        "Doom-loop recovery did not reset the repeat counter");
+    writeln("Doom-loop recovery breaks repeated identical tool calls");
 
     // Tool outputs start collapsed (a compact header) and expand on click.
     assert(root.firstToolBubbleCollapsedForTesting(),

@@ -1,5 +1,50 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro no console flash on tool calls (2026-08-12)
+
+`runProcess` now calls `spawnProcess` with `Config.suppressConsole` (Windows
+`CREATE_NO_WINDOW`), so the child process (cmd.exe / powershell.exe / a `run`
+target) does not open a console window. Previously `Config.none` let Windows
+flash a console for every bash/run/dshell tool call.
+
+Verify: tools test still runs bash (`echo`), PowerShell, cmd, workdir, and the
+D-native `run` tool successfully; Pro smoke passes.
+
+## Aurora OpenCode Pro doom-loop recovery (2026-08-12)
+
+User reported a runaway tool loop ("where we are at" kept calling tools until
+the round limit). The original opencode app has a `doom_loop` permission: when
+the same tool call repeats with identical input 3 times it stops and asks.
+
+Our implementation: `handleToolCalls` builds a signature of each tool-call
+batch (`name(arguments)`); when the same signature repeats 3× it breaks the
+loop, injects a `user` recovery message ("You appear to be repeating the same
+tool call... answer directly"), resets the counters, and runs one final request
+so the model answers instead of looping. The 12-round cap now also injects a
+"stop and answer" message rather than silently stopping.
+
+Verify in the Pro smoke test: three identical `dshell list` injections
+accumulate a repeat count (1, 2, 3) and the third triggers a recovery `user`
+message.
+
+## Aurora OpenCode Pro collapsed thinking with progress animation (2026-08-12)
+
+Reasoning blocks now render as a slim collapsed `▸ Thinking` header (same
+pattern as the tool result headers). Clicking toggles the full reasoning text.
+While the assistant is still streaming, the header shows an animated pulsing
+`▌`/`▐` indicator, driven by the root's per-frame tick (`tickThinking`), which
+repaints only when the indicator phase changes (every ~0.5s), so the animation
+is cheap. `finishAssistantMessage` freezes the indicator.
+
+This mirrors the original opencode app: it renders reasoning as a streamed text
+part behind a show/hide toggle (/thinking in the TUI) and tools as collapsible
+cards — no full-spinner animation; the pulsing cursor is our lightweight
+equivalent of the typing reveal.
+
+Verify in the Pro smoke test: an assistant message with reasoning is created
+via `addConversationForTestingWithReasoning`, starts collapsed, and toggles
+open/closed on demand.
+
 ## Aurora OpenCode Pro tool collapse UX (2026-08-12)
 
 A `tool` result bubble is now a single element: a header showing the command
