@@ -2,17 +2,102 @@ module auroraopencode.appui;
 
 import aurora;
 import auroraopencode.core;
-import auroraopencode.markdown : MarkdownBlock, MdComposition,
+import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import core.time : MonoTime, msecs;
+import std.algorithm : canFind;
+import std.array : appender;
 import std.conv : to;
-import std.file : exists, readText, write;
+import std.datetime : Clock;
+import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
-import std.string : strip;
-import std.utf : toUTF32;
+import std.string : strip, toLower;
+import std.utf : toUTF16z, toUTF32;
+version (Windows)
+{
+    pragma(lib, "user32");
+    import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
+        EmptyClipboard, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+        GMEM_MOVEABLE, HWND, OpenClipboard, SetClipboardData;
+    import core.sys.windows.shellapi : ShellExecuteW;
+    import std.utf : toUTF16;
+}
+
+// ---------------------------------------------------------------------------
+// Pro-only platform helpers: clipboard, external links, timestamps
+// ---------------------------------------------------------------------------
+
+version (Windows)
+private bool writeSystemClipboardText(const(dchar)[] value)
+{
+    if (!OpenClipboard(null)) return false;
+    scope (exit) CloseClipboard();
+    if (!EmptyClipboard()) return false;
+
+    auto encoded = toUTF16(value);
+    const bytes = (encoded.length + 1) * wchar.sizeof;
+    auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory is null) return false;
+    auto text = cast(wchar*) GlobalLock(memory);
+    if (text is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    foreach (index, ch; encoded) text[index] = ch;
+    text[encoded.length] = 0;
+    GlobalUnlock(memory);
+
+    if (SetClipboardData(CF_UNICODETEXT, memory) is null)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+    return true;
+}
+
+private void copyTextToClipboard(string text)
+{
+    version (Windows)
+        writeSystemClipboardText(toUTF32(text));
+}
+
+version (Windows)
+private void openLinkInBrowser(string url)
+{
+    ShellExecuteW(null, null, toUTF16z(url), null, null, 1);
+}
+
+private string currentTimestamp()
+{
+    auto now = Clock.currTime;
+    string pad(int value)
+    {
+        return value < 10 ? "0" ~ to!string(value) : to!string(value);
+    }
+    return pad(now.hour) ~ ":" ~ pad(now.minute);
+}
+
+private string formatThousands(int value)
+{
+    auto text = to!string(value);
+    string result;
+    int count;
+    foreach_reverse (ch; text)
+    {
+        if (count == 3)
+        {
+            result = "," ~ result;
+            count = 0;
+        }
+        result = ch ~ result;
+        ++count;
+    }
+    return result;
+}
 
 // ---------------------------------------------------------------------------
 // Chat message bubble
@@ -30,6 +115,16 @@ private final class MessageBubble : Widget
     private bool _streaming;
     private bool _failed;
     private string _error;
+    private string _time;
+    private string _usageText;
+
+    // Interactive affordances (Pro): message/code copy buttons and links.
+    private int _hoverCopy = -1;
+    private int _hoverLink = -1;
+    private Rect[] _copyRects;
+    private string[] _copyLabels;
+    private Rect[] _linkRects;
+    private string[] _linkUrls;
 
     // Shaped text is expensive and wrapped layouts are never cached by the
     // text engine, so each bubble caches its own layout and reuses it across
@@ -98,6 +193,20 @@ private final class MessageBubble : Widget
     {
         _failed = true;
         _error = error;
+        invalidate();
+    }
+
+    void setTime(string value)
+    {
+        if (_time == value) return;
+        _time = value;
+        invalidate();
+    }
+
+    void setUsageText(string value)
+    {
+        if (_usageText == value) return;
+        _usageText = value;
         invalidate();
     }
 
@@ -217,6 +326,8 @@ private final class MessageBubble : Widget
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
+        if (_time.length > 0 || _usageText.length > 0)
+            height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
         // VBox layout sizes children from layoutHints, not from the intrinsic
@@ -248,6 +359,13 @@ private final class MessageBubble : Widget
             y += layout.measuredSize().height + gap;
         }
 
+        _copyRects.length = 0;
+        _copyLabels.length = 0;
+        _linkRects.length = 0;
+        _linkUrls.length = 0;
+
+        const contentY = y;
+
         if (_content.length > 0 || _streaming)
         {
             if (_role == "assistant")
@@ -255,19 +373,20 @@ private final class MessageBubble : Widget
                 auto composition = markdownFor(innerWidth);
                 if (composition.items.length > 0)
                 {
-                    paintMarkdown(canvas, composition, padH, y);
+                    paintMarkdown(canvas, composition, padH, contentY);
+                    collectMarkdownTargets(composition, contentY);
                 }
                 else if (_streaming)
                 {
                     auto layout = canvas.layoutText("▌"d, 2, FontRole.ui, null,
                         innerWidth, false);
-                    canvas.drawLayout(Point(padH, y), layout, palette.text);
+                    canvas.drawLayout(Point(padH, contentY), layout, palette.text);
                 }
             }
             else
             {
                 auto layout = shapedContent(innerWidth);
-                canvas.drawLayout(Point(padH, y), layout, opencodeText);
+                canvas.drawLayout(Point(padH, contentY), layout, opencodeText);
             }
         }
 
@@ -276,6 +395,127 @@ private final class MessageBubble : Widget
             auto layout = canvas.layoutText(toUTF32(_error), 1, FontRole.ui,
                 cast(FontFace) palette.uiFont, innerWidth, true);
             canvas.drawLayout(Point(padH, y + 4), layout, opencodeErrorRed);
+        }
+
+        addMessageCopyTarget(width);
+        foreach (index; 0 .. _copyRects.length)
+        {
+            if (_copyLabels[index].length == 0) continue;
+            drawCopyPill(canvas, _copyRects[index],
+                _hoverCopy == cast(int) index);
+        }
+        drawFooter(canvas, width, height);
+    }
+
+    private void collectMarkdownTargets(ref MdComposition composition, int contentY)
+    {
+        foreach (item; composition.items)
+        {
+            if (item.kind == MdItemKind.text && item.target.length > 0)
+            {
+                _linkRects ~= Rect(cast(int)(padH + item.x),
+                    cast(int)(contentY + item.y),
+                    maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
+                _linkUrls ~= to!string(item.target);
+            }
+            else if (item.kind == MdItemKind.panel)
+            {
+                const bx = cast(int)(padH + item.w) - 44;
+                const by = cast(int)(contentY + item.y) + 4;
+                _copyRects ~= Rect(bx, by, 40, 18);
+                _copyLabels ~= to!string(item.codeText);
+            }
+        }
+    }
+
+    private void addMessageCopyTarget(int width)
+    {
+        _copyRects ~= Rect(width - padH - 40, 5, 40, 18);
+        _copyLabels ~= to!string(_content);
+    }
+
+    private void drawCopyPill(ref Canvas canvas, Rect rect, bool hovered)
+    {
+        canvas.fillRoundedRect(rect, rect.height / 2,
+            hovered ? opencodeAccent : opencodeBorder);
+        canvas.drawTextInRect(rect, "Copy"d,
+            hovered ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    private void drawFooter(ref Canvas canvas, int width, int height)
+    {
+        const footer = _usageText.length > 0 ? _usageText : _time;
+        if (footer.length == 0) return;
+        auto layout = canvas.layoutText(toUTF32(footer), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, maxInt(1, width - 2 * padH), false);
+        const x = width - padH - cast(int) layout.width;
+        const y = height - padV - cast(int) layout.height;
+        canvas.drawLayout(Point(maxInt(0, x), maxInt(0, y)), layout,
+            opencodeMuted);
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        int nextCopy = -1;
+        int nextLink = -1;
+        foreach (index; 0 .. _copyRects.length)
+        {
+            if (_copyLabels[index].length > 0 &&
+                _copyRects[index].contains(event.position))
+            {
+                nextCopy = cast(int) index;
+                break;
+            }
+        }
+        foreach (index; 0 .. _linkRects.length)
+        {
+            if (_linkRects[index].contains(event.position))
+            {
+                nextLink = cast(int) index;
+                break;
+            }
+        }
+        if (nextCopy != _hoverCopy || nextLink != _hoverLink)
+        {
+            _hoverCopy = nextCopy;
+            _hoverLink = nextLink;
+            setCursor(nextCopy >= 0 || nextLink >= 0 ?
+                CursorKind.hand : CursorKind.arrow);
+            invalidate();
+        }
+        return false;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (_hoverCopy >= 0 && _hoverCopy < cast(int) _copyRects.length)
+        {
+            const text = _copyLabels[_hoverCopy];
+            if (text.length > 0)
+            {
+                copyTextToClipboard(text);
+                return true;
+            }
+        }
+        if (_hoverLink >= 0 && _hoverLink < cast(int) _linkUrls.length)
+        {
+            version (Windows)
+                openLinkInBrowser(_linkUrls[_hoverLink]);
+            return true;
+        }
+        return false;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_hoverCopy != -1 || _hoverLink != -1)
+        {
+            _hoverCopy = -1;
+            _hoverLink = -1;
+            setCursor(CursorKind.arrow);
+            invalidate();
         }
     }
 }
@@ -334,6 +574,38 @@ private final class ChatScrollView : ScrollView
 }
 
 // ---------------------------------------------------------------------------
+// Session sidebar list (Pro: context menu, Delete key)
+// ---------------------------------------------------------------------------
+
+public final class SessionListView : ListView
+{
+    void delegate(int index, Point globalPosition) onContextMenuRequested;
+    void delegate(int index) onDeleteRequested;
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right)
+        {
+            const row = indexAt(event.position);
+            if (row >= 0 && onContextMenuRequested !is null)
+                onContextMenuRequested(row, localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        if (event.key == Key.deleteKey && selectedIndex() >= 0)
+        {
+            if (onDeleteRequested !is null) onDeleteRequested(selectedIndex());
+            return true;
+        }
+        return super.onKeyDown(event);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main root
 // ---------------------------------------------------------------------------
 
@@ -346,7 +618,7 @@ public final class OpenCodeRoot : VBox
     private int _current = -1;
     private string[] _models = defaultModels.dup;
 
-    private ListView _sessionList;
+    private SessionListView _sessionList;
     private ChatScrollView _messagesScroll;
     private VBox _messageColumn;
     private ChatInput _input;
@@ -355,6 +627,10 @@ public final class OpenCodeRoot : VBox
     private CheckBox _thinkingBox;
     private Label _keyBadge;
     private Label _status;
+    private TextField _filterField;
+    private int[] _sessionIndices;
+    private string _filterText;
+    private string _lastUsageText;
 
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
@@ -412,6 +688,9 @@ public final class OpenCodeRoot : VBox
 
         toolbar.add(new Spacer());
 
+        auto exportButton = toolbar.add(new Button("Export", IconKind.save));
+        exportButton.onClick = delegate() { exportCurrentConversation(); };
+
         auto settingsButton = toolbar.add(new Button("Settings", IconKind.settings));
         settingsButton.onClick = delegate() { showSettingsDialog(); };
 
@@ -427,12 +706,28 @@ public final class OpenCodeRoot : VBox
         auto sidebarHeader = sidebar.add(new Label("Conversations"));
         sidebarHeader.setScale(1);
         sidebarHeader.setColor(opencodeMuted);
-        _sessionList = sidebar.add(new ListView());
+        _filterField = sidebar.add(new TextField(""));
+        _filterField.setId("oc-filter");
+        _filterField.layoutHints().preferredHeight = 26;
+        _filterField.onChanged = delegate()
+        {
+            _filterText = _filterField.textUtf8().strip();
+            updateSessionList();
+        };
+        _sessionList = sidebar.add(new SessionListView());
         _sessionList.setId("oc-sessions");
         _sessionList.layoutHints().flex = 1.0;
         _sessionList.onSelectionChanged = delegate(int index)
         {
-            selectSession(index);
+            selectSessionByRow(index);
+        };
+        _sessionList.onContextMenuRequested = delegate(int row, Point point)
+        {
+            showSessionContextMenu(row, point);
+        };
+        _sessionList.onDeleteRequested = delegate(int row)
+        {
+            deleteSessionAtRow(row);
         };
 
         auto chatPanel = new VBox(0);
@@ -481,6 +776,8 @@ public final class OpenCodeRoot : VBox
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         _streamBubble = null;
+        _filterText = "";
+        if (_filterField !is null) _filterField.setText("", false);
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -502,6 +799,12 @@ public final class OpenCodeRoot : VBox
         updateStatus("");
     }
 
+    private void selectSessionByRow(int row)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        selectSession(_sessionIndices[row]);
+    }
+
     private void rebuildMessageColumn()
     {
         _messageColumn.clearChildren();
@@ -514,6 +817,8 @@ public final class OpenCodeRoot : VBox
             bubble.setContent(message.content);
             if (message.reasoning.length > 0)
                 bubble.setThinking(message.reasoning);
+            if (message.time.length > 0)
+                bubble.setTime(message.time);
             _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
@@ -539,6 +844,7 @@ public final class OpenCodeRoot : VBox
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
+        message.time = currentTimestamp();
         session.messages ~= message;
 
         _streamBubble = new MessageBubble();
@@ -575,14 +881,26 @@ public final class OpenCodeRoot : VBox
         _messagesScroll.invalidate();
     }
 
-    private void finishAssistantMessage(bool cancelled)
+    private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
+        int completionTokens = 0, int totalTokens = 0)
     {
         if (_streamBubble !is null)
         {
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
-        updateStatus(cancelled ? "Stopped." : "Done.");
+        if (_current >= 0 && _sessions[_current].messages.length > 0)
+        {
+            auto message = &_sessions[_current].messages[$ - 1];
+            if (message.time.length == 0) message.time = currentTimestamp();
+        }
+        string status = cancelled ? "Stopped." : "Done.";
+        if (!cancelled && totalTokens > 0)
+        {
+            _lastUsageText = " • " ~ formatThousands(totalTokens) ~ " tokens";
+            status ~= _lastUsageText;
+        }
+        updateStatus(status);
         _messagesScroll.invalidate();
         markDirty();
     }
@@ -641,6 +959,7 @@ public final class OpenCodeRoot : VBox
         ChatMessage userMessage;
         userMessage.role = "user";
         userMessage.content = text;
+        userMessage.time = currentTimestamp();
         session.messages ~= userMessage;
         addUserBubble(text);
         _input.setText("");
@@ -831,17 +1150,161 @@ public final class OpenCodeRoot : VBox
     private void updateSessionList(bool revealCurrent = true)
     {
         ListItem[] items;
-        foreach (session; _sessions)
+        int[] indices;
+        foreach (index, session; _sessions)
         {
             const title = session.title.length > 0 ? session.title : "New chat";
+            if (_filterText.length > 0 &&
+                !canFind(title.toLower(), _filterText.toLower()))
+                continue;
+            indices ~= cast(int) index;
             const secondary = session.messages.length == 0
                 ? session.model
                 : session.model ~ " • " ~ to!string(session.messages.length) ~ " msgs";
             items ~= ListItem(title, IconKind.terminal, secondary);
         }
+        _sessionIndices = indices;
         _sessionList.setItems(items);
-        if (_current >= 0)
-            _sessionList.setSelectedIndex(_current, false, revealCurrent);
+        int row = -1;
+        foreach (i, sessionIndex; _sessionIndices)
+            if (sessionIndex == _current) row = cast(int) i;
+        if (row >= 0)
+            _sessionList.setSelectedIndex(row, false, revealCurrent);
+        else
+            _sessionList.setSelectedIndex(-1, false);
+    }
+
+    // -- Pro session management ------------------------------------------
+
+    private void deleteSessionAtRow(int row)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        deleteSession(_sessionIndices[row]);
+    }
+
+    private void deleteSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        _sessions = _sessions[0 .. sessionIndex] ~
+            _sessions[sessionIndex + 1 .. $];
+        if (_current == sessionIndex)
+            _current = _sessions.length > 0
+                ? minInt(sessionIndex, cast(int) _sessions.length - 1)
+                : -1;
+        else if (_current > sessionIndex)
+            --_current;
+        _streamBubble = null;
+        rebuildMessageColumn();
+        updateSessionList();
+        markDirty();
+        updateStatus(_sessions.length == 0 ? "No conversations yet." : "");
+    }
+
+    private void showSessionContextMenu(int row, Point globalPosition)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        const sessionIndex = _sessionIndices[row];
+        auto items = [
+            ContextMenuItem.command("Open", IconKind.terminal, delegate()
+            {
+                selectSession(sessionIndex);
+            }, "Enter"),
+            ContextMenuItem.command("Rename…", IconKind.settings, delegate()
+            {
+                showRenameSession(sessionIndex);
+            }),
+            ContextMenuItem.command("Delete", IconKind.trash, delegate()
+            {
+                deleteSession(sessionIndex);
+            }, "Del"),
+        ];
+        showContextMenu(_sessionList, globalPosition, items);
+    }
+
+    private void showRenameSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        auto content = new VBox(8, Insets(14));
+        content.layoutHints().preferredWidth = 360;
+        auto title = content.add(new Label("Rename conversation"));
+        title.setScale(3);
+        auto field = content.add(new TextField(_sessions[sessionIndex].title));
+        field.setId("oc-rename-field");
+        field.layoutHints().preferredHeight = 34;
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 42;
+        footer.add(new Spacer());
+        auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.onClick = delegate() { dismissPopup(); };
+        auto saveButton = footer.add(new Button("Save", IconKind.save));
+        saveButton.setId("oc-rename-save");
+        saveButton.setAccent(true);
+        saveButton.onClick = delegate()
+        {
+            const name = field.textUtf8().strip();
+            if (name.length > 0)
+            {
+                _sessions[sessionIndex].title = name;
+                updateSessionList();
+                markDirty();
+            }
+            dismissPopup();
+        };
+        footer.add(saveButton);
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, _sessionList);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(380, 180));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+        field.requestFocus();
+    }
+
+    private void exportCurrentConversation()
+    {
+        if (_current < 0) return;
+        const session = &_sessions[_current];
+        ensureStateDirectory();
+        const exportDir = buildPath(opencodeStateDirectory(), "exports");
+        try mkdirRecurse(exportDir);
+        catch (Exception) {}
+        string safeTitle;
+        foreach (ch; session.title)
+        {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == ' ')
+                safeTitle ~= ch;
+            else
+                safeTitle ~= '_';
+        }
+        while (safeTitle.length > 0 && safeTitle[$ - 1] == ' ')
+            safeTitle = safeTitle[0 .. $ - 1];
+        if (safeTitle.length == 0) safeTitle = "conversation";
+        auto builder = appender!string();
+        builder.put("# " ~ session.title ~ "\n\n");
+        builder.put("Model: " ~ session.model ~ "  •  Thinking: " ~
+            (session.thinking ? "on" : "off") ~ "\n\n---\n\n");
+        foreach (message; session.messages)
+        {
+            builder.put("## " ~ (message.role == "user" ? "User" : "Assistant"));
+            if (message.time.length > 0)
+                builder.put(" (" ~ message.time ~ ")");
+            builder.put("\n\n" ~ message.content ~ "\n\n---\n\n");
+        }
+        const path = buildPath(exportDir, safeTitle ~ ".md");
+        try
+        {
+            write(path, builder.data);
+            updateStatus("Exported to " ~ path);
+        }
+        catch (Exception error)
+        {
+            updateStatus("Export failed: " ~ error.msg);
+        }
     }
 
     // -- persistence ------------------------------------------------------
@@ -885,6 +1348,8 @@ public final class OpenCodeRoot : VBox
             messageJson["content"] = message.content;
             if (message.reasoning.length > 0)
                 messageJson["reasoning"] = message.reasoning;
+            if (message.time.length > 0)
+                messageJson["time"] = message.time;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -929,6 +1394,8 @@ public final class OpenCodeRoot : VBox
                                         message.content = f.str;
                                     if (auto f = "reasoning" in messageValue.object)
                                         message.reasoning = f.str;
+                                    if (auto f = "time" in messageValue.object)
+                                        message.time = f.str;
                                     session.messages ~= message;
                                 }
                             }
@@ -977,7 +1444,8 @@ public final class OpenCodeRoot : VBox
                     appendStreamDelta(event.text, event.reasoning);
                     break;
                 case OpenCodeEventKind.done:
-                    finishAssistantMessage(event.cancelled);
+                    finishAssistantMessage(event.cancelled, event.promptTokens,
+                        event.completionTokens, event.totalTokens);
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
@@ -1030,6 +1498,13 @@ public final class OpenCodeRoot : VBox
     public size_t sessionCountForTesting() const
     {
         return _sessions.length;
+    }
+
+    /// Test-only: title of a session.
+    public string sessionTitleForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return "";
+        return _sessions[index].title;
     }
 
     /// Test-only: append a conversation (parallel role/content arrays) without

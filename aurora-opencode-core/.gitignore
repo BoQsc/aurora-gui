@@ -1,0 +1,8 @@
+/.dub/
+/build/
+*.lib
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log

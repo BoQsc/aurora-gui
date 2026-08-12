@@ -1,14 +1,63 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro extended features (2026-08-11)
+
+`aurora-opencode-pro` layers extended features on the shared core while the
+baseline stays basic:
+
+- Conversation **delete** (sidebar right-click menu + `Delete` key) and
+  **rename** (context menu -> dialog).
+- **Filter** box above the conversation list (title substring match).
+- Per-message and **code-block Copy** buttons (hover the bubble or panel), and
+  **clickable Markdown links** (open the default browser).
+- **Message timestamps** (HH:MM) and **token usage** in the status line.
+- **Export** the current conversation to a `.md` file under
+  `%APPDATA%\Aurora OpenCode\exports`.
+
+Run the Pro headless smoke test from `aurora-opencode-pro`:
+
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+
+Pass = `Aurora OpenCode Pro headless smoke test passed.` Coverage: restored
+sessions, filter narrowing/clearing, rename via the context menu, delete via the
+list Delete hook, and Markdown code-block/link bubbles painting.
+
+## Aurora OpenCode structure: baseline, core, and Pro (2026-08-11)
+
+The OpenCode chat clients are split so the baseline stays small while the
+extended version grows freely:
+
+- `aurora-opencode-core` — DUB library (`targetType: library`) with the
+  shared `auroraopencode.opencode_client`, `auroraopencode.markdown`, and
+  `auroraopencode.core` modules. Both clients depend on it by path.
+- `aurora-opencode` — the baseline client (thin `appui.d` on top of core).
+- `aurora-opencode-pro` — the extended client with its own `appui.d`.
+
+Build and run the baseline or Pro exactly like the other apps:
+
+```
+cd aurora-opencode
+dub build --force
+cd ..\aurora-opencode-pro
+dub build --force
+```
+
+The headless tests compile with `dmd -i` and therefore need the core source
+directory on the import path in addition to the app and Aurora-D sources.
+
 ## Aurora OpenCode startup conversation scrollbar (2026-08-11)
 
 The OpenCode headless smoke test now creates an isolated persisted state with
 25 conversations and the last conversation selected before constructing the
 window. It paints the initial tree and asserts the restored selection remains
-selected while the conversation `ListView` scroll offset is still zero. Run:
+selected while the conversation `ListView` scroll offset is still zero. Run
+from `aurora-opencode`:
 
 ```
-dmd -version=AuroraHeadless -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-smoke.exe
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-smoke.exe
 build\headless-smoke.exe
 ```
 

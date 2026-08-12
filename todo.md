@@ -1,5 +1,25 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-11 — Aurora OpenCode baseline vs extended version (structure)
+- [x] Split Aurora OpenCode into `aurora-opencode-core` (shared library:
+      `opencode_client.d`, `markdown.d`, `core.d`), `aurora-opencode`
+      (baseline, unchanged UI), and `aurora-opencode-pro` (extended client with
+      its own `appui.d`). Both clients depend on the core package by path.
+- [x] Registered `aurora-opencode-pro` in `scripts/build-portable-windows.py`
+      and the portable-windows CI artifact list; both new `dub.json` manifests
+      carry the portable-release CRT policy.
+- [x] Baseline debug/release builds and the headless smoke test pass with the
+      new layout.
+- [x] Layered the first Pro-only batch into `aurora-opencode-pro`: conversation
+      delete (context menu + Delete key), rename dialog, title filter box,
+      per-message and code-block Copy buttons, clickable Markdown links,
+      message timestamps, token-usage status, and `.md` export. Covered by the
+      new `headless_pro_smoke.d` test.
+- [ ] Still ahead for Pro: conversation search across content, table Markdown,
+      system prompt / temperature / max-token settings, multiple API profiles,
+      retry/regenerate, syntax highlighting, tray support, and theme/font
+      settings. Keep `aurora-opencode` as the standalone basic client.
+
 ## 2026-08-11 — Aurora OpenCode startup conversation scrollbar (user complaint)
 - [x] Diagnosed the restored active conversation being selected before the
       sidebar had a real viewport. Selection visibility used height zero and

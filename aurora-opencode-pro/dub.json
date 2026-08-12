@@ -1,13 +1,13 @@
 {
-  "name": "aurora-opencode",
-  "description": "A lightweight opencode desktop chat client built with Aurora-D, talking to the OpenAI-compatible opencode API",
+  "name": "aurora-opencode-pro",
+  "description": "Extended Aurora OpenCode desktop chat client built on the shared aurora-opencode-core package",
   "authors": [
     "OpenAI"
   ],
   "copyright": "Copyright \u00a9 2026 OpenAI",
   "license": "BSL-1.0",
   "targetType": "executable",
-  "targetName": "aurora-opencode",
+  "targetName": "aurora-opencode-pro",
   "mainSourceFile": "source/app.d",
   "sourcePaths": [
     "source",

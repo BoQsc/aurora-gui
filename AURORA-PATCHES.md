@@ -19,7 +19,8 @@
 - GUI packages should link with `/SUBSYSTEM:WINDOWS` **and** keep
   `/ENTRY:mainCRTStartup` so `main(string[] args)` still runs (without the
   explicit entry, the linker looks for `WinMain` and fails).
-- Documented in the top-level `README.md`; applied in `aurora-opencode/dub.json`.
+- Documented in the top-level `README.md`; applied in `aurora-opencode/dub.json`
+  and `aurora-opencode-pro/dub.json`.
 - Console-subsystem CLI/tests stay console so their stdout still works.
 
 ## Aurora Cut 0.13.3 title-layer opacity

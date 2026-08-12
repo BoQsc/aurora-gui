@@ -1,0 +1,36 @@
+{
+  "name": "aurora-opencode-core",
+  "description": "Shared networking, markdown rendering, theme, and settings for the Aurora OpenCode desktop chat clients",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "library",
+  "sourcePaths": [
+    "source",
+    "../vendor/aurora-d-0.4.5/source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "version": "0.1.0"
+}

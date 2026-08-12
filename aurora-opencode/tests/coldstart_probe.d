@@ -1,8 +1,8 @@
 module auroraopencode_coldstart_probe;
 
 import aurora;
-import auroraopencode.appui : OpenCodeRoot, opencodeTheme,
-    setOpencodeStateDirectoryForTesting;
+import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
 import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;

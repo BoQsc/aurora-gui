@@ -79,7 +79,7 @@ CRT SDK from the Visual Studio Installer's **Individual components**. GitHub's
 Windows runners already provide an equivalent toolchain. These components are
 needed only to create a portable executable, never to run it.
 
-To build and verify all four applications on a suitably equipped local machine:
+To build and verify all five applications on a suitably equipped local machine:
 
 ```bat
 python scripts\build-portable-windows.py
@@ -87,7 +87,7 @@ python scripts\build-portable-windows.py
 
 Alternatively, run the manually triggered **Portable Windows executables**
 GitHub Actions workflow. It invokes the same Python command and publishes the
-four verified executables as one workflow artifact; normal local build and run
+five verified executables as one workflow artifact; normal local build and run
 scripts remain completely independent of GitHub Actions.
 
 Running the verifier without an executable checks that every `dub.json` in the
@@ -122,6 +122,30 @@ Two things to keep in mind:
   subsystem so their console output still appears.
 
 Example: `aurora-opencode/dub.json` already carries this adjustment.
+
+## Aurora OpenCode desktop clients
+
+The repository carries the OpenAI-compatible chat client in two versions that
+share one core package:
+
+- `aurora-opencode-core` — DUB **library** with the shared pieces both clients
+  need: the WinINet streaming client (`auroraopencode.opencode_client`), the
+  hand-written Markdown renderer (`auroraopencode.markdown`), and the shared
+  theme, data model, and settings helpers (`auroraopencode.core`). A fix to the
+  client or renderer lands in both clients automatically.
+- `aurora-opencode` — the **baseline** desktop chat client (basic, standalone).
+  It builds only the thin UI on top of the core package. Launch with
+  `aurora-opencode\RUN-WINDOWS.bat`.
+- `aurora-opencode-pro` — the **extended** version for larger features. It
+  keeps its own `source/auroraopencode/appui.d` so the baseline stays small
+  while Pro grows freely. Pro currently adds conversation delete/rename, a
+  title filter box, per-message and code-block Copy buttons, clickable Markdown
+  links, message timestamps, token-usage reporting, and Markdown export. Launch
+  with `aurora-opencode-pro\RUN-WINDOWS.bat`.
+
+Both clients depend on the same core package via a path dependency, and both
+keep the vendored Aurora-D source on their own `sourcePaths` exactly like the
+other applications in this repository.
 
 ## Timeline-first workflow
 

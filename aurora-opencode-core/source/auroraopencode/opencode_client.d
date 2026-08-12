@@ -33,6 +33,9 @@ struct OpenCodeEvent
     bool reasoning;
     string[] modelIds;
     bool cancelled;
+    int promptTokens;
+    int completionTokens;
+    int totalTokens;
 }
 
 private struct HttpTarget
@@ -122,6 +125,9 @@ final class OpenCodeClient
     private string _apiKey;
     private string _streamReasoning;
     private string _streamContent;
+    private int _lastPromptTokens;
+    private int _lastCompletionTokens;
+    private int _lastTotalTokens;
 
     this(string baseUrl, string apiKey)
     {
@@ -326,6 +332,9 @@ final class OpenCodeClient
             const body = buildChatBody(roles, contents, model, thinking);
             _streamReasoning = "";
             _streamContent = "";
+            _lastPromptTokens = 0;
+            _lastCompletionTokens = 0;
+            _lastTotalTokens = 0;
 
             auto session = openSession();
 
@@ -405,10 +414,12 @@ final class OpenCodeClient
 
             if (cancelled)
                 pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, true));
+                    _streamContent, false, null, true, _lastPromptTokens,
+                    _lastCompletionTokens, _lastTotalTokens));
             else
                 pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, false));
+                    _streamContent, false, null, false, _lastPromptTokens,
+                    _lastCompletionTokens, _lastTotalTokens));
         }
         catch (Exception error)
         {
@@ -417,7 +428,8 @@ final class OpenCodeClient
             _mutex.unlock();
             if (cancelNow)
                 pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, true));
+                    _streamContent, false, null, true, _lastPromptTokens,
+                    _lastCompletionTokens, _lastTotalTokens));
             else
                 pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
@@ -558,11 +570,18 @@ final class OpenCodeClient
 
         auto choices = "choices" in value.object;
         if (choices is null || choices.type != JSONType.array ||
-            choices.array.length == 0) return;
+            choices.array.length == 0)
+        {
+            // Some providers deliver the usage summary in a chunk with empty
+            // choices just before [DONE].
+            captureUsage(value);
+            return;
+        }
         const choice = choices.array[0];
         if (choice.type != JSONType.object) return;
         auto delta = "delta" in choice.object;
         if (delta is null || delta.type != JSONType.object) return;
+        captureUsage(value);
 
         string fragment;
         bool reasoningFragment;
@@ -588,5 +607,21 @@ final class OpenCodeClient
         else _streamContent ~= fragment;
         pushEvent(OpenCodeEvent(OpenCodeEventKind.delta, fragment,
             reasoningFragment));
+    }
+
+    private void captureUsage(const JSONValue value)
+    {
+        if (value.type != JSONType.object) return;
+        auto usage = "usage" in value.object;
+        if (usage is null || usage.type != JSONType.object) return;
+        if (auto field = "prompt_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+                _lastPromptTokens = cast(int) field.integer;
+        if (auto field = "completion_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+                _lastCompletionTokens = cast(int) field.integer;
+        if (auto field = "total_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+                _lastTotalTokens = cast(int) field.integer;
     }
 }

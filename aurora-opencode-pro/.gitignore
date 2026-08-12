@@ -1,0 +1,8 @@
+/.dub/
+/aurora-opencode-pro.exe
+/build/
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log

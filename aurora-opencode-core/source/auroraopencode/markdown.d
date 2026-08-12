@@ -74,6 +74,8 @@ struct MdItem
     bool clipText;
     double clipX;
     double clipW;
+    dstring target;   // link URL for text items, empty otherwise
+    dstring codeText; // source text for code-block panels (copy button)
 }
 
 struct MdComposition
@@ -615,6 +617,7 @@ private void addTextItem(ref MdComposition c, PendingText p, double lineTop,
     item.color = styleColor(p.style, mdText);
     item.underline = p.style == InlineStyle.link;
     item.codePill = p.style == InlineStyle.code;
+    item.target = p.target;
     if (p.layout.lines.length > 0)
         item.h = p.layout.lines[0].height;
     c.items ~= item;
@@ -863,6 +866,11 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 panel.w = lineWidth;
                 panel.h = panelH;
                 panel.color = mdPanelBg;
+                foreach (codeLine; block.codeLines)
+                {
+                    if (panel.codeText.length > 0) panel.codeText ~= '\n';
+                    panel.codeText ~= codeLine;
+                }
                 c.items[panelIndex] = panel;
                 y += panelH + blockGap(bodyPx);
                 break;
