@@ -7,7 +7,8 @@ import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
-import auroraopencode.tools : builtinToolDefinitions, executeTool;
+import auroraopencode.tools : builtinToolDefinitions, executeTool,
+    nativeOnlyToolDefinitions, toolSteeringPrompt;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -949,6 +950,7 @@ public final class OpenCodeRoot : VBox
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
+    private CheckBox _nativeToolsBox;
     private Label _keyBadge;
     private Label _status;
     private TextField _filterField;
@@ -1038,10 +1040,29 @@ public final class OpenCodeRoot : VBox
         _toolsBox.onChanged = delegate(bool value)
         {
             _settings.toolsEnabled = value;
+            if (!value) _nativeToolsBox.setChecked(false, false);
             saveSettingsNow();
             updateStatus(value
                 ? "Tools enabled — the model can run bash/read/write/glob/grep."
                 : "Tools disabled.");
+        };
+
+        _nativeToolsBox = toolbar.add(new CheckBox("Native tools"));
+        _nativeToolsBox.setId("oc-native");
+        _nativeToolsBox.setChecked(_settings.nativeTools, false);
+        _nativeToolsBox.onChanged = delegate(bool value)
+        {
+            _settings.nativeTools = value;
+            if (value)
+            {
+                _settings.toolsEnabled = true;
+                _toolsBox.setChecked(true, false);
+            }
+            saveSettingsNow();
+            updateStatus(value
+                ? "Native tools mode — no shell; the model uses the D-native " ~
+                  "run/read/write/glob/grep tools."
+                : "Native tools mode off — the model may use the shell tool.");
         };
 
         toolbar.add(new Spacer());
@@ -1537,13 +1558,21 @@ public final class OpenCodeRoot : VBox
 
     /// Start the streaming request for the current session history. When
     /// tools are enabled, the structured history (including tool calls and
-    /// results) is sent together with the tool definitions.
+    /// results) is sent together with the tool definitions and a steering
+    /// prompt that directs the model toward the native D tools.
     private void startChatRequest(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         auto session = &_sessions[sessionIndex];
         ChatRequestMessage[] messages;
+        if (_settings.toolsEnabled)
+        {
+            ChatRequestMessage systemPrompt;
+            systemPrompt.role = "system";
+            systemPrompt.content = toolSteeringPrompt(_settings.nativeTools);
+            messages ~= systemPrompt;
+        }
         foreach (message; session.messages)
         {
             ChatRequestMessage request;
@@ -1555,7 +1584,9 @@ public final class OpenCodeRoot : VBox
         }
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
-            tools = builtinToolDefinitions.dup;
+            tools = _settings.nativeTools
+                ? nativeOnlyToolDefinitions()
+                : builtinToolDefinitions();
         _client.startChatMessages(messages, tools, _settings.model,
             _settings.thinking);
         _chatStartedAt = MonoTime.currTime;

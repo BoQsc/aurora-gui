@@ -1,5 +1,49 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Model defaults to bash for file ops; native D tools instead (user feedback)
+- [x] Reproduced the exact case: "what files are in the workspace?" made the
+      model burn 5–6 rounds on `bash dir` variants. Root cause was TWO things:
+      (1) cmd's `dir` emits the OEM codepage, so strict UTF-8 `readText` threw
+      and the shell tool swallowed real output as "(no output)"; (2) bash was
+      the model's default reflex and nothing steered it to the native tools.
+- [x] Fixed the shell-output bug: stdout/stderr are now read as raw bytes and
+      decoded leniently, so `dir`/`echo %CD%` return real listings. Verified:
+      `dir` now returns the actual directory listing instead of "(no output)".
+- [x] Added the D-native `run` tool (`program` + `args` array + `workdir` +
+      `timeout`) that spawns a process directly — no shell, no quoting, fully
+      cross-platform. This is the "our own tools instead of bash/cmd/powershell"
+      replacement.
+- [x] Added a system-prompt steering message sent with every tools-enabled
+      request that directs the model to the native tools (glob/read/write/grep)
+      and reserves bash for executables the native tools cannot run.
+- [x] Added a "Native tools" toggle (off by default, `Settings.nativeTools`):
+      when enabled the bash tool is not advertised at all and the model only
+      sees run/read/write/glob/grep, plus the "no shell" steering prompt.
+- [x] Verified live: native mode answers "what files are in the workspace?"
+      with glob → read in 3 rounds (no shell). Default mode with steering now
+      completes the same task in 3 rounds too. Pro tools/smoke tests, baseline
+      + Pro debug and release builds all pass.
+
+## 2026-08-12 — Cross-platform tool support (user question)
+- [x] Answered the design question with how the original opencode app does it:
+      BOTH native host-language tools AND a shell-aware shell tool. The file /
+      content tools (read/write/glob/grep) are native D, so they are
+      cross-platform by construction (no shell dependency). The single shell
+      tool ("bash") is shell-aware per platform instead of being a separate
+      cmd / powershell tool.
+- [x] The `bash` tool now accepts `shell` (`auto`/`bash`/`cmd`/`powershell`/
+      `pwsh`), `workdir`, and `timeout` parameters, and its description carries
+      per-platform usage notes so the model writes valid syntax (dir/type/%VAR%
+      on cmd, Get-ChildItem/$env: on PowerShell, ls/cat/$VAR on bash).
+- [x] Execution switched from `spawnShell` (which silently wrapped everything
+      in cmd /c) to `spawnProcess(argv)` with stdout/stderr redirected to a
+      temp file and an explicit `workDir` — no per-shell quoting fragility, and
+      hanging commands are still killed on timeout.
+- [x] Verified on Windows: cmd, powershell, and workdir all round-trip; the
+      live model loop now reads/globs correctly instead of emitting `ls -la`
+      that fails on cmd. Pro tools test + smoke test, baseline + Pro debug and
+      release builds pass.
+
 ## 2026-08-12 — Aurora OpenCode Pro "Edit & resend" stopped working (user complaint)
 - [x] Diagnosed: the action-pill delegates were created inline inside the
       `foreach` over `_messageColumn.children()` in `refreshBubbleActions` (and

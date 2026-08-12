@@ -1,5 +1,60 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro native-tool mode (2026-08-12)
+
+User feedback: the model defaulted to bash for file operations and fumbled
+("list files" burned many rounds on `dir` variants). Two fixes shipped:
+
+1. **Shell output capture bug** — cmd's `dir` emits the OEM codepage, which is
+   not valid UTF-8; strict `readText` threw and the tool returned "(no
+   output)". `runProcess` now reads stdout/stderr as raw bytes and decodes
+   leniently, so `dir`/`echo %CD%` return real output.
+
+2. **Native-tool mode** — a new D-native `run` tool (`program` + `args` array,
+   spawned directly, no shell), a system-prompt steering message that directs
+   the model to glob/read/write/grep, and a "Native tools" toggle (off by
+   default). When enabled, the bash tool is not advertised and the model only
+   sees run/read/write/glob/grep with a "no shell" prompt.
+
+Verify with the tools test (covers run tool + toolset shapes + steering):
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+```
+Pass = `D-native run tool executes a program directly`, `Default vs native-only
+toolset shapes OK`, then `Aurora OpenCode Pro tools module test passed.`
+
+Live probe (temp file `list_probe.d`): native mode answers "what files are in
+the workspace?" with glob → read in 3 rounds, no shell. Default mode with the
+steering prompt completes the same task in 3 rounds too.
+
+## Aurora OpenCode Pro cross-platform tools (2026-08-12)
+
+Design decision (mirrors the original opencode app): keep native D file/content
+tools (`read`, `write`, `glob`, `grep`) — cross-platform by construction — and
+make the one shell tool ("bash") shell-aware per platform rather than shipping
+separate cmd / powershell tools.
+
+- The bash tool schema now has `command` (required), `shell`
+  (`auto|bash|cmd|powershell|pwsh`), `workdir`, and `timeout` (ms).
+- The description embeds per-platform usage notes: on Windows it tells the
+  model it runs in cmd.exe (or the chosen PowerShell) with the right commands,
+  on Unix it says bash.
+- Execution uses `spawnProcess(argv, stdin, outFile, outFile, null,
+  Config.none, workdir)` — the shell binary is invoked directly with
+  stdout/stderr redirected to a temp file, so no shell quoting is involved and
+  a timeout can still kill the process.
+
+Run the tools test (covers cmd, PowerShell, workdir):
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+```
+Pass = `cmd / powershell / workdir shell selection OK` then
+`Aurora OpenCode Pro tools module test passed.`
+
 ## Aurora OpenCode Pro action-pill foreach capture bug (2026-08-12)
 
 User reported "I press edit & resend and nothing happens anymore". Root cause:

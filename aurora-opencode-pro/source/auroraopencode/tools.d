@@ -1,58 +1,165 @@
 module auroraopencode.tools;
 
 import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef;
-import std.file : dirEntries, exists, isFile, isDir, SpanMode, readText,
+import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
     write, mkdirRecurse, remove, tempDir;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildNormalizedPath, buildPath, expandTilde, isAbsolute;
-import std.process : Pid, waitTimeout, kill, spawnShell, wait;
+import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
 import std.regex : Regex, matchFirst, regex;
+import std.stdio : File, stdin;
 import std.string : replace, strip;
 import std.conv : to;
 import std.exception : collectException;
-import core.time : seconds, Duration, MonoTime;
+import core.time : seconds, Duration, MonoTime, msecs;
 import std.datetime.stopwatch : StopWatch, AutoStart;
 import std.algorithm : sort, map, filter;
 import std.array : appender, array;
 import std.range : take;
+import std.typecons : Tuple;
 
 // ---------------------------------------------------------------------------
 // Built-in tool definitions advertised to the model. The parameter schemas
 // mirror the opencode app's tool registry so models behave the same here.
+//
+// Cross-platform strategy (mirrors the original opencode app): file and
+// content tools (read/write/glob/grep) are implemented natively in D, so they
+// never touch a shell and behave identically everywhere. The single shell tool
+// ("bash") is shell-aware per platform: on Windows it runs through cmd.exe or
+// PowerShell and its description tells the model which shell syntax to use; on
+// Unix it runs through /bin/bash. The model can pick a shell explicitly.
 // ---------------------------------------------------------------------------
 
-public immutable OpenCodeToolDef[] builtinToolDefinitions = [
-    OpenCodeToolDef(
-        "bash",
-        "Execute shell commands in the workspace. Use this to run build " ~
-        "commands, inspect the environment, or manipulate files when the " ~
-        "dedicated tools do not fit. Prefer the read/write/glob/grep tools " ~
-        "for file access.",
-        `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"}},"required":["command"]}`
-    ),    OpenCodeToolDef(
-        "read",
-        "Read the contents of a text file from the workspace.",
-        `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"}},"required":["filePath"]}`
-    ),
-    OpenCodeToolDef(
-        "write",
-        "Create or overwrite a text file in the workspace. Creates parent " ~
-        "directories as needed.",
-        `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
-    ),
-    OpenCodeToolDef(
-        "glob",
-        "List files and directories under the workspace matching a glob " ~
-        "pattern (e.g. **/*.d).",
-        `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to the workspace"}},"required":["pattern"]}`
-    ),
-    OpenCodeToolDef(
-        "grep",
-        "Search file contents in the workspace with a regular expression. " ~
-        "Returns matching file paths.",
-        `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
-    ),
-];
+/// The shell the bash tool uses by default on this platform. On Windows we
+/// pick cmd.exe (always present); PowerShell is available on demand via the
+/// `shell` parameter.
+private string defaultShellName()
+{
+    version (Windows)
+        return "cmd";
+    else
+        return "bash";
+}
+
+/// Per-platform usage guidance embedded in the bash tool description so the
+/// model writes valid commands for the shell that will actually run them.
+private string shellUsageNotes(string shell)
+{
+    version (Windows)
+    {
+        if (shell == "powershell" || shell == "pwsh")
+            return "Shell: PowerShell (" ~ (shell == "pwsh" ? "7+" : "5.1") ~
+                "). Use Get-ChildItem / Get-Content / Set-Content / " ~
+                "Test-Path / Remove-Item and $env: variables. Prefer the " ~
+                "read/write/glob/grep tools for file access.";
+        return "Shell: cmd.exe. Use dir / type / echo / %VAR% and `if exist` " ~
+            "checks. Prefer the read/write/glob/grep tools for file access.";
+    }
+    else
+        return "Shell: bash. Use ls / cat / echo / $VAR. Prefer the " ~
+            "read/write/glob/grep tools for file access.";
+}
+
+/// Advertised tool definitions. Built as a function (not an immutable global)
+/// so the bash tool's description reflects the platform shell.
+public OpenCodeToolDef[] builtinToolDefinitions()
+{
+    const shell = defaultShellName();
+    return [
+        OpenCodeToolDef(
+            "bash",
+            "Execute shell commands in the workspace. Use this to run build " ~
+            "commands, inspect the environment, or manipulate files when the " ~
+            "dedicated tools do not fit. " ~ shellUsageNotes(shell),
+            `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["command"]}`
+        ),
+        OpenCodeToolDef(
+            "read",
+            "Read the contents of a text file from the workspace.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"}},"required":["filePath"]}`
+        ),
+        OpenCodeToolDef(
+            "write",
+            "Create or overwrite a text file in the workspace. Creates parent " ~
+            "directories as needed.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
+        ),
+        OpenCodeToolDef(
+            "glob",
+            "List files and directories under the workspace matching a glob " ~
+            "pattern (e.g. **/*.d).",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to the workspace"}},"required":["pattern"]}`
+        ),
+        OpenCodeToolDef(
+            "grep",
+            "Search file contents in the workspace with a regular expression. " ~
+            "Returns matching file paths.",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
+        ),
+    ];
+}
+
+/// Native-only tool definitions: the D-native `run` tool replaces the shell
+/// tool, and every file operation uses a D implementation, so no shell syntax
+/// is ever involved. This is the "our own tools instead of bash/cmd/powershell"
+/// mode.
+public OpenCodeToolDef[] nativeOnlyToolDefinitions()
+{
+    return [
+        OpenCodeToolDef(
+            "run",
+            "Execute a program directly with an argument list, never through " ~
+            "a shell. Use this to run build tools, compilers, git, or any " ~
+            "executable. The program name is resolved against PATH; pass " ~
+            "each argument separately (no shell quoting or redirection).",
+            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["program"]}`
+        ),
+        OpenCodeToolDef(
+            "read",
+            "Read the contents of a text file from the workspace.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"}},"required":["filePath"]}`
+        ),
+        OpenCodeToolDef(
+            "write",
+            "Create or overwrite a text file in the workspace. Creates parent " ~
+            "directories as needed.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
+        ),
+        OpenCodeToolDef(
+            "glob",
+            "List files and directories under the workspace matching a glob " ~
+            "pattern (e.g. **/*.d).",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to the workspace"}},"required":["pattern"]}`
+        ),
+        OpenCodeToolDef(
+            "grep",
+            "Search file contents in the workspace with a regular expression. " ~
+            "Returns matching file paths.",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
+        ),
+    ];
+}
+
+/// System-prompt steering that mirrors the original opencode app: the model is
+/// told to prefer the native tools for file work and reserve the shell for
+/// things the native tools cannot do. In native-only mode there is no shell at
+/// all, so the model is steered exclusively to the D tools.
+public string toolSteeringPrompt(bool nativeOnly)
+{
+    if (nativeOnly)
+        return "You have access to tools implemented natively in this " ~
+            "application; there is no shell and no bash/cmd/powershell. " ~
+            "Use `glob` to list files, `read` to read them, `write` to create " ~
+            "them, `grep` to search contents, and `run` to execute a program " ~
+            "with an explicit argument list. Always prefer these tools over " ~
+            "trying to reconstruct shell commands.";
+    return "You have access to tools. For file and content operations prefer " ~
+        "the dedicated native tools: `glob` to list files, `read` to read " ~
+        "them, `write` to create them, and `grep` to search contents. Use the " ~
+        "`bash` tool only for running build commands, git, package managers, " ~
+        "or other executables that the native tools cannot perform. Avoid " ~
+        "using bash for listing or reading files.";
+}
 
 public struct ToolExecution
 {
@@ -80,37 +187,176 @@ private string truncateOutput(string text)
     return text[0 .. maxOutputBytes] ~ "\n…(output truncated)";
 }
 
-private ToolExecution runBash(string args, string workspace)
+/// Resolve the requested shell to the argv the platform should invoke.
+/// Returns the full argument list (binary + flags + command). `auto` picks
+/// the platform default.
+private string[] shellCommand(string shell, string command)
+{
+    version (Windows)
+    {
+        switch (shell)
+        {
+            case "powershell":
+                return ["powershell.exe", "-NoLogo", "-NoProfile",
+                    "-NonInteractive", "-Command", command];
+            case "pwsh":
+                return ["pwsh", "-NoLogo", "-NoProfile",
+                    "-NonInteractive", "-Command", command];
+            case "bash":
+                return ["bash", "-lc", command];
+            case "cmd":
+            default:
+                return ["cmd.exe", "/d", "/s", "/c", command];
+        }
+    }
+    else
+        return ["/bin/bash", "-lc", command];
+}
+
+/// Parse the shared tool arguments object. Returns false when the payload is
+/// not an object.
+private bool parseToolArgs(string args, ref string command,
+    ref string shell, ref string workdir, ref int timeoutMs,
+    ref string[] argv)
 {
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
-    string command;
-    if (value.type == JSONType.object)
+    if (value.type != JSONType.object) return false;
+    if (auto field = "command" in value.object)
+        if (field.type == JSONType.string)
+            command = field.str;
+    if (auto field = "shell" in value.object)
+        if (field.type == JSONType.string)
+            shell = field.str;
+    if (auto field = "workdir" in value.object)
+        if (field.type == JSONType.string)
+            workdir = field.str;
+    if (auto field = "timeout" in value.object)
+        if (field.type == JSONType.integer)
+            timeoutMs = cast(int) field.integer;
+    if (auto field = "args" in value.object)
     {
-        if (auto field = "command" in value.object)
-            if (field.type == JSONType.string)
-                command = field.str;
+        if (field.type == JSONType.array)
+        {
+            foreach (entry; field.array)
+            {
+                if (entry.type == JSONType.string)
+                    argv ~= entry.str;
+            }
+        }
     }
+    return true;
+}
+
+private ToolExecution runBash(string args, string workspace)
+{
+    string command;
+    string shell = "auto";
+    string workdir;
+    int timeoutMs = 60_000;
+    string[] argvExtra;
+    if (!parseToolArgs(args, command, shell, workdir, timeoutMs, argvExtra))
+        return ToolExecution("bash",
+            "Error: bash requires a JSON object payload.", true);
     if (command.length == 0)
         return ToolExecution("bash",
             "Error: bash requires a non-empty `command` argument.", true);
+    if (timeoutMs <= 0)
+        timeoutMs = 60_000;
 
-    // Run through the platform shell with combined output captured to a
-    // temp file so it can be read back after the process exits (the D
-    // std.process execute/pipe helpers are not used because a hanging
-    // command must be killable without blocking the UI thread).
+    if (shell == "auto")
+        shell = defaultShellName();
+    auto argv = shellCommand(shell, command);
+    const resolvedWorkdir = workdir.length > 0
+        ? resolveToolPath(workdir, workspace) : workspace;
+
+    auto result = runProcess(argv, resolvedWorkdir, timeoutMs, "bash");
+    return ToolExecution("bash", truncateOutput(result[0]), result[1]);
+}
+
+/// The D-native `run` tool: execute a program directly with an argument list,
+/// never through a shell. This is the cross-platform replacement for the
+/// bash/cmd/powershell tool: the model names the program and its arguments,
+/// and the app spawns it directly, so no shell syntax or quoting is involved.
+private ToolExecution runProgramTool(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string program;
+    string workdir;
+    int timeoutMs = 60_000;
+    string[] argv;
+    if (value.type == JSONType.object)
+    {
+        if (auto field = "program" in value.object)
+            if (field.type == JSONType.string)
+                program = field.str;
+        if (auto field = "workdir" in value.object)
+            if (field.type == JSONType.string)
+                workdir = field.str;
+        if (auto field = "timeout" in value.object)
+            if (field.type == JSONType.integer)
+                timeoutMs = cast(int) field.integer;
+        if (auto field = "args" in value.object)
+        {
+            if (field.type == JSONType.array)
+            {
+                foreach (entry; field.array)
+                {
+                    if (entry.type == JSONType.string)
+                        argv ~= entry.str;
+                }
+            }
+        }
+    }
+    if (program.length == 0)
+        return ToolExecution("run",
+            "Error: run requires a non-empty `program` argument.", true);
+    if (timeoutMs <= 0)
+        timeoutMs = 60_000;
+
+    // The program name is resolved against PATH by spawnProcess; an explicit
+    // path may be given instead. Remaining arguments pass through verbatim.
+    const resolvedWorkdir = workdir.length > 0
+        ? resolveToolPath(workdir, workspace) : workspace;
+    auto fullArgv = [program] ~ argv;
+
+    auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run");
+    return ToolExecution("run", truncateOutput(result[0]), result[1]);
+}
+
+/// Shared process runner used by the shell tool and the native `run` tool.
+/// Spawns `argv` directly (no shell), redirects stdout+stderr to a temp file,
+/// waits up to `timeoutMs`, and kills on timeout. Output is decoded leniently
+/// (console tools emit the OEM codepage, not UTF-8). Returns (output,
+/// timedOut).
+private Tuple!(string, bool) runProcess(string[] argv, string workdir,
+    int timeoutMs, string toolName)
+{
+    import std.typecons : tuple;
+
     const outPath = buildNormalizedPath(buildPath(
         cast(string) tempDir(), "aurora-opencode-tool-" ~
         to!string(cast(long) MonoTime.currTime.ticks) ~ ".out"));
-    string shellLine = command ~ " > \"" ~ outPath ~ "\" 2>&1";
-    Pid pid;
-    try pid = spawnShell(shellLine);
-    catch (Exception error)
-        return ToolExecution("bash", "Error: could not start shell: " ~
-            error.msg, true);
+    File outFile;
+    if (!tryOpenOutput(outPath, outFile, toolName))
+        return tuple("Error: could not open output file.", true);
 
-    const timeout = 60.seconds;
+    Pid pid;
+    try pid = spawnProcess(argv, stdin, outFile, outFile, null,
+        Config.none, workdir);
+    catch (Exception error)
+    {
+        try outFile.close();
+        catch (Exception) {}
+        try remove(outPath);
+        catch (Exception) {}
+        return tuple("Error: could not start process: " ~ error.msg, true);
+    }
+
+    const timeout = msecs(timeoutMs);
     auto result = waitTimeout(pid, timeout);
     bool timedOut;
     if (!result.terminated)
@@ -125,16 +371,41 @@ private ToolExecution runBash(string args, string workspace)
     string output;
     if (exists(outPath))
     {
-        try output = readText(outPath);
+        try
+        {
+            // Read raw bytes and decode leniently: console tools emit the OEM
+            // codepage, which is not valid UTF-8. Strict decoding would throw
+            // and the output would be swallowed as "(no output)".
+            auto raw = read(outPath);
+            auto bytes = cast(ubyte[]) raw;
+            auto decoded = new char[](bytes.length);
+            for (size_t index; index < bytes.length; ++index)
+                decoded[index] = cast(char) bytes[index];
+            output = cast(string) decoded;
+        }
         catch (Exception) {}
         try remove(outPath);
         catch (Exception) {}
     }
     if (timedOut)
         output = (output.length > 0 ? output ~ "\n" : "") ~
-            "\n…(command timed out after 60s and was killed)";
+            "\n…(process timed out after " ~ to!string(timeoutMs) ~
+            "ms and was killed)";
     if (output.length == 0) output = "(no output)";
-    return ToolExecution("bash", truncateOutput(output), timedOut);
+    return tuple(output, timedOut);
+}
+
+private bool tryOpenOutput(string outPath, out File outFile, string toolName)
+{
+    try
+    {
+        outFile.open(outPath, "w");
+        return true;
+    }
+    catch (Exception)
+    {
+        return false;
+    }
 }
 
 private ToolExecution runRead(string args, string workspace)
@@ -381,6 +652,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         case "bash":
             return runBash(call.arguments, workspace);
+        case "run":
+            return runProgramTool(call.arguments, workspace);
         case "read":
             return runRead(call.arguments, workspace);
         case "write":

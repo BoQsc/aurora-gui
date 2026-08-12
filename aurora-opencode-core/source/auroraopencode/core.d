@@ -173,6 +173,7 @@ public struct Settings
     string model = defaultModel;
     bool thinking;
     bool toolsEnabled;  // advertise tool definitions to the model
+    bool nativeTools;   // use D-native tools only (run tool), no shell; off by default
     string workspace;   // working directory the tools run in
 }
 
@@ -280,6 +281,9 @@ public Settings loadSettings()
                 if (auto found = "toolsEnabled" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.toolsEnabled = found.type == JSONType.true_;
+                if (auto found = "nativeTools" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.nativeTools = found.type == JSONType.true_;
                 if (auto found = "workspace" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.workspace = found.str;
@@ -310,6 +314,7 @@ public void saveSettings(const ref Settings settings)
     root["model"] = settings.model;
     root["thinking"] = settings.thinking;
     root["toolsEnabled"] = settings.toolsEnabled;
+    root["nativeTools"] = settings.nativeTools;
     root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());
