@@ -1,5 +1,45 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Native tools are the main; Legacy tools moved to Settings with tooltip (user request)
+- [x] User: "Let's have Tools named as Legacy Tools and move into settings as
+      separate option in the settings with a tooltip. Native tools are the
+      main now."
+- [x] The toolbar now has a single "Tools" checkbox (native D tools) that is
+      ON by default. The legacy bash/cmd/powershell shell tool is no longer in
+      the toolbar.
+- [x] Added a "Legacy tools" checkbox in Settings with a "(?)" hover tooltip
+      explaining it adds the shell tool on top of the native tools. New
+      `Settings.legacyTools` bool (default off); old `nativeTools` setting is
+      migrated (native-only users get legacy off).
+- [x] Tool selection: tools on → native tool set; tools on + legacy → native +
+      shell (builtin). System prompt reflects the mode. Covered by the Pro
+      smoke test (checkbox + tooltip present, legacy off by default). Baseline
+      + Pro debug/release builds pass.
+
+## 2026-08-12 — Aurora GUI TitleBar widget, completely customizable (user request)
+- [x] User: "I wonder if we could do aurora gui titlebar widget. A completely
+      customizable titlebar. Let's try."
+- [x] Added `aurora.widgets.titlebar.TitleBar`, exported from `aurora` package.
+      Customizable: title/icon/show-icon/title-align, per-button show/hide and
+      width, bar height, corner radius, all colors (background / inactive /
+      border / text / muted / button hover / pressed / close hover / pressed),
+      active & maximized states, drag behavior (in-canvas self-move, owner
+      `onDragMoved`, or native OS move via `setSystemMoveOnDrag`), double-click
+      maximize, right-click system menu (`onSystemMenu(Point)`), custom content
+      widget slot + fixed title width.
+- [x] Added `WidgetHost.beginSystemMove()` / `Widget.beginSystemMove()` so a
+      frameless window's TitleBar can start the native OS move loop
+      (`GuiWindow` already had the method, now an override).
+- [x] Added `demos/titlebar.d` (frameless window demo) + `titlebar` dub config
+      + `RUN-AURORA-D-TITLEBAR.cmd`. Builds with `dub build --config=titlebar`.
+- [x] Added `tests/titlebar_smoke.d` headless smoke test (caption buttons,
+      double-click, system menu, self/owner drag, customization, hover) with
+      pixel-verified screenshots (titlebar background, window background, close
+      hover = danger). Module unittests + full aurora unittest suite (30
+      modules) + `dub build` of aurora-cut all pass.
+- [ ] Not yet manually launched as a real window by the user (demo + visual
+      drag feel need a human check).
+
 ## 2026-08-12 — Duplicate message Copy button (user feedback)
 - [x] User: "we have copy button for messages in the context menu, then why we
       have duplicate copy on the right side for each message." Removed the

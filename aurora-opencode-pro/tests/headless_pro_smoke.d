@@ -321,6 +321,16 @@ int main(string[] args)
         "Badge should restore the persisted usage for the session");
     writeln("Context meter follows the active session");
 
+    // Native tools are the main mode; Legacy tools live in Settings with a
+    // hover tooltip, not in the toolbar.
+    auto legacyCheck = root.legacyToolsCheckboxForTesting();
+    assert(legacyCheck !is null, "Settings dialog missing the Legacy tools checkbox");
+    assert(!legacyCheck.checked(), "Legacy tools should be off by default");
+    const legacyTip = root.legacyToolsTooltipForTesting();
+    assert(legacyTip.indexOf("bash") >= 0,
+        "Legacy tools tooltip should explain the shell tool: " ~ legacyTip);
+    writeln("Legacy tools checkbox + tooltip present in Settings");
+
     // Tool loop: with tools enabled and a workspace, an injected tool call is
     // executed locally and the result lands as a `tool` role message.
     auto workspaceDir = buildPath(stateDir, "workspace");

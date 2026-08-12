@@ -173,9 +173,9 @@ public struct Settings
     string apiKey = "";
     string model = defaultModel;
     bool thinking;
-    bool toolsEnabled;  // advertise tool definitions to the model
-    bool nativeTools;   // use D-native tools only (run tool), no shell; off by default
-    string workspace;   // working directory the tools run in
+    bool toolsEnabled = true;  // native D tools (run/read/write/glob/grep/dshell); main, on by default
+    bool legacyTools;          // additionally expose the bash/cmd/powershell shell tool; off by default
+    string workspace;          // working directory the tools run in
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +282,16 @@ public Settings loadSettings()
                 if (auto found = "toolsEnabled" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.toolsEnabled = found.type == JSONType.true_;
+                if (auto found = "legacyTools" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.legacyTools = found.type == JSONType.true_;
+                // Migration: the old "nativeTools" flag was a separate native-only
+                // mode. Native tools are now the default, so a user who had them
+                // ON wants no legacy shell; someone who had them OFF (shell mode)
+                // keeps the legacy shell tool.
                 if (auto found = "nativeTools" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
-                        settings.nativeTools = found.type == JSONType.true_;
+                        settings.legacyTools = found.type != JSONType.true_;
                 if (auto found = "workspace" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.workspace = found.str;
@@ -315,7 +322,7 @@ public void saveSettings(const ref Settings settings)
     root["model"] = settings.model;
     root["thinking"] = settings.thinking;
     root["toolsEnabled"] = settings.toolsEnabled;
-    root["nativeTools"] = settings.nativeTools;
+    root["legacyTools"] = settings.legacyTools;
     root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());

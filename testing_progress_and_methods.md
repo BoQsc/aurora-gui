@@ -1,5 +1,84 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro native tools main; Legacy tools in Settings (2026-08-12)
+
+The toolbar has one "Tools" checkbox (native D tools), on by default. The
+legacy bash/cmd/powershell shell tool moved to a "Legacy tools" checkbox in
+Settings with a "(?)" hover tooltip. New `Settings.legacyTools` (default off);
+old `nativeTools` settings are migrated (native-only users → legacy off).
+
+Verify: Pro smoke test opens Settings and asserts the Legacy tools checkbox
+exists, is off by default, and its tooltip mentions the shell tool.
+
+## Aurora Custom TitleBar widget (2026-08-12)
+
+New reusable `aurora.widgets.titlebar.TitleBar` widget — a completely
+customizable in-canvas title bar. Everything is configurable:
+
+- `setTitle` / `setIcon` / `setShowIcon` / `setTitleAlign` (left/center/right)
+- Caption buttons: `setShowMinimize/Maximize/Close`, `setCaptionButtonWidth`
+- Drag: in-canvas self-move (default), owner-driven move (`onDragMoved`), or
+  native OS move (`setSystemMoveOnDrag(true)` + new host `beginSystemMove()`)
+- `setDoubleClickMaximizes`, `onDoubleClick`, `onSystemMenu(Point)`,
+  `onMinimize/onMaximizeToggle/onClose`
+- Visuals: `setBarHeight`, `setCornerRadius`, `setBackground`,
+  `setInactiveBackground`, `setBorderColor`, `setTextColor`,
+  `setMutedTextColor`, `setButtonHover/PressedColor`, `setCloseHover/
+  PressedColor`, `setActive`, `setMaximized`
+- `setContent(Widget)` puts an arbitrary widget (search box, tabs…) between the
+  title and the caption buttons; `setTitleWidth` fixes the title region size.
+
+Two framework hooks were added so the widget can drag a real frameless window:
+`WidgetHost.beginSystemMove()` (interface) and `Widget.beginSystemMove()`;
+`GuiWindow` already exposed it, now as an `override`.
+
+### Build / run the demo
+
+```
+vendor\aurora-d-0.4.5\dub build --config=titlebar      # via dub
+RUN-AURORA-D-TITLEBAR.cmd                               # repo-root launcher
+```
+
+The demo is a frameless window (`options.decorated=false`) whose whole top
+strip is a TitleBar: native drag, custom colors, rounded top corners, a
+`TextField` hosted in the bar, and a right-click system menu.
+
+### Headless smoke test (tests\titlebar_smoke.d)
+
+Compile exactly like the other editor smoke tests:
+
+```
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\titlebar_smoke.d -of=build\headless-smoke\titlebar-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+set AURORA_RENDERER=software&& set SDL_AUDIODRIVER=dummy&& build\headless-smoke\titlebar-smoke.exe
+```
+
+Pass = prints `Aurora TitleBar smoke test passed.` Coverage (through the real
+`UiTestDriver` dispatch path): caption-button callbacks, double-click maximize
+toggle, right-click system menu, self-move drag by exact pointer delta,
+owner-driven drag (`onDragMoved`/`onDragEnded`), hidden buttons, custom content
+layout, fixed title width, active/maximized state, and two screenshots
+(`titlebar-smoke.ppm` default state, `titlebar-smoke-hover.ppm` with the close
+button hot). Pixel-verified with `build/headless-smoke/check_titlebar_pixels.d`
+(titlebar background = `panelElevated`, window background = `windowBackground`,
+close hover = `danger`).
+
+Module unittests: `dmd -main -unittest -i -version=AuroraHeadless
+-Ivendor\aurora-d-0.4.5\source vendor\aurora-d-0.4.5\source\aurora\widgets\titlebar.d
+-of=build\headless-smoke\titlebar-module.exe -L/DEFAULTLIB:user32
+-L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm
+-L/DEFAULTLIB:wininet`.
+
+### Gotchas discovered while building it
+
+- A drag must start only after a movement threshold (5 px): the first click of
+  a double-click must not arm a drag. The plain-click path releases capture
+  without moving.
+- `_armDrag` MUST be cleared when the drag actually starts in `onMouseMove`,
+  otherwise the next mouse-move over the bar re-arms a fresh drag and the bar
+  never stops dragging (regression covered by the smoke test's hover step).
+- PPM `savePpm` output is plain RGB; beware off-by-header-byte bugs when
+  sampling screenshots (the header is `P6\n<w> <h>\n<max>\n`).
+
 ## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
 
 The top-right "Copy" pill on every message bubble was redundant with "Copy

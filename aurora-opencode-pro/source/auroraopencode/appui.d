@@ -867,10 +867,10 @@ private final class MessageBubble : Widget
 // Context usage meter (Pro): small rectangular badge + hover tooltip
 // ---------------------------------------------------------------------------
 
-/// Hover tooltip panel that mirrors the real opencode context indicator. It
-/// never steals the pointer: while it is hovered it reports the anchor badge
-/// as the hit target, so the tooltip stays open without capturing input.
-private final class ContextUsageTooltip : Widget
+/// Hover tooltip panel. It never steals the pointer: while it is hovered it
+/// reports the anchor as the hit target, so the tooltip stays open without
+/// capturing input. Supports a plain text body or a titled multi-row body.
+private final class HoverTooltip : Widget
 {
     private dstring _title;
     private dstring[] _rows;
@@ -888,6 +888,15 @@ private final class ContextUsageTooltip : Widget
         _rows.length = 0;
         foreach (row; rows)
             _rows ~= toUTF32(row);
+        invalidate();
+    }
+
+    void setText(string text)
+    {
+        _title.length = 0;
+        _rows.length = 0;
+        foreach (line; text.splitLines)
+            _rows ~= toUTF32(line);
         invalidate();
     }
 
@@ -947,6 +956,87 @@ private final class ContextUsageTooltip : Widget
             y += 18;
         }
     }
+}
+
+/// Split a string into lines (module-level helper used by HoverTooltip).
+private string[] splitLines(string text)
+{
+    string[] lines;
+    string current;
+    foreach (ch; text)
+    {
+        if (ch == '\n')
+        {
+            lines ~= current;
+            current = "";
+        }
+        else if (ch != '\r')
+            current ~= ch;
+    }
+    if (current.length > 0) lines ~= current;
+    return lines;
+}
+
+/// Reusable hover tooltip anchor: a small "(?)" chip that opens a popup
+/// tooltip while hovered. Used in dialogs (e.g. the Legacy tools option).
+private final class TooltipAnchor : Widget
+{
+    void delegate(bool open) onHoverChanged;
+    private string _text;
+    private bool _hover;
+
+    this(Widget owner)
+    {
+        _hoverOwner = owner;
+        layoutHints().preferredWidth = 18;
+        layoutHints().minWidth = 18;
+        layoutHints().preferredHeight = 18;
+    }
+
+    void setText(string text)
+    {
+        _text = text;
+        invalidate();
+    }
+
+    string text() const @safe pure nothrow @nogc { return _text; }
+
+    /// The widget that should report as the hover target so the tooltip stays
+    /// open while the pointer moves over it.
+    Widget hoverOwner() @safe pure nothrow @nogc { return _hoverOwner; }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = 18;
+        layoutHints().preferredHeight = 18;
+        return Size(18, 18);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        canvas.fillRoundedRect(rect, rect.height / 2,
+            _hover ? opencodeAccent : opencodeField);
+        canvas.drawTextInRect(rect, "?"d,
+            _hover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    protected override void onMouseEnter()
+    {
+        _hover = true;
+        if (onHoverChanged !is null) onHoverChanged(true);
+        invalidate();
+    }
+
+    protected override void onMouseLeave()
+    {
+        _hover = false;
+        if (onHoverChanged !is null) onHoverChanged(false);
+        invalidate();
+    }
+
+    private Widget _hoverOwner;
 }
 
 /// Small rectangular context meter in the toolbar. Shows the exact token
@@ -1152,7 +1242,6 @@ public final class OpenCodeRoot : VBox
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
-    private CheckBox _nativeToolsBox;
     private Label _keyBadge;
     private Label _status;
     private TextField _filterField;
@@ -1181,8 +1270,13 @@ public final class OpenCodeRoot : VBox
     private static immutable int doomLoopRepeatThreshold = 3;
 
     private ContextUsageBadge _usageBadge;
-    private ContextUsageTooltip _usageTooltip;
+    private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
+
+    // Generic hover tooltip (used for dialog options such as Legacy tools).
+    private TooltipAnchor _legacyTooltipAnchor;
+    private HoverTooltip _legacyTooltip;
+    private bool _legacyTooltipOpen;
 
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
@@ -1250,29 +1344,11 @@ public final class OpenCodeRoot : VBox
         _toolsBox.onChanged = delegate(bool value)
         {
             _settings.toolsEnabled = value;
-            if (!value) _nativeToolsBox.setChecked(false, false);
             saveSettingsNow();
             updateStatus(value
-                ? "Tools enabled — the model can run bash/read/write/glob/grep."
+                ? "Tools enabled — the model uses the D-native " ~
+                  "run/read/write/glob/grep/dshell tools."
                 : "Tools disabled.");
-        };
-
-        _nativeToolsBox = toolbar.add(new CheckBox("Native tools"));
-        _nativeToolsBox.setId("oc-native");
-        _nativeToolsBox.setChecked(_settings.nativeTools, false);
-        _nativeToolsBox.onChanged = delegate(bool value)
-        {
-            _settings.nativeTools = value;
-            if (value)
-            {
-                _settings.toolsEnabled = true;
-                _toolsBox.setChecked(true, false);
-            }
-            saveSettingsNow();
-            updateStatus(value
-                ? "Native tools mode — no shell; the model uses the D-native " ~
-                  "run/read/write/glob/grep tools."
-                : "Native tools mode off — the model may use the shell tool.");
         };
 
         toolbar.add(new Spacer());
@@ -1926,7 +2002,9 @@ public final class OpenCodeRoot : VBox
                 const platform = "posix";
             else
                 const platform = "unknown";
-            systemPrompt.content = buildSystemPrompt(_settings.nativeTools,
+            // Native tools are the main tool set; the legacy shell tool is an
+            // opt-in addition from Settings.
+            systemPrompt.content = buildSystemPrompt(!_settings.legacyTools,
                 workspace, platform);
             messages ~= systemPrompt;
         }
@@ -1941,9 +2019,9 @@ public final class OpenCodeRoot : VBox
         }
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
-            tools = _settings.nativeTools
-                ? nativeOnlyToolDefinitions()
-                : builtinToolDefinitions();
+            tools = _settings.legacyTools
+                ? builtinToolDefinitions()
+                : nativeOnlyToolDefinitions();
         _client.startChatMessages(messages, tools, _settings.model,
             _settings.thinking);
         _chatStartedAt = MonoTime.currTime;
@@ -2096,6 +2174,35 @@ public final class OpenCodeRoot : VBox
         workspaceHint.setScale(1);
         workspaceHint.setColor(opencodeMuted);
 
+        // Legacy tools: an opt-in extra on top of the native D tools. Its
+        // label shows a small hover tooltip explaining what it is.
+        auto legacyRow = new HBox(8);
+        legacyRow.layoutHints().preferredHeight = 40;
+        auto legacyCheck = new CheckBox("Legacy tools");
+        legacyCheck.setId("oc-legacy");
+        legacyCheck.setChecked(_settings.legacyTools, false);
+        legacyCheck.onChanged = delegate(bool value)
+        {
+            _settings.legacyTools = value;
+            saveSettingsNow();
+        };
+        legacyRow.add(legacyCheck);
+        auto legacyTip = new TooltipAnchor(legacyCheck);
+        legacyTip.setText(
+            "Also lets the model use the legacy bash/cmd/powershell shell " ~
+            "tool in addition to the native run/read/write/glob/grep/dshell " ~
+            "tools. Off by default.");
+        _legacyTooltipAnchor = legacyTip;
+        legacyTip.onHoverChanged = delegate(bool open)
+        {
+            if (_legacyTooltip is null)
+                _legacyTooltip = new HoverTooltip(legacyTip);
+            setTooltipOpen(legacyTip, _legacyTooltip, _legacyTooltipOpen,
+                open);
+        };
+        legacyRow.add(legacyTip);
+        content.add(legacyRow);
+
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 42;
         footer.add(new Spacer());
@@ -2128,7 +2235,7 @@ public final class OpenCodeRoot : VBox
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(540, 380));
+        popup.setRequestedSize(Size(540, 430));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
@@ -2250,7 +2357,7 @@ public final class OpenCodeRoot : VBox
         if (open)
         {
             if (_usageTooltip is null)
-                _usageTooltip = new ContextUsageTooltip(_usageBadge);
+                _usageTooltip = new HoverTooltip(_usageBadge);
             _usageTooltip.setContent("Context usage",
                 contextUsageTooltipRows());
             popupRoot(this).add(_usageTooltip);
@@ -2263,6 +2370,40 @@ public final class OpenCodeRoot : VBox
             if (_usageTooltip !is null && _usageTooltip.parent() !is null)
                 _usageTooltip.parent().remove(_usageTooltip);
         }
+    }
+
+    /// Open/close the generic hover tooltip anchored to a TooltipAnchor.
+    private void setTooltipOpen(TooltipAnchor anchor, HoverTooltip tooltip,
+        ref bool open, bool value)
+    {
+        if (value)
+        {
+            tooltip.setText(anchor.text());
+            popupRoot(this).add(tooltip);
+            positionTooltip(anchor, tooltip);
+            open = true;
+        }
+        else
+        {
+            open = false;
+            if (tooltip.parent() !is null)
+                tooltip.parent().remove(tooltip);
+        }
+    }
+
+    /// Position a generic tooltip under its anchor, clamped to the window.
+    private void positionTooltip(Widget anchor, HoverTooltip tooltip)
+    {
+        const origin = anchor.localToGlobal(Point(0, 0));
+        const anchorRect = Rect(origin.x, origin.y, anchor.bounds().width,
+            anchor.bounds().height);
+        const measured = tooltip.measure(Size(int.max, int.max));
+        const gap = 6;
+        int x = anchorRect.x;
+        int y = anchorRect.bottom() + gap;
+        x = clampInt(x, 8, maxInt(8, bounds().width - measured.width - 8));
+        y = clampInt(y, 8, maxInt(8, bounds().height - measured.height - 8));
+        tooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
     private void refreshContextUsageTooltip()
@@ -2970,6 +3111,35 @@ public final class OpenCodeRoot : VBox
     public void newChatForTesting()
     {
         newChat();
+    }
+
+    /// Test-only: open the settings dialog and return the legacy checkbox, or
+    /// null when absent.
+    public CheckBox legacyToolsCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-legacy");
+    }
+
+    /// Test-only: open the settings dialog and return the legacy tooltip text
+    /// ("" when the tooltip anchor is missing).
+    public string legacyToolsTooltipForTesting()
+    {
+        showSettingsDialog();
+        return _legacyTooltipAnchor !is null ? _legacyTooltipAnchor.text() : "";
+    }
+
+    /// Test-only: depth-first search for a widget by id.
+    private static Widget findWidgetById(Widget widget, string requestedId)
+    {
+        if (widget is null) return null;
+        if (widget.id() == requestedId) return widget;
+        foreach (child; widget.children())
+        {
+            auto found = findWidgetById(child, requestedId);
+            if (found !is null) return found;
+        }
+        return null;
     }
 
     /// Test-only: pause the tool loop after results arrive so the headless
