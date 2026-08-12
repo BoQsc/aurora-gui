@@ -1,5 +1,71 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream no-stray-console-on-stream-start (2026-08-12)
+
+The broadcaster spawns the isolated WASAPI RTP helper as
+`aurora-stream.exe --audio-rtp-helper ...` with `Config.suppressConsole`
+(CREATE_NO_WINDOW). Previously `app.d` listed `--audio-rtp-helper` in
+`isDiagnosticCommand()`, so `main()` called `attachDiagnosticConsole()` →
+`AllocConsole()` and popped up a visible command prompt on every Start
+streaming. The helper communicates only through status/metrics files and UDP
+(no stdout), so `--audio-rtp-helper` was removed from the console-allocating
+list.
+
+How to verify (no GUI click needed):
+1. Spawn ffmpeg exactly like the broadcast worker and confirm it gets no
+   console window:
+   ```
+   pipeProcess([...], Redirect.stderr, null, Config.suppressConsole)
+   ```
+   then check the child's `MainWindowHandle` is 0.
+2. Spawn the helper the same way the broadcaster does:
+   ```
+   powershell "$p = Start-Process .\aurora-stream.exe -ArgumentList '--audio-rtp-helper','--port',...,'--synthetic' -PassThru -WindowStyle Hidden; Start-Sleep 4; Get-Process -Id $p.Id | select MainWindowHandle"
+   ```
+   MainWindowHandle must be 0 (no console).
+3. Manual diagnostics that print to stdout (`--version`,
+   `--list-audio-endpoints-json`, `--audio-bridge-session-test`,
+   `--pacing-test`) still call `AllocConsole` on demand and are expected to
+   open a terminal.
+
+## Aurora Stream Aurora-rendered program canvas (2026-08-12)
+
+The roadmap's "Aurora-rendered program canvas" is implemented in
+`aurora-stream` as a composited source canvas rendered by Aurora itself. When
+**Aurora-rendered program canvas (replaces desktop capture)** is checked in
+Settings → Program canvas, `BroadcastWorker` launches FFmpeg with
+`-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0` (stdin redirected)
+and a dedicated paced frame-pump thread (`runCanvasPump`) composites the canvas
+into a `Surface` each frame and writes the BGRA bytes to stdin. The existing
+`sourceScaleGraph` (`fps=60:start_time=0:round=near`, `setpts=N/(60*TB)`)
+normalizes CFR downstream, so the pump only needs approximate pacing.
+
+Key modules/files:
+- `aurora-stream/source/aurorastream/programcanvas.d` — `ProgramSource` model
+  (normalized rects, opacity, visibility), `paintProgramCanvas` compositor,
+  `ProgramCanvasPreview` widget, `ProgramCanvasEditor` (add color/image/text,
+  reorder, opacity, visibility), JSON (de)serialization.
+- `broadcast.d` — canvas fields on `BroadcastSettings`, raw-pipe capture args,
+  `runCanvasPump`, zero-copy bypass, `videoPipelineLabel`.
+- `settings.d` — schema 5 persistence.
+- `root.d` — LIVE SOURCE CANVAS preview panel + Program canvas editor section.
+
+How to verify (model level, no GUI needed):
+1. `dub test` in `aurora-stream` → 38 modules pass; new programcanvas unittests
+   cover color/image/text compositing into a `Surface` and JSON round-trips.
+2. Rebuild and run the broadcast-model smoke:
+   ```
+   dmd -i -g -w -unittest -main -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\broadcast_model_smoke.d -of=build\broadcast-model-smoke.exe user32.lib gdi32.lib shell32.lib ole32.lib avrt.lib -L/SUBSYSTEM:CONSOLE -L/ENTRY:mainCRTStartup -g -L/LIBPATH:"C:\D\dmd2\windows\lib64\mingw" -L/DEFAULTLIB:msvcrt.lib -L/DEFAULTLIB:ucrtbase.lib
+   build\broadcast-model-smoke.exe
+   ```
+   Exit 0. New assertions: canvas mode emits `rawvideo`/`bgra`/`1920x1080`/
+   `pipe:0`, never `ddagrab=`/`gdigrab`/`-nostdin`, keeps the CFR cadence
+   filters, `usesD3D11ZeroCopyVideo` false, correct `videoPipelineLabel`, and
+   the pacing diagnostic forces desktop capture.
+3. GUI launch: `dub run` (or RUN-WINDOWS.bat) opens StreamRoot; check the
+   LIVE SOURCE CANVAS panel shows the composite and the Program canvas section
+   edits sources; controls disable while streaming.
+
 ## Aurora Stream custom-titlebar variant + taskbar icon (2026-08-12)
 
 A separate `dub run --config=titlebar` build in `aurora-stream` reuses the
@@ -21,40 +87,51 @@ exe behaves the same.
 
 ## Minimal ffmpeg for redistribution: build + test method (2026-08-12)
 
-Goal: ship ffmpeg with the app at ~15-30MB instead of 300MB. Plan: cross-compile
-a trimmed static ffmpeg.exe + ffprobe.exe in GitHub Actions (no local toolchain).
+Goal: ship ffmpeg with the apps at ~15-30MB instead of 300MB. One static build
+serves BOTH aurora-cut and aurora-stream.
 
 How to build (CI only):
-1. Push the repo (incl. `.github/workflows/minimal-ffmpeg.yml` and
-   `scripts/build-minimal-ffmpeg-win64.sh`).
-2. GitHub → Actions → "Build minimal ffmpeg (Windows x64)" → Run workflow
-   (workflow_dispatch).
-3. Download artifact `ffmpeg-minimal-win64` (bin/ffmpeg.exe + bin/ffprobe.exe).
+1. Push the repo (workflow auto-runs on any change to the build script or
+   workflow; also available via Actions -> "Build minimal ffmpeg" -> Run).
+2. Download artifact `ffmpeg-minimal-win64` (bin/ffmpeg.exe + bin/ffprobe.exe).
 
-How to reproduce locally (Linux or WSL with mingw-w64 + nasm + meson/ninja):
-`scripts/build-minimal-ffmpeg-win64.sh` — set `WINE=wine64` to also run the
-smoke test. FFMPEG_TAG env overrides the release (default n8.1).
+How to reproduce locally (Linux or WSL with mingw-w64 + nasm + meson/ninja +
+cmake): `scripts/build-minimal-ffmpeg-win64.sh` — set `WINE=wine` to also run
+the smoke test. FFMPEG_TAG env overrides the release (default n8.1).
 
-The build enables ONLY Aurora Cut's needs (verified against the installed
-ffmpeg's `-encoders/-decoders/-filters/-formats/-protocols`):
-- demuxers: lavfi, mov/mp4, matroska/mkv/webm, mp3, wav, flac, ogg, image2, gif, rawvideo
-- muxers: mp4 (+faststart), mp3, image2, rawvideo, s16le, null
-- encoders: libx264, h264_nvenc, aac, libmp3lame, ppm
-- decoders: h264, hevc, vp8/9, av1+libdav1d, mpeg4/1/2, prores; png/jpeg/webp/bmp/gif;
-  aac/mp3/flac/vorbis/opus/ac3/eac3; pcm + adpcm_ima_wav
-- ~31 filters incl. the compositor graph (color/anullsrc/testsrc2, overlay,
-  scale, pad, crop, rotate, fade, gblur, geq, amix, afade, adelay, alimiter,
-  showwavespic, ...) + swscale + swresample + zlib + d3d11va/dxva2 hwaccels.
+The build enables ONLY what the two apps use (audited call-site by call-site;
+all names cross-checked against ffmpeg's `-encoders/-decoders/-filters/
+-formats/-protocols/-devices`):
+- aurora-cut surface: mov/mkv/webm/mp3/wav/flac/ogg/image2/gif demuxers,
+  mp4/mp3/image2/rawvideo/s16le/null muxers, libx264+nvenc+qsv+amf+aac+
+  libmp3lame+ppm+rawvideo+pcm_s16le encoders, ~35 decoders incl. images +
+  wrapped_avframe/rawvideo (lavfi + raw pipe), the compositor filter graph,
+  d3d11va/dxva2 decode hwaccels, file/pipe protocols.
+- aurora-stream surface: ddagrab/gdigrab/dshow + lavfi input devices,
+  rawvideo + sdp demuxers (rawvideo pipe:0 canvas, sdp+udp/rtp audio),
+  flv + fifo muxers, udp/rtp/rtmp/rtmps protocols (schannel TLS for rtmps),
+  settb/asetpts/hwdownload filters, h264_nvenc/libx264/aac encoders.
+- Internal codecs with no deps (wrapped_avframe, rawvideo, pcm_s16le, null)
+  are NOT listed in configure docs but ARE needed at runtime and were enabled
+  explicitly.
 
-Smoke test (CI): under wine64, run the same lavfi encode commands as
-`scripts/verify-export.sh` (color+sine → base-av.mp4 via libx264+aac,
-overlay.mp4, extra.mp3 via libmp3lame) then ffprobe the outputs.
+CI verification:
+- smoke test under wine: the verify-export.sh lavfi commands (color+sine ->
+  libx264+aac base-av.mp4, overlay.mp4, libmp3lame extra.mp3) + ffprobe.
+- inventory step prints -version/-encoders/-decoders/-filters/-protocols/
+  -devices so the run shows ddagrab/dshow/gdigrab/udp/rtmp/rtmps are present.
+- configure failures dump ffbuild/config.log.
 
-To verify after download on Windows: drop the minimal exes into a folder on
-PATH, launch aurora-cut, and check (a) import + play MP4/MKV/WebM/GIF/PNG,
-(b) MP4 export (CPU + GPU fallback), (c) MP3 export, (d) yt-dlp normalization,
-(e) audio waveform preview. Watch `aurora-cut.log` for `-c:v libdav1d`,
-`-hwaccel` and `h264_nvenc` command lines actually executing.
+How to verify on the real machine (definitive — wine has no GPU/capture):
+1. Put the minimal ffmpeg.exe + ffprobe.exe on PATH (ahead of any other).
+2. aurora-cut: `scripts/verify-export.sh` and `scripts/verify-headless.sh`,
+   `scripts/verify-playback-stress.sh`; then launch the GUI and do: import
+   MP4/MKV/WebM/GIF/PNG, MP4 export (CPU + GPU), MP3 export, waveform
+   preview, yt-dlp normalization. Watch aurora-cut.log for executed commands.
+3. aurora-stream: `aurora-stream/RUN-ALL-DIAGNOSTICS.bat` +
+   `RUN-QUALITY-DIAGNOSTIC.bat` (exercise ddagrab, fifo->flv, nvenc,
+   sdp/udp audio). A local .flv output verifies the fifo/flv path without
+   needing a real Twitch/YouTube key.
 
 ## Titlebar polish: native cursor + centered search text (2026-08-12)
 
