@@ -611,7 +611,8 @@ private final class MessageBubble : Widget
             canvas.drawLayout(Point(padH, y + 4), layout, opencodeErrorRed);
         }
 
-        addMessageCopyTarget(width);
+        // Only code-block copy pills remain; the per-message Copy pill was
+        // removed (Copy lives in the right-click context menu).
         foreach (index; 0 .. _copyRects.length)
         {
             if (_copyLabels[index].length == 0) continue;
@@ -621,7 +622,6 @@ private final class MessageBubble : Widget
         drawActionPill(canvas, width, height);
         drawFooter(canvas, width, height);
     }
-
     private void drawActionPill(ref Canvas canvas, int width, int height)
     {
         _actionRect = Rect.init;
@@ -733,12 +733,6 @@ private final class MessageBubble : Widget
                 _copyLabels ~= to!string(item.codeText);
             }
         }
-    }
-
-    private void addMessageCopyTarget(int width)
-    {
-        _copyRects ~= Rect(width - padH - 40, 5, 40, 18);
-        _copyLabels ~= to!string(_content);
     }
 
     private void drawCopyPill(ref Canvas canvas, Rect rect, bool hovered)

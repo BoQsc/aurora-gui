@@ -1,5 +1,11 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
+
+The top-right "Copy" pill on every message bubble was redundant with "Copy
+message" in the right-click context menu; it was removed. Code-block copy
+pills are unchanged (they copy just the code block).
+
 ## Aurora OpenCode Pro hidden tool-call wrapper (2026-08-12)
 
 An assistant message that only requested tools (no content, no reasoning) no

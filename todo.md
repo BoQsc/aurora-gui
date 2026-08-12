@@ -1,5 +1,12 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Duplicate message Copy button (user feedback)
+- [x] User: "we have copy button for messages in the context menu, then why we
+      have duplicate copy on the right side for each message." Removed the
+      per-message "Copy" pill (top-right of every bubble); Copy now lives only
+      in the right-click context menu. Code-block copy pills remain (they copy
+      just the code, distinct from the message).
+
 ## 2026-08-12 — Empty tool-call wrapper bubble still visible (user complaint)
 - [x] User: "you removed [the pill/tokens] but the ui empty bubbles are still
       there." The assistant message that requested tools rendered as an empty
