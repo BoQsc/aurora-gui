@@ -174,17 +174,18 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
       --cross-prefix="$cross-" --enable-cross-compile \
-      --disable-doc --disable-debug --disable-avdevice \
+      --disable-doc --disable-debug \
       --disable-network --disable-everything \
       --enable-gpl \
       --enable-static --disable-shared --enable-small \
       --enable-avcodec --enable-avformat --enable-avfilter \
-      --enable-swscale --enable-swresample \
+      --enable-avdevice --enable-swscale --enable-swresample \
       --enable-protocol=file,pipe \
       --enable-libx264 --enable-libmp3lame --enable-libdav1d \
       --enable-zlib --enable-nvenc --enable-amf --enable-libvpl \
       --enable-hwaccel=d3d11va,dxva2 \
-      --enable-demuxer=lavfi,mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
+      --enable-indev=lavfi \
+      --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
       --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null \
       --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores \
       --enable-decoder=png,mjpeg,webp,bmp,gif \
