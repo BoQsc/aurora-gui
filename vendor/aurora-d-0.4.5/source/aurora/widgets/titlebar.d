@@ -62,6 +62,7 @@ class TitleBar : Widget
     private int _cornerRadius = 0;
     private int _titleWidth;
     private int _titleMinWidth = 0;
+    private int _contentWidth;
 
     private OptionalColor _background;
     private OptionalColor _inactiveBackground;
@@ -257,6 +258,18 @@ class TitleBar : Widget
         invalidate();
     }
 
+    /** Constrain and center the content region; zero spans the full width. */
+    void setContentWidth(int value)
+    {
+        value = maxInt(0, value);
+        if (_contentWidth == value) return;
+        _contentWidth = value;
+        onLayout();
+        invalidate();
+    }
+
+    int contentWidth() const @safe pure nothrow @nogc { return _contentWidth; }
+
     /** Round only the top corners; the bottom stays square. */
     void setCornerRadius(int value)
     {
@@ -387,7 +400,14 @@ class TitleBar : Widget
         const left = titleEmpty() ? titleAreaLeft() : titleRect().right() + _spacing;
         const right = buttonsLeft() - _spacing;
         if (right <= left) return Rect.init;
-        return Rect(left, 3, right - left, maxInt(1, bounds().height - 6));
+        int width = right - left;
+        int x = left;
+        if (_contentWidth > 0 && _contentWidth < width)
+        {
+            width = _contentWidth;
+            x = left + (right - left - width) / 2;
+        }
+        return Rect(x, 3, width, maxInt(1, bounds().height - 6));
     }
 
     Rect captionRect(TitleBarControl control) const @safe pure nothrow @nogc
@@ -429,10 +449,11 @@ class TitleBar : Widget
         }
         const icon = iconRect();
         if (!icon.empty && icon.contains(position)) return TitleBarControl.icon;
-        const titleArea = titleRect();
-        if (!titleArea.empty && titleArea.contains(position))
-            return TitleBarControl.title;
-        return TitleBarControl.none;
+        // Everything else on the bar is the draggable title surface, including
+        // the space around a narrow, centered content widget. The content
+        // widget itself is hit-tested as a child first, so this is only
+        // reached for points outside it.
+        return TitleBarControl.title;
     }
 
     protected override Size onMeasure(Size available)

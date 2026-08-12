@@ -110,6 +110,23 @@ int main()
     assert(!maximized, "Double-click did not restore with systemMoveOnDrag");
     bar.setSystemMoveOnDrag(false);
 
+    // --- A native double-click (WM_LBUTTONDBLCLK) also maximizes. ---
+    bar.setMaximized(false);
+    maximized = false;
+    const nativePoint = titleCenter(bar);
+    Event nativeDbl;
+    nativeDbl.type = EventType.mouseDown;
+    nativeDbl.nativeDoubleClick = true;
+    nativeDbl.button = MouseButton.left;
+    nativeDbl.position = nativePoint;
+    nativeDbl.globalPosition = nativePoint;
+    nativeDbl.precisePosition = PointF(nativePoint);
+    nativeDbl.preciseGlobalPosition = PointF(nativePoint);
+    nativeDbl.hasPrecisePosition = true;
+    window.onNativeEvent(nativeDbl);
+    assert(maximized && bar.maximized(),
+        "Native double-click did not maximize");
+
     // --- Drag down while maximized restores, then continues the drag. ---
     // In-canvas self-move: restore fires on drag, the bar leaves maximize and
     // keeps moving from the re-anchored pointer.
@@ -230,6 +247,20 @@ int main()
         "Fixed title width not honored");
     assert(bar.contentRect().x == bar.titleRect().right() + 8,
         "Content does not follow the fixed title region");
+
+    // A narrow centered content widget keeps the surrounding bar draggable.
+    bar.setContentWidth(200);
+    const fieldLeft = bar.contentRect().x;
+    const fieldRight = bar.contentRect().right();
+    assert(bar.controlAt(Point(fieldLeft - 20, 20)) == TitleBarControl.title,
+        "Area left of the field is not draggable title surface");
+    assert(bar.controlAt(Point(fieldRight + 20, 20)) == TitleBarControl.title,
+        "Area right of the field is not draggable title surface");
+    assert(bar.contentRect().width == 200,
+        "Content width constraint not honored");
+    bar.setContentWidth(0);
+    assert(bar.contentRect().width > 200,
+        "Content did not restore to full width after clearing contentWidth");
 
     // --- Active/inactive state and maximized glyph bookkeeping. ---
     bar.setActive(false);

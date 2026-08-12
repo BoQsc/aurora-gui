@@ -27,7 +27,10 @@ final class TitleBarDemoRoot : Widget
     {
         _window = window;
         _titleBar = add(new TitleBar());
-        _titleBar.setTitle("Aurora Custom TitleBar");
+        _titleBar.setTitle("Aurora");
+        // Balance the left title region against the right caption buttons so
+        // the hosted search field is centered horizontally in the titlebar.
+        _titleBar.setTitleWidth(100);
         _titleBar.setIcon(IconKind.computer);
         _titleBar.setBarHeight(44);
         _titleBar.setCornerRadius(8);
@@ -41,6 +44,7 @@ final class TitleBarDemoRoot : Widget
         searchField.setContentCentered(true);
         searchField.setTransparentBackground(true);
         searchField.setTextColor(Color.fromHex(0xf2f6fa));
+        _titleBar.setContentWidth(300);
         _titleBar.setContent(searchField);
 
         _message = add(new Label("Drag the bar, double-click, right-click, or press the caption buttons."));

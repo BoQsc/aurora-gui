@@ -361,8 +361,11 @@ else version (Windows)
         // Aurora owns invalidation and Vulkan does not need a private window
         // DC. CS_HREDRAW/CS_VREDRAW make Windows erase/invalidate the complete
         // client area during every sizing step, which exposes the class
-        // background before the next presented image.
-        wc.style = 0;
+        // background before the next presented image. CS_DBLCLKS lets Windows
+        // detect double-clicks (respecting the user's system double-click
+        // time/area settings) and deliver WM_*BUTTONDBLCLK instead of relying
+        // on the application's own fixed 500 ms / 6 px counting.
+        wc.style = CS_DBLCLKS;
         wc.lpfnWndProc = &auroraWindowProc;
         wc.hInstance = GetModuleHandleW(null);
         wc.hCursor = LoadCursorW(null, cast(LPCWSTR) cursorArrow);
@@ -1773,16 +1776,26 @@ else version (Windows)
                 case WM_MBUTTONDOWN:
                 case WM_RBUTTONDOWN:
                 case WM_XBUTTONDOWN:
+                case WM_LBUTTONDBLCLK:
+                case WM_MBUTTONDBLCLK:
+                case WM_RBUTTONDBLCLK:
+                case WM_XBUTTONDBLCLK:
                     // WM_MOUSEACTIVATE is normally sent first. Repeat the
                     // activation here as a defensive path for synthesized or
                     // device-specific button input that skips that message.
                     activateFromPointerInteraction();
                     SetCapture(_hwnd);
                     event.type = EventType.mouseDown;
+                    event.nativeDoubleClick =
+                        message == WM_LBUTTONDBLCLK ||
+                        message == WM_MBUTTONDBLCLK ||
+                        message == WM_RBUTTONDBLCLK ||
+                        message == WM_XBUTTONDBLCLK;
                     fillMouseEvent(event, lParam);
                     event.button = buttonForMessage(message, wParam);
                     sink.onNativeEvent(event);
-                    return message == WM_XBUTTONDOWN ? TRUE : 0;
+                    return (message == WM_XBUTTONDOWN ||
+                        message == WM_XBUTTONDBLCLK) ? TRUE : 0;
                 case WM_LBUTTONUP:
                 case WM_MBUTTONUP:
                 case WM_RBUTTONUP:
@@ -2114,15 +2127,19 @@ else version (Windows)
             switch (message)
             {
                 case WM_LBUTTONDOWN:
+                case WM_LBUTTONDBLCLK:
                 case WM_LBUTTONUP:
                     return MouseButton.left;
                 case WM_MBUTTONDOWN:
+                case WM_MBUTTONDBLCLK:
                 case WM_MBUTTONUP:
                     return MouseButton.middle;
                 case WM_RBUTTONDOWN:
+                case WM_RBUTTONDBLCLK:
                 case WM_RBUTTONUP:
                     return MouseButton.right;
                 case WM_XBUTTONDOWN:
+                case WM_XBUTTONDBLCLK:
                 case WM_XBUTTONUP:
                     return ((cast(size_t) wParam >> 16) & 0xffff) == XBUTTON1
                         ? MouseButton.extra1 : MouseButton.extra2;

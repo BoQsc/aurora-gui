@@ -1290,6 +1290,18 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void updateClickCount(Widget target, ref Event event)
     {
+        // The OS generated this press as a native double-click (respecting the
+        // user's system double-click time/area), so the click count is known.
+        if (event.nativeDoubleClick)
+        {
+            _clickCount = 2;
+            _lastClickTarget = target;
+            _lastClickButton = event.button;
+            _lastClickTime = event.timestampMs;
+            _lastClickPosition = event.globalPosition;
+            event.clickCount = _clickCount;
+            return;
+        }
         const dx = event.globalPosition.x - _lastClickPosition.x;
         const dy = event.globalPosition.y - _lastClickPosition.y;
         const closeEnough = dx * dx + dy * dy <= 36;

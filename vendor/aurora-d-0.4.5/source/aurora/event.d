@@ -168,6 +168,8 @@ struct Event
     DragAction dragAction;
     bool repeat;
     int clickCount = 1;
+    /** Set when the OS generated this press as a native double-click. */
+    bool nativeDoubleClick;
     long timestampMs;
     double deltaSeconds = 0.0;
 
