@@ -1,5 +1,35 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — ffmpeg is 300MB and cannot be redistributed with the app
+- [x] Diagnosed: the app only needs a small subset of ffmpeg; the 300MB build
+      is the gyan.dev full build (236 encoders / 538 decoders / 555 filters).
+- [x] Checked prebuilt alternatives (no trimming needed): gyan essentials
+      33MB .7z but "contains all internal components" + 34 libs; BtbN win64
+      lgpl-shared ~47MB zip. None are genuinely small. Verified via gyan.dev
+      and the BtbN GitHub releases API.
+- [x] Decided against installing a local toolchain (WSL + mingw) — user called
+      it "a mess". Instead wrote a GitHub Actions workflow that cross-compiles
+      a trimmed static ffmpeg.exe + ffprobe.exe on ubuntu runners (zero local
+      setup), targeting ~15-30MB total.
+- [x] Added `scripts/build-minimal-ffmpeg-win64.sh` (builds zlib, x264, lame,
+      dav1d, nv-codec-headers, then ffmpeg n8.1 with --disable-everything and
+      only Aurora Cut's codecs/filters; optional WINE smoke test using the
+      verify-export.sh clip commands). Every encoder/decoder/filter/muxer/
+      protocol name in the script was verified against the installed ffmpeg
+      component lists.
+- [x] Added `.github/workflows/minimal-ffmpeg.yml` (workflow_dispatch; builds,
+      runs wine smoke test, verifies inventory, uploads artifact).
+- [ ] Not yet run: workflow must be pushed + triggered from the Actions tab.
+      Expected artifact: `ffmpeg-minimal-win64` (~15-30MB) containing
+      ffmpeg.exe + ffprobe.exe. Verify in the running GUI: import/playback,
+      MP4 + MP3 export, GPU encode fallback, yt-dlp normalization.
+- [ ] Not yet decided: whether the app ships the minimal build in `vendor/`
+      and stops requiring ffmpeg on PATH; aurora-stream's extra needs
+      (ddagrab, fifo, udp/rtp/sdp, flv) would need a second configure.
+- [ ] Not yet verified: whether `-hwaccel d3d11va/dxva2` and `h264_nvenc`
+      actually work in the trimmed build (they are compiled in, but only the
+      wine smoke test ran on CI without a GPU).
+
 ## 2026-08-12 — Titlebar: no custom cursor + centered search text (user feedback)
 - [x] "I don't like how we use custom cursor": during titlebar drags the
       synchronized-pointer path hid the native cursor and drew Aurora's vector

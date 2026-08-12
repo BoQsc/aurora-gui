@@ -1,0 +1,48 @@
+name: Build minimal ffmpeg (Windows x64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install cross-compile toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mingw-w64 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+            pkg-config-mingw-w64-x86-64 nasm make wget git wine64
+          python3 -m pip install --user --break-system-packages meson ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build minimal static ffmpeg/ffprobe
+        run: |
+          export WINE=wine64
+          scripts/build-minimal-ffmpeg-win64.sh
+
+      - name: Verify encoder/decoder/filter inventory
+        run: |
+          export WINEDEBUG=-all
+          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -version
+          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -encoders
+          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -decoders
+          wine64 build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
+
+      - name: Upload minimal ffmpeg
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-minimal-win64
+          path: |
+            build/ffmpeg-minimal/dist/bin/ffmpeg.exe
+            build/ffmpeg-minimal/dist/bin/ffprobe.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -1,5 +1,42 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Minimal ffmpeg for redistribution: build + test method (2026-08-12)
+
+Goal: ship ffmpeg with the app at ~15-30MB instead of 300MB. Plan: cross-compile
+a trimmed static ffmpeg.exe + ffprobe.exe in GitHub Actions (no local toolchain).
+
+How to build (CI only):
+1. Push the repo (incl. `.github/workflows/minimal-ffmpeg.yml` and
+   `scripts/build-minimal-ffmpeg-win64.sh`).
+2. GitHub → Actions → "Build minimal ffmpeg (Windows x64)" → Run workflow
+   (workflow_dispatch).
+3. Download artifact `ffmpeg-minimal-win64` (bin/ffmpeg.exe + bin/ffprobe.exe).
+
+How to reproduce locally (Linux or WSL with mingw-w64 + nasm + meson/ninja):
+`scripts/build-minimal-ffmpeg-win64.sh` — set `WINE=wine64` to also run the
+smoke test. FFMPEG_TAG env overrides the release (default n8.1).
+
+The build enables ONLY Aurora Cut's needs (verified against the installed
+ffmpeg's `-encoders/-decoders/-filters/-formats/-protocols`):
+- demuxers: lavfi, mov/mp4, matroska/mkv/webm, mp3, wav, flac, ogg, image2, gif, rawvideo
+- muxers: mp4 (+faststart), mp3, image2, rawvideo, s16le, null
+- encoders: libx264, h264_nvenc, aac, libmp3lame, ppm
+- decoders: h264, hevc, vp8/9, av1+libdav1d, mpeg4/1/2, prores; png/jpeg/webp/bmp/gif;
+  aac/mp3/flac/vorbis/opus/ac3/eac3; pcm + adpcm_ima_wav
+- ~31 filters incl. the compositor graph (color/anullsrc/testsrc2, overlay,
+  scale, pad, crop, rotate, fade, gblur, geq, amix, afade, adelay, alimiter,
+  showwavespic, ...) + swscale + swresample + zlib + d3d11va/dxva2 hwaccels.
+
+Smoke test (CI): under wine64, run the same lavfi encode commands as
+`scripts/verify-export.sh` (color+sine → base-av.mp4 via libx264+aac,
+overlay.mp4, extra.mp3 via libmp3lame) then ffprobe the outputs.
+
+To verify after download on Windows: drop the minimal exes into a folder on
+PATH, launch aurora-cut, and check (a) import + play MP4/MKV/WebM/GIF/PNG,
+(b) MP4 export (CPU + GPU fallback), (c) MP3 export, (d) yt-dlp normalization,
+(e) audio waveform preview. Watch `aurora-cut.log` for `-c:v libdav1d`,
+`-hwaccel` and `h264_nvenc` command lines actually executing.
+
 ## Titlebar polish: native cursor + centered search text (2026-08-12)
 
 - The demo disabled Aurora's synchronized (drawn) cursor during titlebar drags
