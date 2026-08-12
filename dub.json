@@ -24,6 +24,10 @@
     "winmm",
     "wininet"
   ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
   "buildTypes": {
     "portable-release": {
       "buildOptions": [

@@ -116,6 +116,19 @@ int main(string[] arguments)
     {
         if (argument == "--version" || argument == "-v")
         {
+            // The app links as the Windows GUI subsystem (no console), so the
+            // version command must allocate one for its stdout.
+            version (Windows)
+            {
+                import core.sys.windows.windows : AllocConsole;
+                import core.stdc.stdio : fflush, freopen, stderr, stdout, stdin;
+                if (AllocConsole())
+                {
+                    freopen("CONOUT$", "w", stdout);
+                    freopen("CONOUT$", "w", stderr);
+                    freopen("CONIN$", "r", stdin);
+                }
+            }
             writeln(appDisplayName);
             return 0;
         }

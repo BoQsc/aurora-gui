@@ -63,6 +63,10 @@
         "user32",
         "gdi32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -88,6 +92,10 @@
         "user32",
         "gdi32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -117,6 +125,10 @@
         "gdi32",
         "shell32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -146,6 +158,10 @@
         "gdi32",
         "shell32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -171,6 +187,10 @@
         "user32",
         "gdi32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -196,6 +216,10 @@
         "user32",
         "gdi32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -221,6 +245,10 @@
         "user32",
         "gdi32"
       ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
       "lflags-osx": [
         "-framework",
         "AppKit",

@@ -42,6 +42,10 @@
         "ole32",
         "avrt"
       ],
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ],
       "lflags-osx": [
         "-framework",
         "AppKit",
@@ -69,6 +73,10 @@
         "shell32",
         "ole32",
         "avrt"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
       ],
       "lflags-osx": [
         "-framework",

@@ -168,6 +168,11 @@ private int runApplication(string executablePath)
 
 int main(string[] arguments)
 {
+    // The app links as the Windows GUI subsystem (no console), so a diagnostic
+    // command must allocate one for its stdout output.
+    if (arguments.length > 1 && isDiagnosticCommand(arguments[1]))
+        attachDiagnosticConsole();
+
     if (arguments.length > 1 &&
         (arguments[1] == "--version" || arguments[1] == "-v"))
     {
@@ -189,9 +194,28 @@ int main(string[] arguments)
         string details;
         try details = "Aurora Stream could not start.\r\n\r\n" ~ error.toString();
         catch (Throwable) details = "Aurora Stream could not start: " ~ error.msg;
-        stderr.writeln(details);
-        stderr.flush();
         recordStartupFailure(details);
         return 1;
+    }
+}
+
+private bool isDiagnosticCommand(string command)
+{
+    return command == "--version" || command == "-v" ||
+        command == "--list-audio-endpoints-json" ||
+        command == "--audio-bridge-session-test" ||
+        command == "--audio-rtp-helper" || command == "--pacing-test";
+}
+
+private void attachDiagnosticConsole()
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : AllocConsole;
+        import core.stdc.stdio : fflush, freopen, stderr, stdin, stdout;
+        if (!AllocConsole()) return;
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
     }
 }

@@ -23,6 +23,27 @@
   and `aurora-opencode-pro/dub.json`.
 - Console-subsystem CLI/tests stay console so their stdout still works.
 
+## Aurora Windows GUI-subsystem policy (taskbar icon)
+
+Every windowed Aurora app must link as the Windows GUI subsystem
+(`lflags-windows: ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"]`). A
+console-subsystem GUI app opens a console window on double-click that claims
+the taskbar button with an exe-path title and no icon, even though the real
+window's icon is set via WM_SETICON/class icons. GUI-subsystem keeps only the
+real window in the taskbar.
+
+- `scripts/verify-windows-gui-subsystem.py` enforces this across every DUB
+  recipe (headless `AuroraHeadless` test configs are exempt and stay console).
+  Wired into the portable-windows CI workflow.
+- Applied to aurora-cut, aurora-stream (`application` + `titlebar`), and the
+  aurora-d demos. Apps that also need stdout for CLI diagnostics
+  (`--version`, audio-bridge/pacing tests) call `AllocConsole` + `freopen` on
+  demand instead of keeping the console subsystem.
+- `aurora.platform.win32` additionally publishes the loaded icon to the window
+  class (`SetClassLongPtr GCLP_HICON/GCLP_HICONSM`) and re-applies the icons
+  after the window is shown via a one-shot timer, so Explorer picks up the
+  application icon for the taskbar button.
+
 ## Aurora frameless-window drag fixes
 
 - `aurora.window.refreshResizeProxyFromScene` now copies the software

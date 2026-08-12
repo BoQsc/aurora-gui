@@ -1,5 +1,59 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — GUI-subsystem apps must not write to stdout at runtime (crash)
+- [x] User: double-clicking the titlebar to maximize shut down the whole app.
+      Root cause: after switching aurora-stream to GUI-subsystem (no console), a
+      `writeln` on the maximize action wrote to invalid stdout and crashed
+      (verified with a minimal GUI-subsystem test: `writeln` without a console
+      exits 1). Removed all GUI-path `writeln` calls from the titlebar variant
+      (minimize/maximize/restore messages) and dropped the `stderr.writeln` in
+      the startup catch (the file+MessageBox `recordStartupFailure` already
+      reports). Only the `--version`/diagnostic paths still write, and only
+      after `AllocConsole`.
+- [x] Verified: aurora-stream `application` + `titlebar` configs build; the
+      titlebar variant launches and stays up; no runtime stdout writes remain.
+
+## 2026-08-12 — Enforce Windows GUI-subsystem for all Aurora windowed apps
+- [x] Added `scripts/verify-windows-gui-subsystem.py` (top-level policy check,
+      wired into the portable-windows CI workflow) that requires every DUB
+      configuration whose main source constructs a `GuiWindow` to link with
+      `lflags-windows: ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"]`.
+      Headless test configs (`AuroraHeadless`) stay console for their stdout.
+- [x] Applied the rule to every windowed app: aurora-cut, aurora-stream
+      (`application` + `titlebar`), and the aurora-d demos (notepad,
+      file-explorer, windows-file-manager, desktop, taskbar, titlebar,
+      font-gallery). CLI diagnostics in aurora-cut/aurora-stream now allocate a
+      console on demand (`AllocConsole` + `freopen`) for `--version` etc.
+- [x] Rationale: a console-subsystem GUI app opens a console window on
+      double-click that steals the taskbar button (exe-path title, no icon).
+      GUI-subsystem keeps only the real window (with its icon) in the taskbar.
+- [x] Verified: `python scripts/verify-windows-gui-subsystem.py` passes for all
+      manifests; aurora unittest suite (30 modules), editor smoke, titlebar
+      smoke, and aurora-cut + both aurora-stream + vendor demo builds all pass.
+
+## 2026-08-12 — Aurora Stream custom-titlebar variant + taskbar icon (user request)
+- [x] Added a separate `titlebar` dub configuration in aurora-stream (default
+      `application` config untouched) with a frameless window wrapping the
+      unchanged `StreamRoot` under the reusable `TitleBar` widget. New main
+      `source/app_titlebar.d`, shared CLI helpers
+      `source/aurorastream/entry.d`, launcher `RUN-WINDOWS-TITLEBAR.bat`.
+- [x] `aurora.image` gained `loadIcoImage`/`decodeIcoImage` (parses the ICO
+      container little-endian, decodes PNG-compressed and classic 24/32/8-bit
+      BMP entries with AND-mask transparency); `TitleBar.setIconImage(RgbaImage)`
+      shows a raster icon; the titlebar variant displays the real
+      `aurora-stream.ico`.
+- [x] Taskbar icon root cause: aurora-stream was console-subsystem, so
+      double-clicking spawned a console window that took the taskbar slot with
+      the exe-path title and no icon. Fixed by making the `titlebar` build
+      GUI-subsystem (`/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, like
+      aurora-opencode); the CLI diagnostics now allocate a console on demand
+      (`AllocConsole`). The window/class icons are set (WM_SETICON +
+      SetClassLongPtr GCLP_HICON/HICONSM) and re-applied after show via a
+      one-shot timer.
+- [x] Verified: aurora unittest suite (30 modules), titlebar smoke, both
+      aurora-stream configs build; the titlebar variant launches with no console
+      and shows the taskbar icon.
+
 ## 2026-08-12 — ffmpeg is 300MB and cannot be redistributed with the app
 - [x] Diagnosed: the app only needs a small subset of ffmpeg; the 300MB build
       is the gyan.dev full build (236 encoders / 538 decoders / 555 filters).

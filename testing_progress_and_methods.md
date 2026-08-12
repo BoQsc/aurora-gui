@@ -1,5 +1,24 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream custom-titlebar variant + taskbar icon (2026-08-12)
+
+A separate `dub run --config=titlebar` build in `aurora-stream` reuses the
+unchanged `StreamRoot` under the reusable `TitleBar` widget (frameless window,
+drag/maximize/restore/system menu, real `.ico` in the titlebar via
+`TitleBar.setIconImage` and the new `aurora.image.loadIcoImage`).
+
+**Taskbar icon:** the root cause was that aurora-stream was console-subsystem —
+double-clicking the exe opened a console window that claimed the taskbar button
+with the exe-path title and no icon (verified: the window/class icons were
+already set via WM_SETICON/SetClassLongPtr). The `titlebar` build is now
+GUI-subsystem (`/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, like
+aurora-opencode), so only the GUI window appears in the taskbar with its icon.
+CLI diagnostics allocate a console on demand (`AllocConsole` + `freopen`).
+
+Verify: `dub run --config=titlebar` (or RUN-WINDOWS-TITLEBAR.bat) shows the
+aurora-stream icon in the taskbar with no console window; double-clicking the
+exe behaves the same.
+
 ## Minimal ffmpeg for redistribution: build + test method (2026-08-12)
 
 Goal: ship ffmpeg with the app at ~15-30MB instead of 300MB. Plan: cross-compile

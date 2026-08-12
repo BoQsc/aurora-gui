@@ -121,6 +121,7 @@ else version (Windows)
     private enum UINT dragQueryFileCount = 0xffff_ffff;
     private enum UINT wmAuroraWake = WM_APP + 0x31;
     private enum UINT_PTR liveResizeTimerId = 0xA304;
+    private enum UINT_PTR iconRefreshTimerId = 0xA305;
     private enum uint maximumMessagesPerBatch = 64;
     private enum WPARAM unicodeNoChar = 0xffff;
     private enum int wheelDelta = 120;
@@ -1044,6 +1045,13 @@ else version (Windows)
                 (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
             ShowWindow(_hwnd, command);
             UpdateWindow(_hwnd);
+            // Re-publish the icons after the window becomes visible so the
+            // taskbar button (created at show time) picks up the application
+            // icon instead of a generic class default, and schedule a second
+            // pass once Explorer has processed the taskbar-created notification.
+            applyWindowIcons();
+            if (_largeIcon !is null || _smallIcon !is null)
+                SetTimer(_hwnd, iconRefreshTimerId, 1500, null);
             updateClientSize();
             notifyResize();
         }
@@ -1236,17 +1244,30 @@ else version (Windows)
             if (_hwnd is null || path.length == 0) return;
             auto large = loadWindowIcon(path, SM_CXICON, SM_CYICON);
             auto small = loadWindowIcon(path, SM_CXSMICON, SM_CYSMICON);
-            if (large !is null)
+            if (large is null && small is null) return;
+            _largeIcon = large;
+            _smallIcon = small;
+            applyWindowIcons();
+        }
+
+        /// Publish the loaded icons to both the window and its class so the
+        /// taskbar, alt-tab, and the frame always use them.
+        private void applyWindowIcons()
+        {
+            if (_hwnd is null) return;
+            if (_largeIcon !is null)
             {
                 SendMessageW(_hwnd, WM_SETICON, ICON_BIG,
-                    cast(LPARAM) large);
-                _largeIcon = large;
+                    cast(LPARAM) _largeIcon);
+                SetClassLongPtrW(_hwnd, GCLP_HICON,
+                    cast(LONG_PTR) _largeIcon);
             }
-            if (small !is null)
+            if (_smallIcon !is null)
             {
                 SendMessageW(_hwnd, WM_SETICON, ICON_SMALL,
-                    cast(LPARAM) small);
-                _smallIcon = small;
+                    cast(LPARAM) _smallIcon);
+                SetClassLongPtrW(_hwnd, GCLP_HICONSM,
+                    cast(LONG_PTR) _smallIcon);
             }
         }
 
@@ -1590,6 +1611,16 @@ else version (Windows)
                         // paint inside it so live resizing remains responsive.
                         sink.onNativeTick(0.016);
                         paintNow();
+                        return 0;
+                    }
+                    if (wParam == iconRefreshTimerId)
+                    {
+                        KillTimer(_hwnd, iconRefreshTimerId);
+                        // Explorer creates the taskbar button asynchronously
+                        // after the window is shown; re-publishing the icons a
+                        // moment later ensures the button shows the application
+                        // icon instead of a generic class default.
+                        applyWindowIcons();
                         return 0;
                     }
                     break;

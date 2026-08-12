@@ -7,7 +7,7 @@ import aurorastream.entry : applicationIconPath, printAudioEndpointsJson,
     recordStartupFailure, runAudioBridgeSessionTest;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.root : StreamRoot;
-import std.stdio : stderr, writeln;
+import std.stdio : writeln;
 
 /**
  * Custom-titlebar wrapper for Aurora Stream.
@@ -58,7 +58,7 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setButtonPressedColor(Color.fromHex(0x20262d));
         _titleBar.setCloseHoverColor(Color.fromHex(0xe5484d));
         _titleBar.setClosePressedColor(Color.fromHex(0xbf3438));
-        _titleBar.onMinimize = delegate() { writeln("Aurora Stream: minimize requested"); };
+        _titleBar.onMinimize = delegate() {};
         _titleBar.onMaximizeToggle = &toggleMaximize;
         _titleBar.onClose = delegate() { _window.close(); };
         _titleBar.onSystemMenu = &showSystemMenu;
@@ -79,7 +79,6 @@ final class TitleBarStreamRoot : Widget
         _maximized = !_maximized;
         _titleBar.setMaximized(_maximized);
         _window.toggleFullscreen();
-        writeln("Aurora Stream: ", _maximized ? "Maximized" : "Restored");
     }
 
     private void restoreFromDrag(PointF pointer, PointF pressPointer)
@@ -112,7 +111,6 @@ final class TitleBarStreamRoot : Widget
         _pendingOrigin = origin;
         _pendingPointer = hasScreen ? screen : pointer;
         _anchorReady = true;
-        writeln("Aurora Stream: Restored (drag)");
     }
 
     private void beginDrag(PointF startPointer, PointF startPosition)
@@ -222,6 +220,11 @@ private int runTitleBarApplication(string executablePath)
 
 int main(string[] arguments)
 {
+    // The titlebar build is GUI-subsystem (no console), so a diagnostic
+    // command must create one for its stdout output.
+    if (arguments.length > 1 && isDiagnosticCommand(arguments[1]))
+        attachDiagnosticConsole();
+
     if (arguments.length > 1 &&
         (arguments[1] == "--version" || arguments[1] == "-v"))
     {
@@ -243,9 +246,28 @@ int main(string[] arguments)
         string details;
         try details = "Aurora Stream could not start.\r\n\r\n" ~ error.toString();
         catch (Throwable) details = "Aurora Stream could not start: " ~ error.msg;
-        stderr.writeln(details);
-        stderr.flush();
         recordStartupFailure(details);
         return 1;
+    }
+}
+
+private bool isDiagnosticCommand(string command)
+{
+    return command == "--version" || command == "-v" ||
+        command == "--list-audio-endpoints-json" ||
+        command == "--audio-bridge-session-test" ||
+        command == "--audio-rtp-helper" || command == "--pacing-test";
+}
+
+private void attachDiagnosticConsole()
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : AllocConsole;
+        import core.stdc.stdio : fflush, freopen, stderr, stdin, stdout;
+        if (!AllocConsole()) return;
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
     }
 }
