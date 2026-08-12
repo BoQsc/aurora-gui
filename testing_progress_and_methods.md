@@ -1,5 +1,44 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode real API integration (2026-08-12)
+
+The clients now talk to the **real opencode API** (`https://opencode.ai/zen/go/v1`,
+the Go plan) instead of the demo proxy `opencode-api.boqsc.eu`:
+
+- `defaultBaseUrl` in `aurora-opencode-core/core.d` points at
+  `https://opencode.ai/zen/go/v1`.
+- The API key is read from the real opencode CLI auth store
+  (`~/.local/share/opencode/auth.json`, `opencode-go.key`, falling back to
+  `deepseek.key`), then the legacy web-server key files, then
+  `OPENCODE_API_KEY`.
+- Every request sends a desktop-browser `User-Agent`. The real API sits behind
+  Cloudflare and returns HTTP 1010 to non-browser clients otherwise.
+- Thinking off is sent as the standard `reasoning_effort: "none"` (the demo
+  proxy used to translate a custom `thinking: false` boolean, which the real
+  API rejects).
+
+Verified live: the smoke test's real chat returns exactly `AURORA-OPENCODE-GUI-OK`
+(22 chars) with a clean `errors.log`. Debug + release builds of baseline and Pro
+pass. The old loopback fallback to the local demo proxy was removed.
+
+## Aurora OpenCode runtime error logging (2026-08-12)
+
+Both OpenCode clients write runtime errors to
+`%APPDATA%\Aurora OpenCode\logs\errors.log` (one shared file, appended). Each
+launch writes a `========== <app> started ==========` banner, and every entry is
+timestamped, so the latest session is easy to scan. The log directory is the
+state directory plus `logs`; tests redirect it through the normal
+`setOpencodeStateDirectoryForTesting` hook.
+
+Captured sources:
+- Chat and models request failures (WinINet errors such as 12029/12002) with
+  the configured base URL, logged from the shared client worker threads.
+- Settings load/save failures and session persist/restore failures.
+
+A WinINet 12029 (`ERROR_INTERNET_CANNOT_CONNECT`) or 12002 (timeout) on
+`chat request failed` means the API server was unreachable when the request was
+sent, not a client bug.
+
 ## Aurora OpenCode Pro extended features (2026-08-11)
 
 `aurora-opencode-pro` layers extended features on the shared core while the

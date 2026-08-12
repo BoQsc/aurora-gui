@@ -2,6 +2,7 @@ module auroraopencode.appui;
 
 import aurora;
 import auroraopencode.core;
+import auroraopencode.logging : logError, setLogDirectory;
 import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
@@ -643,6 +644,7 @@ public final class OpenCodeRoot : VBox
     {
         super(0);
         _window = window;
+        setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
         _settings = loadSettings();
         _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
         buildUi();
@@ -1331,7 +1333,10 @@ public final class OpenCodeRoot : VBox
         root["current"] = _current;
         try write(buildPath(opencodeStateDirectory(), "sessions.json"),
             root.toString());
-        catch (Exception) {}
+        catch (Exception error)
+        {
+            logError("persist sessions failed: " ~ error.msg);
+        }
     }
 
     private static JSONValue sessionToJson(const ref ChatSession session)
@@ -1420,8 +1425,9 @@ public final class OpenCodeRoot : VBox
                 rebuildMessageColumn();
             }
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            logError("restore sessions failed: " ~ error.msg);
             _sessions.length = 0;
             _current = -1;
         }

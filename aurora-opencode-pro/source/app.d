@@ -3,6 +3,7 @@ module app;
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : opencodeTheme;
+import auroraopencode.logging : logLaunch;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
 import std.conv : to;
@@ -108,6 +109,7 @@ int main(string[] args)
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    logLaunch("Aurora OpenCode Pro");
     const exitCode = window.run();
     root.shutdownClient();
     return exitCode;

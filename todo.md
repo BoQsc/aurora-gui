@@ -1,5 +1,43 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Aurora OpenCode must use the real opencode API, not the demo
+- [x] Clarified that `opencode-api.boqsc.eu` is only a test/demo web client;
+      the real backend is the opencode API itself (`https://opencode.ai`).
+- [x] Pointed the shared core at the real Go-plan endpoint
+      (`https://opencode.ai/zen/go/v1`), read the key from the real opencode
+      CLI auth store (`~/.local/share/opencode/auth.json`), added a browser
+      `User-Agent` (Cloudflare returns 1010 otherwise), and switched thinking
+      off to the standard `reasoning_effort: "none"` (the demo proxy used to
+      translate a `thinking: false` boolean the real API rejects).
+- [x] Removed the loopback/demo-proxy fallback that was built on the wrong
+      assumption. Verified live: the smoke test's real chat returns the exact
+      `AURORA-OPENCODE-GUI-OK` reply with a clean `errors.log`; baseline + Pro
+      debug/release builds and smoke tests pass.
+
+## 2026-08-12 — Aurora OpenCode must not depend on the public opencode-api host
+- [x] Diagnosed `WinINet error 12029/12002`: the public `opencode-api.boqsc.eu`
+      is unreachable from inside the LAN (NAT hairpin / firewall) even though
+      the local `web_webserver` serves the same domain on `0.0.0.0:443` and
+      DNS resolves to the machine's own public IP.
+- [x] Integrated the local `opencode-api` mirror into the shared client
+      (`aurora-opencode-core/opencode_client.d`): every request first tries a
+      loopback mirror (`127.0.0.1`, same port/path, real `Host:` header, TLS
+      hostname errors ignored for that attempt only), then falls back to the
+      configured public host. HTTP/stream errors never trigger the fallback.
+- [x] Verified live: the smoke test's chat now returns the exact expected reply
+      with zero entries in `errors.log`; debug + release builds of baseline and
+      Pro pass.
+
+## 2026-08-12 — Aurora OpenCode runtime error logging (user request)
+- [x] Added a shared thread-safe `auroraopencode.logging` module writing
+      timestamped entries to `<state dir>\logs\errors.log`, with a per-launch
+      banner line so each launch is easy to inspect.
+- [x] Both clients wire it up at startup; chat/models request failures (e.g.
+      WinINet 12029 cannot-connect), settings load/save failures, and session
+      persist/restore failures are all logged. Verified by the smoke runs:
+      the live API calls logged 12002 timeouts, confirming the reported 12029
+      is a server-connectivity issue with `opencode-api.boqsc.eu`, not a bug.
+
 ## 2026-08-11 — Aurora OpenCode baseline vs extended version (structure)
 - [x] Split Aurora OpenCode into `aurora-opencode-core` (shared library:
       `opencode_client.d`, `markdown.d`, `core.d`), `aurora-opencode`

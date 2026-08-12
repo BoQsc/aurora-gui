@@ -1,6 +1,7 @@
 module auroraopencode.core;
 
 import aurora;
+import auroraopencode.logging : logError;
 import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
@@ -11,7 +12,11 @@ import std.string : strip;
 // Shared defaults for the OpenAI-compatible opencode API mirror.
 // ---------------------------------------------------------------------------
 
-private immutable string defaultBaseUrl = "https://opencode-api.boqsc.eu/go/v1";
+private immutable string defaultBaseUrl = "https://opencode.ai/zen/go/v1";
+
+/// Legacy demo-proxy host the app used to point at; migrated away so stale
+/// saved settings cannot pin the client to the unreachable demo host.
+private immutable string legacyDemoBaseUrl = "https://opencode-api.boqsc.eu";
 public immutable string defaultModel = "deepseek-v4-flash";
 
 public immutable string[] defaultModels = [
@@ -130,6 +135,43 @@ public void ensureStateDirectory()
 
 private string readDefaultKeyFile()
 {
+    // Primary: the real opencode CLI auth store
+    // (~/.local/share/opencode/auth.json) which holds the Go-plan and
+    // DeepSeek API keys.
+    const profile = environment.get("USERPROFILE");
+    if (profile.length > 0)
+    {
+        const authPath = buildPath(profile, ".local", "share", "opencode",
+            "auth.json");
+        try
+        {
+            if (exists(authPath))
+            {
+                auto value = parseJSON(readText(authPath));
+                if (value.type == JSONType.object)
+                {
+                    foreach (provider; ["opencode-go", "deepseek"])
+                    {
+                        if (auto found = provider in value.object)
+                        {
+                            if (found.type == JSONType.object)
+                            {
+                                if (auto key = "key" in found.object)
+                                    if (key.type == JSONType.string &&
+                                        key.str.length > 0)
+                                        return key.str;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            logError("failed to read opencode auth: " ~ error.msg);
+        }
+    }
+    // Fallback: legacy key files from the web server setup.
     foreach (candidate; defaultKeyFileCandidates)
     {
         try
@@ -168,13 +210,19 @@ public Settings loadSettings()
                         settings.thinking = found.type == JSONType.true_;
             }
         }
-        catch (Exception) {}
+        catch (Exception error)
+        {
+            logError("failed to load settings: " ~ error.msg);
+        }
     }
     if (settings.apiKey.length == 0)
         settings.apiKey = environment.get("OPENCODE_API_KEY");
     if (settings.apiKey.length == 0)
         settings.apiKey = readDefaultKeyFile();
     if (settings.model.length == 0) settings.model = defaultModel;
+    if (settings.baseUrl.length >= legacyDemoBaseUrl.length &&
+        settings.baseUrl[0 .. legacyDemoBaseUrl.length] == legacyDemoBaseUrl)
+        settings.baseUrl = defaultBaseUrl;
     return settings;
 }
 
@@ -188,5 +236,8 @@ public void saveSettings(const ref Settings settings)
     root["thinking"] = settings.thinking;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());
-    catch (Exception) {}
+    catch (Exception error)
+    {
+        logError("failed to save settings: " ~ error.msg);
+    }
 }

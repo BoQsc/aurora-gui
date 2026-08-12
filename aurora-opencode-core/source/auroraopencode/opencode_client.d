@@ -4,17 +4,19 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.sys.windows.windows : DWORD, BOOL, FALSE, TRUE, GetLastError;
 import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
-    HTTP_QUERY_STATUS_CODE, HttpOpenRequestW, HttpQueryInfoW, HttpSendRequestW,
-    HINTERNET, INTERNET_DEFAULT_HTTPS_PORT, INTERNET_FLAG_NO_CACHE_WRITE,
-    INTERNET_FLAG_PRAGMA_NOCACHE, INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE,
-    INTERNET_OPEN_TYPE_PRECONFIG, INTERNET_OPTION_CONNECT_TIMEOUT,
-    INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
-    INTERNET_SERVICE_HTTP, InternetCloseHandle, InternetConnectW, InternetOpenW,
-    InternetOpenUrlW, InternetReadFile, InternetSetOptionW;
+    HTTP_QUERY_FLAG_NUMBER, HTTP_QUERY_STATUS_CODE, HttpOpenRequestW,
+    HttpQueryInfoW, HttpSendRequestW, HINTERNET, INTERNET_DEFAULT_HTTPS_PORT,
+    INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_PRAGMA_NOCACHE,
+    INTERNET_FLAG_RELOAD, INTERNET_FLAG_SECURE, INTERNET_OPEN_TYPE_PRECONFIG,
+    INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
+    INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP, InternetCloseHandle,
+    InternetConnectW, InternetOpenW, InternetOpenUrlW, InternetReadFile,
+    InternetSetOptionW;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf;
 import std.utf : toUTF16z;
+import auroraopencode.logging : logError;
 
 /** Kinds of events the client delivers to the UI thread. */
 enum OpenCodeEventKind
@@ -100,6 +102,12 @@ private string wininetErrorText(DWORD code)
 {
     return "WinINet error " ~ to!string(code);
 }
+
+/// The real opencode API sits behind Cloudflare and blocks non-browser clients
+/// (HTTP 1010), so requests identify as a desktop browser.
+private immutable string clientUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " ~
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /**
  * Minimal OpenAI-compatible chat client over WinINet.
@@ -361,7 +369,8 @@ final class OpenCodeClient
                 InternetCloseHandle(request);
             }
 
-            const headers = "Authorization: Bearer " ~ _apiKey ~
+            const headers = "User-Agent: " ~ clientUserAgent ~
+                "\r\nAuthorization: Bearer " ~ _apiKey ~
                 "\r\nContent-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
             auto bodyBytes = cast(ubyte[]) body.dup;
@@ -372,8 +381,9 @@ final class OpenCodeClient
 
             DWORD statusCode;
             DWORD statusLength = cast(DWORD) statusCode.sizeof;
-            if (HttpQueryInfoW(request, HTTP_QUERY_STATUS_CODE, &statusCode,
-                &statusLength, null) && statusCode != 200)
+            if (HttpQueryInfoW(request,
+                    HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                    &statusCode, &statusLength, null) && statusCode != 200)
             {
                 const detail = readAllAsUtf8(request);
                 throw new Exception("Upstream returned HTTP " ~
@@ -423,6 +433,7 @@ final class OpenCodeClient
         }
         catch (Exception error)
         {
+            logError("chat request failed: " ~ error.msg ~ " [" ~ _baseUrl ~ "]");
             _mutex.lock();
             const cancelNow = _cancel;
             _mutex.unlock();
@@ -444,13 +455,18 @@ final class OpenCodeClient
             const target = parseHttpTarget(_baseUrl, "/models");
             auto session = openSession();
 
-            const headers = "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            auto connection = InternetConnectW(session, toUTF16z(target.host),
+                target.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
+            if (connection is null)
+                throw new Exception("Could not connect to " ~ target.host);
+            scope (exit) InternetCloseHandle(connection);
+
             const flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD |
                 INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
-            auto request = InternetOpenUrlW(session, toUTF16z(targetUrl(target)),
-                toUTF16z(headers), -1, flags, 0);
+            auto request = HttpOpenRequestW(connection, "GET"w.ptr,
+                toUTF16z(target.path), null, null, null, flags, 0);
             if (request is null)
-                throw new Exception("Could not open the models URL.");
+                throw new Exception("Could not create the models request.");
             if (registerRequest(request, false) is null)
             {
                 InternetCloseHandle(request);
@@ -461,6 +477,12 @@ final class OpenCodeClient
                 unregisterRequest(request, false);
                 InternetCloseHandle(request);
             }
+
+            const headers = "User-Agent: " ~ clientUserAgent ~
+                "\r\nAuthorization: Bearer " ~ _apiKey ~ "\r\n";
+            if (!HttpSendRequestW(request, toUTF16z(headers), -1, null, 0))
+                throw new Exception("Could not open the models URL (" ~
+                    wininetErrorText(GetLastError()) ~ ").");
 
             const body = readAllAsUtf8(request);
             string[] ids;
@@ -486,16 +508,9 @@ final class OpenCodeClient
         }
         catch (Exception error)
         {
+            logError("models request failed: " ~ error.msg ~ " [" ~ _baseUrl ~ "]");
             pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
-    }
-
-    private static string targetUrl(const HttpTarget target)
-    {
-        const scheme = target.port == 80 ? "http" : "https";
-        return scheme ~ "://" ~ target.host ~ (target.port == 80 ||
-            target.port == 443 ? "" : ":" ~ to!string(target.port)) ~
-            target.path;
     }
 
     private static string buildChatBody(const(string)[] roles,
@@ -514,7 +529,7 @@ final class OpenCodeClient
         root["messages"] = messages;
         root["stream"] = true;
         if (!thinking)
-            root["thinking"] = false;
+            root["reasoning_effort"] = "none";
         return root.toString();
     }
 
