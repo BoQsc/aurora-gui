@@ -1,5 +1,63 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Empty tool-call wrapper bubble still visible (user complaint)
+- [x] User: "you removed [the pill/tokens] but the ui empty bubbles are still
+      there." The assistant message that requested tools rendered as an empty
+      gray bubble when it had no content or reasoning.
+- [x] Tool-call wrappers (assistant + toolCalls + no content/reasoning) are now
+      hidden: they keep their slot (index mapping intact) but measure to zero
+      height and paint nothing. `handleToolCalls` rebuilds the column so the
+      wrapper re-renders hidden; `rebuildMessageColumn` hides wrappers on
+      restore too.
+- [x] Verified: wrapper bubble height = 0, hidden = true, no pill, no usage.
+      Covered by the Pro smoke test; baseline + Pro debug/release builds pass.
+
+## 2026-08-12 — Tool-call wrapper showed Regenerate + token count (user complaint)
+- [x] User: "the ui of regenerate and tokens item appears after each tool call,
+      fix it it should not be there." The assistant message that merely
+      requested tools (the tool-call wrapper) kept the streamed usage text and
+      sometimes a Regenerate pill, appearing as a spurious footer item.
+- [x] Tool-call wrappers (assistant role + `toolCalls` + empty content) are now
+      excluded from the action pill and from token-usage display. `handleToolCalls`
+      clears the wrapper's usage text when it finalizes, `refreshBubbleActions`
+      skips wrappers, and rebuild only attaches usage to the latest real reply.
+- [x] Covered by the Pro smoke test: after a tool loop, every assistant wrapper
+      has no pill and no usage text. Baseline + Pro debug/release builds and
+      all tests pass.
+
+## 2026-08-12 — Only latest reply shows Regenerate + token count; right-click menu (user request)
+- [x] User: "why we have separate chat items of having regenerate button and
+      amount of tokens to the right side" — every bubble showed a pill + usage.
+- [x] Only the latest assistant reply now shows the action pill (Regenerate,
+      or Retry when failed) and the token-usage footer. Older bubbles are
+      clean.
+- [x] Right-click on any message now opens a context menu with Copy message
+      and, depending on role, Regenerate (assistant) or Edit & resend (user).
+      The right-click edit path was previously only wired to user messages.
+- [x] Covered by the Pro smoke test: pills only on the latest assistant reply,
+      and context-menu Edit & resend targets the right message (no foreach
+      capture bug). Baseline + Pro debug/release builds and all tests pass.
+
+## 2026-08-12 — First answer "feels smarter" in original opencode (user feedback)
+- [x] User: "in the original opencode, the first answer to prompt always feels
+      better… it starts with git log, then grouped ('Explored 2 reads')… our
+      implementation just spam random shell commands."
+- [x] Root cause found by reading opencode's source: its system prompt is a
+      full behavior spec — identity, tone/style contract, an ENVIRONMENT block
+      (working directory, "Is directory a git repo: yes/no", platform, today's
+      date), a tool-usage policy, and "think about the task before beginning".
+      Our old prompt was a 2-line nudge, so the model improvised and spammed
+      shell commands.
+- [x] Replaced `toolSteeringPrompt` with `buildSystemPrompt(nativeOnly,
+      workspace, platform)` mirroring opencode's structure: identity, `<env>`
+      block with git-repo detection + real date, tone/style, tool policy, and
+      "think before beginning" guidance.
+- [x] Verified live in the real repo: default mode now does `dshell where` →
+      `dshell list` → reads → `bash git log` + `git status` (like opencode);
+      native mode does `dshell where` + `run git status` + `dshell list` in
+      parallel and finishes in 3 rounds. No more random shell spam. All tests
+      and baseline + Pro debug/release builds pass.
+
 ## 2026-08-12 — Console window flashes on every tool call (user complaint)
 - [x] User: "another window is being opened on execution of dshell or maybe
       something else." Root cause: `runProcess` called `spawnProcess` with

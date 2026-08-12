@@ -186,65 +186,92 @@ int main(string[] args)
         "Thinking block did not collapse again");
     writeln("Thinking blocks collapse by default and expand on click");
 
-    // Chat quality: every message bubble carries its action pill.
+    // Chat quality: only the latest assistant reply carries the action pill
+    // (Regenerate / Retry); user messages and older bubbles stay clean. Edit &
+    // resend is available from the right-click context menu instead.
     root.addConversationForTesting(["user"], ["A new user message."]);
-    assert(root.lastBubbleActionForTesting() == "Edit & resend",
-        "User message did not get the Edit & resend pill");
+    assert(root.lastBubbleActionForTesting() == "",
+        "User message should not carry an action pill");
     root.addConversationForTesting(["assistant"], ["A normal reply."]);
     assert(root.lastBubbleActionForTesting() == "Regenerate",
-        "Assistant reply did not get the Regenerate pill");
-    // Both the user bubble and the assistant reply keep their pills.
+        "Latest assistant reply did not get the Regenerate pill");
+    // Older bubbles (including the user message) have no visible pill.
     const count = root.messageCountForTesting();
-    assert(root.bubbleActionForTesting(cast(int) count - 2) == "Edit & resend",
-        "User bubble lost its Edit & resend pill");
-    assert(root.bubbleActionForTesting(cast(int) count - 1) == "Regenerate",
-        "Assistant bubble lost its Regenerate pill");
+    assert(root.bubbleActionForTesting(cast(int) count - 2) == "",
+        "Older user bubble should not carry an action pill");
     assert(root.prepareRegenerateForTesting(),
         "Regenerate was not offered after an assistant reply");
-    assert(root.lastBubbleActionForTesting() == "Edit & resend",
-        "Pill did not return to Edit & resend after regenerate");
+    // After dropping the reply, the user message is the last bubble and has no
+    // pill; the Regenerate action is back on the context menu.
+    assert(root.lastBubbleActionForTesting() == "",
+        "After regenerate the last bubble should have no pill");
     const countAfterRegenerate = root.messageCountForTesting();
 
-    // Edit & resend the newest user message.
-    root.editAndResendForTesting(countAfterRegenerate - 1);
+    // Edit & resend the newest user message via the right-click context menu.
+    root.openMessageContextMenuForTesting(countAfterRegenerate - 1);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Message context menu did not paint");
+    auto messageMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(messageMenu !is null, "Message context menu did not open");
+    bool edited;
+    foreach (item; messageMenu.items())
+    {
+        if (item.label == toUTF32("Edit & resend"))
+        {
+            item.action();
+            edited = true;
+            break;
+        }
+    }
+    assert(edited, "Edit & resend missing from the message context menu");
     root.tickTree(0.02);
     assert(driver.paint(), "Edit & resend did not repaint");
+    dismissContextMenus(root);
+    root.tickTree(0.02);
     assert(root.messageCountForTesting() == countAfterRegenerate - 1,
         "Edit & resend did not truncate at the user message");
     assert(root.inputTextForTesting() == "A new user message.",
         "Edit & resend did not prefill the input");
     writeln("Edit & resend prefilled input: ", root.inputTextForTesting());
 
-    // Regression: invoking a bubble's action pill must target THAT bubble's
-    // message, not the last one (D foreach closures capture the reused loop
-    // slot, which silently bound every pill to the final message).
+    // Regression: the context menu on an older user message targets THAT
+    // message, not the last one (D foreach closure capture bug).
     root.addConversationForTesting(
         ["user", "assistant", "user"],
         ["edit me zero", "reply one", "edit me two"]);
-    const pillsCount = root.messageCountForTesting();
-    assert(root.bubbleActionForTesting(cast(int) pillsCount - 3) ==
-        "Edit & resend", "Bubble 0 should carry Edit & resend");
-    // Clicking bubble 0's pill truncates at message 0 and prefills its text.
-    assert(root.invokeBubbleActionForTesting(cast(int) pillsCount - 3),
-        "Bubble 0 action pill did not fire");
+    const menuCount = root.messageCountForTesting();
+    root.openMessageContextMenuForTesting(cast(int) menuCount - 3);
     root.tickTree(0.02);
-    assert(driver.paint(), "Bubble 0 action did not repaint");
+    auto olderMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(olderMenu !is null, "Older message context menu did not open");
+    bool olderEdited;
+    foreach (item; olderMenu.items())
+    {
+        if (item.label == toUTF32("Edit & resend"))
+        {
+            item.action();
+            olderEdited = true;
+            break;
+        }
+    }
+    assert(olderEdited, "Older message Edit & resend missing");
+    root.tickTree(0.02);
+    dismissContextMenus(root);
+    root.tickTree(0.02);
     assert(root.inputTextForTesting() == "edit me zero",
-        "Bubble 0 pill did not prefill its own message (foreach capture bug)");
-    assert(root.messageCountForTesting() == cast(int) pillsCount - 3,
-        "Bubble 0 pill did not truncate at its own message");
-    writeln("Pill targets its own message (no foreach capture bug)");
+        "Older message Edit & resend targeted the wrong message");
+    assert(root.messageCountForTesting() == cast(int) menuCount - 3,
+        "Older message Edit & resend did not truncate at its own message");
+    writeln("Context menu targets its own message (no foreach capture bug)");
 
     // Regenerate still works after an edit.
     root.addConversationForTesting(
         ["assistant"], ["A reply that will be regenerated."]);
     assert(root.prepareRegenerateForTesting(),
         "Regenerate was not offered after an edit");
-    assert(root.messageCountForTesting() == countAfterRegenerate - 1,
-        "Regenerate did not remove the assistant reply");
     assert(root.lastBubbleActionForTesting() == "Regenerate",
         "Pill did not refresh after the final regenerate");
-    writeln("Chat-quality pills stay consistent on every message");
+    writeln("Chat-quality pill stays on the latest assistant reply");
 
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip
@@ -335,6 +362,21 @@ int main(string[] args)
     assert(root.messageCountForTesting() >= 3,
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
+
+    // The tool-call wrapper (the assistant message that requested tools) is
+    // not a reply: it must not render as a visible empty bubble, and must not
+    // carry an action pill or token usage even if usage streamed first.
+    foreach (index; 0 .. root.messageCountForTesting())
+    {
+        if (root.messageRoleForTesting(index) != "assistant") continue;
+        assert(root.bubbleActionForTesting(index) == "",
+            "Tool-call wrapper must not carry an action pill");
+        assert(!root.bubbleHasUsageForTesting(index),
+            "Tool-call wrapper must not show token usage");
+        assert(root.bubbleHiddenForTesting(index),
+            "Empty tool-call wrapper must not render as a visible bubble");
+    }
+    writeln("Tool-call wrapper is hidden, no pill, no token usage");
 
     // Doom-loop recovery: repeating the same tool call with identical input
     // must break the loop and inject a recovery message asking for an answer,

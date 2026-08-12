@@ -7,8 +7,8 @@ import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
-import auroraopencode.tools : builtinToolDefinitions, executeTool,
-    nativeOnlyToolDefinitions, toolSteeringPrompt;
+import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
+    executeTool, nativeOnlyToolDefinitions;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -121,6 +121,8 @@ private final class MessageBubble : Widget
     private string _error;
     private string _time;
     private string _usageText;
+    private int _messageIndex;
+    private bool _hidden;
 
     // Chat-quality actions (Pro): regenerate/retry the last reply, edit &
     // resend a user message.
@@ -128,7 +130,8 @@ private final class MessageBubble : Widget
     private void delegate() _actionCallback;
     private Rect _actionRect;
     private bool _actionHover;
-    void delegate() onEditRequested;
+    // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
+    void delegate(int messageIndex, Point globalPosition) onContextMenuRequested;
 
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
@@ -189,6 +192,27 @@ private final class MessageBubble : Widget
     {
         _role = role;
         invalidate();
+    }
+
+    void setMessageIndex(int index)
+    {
+        _messageIndex = index;
+    }
+
+    /// Hide the bubble entirely: it measures to zero height and paints nothing
+    /// but keeps its slot so child-index ↔ message-index mapping stays intact.
+    /// Used for tool-call wrappers that carried no content or reasoning.
+    void setHidden(bool value)
+    {
+        if (_hidden == value) return;
+        _hidden = value;
+        invalidate();
+    }
+
+    /// Test-only: whether this bubble is hidden.
+    public bool hiddenForTesting()
+    {
+        return _hidden;
     }
 
     /// Test-only: the bubble role.
@@ -324,6 +348,12 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Test-only: the current usage footer text.
+    public string usageTextForTesting()
+    {
+        return _usageText;
+    }
+
     void setAction(string label, void delegate() callback)
     {
         _actionLabel = label;
@@ -449,6 +479,12 @@ private final class MessageBubble : Widget
 
     protected override Size onMeasure(Size available)
     {
+        if (_hidden)
+        {
+            layoutHints().preferredWidth = 0;
+            layoutHints().preferredHeight = 0;
+            return Size(0, 0);
+        }
         const innerWidth = maxInt(24, available.width - 2 * padH);
         const pixelSize = fontPixelSize(2);
         int height = 2 * padV;
@@ -499,6 +535,7 @@ private final class MessageBubble : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
+        if (_hidden) return;
         const palette = theme();
         const width = bounds().width;
         const height = bounds().height;
@@ -773,9 +810,10 @@ private final class MessageBubble : Widget
     {
         if (event.button == MouseButton.right)
         {
-            if (onEditRequested !is null)
+            if (onContextMenuRequested !is null)
             {
-                onEditRequested();
+                onContextMenuRequested(_messageIndex,
+                    localToGlobal(event.position));
                 return true;
             }
             return false;
@@ -1379,11 +1417,31 @@ public final class OpenCodeRoot : VBox
         _messageColumn.clearChildren();
         if (_current < 0) return;
         const session = &_sessions[_current];
+        // Only the latest real assistant reply shows its token usage in the
+        // footer. Tool-call wrappers (empty content + tool requests) never do.
+        int latestAssistantIndex = -1;
+        foreach_reverse (index, message; session.messages)
+        {
+            if (message.role == "assistant" && message.toolCalls.length == 0)
+            {
+                latestAssistantIndex = cast(int) index;
+                break;
+            }
+        }
         foreach (index, message; session.messages)
         {
             auto bubble = new MessageBubble();
             bubble.setRole(message.role);
+            bubble.setMessageIndex(cast(int) index);
             bubble.setContent(message.content);
+            // A tool-call wrapper with no content/reasoning is not a visible
+            // reply; keep its slot (for index mapping) but collapse it away.
+            if (message.role == "assistant" && message.toolCalls.length > 0 &&
+                message.content.length == 0 && message.reasoning.length == 0 &&
+                !message.failed)
+            {
+                bubble.setHidden(true);
+            }
             if (message.toolName.length > 0)
                 bubble.setToolName(message.toolName);
             if (message.toolArgs.length > 0)
@@ -1404,9 +1462,18 @@ public final class OpenCodeRoot : VBox
                 bubble.setTime(message.time);
             if (message.failed)
                 bubble.setFailed("");
-            if (message.role == "user")
-                bubble.onEditRequested =
-                    editResendAction(_current, cast(int) index);
+            bubble.onContextMenuRequested =
+                delegate(int messageIndex, Point globalPosition)
+                {
+                    showMessageContextMenu(cast(int) index, globalPosition);
+                };
+            // Persisted token usage appears only on the latest assistant reply.
+            if (cast(int) index == latestAssistantIndex &&
+                message.totalTokens > 0)
+            {
+                bubble.setUsageText(" • " ~
+                    formatThousands(message.totalTokens) ~ " tokens");
+            }
             _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
@@ -1417,39 +1484,46 @@ public final class OpenCodeRoot : VBox
         refreshBubbleActions();
     }
 
-    /// Every message bubble carries its own action pill: "Regenerate" (or
-    /// "Retry" when it failed) on assistant replies, "Edit & resend" on user
-    /// messages. The live streaming reply shows no pill. Runs after every
-    /// message change so the pills always match the messages.
+    /// Only the latest assistant REPLY carries an action pill ("Regenerate",
+    /// or "Retry" when it failed). Tool-call wrappers (assistant messages that
+    /// merely requested tools) and every other bubble stay clean — their
+    /// actions are available from the right-click context menu instead. The
+    /// live streaming reply shows no pill. Runs after every message change so
+    /// the pills always match the messages.
     private void refreshBubbleActions()
     {
         if (_current < 0) return;
         const children = _messageColumn.children();
         if (children.length == 0) return;
         const session = &_sessions[_current];
+
+        // The pill belongs to the last bubble that is not the live reply.
+        size_t actionIndex;
+        bool found;
+        for (size_t i = children.length; i > 0; --i)
+        {
+            auto child = cast(MessageBubble) children[i - 1];
+            if (child is null) continue;
+            if (_streamBubble !is null && child is _streamBubble) continue;
+            actionIndex = i - 1;
+            found = true;
+            break;
+        }
+
         foreach (index, child; children)
         {
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
-            if (_streamBubble !is null && child is _streamBubble)
-            {
-                bubble.clearAction();
+            bubble.clearAction();
+            if (!found || index != actionIndex ||
+                index >= session.messages.length)
                 continue;
-            }
-            if (index >= session.messages.length)
-            {
-                bubble.clearAction();
-                continue;
-            }
             const message = session.messages[index];
-            if (message.role == "assistant")
+            // Only a real assistant reply gets a visible pill; a tool-call
+            // wrapper (empty content + tool requests) is not a reply.
+            if (message.role == "assistant" && message.toolCalls.length == 0)
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
                     regenerateAction(_current, cast(int) index));
-            else if (message.role == "user")
-                bubble.setAction("Edit & resend",
-                    editResendAction(_current, cast(int) index));
-            else
-                bubble.clearAction();
         }
     }
 
@@ -1478,11 +1552,15 @@ public final class OpenCodeRoot : VBox
         {
             const last = _sessions[_current].messages[$ - 1];
             if (last.time.length > 0) bubble.setTime(last.time);
-            bubble.onEditRequested = delegate()
-            {
-                editAndResend(_current,
-                    cast(int) _sessions[_current].messages.length - 1);
-            };
+            bubble.setMessageIndex(
+                cast(int) _sessions[_current].messages.length - 1);
+            bubble.onContextMenuRequested =
+                delegate(int messageIndex, Point globalPosition)
+                {
+                    showMessageContextMenu(
+                        cast(int) _sessions[_current].messages.length - 1,
+                        globalPosition);
+                };
         }
         _messageColumn.add(bubble);
         _messagesScroll.follow = true;
@@ -1629,6 +1707,10 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
+        // Rebuild so the tool-call wrapper re-renders: an assistant message
+        // with tool requests and no content/reasoning becomes a hidden slot,
+        // not a visible empty bubble.
+        rebuildMessageColumn();
         markDirty();
 
         // Doom-loop recovery: the same tool call repeated with identical input
@@ -1842,7 +1924,16 @@ public final class OpenCodeRoot : VBox
         {
             ChatRequestMessage systemPrompt;
             systemPrompt.role = "system";
-            systemPrompt.content = toolSteeringPrompt(_settings.nativeTools);
+            const workspace = _settings.workspace.length > 0
+                ? _settings.workspace : ".";
+            version (Windows)
+                const platform = "win32";
+            else version (Posix)
+                const platform = "posix";
+            else
+                const platform = "unknown";
+            systemPrompt.content = buildSystemPrompt(_settings.nativeTools,
+                workspace, platform);
             messages ~= systemPrompt;
         }
         foreach (message; session.messages)
@@ -2256,6 +2347,39 @@ public final class OpenCodeRoot : VBox
         refreshUsageBadge();
     }
 
+    private void showMessageContextMenu(int messageIndex, Point globalPosition)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
+            return;
+        const message = session.messages[cast(size_t) messageIndex];
+        auto items = [
+            ContextMenuItem.command("Copy message", IconKind.save, delegate()
+            {
+                copyTextToClipboard(message.content);
+            }, "Ctrl+C"),
+        ];
+        if (message.role == "assistant")
+        {
+            items ~= ContextMenuItem.command(
+                message.failed ? "Retry" : "Regenerate",
+                IconKind.refresh, delegate()
+                {
+                    regenerateLastReply(_current, messageIndex);
+                });
+        }
+        else if (message.role == "user")
+        {
+            items ~= ContextMenuItem.command("Edit & resend", IconKind.settings,
+                delegate()
+                {
+                    editAndResend(_current, messageIndex);
+                });
+        }
+        showContextMenu(_messageColumn, globalPosition, items);
+    }
+
     private void showSessionContextMenu(int row, Point globalPosition)
     {
         if (row < 0 || row >= cast(int) _sessionIndices.length) return;
@@ -2572,6 +2696,7 @@ public final class OpenCodeRoot : VBox
                 case OpenCodeEventKind.usage:
                     // The provider reports live token usage while streaming;
                     // surface it on the growing reply and the context meter.
+                    // The stream bubble is always the latest assistant reply.
                     if (_streamBubble !is null && event.totalTokens > 0)
                         _streamBubble.setUsageText(
                             " • " ~ formatThousands(event.totalTokens) ~
@@ -2697,6 +2822,15 @@ public final class OpenCodeRoot : VBox
         return cast(int) _sessions[_current].messages.length;
     }
 
+    /// Test-only: role of the message at `index`.
+    public string messageRoleForTesting(int index)
+    {
+        if (_current < 0) return "";
+        if (index < 0 || index >= cast(int) _sessions[_current].messages.length)
+            return "";
+        return _sessions[_current].messages[cast(size_t) index].role;
+    }
+
     /// Test-only: invoke the action pill on the bubble at `index` exactly as a
     /// mouse click would, exercising the real delegate captured for that
     /// bubble (regression: foreach closures must not all target the last
@@ -2707,6 +2841,52 @@ public final class OpenCodeRoot : VBox
         if (index < 0 || index >= cast(int) children.length) return false;
         auto bubble = cast(MessageBubble) children[cast(size_t) index];
         return bubble !is null && bubble.invokeActionForTesting();
+    }
+
+    /// Test-only: open the right-click context menu for the message at
+    /// `index`, exactly as a right-click on that bubble would.
+    public void openMessageContextMenuForTesting(int index)
+    {
+        showMessageContextMenu(index, Point(10, 10));
+    }
+
+    /// Test-only: feed a usage event as the client would while streaming.
+    public void feedUsageForTesting(int prompt, int completion, int total)
+    {
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.usage;
+        event.promptTokens = prompt;
+        event.completionTokens = completion;
+        event.totalTokens = total;
+        if (_streamBubble !is null)
+            _streamBubble.setUsageText(" • " ~ formatThousands(total) ~
+                " tokens");
+    }
+
+    /// Test-only: whether the bubble at `index` shows token usage text.
+    public bool bubbleHasUsageForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return false;
+        auto bubble = cast(MessageBubble) children[cast(size_t) index];
+        return bubble !is null && bubble.usageTextForTesting().length > 0;
+    }
+
+    /// Test-only: whether the bubble at `index` is hidden (zero-size slot).
+    public bool bubbleHiddenForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return false;
+        auto bubble = cast(MessageBubble) children[cast(size_t) index];
+        return bubble !is null && bubble.hiddenForTesting();
+    }
+
+    /// Test-only: the current laid-out height of the bubble at `index`.
+    public int bubbleHeightForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return 0;
+        return children[cast(size_t) index].bounds().height;
     }
 
     /// Test-only: current input text.

@@ -162,34 +162,90 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
     ];
 }
 
-/// System-prompt steering that mirrors the original opencode app: the model is
-/// told to prefer the native tools for file work and reserve the shell for
-/// things the native tools cannot do. In native-only mode there is no shell at
-/// all, so the model is steered exclusively to the D tools. The natural dshell
-/// words are presented as the only vocabulary; legacy shell words are never
-/// offered.
-public string toolSteeringPrompt(bool nativeOnly)
+/// Full system prompt mirroring the original opencode app. The original sends
+/// the model its identity, a tone/style contract, an environment block
+/// (working directory, git-repo status, platform, date), and a tool-usage
+/// policy. That is why its first answer feels deliberate: the model knows it
+/// is a coding agent inside a repo and gathers context (git, reads) instead of
+/// improvising. We reproduce that structure for the same reason.
+public string buildSystemPrompt(bool nativeOnly, string workspace,
+    string platformName)
 {
+    import std.datetime : Clock;
+    import std.file : exists;
+    import std.path : buildPath;
+    import std.conv : to;
+
+    const today = Clock.currTime.toLocalTime.toISOExtString();
+    const isGitRepo = exists(buildPath(workspace, ".git"));
+
+    auto builder = appender!string();
+    builder.put("You are Aurora OpenCode, an interactive desktop assistant " ~
+        "that helps users with software engineering and file tasks. Use the " ~
+        "instructions below and the tools available to you to assist the user.\n");
+
+    builder.put("\n# Environment\n");
+    builder.put("<env>\n");
+    builder.put("  Working directory: " ~ workspace ~ "\n");
+    builder.put("  Is directory a git repo: " ~
+        (isGitRepo ? "yes" : "no") ~ "\n");
+    builder.put("  Platform: " ~ platformName ~ "\n");
+    builder.put("  Today's date: " ~ today ~ "\n");
+    builder.put("</env>\n");
+
+    builder.put("\n# Tone and style\n");
+    builder.put("Be concise, direct, and to the point. When you run a " ~
+        "non-trivial tool call, explain what it does and why you are running " ~
+        "it. Your output is displayed in a chat UI and rendered with " ~
+        "GitHub-flavored Markdown. Minimize output tokens while maintaining " ~
+        "helpfulness, quality, and accuracy; only address the specific query " ~
+        "at hand. Do not add unnecessary preamble or postamble. Only use " ~
+        "emojis if the user explicitly requests them.\n");
+
+    builder.put("\n# Tool usage policy\n");
     if (nativeOnly)
-        return "You have access to tools implemented natively in this " ~
-            "application; there is no shell and no bash/cmd/powershell. " ~
-            "Use `dshell` with these natural words only: `where` for the " ~
+    {
+        builder.put("You have access to tools implemented natively in this " ~
+            "application; there is no shell and no bash/cmd/powershell. Use " ~
+            "`dshell` with these natural words only: `where` for the " ~
             "workspace path, `list` to show a directory, `info` for file " ~
             "metadata. Use `glob` to list files by pattern, `read` to read " ~
             "them, `write` to create them, `grep` to search contents, and " ~
             "`run` to execute a program with an explicit argument list. " ~
             "Never use shell command words such as pwd, ls, dir, or stat; " ~
             "always prefer these tools over trying to reconstruct shell " ~
-            "commands.";
-    return "You have access to tools. For file and content operations prefer " ~
-        "the dedicated native tools: `dshell` with these natural words only " ~
-        "(`where` for the workspace path, `list` to show a directory, `info` " ~
-        "for file metadata), `glob` to list files by pattern, `read` to read " ~
-        "them, `write` to create them, and `grep` to search contents. Never " ~
-        "use shell command words such as pwd, ls, dir, or stat for these " ~
-        "operations. Use the `bash` tool only for running build commands, " ~
-        "git, package managers, or other executables that the native tools " ~
-        "cannot perform.";
+            "commands.\n");
+    }
+    else
+    {
+        builder.put("For file and content operations prefer the dedicated " ~
+            "native tools: `dshell` with these natural words only (`where` " ~
+            "for the workspace path, `list` to show a directory, `info` for " ~
+            "file metadata), `glob` to list files by pattern, `read` to read " ~
+            "them, `write` to create them, and `grep` to search contents. " ~
+            "Never use shell command words such as pwd, ls, dir, or stat for " ~
+            "these operations. Use the `bash` tool only for running build " ~
+            "commands, git, package managers, or other executables that the " ~
+            "native tools cannot perform.\n");
+    }
+    builder.put("When you need information about the workspace, prefer `dshell " ~
+        "where` / `dshell list` over shell commands. Before beginning work, " ~
+        "think about what the task is and what the files are supposed to do " ~
+        "based on the filenames and directory structure.\n");
+
+    builder.put("\n# Concise responses\n");
+    builder.put("Keep answers short unless the user asks for detail. Answer " ~
+        "directly, avoid introductions and conclusions, and do not repeat " ~
+        "what the user already knows.\n");
+
+    return builder.data;
+}
+
+/// Backwards-compatible alias for tests and callers that only need the tool
+/// steering portion.
+public string toolSteeringPrompt(bool nativeOnly)
+{
+    return buildSystemPrompt(nativeOnly, ".", "auto");
 }
 
 public struct ToolExecution

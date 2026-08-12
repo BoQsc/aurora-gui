@@ -1,5 +1,53 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro hidden tool-call wrapper (2026-08-12)
+
+An assistant message that only requested tools (no content, no reasoning) no
+longer renders as an empty bubble. `MessageBubble.setHidden` collapses it to a
+zero-height, paint-nothing slot so the child↔message index mapping stays intact.
+`handleToolCalls` rebuilds the column to hide the wrapper; `rebuildMessageColumn`
+hides wrappers on session restore too.
+
+Verify: Pro smoke test asserts every assistant wrapper is hidden, pill-free,
+and usage-free. A probe confirms wrapper height = 0.
+
+## Aurora OpenCode Pro tool-call wrapper cleanup (2026-08-12)
+
+The assistant message that requests tools (the tool-call wrapper) is not a
+reply, so it must not show a Regenerate pill or token usage. `handleToolCalls`
+clears the wrapper's streamed usage text; `refreshBubbleActions` only pills the
+latest assistant with no `toolCalls`; `rebuildMessageColumn` attaches usage
+only to the latest real reply.
+
+Verify in the Pro smoke test: after a read+grep tool loop, every assistant
+wrapper bubble has no action pill and no usage text.
+
+## Aurora OpenCode Pro latest-reply actions + message context menu (2026-08-12)
+
+Only the latest assistant reply shows the Regenerate/Retry pill and the
+token-usage footer; older bubbles are clean. Right-click on any message opens a
+context menu with Copy message and, depending on role, Regenerate (assistant)
+or Edit & resend (user).
+
+Verify in the Pro smoke test: a user message has no pill, the latest assistant
+reply has Regenerate; after regenerate the last bubble has no pill; the
+right-click context menu Edit & resend truncates at the targeted message (the
+foreach-closure regression is covered).
+
+## Aurora OpenCode Pro opencode-style system prompt (2026-08-12)
+
+Replaced the 2-line steering prompt with `buildSystemPrompt(nativeOnly,
+workspace, platform)`, mirroring the original opencode app's system prompt
+structure (from its source): identity, an `<env>` block with working
+directory + "Is directory a git repo: yes/no" + platform + today's date, a
+tone/style contract, a tool-usage policy, and "think about the task before
+beginning work". This is what makes opencode's first answer feel deliberate.
+
+Verify live with a temp probe against a real git repo: the model now gathers
+context (git log/status/diff) and reads files instead of spamming shell
+commands, and groups tool calls. Native mode runs `dshell where` + `run git
+status` + `dshell list` in parallel.
+
 ## Aurora OpenCode Pro no console flash on tool calls (2026-08-12)
 
 `runProcess` now calls `spawnProcess` with `Config.suppressConsole` (Windows
