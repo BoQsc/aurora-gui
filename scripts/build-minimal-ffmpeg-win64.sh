@@ -144,6 +144,22 @@ if [ ! -f "$deps/libvpl/include/vpl/mfx.h" ]; then
     cmake --build "$work/libvpl-build" -j"$jobs"
     cmake --install "$work/libvpl-build" )
 fi
+echo "--- libvpl install inspection ---"
+find "$deps/libvpl" -maxdepth 4 \( -name 'vpl.pc' -o -name 'libvpl*.a' -o -name 'vpl*.dll' \) -print
+vpl_pc="$(find "$deps/libvpl" -name vpl.pc | head -1)"
+if [ -z "$vpl_pc" ]; then
+  echo "::error::vpl.pc not installed under $deps/libvpl"
+  find "$deps/libvpl" -maxdepth 5
+  exit 1
+fi
+vpl_pc_dir="$(dirname "$vpl_pc")"
+echo "vpl.pc: $vpl_pc"
+if ! PKG_CONFIG_LIBDIR="$vpl_pc_dir" pkg-config --print-errors --exists 'vpl >= 2.6'; then
+  echo "::error::pkg-config cannot resolve 'vpl >= 2.6' from $vpl_pc"
+  cat "$vpl_pc"
+  exit 1
+fi
+echo "resolved vpl: $(PKG_CONFIG_LIBDIR="$vpl_pc_dir" pkg-config --modversion vpl)"
 echo "::endgroup::"
 
 # ---- ffmpeg -----------------------------------------------------------------
@@ -151,8 +167,8 @@ echo "::group::ffmpeg"
 if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
   fetch "$src/ffmpeg" https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_tag"
   ( cd "$src/ffmpeg"
-    export PKG_CONFIG_LIBDIR="$deps/libvpl/lib/pkgconfig:$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
-    ./configure \
+    export PKG_CONFIG_LIBDIR="$vpl_pc_dir:$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
+    if ! ./configure \
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
       --cross-prefix="$cross-" --enable-cross-compile \
@@ -182,7 +198,11 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
       --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib" \
-      --extra-libs="-lws2_32 -lpthread"
+      --extra-libs="-lws2_32 -lpthread"; then
+      echo "=== ffmpeg configure failed; ffbuild/config.log tail ==="
+      tail -120 ffbuild/config.log 2>/dev/null || true
+      exit 1
+    fi
     make -j"$jobs"
     make install )
 fi
