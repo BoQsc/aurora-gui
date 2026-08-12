@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — dshell: D-native replacement for pwd/ls/stat (user request)
+- [x] User: "the last missing piece would be to have dshell so we don't use
+      all these pwd and other commands." The model still reached for bash for
+      plain directory introspection (pwd/ls/dir/stat) in default mode.
+- [x] Added the D-native `dshell` tool: `pwd` (print workspace path), `ls`/`dir`
+      (list a directory with `[f]`/`[d]` tags and sizes via `SpanMode.shallow`),
+      and `stat` (file/directory type, size, modified time). Implemented
+      entirely in D with `std.file` — no external shell is ever spawned.
+- [x] `dshell` is advertised in BOTH the default and native-only toolsets, and
+      the steering prompt tells the model to prefer it for pwd/ls/stat instead
+      of bash/cmd/powershell.
+- [x] Verified live (both modes): "where am I and what's in the workspace?"
+      now calls `dshell pwd` + `dshell ls` then `read`, in 3 rounds with zero
+      bash attempts; native mode uses `dshell ls` directly. Tools test covers
+      dshell pwd/ls/stat + toolset membership; baseline + Pro debug/release
+      builds and all smoke tests pass.
+
 ## 2026-08-12 — Model defaults to bash for file ops; native D tools instead (user feedback)
 - [x] Reproduced the exact case: "what files are in the workspace?" made the
       model burn 5–6 rounds on `bash dir` variants. Root cause was TWO things:

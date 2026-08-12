@@ -1,5 +1,34 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro dshell tool (2026-08-12)
+
+The model still reached for bash for plain directory introspection
+(pwd/ls/dir/stat). Added a D-native `dshell` tool in
+`aurora-opencode-pro/auroraopencode/tools.d`:
+
+- `pwd` — prints the workspace path.
+- `ls` / `dir` — lists a directory (`SpanMode.shallow`) with `[f]`/`[d]` tags
+  and byte sizes.
+- `stat` — file/directory type, size, and modified time.
+
+It never spawns a shell; everything uses `std.file` (`dirEntries`, `getSize`,
+`timeLastModified`). Advertised in both the default and native-only toolsets,
+and the steering prompt directs the model to prefer it over bash for these
+commands.
+
+Verify with the tools test:
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+```
+Pass = `D-native dshell pwd / ls / stat OK`, `Default vs native-only toolset
+shapes OK`, then `Aurora OpenCode Pro tools module test passed.`
+
+Live (temp probe): "where am I and what's in the workspace?" now answers via
+`dshell pwd` + `dshell ls` then `read` in 3 rounds, no bash attempts. Native
+mode uses `dshell ls` directly.
+
 ## Aurora OpenCode Pro native-tool mode (2026-08-12)
 
 User feedback: the model defaulted to bash for file operations and fumbled

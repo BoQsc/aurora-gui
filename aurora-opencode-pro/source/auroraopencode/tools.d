@@ -2,7 +2,7 @@ module auroraopencode.tools;
 
 import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef;
 import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
-    write, mkdirRecurse, remove, tempDir;
+    write, mkdirRecurse, remove, tempDir, getSize, timeLastModified;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildNormalizedPath, buildPath, expandTilde, isAbsolute;
 import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
@@ -60,6 +60,22 @@ private string shellUsageNotes(string shell)
             "read/write/glob/grep tools for file access.";
 }
 
+/// The D-native `dshell` tool definition, shared by both tool sets: it covers
+/// the plain directory-introspection commands (pwd/ls/dir/stat) natively so
+/// the model never needs a shell for them.
+private OpenCodeToolDef dshellToolDefinition()
+{
+    return OpenCodeToolDef(
+        "dshell",
+        "A tiny shell implemented natively in this application (no external " ~
+        "shell). Use it for plain directory introspection: `pwd` prints the " ~
+        "workspace path, `ls`/`dir` lists a directory with types and sizes, " ~
+        "and `stat` shows file/directory metadata. Prefer this over the " ~
+        "bash/cmd/powershell tool for these commands.",
+        `{"type":"object","properties":{"command":{"type":"string","enum":["pwd","ls","dir","stat"],"description":"The command to run"},"path":{"type":"string","description":"Optional path (relative to the workspace or absolute); defaults to the workspace"}},"required":["command"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -73,6 +89,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "dedicated tools do not fit. " ~ shellUsageNotes(shell),
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["command"]}`
         ),
+        dshellToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -114,6 +131,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "each argument separately (no shell quoting or redirection).",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["program"]}`
         ),
+        dshellToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -149,16 +167,18 @@ public string toolSteeringPrompt(bool nativeOnly)
     if (nativeOnly)
         return "You have access to tools implemented natively in this " ~
             "application; there is no shell and no bash/cmd/powershell. " ~
-            "Use `glob` to list files, `read` to read them, `write` to create " ~
-            "them, `grep` to search contents, and `run` to execute a program " ~
-            "with an explicit argument list. Always prefer these tools over " ~
-            "trying to reconstruct shell commands.";
+            "Use `dshell` for directory introspection (pwd, ls/dir, stat), " ~
+            "`glob` to list files by pattern, `read` to read them, `write` to " ~
+            "create them, `grep` to search contents, and `run` to execute a " ~
+            "program with an explicit argument list. Always prefer these tools " ~
+            "over trying to reconstruct shell commands.";
     return "You have access to tools. For file and content operations prefer " ~
-        "the dedicated native tools: `glob` to list files, `read` to read " ~
+        "the dedicated native tools: `dshell` for directory introspection " ~
+        "(pwd, ls/dir, stat), `glob` to list files by pattern, `read` to read " ~
         "them, `write` to create them, and `grep` to search contents. Use the " ~
         "`bash` tool only for running build commands, git, package managers, " ~
         "or other executables that the native tools cannot perform. Avoid " ~
-        "using bash for listing or reading files.";
+        "using bash for pwd, listing, or reading files.";
 }
 
 public struct ToolExecution
@@ -654,6 +674,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return runBash(call.arguments, workspace);
         case "run":
             return runProgramTool(call.arguments, workspace);
+        case "dshell":
+            return runDshell(call.arguments, workspace);
         case "read":
             return runRead(call.arguments, workspace);
         case "write":
@@ -666,4 +688,105 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);
     }
+}
+
+/// The D-native `dshell` tool: a tiny shell implemented in D that covers the
+/// commands the model most often reaches for (pwd, ls/dir, stat) so it never
+/// needs to invoke bash/cmd/powershell for plain directory introspection.
+private ToolExecution runDshell(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string command;
+    string path;
+    if (value.type == JSONType.object)
+    {
+        if (auto field = "command" in value.object)
+            if (field.type == JSONType.string)
+                command = field.str;
+        if (auto field = "path" in value.object)
+            if (field.type == JSONType.string)
+                path = field.str;
+    }
+    if (command.length == 0)
+        return ToolExecution("dshell",
+            "Error: dshell requires a `command` (pwd, ls, dir, or stat).",
+            true);
+
+    const resolved = path.length > 0
+        ? resolveToolPath(path, workspace) : workspace;
+
+    switch (command)
+    {
+        case "pwd":
+            return ToolExecution("dshell",
+                "<path>" ~ workspace ~ "</path>", false);
+        case "ls":
+        case "dir":
+            return dshellList(resolved, workspace);
+        case "stat":
+            return dshellStat(resolved, workspace);
+        default:
+            return ToolExecution("dshell",
+                "Error: unknown dshell command '" ~ command ~
+                "' (expected pwd, ls, dir, or stat).", true);
+    }
+}
+
+private ToolExecution dshellList(string path, string workspace)
+{
+    if (!exists(path) || !isDir(path))
+        return ToolExecution("dshell",
+            "Error: not a directory: " ~ path, true);
+    string[] names;
+    string[] kinds;
+    string[] sizes;
+    try
+    {
+        foreach (entry; dirEntries(path, SpanMode.shallow))
+        {
+            names ~= entry.name;
+            kinds ~= entry.isDir ? "dir" : "file";
+            if (entry.isDir)
+                sizes ~= "-";
+            else
+            {
+                try sizes ~= to!string(entry.size);
+                catch (Exception) sizes ~= "?";
+            }
+        }
+    }
+    catch (Exception error)
+        return ToolExecution("dshell", "Error: could not list directory: " ~
+            error.msg, true);
+    names.sort();
+    auto builder = appender!string();
+    builder.put("<path>" ~ path ~ "</path>\n");
+    builder.put("<entries>\n");
+    foreach (index; 0 .. names.length)
+        builder.put((kinds[index] == "dir" ? "[d] " : "[f] ") ~
+            names[index] ~ "  (" ~ sizes[index] ~ " bytes)\n");
+    builder.put("</entries>\n");
+    return ToolExecution("dshell", truncateOutput(builder.data), false);
+}
+
+private ToolExecution dshellStat(string path, string workspace)
+{
+    if (!exists(path))
+        return ToolExecution("dshell", "Error: not found: " ~ path, true);
+    auto builder = appender!string();
+    builder.put("<path>" ~ path ~ "</path>\n");
+    builder.put(isDir(path) ? "<type>directory</type>\n"
+        : isFile(path) ? "<type>file</type>\n" : "<type>other</type>\n");
+    if (isFile(path))
+    {
+        try builder.put("<size>" ~ to!string(getSize(path)) ~
+            " bytes</size>\n");
+        catch (Exception) {}
+        try builder.put("<modified>" ~ to!string(timeLastModified(path)) ~
+            "</modified>\n");
+        catch (Exception) {}
+    }
+    return ToolExecution("dshell", builder.data, false);
 }

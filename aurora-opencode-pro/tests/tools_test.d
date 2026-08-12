@@ -111,27 +111,59 @@ int main()
         writeln("D-native run tool executes a program directly");
     }
 
+    // The D-native `dshell` tool covers pwd/ls/stat without any shell.
+    auto pwdResult = executeTool(makeCall("dshell",
+        `{"command":"pwd"}`), dir);
+    assert(!pwdResult.failed, "dshell pwd failed: " ~ pwdResult.output);
+    assert(pwdResult.output.indexOf(dir) >= 0,
+        "dshell pwd did not return the workspace path: " ~ pwdResult.output);
+
+    auto lsResult = executeTool(makeCall("dshell",
+        `{"command":"ls"}`), dir);
+    assert(!lsResult.failed, "dshell ls failed: " ~ lsResult.output);
+    assert(lsResult.output.indexOf("README.md") >= 0,
+        "dshell ls did not list the directory: " ~ lsResult.output);
+    assert(lsResult.output.indexOf("[f]") >= 0,
+        "dshell ls did not tag file entries: " ~ lsResult.output);
+    assert(lsResult.output.indexOf("[d]") >= 0,
+        "dshell ls did not tag directory entries: " ~ lsResult.output);
+
+    auto statResult = executeTool(makeCall("dshell",
+        `{"command":"stat","path":"src/main.d"}`), dir);
+    assert(!statResult.failed, "dshell stat failed: " ~ statResult.output);
+    assert(statResult.output.indexOf("<type>file</type>") >= 0,
+        "dshell stat did not report a file: " ~ statResult.output);
+    writeln("D-native dshell pwd / ls / stat OK");
+
     // Toolset shapes: default has the shell tool, native-only does not.
     auto defaults = builtinToolDefinitions();
     bool hasShell;
+    bool defaultHasDshell;
     foreach (tool; defaults)
+    {
         if (tool.name == "bash") hasShell = true;
+        if (tool.name == "dshell") defaultHasDshell = true;
+    }
     assert(hasShell, "Default toolset must include the shell tool");
+    assert(defaultHasDshell, "Default toolset must include dshell");
 
     auto natives = nativeOnlyToolDefinitions();
     bool nativeHasShell;
     bool hasRun;
+    bool nativeHasDshell;
     foreach (tool; natives)
     {
         if (tool.name == "bash") nativeHasShell = true;
         if (tool.name == "run") hasRun = true;
+        if (tool.name == "dshell") nativeHasDshell = true;
     }
     assert(!nativeHasShell, "Native toolset must not include the shell tool");
     assert(hasRun, "Native toolset must include the run tool");
+    assert(nativeHasDshell, "Native toolset must include dshell");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
-    assert(toolSteeringPrompt(false).indexOf("glob") >= 0,
-        "Default steering prompt must steer toward glob");
+    assert(toolSteeringPrompt(false).indexOf("dshell") >= 0,
+        "Default steering prompt must steer toward dshell");
     writeln("Default vs native-only toolset shapes OK");
 
     // unknown tools report a clear error rather than crashing
