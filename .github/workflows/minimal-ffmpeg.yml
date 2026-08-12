@@ -20,14 +20,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mingw-w64 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-            pkg-config-mingw-w64-x86-64 nasm make wget git wine64
+            pkg-config-mingw-w64-x86-64 nasm make cmake wget git wine64
           python3 -m pip install --user --break-system-packages meson ninja
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build minimal static ffmpeg/ffprobe
         run: |
           export WINE=wine64
-          bash scripts/build-minimal-ffmpeg-win64.sh
+          scripts/build-minimal-ffmpeg-win64.sh
 
       - name: Verify encoder/decoder/filter inventory
         run: |

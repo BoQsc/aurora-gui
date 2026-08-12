@@ -3,12 +3,16 @@
 # only the codecs/filters Aurora Cut actually uses. Runs on a Linux host and
 # cross-compiles for x86_64-w64-mingw32.
 #
-# Requires: mingw-w64, nasm, pkg-config-mingw-w64-x86-64, make, wget, git,
-# python3 + meson + ninja. Set WINE=<runner> to also smoke-test the result.
+# Requires: mingw-w64, nasm, pkg-config-mingw-w64-x86-64, make, cmake, wget,
+# git, python3 + meson + ninja. Set WINE=<runner> to also smoke-test the result.
 #
-# nv-codec-headers is pinned to n12.2.72.0: ffmpeg n8.1's nvenc.c uses the old
-# NV_ENC_CLOCK_TIMESTAMP_SET.countingType field, renamed to countingTypeLSB in
-# n13.1. H264 NVENC is Aurora Cut's primary encoder when an NVIDIA GPU exists.
+# GPU encoders are Aurora Cut's primary encoders (media.d probes nvenc -> qsv ->
+# amf before libx264), so all three are kept: h264_nvenc, h264_qsv, h264_amf.
+# - nv-codec-headers is pinned to n12.2.72.0: ffmpeg n8.1's nvenc.c uses the old
+#   NV_ENC_CLOCK_TIMESTAMP_SET.countingType field, renamed to countingTypeLSB
+#   in n13.1.
+# - AMF is header-only (AMF/core/Version.h), runtime loads amfrt64.dll.
+# - libvpl (oneVPL) is cross-built with CMake for h264_qsv.
 set -euo pipefail
 
 ffmpeg_tag="${FFMPEG_TAG:-n8.1}"
@@ -114,12 +118,40 @@ if [ ! -f "$deps/nv/include/ffnvcodec/nvEncodeAPI.h" ]; then
 fi
 echo "::endgroup::"
 
+# ---- AMF headers (h264_amf) -------------------------------------------------
+echo "::group::amf"
+if [ ! -f "$deps/amf/include/AMF/core/Version.h" ]; then
+  fetch "$src/amf" https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git v1.5.2
+  mkdir -p "$deps/amf/include/AMF"
+  cp -r "$src/amf/amf/public/include/core" "$deps/amf/include/AMF/"
+  cp -r "$src/amf/amf/public/include/components" "$deps/amf/include/AMF/"
+fi
+echo "::endgroup::"
+
+# ---- libvpl / oneVPL (h264_qsv) ---------------------------------------------
+echo "::group::libvpl"
+if [ ! -f "$deps/libvpl/include/vpl/mfx.h" ]; then
+  fetch "$src/libvpl" https://github.com/intel/libvpl.git
+  ( cd "$src/libvpl"
+    cmake -S . -B "$work/libvpl-build" \
+      -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+      -DCMAKE_C_COMPILER="$cross-gcc" -DCMAKE_CXX_COMPILER="$cross-g++" \
+      -DCMAKE_RC_COMPILER="$cross-windres" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF \
+      -DBUILD_PREVIEW=OFF -DBUILD_SHARED_LIBS=OFF \
+      -DCMAKE_INSTALL_PREFIX="$deps/libvpl"
+    cmake --build "$work/libvpl-build" -j"$jobs"
+    cmake --install "$work/libvpl-build" )
+fi
+echo "::endgroup::"
+
 # ---- ffmpeg -----------------------------------------------------------------
 echo "::group::ffmpeg"
 if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
   fetch "$src/ffmpeg" https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_tag"
   ( cd "$src/ffmpeg"
-    export PKG_CONFIG_LIBDIR="$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
+    export PKG_CONFIG_LIBDIR="$deps/libvpl/lib/pkgconfig:$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
     ./configure \
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
@@ -132,7 +164,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-swscale --enable-swresample \
       --enable-protocol=file,pipe \
       --enable-libx264 --enable-libmp3lame --enable-libdav1d \
-      --enable-zlib --enable-nvenc \
+      --enable-zlib --enable-nvenc --enable-amf --enable-libvpl \
       --enable-hwaccel=d3d11va,dxva2 \
       --enable-demuxer=lavfi,mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
       --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null \
@@ -141,15 +173,15 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-decoder=aac,mp3,flac,vorbis,opus,ac3,eac3 \
       --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be \
       --enable-decoder=pcm_u8,pcm_s8,pcm_alaw,pcm_mulaw,adpcm_ima_wav \
-      --enable-encoder=libx264,h264_nvenc,aac,libmp3lame,ppm \
+      --enable-encoder=libx264,h264_nvenc,h264_qsv,h264_amf,aac,libmp3lame,ppm \
       --enable-parser=h264,hevc,vp8,vp9,av1,mpeg4video,mpegvideo,mjpeg,png,webp,bmp,gif \
       --enable-parser=aac,mp3,flac,vorbis,opus,mpegaudio,ac3,eac3 \
       --enable-filter=color,anullsrc,testsrc2,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
-      --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include" \
-      --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib" \
+      --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
+      --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib" \
       --extra-libs="-lws2_32 -lpthread"
     make -j"$jobs"
     make install )

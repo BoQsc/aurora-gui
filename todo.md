@@ -74,11 +74,16 @@
 - [x] Added `.github/workflows/minimal-ffmpeg.yml` (workflow_dispatch; builds,
       runs wine smoke test, verifies inventory, uploads artifact).
 - [x] CI iteration fixed: postproc removed in ffmpeg 8.x (dropped the flag),
-      libx264 needs --enable-gpl, dav1d + ffnvcodec need their .pc dirs in
-      PKG_CONFIG_LIBDIR, and h264_nvenc must use nv-codec-headers pinned to
-      n12.2.72.0 (ffmpeg n8.1's nvenc.c uses countingType, renamed to
-      countingTypeLSB in n13.1). NVENC is Aurora Cut's primary encoder on
-      NVIDIA GPUs, so it is kept in the build.
+      libx264 needs --enable-gpl, dav1d + ffnvcodec + libvpl need their .pc
+      dirs in PKG_CONFIG_LIBDIR, and h264_nvenc must use nv-codec-headers
+      pinned to n12.2.72.0 (ffmpeg n8.1's nvenc.c uses countingType, renamed
+      to countingTypeLSB in n13.1).
+- [x] GPU-encode capability is preserved in the minimal build, matching the
+      full build: h264_nvenc (NVIDIA), h264_qsv (Intel, via cross-built
+      libvpl/oneVPL) and h264_amf (AMD, header-only SDK) are all enabled
+      because media.d probes nvenc -> qsv -> amf as primary encoders before
+      libx264. Decode hwaccels d3d11va + dxva2 are included; cuda decode is
+      omitted (d3d11va already covers NVIDIA decode, probed first).
 - [ ] Not yet run successfully: workflow must be triggered from the Actions tab.
       Expected artifact: `ffmpeg-minimal-win64` (~15-30MB) containing
       ffmpeg.exe + ffprobe.exe. Verify in the running GUI: import/playback,
