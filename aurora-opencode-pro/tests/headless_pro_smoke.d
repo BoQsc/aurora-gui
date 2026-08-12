@@ -2,11 +2,16 @@ module auroraopencode_pro_headless_smoke;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
-import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
+import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
+    setOpencodeStateDirectoryForTesting;
+import core.time : msecs, seconds;
+import core.thread : Thread;
+import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
 import std.json : JSONValue;
 import std.path : buildPath;
 import std.stdio : writeln;
+import std.string : indexOf;
 import std.utf : toUTF32;
 
 private Widget findById(Widget widget, string requestedId)
@@ -92,6 +97,12 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(driver.paint(), "Second pro paint failed");
 
+    // Context meter starts empty: the restored replies have no API usage yet.
+    auto usageBadge = requireWidget!Widget(root, "oc-usage");
+    assert(root.contextUsageTextForTesting() == "ctx",
+        "Context badge should read ctx until usage is reported");
+    writeln("Context badge initially: ", root.contextUsageTextForTesting());
+
     auto sessions = requireWidget!SessionListView(root, "oc-sessions");
     auto filter = requireWidget!TextField(root, "oc-filter");
     assert(root.sessionCountForTesting() == 3, "Expected 3 restored sessions");
@@ -137,6 +148,8 @@ int main(string[] args)
     assert(root.sessionTitleForTesting(1) == "Renamed chat",
         "Rename did not update the session title");
     writeln("Renamed session title: ", root.sessionTitleForTesting(1));
+    dismissTransientPopups(root);
+    root.tickTree(0.02);
 
     // Delete a session via the list's Delete-key hook.
     sessions.onDeleteRequested(0);
@@ -153,26 +166,153 @@ int main(string[] args)
     assert(driver.paint(), "Code bubble did not paint");
     writeln("Pro markdown bubble painted");
 
-    // Chat quality: edit & resend truncates the conversation at the user
-    // message and prefills the input.
-    root.editAndResendForTesting(0);
+    // Chat quality: every message bubble carries its action pill.
+    root.addConversationForTesting(["user"], ["A new user message."]);
+    assert(root.lastBubbleActionForTesting() == "Edit & resend",
+        "User message did not get the Edit & resend pill");
+    root.addConversationForTesting(["assistant"], ["A normal reply."]);
+    assert(root.lastBubbleActionForTesting() == "Regenerate",
+        "Assistant reply did not get the Regenerate pill");
+    // Both the user bubble and the assistant reply keep their pills.
+    const count = root.messageCountForTesting();
+    assert(root.bubbleActionForTesting(cast(int) count - 2) == "Edit & resend",
+        "User bubble lost its Edit & resend pill");
+    assert(root.bubbleActionForTesting(cast(int) count - 1) == "Regenerate",
+        "Assistant bubble lost its Regenerate pill");
+    assert(root.prepareRegenerateForTesting(),
+        "Regenerate was not offered after an assistant reply");
+    assert(root.lastBubbleActionForTesting() == "Edit & resend",
+        "Pill did not return to Edit & resend after regenerate");
+    const countAfterRegenerate = root.messageCountForTesting();
+
+    // Edit & resend the newest user message.
+    root.editAndResendForTesting(countAfterRegenerate - 1);
     root.tickTree(0.02);
     assert(driver.paint(), "Edit & resend did not repaint");
-    assert(root.messageCountForTesting() == 0,
+    assert(root.messageCountForTesting() == countAfterRegenerate - 1,
         "Edit & resend did not truncate at the user message");
-    assert(root.inputTextForTesting() == "Hello",
+    assert(root.inputTextForTesting() == "A new user message.",
         "Edit & resend did not prefill the input");
     writeln("Edit & resend prefilled input: ", root.inputTextForTesting());
 
-    // Chat quality: regenerate removes the last assistant reply.
+    // Regression: invoking a bubble's action pill must target THAT bubble's
+    // message, not the last one (D foreach closures capture the reused loop
+    // slot, which silently bound every pill to the final message).
+    root.addConversationForTesting(
+        ["user", "assistant", "user"],
+        ["edit me zero", "reply one", "edit me two"]);
+    const pillsCount = root.messageCountForTesting();
+    assert(root.bubbleActionForTesting(cast(int) pillsCount - 3) ==
+        "Edit & resend", "Bubble 0 should carry Edit & resend");
+    // Clicking bubble 0's pill truncates at message 0 and prefills its text.
+    assert(root.invokeBubbleActionForTesting(cast(int) pillsCount - 3),
+        "Bubble 0 action pill did not fire");
+    root.tickTree(0.02);
+    assert(driver.paint(), "Bubble 0 action did not repaint");
+    assert(root.inputTextForTesting() == "edit me zero",
+        "Bubble 0 pill did not prefill its own message (foreach capture bug)");
+    assert(root.messageCountForTesting() == cast(int) pillsCount - 3,
+        "Bubble 0 pill did not truncate at its own message");
+    writeln("Pill targets its own message (no foreach capture bug)");
+
+    // Regenerate still works after an edit.
     root.addConversationForTesting(
         ["assistant"], ["A reply that will be regenerated."]);
-    assert(driver.paint(), "Regenerate prep did not repaint");
     assert(root.prepareRegenerateForTesting(),
-        "Regenerate was not offered after an assistant reply");
-    assert(root.messageCountForTesting() == 0,
+        "Regenerate was not offered after an edit");
+    assert(root.messageCountForTesting() == countAfterRegenerate - 1,
         "Regenerate did not remove the assistant reply");
-    writeln("Regenerate removed the last assistant reply");
+    assert(root.lastBubbleActionForTesting() == "Regenerate",
+        "Pill did not refresh after the final regenerate");
+    writeln("Chat-quality pills stay consistent on every message");
+
+    // Context usage meter: the toolbar badge shows the exact API usage as a
+    // percentage of the model's context window, and hovering opens a tooltip
+    // with the full breakdown (mirrors the real opencode indicator).
+    root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
+    root.recordContextUsageForTesting(47000, 213, 47213);
+    assert(driver.paint(), "Context badge did not paint after usage");
+    assert(root.contextUsageTextForTesting() == "37%",
+        "Badge should show 47213/128000 rounded to 37%");
+    writeln("Context badge after usage: ", root.contextUsageTextForTesting());
+
+    assert(!root.isContextTooltipOpenForTesting(),
+        "Tooltip must be closed before hovering the badge");
+    driver.moveTo(globalCenter(usageBadge));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Tooltip did not paint after hover");
+    assert(root.isContextTooltipOpenForTesting(),
+        "Hovering the badge did not open the context tooltip");
+    const tooltip = root.contextTooltipTextForTesting();
+    assert(tooltip.length > 0, "Context tooltip text is empty");
+    assert(tooltip.indexOf("Context usage") >= 0, "Tooltip lacks the title");
+    assert(tooltip.indexOf("deepseek-v4-flash") >= 0, "Tooltip lacks the model");
+    assert(tooltip.indexOf("128,000") >= 0, "Tooltip lacks the context limit");
+    assert(tooltip.indexOf("47,213") >= 0, "Tooltip lacks the used tokens");
+    assert(tooltip.indexOf("37%") >= 0, "Tooltip lacks the usage percent");
+    assert(tooltip.indexOf("47,000") >= 0, "Tooltip lacks the prompt tokens");
+    writeln("Context tooltip shows the usage breakdown on hover");
+
+    // Moving away from the badge dismisses the tooltip.
+    driver.moveTo(Point(4, 700));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Tooltip did not repaint after leaving");
+    assert(!root.isContextTooltipOpenForTesting(),
+        "Leaving the badge did not dismiss the context tooltip");
+
+    // The meter follows the active session: a session without recorded usage
+    // resets the badge, and switching back restores the persisted count.
+    sessions.onSelectionChanged(1);
+    root.tickTree(0.02);
+    assert(root.contextUsageTextForTesting() == "ctx",
+        "Badge should reset for a session without usage");
+    sessions.onSelectionChanged(0);
+    root.tickTree(0.02);
+    assert(root.contextUsageTextForTesting() == "37%",
+        "Badge should restore the persisted usage for the session");
+    writeln("Context meter follows the active session");
+
+    // Tool loop: with tools enabled and a workspace, an injected tool call is
+    // executed locally and the result lands as a `tool` role message.
+    auto workspaceDir = buildPath(stateDir, "workspace");
+    mkdirRecurse(workspaceDir);
+    write(buildPath(workspaceDir, "notes.txt"), "hello tool world\n");
+    root.enableToolsForTesting(workspaceDir);
+    root.pauseToolContinuationForTesting();
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["What is in notes.txt?"]);
+    // The client creates an assistant message (chatBegin) before delivering
+    // toolCalls, so mirror that shape here.
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall readCall;
+    readCall.id = "call_test_1";
+    readCall.name = "read";
+    readCall.arguments = `{"filePath":"notes.txt"}`;
+    OpenCodeToolCall grepCall;
+    grepCall.id = "call_test_2";
+    grepCall.name = "grep";
+    grepCall.arguments = `{"pattern":"tool"}`;
+    root.injectToolCallsForTesting([readCall, grepCall]);
+    // The tool worker runs on a background thread; tick the tree so onTick
+    // drains the results, up to a short deadline.
+    const deadline = Clock.currTime + 5.seconds;
+    while (root.toolMessageCountForTesting() < 2 && Clock.currTime < deadline)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
+    }
+    assert(root.toolMessageCountForTesting() == 2,
+        "Tool results did not arrive as tool role messages");
+    assert(root.toolResultForTesting(0).indexOf("hello tool world") >= 0,
+        "read tool did not return the file contents: " ~
+        root.toolResultForTesting(0));
+    assert(root.toolResultForTesting(1).indexOf("notes.txt") >= 0,
+        "grep tool did not find the matching file");
+    assert(driver.paint(), "Tool bubble did not paint");
+    writeln("Tool loop executed read + grep and landed two tool messages");
+    assert(root.messageCountForTesting() >= 3,
+        "Tool loop did not append the tool messages to the session");
+    writeln("Tool loop preserved the session history");
 
     root.shutdownClient();
     window.close();

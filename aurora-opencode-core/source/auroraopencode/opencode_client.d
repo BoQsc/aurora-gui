@@ -16,6 +16,8 @@ import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf;
 import std.utf : toUTF16z;
+import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
+    OpenCodeToolDef;
 import auroraopencode.logging : logError;
 
 /** Kinds of events the client delivers to the UI thread. */
@@ -23,6 +25,9 @@ enum OpenCodeEventKind
 {
     chatBegin,   // assistant reply started (text = "")
     delta,       // streaming fragment (text = fragment, reasoning = kind)
+    usage,       // live usage update while streaming (token fields populated)
+    toolCalls,   // assistant finished requesting tools (text = content, toolCalls set)
+    toolResult,  // a tool execution finished (text = output, toolName/toolCallId set)
     done,        // assistant reply finished (text = full content)
     error,       // request failed (text = message)
     models,      // model list refreshed (modelIds = ids)
@@ -38,6 +43,10 @@ struct OpenCodeEvent
     int promptTokens;
     int completionTokens;
     int totalTokens;
+    OpenCodeToolCall[] toolCalls;
+    string toolName;
+    string toolCallId;
+    bool toolFailed;
 }
 
 private struct HttpTarget
@@ -133,9 +142,15 @@ final class OpenCodeClient
     private string _apiKey;
     private string _streamReasoning;
     private string _streamContent;
+    private OpenCodeToolCall[] _streamToolCalls;
+    private bool _streamWantedTools;
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
     private int _lastTotalTokens;
+    private bool _streamActive;
+    private int _lastPushedPrompt;
+    private int _lastPushedCompletion;
+    private int _lastPushedTotal;
 
     this(string baseUrl, string apiKey)
     {
@@ -171,6 +186,21 @@ final class OpenCodeClient
     void startChat(const(string)[] roles, const(string)[] contents,
         string model, bool thinking)
     {
+        ChatRequestMessage[] messages;
+        foreach (index; 0 .. roles.length)
+        {
+            ChatRequestMessage message;
+            message.role = roles[index];
+            message.content = contents[index];
+            messages ~= message;
+        }
+        startChatMessages(messages, null, model, thinking);
+    }
+
+    /** Start a streaming chat completion with tool definitions. */
+    void startChatMessages(const(ChatRequestMessage)[] messages,
+        const(OpenCodeToolDef)[] tools, string model, bool thinking)
+    {
         _mutex.lock();
         if (_chatBusy)
         {
@@ -182,16 +212,36 @@ final class OpenCodeClient
         _chatHandle = null;
         _mutex.unlock();
 
-        string[] roleCopy;
-        string[] contentCopy;
-        foreach (index; 0 .. roles.length)
+        ChatRequestMessage[] messageCopy;
+        foreach (message; messages)
         {
-            roleCopy ~= roles[index].dup;
-            contentCopy ~= contents[index].dup;
+            ChatRequestMessage copy;
+            copy.role = message.role.dup;
+            copy.content = message.content.dup;
+            copy.toolCallId = message.toolCallId.dup;
+            foreach (call; message.toolCalls)
+            {
+                OpenCodeToolCall callCopy;
+                callCopy.id = call.id.dup;
+                callCopy.name = call.name.dup;
+                callCopy.arguments = call.arguments.dup;
+                copy.toolCalls ~= callCopy;
+            }
+            messageCopy ~= copy;
+        }
+
+        OpenCodeToolDef[] toolCopy;
+        foreach (tool; tools)
+        {
+            OpenCodeToolDef copy;
+            copy.name = tool.name.dup;
+            copy.description = tool.description.dup;
+            copy.parametersJson = tool.parametersJson.dup;
+            toolCopy ~= copy;
         }
 
         _worker = new Thread({
-            runChatRequest(roleCopy, contentCopy, model, thinking);
+            runChatRequest(messageCopy, toolCopy, model, thinking);
         });
         _worker.isDaemon = true;
         _worker.start();
@@ -251,6 +301,16 @@ final class OpenCodeClient
         output.length = 0;
         output ~= _pending;
         _pending.length = 0;
+    }
+
+    /**
+     * Push an event from the application thread (e.g. a completed tool
+     * result) into the same queue the UI drains each tick, so the tool loop
+     * and the streaming client share one event channel.
+     */
+    void pushLocalEvent(OpenCodeEvent event)
+    {
+        pushEvent(event);
     }
 
     /// True when the client is being cancelled or closed, so in-flight request
@@ -336,19 +396,25 @@ final class OpenCodeClient
         else if (!chat && _modelsHandle is handle) _modelsHandle = null;
     }
 
-    private void runChatRequest(string[] roles, string[] contents,
-        string model, bool thinking)
+    private void runChatRequest(ChatRequestMessage[] messages,
+        OpenCodeToolDef[] tools, string model, bool thinking)
     {
-        scope (exit) finishWorker(true);
+        scope (exit)
+        {
+            finishWorker(true);
+            _streamActive = false;
+        }
 
         bool cancelled;
 
         try
         {
             const target = parseHttpTarget(_baseUrl, "/chat/completions");
-            const body = buildChatBody(roles, contents, model, thinking);
+            const body = buildChatBody(messages, tools, model, thinking);
             _streamReasoning = "";
             _streamContent = "";
+            _streamToolCalls.length = 0;
+            _streamWantedTools = false;
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
             _lastTotalTokens = 0;
@@ -401,6 +467,7 @@ final class OpenCodeClient
             }
 
             pushEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
+            _streamActive = true;
 
             ubyte[8192] buffer;
             string lineBuffer;
@@ -436,9 +503,7 @@ final class OpenCodeClient
                     _streamContent, false, null, true, _lastPromptTokens,
                     _lastCompletionTokens, _lastTotalTokens));
             else
-                pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, false, _lastPromptTokens,
-                    _lastCompletionTokens, _lastTotalTokens));
+                pushStreamEnd();
         }
         catch (Exception error)
         {
@@ -455,6 +520,58 @@ final class OpenCodeClient
             else
                 pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
+    }
+
+    /// Emit the terminal event for a stream that was not cancelled: a
+    /// toolCalls event when the model requested tools, otherwise done.
+    private void pushStreamEnd()
+    {
+        if (_streamWantedTools)
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.toolCalls,
+                _streamContent, false, null, false, _lastPromptTokens,
+                _lastCompletionTokens, _lastTotalTokens,
+                _streamToolCalls.dup));
+        else
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
+                _streamContent, false, null, false, _lastPromptTokens,
+                _lastCompletionTokens, _lastTotalTokens));
+    }
+
+    // -- test hooks --------------------------------------------------------
+
+    /// Test-only: run the SSE line parser on a captured payload. No network.
+    public void feedSseForTesting(string payload)
+    {
+        dispatchSseLines(payload);
+    }
+
+    /// Test-only: emit the terminal event for the parsed stream (done or
+    /// toolCalls depending on what the payload requested), then drain.
+    public OpenCodeEvent[] finishStreamForTesting()
+    {
+        pushStreamEnd();
+        OpenCodeEvent[] events;
+        drain(events);
+        return events;
+    }
+
+    /// Test-only: reset the per-stream accumulation state between fixtures.
+    public void resetStreamStateForTesting()
+    {
+        _streamReasoning = "";
+        _streamContent = "";
+        _streamToolCalls.length = 0;
+        _streamWantedTools = false;
+        _lastPromptTokens = 0;
+        _lastCompletionTokens = 0;
+        _lastTotalTokens = 0;
+    }
+
+    /// Test-only: build the request JSON body without sending anything.
+    public string buildBodyForTesting(const(ChatRequestMessage)[] messages,
+        const(OpenCodeToolDef)[] tools, string model, bool thinking)
+    {
+        return buildChatBody(messages, tools, model, thinking);
     }
 
     private void runModelsRequest()
@@ -526,20 +643,58 @@ final class OpenCodeClient
         }
     }
 
-    private static string buildChatBody(const(string)[] roles,
-        const(string)[] contents, string model, bool thinking)
+    private static JSONValue chatMessageToJson(const ref ChatRequestMessage message)
+    {
+        JSONValue json;
+        json["role"] = message.role;
+        json["content"] = message.content;
+        if (message.role == "tool" && message.toolCallId.length > 0)
+            json["tool_call_id"] = message.toolCallId;
+        if (message.toolCalls.length > 0)
+        {
+            JSONValue calls = JSONValue(string[].init);
+            foreach (call; message.toolCalls)
+            {
+                JSONValue callJson;
+                callJson["id"] = call.id;
+                callJson["type"] = "function";
+                JSONValue funcDef;
+                funcDef["name"] = call.name;
+                funcDef["arguments"] = call.arguments;
+                callJson["function"] = funcDef;
+                calls.array ~= callJson;
+            }
+            json["tool_calls"] = calls;
+        }
+        return json;
+    }
+
+    private static string buildChatBody(const(ChatRequestMessage)[] messages,
+        const(OpenCodeToolDef)[] tools, string model, bool thinking)
     {
         JSONValue root;
         root["model"] = model;
-        JSONValue messages = JSONValue(string[].init);
-        foreach (index; 0 .. roles.length)
+        JSONValue messageList = JSONValue(string[].init);
+        foreach (message; messages)
+            messageList.array ~= chatMessageToJson(message);
+        root["messages"] = messageList;
+        if (tools.length > 0)
         {
-            JSONValue message;
-            message["role"] = roles[index];
-            message["content"] = contents[index];
-            messages.array ~= message;
+            JSONValue toolList = JSONValue(string[].init);
+            foreach (tool; tools)
+            {
+                JSONValue toolJson;
+                toolJson["type"] = "function";
+                JSONValue funcDef;
+                funcDef["name"] = tool.name;
+                funcDef["description"] = tool.description;
+                try funcDef["parameters"] = parseJSON(tool.parametersJson);
+                catch (Exception) funcDef["parameters"] = JSONValue.emptyObject;
+                toolJson["function"] = funcDef;
+                toolList.array ~= toolJson;
+            }
+            root["tools"] = toolList;
         }
-        root["messages"] = messages;
         root["stream"] = true;
         if (!thinking)
             root["reasoning_effort"] = "none";
@@ -611,6 +766,49 @@ final class OpenCodeClient
         if (delta is null || delta.type != JSONType.object) return;
         captureUsage(value);
 
+        // Some providers signal tool-call completion through the chunk's
+        // finish_reason before [DONE]; others only through the delta shape.
+        if (auto found = "finish_reason" in choice.object)
+            if (found.type == JSONType.string && found.str == "tool_calls")
+                _streamWantedTools = true;
+
+        if (auto found = "tool_calls" in delta.object)
+        {
+            if (found.type == JSONType.array)
+            {
+                foreach (entry; found.array)
+                {
+                    if (entry.type != JSONType.object) continue;
+                    int index = 0;
+                    if (auto field = "index" in entry.object)
+                        if (field.type == JSONType.integer)
+                            index = cast(int) field.integer;
+                    while (_streamToolCalls.length <= cast(size_t) index)
+                        _streamToolCalls ~= OpenCodeToolCall.init;
+                    if (auto field = "id" in entry.object)
+                        if (field.type == JSONType.string &&
+                            field.str.length > 0)
+                            _streamToolCalls[cast(size_t) index].id =
+                                field.str;
+                    auto funcEntry = "function" in entry.object;
+                    if (funcEntry !is null && funcEntry.type == JSONType.object)
+                    {
+                        if (auto name = "name" in funcEntry.object)
+                            if (name.type == JSONType.string &&
+                                name.str.length > 0)
+                                _streamToolCalls[cast(size_t) index].name =
+                                    name.str;
+                        if (auto args = "arguments" in funcEntry.object)
+                            if (args.type == JSONType.string &&
+                                args.str.length > 0)
+                                _streamToolCalls[cast(size_t) index].arguments ~=
+                                    args.str;
+                    }
+                }
+                _streamWantedTools = true;
+            }
+        }
+
         string fragment;
         bool reasoningFragment;
         if (auto found = "reasoning_content" in delta.object)
@@ -651,5 +849,20 @@ final class OpenCodeClient
         if (auto field = "total_tokens" in usage.object)
             if (field.type == JSONType.integer)
                 _lastTotalTokens = cast(int) field.integer;
+        // Mirror the real opencode: surface exact provider usage live so the
+        // UI can meter context before the stream ends when the provider sends
+        // usage in intermediate chunks (many only send it in the final one).
+        if (_streamActive &&
+            (_lastPromptTokens != _lastPushedPrompt ||
+                _lastCompletionTokens != _lastPushedCompletion ||
+                _lastTotalTokens != _lastPushedTotal))
+        {
+            _lastPushedPrompt = _lastPromptTokens;
+            _lastPushedCompletion = _lastCompletionTokens;
+            _lastPushedTotal = _lastTotalTokens;
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
+                false, _lastPromptTokens, _lastCompletionTokens,
+                _lastTotalTokens));
+        }
     }
 }

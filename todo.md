@@ -1,5 +1,96 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Aurora OpenCode Pro "Edit & resend" stopped working (user complaint)
+- [x] Diagnosed: the action-pill delegates were created inline inside the
+      `foreach` over `_messageColumn.children()` in `refreshBubbleActions` (and
+      the right-click `onEditRequested` in `rebuildMessageColumn`). D captures
+      the reused `foreach` loop slot by reference, so EVERY bubble's pill was
+      bound to the final message index. Clicking "Edit & resend" on an early
+      user bubble silently targeted the last message (role mismatch → no-op).
+- [x] Reproduced with a headless probe: `onMouseDown` on the pill returned
+      `handled=true` but the callback edited the wrong message. Confirmed the
+      D behavior with a minimal closure test (even a `const` local copy in the
+      loop still captures the shared slot; only a factory function works).
+- [x] Fixed with delegate factories `regenerateAction(sessionIndex,
+      messageIndex)` and `editResendAction(...)` that bind the indices as
+      parameters, mirroring the font-menu fix already documented in
+      `AURORA-PATCHES.md`.
+- [x] Added regression coverage that invokes a bubble's pill through the real
+      captured delegate (`invokeBubbleActionForTesting`) and asserts it edits
+      that bubble's own message. Pro smoke test, baseline + Pro debug/release
+      builds pass.
+
+## 2026-08-12 — portable-release link fails on this machine (libcmt.lib missing)
+- [ ] `dub build --build=portable-release` fails with
+      `lld-link: error: could not open 'libcmt.lib'` for **both** baseline and
+      Pro (identical configs). `libcmt.lib` (MSVC static CRT) is not installed
+      anywhere under `C:\D`. Debug builds and the headless/tool smoke tests
+      (compiled with dmd -i) all pass. To restore release builds either
+      install the MSVC Build Tools/CRT so `libcmt.lib` is findable, or change
+      the `-mscrtlib=libcmt` policy in the `portable-release` buildTypes.
+
+## 2026-08-12 — Aurora OpenCode Pro context-usage meter (user request)
+- [x] Researched how the real opencode app meters context usage
+      (`anomalyco/opencode`): it uses the **exact** provider `usage` object per
+      assistant message (`tokens: {input, output, reasoning, cache:{read,
+      write}}`) shown as `total / model.limit.context` percent, updating per
+      step-finish — there is no live mid-stream estimate. The only local
+      approximation is `chars/4` (`packages/core/src/util/token.ts`) used for
+      compaction/overflow and the estimated breakdown bar. The context limit
+      comes from provider metadata.
+- [x] Pro toolbar now has a small rectangular `ContextUsageBadge` (fill bar +
+      percent of the model's context window) that opens a hover
+      `ContextUsageTooltip` with the full breakdown (model, limit, used,
+      prompt, completion). The tooltip never steals the pointer (its `hitTest`
+      reports the badge while hovered).
+- [x] Shared client pushes a live `usage` event when the provider reports token
+      counts mid-stream; the `done` event records final
+      prompt/completion/total on `ChatMessage` (persisted in `sessions.json`).
+      `contextLimitForModel()` in core mirrors `model.limit.context` with a
+      local catalog (128K fallback) — the only approximation.
+- [x] Badge refreshes on `usage`/`done`, session switch, model picker, restore,
+      and delete; shows `ctx` until usage is recorded. Covered by the Pro
+      headless smoke test (empty state, 37% at 47213/128000, hover tooltip
+      rows, leave dismissal, follows active session) + pixel-verified
+      screenshot.
+
+## 2026-08-12 — Aurora OpenCode Pro tool use support
+- [x] Studied the original opencode app's tool architecture (built-in tools:
+      bash/shell, read, write, glob, grep, webfetch, websearch, question, task,
+      todo, skill, apply_patch, lsp, plan; registry + permission model) and
+      confirmed the exact wire format the `/chat/completions` endpoint uses
+      with a live probe: tool calls arrive as `delta.tool_calls` fragments
+      (index, id, function.name, streamed function.arguments) and end with
+      `finish_reason: "tool_calls"`; results are sent back as `role: "tool"`
+      messages with `tool_call_id` and the loop repeats until `finish_reason:
+      "stop"`.
+- [x] Core client (`aurora-opencode-core/opencode_client.d`) now supports
+      tools: `startChatMessages` (structured `ChatRequestMessage`[] +
+      `OpenCodeToolDef`[]), SSE `delta.tool_calls` accumulation across
+      fragments, a `toolCalls` terminal event, and `pushLocalEvent` so tool
+      results ride the same event queue the UI drains each tick.
+- [x] Shared data model extended: `OpenCodeToolCall`, `OpenCodeToolDef`,
+      `ChatRequestMessage`, `ChatMessage.toolCalls/toolCallId/toolName`,
+      `Settings.toolsEnabled/workspace` (persisted).
+- [x] Pro tools module (`aurora-opencode-pro/auroraopencode/tools.d`):
+      bash (cmd shell, 60 s kill timeout, temp-file output capture),
+      read, write, glob (`**` recursive via own glob→regex), grep, all with
+      opencode-mirroring JSON schemas.
+- [x] Pro UI tool loop (`appui.d`): "Tools" checkbox in the toolbar, workspace
+      path in Settings, tool-call chips on assistant bubbles, `tool` role
+      result bubbles, a worker thread executes the batch and feeds results
+      back, history (assistant tool_calls + tool results) is re-sent until the
+      model answers with text (12-round cap), session persistence + export
+      include tool calls/results.
+- [x] Baseline client unchanged in behavior: it never advertises tools, and its
+      `final switch` handles the new event kinds as no-ops.
+- [x] Tests: `aurora-opencode-core/tests/tool_sse_test.d` (fragment
+      accumulation + body serialization), `aurora-opencode-pro/tests/
+      tools_test.d` (executors), Pro headless smoke extended to run the loop
+      offline. Verified live: real API tool loop returns the expected result
+      (`sum(1,2) -> 3`; workspace glob→read→summary) with clean `errors.log`.
+      Baseline + Pro debug/release builds and smoke tests pass.
+
 ## 2026-08-12 — Aurora OpenCode Pro chat-quality actions
 - [x] Regenerate/Retry: the last assistant bubble drops the reply and re-runs
       the request with the remaining history ("Retry" when it failed).

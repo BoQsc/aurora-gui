@@ -1,5 +1,125 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode Pro action-pill foreach capture bug (2026-08-12)
+
+User reported "I press edit & resend and nothing happens anymore". Root cause:
+the Regenerate / Edit & resend pill callbacks were created inline inside the
+`foreach` over `_messageColumn.children()` (`refreshBubbleActions`) and the
+right-click `onEditRequested` (`rebuildMessageColumn`). D captures the reused
+`foreach` loop slot by reference, so every closure was bound to the FINAL
+message index; clicking a pill on any early bubble edited (or no-op'd against)
+the last message instead.
+
+Verification method:
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+Pass = `Aurora OpenCode Pro headless smoke test passed.` The regression section
+(`invokeBubbleActionForTesting`) drives the pill through the real captured
+delegate on a mid-conversation user bubble and asserts it truncates at and
+prefills that bubble's own message.
+
+D gotcha confirmed independently: even `const int captured` / non-const locals
+declared inside a `foreach` body capture the shared loop slot in DMD 2.112;
+only a delegate factory function (binding indices as parameters) works. The
+same pitfall and fix are documented in `AURORA-PATCHES.md` for font menus.
+
+## Aurora OpenCode Pro tool use support (2026-08-12)
+
+Studied the original opencode app's tool architecture (the tool registry in
+`packages/opencode/src/tool`: bash/shell, read, write, glob, grep, webfetch,
+websearch, question, task, todo, skill, apply_patch, lsp, plan) and confirmed
+the exact wire format with a live probe against the real Go API:
+
+- Tool calls stream as `choices[0].delta.tool_calls` fragments:
+  `{index, id, type, function:{name, arguments}}` where `arguments` arrives in
+  multiple fragments that must be concatenated.
+- The stream ends with `finish_reason: "tool_calls"` (no text reply).
+- Results are fed back as `role: "tool"` messages with `tool_call_id`
+  (plus the assistant message with its `tool_calls`), and the loop repeats
+  until the model returns a normal text reply.
+
+The core client (`aurora-opencode-core/opencode_client.d`) gained
+`startChatMessages(messages, tools, model, thinking)` with
+`ChatRequestMessage`/`OpenCodeToolDef`, SSE `delta.tool_calls` accumulation,
+a `toolCalls` terminal event, and `pushLocalEvent`. The Pro UI drives the
+loop: Tools checkbox → workspace setting → tool-call chips + `tool` role
+result bubbles → worker-thread batch execution → history re-sent until `stop`
+(12-round cap).
+
+### Tests
+
+1. Core SSE parsing + body serialization:
+```
+cd aurora-opencode-core
+dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\tool_sse_test.d wininet.lib -of=build\tool-sse-test.exe
+build\tool-sse-test.exe
+```
+Pass = `aurora-opencode-core tool SSE tests passed.` Covers fragmented
+`tool_calls` accumulation (id/name/arguments stitched), the `toolCalls`
+terminal event, tools array serialization, and a tool-role message carrying
+`tool_call_id`.
+
+2. Pro tools executors:
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+```
+Pass = `Aurora OpenCode Pro tools module test passed.` Covers read/write/glob
+(`**` recursion)/grep/bash (echo) against a temp workspace, and unknown-tool
+error handling.
+
+3. Pro headless smoke (tool loop offline):
+```
+cd aurora-opencode-pro
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+Pass = `Aurora OpenCode Pro headless smoke test passed.` The added section
+injects a tool call (read + grep) with tools enabled, ticks the tree until the
+worker results arrive, and asserts two `tool` role messages landed with the
+right contents and the session history was preserved.
+
+4. Live tool loop against the real API (verified): a sum tool request runs two
+rounds (tool_calls → result → text `The result of adding 1 and 2 is 3.`), and
+the built-in tool set (glob/read/bash) completes a workspace task with
+`LIVE BUILTIN TOOL LOOP OK` and a clean `errors.log`.
+
+## Aurora OpenCode Pro live context-usage meter (2026-08-12)
+
+Pro shows the **exact API-reported token usage** as a percentage of the model's
+context window in a small rectangular toolbar badge, with a hover tooltip that
+breaks the usage down (mirrors how the real opencode app meters context):
+
+- **How the real opencode meters context** (`anomalyco/opencode`): it uses the
+  provider's `usage` object stored per assistant message
+  (`tokens: {input, output, reasoning, cache:{read,write}}`), displayed as
+  `total / model.limit.context` percent. There is **no live mid-stream
+  estimate** in the real UI — the indicator updates at each `step-finish`. The
+  only local approximation (`Math.round(chars/4)`) is used for compaction /
+  overflow decisions and the estimated breakdown bar. The context limit comes
+  from provider metadata (`model.limit.context`).
+- **Implementation** in `aurora-opencode-pro/appui.d`: `ContextUsageBadge`
+  (toolbar pill, fill bar + percent) + `ContextUsageTooltip` (hover panel,
+  never steals the pointer — its `hitTest` reports the badge while hovered).
+  The shared client pushes a live `usage` event when the provider reports token
+  counts mid-stream (`opencode_client.d`, `_streamActive` guard), and the `done`
+  event records the final `prompt/completion/total` on the `ChatMessage`
+  (persisted in `sessions.json`).
+- **Context limit**: `contextLimitForModel()` in `aurora-opencode-core/core.d`
+  mirrors `model.limit.context` with a local catalog (fallback 128K). This is
+  the only approximation; the used-token count itself is exact from the API.
+- **Badge lifecycle**: updates live during streaming (`usage` event), on
+  `done`, on session switch, model picker, restore, and delete. Shows `ctx`
+  until usage is recorded.
+
+Covered by `headless_pro_smoke.d`: initial empty state, 37% after recording
+47213/128000, hover opens the tooltip (title/model/limit/used/prompt rows),
+leave dismisses it, and the meter follows the active session. Verified visually
+via a PPM screenshot (badge region: 24 distinct colors, tooltip region: 29).
+
 ## Aurora OpenCode Pro chat-quality actions (2026-08-12)
 
 Pro-only chat quality (implemented in `aurora-opencode-pro/appui.d`, shared

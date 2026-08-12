@@ -37,6 +37,34 @@ private immutable string[] defaultKeyFileCandidates = [
     "C:/Users/Windows10_new/Documents/web_webserver/domains/opencode/data/arena/key.txt"
 ];
 
+/// Fallback context window (tokens) used when a model is not in the catalog.
+private immutable int defaultContextLimit = 128_000;
+
+/**
+ * Approximate context window (tokens) for a model.
+ *
+ * The real opencode reads `model.limit.context` from provider metadata and
+ * meters context as `tokens.used / limit.context`. This client only receives
+ * model IDs from the mirror, so the GUI mirrors that behaviour with a local
+ * catalog and a conservative fallback for unknown models.
+ */
+public int contextLimitForModel(string model)
+{
+    switch (model)
+    {
+        case "deepseek-v4-pro":  return 256_000;
+        case "gpt-5.6-luna":     return 256_000;
+        case "qwen3.8-max":      return 1_000_000;
+        case "glm-5.2":          return 256_000;
+        case "grok-4.5":         return 256_000;
+        case "kimi-k3":          return 512_000;
+        case "minimax-m3":       return 256_000;
+        case "mimo-v2.5-pro":    return 256_000;
+        case "hy3":              return 256_000;
+        default:                 return defaultContextLimit;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Palette
 // ---------------------------------------------------------------------------
@@ -83,13 +111,49 @@ public Theme opencodeTheme()
 // Data model
 // ---------------------------------------------------------------------------
 
+/// A single function call the model requested while streaming a reply. This
+/// mirrors the OpenAI `tool_calls` delta: the id links the result back, and
+/// `arguments` is the raw JSON object string the model produced.
+public struct OpenCodeToolCall
+{
+    string id;
+    string name;
+    string arguments;
+}
+
+/// A tool definition advertised to the model in the `tools` request field.
+/// `parametersJson` is a JSON Schema object string (e.g. `{"type":"object",...}`).
+public struct OpenCodeToolDef
+{
+    string name;
+    string description;
+    string parametersJson;
+}
+
+/// One message sent in a chat request. Richer than the parallel role/content
+/// arrays: assistant messages may carry `toolCalls`, and `tool` role messages
+/// carry the `toolCallId` they answer to.
+public struct ChatRequestMessage
+{
+    string role;              // "user" | "assistant" | "tool"
+    string content;
+    string toolCallId;        // role == "tool"
+    OpenCodeToolCall[] toolCalls; // role == "assistant"
+}
+
 public struct ChatMessage
 {
-    string role;       // "user" | "assistant"
+    string role;       // "user" | "assistant" | "tool"
     string content;
     string reasoning;
     string time;       // "HH:MM" local wall-clock, empty when unknown
     bool failed;       // assistant reply that ended in an error
+    int promptTokens;  // usage the API reported for the reply (0 = unknown)
+    int completionTokens;
+    int totalTokens;
+    OpenCodeToolCall[] toolCalls; // assistant replies that invoked tools
+    string toolCallId;  // "tool" role results, links back to an assistant call
+    string toolName;    // "tool" role results: which tool produced the output
 }
 
 public struct ChatSession
@@ -106,6 +170,8 @@ public struct Settings
     string apiKey = "";
     string model = defaultModel;
     bool thinking;
+    bool toolsEnabled;  // advertise tool definitions to the model
+    string workspace;   // working directory the tools run in
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +275,12 @@ public Settings loadSettings()
                 if (auto found = "thinking" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.thinking = found.type == JSONType.true_;
+                if (auto found = "toolsEnabled" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.toolsEnabled = found.type == JSONType.true_;
+                if (auto found = "workspace" in value.object)
+                    if (found.type == JSONType.string && found.str.length > 0)
+                        settings.workspace = found.str;
             }
         }
         catch (Exception error)
@@ -235,6 +307,8 @@ public void saveSettings(const ref Settings settings)
     root["apiKey"] = settings.apiKey;
     root["model"] = settings.model;
     root["thinking"] = settings.thinking;
+    root["toolsEnabled"] = settings.toolsEnabled;
+    root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());
     catch (Exception error)

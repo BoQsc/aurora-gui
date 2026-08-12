@@ -7,6 +7,8 @@ import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
+import auroraopencode.tools : builtinToolDefinitions, executeTool;
+import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
 import std.array : appender;
@@ -159,6 +161,17 @@ private final class MessageBubble : Widget
     private size_t[2] _mdGens;
     private size_t _mdCount;
 
+    // Tool-call chips (assistant bubbles that invoked tools) and the tool role
+    // label for `tool` result messages.
+    private string[] _toolNames;
+    private string[] _toolArgs;
+    private dstring _toolCallsText;
+    private bool _toolCallsDirty = true;
+    private TextLayout _toolCallsLayout;
+    private int _toolCallsWidth = -1;
+    private size_t _toolCallsGen;
+    private string _toolName;
+
     /// Diagnostic: total number of text shapes performed by all bubbles.
     static __gshared size_t shapeCount;
 
@@ -166,6 +179,45 @@ private final class MessageBubble : Widget
     {
         _role = role;
         invalidate();
+    }
+
+    void setToolName(string name)
+    {
+        _toolName = name;
+        invalidate();
+    }
+
+    void setToolCalls(const OpenCodeToolCall[] calls)
+    {
+        _toolNames.length = 0;
+        _toolArgs.length = 0;
+        foreach (call; calls)
+        {
+            _toolNames ~= call.name;
+            _toolArgs ~= call.arguments;
+        }
+        _toolCallsDirty = true;
+        invalidate();
+    }    private TextLayout shapedToolCalls(int width)
+    {
+        if (!_toolCallsDirty && _toolCallsLayout !is null &&
+            _toolCallsWidth == width)
+            return _toolCallsLayout;
+        _toolCallsText.length = 0;
+        foreach (index; 0 .. _toolNames.length)
+        {
+            if (index > 0) _toolCallsText ~= "  ";
+            _toolCallsText ~= "⚙ "d;
+            _toolCallsText ~= toUTF32(_toolNames[index]);
+            const args = _toolArgs[index];
+            if (args.length > 0)
+                _toolCallsText ~= "("d ~ toUTF32(args) ~ ")"d;
+        }
+        _toolCallsLayout = shape(_toolCallsText, width);
+        _toolCallsWidth = width;
+        _toolCallsGen = _contentGen;
+        _toolCallsDirty = false;
+        return _toolCallsLayout;
     }
 
     void setThinking(string value)
@@ -224,6 +276,29 @@ private final class MessageBubble : Widget
         _actionLabel = label;
         _actionCallback = callback;
         invalidate();
+    }
+
+    void clearAction()
+    {
+        if (_actionLabel.length == 0 && _actionCallback is null) return;
+        _actionLabel = "";
+        _actionCallback = null;
+        _actionHover = false;
+        invalidate();
+    }
+
+    /// Test-only: the label of the current action pill.
+    public string actionLabelForTesting()
+    {
+        return _actionLabel;
+    }
+
+    /// Test-only: invoke the current action pill's callback, if any.
+    public bool invokeActionForTesting()
+    {
+        if (_actionLabel.length == 0 || _actionCallback is null) return false;
+        _actionCallback();
+        return true;
     }
 
     void setStreaming(bool value)
@@ -326,6 +401,8 @@ private final class MessageBubble : Widget
         int height = 2 * padV;
         if (_thinking.length > 0)
             height += shapedThinking(innerWidth).measuredSize().height + gap;
+        if (_toolNames.length > 0)
+            height += shapedToolCalls(innerWidth).measuredSize().height + gap;
         if (_role == "assistant")
         {
             if (_content.length > 0)
@@ -342,7 +419,9 @@ private final class MessageBubble : Widget
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
-        if (_time.length > 0 || _usageText.length > 0 || _actionLabel.length > 0)
+        if (_time.length > 0 || _usageText.length > 0 ||
+            _actionLabel.length > 0 ||
+            (_role == "tool" && _toolName.length > 0))
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
@@ -373,6 +452,14 @@ private final class MessageBubble : Widget
             auto layout = shapedThinking(innerWidth);
             canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
             y += layout.measuredSize().height + gap;
+        }
+
+        if (_toolNames.length > 0)
+        {
+            shapedToolCalls(innerWidth);
+            canvas.drawLayout(Point(padH, y), _toolCallsLayout,
+                opencodeAccent);
+            y += _toolCallsLayout.measuredSize().height + gap;
         }
 
         _copyRects.length = 0;
@@ -477,7 +564,8 @@ private final class MessageBubble : Widget
 
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
-        const footer = _usageText.length > 0 ? _usageText : _time;
+        const footer = _usageText.length > 0 ? _usageText :
+            (_role == "tool" && _toolName.length > 0 ? "⚙ " ~ _toolName : _time);
         if (footer.length == 0) return;
         auto layout = canvas.layoutText(toUTF32(footer), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, maxInt(1, width - 2 * padH), false);
@@ -569,6 +657,189 @@ private final class MessageBubble : Widget
             setCursor(CursorKind.arrow);
             invalidate();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context usage meter (Pro): small rectangular badge + hover tooltip
+// ---------------------------------------------------------------------------
+
+/// Hover tooltip panel that mirrors the real opencode context indicator. It
+/// never steals the pointer: while it is hovered it reports the anchor badge
+/// as the hit target, so the tooltip stays open without capturing input.
+private final class ContextUsageTooltip : Widget
+{
+    private dstring _title;
+    private dstring[] _rows;
+    private Widget _hoverOwner;
+
+    this(Widget hoverOwner)
+    {
+        _hoverOwner = hoverOwner;
+        layoutHints().excludeFromLayout = true;
+    }
+
+    void setContent(string title, const(string)[] rows)
+    {
+        _title = toUTF32(title);
+        _rows.length = 0;
+        foreach (row; rows)
+            _rows ~= toUTF32(row);
+        invalidate();
+    }
+
+    /// Test-only: the tooltip text, one row per line.
+    public string textForTesting()
+    {
+        auto builder = appender!string();
+        if (_title.length > 0) builder.put(to!string(_title));
+        foreach (row; _rows)
+        {
+            if (builder.data.length > 0) builder.put("\n");
+            builder.put(to!string(row));
+        }
+        return builder.data;
+    }
+
+    override Widget hitTest(Point globalPoint)
+    {
+        if (!visible() || !enabled()) return null;
+        const local = globalToLocal(globalPoint);
+        if (!containsLocal(local)) return null;
+        return _hoverOwner;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const padH = 14;
+        const padV = 12;
+        const lineH = 18;
+        const width = 272;
+        int height = padV * 2;
+        if (_title.length > 0) height += lineH + 6;
+        height += cast(int) _rows.length * lineH;
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const width = bounds().width;
+        const height = bounds().height;
+        canvas.drawRoundedRect(Rect(0, 0, width, height), 8,
+            opencodeElevated, opencodeBorder, 1);
+        int y = 12;
+        if (_title.length > 0)
+        {
+            canvas.drawText(Point(14, y), _title, palette.text, 1,
+                FontRole.ui, cast(FontFace) palette.uiFont);
+            y += 24;
+        }
+        foreach (row; _rows)
+        {
+            canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+                FontRole.ui, cast(FontFace) palette.uiFont);
+            y += 18;
+        }
+    }
+}
+
+/// Small rectangular context meter in the toolbar. Shows the exact token
+/// usage the API reported as a percentage of the model's context window, and
+/// opens the hover tooltip with the full breakdown.
+private final class ContextUsageBadge : Widget
+{
+    void delegate(bool open) onHoverChanged;
+
+    private int _prompt = -1;
+    private int _completion = -1;
+    private int _total = -1;
+    private int _limit = 128_000;
+
+    this()
+    {
+        layoutHints().preferredWidth = 56;
+        layoutHints().minWidth = 56;
+        layoutHints().preferredHeight = 22;
+    }
+
+    void setModel(string model)
+    {
+        const limit = contextLimitForModel(model);
+        if (limit == _limit) return;
+        _limit = limit;
+        invalidate();
+    }
+
+    void setUsage(int prompt, int completion, int total)
+    {
+        if (prompt == _prompt && completion == _completion && total == _total)
+            return;
+        _prompt = prompt;
+        _completion = completion;
+        _total = total;
+        invalidate();
+    }
+
+    int promptTokens() const @safe pure nothrow @nogc { return _prompt; }
+    int completionTokens() const @safe pure nothrow @nogc { return _completion; }
+    int totalTokens() const @safe pure nothrow @nogc { return _total; }
+    int limit() const @safe pure nothrow @nogc { return _limit; }
+
+    bool hasUsage() const @safe pure nothrow @nogc
+    {
+        return _total > 0 && _limit > 0;
+    }
+
+    int usagePercent() const
+    {
+        if (_total <= 0 || _limit <= 0) return 0;
+        const long scaled = (cast(long) _total * 100 + _limit - 1) / _limit;
+        return scaled >= 100 ? 100 : cast(int) scaled;
+    }
+
+    string labelForTesting()
+    {
+        return hasUsage() ? to!string(usagePercent) ~ "%" : "ctx";
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = 56;
+        layoutHints().preferredHeight = 22;
+        return Size(56, 22);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const width = bounds().width;
+        const height = bounds().height;
+        canvas.fillRoundedRect(Rect(0, 0, width, height), height / 2,
+            opencodeField);
+        if (hasUsage())
+        {
+            const pct = usagePercent();
+            const fillWidth = maxInt(1, (width - 4) * pct / 100);
+            canvas.fillRoundedRect(Rect(2, 2, fillWidth, height - 4),
+                (height - 4) / 2,
+                pct >= 90 ? opencodeKeyMissing : opencodeAccent);
+        }
+        canvas.drawTextInRect(Rect(0, 0, width, height), toUTF32(labelForTesting),
+            hasUsage() ? palette.text : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    protected override void onMouseEnter()
+    {
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (onHoverChanged !is null) onHoverChanged(false);
     }
 }
 
@@ -677,15 +948,29 @@ public final class OpenCodeRoot : VBox
     private Button _sendButton;
     private Button _modelButton;
     private CheckBox _thinkingBox;
+    private CheckBox _toolsBox;
     private Label _keyBadge;
     private Label _status;
     private TextField _filterField;
     private int[] _sessionIndices;
     private string _filterText;
     private string _lastUsageText;
+    private bool _suppressDoneStatus;
 
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
+
+    // Tool loop: the model may request tool calls, the app executes them, and
+    // the enriched history is re-sent until the model answers with text.
+    private OpenCodeToolCall[] _pendingToolCalls;
+    private int _pendingToolResults;
+    private int _toolRounds;
+    private static immutable int maxToolRounds = 12;
+    private bool _toolContinuationPaused; // test-only: hold the loop after results
+
+    private ContextUsageBadge _usageBadge;
+    private ContextUsageTooltip _usageTooltip;
+    private bool _usageTooltipOpen;
 
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
@@ -729,6 +1014,14 @@ public final class OpenCodeRoot : VBox
         _modelButton.setId("oc-model");
         _modelButton.onClick = delegate() { showModelPicker(); };
 
+        _usageBadge = toolbar.add(new ContextUsageBadge());
+        _usageBadge.setId("oc-usage");
+        _usageBadge.setModel(_settings.model);
+        _usageBadge.onHoverChanged = delegate(bool open)
+        {
+            setContextUsageTooltipOpen(open);
+        };
+
         _thinkingBox = toolbar.add(new CheckBox("Thinking"));
         _thinkingBox.setId("oc-thinking");
         _thinkingBox.setChecked(_settings.thinking, false);
@@ -737,6 +1030,18 @@ public final class OpenCodeRoot : VBox
             _settings.thinking = value;
             if (_current >= 0) _sessions[_current].thinking = value;
             saveSettingsNow();
+        };
+
+        _toolsBox = toolbar.add(new CheckBox("Tools"));
+        _toolsBox.setId("oc-tools");
+        _toolsBox.setChecked(_settings.toolsEnabled, false);
+        _toolsBox.onChanged = delegate(bool value)
+        {
+            _settings.toolsEnabled = value;
+            saveSettingsNow();
+            updateStatus(value
+                ? "Tools enabled — the model can run bash/read/write/glob/grep."
+                : "Tools disabled.");
         };
 
         toolbar.add(new Spacer());
@@ -829,6 +1134,9 @@ public final class OpenCodeRoot : VBox
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         _streamBubble = null;
+        _pendingToolCalls.length = 0;
+        _pendingToolResults = 0;
+        _toolRounds = 0;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         rebuildMessageColumn();
@@ -836,6 +1144,7 @@ public final class OpenCodeRoot : VBox
         markDirty();
         _input.requestFocus();
         updateStatus("New conversation. Ask away!");
+        refreshUsageBadge();
     }
 
     private void selectSession(int index)
@@ -843,6 +1152,9 @@ public final class OpenCodeRoot : VBox
         if (index < 0 || index >= cast(int) _sessions.length) return;
         _current = index;
         _streamBubble = null;
+        _pendingToolCalls.length = 0;
+        _pendingToolResults = 0;
+        _toolRounds = 0;
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
         _settings.thinking = _sessions[index].thinking;
@@ -850,6 +1162,7 @@ public final class OpenCodeRoot : VBox
         _thinkingBox.setChecked(_settings.thinking, false);
         markDirty();
         updateStatus("");
+        refreshUsageBadge();
     }
 
     private void selectSessionByRow(int row)
@@ -868,24 +1181,19 @@ public final class OpenCodeRoot : VBox
             auto bubble = new MessageBubble();
             bubble.setRole(message.role);
             bubble.setContent(message.content);
+            if (message.toolCalls.length > 0)
+                bubble.setToolCalls(message.toolCalls);
+            if (message.toolName.length > 0)
+                bubble.setToolName(message.toolName);
             if (message.reasoning.length > 0)
                 bubble.setThinking(message.reasoning);
             if (message.time.length > 0)
                 bubble.setTime(message.time);
             if (message.failed)
                 bubble.setFailed("");
-            if (index == session.messages.length - 1)
-            {
-                if (message.role == "assistant")
-                    bubble.setAction(message.failed ? "Retry" : "Regenerate",
-                        delegate() { regenerateLastReply(); });
-                else
-                    bubble.setAction("Edit & resend",
-                        delegate() { editAndResend(_current, cast(int) index); });
-            }
             if (message.role == "user")
                 bubble.onEditRequested =
-                    delegate() { editAndResend(_current, cast(int) index); };
+                    editResendAction(_current, cast(int) index);
             _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
@@ -893,16 +1201,80 @@ public final class OpenCodeRoot : VBox
         // The column is a retained layer; let the ScrollView re-measure and
         // update the content height / auto-follow after the message set changes.
         _messagesScroll.invalidate();
+        refreshBubbleActions();
     }
+
+    /// Every message bubble carries its own action pill: "Regenerate" (or
+    /// "Retry" when it failed) on assistant replies, "Edit & resend" on user
+    /// messages. The live streaming reply shows no pill. Runs after every
+    /// message change so the pills always match the messages.
+    private void refreshBubbleActions()
+    {
+        if (_current < 0) return;
+        const children = _messageColumn.children();
+        if (children.length == 0) return;
+        const session = &_sessions[_current];
+        foreach (index, child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (_streamBubble !is null && child is _streamBubble)
+            {
+                bubble.clearAction();
+                continue;
+            }
+            if (index >= session.messages.length)
+            {
+                bubble.clearAction();
+                continue;
+            }
+            const message = session.messages[index];
+            if (message.role == "assistant")
+                bubble.setAction(message.failed ? "Retry" : "Regenerate",
+                    regenerateAction(_current, cast(int) index));
+            else if (message.role == "user")
+                bubble.setAction("Edit & resend",
+                    editResendAction(_current, cast(int) index));
+            else
+                bubble.clearAction();
+        }
+    }
+
+    /// Delegate factory for the Regenerate/Retry pill. D captures the reused
+    /// `foreach` loop slot when a closure is created inline (the loop variable
+    /// is shared, so every pill would target the final message), so the
+    /// session/message indices are bound through a factory function instead.
+    private void delegate() regenerateAction(int sessionIndex, int messageIndex)
+    {
+        return delegate() { regenerateLastReply(sessionIndex, messageIndex); };
+    }
+
+    /// Delegate factory for the Edit & resend pill (see regenerateAction).
+    private void delegate() editResendAction(int sessionIndex, int messageIndex)
+    {
+        return delegate() { editAndResend(sessionIndex, messageIndex); };
+    }
+
 
     private void addUserBubble(string text)
     {
         auto bubble = new MessageBubble();
         bubble.setRole("user");
         bubble.setContent(text);
+        if (_current >= 0 && _sessions[_current].messages.length > 0)
+        {
+            const last = _sessions[_current].messages[$ - 1];
+            if (last.time.length > 0) bubble.setTime(last.time);
+            bubble.onEditRequested = delegate()
+            {
+                editAndResend(_current,
+                    cast(int) _sessions[_current].messages.length - 1);
+            };
+        }
         _messageColumn.add(bubble);
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
+        refreshBubbleActions();
     }
 
     private void beginAssistantMessage()
@@ -920,6 +1292,7 @@ public final class OpenCodeRoot : VBox
         _messageColumn.add(_streamBubble);
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
+        refreshBubbleActions();
     }
 
     private void appendStreamDelta(string text, bool reasoning)
@@ -960,6 +1333,12 @@ public final class OpenCodeRoot : VBox
         {
             auto message = &_sessions[_current].messages[$ - 1];
             if (message.time.length == 0) message.time = currentTimestamp();
+            if (totalTokens > 0)
+            {
+                message.promptTokens = promptTokens;
+                message.completionTokens = completionTokens;
+                message.totalTokens = totalTokens;
+            }
         }
         string status = cancelled ? "Stopped." : "Done.";
         if (!cancelled && totalTokens > 0)
@@ -967,9 +1346,14 @@ public final class OpenCodeRoot : VBox
             _lastUsageText = " • " ~ formatThousands(totalTokens) ~ " tokens";
             status ~= _lastUsageText;
         }
-        updateStatus(status);
+        if (_suppressDoneStatus)
+            _suppressDoneStatus = false;
+        else
+            updateStatus(status);
         _messagesScroll.invalidate();
         markDirty();
+        refreshBubbleActions();
+        refreshUsageBadge();
     }
 
     private void failAssistantMessage(string error)
@@ -998,6 +1382,119 @@ public final class OpenCodeRoot : VBox
         _messagesScroll.invalidate();
         updateStatus("Error: " ~ error);
         markDirty();
+        refreshBubbleActions();
+    }
+
+    // -- tool loop ---------------------------------------------------------
+
+    /// The model requested tool calls. Finalize the assistant message with the
+    /// request (so it persists and is replayed on regeneration), then execute
+    /// each tool on a worker thread. Results are pushed back through the
+    /// client's event queue as toolResult events.
+    private void handleToolCalls(const OpenCodeEvent event)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        if (session.messages.length == 0) return;
+        auto message = &session.messages[$ - 1];
+        if (message.role != "assistant") return;
+
+        if (!_settings.toolsEnabled || event.toolCalls.length == 0)
+        {
+            message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
+                "⚠ The model requested tools, but tools are disabled.";
+            message.failed = true;
+            finishAssistantMessage(false);
+            return;
+        }
+
+        message.toolCalls = event.toolCalls.dup;
+        if (_streamBubble !is null)
+        {
+            _streamBubble.setStreaming(false);
+            _streamBubble.setToolCalls(message.toolCalls);
+            _streamBubble = null;
+        }
+        markDirty();
+
+        if (_toolRounds >= maxToolRounds)
+        {
+            updateStatus("Stopped after " ~ to!string(_toolRounds) ~
+                " tool rounds (limit reached).");
+            refreshUsageBadge();
+            return;
+        }
+        ++_toolRounds;
+        updateStatus("Running " ~ to!string(event.toolCalls.length) ~
+            " tool call(s)…");
+
+        _pendingToolCalls = event.toolCalls.dup;
+        _pendingToolResults = cast(int) event.toolCalls.length;
+        const sessionIndex = _current;
+        const workspace = _settings.workspace;
+        auto client = _client;
+        auto worker = new Thread({
+            runToolWorker(client, sessionIndex, _pendingToolCalls, workspace);
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    /// Worker thread body: execute each tool in the batch and push the results
+    /// back into the client event queue, which the UI drains on the next tick.
+    private static void runToolWorker(OpenCodeClient client, int sessionIndex,
+        const(OpenCodeToolCall)[] calls, string workspace)
+    {
+        foreach (call; calls)
+        {
+            auto execution = executeTool(call, workspace);
+            OpenCodeEvent result;
+            result.kind = OpenCodeEventKind.toolResult;
+            result.text = execution.output;
+            result.toolName = call.name;
+            result.toolCallId = call.id;
+            result.toolFailed = execution.failed;
+            result.reasoning = false;
+            client.pushLocalEvent(result);
+        }
+    }
+
+    /// A tool finished executing: append a `tool` role message with its output
+    /// and, once every call in the batch has reported, re-send the enriched
+    /// history so the model can answer with the results available.
+    private void applyToolResult(const OpenCodeEvent event)
+    {
+        if (_current < 0 || _pendingToolCalls.length == 0) return;
+        auto session = &_sessions[_current];
+
+        ChatMessage toolMessage;
+        toolMessage.role = "tool";
+        toolMessage.content = event.text;
+        toolMessage.toolCallId = event.toolCallId;
+        toolMessage.toolName = event.toolName;
+        toolMessage.time = currentTimestamp();
+        session.messages ~= toolMessage;
+
+        auto bubble = new MessageBubble();
+        bubble.setRole("tool");
+        bubble.setContent(event.text);
+        bubble.setToolName(event.toolName);
+        if (event.toolFailed)
+            bubble.setFailed("");
+        _messageColumn.add(bubble);
+        _messagesScroll.follow = true;
+        _messagesScroll.invalidate();
+        markDirty();
+
+        --_pendingToolResults;
+        if (_pendingToolResults <= 0)
+        {
+            _pendingToolCalls.length = 0;
+            _messagesScroll.invalidate();
+            refreshBubbleActions();
+            if (!_toolContinuationPaused)
+                startChatRequest(_current);
+        }
     }
 
     // -- sending ----------------------------------------------------------
@@ -1032,23 +1529,35 @@ public final class OpenCodeRoot : VBox
         addUserBubble(text);
         _input.setText("");
         markDirty();
+        _toolRounds = 0;
+        _pendingToolCalls.length = 0;
+        _pendingToolResults = 0;
         startChatRequest(_current);
     }
 
-    /// Start the streaming request for the current session history.
+    /// Start the streaming request for the current session history. When
+    /// tools are enabled, the structured history (including tool calls and
+    /// results) is sent together with the tool definitions.
     private void startChatRequest(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         auto session = &_sessions[sessionIndex];
-        string[] roles;
-        string[] contents;
+        ChatRequestMessage[] messages;
         foreach (message; session.messages)
         {
-            roles ~= message.role;
-            contents ~= message.content;
+            ChatRequestMessage request;
+            request.role = message.role;
+            request.content = message.content;
+            request.toolCallId = message.toolCallId;
+            request.toolCalls = message.toolCalls.dup;
+            messages ~= request;
         }
-        _client.startChat(roles, contents, _settings.model, _settings.thinking);
+        OpenCodeToolDef[] tools;
+        if (_settings.toolsEnabled)
+            tools = builtinToolDefinitions.dup;
+        _client.startChatMessages(messages, tools, _settings.model,
+            _settings.thinking);
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
@@ -1056,35 +1565,43 @@ public final class OpenCodeRoot : VBox
         updateSendButton();
     }
 
-    /// Regenerate the last assistant reply (or retry it when it failed).
-    private void regenerateLastReply()
+    /// Regenerate an assistant reply (or retry it when it failed): everything
+    /// from that reply onward is dropped and the request re-runs with the
+    /// history that produced it.
+    private void regenerateLastReply(int sessionIndex, int messageIndex)
     {
-        if (!prepareRegenerate()) return;
-        startChatRequest(_current);
+        if (!prepareRegenerate(sessionIndex, messageIndex)) return;
+        startChatRequest(sessionIndex);
     }
 
-    /// Remove the last assistant reply so its history is ready to re-run.
-    /// Returns false when there is nothing to regenerate.
-    private bool prepareRegenerate()
+    /// Remove an assistant reply (and everything after it) so its history is
+    /// ready to re-run. Returns false when there is nothing to regenerate.
+    private bool prepareRegenerate(int sessionIndex, int messageIndex)
     {
         if (_client.busy()) return false;
-        if (_current < 0) return false;
-        auto session = &_sessions[_current];
-        if (session.messages.length == 0) return false;
-        if (session.messages[$ - 1].role != "assistant") return false;
-        session.messages = session.messages[0 .. $ - 1];
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
+            return false;
+        if (session.messages[messageIndex].role != "assistant") return false;
+        session.messages = session.messages[0 .. messageIndex];
         _streamBubble = null;
         rebuildMessageColumn();
         return true;
     }
 
-    /// Edit-and-resend a user message: truncate the conversation at that
-    /// message and prefill the input with its text.
+    /// Edit-and-resend a user message: cancel any in-flight reply, truncate
+    /// the conversation at that message, and prefill the input with its text.
     private void editAndResend(int sessionIndex, int messageIndex)
     {
-        if (_client.busy()) return;
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        if (_client.busy())
+        {
+            _client.cancel();
+            _suppressDoneStatus = true;
+        }
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
@@ -1127,6 +1644,7 @@ public final class OpenCodeRoot : VBox
                 _modelButton.setText(_settings.model);
                 saveSettingsNow();
                 markDirty();
+                refreshUsageBadge();
             }
             dismissPopup();
         };
@@ -1175,6 +1693,21 @@ public final class OpenCodeRoot : VBox
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
+        auto workspaceRow = new HBox(8);
+        workspaceRow.layoutHints().preferredHeight = 40;
+        auto workspaceLabel = workspaceRow.add(new Label("Workspace"));
+        workspaceLabel.layoutHints().preferredWidth = 110;
+        workspaceLabel.setScale(1);
+        auto workspaceField = workspaceRow.add(
+            new TextField(_settings.workspace));
+        workspaceField.setId("oc-workspace");
+        workspaceField.layoutHints().flex = 1.0;
+        auto workspaceHint = content.add(new Label(
+            "Directory where tools (bash/read/write/glob/grep) operate. " ~
+            "Leave empty to use the app directory."));
+        workspaceHint.setScale(1);
+        workspaceHint.setColor(opencodeMuted);
+
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 42;
         footer.add(new Spacer());
@@ -1186,8 +1719,10 @@ public final class OpenCodeRoot : VBox
         {
             const baseUrl = baseField.textUtf8().strip();
             const apiKey = keyField.textUtf8().strip();
+            const workspace = workspaceField.textUtf8().strip();
             if (baseUrl.length > 0) _settings.baseUrl = baseUrl;
             _settings.apiKey = apiKey;
+            _settings.workspace = workspace;
             _client.setCredentials(_settings.baseUrl, _settings.apiKey);
             saveSettingsNow();
             updateKeyBadge();
@@ -1199,11 +1734,13 @@ public final class OpenCodeRoot : VBox
         content.add(baseRow);
         content.add(keyRow);
         content.add(hint);
+        content.add(workspaceRow);
+        content.add(workspaceHint);
         content.add(footer);
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(540, 300));
+        popup.setRequestedSize(Size(540, 380));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
@@ -1239,6 +1776,7 @@ public final class OpenCodeRoot : VBox
             _settings.model = _models[0];
         if (!_client.busy())
             updateStatus("Models refreshed.");
+        refreshUsageBadge();
     }
 
     private void updateModelButton()
@@ -1263,6 +1801,102 @@ public final class OpenCodeRoot : VBox
         const busy = _client.busy();
         _sendButton.setText(busy ? "Stop" : "Send");
         _sendButton.setAccent(!busy);
+    }
+
+    // -- context usage meter ---------------------------------------------
+
+    /// Recompute the toolbar context badge from the current session's latest
+    /// assistant reply that carries API-reported usage.
+    private void refreshUsageBadge()
+    {
+        if (_usageBadge is null) return;
+        _usageBadge.setModel(_settings.model);
+        int prompt = -1, completion = -1, total = -1;
+        if (_current >= 0)
+        {
+            auto session = &_sessions[_current];
+            for (int index = cast(int) session.messages.length - 1;
+                index >= 0; --index)
+            {
+                auto message = &session.messages[cast(size_t) index];
+                if (message.role == "assistant" && message.totalTokens > 0)
+                {
+                    prompt = message.promptTokens;
+                    completion = message.completionTokens;
+                    total = message.totalTokens;
+                    break;
+                }
+            }
+        }
+        _usageBadge.setUsage(prompt, completion, total);
+        refreshContextUsageTooltip();
+    }
+
+    private string[] contextUsageTooltipRows()
+    {
+        string[] rows;
+        const hasUsage = _usageBadge !is null && _usageBadge.hasUsage();
+        rows ~= "Model: " ~ _settings.model;
+        rows ~= "Context limit: " ~
+            formatThousands(_usageBadge is null ? 0 : _usageBadge.limit()) ~
+            " tokens";
+        if (hasUsage)
+        {
+            rows ~= "Used: " ~ formatThousands(_usageBadge.totalTokens()) ~
+                " tokens (" ~ to!string(_usageBadge.usagePercent()) ~ "%)";
+            rows ~= "Prompt: " ~ formatThousands(_usageBadge.promptTokens()) ~
+                " tokens";
+            rows ~= "Completion: " ~
+                formatThousands(_usageBadge.completionTokens()) ~ " tokens";
+        }
+        else
+        {
+            rows ~= "Used: —";
+            rows ~= "Send a message to start metering context.";
+        }
+        return rows;
+    }
+
+    private void setContextUsageTooltipOpen(bool open)
+    {
+        if (open)
+        {
+            if (_usageTooltip is null)
+                _usageTooltip = new ContextUsageTooltip(_usageBadge);
+            _usageTooltip.setContent("Context usage",
+                contextUsageTooltipRows());
+            popupRoot(this).add(_usageTooltip);
+            positionContextUsageTooltip();
+            _usageTooltipOpen = true;
+        }
+        else
+        {
+            _usageTooltipOpen = false;
+            if (_usageTooltip !is null && _usageTooltip.parent() !is null)
+                _usageTooltip.parent().remove(_usageTooltip);
+        }
+    }
+
+    private void refreshContextUsageTooltip()
+    {
+        if (!_usageTooltipOpen || _usageTooltip is null) return;
+        _usageTooltip.setContent("Context usage", contextUsageTooltipRows());
+        positionContextUsageTooltip();
+    }
+
+    private void positionContextUsageTooltip()
+    {
+        if (_usageTooltip is null || _usageBadge is null) return;
+        const origin = _usageBadge.localToGlobal(Point(0, 0));
+        const anchor = Rect(origin.x, origin.y, _usageBadge.bounds().width,
+            _usageBadge.bounds().height);
+        const measured = _usageTooltip.measure(Size(int.max, int.max));
+        const gap = 6;
+        int x = anchor.x;
+        int y = anchor.bottom() + gap;
+        x = clampInt(x, 8, maxInt(8, bounds().width - measured.width - 8));
+        y = clampInt(y, 8, maxInt(8, bounds().height - measured.height - 8));
+        _usageTooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
     private void updateSessionList(bool revealCurrent = true)
@@ -1316,6 +1950,7 @@ public final class OpenCodeRoot : VBox
         updateSessionList();
         markDirty();
         updateStatus(_sessions.length == 0 ? "No conversations yet." : "");
+        refreshUsageBadge();
     }
 
     private void showSessionContextMenu(int row, Point globalPosition)
@@ -1408,7 +2043,9 @@ public final class OpenCodeRoot : VBox
             (session.thinking ? "on" : "off") ~ "\n\n---\n\n");
         foreach (message; session.messages)
         {
-            builder.put("## " ~ (message.role == "user" ? "User" : "Assistant"));
+            builder.put("## " ~ (message.role == "user" ? "User" :
+                (message.role == "tool" ? "Tool (" ~ message.toolName ~ ")" :
+                    "Assistant")));
             if (message.time.length > 0)
                 builder.put(" (" ~ message.time ~ ")");
             builder.put("\n\n" ~ message.content ~ "\n\n---\n\n");
@@ -1473,6 +2110,29 @@ public final class OpenCodeRoot : VBox
                 messageJson["time"] = message.time;
             if (message.failed)
                 messageJson["failed"] = true;
+            if (message.totalTokens > 0)
+            {
+                messageJson["promptTokens"] = message.promptTokens;
+                messageJson["completionTokens"] = message.completionTokens;
+                messageJson["totalTokens"] = message.totalTokens;
+            }
+            if (message.toolCalls.length > 0)
+            {
+                JSONValue calls = JSONValue(string[].init);
+                foreach (call; message.toolCalls)
+                {
+                    JSONValue callJson;
+                    callJson["id"] = call.id;
+                    callJson["name"] = call.name;
+                    callJson["arguments"] = call.arguments;
+                    calls.array ~= callJson;
+                }
+                messageJson["toolCalls"] = calls;
+            }
+            if (message.toolCallId.length > 0)
+                messageJson["toolCallId"] = message.toolCallId;
+            if (message.toolName.length > 0)
+                messageJson["toolName"] = message.toolName;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -1521,6 +2181,38 @@ public final class OpenCodeRoot : VBox
                                         message.time = f.str;
                                     if (auto f = "failed" in messageValue.object)
                                         message.failed = f.type == JSONType.true_;
+                                    if (auto f = "promptTokens" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.promptTokens = cast(int) f.integer;
+                                    if (auto f = "completionTokens" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.completionTokens = cast(int) f.integer;
+                                    if (auto f = "totalTokens" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.totalTokens = cast(int) f.integer;
+                                    if (auto f = "toolCallId" in messageValue.object)
+                                        message.toolCallId = f.str;
+                                    if (auto f = "toolName" in messageValue.object)
+                                        message.toolName = f.str;
+                                    if (auto f = "toolCalls" in messageValue.object)
+                                    {
+                                        if (f.type == JSONType.array)
+                                        {
+                                            foreach (callValue; f.array)
+                                            {
+                                                if (callValue.type != JSONType.object)
+                                                    continue;
+                                                OpenCodeToolCall call;
+                                                if (auto c = "id" in callValue.object)
+                                                    call.id = c.str;
+                                                if (auto c = "name" in callValue.object)
+                                                    call.name = c.str;
+                                                if (auto c = "arguments" in callValue.object)
+                                                    call.arguments = c.str;
+                                                message.toolCalls ~= call;
+                                            }
+                                        }
+                                    }
                                     session.messages ~= message;
                                 }
                             }
@@ -1544,6 +2236,7 @@ public final class OpenCodeRoot : VBox
                 _thinkingBox.setChecked(_settings.thinking, false);
                 rebuildMessageColumn();
             }
+            refreshUsageBadge();
         }
         catch (Exception error)
         {
@@ -1568,6 +2261,26 @@ public final class OpenCodeRoot : VBox
                     break;
                 case OpenCodeEventKind.delta:
                     appendStreamDelta(event.text, event.reasoning);
+                    break;
+                case OpenCodeEventKind.usage:
+                    // The provider reports live token usage while streaming;
+                    // surface it on the growing reply and the context meter.
+                    if (_streamBubble !is null && event.totalTokens > 0)
+                        _streamBubble.setUsageText(
+                            " • " ~ formatThousands(event.totalTokens) ~
+                            " tokens");
+                    if (_usageBadge !is null)
+                    {
+                        _usageBadge.setUsage(event.promptTokens,
+                            event.completionTokens, event.totalTokens);
+                        refreshContextUsageTooltip();
+                    }
+                    break;
+                case OpenCodeEventKind.toolCalls:
+                    handleToolCalls(event);
+                    break;
+                case OpenCodeEventKind.toolResult:
+                    applyToolResult(event);
                     break;
                 case OpenCodeEventKind.done:
                     finishAssistantMessage(event.cancelled, event.promptTokens,
@@ -1663,6 +2376,18 @@ public final class OpenCodeRoot : VBox
         return cast(int) _sessions[_current].messages.length;
     }
 
+    /// Test-only: invoke the action pill on the bubble at `index` exactly as a
+    /// mouse click would, exercising the real delegate captured for that
+    /// bubble (regression: foreach closures must not all target the last
+    /// message).
+    public bool invokeBubbleActionForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return false;
+        auto bubble = cast(MessageBubble) children[cast(size_t) index];
+        return bubble !is null && bubble.invokeActionForTesting();
+    }
+
     /// Test-only: current input text.
     public string inputTextForTesting()
     {
@@ -1680,6 +2405,130 @@ public final class OpenCodeRoot : VBox
     /// preparation for a regenerate.
     public bool prepareRegenerateForTesting()
     {
-        return prepareRegenerate();
+        if (_current < 0) return false;
+        return prepareRegenerate(_current,
+            cast(int) _sessions[_current].messages.length - 1);
+    }
+
+    /// Test-only: action-pill label on the last bubble ("" when none).
+    public string lastBubbleActionForTesting()
+    {
+        const children = _messageColumn.children();
+        if (children.length == 0) return "";
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    /// Test-only: action-pill label on the bubble at `index`.
+    public string bubbleActionForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return "";
+        auto bubble = cast(MessageBubble) children[cast(size_t) index];
+        return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    /// Test-only: record API-reported usage on the current session's last
+    /// message and refresh the toolbar context meter (mirrors the done/usage
+    /// events without any network activity).
+    public void recordContextUsageForTesting(int prompt, int completion, int total)
+    {
+        if (_current >= 0 && _sessions[_current].messages.length > 0)
+        {
+            auto message = &_sessions[_current].messages[$ - 1];
+            message.promptTokens = prompt;
+            message.completionTokens = completion;
+            message.totalTokens = total;
+        }
+        refreshUsageBadge();
+    }
+
+    /// Test-only: the text currently painted on the context badge.
+    public string contextUsageTextForTesting()
+    {
+        return _usageBadge is null ? "" : _usageBadge.labelForTesting();
+    }
+
+    /// Test-only: the context tooltip text ("" when closed).
+    public string contextTooltipTextForTesting()
+    {
+        return isContextTooltipOpenForTesting() && _usageTooltip !is null
+            ? _usageTooltip.textForTesting() : "";
+    }
+
+    /// Test-only: whether the hover context tooltip is currently open.
+    public bool isContextTooltipOpenForTesting()
+    {
+        return _usageTooltipOpen && _usageTooltip !is null &&
+            _usageTooltip.parent() !is null;
+    }
+
+    /// Test-only: enable tools and set the workspace directory they run in.
+    public void enableToolsForTesting(string workspace)
+    {
+        _settings.toolsEnabled = true;
+        _settings.workspace = workspace;
+        if (_toolsBox !is null) _toolsBox.setChecked(true, false);
+    }
+
+    /// Test-only: start a fresh conversation (used by tool-loop tests).
+    public void newChatForTesting()
+    {
+        newChat();
+    }
+
+    /// Test-only: pause the tool loop after results arrive so the headless
+    /// test can inspect the appended tool messages without a network request.
+    public void pauseToolContinuationForTesting()
+    {
+        _toolContinuationPaused = true;
+    }
+
+    /// Test-only: inject a completed tool call (assistant message with the
+    /// tool request) into the loop exactly as the client would deliver it.
+    public void injectToolCallsForTesting(const(OpenCodeToolCall)[] calls)
+    {
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.toolCalls;
+        event.toolCalls = calls.dup;
+        event.text = "I'll check that.";
+        handleToolCalls(event);
+    }
+
+    /// Test-only: number of `tool` role messages in the current session.
+    public int toolMessageCountForTesting()
+    {
+        if (_current < 0) return 0;
+        int count;
+        foreach (message; _sessions[_current].messages)
+            if (message.role == "tool") ++count;
+        return count;
+    }
+
+    /// Test-only: content of the last `tool` role message ("" when none).
+    public string lastToolResultForTesting()
+    {
+        if (_current < 0) return "";
+        auto session = &_sessions[_current];
+        foreach_reverse (message; session.messages)
+        {
+            if (message.role == "tool") return message.content;
+        }
+        return "";
+    }
+
+    /// Test-only: content of the `tool` role message at index `n` ("" when
+    /// there is no such tool message).
+    public string toolResultForTesting(int n)
+    {
+        if (_current < 0) return "";
+        int seen;
+        foreach (message; _sessions[_current].messages)
+        {
+            if (message.role != "tool") continue;
+            if (seen == n) return message.content;
+            ++seen;
+        }
+        return "";
     }
 }
