@@ -121,7 +121,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --target-os=mingw32 --arch=x86_64 \
       --cross-prefix="$cross-" --enable-cross-compile \
       --disable-doc --disable-debug --disable-avdevice \
-      --disable-postproc --disable-network --disable-everything \
+      --disable-network --disable-everything \
       --enable-static --disable-shared --enable-small \
       --enable-avcodec --enable-avformat --enable-avfilter \
       --enable-swscale --enable-swresample \
