@@ -187,12 +187,12 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-indev=lavfi \
       --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
       --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null \
-      --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores \
+      --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores,wrapped_avframe,rawvideo \
       --enable-decoder=png,mjpeg,webp,bmp,gif \
       --enable-decoder=aac,mp3,flac,vorbis,opus,ac3,eac3 \
       --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be \
       --enable-decoder=pcm_u8,pcm_s8,pcm_alaw,pcm_mulaw,adpcm_ima_wav \
-      --enable-encoder=libx264,h264_nvenc,h264_qsv,h264_amf,aac,libmp3lame,ppm \
+      --enable-encoder=libx264,h264_nvenc,h264_qsv,h264_amf,aac,libmp3lame,ppm,rawvideo,pcm_s16le,null \
       --enable-parser=h264,hevc,vp8,vp9,av1,mpeg4video,mpegvideo,mjpeg,png,webp,bmp,gif \
       --enable-parser=aac,mp3,flac,vorbis,opus,mpegaudio,ac3,eac3 \
       --enable-filter=color,anullsrc,testsrc2,sine,format,scale,pad,crop,overlay,setpts \
