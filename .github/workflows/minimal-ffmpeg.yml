@@ -27,7 +27,7 @@ jobs:
       - name: Build minimal static ffmpeg/ffprobe
         run: |
           export WINE=wine64
-          scripts/build-minimal-ffmpeg-win64.sh
+          bash scripts/build-minimal-ffmpeg-win64.sh
 
       - name: Verify encoder/decoder/filter inventory
         run: |
