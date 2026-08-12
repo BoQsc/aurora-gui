@@ -5,6 +5,11 @@
 #
 # Requires: mingw-w64, nasm, pkg-config-mingw-w64-x86-64, make, wget, git,
 # python3 + meson + ninja. Set WINE=<runner> to also smoke-test the result.
+#
+# Note: h264_nvenc is intentionally NOT built here. ffmpeg n8.1's nvenc.c is
+# incompatible with current nv-codec-headers (countingType -> countingTypeLSB)
+# and the app already falls back to libx264. To add NVENC later, pin
+# nv-codec-headers to a 12.x SDK tag and re-enable --enable-nvenc.
 set -euo pipefail
 
 ffmpeg_tag="${FFMPEG_TAG:-n8.1}"
@@ -101,21 +106,12 @@ EOF
 fi
 echo "::endgroup::"
 
-# ---- nv-codec-headers (h264_nvenc) ------------------------------------------
-echo "::group::nv-codec-headers"
-if [ ! -f "$deps/nv/include/ffnvcodec/nvEncodeAPI.h" ]; then
-  fetch "$src/nv-codec-headers" https://github.com/FFmpeg/nv-codec-headers.git
-  ( cd "$src/nv-codec-headers"
-    make install PREFIX="$deps/nv" )
-fi
-echo "::endgroup::"
-
 # ---- ffmpeg -----------------------------------------------------------------
 echo "::group::ffmpeg"
 if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
   fetch "$src/ffmpeg" https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_tag"
   ( cd "$src/ffmpeg"
-    export PKG_CONFIG_LIBDIR="$deps/nv/lib/pkgconfig:$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
+    export PKG_CONFIG_LIBDIR="$deps/dav1d/lib/pkgconfig:$deps/x264/lib/pkgconfig:$deps/lame/lib/pkgconfig:$deps/zlib/lib/pkgconfig"
     ./configure \
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
@@ -128,7 +124,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-swscale --enable-swresample \
       --enable-protocol=file,pipe \
       --enable-libx264 --enable-libmp3lame --enable-libdav1d \
-      --enable-zlib --enable-nvenc \
+      --enable-zlib \
       --enable-hwaccel=d3d11va,dxva2 \
       --enable-demuxer=lavfi,mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo \
       --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null \
@@ -137,14 +133,14 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-decoder=aac,mp3,flac,vorbis,opus,ac3,eac3 \
       --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be \
       --enable-decoder=pcm_u8,pcm_s8,pcm_alaw,pcm_mulaw,adpcm_ima_wav \
-      --enable-encoder=libx264,h264_nvenc,aac,libmp3lame,ppm \
+      --enable-encoder=libx264,aac,libmp3lame,ppm \
       --enable-parser=h264,hevc,vp8,vp9,av1,mpeg4video,mpegvideo,mjpeg,png,webp,bmp,gif \
       --enable-parser=aac,mp3,flac,vorbis,opus,mpegaudio,ac3,eac3 \
       --enable-filter=color,anullsrc,testsrc2,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
-      --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include" \
+      --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib" \
       --extra-libs="-lws2_32 -lpthread"
     make -j"$jobs"
