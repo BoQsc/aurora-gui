@@ -12,7 +12,9 @@
 #   NV_ENC_CLOCK_TIMESTAMP_SET.countingType field, renamed to countingTypeLSB
 #   in n13.1.
 # - AMF is header-only (AMF/core/Version.h), runtime loads amfrt64.dll.
-# - libvpl (oneVPL) is cross-built with CMake for h264_qsv.
+# - libvpl (oneVPL) is cross-built with CMake for h264_qsv. It is C++, so the
+#   ffmpeg link adds -lstdc++ and -static (embeds libstdc++/libgcc/winpthread so
+#   ffmpeg.exe stays a single self-contained file).
 set -euo pipefail
 
 ffmpeg_tag="${FFMPEG_TAG:-n8.1}"
@@ -197,8 +199,8 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic \
       --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
-      --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib" \
-      --extra-libs="-lws2_32 -lpthread"; then
+      --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
+      --extra-libs="-lstdc++ -lws2_32 -lpthread"; then
       echo "=== ffmpeg configure failed; ffbuild/config.log tail ==="
       tail -120 ffbuild/config.log 2>/dev/null || true
       exit 1
