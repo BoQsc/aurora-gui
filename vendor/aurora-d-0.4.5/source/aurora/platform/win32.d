@@ -1899,8 +1899,13 @@ else version (Windows)
                     emitCodePoint(cast(dchar) wParam);
                     return 0;
                 case WM_SETCURSOR:
-                    if (!options.decorated && options.resizable && !_fullscreen &&
-                        unsignedLowWord(lParam) != HTCLIENT)
+                    // Over a non-client area (resize border, caption, frame,
+                    // scrollbar) let DefWindowProc pick the native cursor so
+                    // decorated and frameless windows both show the OS resize
+                    // arrows on their edges and corners. Only the client area
+                    // uses Aurora's cached cursor. A hidden synchronized-drag
+                    // pointer must stay hidden even over the frame.
+                    if (unsignedLowWord(lParam) != HTCLIENT && _pointerVisible)
                         break;
                     if (!_pointerVisible)
                     {
