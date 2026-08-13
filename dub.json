@@ -14,7 +14,8 @@
     "vendor/aurora-d-0.4.5/source"
   ],
   "stringImportPaths": [
-    "embedded"
+    "embedded",
+    "assets"
   ],
   "libs-linux": [
     "X11",
@@ -56,6 +57,9 @@
       ],
       "versions": [
         "BundledFfmpeg"
+      ],
+      "sourceFiles-windows": [
+        "embedded/aurora-cut.rsrc.obj"
       ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"

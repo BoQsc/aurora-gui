@@ -1,5 +1,55 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Icons embedded in the single-exe releases (aurora-cut + aurora-stream)
+- [x] Runtime icon: `bundledicon.d` (auroracut/aurorastream) embeds the app's
+      `.ico` bytes (`version (BundledFfmpeg)` + stringImportPaths `assets`),
+      extracts to `%TEMP%\<App>-assets` on first use; `applicationIconPath()`
+      returns it so the window/taskbar/titlebar icon works without an assets
+      folder next to the exe. Verified standalone (real .ico extracted).
+- [x] PE/Explorer icon: `scripts/make-ico-rsrc-obj.py` builds a COFF `.rsrc`
+      object (RT_ICON + RT_GROUP_ICON) from the `.ico` with no resource
+      compiler needed; DMD/lld-link links it. `build-portable-windows.py
+      --single-exe` generates `<app>.rsrc.obj` into `embedded/`; the
+      `portable-single-exe` buildType links it via `sourceFiles-windows`.
+      Verified: aurora-cut.exe PE has icon resources [3, 14].
+- [x] Note: DUB 1.41 `resourceFiles` was silently ignored, and DMD x64
+      (lld-link) rejects `.res` ("unknown file type"), so the .rsrc COFF object
+      is the reliable path.
+- [ ] Not yet verified visually on a clean machine: Explorer shows the app icon
+      and the running window/taskbar/titlebar use it (single exe, no assets
+      folder, no installed ffmpeg). v0.60.0 release was created BEFORE icons;
+      needs a re-release (v0.60.1 or updated tag) to include them.
+
+## 2026-08-13 — Aurora Stream: cache audio device names + auto-refresh on device changes
+- [x] User: "we probably need to cache device names like audio so we keep
+      correct names when they are unavailable or disconnected. We probably need
+      to have ability to receive notification about newly connected devices so
+      we don't become stale on devices while program is running."
+- [x] Persistent device-name cache: `BroadcastSettings.deviceDisplayNameCache`
+      (identifier → friendly name) saved in the settings file
+      (`settings.d` load/save, round-trip unittest incl. invalid-entry
+      tolerance). `root.d` fills it from every successful scan (`remember` in
+      the generation-change handler) and passes it to the dropdowns
+      (`AudioDeviceDropdown.setNameCache`), so a disconnected selection shows
+      "Unavailable — Headphones (High Definition Audio Device)" / "Saved but
+      unavailable: <name>" instead of the raw backend ID, even across restarts.
+- [x] Auto-refresh on device changes: `AudioDeviceNotifications` (wasapi.d)
+      implements a minimal `IMMNotificationClient` (raw COM vtable) registered
+      on a dedicated STA thread with a small message pump; OnDeviceAdded/
+      Removed/StateChanged/DefaultDeviceChanged/PropertyValueChanged set a flag
+      the UI thread polls each tick (`consumeChanged` → `_pendingAudioRescan`
+      → `refreshAudioDevices(false)`), so newly connected/disconnected devices
+      are picked up while running. Best-effort: failures fall back to the
+      startup scan + manual Refresh button.
+- [x] Verified: `dub test` 39 modules pass; application + titlebar configs
+      build. Runtime: launched app, settings file gained a real cache
+      (`@device_cm_...\wave_...` → "Microphone (...)", `{0.0.0.00000000}.{...}`
+      → "Headphones/Speakers (High Definition Audio Device)"); app stable
+      (~10% of one core incl. the notification listener's 250 ms wake loop)
+      and `CloseMainWindow()` joins cleanly.
+- [x] Note: caught and fixed an AA `RangeError` in `remember` (`aa[key]` reads
+      throw on missing keys; must use `in`).
+
 ## 2026-08-13 — Aurora Stream: live preview looks blurred
 - [x] User: "looks blured, was it expected?" Yes — the preview captured at a
       fixed 480×270 (a quarter of the screen) and then upscaled it to fill the

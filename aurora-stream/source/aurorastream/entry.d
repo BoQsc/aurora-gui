@@ -1,6 +1,7 @@
 module aurorastream.entry;
 
 import aurorastream.audiobridge : AudioBridgeSession;
+import aurorastream.bundledicon : bundledIconPath;
 import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
 import core.thread : Thread;
 import core.time : msecs;
@@ -30,6 +31,9 @@ void recordStartupFailure(string details)
 
 string applicationIconPath()
 {
+    const bundled = bundledIconPath();
+    if (bundled.length > 0) return bundled;
+
     const local = buildPath("assets", "aurora-stream.ico");
     if (exists(local)) return local;
 

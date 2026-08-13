@@ -2,6 +2,7 @@ module app;
 
 import aurora;
 import auroracut.appversion : appDisplayName, appFullVersion, appVersion;
+import auroracut.bundledicon : bundledIconPath;
 import auroracut.editor : EditorRoot;
 import auroracut.ffmpegbundle : enableBundledFfmpeg;
 import auroracut.util : appLog;
@@ -69,6 +70,9 @@ private void recordStartupFailure(string details)
 
 private string applicationIconPath()
 {
+    const bundled = bundledIconPath();
+    if (bundled.length > 0) return bundled;
+
     const local = buildPath("assets", "aurora-cut.ico");
     if (exists(local)) return local;
     try

@@ -3,6 +3,7 @@ module app;
 import aurora;
 import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audiobridge : AudioBridgeSession, runAudioBridgeHelper;
+import aurorastream.bundledicon : bundledIconPath;
 import aurorastream.ffmpegbundle : enableBundledFfmpeg;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
@@ -35,6 +36,9 @@ private void recordStartupFailure(string details)
 
 private string applicationIconPath()
 {
+    const bundled = bundledIconPath();
+    if (bundled.length > 0) return bundled;
+
     const local = buildPath("assets", "aurora-stream.ico");
     if (exists(local)) return local;
 

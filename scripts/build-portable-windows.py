@@ -45,6 +45,21 @@ def run(command: list[str], cwd: Path) -> None:
         raise SystemExit(result.returncode)
 
 
+def make_icon_resource_object(repo_root: Path, ico_path: Path, out_path: Path) -> None:
+    """Build the .rsrc COFF object embedding ico_path so the exe shows the icon."""
+    run(
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            str(repo_root / "scripts/make-ico-rsrc-obj.py"),
+            str(ico_path),
+            str(out_path),
+        ],
+        repo_root,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build Aurora's statically linked portable Windows executables."
@@ -98,6 +113,11 @@ def main() -> int:
                         flush=True,
                     )
                     raise SystemExit(1)
+            ico = package_root / "assets" / f"{name}.ico"
+            if not ico.is_file():
+                print(f"::error::missing icon {ico}", flush=True)
+                raise SystemExit(1)
+            make_icon_resource_object(repo_root, ico, embedded / f"{name}.rsrc.obj")
         command = [
             "dub",
             "build",

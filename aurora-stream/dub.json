@@ -11,7 +11,8 @@
     "../vendor/aurora-d-0.4.5/source"
   ],
   "stringImportPaths": [
-    "embedded"
+    "embedded",
+    "assets"
   ],
   "buildTypes": {
     "portable-release": {
@@ -35,6 +36,9 @@
       ],
       "versions": [
         "BundledFfmpeg"
+      ],
+      "sourceFiles-windows": [
+        "embedded/aurora-stream.rsrc.obj"
       ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
