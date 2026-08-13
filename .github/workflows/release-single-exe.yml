@@ -87,15 +87,25 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Rename release assets with version (avoids Explorer icon cache)
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION.txt | Select-Object -First 1).Trim()
+          Copy-Item aurora-cut.exe "aurora-cut-v$v.exe" -Force
+          Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$v.exe" -Force
+          Copy-Item aurora-image-viewer/aurora-image-viewer.exe "aurora-image-viewer-v$v.exe" -Force
+          Copy-Item aurora-opencode/aurora-opencode.exe "aurora-opencode-v$v.exe" -Force
+          Copy-Item aurora-opencode-pro/aurora-opencode-pro.exe "aurora-opencode-pro-v$v.exe" -Force
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           files: |
-            aurora-cut.exe
-            aurora-stream/aurora-stream.exe
-            aurora-image-viewer/aurora-image-viewer.exe
-            aurora-opencode/aurora-opencode.exe
-            aurora-opencode-pro/aurora-opencode-pro.exe
+            aurora-cut-v*.exe
+            aurora-stream-v*.exe
+            aurora-image-viewer-v*.exe
+            aurora-opencode-v*.exe
+            aurora-opencode-pro-v*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true

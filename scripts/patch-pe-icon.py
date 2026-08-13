@@ -107,11 +107,12 @@ def build_rsrc_section(root, data, section_rva):
     for d in data:
         data_offsets.append(cur)
         cur += len(d)
-    # data entries come after the directory tree
-    data_start = current_relative
+    # data entries come after the directory tree; raw data blocks come after
+    # the data entries, so their offsets are tree_size + n_data*16 + data_offsets.
+    raw_start = current_relative + len(data_nodes) * SIZE_DATA_ENTRY
     for node in data_nodes:
         idx = node.data_index
-        out += struct.pack('<IIII', section_rva + data_start + data_offsets[idx],
+        out += struct.pack('<IIII', section_rva + raw_start + data_offsets[idx],
                            len(data[idx]), 0, 0)
         current_relative += SIZE_DATA_ENTRY
     # append the raw data blocks
