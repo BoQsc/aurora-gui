@@ -1,10 +1,11 @@
-name: Build portable executables
-run-name: Build portable executables (${{ github.ref_name }})
+name: Build & publish portable executables
+run-name: Build & publish portable executables (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - .github/workflows/portable-windows.yml
       - .github/workflows/minimal-ffmpeg.yml
@@ -17,13 +18,13 @@ on:
       - aurora-stream/source/**
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Check out repository
@@ -75,7 +76,7 @@ jobs:
       - name: Build and verify portable executables
         run: python -X utf8 scripts/build-portable-windows.py --compiler dmd --single-exe
 
-      - name: Upload portable executables
+      - name: Upload portable executables (artifact)
         uses: actions/upload-artifact@v7
         with:
           name: aurora-windows-portable
@@ -87,3 +88,28 @@ jobs:
             aurora-stream/aurora-stream.exe
           if-no-files-found: error
           retention-days: 14
+
+      - name: Rename release assets with version (avoids Explorer icon cache)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION.txt | Select-Object -First 1).Trim()
+          Copy-Item aurora-cut.exe "aurora-cut-v$v.exe" -Force
+          Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$v.exe" -Force
+          Copy-Item aurora-image-viewer/aurora-image-viewer.exe "aurora-image-viewer-v$v.exe" -Force
+          Copy-Item aurora-opencode/aurora-opencode.exe "aurora-opencode-v$v.exe" -Force
+          Copy-Item aurora-opencode-pro/aurora-opencode-pro.exe "aurora-opencode-pro-v$v.exe" -Force
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            aurora-cut-v*.exe
+            aurora-stream-v*.exe
+            aurora-image-viewer-v*.exe
+            aurora-opencode-v*.exe
+            aurora-opencode-pro-v*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
