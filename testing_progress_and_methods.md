@@ -1,5 +1,38 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline snapping: playhead, In/Out markers, and cross-track clip edges (2026-08-13)
+
+Timeline items now snap to the playhead (already present), the work-area **In**
+(blue) / **Out** (orange) markers, and clip edges on **every** track, plus the
+sequence start. Both a clip's start edge and its tail (start + duration) can
+snap, and edge-resize previews snap too.
+
+Implementation notes in `source/auroracut/timeline.d`:
+- `snappedEdge` / `snappedStart` now take an `out double guide` parameter that
+  records the winning marker time (NaN when unsnapped). The `consider` closure
+  for start-snaps knows whether the start edge or the tail edge aligned
+  (`endEdge`), so the guide points at the marker itself, e.g. a tail snapping
+  to the playhead still guides at the playhead.
+- `forEachNearbyClipMarker(desired, duration, excludedClipId, visit)` visits
+  clip start/end markers from every track using a small window around
+  `lowerBoundByStart` (2 binary searches per track, ~7 clips), so 20k-clip
+  tracks stay cheap during drags.
+- `drawSnapGuide` paints a 1px bright-white rule at `_snapGuideTime` between
+  the ruler and the drag overlays. The guide clears on mouse-up, Escape, and
+  `clearGhost`. Note: at the playhead's exact X the composited red playhead
+  layer is painted above the base guide, so the guide is visually covered there
+  (the red line is the cue).
+
+How to verify (headless, no GUI click needed):
+- `tests/editor_smoke.d` contains four focused blocks:
+  1. In/Out marker snapping: start edge, tail edge, and edge-resize preview.
+  2. Cross-track clip-edge snapping: start, tail, and edge-resize preview.
+  3. Snap-guide lifecycle: a simulated clip drag snaps to the In marker at
+     3.0s, `snapGuideTimeForTesting()` equals 3.0, the rendered pixel at that X
+     is bright (>120 per channel), and mouse-up resets it to NaN.
+- Compile/run exactly as described in "Run the headless editor smoke test"
+  below. Pass = `Aurora Cut multi-track editor smoke test passed.`
+
 ## Timeline rows painted over the ruler while scrolling (2026-08-13)
 
 Follow-up to the draggable scrollbar: after making the scrollbar interactive, a

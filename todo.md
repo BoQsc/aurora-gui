@@ -1,5 +1,30 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Cut: snap timeline items to playhead and other vertical markers
+- [x] User: introduce the ability for timeline items to snap to the playhead or
+      other vertical markers in the timeline.
+- [x] Playhead + sequence start snapping already existed; extended to the other
+      vertical markers in `source/auroracut/timeline.d`:
+      - Work-area **In** marker (blue) and **Out** marker (orange) are now snap
+        targets for both a clip's start edge and its tail edge (`snappedStart`)
+        and for edge-resize previews (`snappedEdge`).
+      - Clip edges on **every** track (cross-track), not only the destination
+        row, are snap targets. `forEachNearbyClipMarker` scans each sorted
+        track with a small binary-search window so long tracks stay responsive.
+      - While a drag is snapped, a bright white guide rule is painted at the
+        marker via `_snapGuideTime` + `drawSnapGuide`; it clears on mouse-up,
+        Escape, and ghost clear. (At the playhead's own X the composited red
+        playhead layer paints above the base guide, which is fine because the
+        playhead line itself is the cue.)
+- [x] Covered by `tests/editor_smoke.d`: In/Out marker snapping (start, tail,
+      edge resize), cross-track clip-edge snapping (start, tail, edge resize),
+      and a live drag that verifies `snapGuideTimeForTesting` points at the In
+      marker, that a bright guide pixel is painted, and that the guide clears
+      on mouse-up.
+- [x] Verified: `dmd -i -version=AuroraHeadless ...` compile + run of
+      `tests/editor_smoke.d` (passes) and `tests/layout_smoke.d` (passes) on
+      Windows.
+
 ## 2026-08-13 — Aurora Cut: timeline rows appear over the ruler while scrolling
 - [x] User: after the scrollbar became draggable, timeline rows appear above
       other UI when scrolling up/down the timeline with the scrollbar.

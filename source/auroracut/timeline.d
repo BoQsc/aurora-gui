@@ -4,7 +4,7 @@ import aurora;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation, TimelineClip, TrackAddress, TrackKind;
 import auroracut.util : clampValue, formatTimecode;
 import std.format : format;
-import std.math : fabs;
+import std.math : fabs, isNaN;
 import std.utf : toUTF32;
 
 private enum SequenceRulerHeight = 24;
@@ -124,6 +124,11 @@ final class TimelineWidget : Widget
     private double _resizePreviewEnd;
     private double _transitionPreviewDuration;
     private double _transitionGrabOffset;
+
+    // Time of the vertical marker the active drag currently snaps to, or NaN
+    // when no guide is shown. Painted as a bright rule while a clip is being
+    // dragged/resized onto the playhead, In/Out markers, or clip edges.
+    private double _snapGuideTime = double.nan;
 
     private bool _ghostVisible;
     private bool _ghostValid;
@@ -333,13 +338,20 @@ final class TimelineWidget : Widget
     double snappedStartForTesting(double desired, double duration,
         TrackAddress address, ulong excludedClipId = 0) const
     {
-        return snappedStart(desired, duration, address, excludedClipId);
+        double guide = double.nan;
+        return snappedStart(desired, duration, address, excludedClipId, guide);
     }
 
     double snappedEdgeForTesting(double desired, double minimum,
         double maximum, TrackAddress address, ulong excludedClipId = 0) const
     {
-        return snappedEdge(desired, minimum, maximum, address, excludedClipId);
+        double guide = double.nan;
+        return snappedEdge(desired, minimum, maximum, address, excludedClipId, guide);
+    }
+
+    double snapGuideTimeForTesting() const @safe pure nothrow @nogc
+    {
+        return _snapGuideTime;
     }
 
     double frameStepSecondsForTesting(double time)
@@ -1167,8 +1179,9 @@ final class TimelineWidget : Widget
     }
 
     private double snappedEdge(double desired, double minimum, double maximum,
-        TrackAddress address, ulong excludedId) const
+        TrackAddress address, ulong excludedId, ref double guide) const
     {
+        guide = double.nan;
         if (maximum < minimum)
         {
             const swap = minimum;
@@ -1190,76 +1203,103 @@ final class TimelineWidget : Widget
             {
                 best = distance;
                 result = candidate;
+                guide = candidate;
             }
         }
 
         consider(0.0);
         consider(_playhead);
-        if (_model.validTrack(address))
-        {
-            const clips = _model.trackValue(address).clips;
-            const center = lowerBoundByStart(clips, desired);
-            const begin = center > 4 ? center - 4 : 0;
-            const finish = center + 5 < clips.length ? center + 5 : clips.length;
-            foreach (index; begin .. finish)
-            {
-                const clip = clips[index];
-                if (clip.id == excludedId) continue;
-                consider(clip.start);
-                consider(clip.end());
-            }
-        }
+        if (_hasWorkIn) consider(_workIn);
+        if (_hasWorkOut) consider(_workOut);
+        // Clip edges from every track, not just the destination row.
+        forEachNearbyClipMarker(desired, 0.0, excludedId,
+            (double marker, bool endEdge) { consider(marker); });
         return result;
     }
 
     private double snappedStart(double desired, double duration,
-        TrackAddress address, ulong excludedId) const
+        TrackAddress address, ulong excludedId, ref double guide) const
     {
+        guide = double.nan;
         desired = desired < 0.0 ? 0.0 : desired;
         if (!_snappingEnabled) return desired;
         const threshold = snapThreshold();
-        if (desired <= threshold) return 0.0;
+        if (desired <= threshold)
+        {
+            guide = 0.0;
+            return 0.0;
+        }
         double result = desired;
         double best = threshold + 1.0;
 
-        void consider(double candidate)
+        // `endEdge` means the clip's tail (start + duration) lands on `marker`,
+        // so its start is placed at `marker - duration`. The guide always
+        // points at the marker itself, wherever the aligned edge is.
+        void consider(double marker, bool endEdge)
         {
+            const candidate = endEdge ? marker - duration : marker;
             const distance = fabs(candidate - desired);
             if (distance <= threshold && distance < best)
             {
                 best = distance;
                 result = candidate < 0.0 ? 0.0 : candidate;
+                guide = marker;
             }
         }
 
-        consider(0.0);
-        consider(_playhead);
-        consider(_playhead - duration);
-        if (_model.validTrack(address))
+        consider(0.0, false);
+        consider(_playhead, false);
+        consider(_playhead, true);
+        if (_hasWorkIn)
         {
-            // Tracks are sorted and non-overlapping. Inspect a small window
-            // around the candidate start and end rather than scanning every
-            // clip for every mouse-move event. This keeps dragging responsive
-            // even on tracks containing tens of thousands of clips.
-            const clips = _model.trackValue(address).clips;
-            size_t[2] centers = [lowerBoundByStart(clips, desired),
-                lowerBoundByStart(clips, desired + duration)];
-            foreach (center; centers)
+            consider(_workIn, false);
+            consider(_workIn, true);
+        }
+        if (_hasWorkOut)
+        {
+            consider(_workOut, false);
+            consider(_workOut, true);
+        }
+        forEachNearbyClipMarker(desired, duration, excludedId, &consider);
+        return result;
+    }
+
+    /** Visit clip-start/end markers from every track that lie near `desired`.
+     * Tracks are sorted and non-overlapping, so a small window around the
+     * candidate start/end is inspected rather than every clip, keeping drags
+     * responsive even on tracks with tens of thousands of clips. */
+    private void forEachNearbyClipMarker(double desired, double duration,
+        ulong excludedClipId, void delegate(double marker, bool endEdge) visit) const
+    {
+        void scanTrack(TrackKind kind)
+        {
+            foreach (track; _model.tracks(kind))
             {
-                const begin = center > 3 ? center - 3 : 0;
-                const finish = center + 4 < clips.length ? center + 4 : clips.length;
-                foreach (index; begin .. finish)
+                const clips = track.clips;
+                if (clips.length == 0) continue;
+                size_t[2] centers = [lowerBoundByStart(clips, desired),
+                    lowerBoundByStart(clips, desired + duration)];
+                foreach (center; centers)
                 {
-                    const clip = clips[index];
-                    if (clip.id == excludedId) continue;
-                    consider(clip.start);
-                    consider(clip.end());
-                    consider(clip.start - duration);
-                    consider(clip.end() - duration);
+                    const begin = center > 3 ? center - 3 : 0;
+                    const finish = center + 4 < clips.length ? center + 4 : clips.length;
+                    foreach (index; begin .. finish)
+                    {
+                        const clip = clips[index];
+                        if (clip.id == excludedClipId) continue;
+                        visit(clip.start, false);
+                        visit(clip.end(), false);
+                        if (duration > 0.0)
+                        {
+                            visit(clip.start, true);
+                            visit(clip.end(), true);
+                        }
+                    }
                 }
             }
         }
-        return result;
+        scanTrack(TrackKind.video);
+        scanTrack(TrackKind.audio);
     }
 
     private void autoScrollDuringDrag(Point local)
@@ -1319,7 +1359,9 @@ final class TimelineWidget : Widget
         if (_pointerMode == PointerMode.clipDrag) desired -= _grabOffset;
         if (_model.sequenceDuration() <= 0.000_001 && excludedClipId == 0)
             desired = 0.0;
-        desired = snappedStart(desired, duration, target, excludedClipId);
+        double snapGuide = double.nan;
+        desired = snappedStart(desired, duration, target, excludedClipId, snapGuide);
+        _snapGuideTime = snapGuide;
 
         const ghostLabelChanged = !_ghostVisible || _ghostTrack != target ||
             _ghostNewTrack != createsTrack;
@@ -1341,6 +1383,7 @@ final class TimelineWidget : Widget
         _ghostVisible = false;
         _ghostValid = false;
         _ghostNewTrack = false;
+        _snapGuideTime = double.nan;
         if (changed) invalidate();
     }
 
@@ -1387,6 +1430,7 @@ final class TimelineWidget : Widget
         }
         drawWorkArea(canvas);
         drawTimelineGuides(canvas);
+        drawSnapGuide(canvas);
         drawResizePreview(canvas);
         drawGhost(canvas);
         drawTextCreatePreview(canvas);
@@ -1532,6 +1576,16 @@ final class TimelineWidget : Widget
                 canvas.fillRoundedRect(Rect(x - 4, 1, 8, 8), 2, color);
             }
         }
+    }
+
+    private void drawSnapGuide(ref Canvas canvas)
+    {
+        if (isNaN(_snapGuideTime)) return;
+        const x = xForTime(_snapGuideTime);
+        if (x < labelWidth() || x >= bounds().width) return;
+        canvas.fillRect(Rect(x, rulerHeight(), 1,
+                maxInt(0, bounds().height - rulerHeight())),
+            Color.rgb(255, 255, 255).withAlpha(190));
     }
 
     private void drawTransitionBlock(ref Canvas canvas, Rect rect, bool fadeIn,
@@ -2107,10 +2161,11 @@ final class TimelineWidget : Widget
         {
             autoScrollDuringDrag(event.position);
             const t = timeForX(event.position.x);
+            double snapGuide = double.nan;
             if (_pointerMode == PointerMode.clipResizeStart)
             {
                 _resizePreviewStart = snappedEdge(t, 0.0,
-                    _resizeClip.end() - 0.05, _pressTrack, _resizeClip.id);
+                    _resizeClip.end() - 0.05, _pressTrack, _resizeClip.id, snapGuide);
                 _resizePreviewEnd = _resizeClip.end();
             }
             else
@@ -2118,8 +2173,9 @@ final class TimelineWidget : Widget
                 _resizePreviewStart = _resizeClip.start;
                 _resizePreviewEnd = snappedEdge(t,
                     _resizeClip.start + 0.05, double.max, _pressTrack,
-                    _resizeClip.id);
+                    _resizeClip.id, snapGuide);
             }
+            _snapGuideTime = snapGuide;
             setCursor(CursorKind.resizeHorizontal);
             invalidate();
             return true;
@@ -2212,6 +2268,7 @@ final class TimelineWidget : Widget
             return false;
         const mode = _pointerMode;
         _pointerMode = PointerMode.none;
+        _snapGuideTime = double.nan;
         releaseMouse();
         restoreToolCursor();
         endScrubGesture();
@@ -2327,7 +2384,8 @@ final class TimelineWidget : Widget
         bool createsTrack;
         if (!candidateTrackAt(event.position, target, createsTrack) ||
             event.position.x < labelWidth()) return false;
-        const start = snappedStart(timeForX(event.position.x), 0.0, target, 0);
+        double snapGuide = double.nan;
+        const start = snappedStart(timeForX(event.position.x), 0.0, target, 0, snapGuide);
         if (onExplorerMediaDropRequested !is null)
             onExplorerMediaDropRequested(event.paths, target, start);
         return true;
@@ -2352,6 +2410,7 @@ final class TimelineWidget : Widget
             clearGhost();
             _draggingVerticalThumb = false;
             _verticalScrollbarHovered = false;
+            _snapGuideTime = double.nan;
             _pointerMode = PointerMode.none;
             releaseMouse();
             setCursor(CursorKind.arrow);

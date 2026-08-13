@@ -17,7 +17,7 @@ import std.algorithm.searching : canFind;
 import std.conv : to;
 import std.datetime.stopwatch : AutoStart, StopWatch;
 import std.file : exists, mkdirRecurse, remove, rmdirRecurse, tempDir, write;
-import std.math : fabs;
+import std.math : fabs, isNaN;
 import std.path : baseName, buildPath, dirName;
 import std.stdio : writeln;
 
@@ -782,6 +782,129 @@ int main(string[] arguments)
             0.30, snapTrack);
         assert(fabs(unsnapped - 1.13) < 0.0001,
             "Disabling timeline snapping did not bypass playhead snapping");
+    }
+
+    // Items snap to the work-area In/Out markers, the other vertical guide
+    // lines drawn in the timeline, for both their start and their tail.
+    {
+        auto markerModel = new EditorModel();
+        const markerTrack = TrackAddress(TrackKind.video, 0);
+        assert(markerModel.insertTextClip(markerTrack, 0.0, 1.0,
+            "Marker probe") >= 0);
+        auto markerTimeline = new TimelineWidget(markerModel);
+        markerTimeline.setBounds(Rect(0, 0, 800, 180));
+        markerTimeline.setZoom(100.0);
+        markerTimeline.setPlayhead(8.0, false);
+        markerTimeline.setWorkArea(true, 3.0, true, 5.0);
+
+        const inSnap = markerTimeline.snappedStartForTesting(3.10,
+            0.5, markerTrack);
+        assert(fabs(inSnap - 3.0) < 0.0001,
+            "Timeline item start did not snap to the work-area In marker");
+        const outSnap = markerTimeline.snappedStartForTesting(4.95,
+            0.5, markerTrack);
+        assert(fabs(outSnap - 5.0) < 0.0001,
+            "Timeline item start did not snap to the work-area Out marker");
+        const tailIn = markerTimeline.snappedStartForTesting(2.45,
+            0.5, markerTrack);
+        assert(fabs(tailIn + 0.5 - 3.0) < 0.0001,
+            "Timeline item tail did not snap to the work-area In marker");
+        const tailOut = markerTimeline.snappedStartForTesting(4.45,
+            0.5, markerTrack);
+        assert(fabs(tailOut + 0.5 - 5.0) < 0.0001,
+            "Timeline item tail did not snap to the work-area Out marker");
+        const edgeSnap = markerTimeline.snappedEdgeForTesting(4.95,
+            0.05, 8.0, markerTrack);
+        assert(fabs(edgeSnap - 5.0) < 0.0001,
+            "Timeline edge resize did not snap to the work-area Out marker");
+    }
+
+    // Items snap to clip edges on other tracks too, not only their own row.
+    {
+        auto crossModel = new EditorModel();
+        const crossV1 = TrackAddress(TrackKind.video, 0);
+        const crossV2 = TrackAddress(TrackKind.video, 1);
+        assert(crossModel.addTrack(TrackKind.video) >= 0);
+        assert(crossModel.insertTextClip(crossV1, 0.0, 2.0,
+            "Lower row") >= 0);
+        assert(crossModel.insertTextClip(crossV2, 4.0, 2.0,
+            "Upper row") >= 0);
+        auto crossTimeline = new TimelineWidget(crossModel);
+        crossTimeline.setBounds(Rect(0, 0, 800, 180));
+        crossTimeline.setZoom(100.0);
+        crossTimeline.setPlayhead(9.0, false);
+
+        const crossStart = crossTimeline.snappedStartForTesting(3.90,
+            1.0, crossV1);
+        assert(fabs(crossStart - 4.0) < 0.0001,
+            "Timeline item start did not snap to a clip edge on another track");
+        const crossTail = crossTimeline.snappedStartForTesting(2.85,
+            1.0, crossV1);
+        assert(fabs(crossTail + 1.0 - 4.0) < 0.0001,
+            "Timeline item tail did not snap to a clip edge on another track");
+        const crossEdge = crossTimeline.snappedEdgeForTesting(4.05,
+            0.05, 8.0, crossV1);
+        assert(fabs(crossEdge - 4.0) < 0.0001,
+            "Timeline edge resize did not snap to a clip edge on another track");
+    }
+
+    // While a drag is snapped, a bright guide rule points at the marker and
+    // disappears once the pointer is released. Snap to the work-area In marker
+    // (3.0s) rather than the playhead, because the composited playhead layer
+    // is painted above the base scene and covers the guide at its own X.
+    {
+        auto guideModel = new EditorModel();
+        const guideTrack = TrackAddress(TrackKind.video, 0);
+        assert(guideModel.insertTextClip(guideTrack, 0.0, 2.0,
+            "Guide probe") >= 0);
+        auto guideTimeline = new TimelineWidget(guideModel);
+        guideTimeline.setBounds(Rect(0, 0, 800, 180));
+        guideTimeline.setZoom(100.0);
+        guideTimeline.setPlayhead(8.0, false);
+        guideTimeline.setWorkArea(true, 3.0, false, 0.0);
+        assert(isNaN(guideTimeline.snapGuideTimeForTesting()),
+            "Timeline snap guide was visible before any drag");
+
+        const guideRect = guideTimeline.clipRectForTesting(guideTrack, 0);
+        const guideY = guideRect.y + guideRect.height / 2;
+        // Press at t=0.50 (a 0.50s grab offset), then drag the clip start near
+        // the 3.0s In marker so the ghost snaps onto it.
+        const pressX = guideTimeline.timeOriginXForTesting() +
+            cast(int) (0.50 * guideTimeline.pixelsPerSecond() + 0.5);
+        Event down;
+        down.button = MouseButton.left;
+        down.position = Point(pressX, guideY);
+        assert(guideTimeline.onMouseDown(down),
+            "Snap-guide fixture could not press the clip");
+        Event move;
+        move.position = Point(guideTimeline.timeOriginXForTesting() +
+            cast(int) (3.55 * guideTimeline.pixelsPerSecond() + 0.5), guideY);
+        assert(guideTimeline.onMouseMove(move),
+            "Snap-guide fixture drag was not followed");
+        assert(guideTimeline.draggingClip(),
+            "Snap-guide fixture did not enter clip drag mode");
+        assert(fabs(guideTimeline.snapGuideTimeForTesting() - 3.0) < 0.0001,
+            "Timeline snap guide did not point at the In marker while snapping");
+
+        auto guideSurface = new Surface(800, 180);
+        auto guideCanvas = Canvas(guideSurface);
+        guideTimeline.paintTree(guideCanvas);
+        const guideLineX = guideTimeline.timeOriginXForTesting() +
+            cast(int) (3.0 * guideTimeline.pixelsPerSecond() + 0.5);
+        const guidePixel = guideSurface.pixel(guideLineX, 26);
+        const guideRed = (guidePixel >> 16) & 0xff;
+        const guideGreen = (guidePixel >> 8) & 0xff;
+        const guideBlue = guidePixel & 0xff;
+        assert(guideRed > 120 && guideGreen > 120 && guideBlue > 120,
+            "Timeline snap guide rule was not painted while snapping");
+
+        Event up;
+        up.button = MouseButton.left;
+        up.position = move.position;
+        assert(guideTimeline.onMouseUp(up),
+            "Snap-guide fixture did not accept mouse-up");
+        assert(isNaN(guideTimeline.snapGuideTimeForTesting()),
+            "Timeline snap guide remained visible after mouse-up");
     }
 
     // Regression: V1/A1 row paint must never erase the Cut and Text buttons
