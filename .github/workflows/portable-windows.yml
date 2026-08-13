@@ -56,14 +56,21 @@ jobs:
       - name: Stage embedded ffmpeg for single-exe builds
         shell: pwsh
         run: |
-          $src = Join-Path $env:RUNNER_TEMP "ffmpeg\ffmpeg-minimal-win64"
+          $root = Join-Path $env:RUNNER_TEMP "ffmpeg"
+          Get-ChildItem -Path $root -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          $ffmpegExe = Get-ChildItem -Path $root -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $ffprobeExe = Get-ChildItem -Path $root -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          if (-not $ffmpegExe -or -not $ffprobeExe) {
+            Write-Error "ffmpeg.exe/ffprobe.exe not found under $root"
+            exit 1
+          }
           foreach ($app in @("aurora-stream", "aurora-cut")) {
             $embedded = Join-Path $app "embedded"
             New-Item -ItemType Directory -Force -Path $embedded | Out-Null
-            Copy-Item (Join-Path $src "ffmpeg.exe") (Join-Path $embedded "ffmpeg.exe") -Force
-            Copy-Item (Join-Path $src "ffprobe.exe") (Join-Path $embedded "ffprobe.exe") -Force
+            Copy-Item $ffmpegExe.FullName (Join-Path $embedded "ffmpeg.exe") -Force
+            Copy-Item $ffprobeExe.FullName (Join-Path $embedded "ffprobe.exe") -Force
+            Get-ChildItem $embedded | Select-Object FullName, Length | Format-Table -AutoSize
           }
-          Get-ChildItem -Recurse aurora-stream\embedded, aurora-cut\embedded | Select-Object FullName, Length
 
       - name: Build and verify portable executables
         run: python -X utf8 scripts/build-portable-windows.py --compiler dmd --single-exe
