@@ -43,6 +43,8 @@ jobs:
 
       - name: Download minimal ffmpeg artifact
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           run_id="$(gh run list --workflow minimal-ffmpeg.yml --status success --limit 1 \
             --json databaseId --jq '.[0].databaseId')"
