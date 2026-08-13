@@ -2,6 +2,22 @@
 
 Aurora Stream version: 0.4.9
 
+## Unreleased Aurora-rendered program canvas
+
+The roadmap's Aurora-rendered program canvas is implemented in
+`source/aurorastream/programcanvas.d`. When **Aurora-rendered program canvas**
+is enabled in Settings → Program canvas, the broadcaster replaces desktop
+capture with an Aurora-composited scene (color/image/text sources) and feeds
+the rendered BGRA frames to FFmpeg over stdin (`-f rawvideo -pix_fmt bgra -s
+WxH -framerate 60 -i pipe:0`) on a dedicated paced frame-pump thread.
+
+Model validation (no GUI/network required):
+- `dub test` in `aurora-stream` passes 38 modules, including programcanvas
+  compositing unittests (color fill, text glyphs, image scaling, JSON round-trip)
+  and broadcast unittests (raw-pipe input, no `-nostdin`, zero-copy disabled).
+- `build/broadcast-model-smoke.exe` exits 0 with canvas-mode argument
+  assertions (see the build command in testing_progress_and_methods.md).
+
 ## Unreleased loaded-audio regression
 
 Run `python tests/run-quality-diagnostic.py --loaded-audio` for a headless, silent stress check of both the live compatibility graph and the lower-overhead BGRA graph. Each 12-second phase must encode 720 frames with no FFmpeg RTP-loss, maximum-delay, overrun, or output-queue warning; MMCSS must be active; and the sender must report no pacing skip or send failure. This test does not replace the audible decoded-waveform control or the full visual 60 FPS diagnostic.

@@ -211,6 +211,18 @@ The source selection appears above both destination profiles as one dropdown:
 
 When scaling is required, FFmpeg normalizes the captured Windows desktop into the selected shared source canvas and derives each destination from it. A single matching D3D11/NVENC destination bypasses pixel scaling entirely, and a software fallback no longer repeats a second scale when source and output resolutions already match.
 
+### Aurora-rendered program canvas
+
+The **Program canvas** settings section (below the source-canvas dropdown) can replace direct desktop capture entirely. When **Aurora-rendered program canvas (replaces desktop capture)** is checked, Aurora renders the common source canvas itself at the selected source resolution instead of FFmpeg capturing the desktop:
+
+- **Color sources** fill a rectangle with a solid color.
+- **Image sources** load a PNG and scale it into a rectangle.
+- **Text sources** render live text through Aurora's own text engine.
+
+Each source has its own visibility, opacity, and stacking order (use ▲/▼ to reorder). A live preview of the composite appears in the **LIVE SOURCE CANVAS** panel on the right. When enabled, the broadcaster feeds the rendered BGRA frames to FFmpeg over stdin as raw video (`-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0`), so the common source canvas, Twitch output, and YouTube output remain three independent layers. Sources are persisted in the settings file (schema 5) and re-render on every frame the canvas is active.
+
+Program-canvas mode disables the direct D3D11/NVENC handoff (the canvas is CPU-composited), but keeps the independent Twitch/YouTube scaling and encoding paths unchanged.
+
 Examples:
 
 - Source 1080p → Twitch 1080p + YouTube 1440p upscale
@@ -454,15 +466,14 @@ at runtime.
 
 - Editable Twitch output resolutions beyond the locked normal 1080p60 profile
 - Twitch Enhanced Broadcasting or Twitch 2K output (intentionally out of scope)
-- Camera, image, text, or browser sources
-- Scene/source list and real Aurora program composition
+- Screen/window/game, camera, browser sources, and per-source position/scale/crop editing in the program canvas
 - Zero-copy scaling, multi-destination composition, and Windows Graphics Capture path
 - Native Windows microphone capture without FFmpeg DirectShow
 - Per-destination encoder backend selection
 - OAuth or automatic retrieval of stream keys
 - Local recording
 
-The next architectural step remains an Aurora-rendered source canvas that replaces direct desktop capture while keeping the independent Twitch and YouTube output profiles introduced here.
+The Aurora-rendered program canvas now replaces direct desktop capture while keeping the independent Twitch and YouTube output profiles introduced here. Screen/window/game capture and a richer scene editor are the next steps.
 
 ## Specifications used
 

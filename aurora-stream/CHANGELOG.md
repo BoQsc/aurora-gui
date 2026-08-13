@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Fixed the frame-pump crash on stop (heap corruption `0xc0000409` in
+  MSVCR120): the pump wrote through the CRT `_write` on the pipe file
+  descriptor, so no phobos `File` object crosses the thread boundary and the
+  descriptor is closed exactly once by the worker that owns it.
+- Fixed a crash when starting streaming with the Aurora program canvas enabled
+  (access violation in `File.rawWrite`): the phobos `File` object was passed
+  across the thread boundary into the canvas frame-pump thread, where its
+  heap-allocated `_p` could be null/garbage by the time `rawWrite` ran. The
+  pump now receives only the raw file descriptor and writes directly with the
+  CRT `_write`.
+- Fixed a stray command prompt opening on every **Start streaming**: the
+  broadcaster spawns the isolated WASAPI RTP helper with `Config.suppressConsole`
+  (CREATE_NO_WINDOW), but both `app.d` and `app_titlebar.d` still listed
+  `--audio-rtp-helper` as a console-allocating diagnostic command, so
+  `AllocConsole()` created a visible console window for the helper. The helper
+  only communicates through status/metrics files and UDP, so
+  `--audio-rtp-helper` no longer allocates a console; manual diagnostics that
+  print to stdout still do.
+- Added the **Aurora-rendered program canvas** (`programcanvas.d`): a composited source canvas rendered by Aurora itself that replaces direct desktop capture while keeping the independent Twitch/YouTube output profiles.
+- Program canvas sources: color fills, PNG image sources, and live text sources, each with visibility, opacity, and stacking order.
+- Added a live **LIVE SOURCE CANVAS** preview panel that renders the composite letterboxed to the selected source-canvas aspect ratio.
+- The broadcaster now feeds the rendered canvas to FFmpeg over stdin as raw BGRA (`-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0`) on a dedicated paced frame-pump thread; the existing CFR cadence filter (`fps=60:round=near`, `setpts=N/(60*TB)`) still normalizes timestamps.
+- Program-canvas mode disables the direct D3D11/NVENC zero-copy path (canvas frames are CPU-composited) and reports `Aurora program canvas → CPU composite → encoder`.
+- Persisted program-canvas state in settings schema 5 (`programCanvasEnabled`, `programCanvasSources`).
+- The pacing diagnostic explicitly forces desktop capture so it never emits a raw pipe input that would hang without a frame pump.
 - Fixed **Unhide streaming servers** reserving only a sliver of spacing: the Twitch and YouTube server groups now receive their full label-plus-input height when restored to the settings layout.
 - Shortened the YouTube 4K toggle to **4K / 2160p60 highest-quality** to reduce horizontal crowding in the settings panel.
 - Changed live RTMP/RTMPS FIFO output from drop-on-overflow to a larger non-dropping queue plus a post-startup watchdog, so a sustained Twitch/network stall stops with `Live output stalled` instead of feeding Twitch a damaged stream that can become a black buffering player.

@@ -16,9 +16,29 @@ version (Windows)
 
 private void reportStage(string message)
 {
-    stderr.writeln("[Aurora Cut] ", message);
-    stderr.flush();
+    safeStderrWriteln("[Aurora Cut] " ~ message);
     appLog(message);
+}
+
+/// Writes to stderr only when a console is actually attached. Aurora Cut links
+/// as the Windows GUI subsystem, so `stderr.writeln` throws StdioException when
+/// the process is launched without a console (double-click / detached). A
+/// diagnostic command that needs stdout allocates its own console first.
+private void safeStderrWriteln(string text)
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : GetStdHandle, STD_ERROR_HANDLE;
+        if (GetStdHandle(STD_ERROR_HANDLE) is null) return;
+    }
+    try
+    {
+        stderr.writeln(text);
+        stderr.flush();
+    }
+    catch (Exception)
+    {
+    }
 }
 
 private void recordStartupFailure(string details)
@@ -146,8 +166,7 @@ int main(string[] arguments)
         catch (Throwable)
             details = "Aurora Cut could not start: " ~ error.msg;
 
-        stderr.writeln(details);
-        stderr.flush();
+        safeStderrWriteln(details);
         recordStartupFailure(details);
         return 1;
     }

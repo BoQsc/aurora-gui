@@ -1,5 +1,98 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-12 — Aurora Cut: RUN-WINDOWS.bat exits immediately with "Program exited with code 1"
+- [x] User: `RUN-WINDOWS.bat` builds and prints all startup stages then exits
+      with `Error Program exited with code 1`; the editor window never stays.
+- [x] Root cause: aurora-cut links as the Windows GUI subsystem
+      (`/SUBSYSTEM:WINDOWS`), so when launched with no attached console
+      (double-click, or a detached process) the CRT `stderr` handle is invalid.
+      `reportStage` in `source/app.d` called `stderr.writeln(...)` on that
+      invalid handle, which throws `StdioException`; `main`'s `catch
+      (Throwable)` then tried `stderr.writeln(details)` and threw again, so the
+      error escaped main entirely → the D runtime reported "Program exited
+      with code 1" and never wrote `aurora-cut-startup.log` (diagnostic marker
+      confirmed `main` entered but no catch message was ever logged).
+- [x] Fixed with `safeStderrWriteln`: only writes to stderr when a console is
+      actually attached (`GetStdHandle(STD_ERROR_HANDLE)`), otherwise skips,
+      and wraps the write in try/catch. `reportStage` and main's error handler
+      now use it, so a console-less launch starts the editor instead of dying
+      on the first log line.
+- [x] Verified: `aurora-cut.exe` launched detached stays ALIVE (was EXITED 1);
+      `RUN-WINDOWS.bat` leaves aurora-cut running; both aurora-stream
+      `application` + `titlebar` builds unaffected; aurora-cut `dub test`
+      (33 modules) and aurora-stream `dub test` (38 modules) pass.
+
+## 2026-08-12 — Aurora Stream: titlebar app crashed/disappeared on Start streaming (canvas mode)
+- [x] User: pressing **Start streaming** with the Aurora program canvas enabled
+      both popped up a stray command prompt and crashed/disappeared the whole
+      app (aurora-stream-titlebar.exe, access violation 0xc0000005 at the same
+      RVA in two dumps).
+- [x] Console: `app_titlebar.d` had its own `main()`/`isDiagnosticCommand()` that
+      still listed `--audio-rtp-helper`, so the WASAPI helper spawned with
+      `Config.suppressConsole` still called `AllocConsole()` → stray prompt.
+      Removed `--audio-rtp-helper` there too (app.d had the same fix earlier).
+- [x] Crash: WER + minidump analysis (two dumps, deterministic RVA `0x12fe9`)
+      located the fault in `std.stdio.File.rawWrite` (the "Wrote ... ubyte"
+      errnoEnforce string) called only from `BroadcastWorker.runCanvasPump`.
+      The phobos `File` object was passed across the thread boundary into the
+      pump thread closure; `File` is @system with a heap-allocated, manually
+      refcounted `_p` (Impl*) and can be seen with a null/garbage `_p` by the
+      time `rawWrite` dereferences it.
+- [x] Fixed by passing only the raw file descriptor (`pipes.stdin.fileno()`,
+      an `int`) into the pump thread; the pump now builds its own `File` from
+      the fd (`stdin.fdopen(stdinFd, "wb")`), so no phobos `File` object is
+      shared across threads and `rawWrite` always sees a valid `_p`.
+- [x] Verified: `dub test` 38 modules pass; `broadcast-model-smoke.exe` exit 0;
+      both `application` and `titlebar` configs build; the titlebar app
+      launches with its window and stays up; a standalone repro of the exact
+      fd-based pump runs clean.
+
+## 2026-08-12 — Aurora Stream: stray command prompt on Start streaming
+- [x] User: pressing **Start streaming** opened a separate command prompt.
+      Root cause: the broadcaster spawns the isolated WASAPI RTP helper as
+      `aurora-stream.exe --audio-rtp-helper ...` with `Config.suppressConsole`
+      (CREATE_NO_WINDOW), but `app.d`'s `isDiagnosticCommand()` listed
+      `--audio-rtp-helper` and `main()` called `attachDiagnosticConsole()` →
+      `AllocConsole()`, which created a visible console window for every
+      stream start. The helper only communicates through status/metrics files
+      and UDP (no stdout), so the console was useless.
+- [x] Fixed by removing `--audio-rtp-helper` from `isDiagnosticCommand()`.
+      Manual diagnostics that write to stdout (`--version`,
+      `--list-audio-endpoints-json`, `--audio-bridge-session-test`,
+      `--pacing-test`) still allocate a console on demand as before.
+- [x] Verified with a GUI-subsystem probe: ffmpeg spawned exactly like the
+      broadcast worker (`pipeProcess(..., Config.suppressConsole)`) has
+      `MainWindowHandle=0` (no window); the audio helper spawned the same way
+      has `MainWindowHandle=0` after the fix. `dub test` (38 modules) and both
+      `application` + `titlebar` builds pass; the app launches with its window
+      and no extra console.
+
+## 2026-08-12 — Aurora Stream: Aurora-rendered program canvas (roadmap item)
+- [x] Implemented the roadmap's "Aurora-rendered program canvas": Aurora now
+      composites color/image/text sources into the common source canvas,
+      replacing direct desktop capture while keeping the independent
+      Twitch/YouTube output profiles.
+- [x] New `source/aurorastream/programcanvas.d`: `ProgramSource` model
+      (normalized rects, opacity, visibility), `paintProgramCanvas` compositor
+      (works for both widget draw-list canvases and worker surface canvases),
+      live `ProgramCanvasPreview` widget, compact `ProgramCanvasEditor` with
+      add color/image/text + reorder + opacity + visibility, and JSON
+      serialization.
+- [x] Broadcast integration: `BroadcastSettings` gained `programCanvasEnabled`
+      + `programCanvasSources`; `captureArguments` emits
+      `-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0` instead of
+      ddagrab/gdigrab; `BroadcastWorker.run` spawns FFmpeg with stdin redirect
+      in canvas mode and a dedicated paced frame-pump thread writes rendered
+      BGRA frames; zero-copy D3D11 path and `videoPipelineLabel` are bypassed
+      for canvas mode; the pacing diagnostic forces desktop capture.
+- [x] UI: live **LIVE SOURCE CANVAS** preview panel + Program canvas settings
+      section with the source editor; controls disable while streaming.
+- [x] Settings schema 5 persists canvas state.
+- [x] Verified: 38 modules pass `dub test` (incl. new programcanvas unittests),
+      `broadcast-model-smoke.exe` passes new canvas-mode argument assertions,
+      both `application` and `titlebar` configs build, the app launches and
+      stays up.
+
 ## 2026-08-12 — GUI-subsystem apps must not write to stdout at runtime (crash)
 - [x] User: double-clicking the titlebar to maximize shut down the whole app.
       Root cause: after switching aurora-stream to GUI-subsystem (no console), a

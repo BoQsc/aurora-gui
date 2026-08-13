@@ -1,5 +1,42 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream canvas-pump crash: rawWrite on a cross-thread File (2026-08-12)
+
+With the Aurora program canvas enabled, pressing Start streaming crashed the
+titlebar app (access violation `0xc0000005`). Two crash dumps
+(`aurora-stream-titlebar.exe.*.dmp` in `%LOCALAPPDATA%\CrashDumps`) both faulted
+at the same RVA `0x12fe9`.
+
+How it was diagnosed:
+1. WER `Report.wer` → ExceptionCode `c0000005`, ExceptionOffset `0x12fe9`.
+2. Minidump parse (hand-written Python with the stream directory) →
+   exception address `0x140012fe9` (image base + `0x12fe9`), i.e. the fault is
+   in the app itself, not a system DLL. The saved thread context pointed into
+   ntdll only because the dump captures the exception dispatcher frame.
+3. Disassembled the containing function with capstone → it dereferences
+   `[rbp+0x10]` (`this`), then `[rax]` (`this._p`), then `[rcx]`
+   (`this._p.handle`) and calls; a nearby `lea` references the
+   `"Wrote ... instead of ... objects of type ubyte"` string from
+   `phobos/std/stdio.d` line 1122 — i.e. **`File.rawWrite!ubyte`**.
+4. Grep: the only `rawWrite` in aurora-stream is
+   `BroadcastWorker.runCanvasPump` → `stdin.rawWrite(cast(ubyte[]) surface.pixels())`.
+
+Root cause and fix: the phobos `File` (a `@system` struct with a heap-allocated,
+manually refcounted `_p` Impl pointer) was captured by reference into the pump
+thread's closure and passed by value to `runCanvasPump`. `File.rawWrite` can then
+see a null/garbage `_p`. Fixed in `broadcast.d` by passing only the raw fd
+(`pipes.stdin.fileno()`, an `int`) into the pump thread; the pump builds its own
+`File` via `stdin.fdopen(stdinFd, "wb")` so each thread owns a valid `File`.
+
+How to verify (no GUI click needed):
+1. `dub test` in `aurora-stream` → 38 modules pass.
+2. `dub build --config=titlebar --force` links.
+3. Launch the titlebar app; it opens its window and stays up (no console, no
+   crash) with the saved settings (which have `programCanvasEnabled: true`).
+4. Standalone repro: spawn ffmpeg with `Redirect.stderr | Redirect.stdin`,
+   `int fd = pipes.stdin.fileno()`, pump thread does
+   `File stdin; stdin.fdopen(fd, "wb"); stdin.rawWrite(frames)` — runs clean.
+
 ## Aurora Stream no-stray-console-on-stream-start (2026-08-12)
 
 The broadcaster spawns the isolated WASAPI RTP helper as

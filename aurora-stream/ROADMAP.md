@@ -48,9 +48,9 @@ Do not change the live path again until `RUN-QUALITY-DIAGNOSTIC.bat` identifies 
 ## Later — Aurora scene compositor
 
 - Source list and scene list
-- Aurora-rendered program canvas
-- Screen/window/game, camera, image, text, and color sources
-- Position, scale, crop, opacity, visibility, and ordering
+- **Aurora-rendered program canvas — delivered**: Aurora composites color, image, and text sources into the source canvas (replacing direct desktop capture), with a live preview panel and per-source opacity/visibility/ordering. Sources are persisted (settings schema 5) and the composite is fed to FFmpeg over stdin as raw BGRA frames.
+- Screen/window/game capture, camera, and browser sources
+- Position, scale, crop, opacity, visibility, and ordering editors for every source
 - Program preview and source selection outlines
 - Direct GPU handoff where supported; bounded readback fallback
 

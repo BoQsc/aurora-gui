@@ -11,6 +11,8 @@ import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     twitchVideoBitrateKbps, youtubeVideoBitrateKbps;
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
+import aurorastream.programcanvas : ProgramCanvasEditor, ProgramCanvasPreview,
+    ProgramSource;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
 import std.format : format;
@@ -28,6 +30,10 @@ final class StreamRoot : VBox
     private AudioDeviceScanner _audioScanner;
 
     private SourceQualityDropdown _sourceQuality;
+    private CheckBox _programCanvasEnabled;
+    private ProgramCanvasEditor _canvasEditor;
+    private ProgramCanvasPreview _canvasPreview;
+    private ProgramSource[] _programSources;
     private Button _settingsMenu;
     private bool _streamingServersVisible;
     private ScrollView _settingsScroll;
@@ -115,6 +121,7 @@ final class StreamRoot : VBox
             saved.sourceQuality));
         _sourceQuality.onChanged = delegate(BroadcastQuality quality) {
             updateQualitySummary();
+            updateCanvasPreview();
             markSettingsDirty();
         };
         auto sourceHint = settingsContent.add(new Label(
@@ -122,6 +129,35 @@ final class StreamRoot : VBox
         sourceHint.setScale(1);
         sourceHint.setColor(Color.fromHex(0x8793a0));
         sourceHint.layoutHints().preferredHeight = 36;
+
+        settingsContent.add(new Separator());
+        auto programTitle = settingsContent.add(new Label("PROGRAM CANVAS"));
+        programTitle.setScale(1);
+        programTitle.setColor(Color.fromHex(0xc8d0da));
+        _programCanvasEnabled = settingsContent.add(new CheckBox(
+            "Aurora-rendered program canvas (replaces desktop capture)",
+            saved.programCanvasEnabled));
+        _programCanvasEnabled.onChanged = delegate(bool checked) {
+            updateQualitySummary();
+            markSettingsDirty();
+        };
+        auto programHint = settingsContent.add(new Label(
+            "Aurora renders this scene instead of capturing the desktop. Twitch and YouTube are still encoded independently."));
+        programHint.setScale(1);
+        programHint.setColor(Color.fromHex(0x8793a0));
+        programHint.layoutHints().preferredHeight = 36;
+        _canvasEditor = settingsContent.add(new ProgramCanvasEditor());
+        _canvasEditor.setSources(saved.programCanvasSources);
+        _canvasEditor.onSourcesChanged = delegate(const ProgramSource[] sources) {
+            _programSources.length = 0;
+            foreach (source; sources)
+                _programSources ~= cast(ProgramSource) source;
+            updateCanvasPreview();
+            markSettingsDirty();
+        };
+        _programSources.length = 0;
+        foreach (source; saved.programCanvasSources)
+            _programSources ~= cast(ProgramSource) source;
 
         settingsContent.add(new Separator());
         auto twitchHeader = settingsContent.add(new HBox(6));
@@ -250,22 +286,19 @@ final class StreamRoot : VBox
         monitor.layoutHints().flex = 1.0;
         monitor.layoutHints().minWidth = 420;
 
-        auto preview = monitor.add(new VBox(6, Insets(18)));
+        auto preview = monitor.add(new VBox(6, Insets(12)));
         preview.setBackground(Color.fromHex(0x090b0e));
         preview.setBorder(Color.fromHex(0x343d47), 6);
         preview.layoutHints().flex = 1.0;
         preview.layoutHints().minHeight = 300;
-        preview.add(new Spacer());
-        auto previewTitle = preview.add(new Label("LIVE SOURCE CANVAS"));
-        previewTitle.setAlignment(HorizontalAlign.center);
-        previewTitle.setScale(2);
-        auto previewDetail = preview.add(new Label(
-            "One common 1080p, 1440p, or 4K source canvas.\nTwitch and YouTube are then scaled and encoded independently."));
-        previewDetail.setAlignment(HorizontalAlign.center);
-        previewDetail.setScale(1);
-        previewDetail.setColor(Color.fromHex(0x8e99a6));
-        previewDetail.layoutHints().preferredHeight = 54;
-        preview.add(new Spacer());
+        _canvasPreview = preview.add(new ProgramCanvasPreview());
+        _canvasPreview.layoutHints().flex = 1.0;
+        auto previewCaption = preview.add(new Label(
+            "LIVE SOURCE CANVAS"));
+        previewCaption.setAlignment(HorizontalAlign.center);
+        previewCaption.setScale(1);
+        previewCaption.setColor(Color.fromHex(0x8e99a6));
+        previewCaption.layoutHints().preferredHeight = 24;
 
         auto statusPanel = monitor.add(new VBox(6, Insets(10)));
         statusPanel.setBackground(Color.fromHex(0x1b2026));
@@ -309,6 +342,7 @@ final class StreamRoot : VBox
 
         setStreamingServersVisible(false);
         updateQualitySummary();
+        updateCanvasPreview();
         refreshAudioDevices(false);
     }
 
@@ -554,9 +588,13 @@ final class StreamRoot : VBox
             pathSettings.youtubeEnabled = _youtubeEnabled.checked();
             pathSettings.twitchQuality = BroadcastQuality.fullHD;
             pathSettings.youtubeQuality = youtubeQuality;
-            _videoPath.setText("Capture: " ~ _capture.label ~ " • " ~
-                videoPipelineLabel(pathSettings, _encoder, _capture) ~
-                " • Encoder: " ~ _encoder.label);
+            pathSettings.programCanvasEnabled = _programCanvasEnabled.checked();
+            _videoPath.setText(format(
+                "%s • %s • Encoder: %s",
+                _programCanvasEnabled.checked() ? "Program canvas" :
+                    "Capture: " ~ _capture.label,
+                videoPipelineLabel(pathSettings, _encoder, _capture),
+                _encoder.label));
         }
 
         _output.setText(format(
@@ -614,7 +652,17 @@ final class StreamRoot : VBox
         settings.desktopAudioEnabled = _selectDefaultDesktopAudio ||
             settings.desktopAudioDevice.length > 0;
         settings.microphoneDevice = _microphone.selectedDevice().strip();
+        settings.programCanvasEnabled = _programCanvasEnabled.checked();
+        settings.programCanvasSources = _programSources.dup;
         return settings;
+    }
+
+    private void updateCanvasPreview()
+    {
+        if (_canvasPreview is null) return;
+        const sourceQuality = selectedSourceQuality();
+        _canvasPreview.setSources(_programSources,
+            Size(qualityWidth(sourceQuality), qualityHeight(sourceQuality)));
     }
 
     private void toggleStreaming()
@@ -752,6 +800,8 @@ final class StreamRoot : VBox
         _twitchEnabled.setEnabled(!active && twitchHasKey);
         _youtubeEnabled.setEnabled(!active && youtubeHasKey);
         _sourceQuality.setEnabled(!active);
+        _programCanvasEnabled.setEnabled(!active);
+        _canvasEditor.setControlsEnabled(!active);
         _youtubeFourK.setEnabled(!active);
         _desktopAudio.setEnabled(!active);
         _microphone.setEnabled(!active);

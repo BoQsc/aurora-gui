@@ -3,9 +3,10 @@ module tests.broadcast_model_smoke;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     CaptureSelection, DesktopCaptureBackend, EncoderSelection,
     broadcastArguments, defaultAudioBitrateKbps,
-    pacingDiagnosticArguments,
+    pacingDiagnosticArguments, usesD3D11ZeroCopyVideo, videoPipelineLabel,
     qualityHeight, qualityWidth, twitchVideoBitrateKbps, validateBroadcastSettings,
     youtubeVideoBitrateKbps;
+import aurorastream.programcanvas : defaultColorSource, defaultTextSource;
 import std.algorithm.searching : canFind;
 import std.string : indexOf;
 
@@ -238,6 +239,100 @@ unittest
 
 unittest
 {
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "h264_nvenc";
+    encoder.d3d11DirectProbeAttempted = true;
+    encoder.d3d11DirectSupported = true;
+
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "twitch-secret";
+    settings.youtubeEnabled = false;
+    settings.sourceQuality = BroadcastQuality.fullHD;
+    settings.twitchQuality = BroadcastQuality.fullHD;
+    settings.programCanvasEnabled = true;
+    settings.programCanvasSources = [
+        defaultColorSource(),
+        defaultTextSource("LIVE")
+    ];
+
+    CaptureSelection capture;
+    capture.backend = DesktopCaptureBackend.desktopDuplication;
+    capture.nativeWidth = 1920;
+    capture.nativeHeight = 1080;
+
+    const arguments = broadcastArguments(settings, encoder, capture);
+    assert(containsFragment(arguments, "rawvideo"));
+    assert(containsFragment(arguments, "bgra"));
+    assert(containsFragment(arguments, "1920x1080"));
+    assert(containsFragment(arguments, "framerate"));
+    assert(arguments.canFind("pipe:0"));
+    // Canvas mode must never use desktop capture or suppress stdin.
+    assert(!containsFragment(arguments, "ddagrab="));
+    assert(!containsFragment(arguments, "gdigrab"));
+    assert(!arguments.canFind("-nostdin"));
+    // The existing CFR cadence normalization still applies downstream.
+    assert(containsFragment(arguments, "fps=fps=60:start_time=0:round=near"));
+    assert(containsFragment(arguments, "setpts=N/(60*TB)"));
+    // No direct GPU handoff exists for a CPU-rendered canvas.
+    assert(!usesD3D11ZeroCopyVideo(settings, encoder, capture));
+    assert(videoPipelineLabel(settings, encoder, capture) ==
+        "Aurora program canvas → CPU composite → encoder");
+}
+
+unittest
+{
+    // Canvas mode works for 4K source canvases too, and the independent
+    // Twitch/YouTube output profiles remain intact.
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "twitch-secret";
+    settings.youtubeEnabled = true;
+    settings.youtubeKey = "youtube-secret";
+    settings.sourceQuality = BroadcastQuality.fourK;
+    settings.youtubeQuality = BroadcastQuality.fourK;
+    settings.programCanvasEnabled = true;
+
+    const arguments = broadcastArguments(settings, encoder);
+    assert(containsFragment(arguments, "3840x2160"));
+    assert(containsFragment(arguments, "scale=1920:1080"));
+    assert(containsFragment(arguments, "scale=3840:2160"));
+    assert(countExact(arguments, "h264_nvenc") == 0);
+    assert(countExact(arguments, "libx264") == 2);
+    assert(containsFragment(arguments, "pipe:0"));
+    assert(!containsFragment(arguments, "ddagrab="));
+    assert(!containsFragment(arguments, "gdigrab"));
+}
+
+unittest
+{
+    // The pacing diagnostic measures the desktop-capture pipeline and must
+    // never emit a raw pipe input that would hang without a frame pump.
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "twitch-secret";
+    settings.youtubeEnabled = false;
+    settings.programCanvasEnabled = true;
+
+    const arguments = pacingDiagnosticArguments(settings, encoder,
+        CaptureSelection.init, "", `C:\temp\pacing.flv`, 15);
+    assert(!containsFragment(arguments, "pipe:0"));
+    assert(!containsFragment(arguments, "rawvideo"));
+}
+
+unittest
+{
+    // Zero-copy NVENC path still applies for the desktop-capture case: DD
+    // frames at exactly the source resolution go straight to the encoder.
     EncoderSelection encoder;
     encoder.ffmpegAvailable = true;
     encoder.name = "h264_nvenc";

@@ -201,10 +201,15 @@ int main(string[] arguments)
 
 private bool isDiagnosticCommand(string command)
 {
+    // `--audio-rtp-helper` is deliberately NOT a console-allocating diagnostic
+    // command: the broadcaster spawns it with Config.suppressConsole, it
+    // communicates only through status/metrics files and UDP, and it never
+    // writes to stdout, so allocating a console would pop up a stray command
+    // prompt on every Start streaming.
     return command == "--version" || command == "-v" ||
         command == "--list-audio-endpoints-json" ||
         command == "--audio-bridge-session-test" ||
-        command == "--audio-rtp-helper" || command == "--pacing-test";
+        command == "--pacing-test";
 }
 
 private void attachDiagnosticConsole()
