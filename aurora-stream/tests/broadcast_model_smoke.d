@@ -3,7 +3,8 @@ module tests.broadcast_model_smoke;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     CaptureSelection, DesktopCaptureBackend, EncoderSelection,
     broadcastArguments, defaultAudioBitrateKbps,
-    pacingDiagnosticArguments, usesD3D11ZeroCopyVideo, videoPipelineLabel,
+    effectiveYoutubeBitrateKbps, pacingDiagnosticArguments,
+    usesD3D11ZeroCopyVideo, videoPipelineLabel,
     qualityHeight, qualityWidth, twitchVideoBitrateKbps, validateBroadcastSettings,
     youtubeVideoBitrateKbps;
 import std.algorithm.searching : canFind;
@@ -36,6 +37,7 @@ unittest
     settings.twitchKey = "twitch-secret";
     settings.youtubeServer = "rtmps://youtube.example/live2";
     settings.youtubeKey = "youtube-secret";
+    settings.youtubeQuality = BroadcastQuality.twoK;
 
     version (Windows)
         assert(validateBroadcastSettings(settings, encoder).length == 0);
@@ -73,6 +75,7 @@ unittest
     settings.youtubeEnabled = true;
     settings.youtubeServer = "rtmps://youtube.example/live2";
     settings.youtubeKey = "youtube-secret";
+    settings.youtubeQuality = BroadcastQuality.twoK;
 
     assert(qualityWidth(settings.sourceQuality) == 1920);
     assert(qualityHeight(settings.sourceQuality) == 1080);
@@ -86,6 +89,55 @@ unittest
     assert(arguments.canFind("24000k"));
     assert(arguments.canFind("5.1"));
     assert(countExact(arguments, "h264_nvenc") == 1);
+}
+
+unittest
+{
+    // The default YouTube output is now 1080p60 (12 Mbps): no upscale to 1440p
+    // and a 1080p H.264 level unless a higher profile is selected.
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "h264_nvenc";
+
+    BroadcastSettings settings;
+    settings.twitchEnabled = false;
+    settings.youtubeEnabled = true;
+    settings.youtubeServer = "rtmps://youtube.example/live2";
+    settings.youtubeKey = "youtube-secret";
+
+    assert(settings.youtubeQuality == BroadcastQuality.fullHD);
+    assert(qualityWidth(settings.youtubeQuality) == 1920);
+    assert(youtubeVideoBitrateKbps(settings.youtubeQuality) == 12_000);
+
+    const arguments = broadcastArguments(settings, encoder);
+    assert(containsFragment(arguments, "12000k"));
+    assert(!containsFragment(arguments, "2560:1440"));
+    assert(arguments.canFind("4.2"));
+}
+
+unittest
+{
+    // A YouTube bitrate override lets a 1080p stream send a higher ingest
+    // bitrate (e.g. for a 4K-configured key) without changing resolution.
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "h264_nvenc";
+
+    BroadcastSettings settings;
+    settings.twitchEnabled = false;
+    settings.youtubeEnabled = true;
+    settings.youtubeServer = "rtmps://youtube.example/live2";
+    settings.youtubeKey = "youtube-secret";
+    settings.youtubeQuality = BroadcastQuality.fullHD;
+    settings.youtubeBitrateKbps = 24_000;
+
+    assert(effectiveYoutubeBitrateKbps(settings) == 24_000);
+
+    const arguments = broadcastArguments(settings, encoder);
+    assert(arguments.canFind("24000k"));
+    assert(arguments.canFind("48000k")); // bufsize = 2x override
+    assert(!containsFragment(arguments, "2560:1440"));
+    assert(arguments.canFind("4.2"));
 }
 
 unittest

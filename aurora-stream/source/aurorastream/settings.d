@@ -61,6 +61,14 @@ private string jsonString(const JSONValue root, string key, string fallback)
     return value.str;
 }
 
+private int jsonInt(const JSONValue root, string key, int fallback)
+{
+    if (root.type != JSONType.object) return fallback;
+    const value = key in root;
+    if (value is null || value.type != JSONType.integer) return fallback;
+    return cast(int) value.integer;
+}
+
 private BroadcastQuality qualityFromString(string value,
     BroadcastQuality fallback)
 {
@@ -148,10 +156,11 @@ private BroadcastSettings settingsFromJson(string source)
     settings.youtubeQuality = qualityFromString(jsonString(root,
         "youtubeQuality", qualityToString(settings.youtubeQuality)),
         settings.youtubeQuality);
+    settings.youtubeBitrateKbps = jsonInt(root, "youtubeBitrateKbps", 0);
 
     // 0.1.2/0.1.3 stored one shared "quality" setting. Migrate it into
     // the new independent model. The shared source remains 1080p, Twitch
-    // remains 1080p, and YouTube now defaults to 1440p unless legacy 4K
+    // remains 1080p, and YouTube now defaults to 1080p unless legacy 4K
     // was explicitly selected.
     if (!hasJsonKey(root, "youtubeQuality") && hasJsonKey(root, "quality"))
     {
@@ -160,15 +169,16 @@ private BroadcastSettings settingsFromJson(string source)
         settings.sourceQuality = BroadcastQuality.fullHD;
         settings.twitchQuality = BroadcastQuality.fullHD;
         settings.youtubeQuality = legacy == BroadcastQuality.fourK ?
-            BroadcastQuality.fourK : BroadcastQuality.twoK;
+            BroadcastQuality.fourK : BroadcastQuality.fullHD;
     }
 
     // Guard against hand-edited values that are syntactically valid JSON but
     // unsupported by the current UI.
     settings.twitchQuality = BroadcastQuality.fullHD;
-    if (settings.youtubeQuality != BroadcastQuality.twoK &&
+    if (settings.youtubeQuality != BroadcastQuality.fullHD &&
+        settings.youtubeQuality != BroadcastQuality.twoK &&
         settings.youtubeQuality != BroadcastQuality.fourK)
-        settings.youtubeQuality = BroadcastQuality.twoK;
+        settings.youtubeQuality = BroadcastQuality.fullHD;
 
     return settings;
 }
@@ -186,6 +196,7 @@ private string settingsToJson(BroadcastSettings settings)
     root["sourceQuality"] = qualityToString(settings.sourceQuality);
     root["twitchQuality"] = qualityToString(settings.twitchQuality);
     root["youtubeQuality"] = qualityToString(settings.youtubeQuality);
+    root["youtubeBitrateKbps"] = settings.youtubeBitrateKbps;
     root["desktopAudioBackend"] = "wasapi-loopback";
     root["desktopAudioEnabled"] = settings.desktopAudioEnabled;
     root["desktopAudioDevice"] = settings.desktopAudioDevice;
@@ -283,6 +294,7 @@ unittest
     source.sourceQuality = BroadcastQuality.fourK;
     source.twitchQuality = BroadcastQuality.fullHD;
     source.youtubeQuality = BroadcastQuality.fourK;
+    source.youtubeBitrateKbps = 24_000;
     source.desktopAudioDevice = "Desktop Loopback";
     source.desktopAudioEnabled = true;
     source.microphoneDevice = "Microphone";
@@ -292,6 +304,7 @@ unittest
     assert(restored.twitchEnabled == source.twitchEnabled);
     assert(restored.twitchServer == source.twitchServer);
     assert(restored.twitchKey == source.twitchKey);
+    assert(restored.youtubeBitrateKbps == source.youtubeBitrateKbps);
     assert(restored.youtubeEnabled == source.youtubeEnabled);
     assert(restored.youtubeServer == source.youtubeServer);
     assert(restored.youtubeKey == source.youtubeKey);
@@ -310,12 +323,12 @@ unittest
     assert(defaults.youtubeServer == "rtmp://a.rtmp.youtube.com/live2");
     assert(defaults.sourceQuality == BroadcastQuality.fullHD);
     assert(defaults.twitchQuality == BroadcastQuality.fullHD);
-    assert(defaults.youtubeQuality == BroadcastQuality.twoK);
+    assert(defaults.youtubeQuality == BroadcastQuality.fullHD);
 
     const legacyDefault = settingsFromJson(`{"quality":"1080p"}`);
     assert(legacyDefault.sourceQuality == BroadcastQuality.fullHD);
     assert(legacyDefault.twitchQuality == BroadcastQuality.fullHD);
-    assert(legacyDefault.youtubeQuality == BroadcastQuality.twoK);
+    assert(legacyDefault.youtubeQuality == BroadcastQuality.fullHD);
 
     const legacyFourK = settingsFromJson(`{"quality":"4k"}`);
     assert(legacyFourK.youtubeQuality == BroadcastQuality.fourK);

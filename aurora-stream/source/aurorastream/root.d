@@ -4,12 +4,14 @@ import aurora;
 import aurorastream.appversion : appDisplayName;
 import aurorastream.audioendpoint : AudioEndpoint;
 import aurorastream.audiodevices : AudioDeviceScanner;
+import aurorastream.bitratedropdown : BitrateDropdown;
 import aurorastream.browser : openExternalUrl, openPacingDiagnostic;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     BroadcastSnapshot, BroadcastWorker, CaptureSelection, EncoderSelection,
-    detectCaptureBackend, detectEncoder, videoPipelineLabel,
-    defaultAudioBitrateKbps, qualityHeight, qualityShortLabel, qualityWidth,
-    twitchVideoBitrateKbps, youtubeVideoBitrateKbps;
+    detectCaptureBackend, detectEncoder, effectiveYoutubeBitrateKbps,
+    videoPipelineLabel, defaultAudioBitrateKbps, qualityHeight,
+    qualityShortLabel, qualityWidth, twitchVideoBitrateKbps,
+    youtubeVideoBitrateKbps;
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
@@ -72,7 +74,8 @@ final class StreamRoot : VBox
     private ClipboardTextField _youtubeServer;
     private ClipboardTextField _youtubeKey;
     private Button _youtubePaste;
-    private CheckBox _youtubeFourK;
+    private SourceQualityDropdown _youtubeQuality;
+    private BitrateDropdown _youtubeBitrate;
     private Label _youtubeProfile;
     private AudioDeviceDropdown _desktopAudio;
     private AudioDeviceDropdown _microphone;
@@ -130,8 +133,10 @@ final class StreamRoot : VBox
         _settingsMenu.layoutHints().preferredWidth = 105;
         _settingsMenu.layoutHints().preferredHeight = 34;
         _settingsMenu.onClick = delegate() { openSettingsMenu(); };
-        _output = header.add(new Label(
-            "Source 1080p60 • Twitch 1080p60 • YouTube 1440p60"));
+        string initialSummary = "Source 1080p60";
+        if (saved.twitchEnabled) initialSummary ~= " • Twitch 1080p60";
+        if (saved.youtubeEnabled) initialSummary ~= " • YouTube 1080p60";
+        _output = header.add(new Label(initialSummary));
         _output.setScale(1);
         _output.setColor(Color.fromHex(0x9ba7b5));
 
@@ -221,17 +226,21 @@ final class StreamRoot : VBox
             updateQualitySummary();
             markSettingsDirty();
         };
-        _youtubeFourK = youtubeDestinationRow.add(new CheckBox(
-            "4K / 2160p60 highest-quality",
-            saved.youtubeQuality == BroadcastQuality.fourK));
-        _youtubeFourK.layoutHints().preferredWidth = 240;
-        _youtubeFourK.layoutHints().flex = 1.0;
-        _youtubeFourK.onChanged = delegate(bool checked) {
+        _youtubeQuality = youtubeDestinationRow.add(new SourceQualityDropdown(
+            saved.youtubeQuality));
+        _youtubeQuality.layoutHints().flex = 1.0;
+        _youtubeQuality.onChanged = delegate(BroadcastQuality quality) {
+            updateQualitySummary();
+            markSettingsDirty();
+        };
+        _youtubeBitrate = youtubeDestinationRow.add(new BitrateDropdown(
+            saved.youtubeBitrateKbps));
+        _youtubeBitrate.onChanged = delegate(int kbps) {
             updateQualitySummary();
             markSettingsDirty();
         };
         _youtubeProfile = settingsContent.add(new Label(
-            "Default: 2560×1440 • 60 FPS • 24000 kbps • independent H.264 encoder"));
+            "Default: 1920×1080 • 60 FPS • 12000 kbps • independent H.264 encoder"));
         _youtubeProfile.setScale(1);
         _youtubeProfile.setColor(Color.fromHex(0x8793a0));
         _youtubeProfile.layoutHints().preferredHeight = 36;
@@ -614,8 +623,12 @@ final class StreamRoot : VBox
 
     private BroadcastQuality selectedYoutubeQuality() const
     {
-        return _youtubeFourK.checked() ?
-            BroadcastQuality.fourK : BroadcastQuality.twoK;
+        return _youtubeQuality.selectedQuality();
+    }
+
+    private int selectedYoutubeBitrateKbps() const
+    {
+        return _youtubeBitrate.selectedKbps();
     }
 
     private void updateQualitySummary()
@@ -627,7 +640,10 @@ final class StreamRoot : VBox
         const youtubeQuality = selectedYoutubeQuality();
         const youtubeWidth = qualityWidth(youtubeQuality);
         const youtubeHeight = qualityHeight(youtubeQuality);
-        const youtubeBitrate = youtubeVideoBitrateKbps(youtubeQuality);
+        BroadcastSettings bitrateSettings;
+        bitrateSettings.youtubeQuality = youtubeQuality;
+        bitrateSettings.youtubeBitrateKbps = selectedYoutubeBitrateKbps();
+        const youtubeBitrate = effectiveYoutubeBitrateKbps(bitrateSettings);
 
         if (_videoPath !is null && _encoder.ffmpegAvailable)
         {
@@ -637,6 +653,7 @@ final class StreamRoot : VBox
             pathSettings.youtubeEnabled = _youtubeEnabled.checked();
             pathSettings.twitchQuality = BroadcastQuality.fullHD;
             pathSettings.youtubeQuality = youtubeQuality;
+            pathSettings.youtubeBitrateKbps = selectedYoutubeBitrateKbps();
             _videoPath.setText(format(
                 "%s • %s • Encoder: %s",
                 "Capture: " ~ _capture.label,
@@ -644,13 +661,18 @@ final class StreamRoot : VBox
                 _encoder.label));
         }
 
-        _output.setText(format(
-            "Source %s60 • Twitch 1080p60 • YouTube %s60",
-            qualityShortLabel(sourceQuality), qualityShortLabel(youtubeQuality)));
+        string headerSummary = format("Source %s60", qualityShortLabel(sourceQuality));
+        if (_twitchEnabled.checked())
+            headerSummary ~= " • Twitch 1080p60";
+        if (_youtubeEnabled.checked())
+            headerSummary ~= format(" • YouTube %s60", qualityShortLabel(youtubeQuality));
+        _output.setText(headerSummary);
+        const youtubeProfileLabel = youtubeQuality == BroadcastQuality.fourK ?
+            "Highest quality" :
+            (youtubeQuality == BroadcastQuality.twoK ? "1440p (higher)" : "Default");
         _youtubeProfile.setText(format(
             "%s: %d×%d • 60 FPS • %d kbps • independent H.264 encoder",
-            youtubeQuality == BroadcastQuality.fourK ? "Highest quality" : "Default",
-            youtubeWidth, youtubeHeight, youtubeBitrate));
+            youtubeProfileLabel, youtubeWidth, youtubeHeight, youtubeBitrate));
 
         const twitchEnabled = _twitchEnabled.checked();
         const youtubeEnabled = _youtubeEnabled.checked();
@@ -695,6 +717,7 @@ final class StreamRoot : VBox
         settings.youtubeServer = _youtubeServer.textUtf8().strip();
         settings.youtubeKey = _youtubeKey.textUtf8().strip();
         settings.youtubeQuality = selectedYoutubeQuality();
+        settings.youtubeBitrateKbps = selectedYoutubeBitrateKbps();
         settings.desktopAudioDevice = _desktopAudio.selectedDevice().strip();
         settings.desktopAudioEnabled = _selectDefaultDesktopAudio ||
             settings.desktopAudioDevice.length > 0;
@@ -995,7 +1018,8 @@ final class StreamRoot : VBox
         _twitchEnabled.setEnabled(!active && twitchHasKey);
         _youtubeEnabled.setEnabled(!active && youtubeHasKey);
         _sourceQuality.setEnabled(!active);
-        _youtubeFourK.setEnabled(!active);
+        _youtubeQuality.setEnabled(!active);
+        _youtubeBitrate.setEnabled(!active);
         _desktopAudio.setEnabled(!active);
         _microphone.setEnabled(!active);
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);

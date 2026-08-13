@@ -1,5 +1,113 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: "something went wrong immediately stopped streaming"
+- [x] User reported streaming stopped immediately. Log showed FFmpeg failing at
+      launch: `[udp @ ...] bind failed: Error number -10048 occurred` then
+      `Error opening input file ...sdp.` — the Windows UDP RTP/RTCP port was
+      transiently still in use right after the reservation was released.
+- [x] The handoff proof passed (ports proven free), so this is the known
+      transient close→re-bind `-10048` race that `verify-rtp-sdp.py` retries
+      with fresh pairs but the LIVE path did not.
+- [x] Fix in `broadcast.d` `run()`: the FFmpeg launch is now retried up to 4
+      times when it exits within a 2.5 s health window with a `-10048`/`bind
+      failed` line. Stderr is drained by a background reader (pipe can never
+      fill), the watchdog monitor starts only after health is confirmed, and a
+      clear "FFmpeg could not bind the audio UDP port (transient Windows
+      -10048)" status is shown if all retries fail. Non-bind-race early exits
+      are not retried.
+- [x] Verified: `dub test` 38 modules pass; application + notitlebar configs
+      build; the default app launches.
+
+## 2026-08-13 — Aurora Stream: dub.json "defaultConfig" warning
+- [x] User: "what is this warning, do we need fixing: ... defaultConfig: Key is
+      not a valid member of this section."
+- [x] `"defaultConfig": "application"` is not a valid dub.json root key in this
+      dub version, and it is redundant: dub already uses the FIRST configuration
+      as the default, and `application` (titlebar) is first. Removed the key; the
+      build now runs without the warning and still defaults to the titlebar
+      `aurora-stream.exe`.
+
+## 2026-08-13 — Aurora Stream: UI didn't reflect settings (header showed Twitch when off)
+- [x] User: "this time it worked out, but I feel like maybe the settings were
+      not reflective on UIs after program was run... are there fixes to be
+      made now?"
+- [x] The settings WERE applied correctly (that's why 1080p60 to YouTube
+      worked). The UI confusion came from the top header always printing
+      "Source 1080p60 • Twitch 1080p60 • YouTube 1080p60" regardless of whether
+      Twitch/YouTube were actually enabled.
+- [x] Fixed: the header now reflects the enabled destinations only
+      ("Source 1080p60 • YouTube 1080p60" when Twitch is off) in both the
+      constructor initial text and `updateQualitySummary`.
+- [x] Verified: `dub test` 38 modules pass; `notitlebar` config builds; the
+      default `aurora-stream.exe` needs a rebuild after the running app is
+      closed (it was locked).
+
+## 2026-08-13 — Aurora Stream: 1080p60 to YouTube — tested, root cause = dual-encode
+- [x] User: "do a few tests for 15 seconds to see which works and if 1080p60
+      would even work" and "we are only testing youtube, don't test twitch ever
+      for now".
+- [x] Live tests against the user's YouTube key (synthetic testsrc2, 15 s):
+  - 1080p60 @ 12 Mbps → exit 0, 900 frames, YouTube accepted.
+  - 1080p60 @ 24 Mbps → exit 0, 900 frames, YouTube accepted.
+  - 1440p60 @ 24 Mbps → exit 0, 900 frames, YouTube accepted.
+  So YouTube does NOT reject 1080p or want more Mbps; the bitrate was never the
+  problem.
+- [x] Real pipeline test: desktop-capture (ddagrab) + single NVENC 1080p60 @
+      12 Mbps → YouTube: exit 0, 900 frames, ~61 fps, speed 1.01-1.02x. The PC
+      handles 1080p60 easily.
+- [x] Root cause of the earlier stops: the app was encoding **Twitch + YouTube
+      simultaneously** (two NVENC instances) plus desktop-capture readback —
+      that overloads this 4-core/GTX 1060 host (1440p run stalled at 19 s; the
+      dual 1080p run exited at 7 s). Single-encode 1080p60 is sustainable.
+- [x] Settings updated: `twitchEnabled: false` (YouTube-only), `youtubeQuality:
+      "1080p"`, `youtubeBitrateKbps: 0` (auto → 12 Mbps). Added a
+      `BitrateDropdown` so the Mbps can be overridden independently (the 
+      earlier feature request) — works but is not required for 1080p60.
+
+## 2026-08-13 — Aurora Stream: YouTube stream stopped + showed 1440p not 1080p
+- [x] User: "the stream stopped and youtube didn't even recognized 1080p for
+      some reason, maybe because we need separate dropdown for selecting the
+      streaming mbps."
+- [x] Diagnosed from `aurora-stream-startup.log`: the run encoded YouTube at
+      **1440p60/24000k** (`scale=2560:1440`, `-b:v 24000k`) because the saved
+      `youtubeQuality: "2k"` overrode the new 1080p default — so YouTube showed
+      1440p. The stream then stalled: ~59 fps for 14 s, video froze at ~19 s
+      (frame 1140), audio helper had a 16 s packet gap, speed dropped to
+      ~0.55x, and the watchdog stopped it ("Live output speed stayed below
+      0.95x").
+- [x] Root cause is encoder/GPU overload: two NVENC encodes (1080p Twitch +
+      1440p YouTube) plus desktop-capture readback exceeds this 4-core/GTX 1060
+      host. At 1080p60 the load is sustainable. Bitrate is not the bottleneck
+      (NVENC cost is resolution-bound, not bitrate-bound), so a separate Mbps
+      dropdown would not fix this stall.
+- [x] Set the saved `aurora-stream-settings.json` `youtubeQuality` to `"1080p"`
+      so the next stream is actually 1080p60/12 Mbps; the 1080p default from the
+      recent change now applies. (Stream keys untouched.)
+
+## 2026-08-13 — Aurora Stream: YouTube stream should default to 1080p60
+- [x] User: "the streaming of youtube 1440p60 should not be default. Let's make
+      1080p60 the default and 1440p60 and other option optionals... we stream
+      at 1080p 60fps by default but not lower the internet streaming quality."
+- [x] Changed the YouTube output default from 1440p60 (24 Mbps) to **1080p60**
+      (12 Mbps) in `BroadcastSettings.youtubeQuality`; 1440p60 and 4K60 stay
+      available. The YouTube quality UI was a binary 4K checkbox (1440p↔4K with
+      no 1080p option), so it's now a `SourceQualityDropdown` with
+      1080p/1440p/4K, defaulting to 1080p.
+- [x] Updated the settings guard (invalid YouTube values now fall back to 1080p,
+      valid are 1080p/1440p/4K), the legacy shared-quality migration (old 1080p
+      → 1080p instead of 1440p), validation, the profile/header labels
+      ("Default: 1920×1080 • 60 FPS • 12000 kbps"), and the affected unittests.
+      Saved YouTube qualities in existing settings are preserved.
+- [x] Verified: `dub test` 38 modules pass; application + notitlebar configs
+      build; the default titlebar app launches.
+
+## 2026-08-13 — Aurora Stream: clarified "recording" vs streaming quality
+- [x] User thought YouTube's 1440p output was a "recording" and suggested a
+      1080p-default recording with higher optional, keeping streaming highest.
+- [x] Verified: Aurora Stream has NO local recording feature — it only streams
+      (YouTube 1440p60 default / 4K option, Twitch 1080p60, 1080p source
+      canvas). User chose **Keep as-is, no recording**; no changes made.
+
 ## 2026-08-13 — Aurora Stream: make the custom titlebar the default build
 - [x] User: "Make the titlebar the default option and notitlebar suffix for no
       titlebar that is currently active as default."

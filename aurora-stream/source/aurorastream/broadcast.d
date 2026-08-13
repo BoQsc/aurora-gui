@@ -3,7 +3,7 @@ module aurorastream.broadcast;
 import aurorastream.audiobridge : AudioBridgeSession;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
-import core.time : msecs;
+import core.time : MonoTime, dur, msecs;
 import std.conv : to;
 import std.file : append, write;
 import std.format : format;
@@ -69,7 +69,15 @@ struct BroadcastSettings
     // Kept as separate destination profiles even while Twitch is intentionally
     // fixed to its normal 1080p60 preset in this milestone.
     BroadcastQuality twitchQuality = BroadcastQuality.fullHD;
-    BroadcastQuality youtubeQuality = BroadcastQuality.twoK;
+    // YouTube output defaults to 1080p60; 1440p60 and 4K60 are selectable
+    // higher profiles that keep the highest internet quality.
+    BroadcastQuality youtubeQuality = BroadcastQuality.fullHD;
+
+    // YouTube video bitrate in kbps; 0 = auto (derived from youtubeQuality:
+    // 1080p=12000, 1440p=24000, 4K=35000). A separate override lets a stream
+    // send 1080p at a higher ingest bitrate when the destination (for example a
+    // 4K-configured YouTube key) expects more bandwidth.
+    int youtubeBitrateKbps;
 
     int fps = 60;
     int audioBitrateKbps = defaultAudioBitrateKbps;
@@ -130,6 +138,15 @@ int youtubeVideoBitrateKbps(BroadcastQuality quality)
         case BroadcastQuality.twoK: return 24_000;
         default: return 12_000;
     }
+}
+
+/// The YouTube video bitrate actually used: a non-zero `youtubeBitrateKbps`
+/// override wins, otherwise the quality-derived value.
+int effectiveYoutubeBitrateKbps(const BroadcastSettings settings)
+{
+    return settings.youtubeBitrateKbps > 0 ?
+        settings.youtubeBitrateKbps :
+        youtubeVideoBitrateKbps(settings.youtubeQuality);
 }
 
 string qualityLabel(BroadcastQuality quality)
@@ -406,9 +423,13 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         return "Select a valid common source resolution.";
     if (settings.twitchQuality != BroadcastQuality.fullHD)
         return "Twitch output is currently fixed to the normal 1080p60 profile.";
-    if (settings.youtubeQuality != BroadcastQuality.twoK &&
+    if (settings.youtubeQuality != BroadcastQuality.fullHD &&
+        settings.youtubeQuality != BroadcastQuality.twoK &&
         settings.youtubeQuality != BroadcastQuality.fourK)
-        return "YouTube output must be 1440p60 or 4K60.";
+        return "YouTube output must be 1080p60, 1440p60, or 4K60.";
+    if (settings.youtubeBitrateKbps < 0 ||
+        settings.youtubeBitrateKbps > 80_000)
+        return "The YouTube bitrate override must be between 0 (auto) and 80000 kbps.";
 
     if (settings.twitchEnabled)
     {
@@ -843,7 +864,7 @@ private string[] independentOutputArguments(const BroadcastSettings settings,
     if (settings.youtubeEnabled)
     {
         appendIndependentFlvOutput(arguments, encoder, settings.fps,
-            youtubeVideoBitrateKbps(settings.youtubeQuality),
+            effectiveYoutubeBitrateKbps(settings),
             qualityH264Level(settings.youtubeQuality),
             settings.audioBitrateKbps, youtubeVideoMap,
             twoOutputs ? "[ayoutube]" : "[amixed]",
@@ -1671,6 +1692,8 @@ final class BroadcastWorker
         string[] secrets)
     {
         int exitCode = -1;
+        bool launched;
+        bool bindRace;
         AudioBridgeSession desktopBridge;
         PreparedDesktopAudio desktopAudio;
 
@@ -1739,44 +1762,110 @@ final class BroadcastWorker
             auto arguments = independentOutputArguments(settings, encoder,
                 desktopAudio, capture);
             appendArgumentLog(arguments, secrets);
-            if (desktopBridge !is null)
+
+            // Windows can transiently refuse to re-bind the just-released RTP
+            // UDP port with WSAEADDRINUSE (-10048) even though the handoff
+            // proved it free (the diagnostic matrix retries this race with
+            // fresh port pairs; the live path retries the FFmpeg launch, which
+            // uses the same proven-free ports).
+            enum int maxLaunchAttempts = 4;
+            enum double launchHealthSeconds = 2.5;
+            for (int attempt = 1; attempt <= maxLaunchAttempts && !launched;
+                ++attempt)
             {
+                if (desktopBridge !is null)
+                {
+                    _mutex.lock();
+                    appendDiagnostic(format(
+                        "Desktop audio UDP ownership: helper source is bound and handoff verified; releasing FFmpeg RTP %s / RTCP %s reservations",
+                        desktopBridge.port, desktopBridge.rtcpPort));
+                    _mutex.unlock();
+                    desktopBridge.releaseReceiverReservations();
+                    appendPersistentLog(
+                        "Released the verified non-inheritable receiver reservations immediately before FFmpeg launch.");
+                }
+                auto pipes = pipeProcess(arguments,
+                    Redirect.stderr,
+                    cast(const string[string]) null, Config.suppressConsole);
                 _mutex.lock();
-                appendDiagnostic(format(
-                    "Desktop audio UDP ownership: helper source is bound and handoff verified; releasing FFmpeg RTP %s / RTCP %s reservations",
-                    desktopBridge.port, desktopBridge.rtcpPort));
+                _process = pipes.pid;
+                _processRunning = true;
+                _status = "Connecting to streaming services…";
+                const shouldStop = !_requestedRunning || _shutdown;
                 _mutex.unlock();
-                desktopBridge.releaseReceiverReservations();
-                appendPersistentLog(
-                    "Released the verified non-inheritable receiver reservations immediately before FFmpeg launch.");
+                appendPersistentLog(format(
+                    "FFmpeg process launched (attempt %s/%s); startup deadline is 12 seconds.",
+                    attempt, maxLaunchAttempts));
+
+                // Drain stderr on a background thread so the pipe can never
+                // fill and block FFmpeg; flag a UDP bind race if it appears.
+                bool stderrEnded;
+                auto reader = new Thread({
+                    foreach (rawLine; pipes.stderr.byLine())
+                    {
+                        const line = rawLine.to!string;
+                        if (line.indexOf("-10048") >= 0 ||
+                            line.indexOf("bind failed") >= 0)
+                            bindRace = true;
+                        parseLine(line, secrets, desktopBridge);
+                    }
+                    stderrEnded = true;
+                });
+                reader.isDaemon = true;
+                reader.start();
+
+                // A healthy FFmpeg is still running after the health window; a
+                // -10048 bind race exits well inside it. Only after health is
+                // confirmed does the watchdog monitor start.
+                const healthDeadline = MonoTime.currTime +
+                    dur!"msecs"(cast(long) (launchHealthSeconds * 1000.0));
+                while (!stderrEnded && MonoTime.currTime < healthDeadline)
+                    Thread.sleep(20.msecs);
+
+                if (!stderrEnded)
+                {
+                    launched = true;
+                    auto monitor = new Thread({
+                        monitorProcess(pipes.pid, desktopBridge);
+                    });
+                    monitor.isDaemon = true;
+                    monitor.start();
+                    if (shouldStop)
+                    {
+                        try kill(pipes.pid);
+                        catch (Exception) {}
+                    }
+                    try reader.join();
+                    catch (Exception) {}
+                    exitCode = wait(pipes.pid);
+                    appendPersistentLog(
+                        format("FFmpeg exited with code %s.", exitCode));
+                }
+                else
+                {
+                    try reader.join();
+                    catch (Exception) {}
+                    exitCode = wait(pipes.pid);
+                    appendPersistentLog(
+                        format("FFmpeg exited with code %s.", exitCode));
+                    _mutex.lock();
+                    _processRunning = false;
+                    _mutex.unlock();
+                    if (bindRace && attempt < maxLaunchAttempts)
+                    {
+                        appendPersistentLog(format(
+                            "Transient Windows UDP -10048 bind race; retrying launch (%s of %s).",
+                            attempt, maxLaunchAttempts - 1));
+                        Thread.sleep(300.msecs);
+                    }
+                    else
+                    {
+                        appendPersistentLog(
+                            bindRace ? "Gave up after repeated UDP -10048 bind races."
+                                     : "FFmpeg exited before the startup deadline.");
+                    }
+                }
             }
-            auto pipes = pipeProcess(arguments,
-                Redirect.stderr,
-                cast(const string[string]) null, Config.suppressConsole);
-            _mutex.lock();
-            _process = pipes.pid;
-            _processRunning = true;
-            _status = "Connecting to streaming services…";
-            const shouldStop = !_requestedRunning || _shutdown;
-            _mutex.unlock();
-            appendPersistentLog("FFmpeg process launched; startup deadline is 12 seconds.");
-
-            auto monitor = new Thread({
-                monitorProcess(pipes.pid, desktopBridge);
-            });
-            monitor.isDaemon = true;
-            monitor.start();
-
-            if (shouldStop)
-            {
-                try kill(pipes.pid);
-                catch (Exception) {}
-            }
-
-            foreach (rawLine; pipes.stderr.byLine())
-                parseLine(rawLine.to!string, secrets, desktopBridge);
-            exitCode = wait(pipes.pid);
-            appendPersistentLog(format("FFmpeg exited with code %s.", exitCode));
         }
         catch (Exception error)
         {
@@ -1840,6 +1929,11 @@ final class BroadcastWorker
         {
             _failed = false;
             _status = "Stopped";
+        }
+        else if (!launched && bindRace)
+        {
+            _failed = true;
+            _status = "FFmpeg could not bind the audio UDP port (transient Windows -10048) — see aurora-stream-startup.log";
         }
         else
         {

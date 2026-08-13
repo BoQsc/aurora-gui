@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The live stream now **retries the FFmpeg launch** (up to 4 attempts) when
+  FFmpeg exits immediately with the transient Windows UDP bind race
+  (`-10048`, `bind failed`) on the audio RTP port. The handoff already proved
+  the port pair free, so this only affects the rare close→re-bind race that
+  could otherwise stop streaming right after Start; the failure now surfaces a
+  clear "FFmpeg could not bind the audio UDP port" status if all retries fail.
+- YouTube output now **defaults to 1080p60** (12 Mbps) instead of 1440p60; the
+  YouTube quality selector is a proper 1080p/1440p/4K dropdown (was a 4K-only
+  checkbox), so 1440p60 and 4K60 remain selectable higher profiles that keep
+  the highest internet streaming quality. Existing saved YouTube qualities are
+  preserved.
 - Made the custom-titlebar build the **default** configuration: `dub build` /
   `dub run` now produce `aurora-stream` with the `TitleBar`-style window. The
   plain OS-titlebar build moved to a `notitlebar` configuration

@@ -159,12 +159,12 @@ Default configuration:
 ```text
 Common source canvas: 1920×1080 at 60 FPS
         ├─ Twitch: 1920×1080 at 60 FPS, 6000 kbps
-        └─ YouTube: 2560×1440 at 60 FPS, 24000 kbps
+        └─ YouTube: 1920×1080 at 60 FPS, 12000 kbps
 ```
 
 Twitch and YouTube never share one encoded video stream. Each enabled destination receives its own scaling filter, H.264 encoder instance, bitrate control, AAC encoder, FLV muxer, and network output. Every enabled live destination receives its own bounded non-dropping FIFO recovery wrapper so network setup and reconnects cannot own the capture/encode thread, plus a live watchdog that fails visibly when sustained output stalls would make viewers buffer.
 
-This means a 1080p source can remain normal 1080p60 for Twitch while being upscaled to 1440p60 for YouTube. Upscaling does not invent genuine source detail, but it gives YouTube the requested higher-resolution ingest profile rather than forcing both platforms to use Twitch's constrained output.
+YouTube defaults to normal 1080p60 at 12 Mbps so a default broadcast uses roughly a quarter of the upload bandwidth; 1440p60 (24 Mbps) and 4K60 (35 Mbps) are selectable higher profiles. This means a 1080p source can remain normal 1080p60 for Twitch and, when a higher profile is selected, be upscaled to 1440p60 or 4K60 for YouTube. Upscaling does not invent genuine source detail, but it gives YouTube the requested higher-resolution ingest profile rather than forcing both platforms to use Twitch's constrained output.
 
 ## Windows desktop capture and cursor stability
 
@@ -238,19 +238,17 @@ Twitch has its own encoder instance even when YouTube is enabled.
 
 YouTube defaults to:
 
-- 2560×1440
+- 1920×1080
 - 60 FPS
-- 24000 kbps H.264
-- High Profile, level 5.1
+- 12000 kbps H.264
+- High Profile, level 4.2
 - Two-second keyframe interval
 - AAC stereo, 48 kHz, 160 kbps
 
-The optional **4K / 2160p60 highest-quality** toggle appears on the same row as **Stream to YouTube** and changes only YouTube to:
+The YouTube quality dropdown on the same row as **Stream to YouTube** offers **1080p60** (default), **1440p60 / 2K**, and **2160p60 / 4K**:
 
-- 3840×2160
-- 60 FPS
-- 35000 kbps H.264
-- High Profile, level 5.2
+- 1440p60 / 2K: 2560×1440, 24000 kbps, High Profile level 5.1
+- 2160p60 / 4K: 3840×2160, 35000 kbps, High Profile level 5.2
 
 Twitch remains 1080p60 at 6000 kbps regardless of the YouTube selection.
 
@@ -274,8 +272,9 @@ Windows desktop + desktop audio + microphone
 Configured media targets, including each 160 kbps AAC track but excluding small protocol overhead:
 
 - Twitch only: 6.16 Mbps
+- YouTube 1080p60 only: 12.16 Mbps
+- Twitch + YouTube 1080p60: 18.32 Mbps
 - YouTube 1440p60 only: 24.16 Mbps
-- Twitch + YouTube 1440p60: 30.32 Mbps
 - Twitch + YouTube 4K60: 41.32 Mbps
 
 The video sent to both services is already H.264-compressed. Desktop PCM is raw only inside the local WASAPI-to-FFmpeg bridge and is converted to 160 kbps AAC before upload. A Windows or FFmpeg metric near hundreds of Mbps therefore describes an internal capture/processing path or a different counter, not the configured Twitch network output.
@@ -326,7 +325,7 @@ Version 0.3.0 continues using settings schema 3. Existing destination, key, qual
 - The obsolete pre-0.2 desktop-audio selection is cleared and must be selected once from the new playback-endpoint dropdown
 - Common source becomes 1080p60
 - Twitch becomes 1080p60
-- YouTube becomes 1440p60 by default
+- YouTube becomes 1080p60 by default
 - A previously selected 4K mode remains YouTube 4K60
 
 Changes save automatically after a short pause, immediately before streaming, and when the program closes. The file contains stream keys in plain text. Keep it private and do not commit or share it.
