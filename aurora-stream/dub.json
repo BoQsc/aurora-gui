@@ -37,9 +37,6 @@
       "versions": [
         "BundledFfmpeg"
       ],
-      "sourceFiles-windows": [
-        "embedded/aurora-stream.rsrc.obj"
-      ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
       ],
