@@ -217,7 +217,16 @@ final class StreamRoot : VBox
         };
 
         const youtubeHasSavedKey = saved.youtubeKey.strip().length > 0;
-        auto youtubeDestinationRow = settingsContent.add(new HBox(6));
+        // Keep the selector row at its natural content width and center it so
+        // the quality/bitrate dropdowns do not stretch across the whole panel
+        // (their oversized minimum widths also forced the settings column wider
+        // than its 540 px target).
+        auto youtubeRowWrap = settingsContent.add(new HBox(0));
+        youtubeRowWrap.layoutHints().preferredHeight = 34;
+        youtubeRowWrap.layoutHints().minHeight = 34;
+        youtubeRowWrap.add(new Spacer(1.0));
+        auto youtubeDestinationRow = youtubeRowWrap.add(new HBox(6));
+        youtubeDestinationRow.layoutHints().preferredWidth = 512;
         youtubeDestinationRow.layoutHints().preferredHeight = 34;
         _youtubeEnabled = youtubeDestinationRow.add(new CheckBox("Stream to YouTube",
             saved.youtubeEnabled && youtubeHasSavedKey));
@@ -228,7 +237,6 @@ final class StreamRoot : VBox
         };
         _youtubeQuality = youtubeDestinationRow.add(new SourceQualityDropdown(
             saved.youtubeQuality));
-        _youtubeQuality.layoutHints().flex = 1.0;
         _youtubeQuality.onChanged = delegate(BroadcastQuality quality) {
             updateQualitySummary();
             markSettingsDirty();
@@ -239,6 +247,7 @@ final class StreamRoot : VBox
             updateQualitySummary();
             markSettingsDirty();
         };
+        youtubeRowWrap.add(new Spacer(1.0));
         _youtubeProfile = settingsContent.add(new Label(
             "Default: 1920×1080 • 60 FPS • 12000 kbps • independent H.264 encoder"));
         _youtubeProfile.setScale(1);

@@ -56,7 +56,7 @@ final class BitrateDropdown : Button
     {
         setText(caption(_selectedKbps) ~ "  ▼");
         layoutHints().minWidth = 110;
-        layoutHints().preferredWidth = 150;
+        layoutHints().preferredWidth = 120;
     }
 
     private ContextMenuItem item(int kbps)

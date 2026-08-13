@@ -68,8 +68,8 @@ final class SourceQualityDropdown : Button
     private void updateCaption()
     {
         setText(caption(_selectedQuality) ~ "  ▼");
-        layoutHints().minWidth = 280;
-        layoutHints().preferredWidth = 500;
+        layoutHints().minWidth = 200;
+        layoutHints().preferredWidth = 210;
     }
 
     private ContextMenuItem qualityItem(BroadcastQuality quality)
