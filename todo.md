@@ -1,5 +1,21 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Cut: timeline rows appear over the ruler while scrolling
+- [x] User: after the scrollbar became draggable, timeline rows appear above
+      other UI when scrolling up/down the timeline with the scrollbar.
+- [x] Diagnosed with a headless pixel probe (render → `savePpm` → scan rows):
+      the change on scroll was confined to the timeline region (rows are clipped
+      to the widget bounds), but a partially scrolled top row painted over the
+      ruler band because `onPaint` draws the ruler before the tracks and only
+      skips rows that are fully above the ruler.
+- [x] Fixed in `source/auroracut/timeline.d`: track painting now uses a canvas
+      clipped to the region below the ruler, so a partially scrolled row is cut
+      off at the ruler's bottom edge instead of covering it.
+- [x] Covered by `tests/editor_smoke.d`: a 6-track fixture is scrolled to the
+      bottom via the vertical scrollbar, rendered standalone, and asserted to
+      keep the ruler band free of any track-row color. The new assertion fails
+      on the pre-fix code (verified) and passes with the fix.
+
 ## 2026-08-13 — Aurora Cut: timeline vertical scrollbar is too thin and not draggable
 - [x] User: the timeline's vertical scrollbar is basically unusable — too thin
       and there is no way to grab it, so moving up/down the timeline only works

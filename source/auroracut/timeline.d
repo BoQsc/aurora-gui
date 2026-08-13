@@ -1373,12 +1373,17 @@ final class TimelineWidget : Widget
             palette.border);
 
         drawRuler(canvas);
+        // Clip rows to the track viewport below the ruler. Without the clip a
+        // partially scrolled top row painted over the ruler's lower half, so
+        // timeline content appeared on top of the ruler while scrolling.
+        auto trackViewport = canvas.clipped(Rect(0, rulerHeight(),
+            bounds().width, maxInt(0, bounds().height - rulerHeight())));
         foreach (row; 0 .. totalRows())
         {
             const address = addressForRow(row);
             const rect = trackRect(address);
             if (rect.bottom() <= rulerHeight() || rect.y >= bounds().height) continue;
-            drawTrack(canvas, address);
+            drawTrack(trackViewport, address);
         }
         drawWorkArea(canvas);
         drawTimelineGuides(canvas);

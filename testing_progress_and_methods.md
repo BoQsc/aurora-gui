@@ -1,5 +1,34 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline rows painted over the ruler while scrolling (2026-08-13)
+
+Follow-up to the draggable scrollbar: after making the scrollbar interactive, a
+top row scrolled into view painted over the ruler's lower half, so timeline
+content appeared on top of the ruler (its time labels/tick marks) while
+scrolling up/down.
+
+Root cause in `source/auroracut/timeline.d`: `onPaint` drew the ruler first,
+then each track. A row whose top scrolled above `rulerHeight()` but whose
+bottom was still below it was not skipped (`rect.bottom() <= rulerHeight()` is
+false), so it drew from its unscrolled Y and covered the ruler band.
+
+Fix (a clip, effectively a layer boundary): the track loop now draws into
+`canvas.clipped(Rect(0, rulerHeight(), width, height - rulerHeight()))`, so a
+partially scrolled row is clipped at the ruler's bottom edge instead of
+painting over the ruler.
+
+How to verify (headless):
+1. `tests/editor_smoke.d` now renders a 6-track overflow fixture after dragging
+   the vertical scrollbar to the bottom and asserts that no track-row color
+   (`#1c2027` / `#1a2020` / label `#242930` / selected `#303844`) appears in
+   the ruler band (y 0..22 at x=700). It fails on the pre-fix paint order and
+   passes with the clip.
+2. Pixel probe used during diagnosis: render the editor headlessly
+   (`AuroraHeadless`, software renderer), scroll to max, save
+   `window.surface().savePpm(...)`, and scan the rows below the timeline for
+   row colors. Rows are clipped to the timeline bounds, so the only leak was
+   the ruler band.
+
 ## Timeline vertical scrollbar: draggable, wider track (2026-08-13)
 
 User complaint: the timeline's vertical scrollbar was a 4px painted thumb only —

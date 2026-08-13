@@ -660,6 +660,60 @@ int main(string[] arguments)
             "Timeline vertical scrollbar thumb did not reach the bottom");
     }
 
+    // Scrolled rows must be clipped below the ruler. Before the clip a
+    // partially scrolled top row painted over the ruler's lower half, so
+    // timeline content appeared on top of the ruler while scrolling.
+    {
+        auto rulerModel = new EditorModel();
+        foreach (lane; 0 .. 6)
+        {
+            assert(rulerModel.addTrack(
+                lane % 2 == 0 ? TrackKind.video : TrackKind.audio) >= 0,
+                "Ruler-clip fixture track creation failed");
+        }
+        auto rulerTimeline = new TimelineWidget(rulerModel);
+        rulerTimeline.setBounds(Rect(0, 0, 800, 120));
+        assert(rulerTimeline.maxVerticalScrollForTesting() > 0,
+            "Ruler-clip fixture did not overflow the viewport");
+        const rulerTrack = rulerTimeline.verticalScrollbarTrackForTesting();
+        const rulerThumb = rulerTimeline.verticalScrollbarThumbForTesting();
+        Event down;
+        down.button = MouseButton.left;
+        down.position = Point(rulerTrack.x + rulerTrack.width / 2,
+            rulerThumb.y + 2);
+        assert(rulerTimeline.onMouseDown(down));
+        Event move;
+        move.position = Point(rulerTrack.x + rulerTrack.width / 2,
+            rulerTrack.bottom() - 2);
+        assert(rulerTimeline.onMouseMove(move));
+        Event up;
+        up.button = MouseButton.left;
+        up.position = move.position;
+        assert(rulerTimeline.onMouseUp(up));
+        assert(rulerTimeline.verticalScroll() ==
+            rulerTimeline.maxVerticalScrollForTesting(),
+            "Ruler-clip fixture did not scroll to the bottom");
+
+        auto rulerSurface = new Surface(800, 120);
+        auto rulerCanvas = Canvas(rulerSurface);
+        rulerTimeline.paintTree(rulerCanvas);
+        bool rulerLeaked;
+        foreach (y; 0 .. 23)
+        {
+            const argb = rulerSurface.pixel(700, y);
+            if (argb == Color.fromHex(0x1c2027).argb() ||
+                argb == Color.fromHex(0x1a2020).argb() ||
+                argb == Color.fromHex(0x242930).argb() ||
+                argb == Color.fromHex(0x303844).argb())
+            {
+                rulerLeaked = true;
+                break;
+            }
+        }
+        assert(!rulerLeaked,
+            "Scrolled timeline row painted over the ruler band");
+    }
+
     // Out-first export marking must create a complete visible zone rather than
     // leaving a lone Out marker and relying on export-time fallback behavior.
     editor.setWorkOutForTesting(4.25);
