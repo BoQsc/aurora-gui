@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The **LIVE SOURCE CANVAS** live preview now captures at the preview panel's
+  own resolution (tracked on resize, 16:9, capped at 1280×720) instead of a
+  fixed 480×270 buffer, so the desktop is shown sharp at ~1:1 rather than
+  upscaled and blurry. CPU stays low: ~11% of one core (~3% of all cores) at
+  30 FPS with the panel-sized capture.
+- Made the **LIVE SOURCE CANVAS** live preview cheap to run. The capture
+  thread now reuses one persistent GDI memory DC + DIB section and the same
+  `RgbaImage` (so the GPU texture is never recreated and the texture cache
+  stops growing), switches `StretchBlt` from HALFTONE to COLORONCOLOR (no
+  software dithering on every downscale), and the preview widget is a retained
+  compositor layer so updating it repaints only the preview area instead of the
+  whole window. Measured CPU dropped from saturating the machine to ~8% of one
+  core (~2% of all cores) at 30 FPS.
 - The **LIVE SOURCE CANVAS** panel is now a real live recording preview: in
   desktop-capture mode a background thread grabs the primary monitor at ~30 FPS
   through an in-app GDI capture (`desktoppreview.d`) so the panel shows exactly

@@ -119,6 +119,8 @@ private BroadcastSettings settingsFromJson(string source)
 
     settings.programCanvasEnabled = jsonBool(root, "programCanvasEnabled",
         settings.programCanvasEnabled);
+    settings.liveSourcePreviewEnabled = jsonBool(root,
+        "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
     const canvasSources = "programCanvasSources" in root;
     if (canvasSources !is null && canvasSources.type == JSONType.array)
         settings.programCanvasSources = programSourcesFromJson(*canvasSources);
@@ -198,6 +200,7 @@ private string settingsToJson(BroadcastSettings settings)
     root["programCanvasEnabled"] = settings.programCanvasEnabled;
     root["programCanvasSources"] =
         programSourcesToJson(settings.programCanvasSources);
+    root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
     return root.toPrettyString() ~ "\n";
 }
 

@@ -5,10 +5,10 @@ import aurora.image : RgbaImage;
 version (Windows)
 {
     import core.sys.windows.windows : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, DIB_RGB_COLORS,
-        GetDC, GetSystemMetrics, HALFTONE, HBITMAP, HDC, HGDIOBJ, POINT, ReleaseDC,
-        SelectObject, SetBrushOrgEx, SetStretchBltMode, SM_CXSCREEN, SM_CYSCREEN,
-        SRCCOPY, StretchBlt;
+        COLORONCOLOR, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
+        DIB_RGB_COLORS, GetDC, GetSystemMetrics, HBITMAP, HDC, HGDIOBJ, ReleaseDC,
+        SelectObject, SetStretchBltMode, SM_CXSCREEN, SM_CYSCREEN, SRCCOPY,
+        StretchBlt;
 }
 
 /// Maps one 32bpp DIB pixel word (memory bytes B,G,R,undefined alpha on
@@ -21,67 +21,136 @@ private uint dibPixelToRgbaWord(uint value) @safe pure nothrow @nogc
     return 0xff000000 | (blue << 16) | (green << 8) | red;
 }
 
-/// Captures the primary monitor scaled into a small RGBA8 preview image, or
-/// null when the screen cannot be captured (locked session, no desktop, ...).
-/// This is the live "what we are recording" source preview shown beside the
-/// broadcaster controls; it mirrors the ddagrab output_idx=0 primary-monitor
-/// capture used by the live stream.
+/// Reusable GDI screen-capture state for the live source preview. The memory
+/// DC, DIB section, and stretch mode are created once and reused across frames
+/// so a 30 FPS preview never pays per-frame GDI object churn, and COLORONCOLOR
+/// avoids the expensive software dithering that HALFTONE performs on every
+/// downscale.
+version (Windows)
+final class DesktopPreviewCapturer
+{
+    private int _width;
+    private int _height;
+    private HDC _memoryDC;
+    private HBITMAP _bitmap;
+    private HGDIOBJ _previous;
+    private void* _bits;
+    private int _screenWidth;
+    private int _screenHeight;
+
+    this(int width, int height)
+    {
+        _width = width;
+        _height = height;
+    }
+
+    ~this()
+    {
+        releaseDeviceObjects();
+    }
+
+    /// Changes the captured output size. The DIB is recreated on the next
+    /// capture so the preview can track its panel size for a sharp 1:1 view.
+    void setTargetSize(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return;
+        if (width == _width && height == _height) return;
+        _width = width;
+        _height = height;
+        releaseDeviceObjects();
+    }
+
+    private void releaseDeviceObjects()
+    {
+        if (_memoryDC !is null && _previous !is null)
+            SelectObject(_memoryDC, _previous);
+        _previous = null;
+        if (_bitmap !is null)
+            DeleteObject(_bitmap);
+        _bitmap = null;
+        _bits = null;
+        if (_memoryDC !is null)
+            DeleteDC(_memoryDC);
+        _memoryDC = null;
+    }
+
+    private void ensureScreen()
+    {
+        const screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        const screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        if (_bitmap !is null && screenWidth == _screenWidth &&
+            screenHeight == _screenHeight)
+            return;
+        _screenWidth = screenWidth;
+        _screenHeight = screenHeight;
+        releaseDeviceObjects();
+        if (screenWidth <= 0 || screenHeight <= 0) return;
+
+        HDC screenDC = GetDC(null);
+        if (screenDC is null) return;
+        scope (exit) ReleaseDC(null, screenDC);
+
+        _memoryDC = CreateCompatibleDC(screenDC);
+        if (_memoryDC is null) return;
+
+        BITMAPINFOHEADER header;
+        header.biSize = BITMAPINFOHEADER.sizeof;
+        header.biWidth = _width;
+        header.biHeight = -_height; // Top-down rows for a natural y order.
+        header.biPlanes = 1;
+        header.biBitCount = 32;
+        header.biCompression = BI_RGB;
+        BITMAPINFO info;
+        info.bmiHeader = header;
+
+        _bitmap = CreateDIBSection(_memoryDC, &info, DIB_RGB_COLORS, &_bits,
+            null, 0);
+        if (_bitmap is null) return;
+        _previous = SelectObject(_memoryDC, cast(HGDIOBJ) _bitmap);
+        SetStretchBltMode(_memoryDC, COLORONCOLOR);
+    }
+
+    /// Copies the current primary-monitor frame (scaled to the configured
+    /// preview size) into `rgba` as RGBA8 bytes. Returns false when the screen
+    /// cannot be captured or the buffer is too small.
+    bool capture(ubyte[] rgba)
+    {
+        if (rgba.length < cast(size_t) _width * _height * 4) return false;
+        ensureScreen();
+        if (_bitmap is null || _memoryDC is null || _bits is null) return false;
+
+        HDC screenDC = GetDC(null);
+        if (screenDC is null) return false;
+        scope (exit) ReleaseDC(null, screenDC);
+
+        if (StretchBlt(_memoryDC, 0, 0, _width, _height,
+            screenDC, 0, 0, _screenWidth, _screenHeight, SRCCOPY) == 0)
+            return false;
+
+        const pixelCount = _width * _height;
+        auto source = cast(uint*) _bits;
+        auto target = cast(uint*) rgba.ptr;
+        foreach (index; 0 .. pixelCount)
+        {
+            // 32bpp DIB rows are BGRA bytes on little-endian; the canvas
+            // consumes RGBA bytes, so rebuild each word and force an opaque
+            // alpha (GDI leaves the DIB alpha byte undefined).
+            target[index] = dibPixelToRgbaWord(source[index]);
+        }
+        return true;
+    }
+}
+
+/// One-shot capture convenience used by tests; the live preview keeps a
+/// persistent `DesktopPreviewCapturer` instead so no GDI objects are recreated
+/// per frame.
 version (Windows)
 RgbaImage captureDesktopPreview(int targetWidth = 480, int targetHeight = 270)
 {
-    const screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    const screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    if (screenWidth <= 0 || screenHeight <= 0 ||
-        targetWidth <= 0 || targetHeight <= 0)
-        return null;
-
-    HDC screenDC = GetDC(null);
-    if (screenDC is null) return null;
-    scope (exit) ReleaseDC(null, screenDC);
-
-    HDC memoryDC = CreateCompatibleDC(screenDC);
-    if (memoryDC is null) return null;
-    scope (exit) DeleteDC(memoryDC);
-
-    BITMAPINFOHEADER header;
-    header.biSize = BITMAPINFOHEADER.sizeof;
-    header.biWidth = targetWidth;
-    header.biHeight = -targetHeight; // Top-down rows for a natural y order.
-    header.biPlanes = 1;
-    header.biBitCount = 32;
-    header.biCompression = BI_RGB;
-    BITMAPINFO info;
-    info.bmiHeader = header;
-
-    void* bits;
-    HBITMAP bitmap = CreateDIBSection(memoryDC, &info, DIB_RGB_COLORS, &bits,
-        null, 0);
-    if (bitmap is null || bits is null) return null;
-    scope (exit) DeleteObject(bitmap);
-
-    HGDIOBJ previous = SelectObject(memoryDC, cast(HGDIOBJ) bitmap);
-    scope (exit) SelectObject(memoryDC, previous);
-
-    // HALFTONE smooths the downscale instead of nearest-neighbor. MSDN
-    // requires a SetBrushOrgEx call after selecting HALFTONE mode.
-    SetStretchBltMode(memoryDC, HALFTONE);
-    POINT brushOrigin;
-    SetBrushOrgEx(memoryDC, 0, 0, &brushOrigin);
-    if (StretchBlt(memoryDC, 0, 0, targetWidth, targetHeight,
-        screenDC, 0, 0, screenWidth, screenHeight, SRCCOPY) == 0)
-        return null;
-
-    const pixelCount = targetWidth * targetHeight;
-    auto rgba = new ubyte[cast(size_t) pixelCount * 4];
-    auto source = cast(uint*) bits;
-    auto target = cast(uint*) rgba.ptr;
-    foreach (index; 0 .. pixelCount)
-    {
-        // 32bpp DIB rows are BGRA bytes on little-endian; the canvas consumes
-        // RGBA bytes, so rebuild each word and force an opaque alpha (GDI
-        // leaves the DIB alpha byte undefined).
-        target[index] = dibPixelToRgbaWord(source[index]);
-    }
+    if (targetWidth <= 0 || targetHeight <= 0) return null;
+    auto capturer = new DesktopPreviewCapturer(targetWidth, targetHeight);
+    auto rgba = new ubyte[cast(size_t) targetWidth * targetHeight * 4];
+    if (!capturer.capture(rgba)) return null;
     return new RgbaImage(targetWidth, targetHeight, rgba);
 }
 
@@ -91,19 +160,11 @@ unittest
     // A DIB stores byte0=blue, byte1=green, byte2=red; the canvas needs
     // byte0=red, byte1=green, byte2=blue. RGBA words below are shown as
     // little-endian 32-bit values (byte0 is the low byte, byte3 the alpha).
-    // Pure red DIB (0x00FF0000) must become 0xFF0000FF (R=0xFF,A=0xFF),
-    // pure green (0x0000FF00) becomes 0xFF00FF00, and pure blue (0x000000FF)
-    // becomes 0xFFFF0000 (B=0xFF in byte2).
-    assert(dibPixelToRgbaWord(0x00ff0000) == 0xff0000ff);
-    assert(dibPixelToRgbaWord(0x0000ff00) == 0xff00ff00);
-    assert(dibPixelToRgbaWord(0x000000ff) == 0xffff0000);
-    // A neutral gray must stay neutral (no channel swap visible).
-    assert(dibPixelToRgbaWord(0x00505050) == 0xff505050);
-}
+    assert(dibPixelToRgbaWord(0x00ff0000) == 0xff0000ff); // DIB red -> RGBA red
+    assert(dibPixelToRgbaWord(0x0000ff00) == 0xff00ff00); // DIB green -> RGBA green
+    assert(dibPixelToRgbaWord(0x000000ff) == 0xffff0000); // DIB blue -> RGBA blue
+    assert(dibPixelToRgbaWord(0x00505050) == 0xff505050); // gray stays gray
 
-version (Windows)
-unittest
-{
     // On an interactive desktop session a real capture must return the
     // requested 16:9 image; headless/service sessions may fail and return null.
     auto frame = captureDesktopPreview(480, 270);

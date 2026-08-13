@@ -99,6 +99,11 @@ struct BroadcastSettings
     // capture while keeping the independent Twitch/YouTube output profiles.
     bool programCanvasEnabled;
     ProgramSource[] programCanvasSources;
+
+    // UI preference: show the live source-canvas preview (background desktop
+    // grab) so the broadcaster doubles as a monitor. Toggled off to save
+    // CPU/energy; it never changes what is streamed.
+    bool liveSourcePreviewEnabled = true;
 }
 
 struct BroadcastSnapshot

@@ -1,5 +1,46 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: live preview looks blurred
+- [x] User: "looks blured, was it expected?" Yes — the preview captured at a
+      fixed 480×270 (a quarter of the screen) and then upscaled it to fill the
+      panel, so it was inherently soft.
+- [x] The capture now tracks the preview panel size: `updateLiveSourcePreview`
+      computes a 16:9 target from `_canvasPreview.bounds()` (clamped to
+      320×180 … 1280×720) under the mutex, the capture thread passes it to
+      `DesktopPreviewCapturer.setTargetSize` (DIB recreated only on size
+      change) and resizes the reusable buffer/RgbaImage, so the frame is drawn
+      near 1:1 and sharp.
+- [x] Measured: ~10.9% of one core (~2.7% of all cores) at 30 FPS with the
+      panel-sized capture; app builds, launches, closes cleanly.
+- [x] `dub test` 39 modules pass; application + titlebar configs build.
+
+## 2026-08-13 — Aurora Stream: live preview saturates the CPU
+- [x] User: "the preview takes all of cpu right now horrible performance, no
+      idea why it's so expensive for no reason".
+- [x] Root causes found in the renderer + capture paths:
+  - The capture thread created a NEW `RgbaImage` (new id) every frame, so the
+    renderer's texture cache grew unboundedly and a fresh GPU texture was
+    created/destroyed at 30 FPS (`ensureImageTexture` keys on `image.id()`).
+  - `StretchBlt` ran in `HALFTONE` mode, which performs expensive software
+    dithering on every downscale.
+  - The preview widget was a plain widget, so each live frame set `_baseDirty`
+    and the software renderer redrew the ENTIRE 1280×780 UI at 30 FPS.
+  - Per-frame GDI object churn (CreateCompatibleDC/CreateDIBSection/Delete…).
+- [x] Fixes:
+  - `desktoppreview.d` rewritten around a persistent `DesktopPreviewCapturer`
+    that creates the memory DC + DIB once (recreated only on screen-size
+    change) and uses `COLORONCOLOR` (no dithering); `captureDesktopPreview`
+    remains as a one-shot test convenience.
+  - `root.d` capture thread reuses ONE `RgbaImage` via `reset()` (same id →
+    same GPU texture, just a re-upload) and one reusable pixel buffer; new
+    frames are detected by `revision()` instead of identity.
+  - `_canvasPreview.setComposited(true)` + `setCompositedOpaque(true)` make the
+    preview a retained layer, so live updates repaint only the preview area.
+- [x] Measured: with the fix the app uses ~8.3% of one core (~2.1% of all
+      cores) at 30 FPS vs saturating before. `dub test` 39 modules pass;
+      application + titlebar configs build; app launches, preview runs, and
+      graceful `CloseMainWindow()` exits cleanly.
+
 ## 2026-08-13 — True single portable exe (ffmpeg embedded) for aurora-cut + aurora-stream
 - [x] Minimal ffmpeg build (covers both apps) is green: run #15 of the
       `minimal-ffmpeg.yml` workflow; artifact `ffmpeg-minimal-win64` ~10MB

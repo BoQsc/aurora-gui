@@ -10,7 +10,7 @@ import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     defaultAudioBitrateKbps, qualityHeight, qualityShortLabel, qualityWidth,
     twitchVideoBitrateKbps, youtubeVideoBitrateKbps;
 import aurorastream.clipboardfield : ClipboardTextField;
-import aurorastream.desktoppreview : captureDesktopPreview;
+import aurorastream.desktoppreview : DesktopPreviewCapturer;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
 import aurorastream.programcanvas : ProgramCanvasEditor, ProgramCanvasPreview,
     ProgramSource;
@@ -41,6 +41,7 @@ final class StreamRoot : VBox
     private Button _settingsMenu;
     private bool _streamingServersVisible;
     private bool _programCanvasVisible;
+    private bool _liveSourcePreviewEnabled;
     private ScrollView _settingsScroll;
     private VBox _twitchServerGroup;
     private VBox _programCanvasGroup;
@@ -48,10 +49,17 @@ final class StreamRoot : VBox
     private VBox _statusPanel;
     private Thread _previewCaptureThread;
     private Mutex _previewCaptureMutex;
+    private DesktopPreviewCapturer _previewCapturer;
+    private RgbaImage _previewCaptureImage;
+    private ubyte[] _previewCaptureBuffer;
     private RgbaImage _previewCaptureFrame;
-    private RgbaImage _previewCaptureLastShown;
+    private ulong _previewCaptureLastShownRevision;
+    private int _previewCaptureTargetWidth = previewCaptureWidth;
+    private int _previewCaptureTargetHeight = previewCaptureHeight;
     private bool _previewCaptureRunning;
     private bool _previewCaptureDesired;
+    private enum int previewCaptureWidth = 480;
+    private enum int previewCaptureHeight = 270;
     private enum int previewCaptureFps = 30;
     private enum double previewCaptureIdleIntervalSeconds = 0.25;
     private CheckBox _twitchEnabled;
@@ -107,6 +115,7 @@ final class StreamRoot : VBox
         // actually configured to use it, so an empty canvas never hides the
         // live desktop capture by surprise.
         _programCanvasVisible = saved.programCanvasEnabled;
+        _liveSourcePreviewEnabled = saved.liveSourcePreviewEnabled;
         _settingsMessage = settingsLoadMessage;
         _settingsLoadFailed = !settingsLoaded &&
             settingsLoadMessage.startsWith("Could not load");
@@ -316,6 +325,12 @@ final class StreamRoot : VBox
         _canvasPreviewPanel.layoutHints().minHeight = 300;
         _canvasPreview = _canvasPreviewPanel.add(new ProgramCanvasPreview());
         _canvasPreview.layoutHints().flex = 1.0;
+        // Retain the preview as its own compositor layer so updating the live
+        // frame repaints only the preview area instead of the whole window
+        // (important for the software renderer, where full-scene redraws are
+        // the dominant CPU cost).
+        _canvasPreview.setComposited(true);
+        _canvasPreview.setCompositedOpaque(true);
         auto previewCaption = _canvasPreviewPanel.add(new Label(
             "LIVE SOURCE CANVAS"));
         previewCaption.setAlignment(HorizontalAlign.center);
@@ -365,13 +380,17 @@ final class StreamRoot : VBox
 
         setStreamingServersVisible(false);
         setProgramCanvasVisible(_programCanvasVisible);
+        setLiveSourcePreviewVisible(_liveSourcePreviewEnabled);
         updateQualitySummary();
         updateCanvasPreview();
         refreshAudioDevices(false);
 
         _previewCaptureMutex = new Mutex();
+        _previewCapturer = new DesktopPreviewCapturer(previewCaptureWidth,
+            previewCaptureHeight);
         _previewCaptureRunning = true;
-        _previewCaptureDesired = !_programCanvasEnabled.checked();
+        _previewCaptureDesired = _liveSourcePreviewEnabled &&
+            !_programCanvasEnabled.checked();
         _previewCaptureThread = new Thread({ previewCaptureLoop(); });
         _previewCaptureThread.isDaemon = true;
         _previewCaptureThread.start();
@@ -419,6 +438,10 @@ final class StreamRoot : VBox
     private void openSettingsMenu()
     {
         ContextMenuItem[] items = [
+            ContextMenuItem.check("Live source preview",
+                _liveSourcePreviewEnabled, delegate() {
+                    setLiveSourcePreviewVisible(!_liveSourcePreviewEnabled);
+                }),
             ContextMenuItem.check("Program canvas",
                 _programCanvasVisible, delegate() {
                     setProgramCanvasVisible(!_programCanvasVisible);
@@ -497,6 +520,31 @@ final class StreamRoot : VBox
 
         if (visible && _settingsScroll !is null && _programCanvasGroup !is null)
             _settingsScroll.ensureVisible(_programCanvasGroup.bounds());
+    }
+
+    /// Turns the live recording preview on/off. Disabling hides the panel,
+    /// lets the status panel fill the monitor column, and idles the capture
+    /// thread so the app stops grabbing the desktop and repainting the preview
+    /// (saves CPU/energy). Persisted in the settings file.
+    private void setLiveSourcePreviewVisible(bool visible)
+    {
+        _liveSourcePreviewEnabled = visible;
+        if (_canvasPreviewPanel !is null)
+        {
+            _canvasPreviewPanel.layoutHints().excludeFromLayout = !visible;
+            _canvasPreviewPanel.setVisible(visible);
+            if (_statusPanel !is null)
+                _statusPanel.layoutHints().flex = visible ? 0.0 : 1.0;
+        }
+        if (_previewCaptureMutex !is null)
+        {
+            _previewCaptureMutex.lock();
+            if (!visible) _previewCaptureDesired = false;
+            _previewCaptureMutex.unlock();
+        }
+        markSettingsDirty();
+        layoutTree();
+        invalidate();
     }
 
 
@@ -709,6 +757,7 @@ final class StreamRoot : VBox
         settings.microphoneDevice = _microphone.selectedDevice().strip();
         settings.programCanvasEnabled = _programCanvasEnabled.checked();
         settings.programCanvasSources = _programSources.dup;
+        settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
         return settings;
     }
 
@@ -764,6 +813,13 @@ final class StreamRoot : VBox
     private void updateLiveSourcePreview(double deltaSeconds)
     {
         if (_canvasPreview is null) return;
+        if (!_liveSourcePreviewEnabled)
+        {
+            _previewCaptureMutex.lock();
+            _previewCaptureDesired = false;
+            _previewCaptureMutex.unlock();
+            return;
+        }
         const canvasMode = _programCanvasEnabled !is null &&
             _programCanvasEnabled.checked();
         _previewCaptureMutex.lock();
@@ -775,9 +831,31 @@ final class StreamRoot : VBox
             _canvasPreview.clearLiveFrame();
             return;
         }
-        if (latest !is null && latest !is _previewCaptureLastShown)
+        // Size the capture to the preview panel so the live frame is shown at
+        // (near) native resolution instead of upscaled from a small buffer.
+        const previewBounds = _canvasPreview.bounds();
+        if (previewBounds.width > 0 && previewBounds.height > 0)
         {
-            _previewCaptureLastShown = latest;
+            int targetWidth = previewBounds.width;
+            int targetHeight = previewBounds.width * 9 / 16;
+            if (targetHeight > previewBounds.height)
+            {
+                targetHeight = previewBounds.height;
+                targetWidth = previewBounds.height * 16 / 9;
+            }
+            targetWidth = clampInt(targetWidth, 320, 1280);
+            targetHeight = clampInt(targetHeight, 180, 720);
+            _previewCaptureMutex.lock();
+            _previewCaptureTargetWidth = targetWidth;
+            _previewCaptureTargetHeight = targetHeight;
+            _previewCaptureMutex.unlock();
+        }
+        // The capture thread reuses a single RgbaImage (same texture on the
+        // GPU), so a new frame is detected by its revision, not identity.
+        if (latest !is null &&
+            latest.revision() != _previewCaptureLastShownRevision)
+        {
+            _previewCaptureLastShownRevision = latest.revision();
             _canvasPreview.setLiveFrame(latest);
         }
     }
@@ -801,11 +879,35 @@ final class StreamRoot : VBox
                 catch (Exception) {}
                 continue;
             }
-            auto frame = captureDesktopPreview();
-            if (frame !is null)
+            // Reuse the persistent GDI capture state and the same RgbaImage so
+            // per-frame work is just one COLORONCOLOR StretchBlt plus a small
+            // pixel shuffle; the GPU texture is never recreated. The target
+            // size tracks the preview panel so the frame stays sharp.
+            _previewCaptureMutex.lock();
+            const targetWidth = _previewCaptureTargetWidth;
+            const targetHeight = _previewCaptureTargetHeight;
+            _previewCaptureMutex.unlock();
+            _previewCapturer.setTargetSize(targetWidth, targetHeight);
+            const byteCount = cast(size_t) targetWidth * targetHeight * 4;
+            if (_previewCaptureBuffer is null ||
+                _previewCaptureBuffer.length < byteCount)
+                _previewCaptureBuffer.length = byteCount;
+            auto bytes = _previewCaptureBuffer[0 .. byteCount];
+            if (_previewCapturer.capture(bytes))
             {
+                if (_previewCaptureImage is null ||
+                    _previewCaptureImage.width() != targetWidth ||
+                    _previewCaptureImage.height() != targetHeight)
+                {
+                    _previewCaptureImage = new RgbaImage(targetWidth,
+                        targetHeight, bytes);
+                }
+                else
+                {
+                    _previewCaptureImage.reset(targetWidth, targetHeight, bytes);
+                }
                 _previewCaptureMutex.lock();
-                _previewCaptureFrame = frame;
+                _previewCaptureFrame = _previewCaptureImage;
                 _previewCaptureMutex.unlock();
             }
             try Thread.sleep(dur!"msecs"(1000 / previewCaptureFps));
