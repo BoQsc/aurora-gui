@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject **Start streaming** when the Aurora program canvas is enabled but has
+  no visible source, instead of streaming a pure-black canvas with healthy
+  encoder stats. The settings now fail with an explicit message pointing to
+  adding a color/image/text source or disabling the program canvas.
 - Fixed the frame-pump crash on stop (heap corruption `0xc0000409` in
   MSVCR120): the pump wrote through the CRT `_write` on the pipe file
   descriptor, so no phobos `File` object crosses the thread boundary and the

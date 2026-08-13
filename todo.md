@@ -1,5 +1,116 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: YouTube stream shows only a black screen
+- [x] User: "Nothing is being streamed, only black screen" — then "the aurora
+      render canvas is enabled by default for no reason I don't even know why
+      we have it".
+- [x] Verified root cause from `aurora-stream-startup.log` + code: the last
+      live stream ran with the **Aurora program canvas** as the video source
+      (`Video source: Aurora program canvas`, `-f rawvideo -pix_fmt bgra -i
+      pipe:0`) while `programCanvasSources` was empty. `runCanvasPump` clears
+      the surface to black each frame and `paintProgramCanvas` draws nothing,
+      so FFmpeg/NVENC encoded healthy black frames (~59 FPS, speed ~0.99) — no
+      encoder failure, hence no `Live output stalled`, just a black picture.
+- [x] It is NOT on by default: `BroadcastSettings.programCanvasEnabled`
+      defaults to false and the saved settings have it false. It was left
+      checked from an earlier canvas-mode session (2026-08-12 todo entry). The
+      feature exists as the delivered roadmap milestone "Aurora scene
+      compositor": Aurora composites color/image/text sources into the source
+      canvas instead of capturing the desktop, as the first step toward
+      window/game/camera/browser sources.
+- [x] Guard added in `validateBroadcastSettings` (broadcast.d): Start streaming
+      is now rejected when the program canvas is enabled but has no visible
+      (enabled) source, with an explicit message to add a source or disable the
+      program canvas to stream the desktop. New unittest covers baseline, empty
+      canvas, all-disabled sources, and one-enabled-source.
+- [x] Verified: `dub test` 38 modules pass; `dub build` application links.
+
+## 2026-08-13 — Background playback prewarm: playhead changes start loading immediately
+- [x] User: "so i expect that after playhead changes we immediately try to start
+      loading in the background instead of having bad experience on actual
+      playback."
+- [x] Implemented a paused background prewarm in `source/auroracut/editor.d`:
+      while the timeline is paused (`_playbackKind == none` or a paused
+      sequence), after the playhead settles for `playbackPrewarmDelaySeconds`
+      (0.10 s) the editor starts decoding the EXACT stream Play would start at
+      the playhead — direct source decode or the live composition graph — plus
+      a paused PCM audio stream. Frames buffer unseen; the retained static
+      frame stays visible.
+- [x] On Play, `startPlaybackStreams`/`startPlaybackAudio` compare an opaque
+      signature (mode + path + position + decode size + fps + decode options +
+      graph args, which embed the model revision) against the prewarm and ADOPT
+      the running streams instead of spawning new FFmpeg processes. The video
+      first frame and the audio clock are therefore ready immediately.
+  - `PcmAudioPlayer.reanchorClock()` re-anchors the headless fallback clock on
+    adoption so the time spent buffering while paused is not reported as
+    playback position.
+  - `startPlayback` computes `prewarmMatchesPlayback(...)` before its
+    `stopPlayback(false)` teardown and skips the teardown when the prewarm
+    matches, otherwise the teardown would kill the warm streams first.
+- [x] Lifecycle: playhead moves and model edits reset the debounce/cancel the
+      prewarm (`notePlaybackPrewarmDirty` from `playheadChanged`; the onTick
+      revision/position checks catch model edits); pause/seek/stop cancel it;
+      an idle prewarm is released after `playbackPrewarmIdleSeconds` (45 s) so
+      a paused editor does not hold FFmpeg processes forever. A signature match
+      also requires the prewarmed video stream to still be running.
+- [x] Regression test in `tests/editor_smoke.d`: after a playhead change while
+      paused, waits for the prewarm to activate and spawn video+audio FFmpeg,
+      waits for buffered video frames, then presses Play and asserts NO new
+      video or audio process was spawned (adoption) and the transport runs.
+- [x] Verified: `dub test` (33 modules), `tests/editor_smoke.d`,
+      `tests/playback_stress.d`, `tests/playback_seek_resilience_smoke.d`,
+      `tests/static_sequence_playback_smoke.d`, `tests/playback_proxy_smoke.d`,
+      `tests/layout_smoke.d`, `tests/gpu_decode_args_smoke.d`,
+      `tests/model_smoke.d`, `tests/export_smoke.d` all pass; the prewarm
+      smoke block passed on 3 consecutive runs (loaded 4-core host).
+
+## 2026-08-13 — "Video decoder ended before the next frame was ready" must never halt playback
+- [x] User: "First fix the 'video decoder ended before the next frame was
+      ready' this should never happen."
+- [x] Root cause in `source/auroracut/editor.d` onTick: whenever the video
+      stream reported `finished()` while the transport was in the
+      `_playbackVideoWaiting` buffering state, the editor called
+      `haltPlaybackForSync("Video decoder ended before the next frame was
+      ready.")` and stopped playback. Reaching the last frame of the requested
+      range is the normal completion of that range, not a failure, so a clean
+      EOF while buffering (e.g. a slow decoder that caught up right at the end
+      on a loaded machine) was misreported as a broken decoder and aborted the
+      session.
+- [x] Fix:
+  - `playback.d`: added `VideoFrameStream.hasReadyFrames()` so callers can tell
+    "stream finished but tail frames are still queued" from "nothing left to
+    display".
+  - `editor.d` `displayedVideoBehindPlaybackClock()`: returns false once the
+    stream is finished with no ready frames — a finished decoder cannot catch
+    up further, so the transport must not re-enter buffering (this also breaks
+    a potential resume→re-pause loop for a decoder that stopped early).
+  - `editor.d` halt block: clean EOF while waiting now RESUMES
+    (`resumeAfterVideoBuffer()`, or lets the waiting branch keep draining the
+    queued tail) so playback completes at the range end. A genuine FFmpeg
+    error (`error()` non-empty) is surfaced as a status message only, never a
+    halt. The `haltPlaybackForSync` audio-start failure path is unchanged.
+- [x] Regression test in `tests/editor_smoke.d` (deterministic, no decode-speed
+      dependence): start direct playback, wait until the decoder reaches the
+      end of its range normally, force `waitForVideoBuffer()` (the production
+      buffering state), tick, then run to completion. Asserts playback reaches
+      `_playbackEnd` and the status never contains "Video decoder ended before
+      the next frame was ready". Verified: FAILS on the pre-fix code (playback
+      halts early at line 1176), PASSES with the fix.
+- [x] Verified: `dub test` (33 modules) passes; `tests/editor_smoke.d`,
+      `tests/playback_stress.d`, `tests/playback_seek_resilience_smoke.d`,
+      `tests/static_sequence_playback_smoke.d`, `tests/playback_proxy_smoke.d`,
+      `tests/layout_smoke.d`, `tests/gpu_decode_args_smoke.d`,
+      `tests/model_smoke.d`, `tests/export_smoke.d` all pass on Windows.
+- [ ] Note (pre-existing, NOT caused by this fix): `tests/synced_playback_preroll_smoke.d`
+      fails at line 112 ("Frame-step playhead movement did not request preview
+      immediately") identically on the base commit before any of these changes.
+      The test asserts `setPlayhead(...)` synchronously increments the preview
+      request counter, but the editor dispatches previews through the 0.06 s
+      debounce in `scheduleTimelineFrame`/`dispatchPendingPreview`, so the
+      assertion cannot hold. It is not part of any verification script. Either
+      repair it (assert after a tick, or wire frame-step to
+      `dispatchPendingPreviewNow`) or remove it.
+
 ## 2026-08-13 — Aurora Cut: consolidate "Move to V*" context menu into one "Move to track…" dialog
 - [x] User: "replace multiple lots of context menu 'Move to V*' with a single
       context menu item 'Move to track' that opens dialog."

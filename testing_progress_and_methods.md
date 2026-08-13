@@ -1,5 +1,101 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Background playback prewarm on playhead changes (2026-08-13)
+
+User: "after playhead changes we immediately try to start loading in the
+background instead of having bad experience on actual playback." Goal: pressing
+Play feels immediate because the exact stream was already decoded in the
+background while paused.
+
+How it works in `source/auroracut/editor.d`:
+- `updatePlaybackPrewarm` (called each onTick): when paused (`_playbackKind ==
+  none`, or a paused sequence session) and no busy background job, after the
+  playhead settles for `playbackPrewarmDelaySeconds` (0.10 s) it calls
+  `startPlaybackPrewarm`.
+- `startPlaybackPrewarm` resolves the same context Play would choose
+  (direct sequence -> static visual -> live composition, mirroring
+  `previewTimeline`), starts `_videoStream` + a PAUSED `_audioPlayer`, and
+  stores opaque signatures:
+  - `directVideoSignature(path, mediaPosition, duration, w, h, fps, opts,
+    mediaOffset)` for direct source playback.
+  - `"live\x1f" ~ join(compositeStreamArguments(...), "\x1f")` for the live
+    compositor (the args embed position/model/decode/fps).
+  - `"static"` for still-image visuals.
+- On Play: `startPlayback` first evaluates `prewarmMatchesPlayback(...)` from
+  the incoming arguments and skips its `stopPlayback(false)` teardown when the
+  prewarm matches (otherwise the teardown kills the warm streams). Then
+  `startPlaybackStreams` calls `adoptPlaybackVideoPrewarm()` (signature vs
+  `buildCurrentVideoSignature()`, plus the stream must still be running) and,
+  in the first-frame handler, `startPlaybackAudio` adopts the matching paused
+  audio (calling `PcmAudioPlayer.reanchorClock()` first so the headless
+  fallback clock ignores buffering time). No FFmpeg process is spawned on Play.
+- Lifecycle: `notePlaybackPrewarmDirty` (from `playheadChanged`) and the
+  onTick revision/position checks cancel/restart on any edit or playhead move;
+  `cancelPlaybackPrewarm` is called from pause/seek/stop; an idle prewarm is
+  released after `playbackPrewarmIdleSeconds` (45 s).
+
+How to verify (headless, deterministic):
+- `tests/editor_smoke.d` prewarm block: set the playhead while paused, wait for
+  `playbackPrewarmActiveForTesting()` and for the video+audio process counters
+  to increase and video frames to buffer, then press Play and assert
+  `videoStatsForTesting().processesStarted` and
+  `audioStatsForTesting().processesStarted` are UNCHANGED (adoption) and the
+  transport reaches the running state.
+- The block relies on the prewarm enqueuing the request immediately but
+  spawning FFmpeg on the worker thread, so it waits (not asserts) for the
+  process counters to move.
+- Full gate: `dub test` (33 modules) + the editor/playback/layout/gpu/model/
+  export smoke tests. Run `tests/editor_smoke.d` 2-3x on a loaded host to
+  confirm the prewarm timing is not flaky.
+
+## "Video decoder ended before the next frame was ready" no longer halts playback (2026-08-13)
+
+User: this message should never appear. It was raised by `editor.d` onTick
+whenever `_playbackVideoWaiting` (the transport had paused audio to let a
+lagging decoder catch up) was true at the moment the stream reported
+`finished()`. But reaching the last frame of the requested range is normal
+completion, so a clean EOF while buffering was misreported as a decoder
+failure and playback was stopped mid-range.
+
+What changed:
+- `playback.d`: `VideoFrameStream.hasReadyFrames()` — distinguishes "finished
+  but tail frames still queued" from "nothing left to display".
+- `editor.d` `displayedVideoBehindPlaybackClock()`: false once the stream is
+  finished with no ready frames (a finished decoder can't catch up, so the
+  transport must not re-enter buffering; also breaks a resume→re-pause loop).
+- `editor.d` halt block: clean EOF while waiting resumes the transport
+  (`resumeAfterVideoBuffer()`) or lets the waiting branch drain the tail;
+  genuine FFmpeg errors surface as a status message only. The audio-start
+  failure halt is unchanged.
+
+How to verify (deterministic, no decode-speed dependence):
+- `tests/editor_smoke.d` direct-playback regression block: after playback is
+  active, wait until `videoStreamFinishedForTesting()` (decoder reached the end
+  of its range during normal playback — no halt while not waiting), then force
+  the exact production buffering state with `simulateVideoBufferWaitForTesting()`
+  (which calls the real `waitForVideoBuffer()`), tick, and run to completion.
+  Asserts `playbackPositionForTesting() >= playbackEndForTesting() - 0.03` and
+  `statusTextForTesting()` never contains "Video decoder ended before the next
+  frame was ready". The block fails on the pre-fix code (halt at
+  `tests/editor_smoke.d` ~line 1176) and passes with the fix.
+- Full gate: `dub test` (33 modules), `tests/editor_smoke.d`,
+  `tests/playback_stress.d`, `tests/playback_seek_resilience_smoke.d`,
+  `tests/static_sequence_playback_smoke.d`, `tests/playback_proxy_smoke.d`,
+  `tests/layout_smoke.d`, `tests/gpu_decode_args_smoke.d`,
+  `tests/model_smoke.d`, `tests/export_smoke.d`.
+- `tests/synced_playback_preroll_smoke.d` fails at line 112 on the base commit
+  too (pre-existing): it asserts `setPlayhead` synchronously increments the
+  preview-request counter, but previews are debounced through
+  `scheduleTimelineFrame`/`dispatchPendingPreview`. Not part of any verify
+  script; repair (assert after a tick / wire frame-step to
+  `dispatchPendingPreviewNow`) or remove.
+
+Manual verification in the GUI (this host is 4 logical CPUs, often ~100%
+loaded): play a short single-clip timeline to its end, and play a live
+multi-clip timeline with audio while the machine is under load; the status must
+never show the decoder-end failure and playback must complete at the sequence
+end.
+
 ## Timeline playback performance / immediacy — analysis (2026-08-13)
 
 End-to-end review of the playback pipeline. Two processes can exist per Play:

@@ -283,6 +283,18 @@ final class PcmAudioPlayer
             return false;
     }
 
+    /** Re-anchor the published transport clock to `displayStartTime`. Used when
+     * adopting a background-prewarmed paused stream so the headless fallback
+     * clock does not report the time spent buffering while paused. */
+    void reanchorClock(double displayStartTime)
+    {
+        _mutex.lock();
+        _clockStartTime = displayStartTime;
+        _fallbackClockStarted = MonoTime.currTime;
+        _fallbackClockValid = true;
+        _mutex.unlock();
+    }
+
     string error()
     {
         _mutex.lock();

@@ -2,7 +2,7 @@ module aurorastream.broadcast;
 
 import aurorastream.audiobridge : AudioBridgeSession;
 import aurorastream.programcanvas : ProgramSource, ProgramSourceKind,
-    paintProgramCanvas;
+    defaultColorSource, paintProgramCanvas;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, dur, msecs;
@@ -430,6 +430,21 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         settings.youtubeQuality != BroadcastQuality.fourK)
         return "YouTube output must be 1440p60 or 4K60.";
 
+    if (settings.programCanvasEnabled)
+    {
+        bool anyVisibleSource;
+        foreach (source; settings.programCanvasSources)
+        {
+            if (source.enabled)
+            {
+                anyVisibleSource = true;
+                break;
+            }
+        }
+        if (!anyVisibleSource)
+            return "The Aurora program canvas is enabled but has no visible source. Add a color, image, or text source, or disable the program canvas to stream the desktop instead of a black canvas.";
+    }
+
     if (settings.twitchEnabled)
     {
         if (!validServer(settings.twitchServer))
@@ -457,6 +472,36 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         return "An audio device name contains an unsupported character.";
 
     return "";
+}
+
+unittest
+{
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+
+    BroadcastSettings valid;
+    valid.twitchEnabled = false;
+    valid.youtubeEnabled = true;
+    valid.youtubeKey = "test-key";
+    assert(validateBroadcastSettings(valid, encoder).length == 0);
+
+    // A canvas enabled with no visible source would stream a black picture;
+    // validation must reject it before FFmpeg starts.
+    BroadcastSettings emptyCanvas;
+    emptyCanvas.twitchEnabled = false;
+    emptyCanvas.youtubeEnabled = true;
+    emptyCanvas.youtubeKey = "test-key";
+    emptyCanvas.programCanvasEnabled = true;
+    assert(validateBroadcastSettings(emptyCanvas, encoder).length > 0);
+
+    // Disabled sources do not rescue the canvas; one enabled source does.
+    auto hidden = defaultColorSource(Color.rgb(0, 0, 0));
+    hidden.enabled = false;
+    emptyCanvas.programCanvasSources = [hidden];
+    assert(validateBroadcastSettings(emptyCanvas, encoder).length > 0);
+
+    emptyCanvas.programCanvasSources = [defaultColorSource(Color.rgb(0, 0, 0))];
+    assert(validateBroadcastSettings(emptyCanvas, encoder).length == 0);
 }
 
 private string appendPath(string server, string key)

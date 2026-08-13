@@ -1181,6 +1181,79 @@ int main(string[] arguments)
         "A finished video decoder spuriously reported a playback failure");
     driver.pressKey(Key.escape);
 
+    // Background prewarm: after the playhead settles while paused, the editor
+    // starts decoding the exact stream Play would use, and pressing Play
+    // adopts that stream instead of spawning another FFmpeg process. This is
+    // what makes Play feel immediate.
+    timeline.setPlayhead(0.45, true);
+    editor.tickTree(0.02);
+    const videoProcessesBeforePrewarm =
+        editor.videoStatsForTesting().processesStarted;
+    const audioProcessesBeforePrewarm =
+        editor.audioStatsForTesting().processesStarted;
+    bool prewarmStarted;
+    foreach (_; 0 .. 600)
+    {
+        editor.tickTree(0.02);
+        if (editor.playbackPrewarmActiveForTesting())
+        {
+            prewarmStarted = true;
+            break;
+        }
+        Thread.sleep(10.msecs);
+    }
+    assert(prewarmStarted,
+        "Paused playhead movement did not start a background playback prewarm");
+    // The prewarm enqueues the request immediately but spawns its FFmpeg
+    // processes on the worker thread; wait for them to appear.
+    bool videoPrewarmed;
+    bool audioPrewarmed;
+    foreach (_; 0 .. 600)
+    {
+        editor.tickTree(0.02);
+        if (editor.videoStatsForTesting().processesStarted >
+            videoProcessesBeforePrewarm)
+            videoPrewarmed = true;
+        if (editor.audioStatsForTesting().processesStarted >
+            audioProcessesBeforePrewarm)
+            audioPrewarmed = true;
+        if (videoPrewarmed && audioPrewarmed) break;
+        Thread.sleep(10.msecs);
+    }
+    assert(videoPrewarmed,
+        "The playback prewarm did not spawn a video decoder");
+    assert(audioPrewarmed,
+        "The playback prewarm did not spawn a paused audio decoder");
+    bool framesBuffered;
+    foreach (_; 0 .. 600)
+    {
+        editor.tickTree(0.02);
+        if (editor.videoStreamHasReadyFramesForTesting())
+        {
+            framesBuffered = true;
+            break;
+        }
+        Thread.sleep(10.msecs);
+    }
+    assert(framesBuffered,
+        "The playback prewarm never buffered video frames");
+    const videoProcessesBeforePlay =
+        editor.videoStatsForTesting().processesStarted;
+    const audioProcessesBeforePlay =
+        editor.audioStatsForTesting().processesStarted;
+    driver.click(globalCenter(playSource));
+    assert(editor.directSequencePlaybackForTesting(),
+        "Prewarmed Play did not use direct source passthrough");
+    assert(waitForPlaybackReady(editor, preview),
+        "Prewarmed Play did not reach the running transport");
+    assert(editor.videoStatsForTesting().processesStarted ==
+        videoProcessesBeforePlay,
+        "Prewarmed Play spawned a new video decoder instead of adopting the warm stream");
+    assert(editor.audioStatsForTesting().processesStarted ==
+        audioProcessesBeforePlay,
+        "Prewarmed Play spawned a new audio decoder instead of adopting the warm stream");
+    driver.pressKey(Key.escape);
+
     driver.rightClick(globalCenter(preview));
     auto previewMenu = findOpenContextMenu(editor);
     assert(previewMenu !is null && menuHasLabel(previewMenu, "Add text"d),

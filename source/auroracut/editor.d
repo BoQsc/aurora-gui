@@ -33,6 +33,7 @@ import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
     ytDlpMaxWidthForHeight;
 import core.time : MonoTime;
 import std.algorithm : max, min;
+import std.array : join;
 import std.file : exists;
 import std.conv : ConvException, to;
 import std.format : format;
@@ -791,6 +792,19 @@ final class EditorRoot : VBox
     private double _playbackAudioClockLostWait;
     private ulong _playbackModelRevision;
 
+    // Background playback prewarm: while the timeline is paused, the exact
+    // stream Play would start is decoded ahead so the first frame appears
+    // immediately and no FFmpeg process is spawned on Play.
+    private bool _playbackPrewarmActive;
+    private double _playbackPrewarmDelay;
+    private double _playbackPrewarmIdle;
+    private string _playbackPrewarmMode;
+    private string _playbackPrewarmVideoSignature;
+    private string _playbackPrewarmAudioSignature;
+    private bool _playbackPrewarmHasVideoStream;
+    private double _playbackPrewarmPosition = -1.0;
+    private ulong _playbackPrewarmRevision;
+
     private bool _canvasDragEditing;
     private bool _canvasDragChanged;
     private TimelineSnapshot _canvasDragSnapshot;
@@ -819,6 +833,11 @@ final class EditorRoot : VBox
     private enum double playbackVideoLagToleranceSeconds = 0.075;
     private enum double directPlaybackPrerollSeconds = 0.055;
     private enum double livePlaybackPrerollSeconds = 0.090;
+    // Debounce before a background playback prewarm is started after the
+    // playhead settles, and how long an idle prewarm is kept before it is
+    // released so a paused editor does not hold FFmpeg processes forever.
+    private enum double playbackPrewarmDelaySeconds = 0.10;
+    private enum double playbackPrewarmIdleSeconds = 45.0;
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
@@ -1050,6 +1069,9 @@ final class EditorRoot : VBox
     {
         return nextTimelineAudioStart(value);
     }
+    bool playbackPrewarmActiveForTesting() const { return _playbackPrewarmActive; }
+    string playbackPrewarmModeForTesting() const { return _playbackPrewarmMode; }
+    double playbackPrewarmPositionForTesting() const { return _playbackPrewarmPosition; }
     void seekForTesting(double value) { seekPlayback(value); }
     void beginSeekGestureForTesting() { beginSeekGesture(); }
     void endSeekGestureForTesting() { endSeekGesture(); }
@@ -5357,6 +5379,7 @@ final class EditorRoot : VBox
     private void playheadChanged(double value)
     {
         _lastSelectionIsMedia = false;
+        notePlaybackPrewarmDirty();
         _scrub.setValue(value, false);
         updateTimeLabel();
         if (_timeline.selectedIndex() >= 0) syncInspector();
@@ -5620,7 +5643,14 @@ final class EditorRoot : VBox
         }
         if (asset is null || asset.duration <= 0.0) return;
         cancelPlaybackProxyWork();
-        stopPlayback(false);
+        // A background prewarm that exactly matches this request must survive
+        // the teardown below so its buffered stream can be adopted. The paused
+        // (never-played) state it belongs to is already reset, so only the
+        // worker state reset is needed, never a stream stop.
+        const prewarmAdoptable = prewarmMatchesPlayback(asset, start, end,
+            mediaOffset, directSequence, liveSequence, staticSequenceVisual);
+        if (!prewarmAdoptable)
+            stopPlayback(false);
         _previewService.cancel();
         _pendingPreviewKind = PendingPreviewKind.none;
 
@@ -5761,6 +5791,373 @@ final class EditorRoot : VBox
             return sequenceHasAudibleAudio(_playbackPosition, _playbackEnd);
         return _playbackAsset.hasAudio && !_playbackSourceMuted &&
             _playbackSourceVolume > 0.000_001;
+    }
+
+    /** Opaque signature of the direct-mode video stream parameters, shared by
+     * the background prewarm and the playback start so a prewarmed stream can
+     * be adopted only when the request is byte-for-byte identical. */
+    private static string directVideoSignature(string path, double mediaPosition,
+        double duration, int width, int height, int fps, string[] opts,
+        double mediaOffset)
+    {
+        return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", mediaPosition) ~
+            "\x1f" ~ format("%.6f", duration) ~ "\x1f" ~ format("%d", width) ~
+            "\x1f" ~ format("%d", height) ~ "\x1f" ~ format("%d", fps) ~
+            "\x1f" ~ join(opts, "\x1f") ~ "\x1f" ~ format("%.6f", mediaOffset);
+    }
+
+    private static string directAudioSignature(string path, double mediaPosition,
+        double duration, double volume, double displayStart, bool muted)
+    {
+        return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", mediaPosition) ~
+            "\x1f" ~ format("%.6f", duration) ~ "\x1f" ~ format("%.6f", volume) ~
+            "\x1f" ~ format("%.6f", displayStart) ~ "\x1f" ~ (muted ? "1" : "0");
+    }
+
+    /** The exact video stream the current playback state would start, or ""
+     * when the state has no streaming video decode. */
+    private string buildCurrentVideoSignature()
+    {
+        if (_sequencePlaybackLive && _sequencePlaybackStaticVisual)
+            return "static";
+        const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
+            _compositionWidth, _compositionHeight);
+        const fps = livePlaybackFps(decode);
+        if (_sequencePlaybackLive)
+        {
+            const renderHeight = liveDecodeHeight();
+            auto preset = ExportPreset.previewForHeight(renderHeight);
+            auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                false, true);
+            request.renderTitles = false;
+            scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+            auto arguments = compositeStreamArguments(request, _playbackPosition,
+                _playbackEnd, decode.width, decode.height, fps);
+            return "live\x1f" ~ join(arguments, "\x1f");
+        }
+        if (_playbackAsset is null || !_playbackAsset.hasVideo) return "";
+        const mediaPosition = clampValue(_playbackPosition + _playbackMediaOffset,
+            0.0, _playbackAsset.duration);
+        return directVideoSignature(_playbackAsset.path, mediaPosition,
+            _playbackEnd - _playbackPosition, decode.width, decode.height, fps,
+            playbackDecodeInputOptions(_playbackAsset), _playbackMediaOffset);
+    }
+
+    private void notePlaybackPrewarmDirty()
+    {
+        if (_playbackPrewarmActive) cancelPlaybackPrewarm();
+        _playbackPrewarmDelay = 0.0;
+        _playbackPrewarmIdle = 0.0;
+    }
+
+    private void cancelPlaybackPrewarm()
+    {
+        if (!_playbackPrewarmActive) return;
+        _playbackPrewarmActive = false;
+        _playbackPrewarmDelay = 0.0;
+        _playbackPrewarmIdle = 0.0;
+        _playbackPrewarmVideoSignature = "";
+        _playbackPrewarmAudioSignature = "";
+        _playbackPrewarmHasVideoStream = false;
+        _videoStream.stop();
+        _audioPlayer.stop();
+    }
+
+    /** Start the live-mode preview audio stream paused and return its
+     * signature, or "" when the range has no audible media. */
+    private string prewarmLiveAudio(double sequenceTime, double end)
+    {
+        if (!sequenceHasAudibleAudio(sequenceTime, end)) return "";
+        try
+        {
+            auto request = buildExportRequest(ExportKind.mp4, "",
+                ExportPreset.previewForHeight(liveDecodeHeight()), false);
+            auto arguments = compositeAudioArguments(request, sequenceTime, end);
+            const remaining = max(0.0, end - sequenceTime);
+            if (!_audioPlayer.startCommand(arguments, sequenceTime, remaining,
+                1.0, true))
+                return "";
+            return "live\x1f" ~ join(arguments, "\x1f") ~ "\x1f" ~
+                format("%.6f", sequenceTime) ~ "\x1f" ~ format("%.6f", remaining);
+        }
+        catch (Exception error)
+        {
+            appLog(format("Playback audio prewarm failed at %.3f: %s",
+                sequenceTime, error.toString()));
+            return "";
+        }
+    }
+
+    /** Begin decoding the exact stream Play would start at the current
+     * position, paused. Frames buffer unseen; Play adopts it on a signature
+     * match so the first frame appears immediately. */
+    private void startPlaybackPrewarm()
+    {
+        if (_playbackPrewarmActive || !_tools.ffmpeg) return;
+        const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
+            _compositionWidth, _compositionHeight);
+        const fps = livePlaybackFps(decode);
+        try
+        {
+            if (_playbackKind == PlaybackKind.sequence)
+            {
+                // A paused session: reuse its exact playback state.
+                if (_sequencePlaybackLive && _sequencePlaybackStaticVisual)
+                {
+                    _playbackPrewarmVideoSignature = "static";
+                    _playbackPrewarmHasVideoStream = false;
+                    _playbackPrewarmAudioSignature = prewarmLiveAudio(
+                        _playbackPosition, _playbackEnd);
+                    _playbackPrewarmMode = "static";
+                }
+                else if (_sequencePlaybackLive)
+                {
+                    const renderHeight = liveDecodeHeight();
+                    auto preset = ExportPreset.previewForHeight(renderHeight);
+                    auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                        false, true);
+                    request.renderTitles = false;
+                    scalePreviewPixelEffects(request, _previewQualityHeight,
+                        renderHeight);
+                    auto arguments = compositeStreamArguments(request,
+                        _playbackPosition, _playbackEnd, decode.width,
+                        decode.height, fps);
+                    const started = _videoStream.startCommand(arguments,
+                        _playbackPosition, _playbackEnd - _playbackPosition,
+                        decode.width, decode.height, fps,
+                        "Sequence 01 • live composition");
+                    _playbackPrewarmVideoSignature = started ?
+                        "live\x1f" ~ join(arguments, "\x1f") : "";
+                    _playbackPrewarmHasVideoStream = started;
+                    _playbackPrewarmAudioSignature = prewarmLiveAudio(
+                        _playbackPosition, _playbackEnd);
+                    _playbackPrewarmMode = "live";
+                }
+                else
+                {
+                    const mediaPosition = clampValue(_playbackPosition +
+                        _playbackMediaOffset, 0.0, _playbackAsset.duration);
+                    const remaining = _playbackEnd - _playbackPosition;
+                    auto opts = playbackDecodeInputOptions(_playbackAsset);
+                    if (_playbackAsset.hasVideo)
+                    {
+                        const started = _videoStream.start(_playbackAsset.path,
+                            mediaPosition, remaining, decode.width, decode.height,
+                            fps, _playbackAsset.name, opts);
+                        _playbackPrewarmVideoSignature = started ?
+                            directVideoSignature(_playbackAsset.path, mediaPosition,
+                                remaining, decode.width, decode.height, fps, opts,
+                                _playbackMediaOffset) : "";
+                        _playbackPrewarmHasVideoStream = started;
+                    }
+                    else
+                    {
+                        _playbackPrewarmVideoSignature = "";
+                        _playbackPrewarmHasVideoStream = false;
+                    }
+                    if (_playbackAsset.hasAudio && !_playbackSourceMuted &&
+                        _playbackSourceVolume > 0.000_001)
+                    {
+                        const audioStarted = _audioPlayer.start(
+                            _playbackAsset.path, mediaPosition, remaining,
+                            _playbackSourceVolume, _playbackPosition, true);
+                        _playbackPrewarmAudioSignature = audioStarted ?
+                            directAudioSignature(_playbackAsset.path, mediaPosition,
+                                remaining, _playbackSourceVolume,
+                                _playbackPosition, _playbackSourceMuted) : "";
+                    }
+                    else
+                        _playbackPrewarmAudioSignature = "";
+                    _playbackPrewarmMode = "direct";
+                }
+                _playbackPrewarmPosition = _playbackPosition;
+            }
+            else
+            {
+                // Never played: resolve the context Play would choose at the
+                // playhead, mirroring previewTimeline()'s ordering.
+                const position = _timeline.playhead();
+                const duration = _model.sequenceDuration();
+                if (duration <= 0.0) return;
+                TrackAddress directTrack;
+                TimelineClip directClip;
+                MediaAsset directAsset;
+                if (resolveDirectSequence(directTrack, directClip, directAsset))
+                {
+                    const track = _model.trackValue(directTrack);
+                    auto playbackAsset = playbackAssetForPreview(directAsset);
+                    const start = clampValue(position, directClip.start,
+                        directClip.end());
+                    const mediaOffset = directClip.inPoint - directClip.start;
+                    const mediaPosition = clampValue(start + mediaOffset, 0.0,
+                        playbackAsset.duration);
+                    const remaining = max(0.0, directClip.end() - start);
+                    if (remaining <= 0.001) return;
+                    auto opts = playbackDecodeInputOptions(playbackAsset);
+                    if (playbackAsset.hasVideo)
+                    {
+                        const started = _videoStream.start(playbackAsset.path,
+                            mediaPosition, remaining, decode.width, decode.height,
+                            fps, playbackAsset.name, opts);
+                        _playbackPrewarmVideoSignature = started ?
+                            directVideoSignature(playbackAsset.path, mediaPosition,
+                                remaining, decode.width, decode.height, fps, opts,
+                                mediaOffset) : "";
+                        _playbackPrewarmHasVideoStream = started;
+                    }
+                    else
+                    {
+                        _playbackPrewarmVideoSignature = "";
+                        _playbackPrewarmHasVideoStream = false;
+                    }
+                    const muted = directClip.muted || track.muted;
+                    if (playbackAsset.hasAudio && !muted &&
+                        directClip.volume > 0.000_001)
+                    {
+                        const audioStarted = _audioPlayer.start(
+                            playbackAsset.path, mediaPosition, remaining,
+                            directClip.volume, start, true);
+                        _playbackPrewarmAudioSignature = audioStarted ?
+                            directAudioSignature(playbackAsset.path, mediaPosition,
+                                remaining, directClip.volume, start, muted) : "";
+                    }
+                    else
+                        _playbackPrewarmAudioSignature = "";
+                    _playbackPrewarmMode = "direct";
+                }
+                else if (resolveStaticSequenceVisual())
+                {
+                    _playbackPrewarmVideoSignature = "static";
+                    _playbackPrewarmHasVideoStream = false;
+                    _playbackPrewarmAudioSignature = prewarmLiveAudio(
+                        position, duration);
+                    _playbackPrewarmMode = "static";
+                }
+                else
+                {
+                    const renderHeight = liveDecodeHeight();
+                    auto preset = ExportPreset.previewForHeight(renderHeight);
+                    auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                        false, true);
+                    request.renderTitles = false;
+                    scalePreviewPixelEffects(request, _previewQualityHeight,
+                        renderHeight);
+                    auto arguments = compositeStreamArguments(request, position,
+                        duration, decode.width, decode.height, fps);
+                    const started = _videoStream.startCommand(arguments, position,
+                        duration - position, decode.width, decode.height, fps,
+                        "Sequence 01 • live composition");
+                    _playbackPrewarmVideoSignature = started ?
+                        "live\x1f" ~ join(arguments, "\x1f") : "";
+                    _playbackPrewarmHasVideoStream = started;
+                    _playbackPrewarmAudioSignature = prewarmLiveAudio(
+                        position, duration);
+                    _playbackPrewarmMode = "live";
+                }
+                _playbackPrewarmPosition = position;
+            }
+            if (!_playbackPrewarmHasVideoStream &&
+                _playbackPrewarmAudioSignature.length == 0)
+                return;
+            _playbackPrewarmActive = true;
+            _playbackPrewarmRevision = _modelRevision;
+            appLog(format("Prewarmed %s playback at %.3f",
+                _playbackPrewarmMode, _playbackPrewarmPosition));
+        }
+        catch (Exception error)
+        {
+            cancelPlaybackPrewarm();
+            appLog(format("Playback prewarm failed: %s", error.toString()));
+        }
+    }
+
+    /** Drive the paused background prewarm lifecycle once per tick. */
+    private void updatePlaybackPrewarm(double deltaSeconds)
+    {
+        if (_playbackRunning ||
+            (_playbackKind != PlaybackKind.none &&
+             _playbackKind != PlaybackKind.sequence))
+            return;
+        if (!_tools.ffmpeg || _model.sequenceDuration() <= 0.0 ||
+            _exportJob.state().running || _importService.busy() ||
+            _downloadService.busy())
+        {
+            if (_playbackPrewarmActive) cancelPlaybackPrewarm();
+            _playbackPrewarmDelay = 0.0;
+            return;
+        }
+        const position = _playbackKind == PlaybackKind.sequence ?
+            _playbackPosition : _timeline.playhead();
+        if (_playbackPrewarmActive)
+        {
+            _playbackPrewarmIdle += deltaSeconds;
+            if (_playbackPrewarmIdle >= playbackPrewarmIdleSeconds ||
+                _playbackPrewarmRevision != _modelRevision ||
+                fabs(_playbackPrewarmPosition - position) > 0.02)
+            {
+                cancelPlaybackPrewarm();
+                return;
+            }
+        }
+        if (_playbackPrewarmActive) return;
+        _playbackPrewarmDelay += deltaSeconds;
+        if (_playbackPrewarmDelay < playbackPrewarmDelaySeconds) return;
+        _playbackPrewarmDelay = 0.0;
+        startPlaybackPrewarm();
+    }
+
+    /** True when the running prewarm exactly matches the current playback
+     * intent, so its buffered stream can be adopted without a restart. */
+    private bool adoptPlaybackVideoPrewarm()
+    {
+        if (!_playbackPrewarmActive ||
+            _playbackPrewarmRevision != _modelRevision) return false;
+        const target = buildCurrentVideoSignature();
+        if (target != _playbackPrewarmVideoSignature) return false;
+        if (_playbackPrewarmHasVideoStream && !_videoStream.running()) return false;
+        return true;
+    }
+
+    /** Like `adoptPlaybackVideoPrewarm` but evaluated from the incoming
+     * `startPlayback` arguments before the playback state is installed, so
+     * `startPlayback` can avoid tearing the warm streams down first. */
+    private bool prewarmMatchesPlayback(MediaAsset asset, double start, double end,
+        double mediaOffset, bool directSequence, bool liveSequence,
+        bool staticSequenceVisual)
+    {
+        if (!_playbackPrewarmActive ||
+            _playbackPrewarmRevision != _modelRevision) return false;
+        const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
+            _compositionWidth, _compositionHeight);
+        const fps = livePlaybackFps(decode);
+        string target;
+        if (liveSequence && staticSequenceVisual)
+            target = "static";
+        else if (liveSequence)
+        {
+            const renderHeight = liveDecodeHeight();
+            auto preset = ExportPreset.previewForHeight(renderHeight);
+            auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                false, true);
+            request.renderTitles = false;
+            scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+            auto arguments = compositeStreamArguments(request, start, end,
+                decode.width, decode.height, fps);
+            target = "live\x1f" ~ join(arguments, "\x1f");
+        }
+        else if (asset !is null && asset.hasVideo)
+        {
+            const mediaPosition = clampValue(start + mediaOffset, 0.0,
+                asset.duration);
+            target = directVideoSignature(asset.path, mediaPosition,
+                max(0.0, end - start), decode.width, decode.height, fps,
+                playbackDecodeInputOptions(asset), mediaOffset);
+        }
+        else
+            return false;
+        if (target != _playbackPrewarmVideoSignature) return false;
+        if (_playbackPrewarmHasVideoStream && !_videoStream.running()) return false;
+        return true;
     }
 
     private void haltPlaybackForSync(string statusText)
@@ -6050,7 +6447,6 @@ final class EditorRoot : VBox
     {
         if (_playbackAudioStarted) return true;
         _playbackAudioStarted = true;
-        _audioPlayer.stop();
         if (_playbackAsset is null)
         {
             _playbackAudioStarted = false;
@@ -6062,6 +6458,52 @@ final class EditorRoot : VBox
             _playbackAudioStarted = false;
             return false;
         }
+
+        // Adopt a matching background-prewarmed audio stream instead of
+        // spawning another FFmpeg process. The prewarm started it paused, so
+        // its clock already reflects the launch position; the caller resumes
+        // the transport after reading the clock.
+        if (_playbackPrewarmActive && _playbackPrewarmAudioSignature.length > 0)
+        {
+            string target;
+            if (_sequencePlaybackLive)
+            {
+                const sequenceTime = clampValue(_playbackPosition, _playbackStart,
+                    _playbackEnd);
+                try
+                {
+                    auto request = buildExportRequest(ExportKind.mp4, "",
+                        ExportPreset.previewForHeight(liveDecodeHeight()), false);
+                    auto arguments = compositeAudioArguments(request, sequenceTime,
+                        _playbackEnd);
+                    target = "live\x1f" ~ join(arguments, "\x1f") ~ "\x1f" ~
+                        format("%.6f", sequenceTime) ~ "\x1f" ~
+                        format("%.6f", remaining);
+                }
+                catch (Exception) { target = ""; }
+            }
+            else if (_playbackAsset.hasAudio && !_playbackSourceMuted &&
+                _playbackSourceVolume > 0.000_001)
+            {
+                const mediaPosition = clampValue(_playbackPosition +
+                    _playbackMediaOffset, 0.0, _playbackAsset.duration);
+                target = directAudioSignature(_playbackAsset.path, mediaPosition,
+                    remaining, _playbackSourceVolume, _playbackPosition,
+                    _playbackSourceMuted);
+            }
+            if (target.length > 0 && target == _playbackPrewarmAudioSignature)
+            {
+                // Re-anchor the headless fallback clock so the time spent
+                // buffering while paused is not reported as playback position.
+                _audioPlayer.reanchorClock(_playbackPosition);
+                _playbackPrewarmActive = false;
+                _playbackPrewarmVideoSignature = "";
+                _playbackPrewarmAudioSignature = "";
+                return true;
+            }
+        }
+
+        _audioPlayer.stop();
         if (_sequencePlaybackLive)
         {
             const started = startLiveTimelineAudio(startPaused);
@@ -6093,10 +6535,23 @@ final class EditorRoot : VBox
         if (_playbackAsset is null || !_playbackRunning) return;
 
         cancelPlaybackProxyWork();
-        _videoStream.stop();
-        _audioPlayer.stop();
-        _playbackAudioStarted = false;
+        const adoptedPrewarm = adoptPlaybackVideoPrewarm();
+        if (!adoptedPrewarm)
+        {
+            _videoStream.stop();
+            _audioPlayer.stop();
+            _playbackAudioStarted = false;
+        }
         _playbackAudioRequired = playbackAudioRequiredNow();
+        if (adoptedPrewarm && !_playbackAudioRequired)
+        {
+            // Video prewarm adopted, but the transport needs no audio; release
+            // the paused prewarmed audio stream and the prewarm state.
+            _audioPlayer.stop();
+            _playbackPrewarmActive = false;
+            _playbackPrewarmVideoSignature = "";
+            _playbackPrewarmAudioSignature = "";
+        }
         _playbackAwaitingAudioClock = false;
         _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
@@ -6154,11 +6609,20 @@ final class EditorRoot : VBox
             scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
             auto arguments = compositeStreamArguments(request, _playbackPosition,
                 _playbackEnd, decode.width, decode.height, fps);
-            videoStarted = _videoStream.startCommand(arguments, _playbackPosition,
-                remaining, decode.width, decode.height, fps,
-                "Sequence 01 • live composition");
-            if (!videoStarted)
-                setStatus("The live timeline compositor could not be started.");
+            if (adoptedPrewarm)
+            {
+                // The background compositor is already decoding this exact
+                // request with buffered frames; adopt it instead of restarting.
+                videoStarted = _playbackPrewarmHasVideoStream;
+            }
+            else
+            {
+                videoStarted = _videoStream.startCommand(arguments, _playbackPosition,
+                    remaining, decode.width, decode.height, fps,
+                    "Sequence 01 • live composition");
+                if (!videoStarted)
+                    setStatus("The live timeline compositor could not be started.");
+            }
         }
         else
         {
@@ -6166,11 +6630,20 @@ final class EditorRoot : VBox
                 0.0, _playbackAsset.duration);
             if (_playbackAsset.hasVideo)
             {
-                videoStarted = _videoStream.start(_playbackAsset.path, mediaPosition,
-                    remaining, decode.width, decode.height, fps, _playbackAsset.name,
-                    playbackDecodeInputOptions(_playbackAsset));
-                if (!videoStarted)
-                    setStatus("The embedded video decoder could not be started.");
+                if (adoptedPrewarm)
+                {
+                    // The background source decoder is already running this
+                    // exact request; adopt it instead of restarting.
+                    videoStarted = _playbackPrewarmHasVideoStream;
+                }
+                else
+                {
+                    videoStarted = _videoStream.start(_playbackAsset.path, mediaPosition,
+                        remaining, decode.width, decode.height, fps, _playbackAsset.name,
+                        playbackDecodeInputOptions(_playbackAsset));
+                    if (!videoStarted)
+                        setStatus("The embedded video decoder could not be started.");
+                }
             }
             else
                 _previewService.requestAsset(_playbackAsset, mediaPosition,
@@ -6222,6 +6695,7 @@ final class EditorRoot : VBox
         _playbackAwaitingAudioClock = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
+        cancelPlaybackPrewarm();
         _videoStream.stop();
         _audioPlayer.stop();
         _preview.setPlaying(false);
@@ -6305,6 +6779,7 @@ final class EditorRoot : VBox
         if (!_seekPending)
         {
             _seekResumePlayback = _playbackRunning;
+            cancelPlaybackPrewarm();
             _videoStream.stop();
             _audioPlayer.stop();
             _playbackAudioStarted = false;
@@ -6515,6 +6990,7 @@ final class EditorRoot : VBox
 
     private void stopPlayback(bool restorePreview)
     {
+        cancelPlaybackPrewarm();
         _videoStream.stop();
         _audioPlayer.stop();
         const hadPlayback = _playbackKind != PlaybackKind.none;
@@ -8125,6 +8601,7 @@ final class EditorRoot : VBox
         drainImportedMedia();
         drainPlaybackProxies();
         startIdlePlaybackProxy(deltaSeconds);
+        updatePlaybackPrewarm(deltaSeconds);
         _audioPlayer.poll();
 
         if (_sourceAudioRefreshPending)
