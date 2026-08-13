@@ -1,5 +1,45 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline vertical scrollbar: draggable, wider track (2026-08-13)
+
+User complaint: the timeline's vertical scrollbar was a 4px painted thumb only —
+you could not grab it, so moving up/down relied on the mouse wheel alone.
+
+What changed in `source/auroracut/timeline.d`:
+1. The right-edge scrollbar track is now 12px wide (`VerticalScrollbarWidth`)
+   with an opaque track, a left border, and a proportionally sized thumb
+   (`verticalScrollbarTrack` / `verticalScrollbarThumb`).
+2. It is a real input target: `onMouseDown` grabs the thumb (drag mode),
+   `onMouseMove`/`onMouseUp` drag it, hover changes the cursor to `hand`, and
+   Escape cancels an active drag. Clicking the track jumps the thumb to the
+   pointer (grab offset `thumb.height / 2` when not on the thumb).
+3. Testing getters were added: `maxVerticalScrollForTesting`,
+   `draggingVerticalScrollbarForTesting`, `verticalScrollbarTrackForTesting`,
+   `verticalScrollbarThumbForTesting`.
+
+How to verify (headless, no GUI click needed):
+1. `tests/editor_smoke.d` now builds a 4-track fixture that overflows a 120px
+   viewport and asserts: track is ≥10px wide and docked right, mouse-down on the
+   thumb enters drag mode, dragging to the track bottom scrolls to
+   `maxVerticalScrollForTesting`, and mouse-up leaves drag mode.
+2. The stale `ListView` scrollbar assertion was rewritten to drive the vendored
+   `Scrollbar` widget (drags from the thumb; a track click pages). This was
+   pre-existing on the clean base commit — see todo.md.
+3. `tests/layout_smoke.d` was stale too: the status-bar loading bar is anchored
+   right (inside the 8px inset), not centered; the assertion was renamed
+   `assertStatusProgressDocked`. `status-progress` id was missing on
+   `_progress` in `source/auroracut/editor.d` and was restored.
+
+Windows build/test commands (see also "Run the headless editor smoke test"):
+```
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\editor_smoke.d -of=build\editor-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\layout_smoke.d -of=build\layout-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+```
+Then run with the generated media (or `layout-smoke.exe` with no args). Pass =
+`Aurora Cut multi-track editor smoke test passed.` and a silent exit for
+layout-smoke. Note `dmd -of=` on Windows emits a file without `.exe` unless the
+`.exe` suffix is included; cmd refuses to launch it otherwise.
+
 ## Aurora Stream canvas-pump crash: rawWrite on a cross-thread File (2026-08-12)
 
 With the Aurora program canvas enabled, pressing Start streaming crashed the

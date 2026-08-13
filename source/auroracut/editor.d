@@ -2231,6 +2231,7 @@ final class EditorRoot : VBox
         _status.setComposited(true);
         _status.layoutHints().flex = 1.0;
         _progress = bar.add(new ProgressBar(0.0));
+        _progress.setId("status-progress");
         _progress.setComposited(true);
         _progress.layoutHints().preferredWidth = 260;
         _progress.setShowPercent(false);

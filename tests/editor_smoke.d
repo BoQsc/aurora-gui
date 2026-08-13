@@ -568,7 +568,9 @@ int main(string[] arguments)
     }
 
     // File dialogs use ListView for the folder/file rows. Its vertical
-    // scrollbar must be an input target, not only a painted decoration.
+    // scrollbar must be an input target, not only a painted decoration. The
+    // vendored Scrollbar widget pages on a track click and drags only from the
+    // thumb, so the probe drives the thumb directly.
     {
         auto dialogList = new ListView();
         dialogList.setBounds(Rect(0, 0, 200, 120));
@@ -577,26 +579,85 @@ int main(string[] arguments)
         foreach (index; 0 .. 20)
             rows ~= "file-" ~ to!string(index);
         dialogList.setStrings(rows);
+        auto scrollbar = dialogList.verticalScrollbar();
+        assert(scrollbar !is null && scrollbar.scrollable(),
+            "File dialog scrollbar is not scrollable for its rows");
+        const track = scrollbar.trackRect();
+        const thumb = scrollbar.thumbRect();
+        assert(!thumb.empty() && thumb.y >= track.y &&
+            thumb.bottom() <= track.bottom() && thumb.x >= track.x &&
+            thumb.right() <= track.right(),
+            "File dialog scrollbar thumb is not inside its track");
+        const grab = Point(track.x + track.width / 2,
+            thumb.y + maxInt(1, thumb.height / 2));
         Event down;
         down.button = MouseButton.left;
-        down.position = Point(190, 60);
-        assert(dialogList.onMouseDown(down),
+        down.position = grab;
+        assert(scrollbar.onMouseDown(down),
             "File dialog scrollbar did not accept mouse-down");
-        assert(dialogList.draggingScrollbarForTesting(),
+        assert(scrollbar.draggingThumb(),
             "File dialog scrollbar did not enter drag mode");
         assert(dialogList.selectedIndex() < 0,
             "Clicking the file dialog scrollbar selected a file row");
         Event move;
-        move.position = Point(190, 110);
-        assert(dialogList.onMouseMove(move));
+        move.position = Point(track.x + track.width / 2, track.bottom() - 2);
+        assert(scrollbar.onMouseMove(move),
+            "File dialog scrollbar drag was not followed");
         assert(dialogList.scrollOffset() > 0,
             "Dragging the file dialog scrollbar did not scroll the list");
         Event up;
         up.button = MouseButton.left;
-        up.position = Point(190, 110);
-        assert(dialogList.onMouseUp(up));
-        assert(!dialogList.draggingScrollbarForTesting(),
+        up.position = move.position;
+        assert(scrollbar.onMouseUp(up),
+            "File dialog scrollbar did not accept mouse-up");
+        assert(!scrollbar.draggingThumb(),
             "File dialog scrollbar did not leave drag mode on mouse-up");
+    }
+
+    // The timeline's vertical scrollbar must be a drag target, not only a
+    // painted decoration. A wider, interactive thumb lets the user move up and
+    // down the sequence directly instead of relying on the mouse wheel.
+    {
+        auto scrollModel = new EditorModel();
+        foreach (lane; 0 .. 4)
+        {
+            assert(scrollModel.addTrack(
+                lane % 2 == 0 ? TrackKind.video : TrackKind.audio) >= 0,
+                "Scroll fixture track creation failed");
+        }
+        auto scrollTimeline = new TimelineWidget(scrollModel);
+        scrollTimeline.setBounds(Rect(0, 0, 800, 120));
+        assert(scrollTimeline.maxVerticalScrollForTesting() > 0,
+            "Vertical scroll fixture did not overflow the viewport");
+        const track = scrollTimeline.verticalScrollbarTrackForTesting();
+        assert(!track.empty() && track.width >= 10,
+            "Timeline vertical scrollbar track is too narrow to grab");
+        assert(track.x == scrollTimeline.bounds().width - track.width,
+            "Timeline vertical scrollbar is not docked to the right edge");
+        const thumbBefore = scrollTimeline.verticalScrollbarThumbForTesting();
+        Event down;
+        down.button = MouseButton.left;
+        down.position = Point(track.x + track.width / 2, thumbBefore.y + 2);
+        assert(scrollTimeline.onMouseDown(down),
+            "Timeline vertical scrollbar did not accept mouse-down");
+        assert(scrollTimeline.draggingVerticalScrollbarForTesting(),
+            "Timeline vertical scrollbar did not enter drag mode");
+        Event move;
+        move.position = Point(track.x + track.width / 2, track.bottom() - 2);
+        assert(scrollTimeline.onMouseMove(move),
+            "Timeline vertical scrollbar drag was not followed");
+        assert(scrollTimeline.verticalScroll() > 0,
+            "Dragging the timeline vertical scrollbar did not scroll down");
+        Event up;
+        up.button = MouseButton.left;
+        up.position = move.position;
+        assert(scrollTimeline.onMouseUp(up),
+            "Timeline vertical scrollbar did not accept mouse-up");
+        assert(!scrollTimeline.draggingVerticalScrollbarForTesting(),
+            "Timeline vertical scrollbar did not leave drag mode on mouse-up");
+        assert(scrollTimeline.verticalScroll() ==
+            scrollTimeline.maxVerticalScrollForTesting(),
+            "Timeline vertical scrollbar thumb did not reach the bottom");
     }
 
     // Out-first export marking must create a complete visible zone rather than

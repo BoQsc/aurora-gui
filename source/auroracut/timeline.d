@@ -10,6 +10,7 @@ import std.utf : toUTF32;
 private enum SequenceRulerHeight = 24;
 private enum AutomaticFitDurationLimit = 180.0;
 private enum NewTrackDropGap = 8;
+private enum VerticalScrollbarWidth = 12;
 
 private enum PointerMode : ubyte
 {
@@ -92,6 +93,9 @@ final class TimelineWidget : Widget
     private bool _fitAllDurations;
     private bool _snappingEnabled = true;
     private int _verticalScroll;
+    private bool _draggingVerticalThumb;
+    private int _verticalThumbGrabOffset;
+    private bool _verticalScrollbarHovered;
     private int _labelColumnWidth = 30;
     private TimelineTool _activeTool = TimelineTool.selection;
     private TrackAddress _selectedTrack = TrackAddress(TrackKind.video, 0);
@@ -283,6 +287,22 @@ final class TimelineWidget : Widget
     }
     bool fitViewForTesting() const @safe pure nothrow @nogc { return _fitView; }
     int verticalScroll() const @safe pure nothrow @nogc { return _verticalScroll; }
+    int maxVerticalScrollForTesting() const
+    {
+        return maxVerticalScroll();
+    }
+    bool draggingVerticalScrollbarForTesting() const @safe pure nothrow @nogc
+    {
+        return _draggingVerticalThumb;
+    }
+    Rect verticalScrollbarTrackForTesting() const
+    {
+        return verticalScrollbarTrack();
+    }
+    Rect verticalScrollbarThumbForTesting() const
+    {
+        return verticalScrollbarThumb();
+    }
     bool draggingClip() const @safe pure nothrow @nogc
     {
         return _pointerMode == PointerMode.clipDrag ||
@@ -774,6 +794,41 @@ final class TimelineWidget : Widget
     private void clampVerticalScroll()
     {
         _verticalScroll = clampInt(_verticalScroll, 0, maxVerticalScroll());
+    }
+
+    private Rect verticalScrollbarTrack() const
+    {
+        return Rect(bounds().width - VerticalScrollbarWidth, rulerHeight(),
+            VerticalScrollbarWidth, maxInt(0, bounds().height - rulerHeight()));
+    }
+
+    private Rect verticalScrollbarThumb() const
+    {
+        const track = verticalScrollbarTrack();
+        if (track.empty() || track.height <= 0) return Rect.init;
+        const viewport = maxInt(1, bounds().height - rulerHeight() - NewTrackDropGap);
+        const content = maxInt(1, contentTrackHeight());
+        const thumbHeight = clampInt(cast(int)
+            (cast(double) track.height * viewport / content + 0.5),
+            18, maxInt(18, track.height));
+        const travel = maxInt(1, track.height - thumbHeight);
+        const maximum = maxInt(1, maxVerticalScroll());
+        const y = track.y + travel * _verticalScroll / maximum;
+        return Rect(track.x, y, track.width, thumbHeight);
+    }
+
+    private void updateVerticalThumb(int pointerY)
+    {
+        const track = verticalScrollbarTrack();
+        const thumb = verticalScrollbarThumb();
+        if (track.empty() || thumb.empty()) return;
+        const travel = maxInt(1, track.height - thumb.height);
+        const y = clampInt(pointerY - _verticalThumbGrabOffset, track.y,
+            track.bottom() - thumb.height);
+        _verticalScroll = cast(int) (cast(double) (y - track.y) /
+            cast(double) travel * cast(double) maxVerticalScroll() + 0.5);
+        clampVerticalScroll();
+        invalidate();
     }
 
     private size_t rowForAddress(TrackAddress address) const
@@ -1340,14 +1395,15 @@ final class TimelineWidget : Widget
 
         if (maxVerticalScroll() > 0)
         {
-            const viewport = maxInt(1, bounds().height - rulerHeight() - NewTrackDropGap);
-            const thumbHeight = maxInt(18, viewport * viewport /
-                maxInt(1, contentTrackHeight()));
-            const travel = maxInt(1, viewport - thumbHeight);
-            const y = rulerHeight() + travel * _verticalScroll /
-                maxInt(1, maxVerticalScroll());
-            canvas.fillRoundedRect(Rect(bounds().width - 6, y, 4, thumbHeight),
-                2, palette.textMuted.withAlpha(135));
+            const track = verticalScrollbarTrack();
+            const thumb = verticalScrollbarThumb();
+            canvas.fillRect(track, Color.fromHex(0x10141a));
+            canvas.fillRect(Rect(track.x, track.y, 1, track.height),
+                palette.border.withAlpha(80));
+            canvas.fillRoundedRect(thumb, 2,
+                (_draggingVerticalThumb ? palette.text : palette.textMuted)
+                    .withAlpha(_draggingVerticalThumb ? 225 :
+                        (_verticalScrollbarHovered ? 190 : 150)));
         }
         canvas.strokeRect(full, palette.border.withAlpha(190), 1);
     }
@@ -1817,6 +1873,21 @@ final class TimelineWidget : Widget
             return true;
         }
 
+        // The vertical scrollbar is a full-width-right input target so the
+        // timeline can be moved up and down by dragging the thumb directly.
+        if (maxVerticalScroll() > 0 &&
+            verticalScrollbarTrack().contains(event.position))
+        {
+            const thumb = verticalScrollbarThumb();
+            _draggingVerticalThumb = true;
+            _verticalThumbGrabOffset = thumb.contains(event.position) ?
+                event.position.y - thumb.y : thumb.height / 2;
+            captureMouse();
+            setCursor(CursorKind.hand);
+            updateVerticalThumb(event.position.y);
+            return true;
+        }
+
         const toolIndex = toolIndexAt(event.position);
         if (toolIndex >= 0)
         {
@@ -1979,6 +2050,11 @@ final class TimelineWidget : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_draggingVerticalThumb)
+        {
+            updateVerticalThumb(event.position.y);
+            return true;
+        }
         if (_pointerMode == PointerMode.marqueeSelect)
         {
             _marqueeCurrent = event.position;
@@ -2099,7 +2175,15 @@ final class TimelineWidget : Widget
                 transitionPartAtPoint(hoverTrack, hoverIndex,
                     event.position) != TimelineSelectionPart.clip;
         }
-        if (overClipEdge || overTransitionBlock) setCursor(CursorKind.resizeHorizontal);
+        const overVerticalScrollbar = maxVerticalScroll() > 0 &&
+            verticalScrollbarTrack().contains(event.position);
+        if (overVerticalScrollbar != _verticalScrollbarHovered)
+        {
+            _verticalScrollbarHovered = overVerticalScrollbar;
+            invalidate();
+        }
+        if (overVerticalScrollbar) setCursor(CursorKind.hand);
+        else if (overClipEdge || overTransitionBlock) setCursor(CursorKind.resizeHorizontal);
         else if (overLabelResizeHandle(event.position)) setCursor(CursorKind.resizeHorizontal);
         else if (resizeTrackAtY(event.position.y, hoverTrack)) setCursor(CursorKind.resizeVertical);
         else restoreToolCursor();
@@ -2108,6 +2192,17 @@ final class TimelineWidget : Widget
 
     override bool onMouseUp(ref Event event)
     {
+        if (_draggingVerticalThumb)
+        {
+            if (event.button == MouseButton.left)
+                updateVerticalThumb(event.position.y);
+            _draggingVerticalThumb = false;
+            _verticalScrollbarHovered = false;
+            releaseMouse();
+            restoreToolCursor();
+            invalidate();
+            return true;
+        }
         if (event.button != MouseButton.left || _pointerMode == PointerMode.none)
             return false;
         const mode = _pointerMode;
@@ -2188,6 +2283,11 @@ final class TimelineWidget : Widget
             _hoverToolIndex = -1;
             invalidate();
         }
+        if (_verticalScrollbarHovered)
+        {
+            _verticalScrollbarHovered = false;
+            invalidate();
+        }
     }
 
     override bool onMouseWheel(ref Event event)
@@ -2230,7 +2330,8 @@ final class TimelineWidget : Widget
 
     override bool onKeyDown(ref Event event)
     {
-        if (event.key == Key.escape && (_externalDrag ||
+        if (event.key == Key.escape && (_draggingVerticalThumb ||
+            _externalDrag ||
             _pointerMode == PointerMode.clipDrag ||
             _pointerMode == PointerMode.clipResizeStart ||
             _pointerMode == PointerMode.clipResizeEnd ||
@@ -2244,6 +2345,8 @@ final class TimelineWidget : Widget
         {
             clearExternalDrag();
             clearGhost();
+            _draggingVerticalThumb = false;
+            _verticalScrollbarHovered = false;
             _pointerMode = PointerMode.none;
             releaseMouse();
             setCursor(CursorKind.arrow);

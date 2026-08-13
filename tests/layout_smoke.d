@@ -41,15 +41,18 @@ private void assertSequenceTimelineSeparatedFromStatus(SplitPane sequenceSplit,
         "Sequence scrollbar overlaps the status bar");
 }
 
-private void assertStatusProgressCentered(Widget statusBar, ProgressBar progress)
+private void assertStatusProgressDocked(Widget statusBar, ProgressBar progress)
 {
     const statusOrigin = statusBar.localToGlobal(Point(0, 0));
     const progressOrigin = progress.localToGlobal(Point(0, 0));
-    const statusCenter = statusOrigin.x + statusBar.bounds().width / 2;
-    const progressCenter = progressOrigin.x + progress.bounds().width / 2;
-    const delta = statusCenter >= progressCenter ?
-        statusCenter - progressCenter : progressCenter - statusCenter;
-    assert(delta <= 1, "Status loading bar is not centered");
+    const statusRight = statusOrigin.x + statusBar.bounds().width;
+    const progressRight = progressOrigin.x + progress.bounds().width;
+    // The status bar anchors the loading bar to its right edge inside the
+    // 8px inset rather than centering it; the status text owns the left side.
+    assert(progressRight <= statusRight && progressRight >= statusRight - 12,
+        "Status loading bar is not docked to the right edge of the status area");
+    assert(progressOrigin.x >= statusOrigin.x,
+        "Status loading bar starts before the status area");
     assert(progressOrigin.y >= statusOrigin.y &&
         progressOrigin.y + progress.bounds().height <=
             statusOrigin.y + statusBar.bounds().height,
@@ -81,13 +84,13 @@ int main()
     assert(driver.paint(), "Default editor paint failed");
     assertSequenceTimelineSeparatedFromStatus(sequenceSplit, timeline,
         timelineScrollbar, statusBar);
-    assertStatusProgressCentered(statusBar, statusProgress);
+    assertStatusProgressDocked(statusBar, statusProgress);
 
     driver.resize(Size(options.width, 520));
     assert(driver.paint(), "Compact editor paint failed");
     assertSequenceTimelineSeparatedFromStatus(sequenceSplit, timeline,
         timelineScrollbar, statusBar);
-    assertStatusProgressCentered(statusBar, statusProgress);
+    assertStatusProgressDocked(statusBar, statusProgress);
 
     return 0;
 }

@@ -1,5 +1,31 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Cut: timeline vertical scrollbar is too thin and not draggable
+- [x] User: the timeline's vertical scrollbar is basically unusable — too thin
+      and there is no way to grab it, so moving up/down the timeline only works
+      with the mouse wheel.
+- [x] Fixed in `source/auroracut/timeline.d`: widened the right-edge scrollbar
+      from 4px to a 12px track with an opaque background and a left border, and
+      made it a real input target. Left-click on the thumb drags the timeline
+      vertically; a click on the track jumps the thumb to the pointer; hover
+      shows the `hand` cursor; Escape cancels an active drag.
+- [x] Covered by `tests/editor_smoke.d` (new vertical-scrollbar drag block: wide
+      track, drag-to-bottom reaches `maxVerticalScrollForTesting`, mouse-up
+      exits drag mode).
+- [x] While fixing the smoke suite, two pre-existing stale failures were also
+      repaired and verified against the clean base commit (both reproduce on
+      HEAD before any of these changes):
+      - `tests/editor_smoke.d` ListView scrollbar block: it asserted drag mode
+        from a track click, but the vendored `Scrollbar` pages on a track click
+        and drags only from the thumb. Rewritten to drive the thumb directly.
+      - `tests/layout_smoke.d`: `status-progress` id was missing on the editor
+        status-bar `ProgressBar` (restored in `source/auroracut/editor.d`), and
+        the "centered" assertion never matched the anchor-right layout;
+        renamed to `assertStatusProgressDocked`.
+- [x] Verified: `dmd -i -version=AuroraHeadless ...` compile + run of
+      `tests/editor_smoke.d` (passes, prints the final "smoke test passed"
+      line) and `tests/layout_smoke.d` (passes) on Windows.
+
 ## 2026-08-12 — Aurora Cut: RUN-WINDOWS.bat exits immediately with "Program exited with code 1"
 - [x] User: `RUN-WINDOWS.bat` builds and prints all startup stages then exits
       with `Error Program exited with code 1`; the editor window never stays.
