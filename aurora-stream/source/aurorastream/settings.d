@@ -121,6 +121,15 @@ private BroadcastSettings settingsFromJson(string source)
         settings.programCanvasEnabled);
     settings.liveSourcePreviewEnabled = jsonBool(root,
         "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
+
+    const cachedNames = "deviceDisplayNameCache" in root;
+    if (cachedNames !is null && cachedNames.type == JSONType.object)
+    {
+        foreach (deviceId, value; cachedNames.object)
+            if (deviceId.length > 0 && value.type == JSONType.string &&
+                value.str.length > 0)
+                settings.deviceDisplayNameCache[deviceId] = value.str;
+    }
     const canvasSources = "programCanvasSources" in root;
     if (canvasSources !is null && canvasSources.type == JSONType.array)
         settings.programCanvasSources = programSourcesFromJson(*canvasSources);
@@ -201,6 +210,13 @@ private string settingsToJson(BroadcastSettings settings)
     root["programCanvasSources"] =
         programSourcesToJson(settings.programCanvasSources);
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
+    if (settings.deviceDisplayNameCache.length > 0)
+    {
+        JSONValue cache = JSONValue.emptyObject;
+        foreach (deviceId, name; settings.deviceDisplayNameCache)
+            cache[deviceId] = name;
+        root["deviceDisplayNameCache"] = cache;
+    }
     return root.toPrettyString() ~ "\n";
 }
 
@@ -361,4 +377,27 @@ unittest
         `"desktopAudioDevice":"{ignored-render-endpoint-id}"}`);
     assert(!explicitlyDisabledAudio.desktopAudioEnabled);
     assert(explicitlyDisabledAudio.desktopAudioDevice.length == 0);
+}
+
+unittest
+{
+    // Device-name cache round-trips, and a missing cache loads as empty.
+    BroadcastSettings source;
+    source.deviceDisplayNameCache["{render-id}"] = "Speakers (USB)";
+    source.deviceDisplayNameCache["@device_cm_mic"] = "Microphone (USB Audio)";
+
+    const restored = settingsFromJson(settingsToJson(source));
+    assert(restored.deviceDisplayNameCache.length == 2);
+    assert(restored.deviceDisplayNameCache["{render-id}"] == "Speakers (USB)");
+    assert(restored.deviceDisplayNameCache["@device_cm_mic"] ==
+        "Microphone (USB Audio)");
+
+    const withoutCache = settingsFromJson(`{"schemaVersion":5}`);
+    assert(withoutCache.deviceDisplayNameCache.length == 0);
+
+    // Invalid cache entries are ignored instead of crashing.
+    const badCache = settingsFromJson(
+        `{"schemaVersion":5,"deviceDisplayNameCache":{"ok":"Name","bad":7}}`);
+    assert(badCache.deviceDisplayNameCache.length == 1);
+    assert(badCache.deviceDisplayNameCache["ok"] == "Name");
 }

@@ -14,6 +14,7 @@ final class AudioDeviceDropdown : Button
     private AudioEndpoint[] _devices;
     private bool _devicesKnown;
     private string _emptyMessage;
+    private string[string] _nameCache;
 
     void delegate(string selectedDevice) onChanged;
 
@@ -90,6 +91,24 @@ final class AudioDeviceDropdown : Button
         return true;
     }
 
+    /// Supplies the persistent identifier → name cache so a temporarily
+    /// disconnected selection keeps showing its real name instead of a raw ID.
+    void setNameCache(string[string] cache)
+    {
+        _nameCache.clear();
+        foreach (deviceId, name; cache)
+            if (deviceId.length > 0 && name.length > 0)
+                _nameCache[deviceId] = name;
+        updateCaption();
+    }
+
+    private string unavailableName() const
+    {
+        const name = _selectedDevice in _nameCache;
+        if (name !is null && (*name).length > 0) return *name;
+        return _selectedDevice;
+    }
+
     private ptrdiff_t findDeviceIndex(string value) const
     {
         foreach (index, device; _devices)
@@ -105,6 +124,7 @@ final class AudioDeviceDropdown : Button
     private void updateCaption()
     {
         string caption;
+        bool unavailable;
         if (_selectedDevice.length == 0)
         {
             caption = "Disabled";
@@ -115,12 +135,16 @@ final class AudioDeviceDropdown : Button
             if (index >= 0)
                 caption = _devices[cast(size_t) index].label;
             else if (_devicesKnown)
-                caption = "Unavailable — " ~ _selectedDevice;
+            {
+                caption = "Unavailable — " ~ unavailableName();
+                unavailable = true;
+            }
             else
                 caption = _selectedDevice;
         }
 
         setText(caption ~ "  ▼");
+        setDanger(unavailable);
         layoutHints().minWidth = 280;
         layoutHints().preferredWidth = 500;
     }
@@ -143,7 +167,7 @@ final class AudioDeviceDropdown : Button
             immutable unavailable = _selectedDevice.idup;
             items ~= ContextMenuItem.separatorItem();
             items ~= ContextMenuItem.check(
-                "Saved but unavailable: " ~ unavailable,
+                "Saved but unavailable: " ~ unavailableName(),
                 true,
                 delegate() { setSelectedDevice(unavailable); });
         }

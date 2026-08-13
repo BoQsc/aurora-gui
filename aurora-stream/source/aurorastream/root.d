@@ -2,6 +2,7 @@ module aurorastream.root;
 
 import aurora;
 import aurorastream.appversion : appDisplayName;
+import aurorastream.audioendpoint : AudioEndpoint;
 import aurorastream.audiodevices : AudioDeviceScanner;
 import aurorastream.browser : openExternalUrl, openPacingDiagnostic;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
@@ -16,6 +17,7 @@ import aurorastream.programcanvas : ProgramCanvasEditor, ProgramCanvasPreview,
     ProgramSource;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
+import aurorastream.wasapi : AudioDeviceNotifications;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : dur, msecs;
@@ -32,6 +34,11 @@ final class StreamRoot : VBox
     private CaptureSelection _capture;
     private BroadcastWorker _worker;
     private AudioDeviceScanner _audioScanner;
+    private AudioDeviceNotifications _audioNotifications;
+    private string[string] _deviceNameCache;
+    private bool _pendingAudioRescan;
+    private double _audioRescanTimer = 0.0; // D floats default to NaN; explicit 0.0
+    private enum double audioRescanIntervalSeconds = 8.0;
 
     private SourceQualityDropdown _sourceQuality;
     private CheckBox _programCanvasEnabled;
@@ -102,6 +109,7 @@ final class StreamRoot : VBox
         _window = window;
         _worker = new BroadcastWorker(executablePath);
         _audioScanner = new AudioDeviceScanner();
+        _audioNotifications = new AudioDeviceNotifications();
         _encoder = detectEncoder();
         _capture = detectCaptureBackend(_encoder);
 
@@ -116,6 +124,9 @@ final class StreamRoot : VBox
         // live desktop capture by surprise.
         _programCanvasVisible = saved.programCanvasEnabled;
         _liveSourcePreviewEnabled = saved.liveSourcePreviewEnabled;
+        foreach (deviceId, name; saved.deviceDisplayNameCache)
+            if (deviceId.length > 0 && name.length > 0)
+                _deviceNameCache[deviceId] = name;
         _settingsMessage = settingsLoadMessage;
         _settingsLoadFailed = !settingsLoaded &&
             settingsLoadMessage.startsWith("Could not load");
@@ -308,6 +319,11 @@ final class StreamRoot : VBox
         audioHint.layoutHints().flex = 1.0;
         audioHint.layoutHints().preferredHeight = 36;
 
+        // Restore cached device names so a selection made in a previous session
+        // shows its real name even before the first scan completes.
+        _desktopAudio.setNameCache(_deviceNameCache);
+        _microphone.setNameCache(_deviceNameCache);
+
         _settingsScroll = new ScrollView(settingsContent);
         _settingsScroll.layoutHints().preferredWidth = 560;
         _settingsScroll.layoutHints().minWidth = 450;
@@ -384,6 +400,7 @@ final class StreamRoot : VBox
         updateQualitySummary();
         updateCanvasPreview();
         refreshAudioDevices(false);
+        _audioNotifications.start();
 
         _previewCaptureMutex = new Mutex();
         _previewCapturer = new DesktopPreviewCapturer(previewCaptureWidth,
@@ -616,10 +633,10 @@ final class StreamRoot : VBox
         return dropdown;
     }
 
-    private void refreshAudioDevices(bool announce)
+    private void refreshAudioDevices(bool announce, bool background = false)
     {
         if (!_audioScanner.start()) return;
-        if (_refreshAudioDevices !is null)
+        if (!background && _refreshAudioDevices !is null)
         {
             _refreshAudioDevices.setText("Refreshing audio devices…");
             _refreshAudioDevices.setEnabled(false);
@@ -758,6 +775,9 @@ final class StreamRoot : VBox
         settings.programCanvasEnabled = _programCanvasEnabled.checked();
         settings.programCanvasSources = _programSources.dup;
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
+        settings.deviceDisplayNameCache.clear();
+        foreach (deviceId, name; _deviceNameCache)
+            settings.deviceDisplayNameCache[deviceId] = name;
         return settings;
     }
 
@@ -919,9 +939,60 @@ final class StreamRoot : VBox
     {
         updateLiveSourcePreview(deltaSeconds);
         auto audioScan = _audioScanner.snapshot();
+
+        // A Windows audio device notification (device added/removed/state
+        // changed) triggers a background rescan so the lists never go stale
+        // while the program runs. The scan is serialized by the scanner.
+        if (_audioNotifications !is null && _audioNotifications.consumeChanged())
+            _pendingAudioRescan = true;
+
+        // A periodic safety-net rescan guarantees device changes are noticed
+        // even if the Core Audio notification path is unavailable, so a
+        // disconnected endpoint always shows up as Unavailable within the
+        // interval.
+        _audioRescanTimer += deltaSeconds;
+        if (_audioRescanTimer >= audioRescanIntervalSeconds)
+        {
+            _audioRescanTimer = 0;
+            _pendingAudioRescan = true;
+        }
+        if (_pendingAudioRescan && !audioScan.running)
+        {
+            _pendingAudioRescan = false;
+            refreshAudioDevices(false, true);
+        }
+
         if (audioScan.generation != _audioDeviceGeneration)
         {
             _audioDeviceGeneration = audioScan.generation;
+
+            // Refresh the persistent identifier → name cache from every
+            // successful scan so a temporarily disconnected device keeps its
+            // real name in the selectors.
+            bool cacheGrew;
+            void remember(const AudioEndpoint[] devices)
+            {
+                foreach (device; devices)
+                {
+                    if (device.inputName.length == 0 ||
+                        device.displayName.length == 0) continue;
+                    const existing = device.inputName in _deviceNameCache;
+                    if (existing is null || *existing != device.displayName)
+                    {
+                        _deviceNameCache[device.inputName] = device.displayName;
+                        cacheGrew = true;
+                    }
+                }
+            }
+            remember(audioScan.desktopDevices);
+            remember(audioScan.microphoneDevices);
+            if (cacheGrew)
+            {
+                _desktopAudio.setNameCache(_deviceNameCache);
+                _microphone.setNameCache(_deviceNameCache);
+                markSettingsDirty();
+            }
+
             _desktopAudio.setDevices(audioScan.desktopDevices);
             _microphone.setDevices(audioScan.microphoneDevices);
             if (_selectDefaultDesktopAudio &&
@@ -1039,6 +1110,7 @@ final class StreamRoot : VBox
             try _previewCaptureThread.join();
             catch (Exception) {}
         }
+        if (_audioNotifications !is null) _audioNotifications.shutdown();
         saveSettingsNow();
         _audioScanner.shutdown();
         _worker.shutdown();

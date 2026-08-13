@@ -209,10 +209,23 @@ final class AudioDeviceScanner
     {
         Thread completed;
         _mutex.lock();
-        if (_running || _shutdown)
+        if (_shutdown)
         {
             _mutex.unlock();
             return false;
+        }
+        if (_running)
+        {
+            // Recover a wedged scan: if the scan thread died without clearing
+            // the running flag (an exception escaped runScan), clear it so
+            // future rescans can proceed instead of blocking forever.
+            if (_thread is null || !_thread.isRunning)
+                _running = false;
+            else
+            {
+                _mutex.unlock();
+                return false;
+            }
         }
         completed = _thread;
         _thread = null;
@@ -282,7 +295,18 @@ final class AudioDeviceScanner
 
     private void runScan()
     {
-        auto result = scanAudioDevices();
+        AudioDeviceScanResult result;
+        try
+        {
+            result = scanAudioDevices();
+        }
+        catch (Exception scanError)
+        {
+            // Never let an enumeration failure leave the scanner permanently
+            // "running", or every later rescan would be silently skipped.
+            result.desktopError = scanError.msg;
+            result.microphoneError = scanError.msg;
+        }
         _mutex.lock();
         if (!_shutdown)
         {

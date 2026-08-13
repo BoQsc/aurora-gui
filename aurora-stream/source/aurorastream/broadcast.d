@@ -104,6 +104,12 @@ struct BroadcastSettings
     // grab) so the broadcaster doubles as a monitor. Toggled off to save
     // CPU/energy; it never changes what is streamed.
     bool liveSourcePreviewEnabled = true;
+
+    // Cache of stable audio device identifier → friendly name. Kept so a
+    // temporarily disconnected device still shows its real name in the
+    // selectors instead of a raw backend ID. Updated from every successful
+    // device scan and persisted with the settings.
+    string[string] deviceDisplayNameCache;
 }
 
 struct BroadcastSnapshot

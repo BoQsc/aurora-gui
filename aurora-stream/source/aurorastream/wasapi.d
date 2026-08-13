@@ -1,6 +1,7 @@
 module aurorastream.wasapi;
 
 import aurorastream.audioendpoint : AudioEndpoint;
+import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : msecs;
 import std.file : exists, write;
@@ -89,6 +90,28 @@ version (Windows)
     private alias BOOL = int;
     private alias HANDLE = void*;
     private alias REFERENCE_TIME = long;
+    private alias HWND = void*;
+    private alias WPARAM = size_t;
+    private alias LPARAM = ptrdiff_t;
+    private alias LONG = int;
+    private alias LONG_PTR = ptrdiff_t;
+    private alias LRESULT = LONG_PTR;
+
+    private struct PointT
+    {
+        LONG x;
+        LONG y;
+    }
+
+    private struct MsgT
+    {
+        HWND hwnd;
+        UINT message;
+        WPARAM wParam;
+        LPARAM lParam;
+        DWORD time;
+        PointT pt;
+    }
 
     private struct Guid
     {
@@ -129,6 +152,9 @@ version (Windows)
     private immutable Guid iidIAudioCaptureClient = makeGuid(
         0xc8adbd64, 0xe71e, 0x48a0,
         0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17);
+    private immutable Guid iidIMMNotificationClient = makeGuid(
+        0x7991eec9, 0x7e89, 0x4d85,
+        0x83, 0x90, 0x6c, 0x70, 0x3c, 0xec, 0x60, 0xc0);
     private immutable Guid pkeyDeviceFriendlyNameGuid = makeGuid(
         0xa45c254e, 0xdf1c, 0x4efd,
         0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0);
@@ -182,6 +208,10 @@ version (Windows)
             int dataFlow, int role, void** endpoint);
         alias EnumeratorGetDevice = HRESULT function(void* object,
             const(wchar)* endpointId, void** endpoint);
+        alias EnumeratorRegisterNotification = HRESULT function(void* object,
+            void* client);
+        alias EnumeratorUnregisterNotification = HRESULT function(void* object,
+            void* client);
         alias CollectionGetCount = HRESULT function(void* object, UINT* count);
         alias CollectionItem = HRESULT function(void* object, UINT index,
             void** endpoint);
@@ -224,6 +254,12 @@ version (Windows)
             BOOL initialState, const(wchar)* name);
         DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);
         BOOL CloseHandle(HANDLE handle);
+        BOOL PeekMessageW(MsgT* message, HWND hwnd, UINT filterMin,
+            UINT filterMax, UINT removeMode);
+        BOOL TranslateMessage(const MsgT* message);
+        LRESULT DispatchMessageW(const MsgT* message);
+        DWORD MsgWaitForMultipleObjectsEx(DWORD count, const(HANDLE)* handles,
+            DWORD timeout, DWORD wakeMask, DWORD flags);
         HANDLE AvSetMmThreadCharacteristicsW(const(wchar)* taskName,
             DWORD* taskIndex);
         BOOL AvSetMmThreadPriority(HANDLE avrtHandle, int priority);
@@ -231,12 +267,19 @@ version (Windows)
     }
 
     private enum DWORD coinitMultithreaded = 0x0;
+    private enum DWORD coinitApartmentThreaded = 0x2;
     private enum DWORD classContextAll = 0x17;
     private enum DWORD deviceStateActive = 0x1;
     private enum int dataFlowRender = 0;
     private enum int roleMultimedia = 1;
     private enum DWORD storageRead = 0;
     private enum ushort variantWideString = 31;
+    private enum UINT pmRemove = 0x1;
+    private enum DWORD qsAllInput = 0x04ff;
+    private enum DWORD mwmoInputAvailable = 0x4;
+    private enum UINT wmQuit = 0x0012;
+    private enum HRESULT eNoInterface = cast(HRESULT) 0x80004002;
+    private enum HRESULT ePointer = cast(HRESULT) 0x80004003;
 
     private enum ushort waveFormatPcm = 0x0001;
     private enum int audioClientShareModeShared = 0;
@@ -476,6 +519,279 @@ version (Windows)
             if (comInitialized) CoUninitialize();
         }
         return result;
+    }
+
+    /// Minimal IMMNotificationClient implementation backed by a D struct. The
+    /// COM object pointer is the struct address; its first member is the vtable
+    /// pointer, matching the IUnknown layout Windows expects.
+    private struct NotificationClient
+    {
+        void** vtable;
+        ulong refCount;
+        void delegate() onChanged;
+    }
+
+    private bool equalGuid(const Guid* a, const Guid* b) @safe pure nothrow @nogc
+    {
+        if (a is null || b is null) return false;
+        return a.data1 == b.data1 && a.data2 == b.data2 &&
+            a.data3 == b.data3 && a.data4 == b.data4[];
+    }
+
+    private extern (Windows)
+    HRESULT notificationQueryInterface(void* self, const Guid* iid, void** result)
+    {
+        if (result is null) return ePointer;
+        if (iid !is null && equalGuid(iid, &iidIMMNotificationClient))
+        {
+            *result = self;
+            notificationAddRef(self);
+            return 0;
+        }
+        *result = null;
+        return eNoInterface;
+    }
+
+    private extern (Windows)
+    ULONG notificationAddRef(void* self)
+    {
+        auto client = cast(NotificationClient*) self;
+        ++client.refCount;
+        return cast(ULONG) client.refCount;
+    }
+
+    private extern (Windows)
+    ULONG notificationRelease(void* self)
+    {
+        auto client = cast(NotificationClient*) self;
+        if (client.refCount > 0) --client.refCount;
+        // The D GC owns the object's memory; Release only tracks COM
+        // references until the enumerator drops its reference on unregister.
+        return cast(ULONG) client.refCount;
+    }
+
+    private void notificationChanged(void* self)
+    {
+        auto client = cast(NotificationClient*) self;
+        if (client.onChanged !is null) client.onChanged();
+    }
+
+    private extern (Windows)
+    HRESULT notificationOnDeviceStateChanged(void* self, const(wchar)* deviceId,
+        DWORD newState)
+    {
+        notificationChanged(self);
+        return 0;
+    }
+
+    private extern (Windows)
+    HRESULT notificationOnDeviceAdded(void* self, const(wchar)* deviceId)
+    {
+        notificationChanged(self);
+        return 0;
+    }
+
+    private extern (Windows)
+    HRESULT notificationOnDeviceRemoved(void* self, const(wchar)* deviceId)
+    {
+        notificationChanged(self);
+        return 0;
+    }
+
+    private extern (Windows)
+    HRESULT notificationOnDefaultDeviceChanged(void* self, int dataFlow,
+        int role, const(wchar)* deviceId)
+    {
+        notificationChanged(self);
+        return 0;
+    }
+
+    private extern (Windows)
+    HRESULT notificationOnPropertyValueChanged(void* self,
+        const(wchar)* deviceId, const PropertyKey* key)
+    {
+        notificationChanged(self);
+        return 0;
+    }
+
+    private __gshared void*[8] notificationClientVtable = [
+        cast(void*) &notificationQueryInterface,
+        cast(void*) &notificationAddRef,
+        cast(void*) &notificationRelease,
+        cast(void*) &notificationOnDeviceStateChanged,
+        cast(void*) &notificationOnDeviceAdded,
+        cast(void*) &notificationOnDeviceRemoved,
+        cast(void*) &notificationOnDefaultDeviceChanged,
+        cast(void*) &notificationOnPropertyValueChanged,
+    ];
+
+    /**
+     * Listens for Windows audio device additions, removals, and state changes
+     * through Core Audio's IMMNotificationClient and flags when the app should
+     * rescan its device lists, so newly connected or disconnected devices are
+     * picked up while the program is running instead of going stale.
+     *
+     * Notifications are delivered as STA messages, so the listener runs a small
+     * message pump on its own thread. It is best-effort: if registration fails
+     * (no Core Audio, restricted session, ...), the app simply keeps using the
+     * startup scan and the manual Refresh button.
+     */
+    final class AudioDeviceNotifications
+    {
+        private Mutex _mutex;
+        private Thread _thread;
+        private bool _running;
+        private bool _changed;
+        private NotificationClient* _client;
+        private void* _enumerator;
+
+        this()
+        {
+            _mutex = new Mutex();
+        }
+
+        bool start()
+        {
+            _mutex.lock();
+            if (_running || _thread !is null)
+            {
+                _mutex.unlock();
+                return false;
+            }
+            _running = true;
+            _changed = false;
+            _mutex.unlock();
+
+            try
+            {
+                auto worker = new Thread({ runLoop(); });
+                worker.isDaemon = true;
+                _mutex.lock();
+                _thread = worker;
+                _mutex.unlock();
+                worker.start();
+                return true;
+            }
+            catch (Exception)
+            {
+                _mutex.lock();
+                _running = false;
+                _thread = null;
+                _mutex.unlock();
+                return false;
+            }
+        }
+
+        void shutdown()
+        {
+            Thread worker;
+            _mutex.lock();
+            _running = false;
+            worker = _thread;
+            _thread = null;
+            _mutex.unlock();
+            if (worker !is null)
+            {
+                try worker.join();
+                catch (Exception) {}
+            }
+        }
+
+        /// True when a device change was reported since the last call. Polled
+        /// from the UI thread; reading clears the flag.
+        bool consumeChanged()
+        {
+            _mutex.lock();
+            scope (exit) _mutex.unlock();
+            const changed = _changed;
+            _changed = false;
+            return changed;
+        }
+
+        private void notifyChanged()
+        {
+            _mutex.lock();
+            _changed = true;
+            _mutex.unlock();
+        }
+
+        private void runLoop()
+        {
+            bool comInitialized;
+            void* enumerator;
+            try
+            {
+                checkResult("CoInitializeEx(device notifications)",
+                    CoInitializeEx(null, coinitApartmentThreaded));
+                comInitialized = true;
+
+                checkResult("CoCreateInstance(MMDeviceEnumerator)",
+                    CoCreateInstance(&clsidMMDeviceEnumerator, null,
+                        classContextAll, &iidIMMDeviceEnumerator, &enumerator));
+                _mutex.lock();
+                _enumerator = enumerator;
+                _mutex.unlock();
+
+                auto client = new NotificationClient;
+                client.vtable = cast(void**) &notificationClientVtable[0];
+                client.refCount = 1;
+                client.onChanged = delegate() { notifyChanged(); };
+
+                auto registerClient = cast(EnumeratorRegisterNotification)
+                    methodPointer(enumerator, 7);
+                checkResult(
+                    "IMMDeviceEnumerator.RegisterEndpointNotificationCallback",
+                    registerClient(enumerator, client));
+                _mutex.lock();
+                _client = client;
+                _mutex.unlock();
+
+                // STA notifications arrive as posted messages; pump them and
+                // wake on input or a short timeout so shutdown is noticed.
+                while (true)
+                {
+                    _mutex.lock();
+                    const running = _running;
+                    _mutex.unlock();
+                    if (!running) break;
+
+                    MsgWaitForMultipleObjectsEx(0, null, 250, qsAllInput,
+                        mwmoInputAvailable);
+                    MsgT message;
+                    while (PeekMessageW(&message, null, 0, 0, pmRemove))
+                    {
+                        if (message.message == wmQuit)
+                        {
+                            _mutex.lock();
+                            _running = false;
+                            _mutex.unlock();
+                            break;
+                        }
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+
+                auto unregisterClient = cast(EnumeratorUnregisterNotification)
+                    methodPointer(enumerator, 8);
+                if (unregisterClient !is null && client !is null)
+                    unregisterClient(enumerator, client);
+            }
+            catch (Exception)
+            {
+                // Best-effort: without Core Audio notifications the app still
+                // rescans on startup and via the manual Refresh button.
+            }
+            finally
+            {
+                _mutex.lock();
+                _client = null;
+                _enumerator = null;
+                _mutex.unlock();
+                releaseCom(enumerator);
+                if (comInitialized) CoUninitialize();
+            }
+        }
     }
 
     private ulong clockMicroseconds(long frequency)

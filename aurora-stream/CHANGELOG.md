@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Fixed the periodic audio-device auto-rescan never running: `_audioRescanTimer`
+  was D-default NaN (D floats initialize to NaN, not 0), so `NaN >= interval`
+  was never true and disconnected/reconnected devices were not picked up while
+  the app ran. The timer is now explicitly `0.0`; the audio-device lists refresh
+  every 8 seconds (verified: ffmpeg DirectShow scans fire on schedule).
+- A disconnected audio device now shows a clear **Unavailable** state: the
+  device selectors turn the selected endpoint's caption into
+  "Unavailable — <cached name>" and highlight it (danger style) as soon as a
+  scan finds it missing. Detection is guaranteed by an 8-second safety-net
+  auto-rescan that runs while the app is open (in addition to Core Audio
+  `IMMNotificationClient` callbacks), so unplugging headphones or a mic is
+  reflected within the interval even on systems where the notification path is
+  unavailable.
+- Audio device selectors now keep friendly names for disconnected devices: a
+  persistent device-identifier → name cache is filled from every scan and
+  saved in the settings file, so a temporarily unplugged speaker/mic still
+  shows "Unavailable — Headphones (High Definition Audio Device)" instead of a
+  raw backend ID, even across restarts.
+- The app now listens for Windows audio device add/remove/state changes
+  through Core Audio's `IMMNotificationClient` (`AudioDeviceNotifications` in
+  wasapi.d) and auto-rescans the desktop/microphone lists while running, so
+  newly connected or disconnected devices no longer leave the selectors stale;
+  the manual Refresh button remains for edge cases.
 - The **LIVE SOURCE CANVAS** live preview now captures at the preview panel's
   own resolution (tracked on resize, 16:9, capped at 1280×720) instead of a
   fixed 480×270 buffer, so the desktop is shown sharp at ~1:1 rather than

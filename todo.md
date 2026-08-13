@@ -1,5 +1,47 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: device stayed "Unavailable" after reconnecting
+- [x] User: "I don't know I reinserted the headphones device and it keeps
+      visibly showing as unavailable."
+- [x] Diagnosed: a WASAPI state dump showed the headphones ACTIVE with the same
+      endpoint ID, and the app's own `AudioDeviceScanner` returned them — so a
+      rescan WOULD clear the state. The periodic rescan simply never ran.
+- [x] Root cause (found via temporary instrumentation): `_audioRescanTimer` was
+      D-default **NaN** (D floats initialize to NaN, not 0.0), so
+      `_audioRescanTimer += deltaSeconds` stayed NaN and `NaN >= 8.0` was never
+      true → the 8 s safety-net rescan never triggered. Fixed with explicit
+      `= 0.0` initialization.
+- [x] Also hardened the scanner: `AudioDeviceScanner.start()` now recovers a
+      wedged scan thread (clears `_running` if the thread died without
+      resetting it) and `runScan` wraps enumeration in try/catch so `_running`
+      always resets — a stuck scan can no longer block all future rescans.
+- [x] Verified: `dub test` 39 modules pass; with the fix the app spawns the
+      periodic ffmpeg DirectShow scans every ~8 s (3 unique ffmpeg PIDs in 22 s
+      of 100 ms sampling); app + titlebar build; clean `CloseMainWindow()`.
+
+## 2026-08-13 — Aurora Stream: no indication when a selected device is disconnected
+- [x] User: "I just disconnected headphones and no indication that it is no
+      longer available."
+- [x] Diagnosed with a standalone WASAPI state dump: the selected desktop
+      endpoint `{0.0.0.00000000}.{5d7a565c-...}` ("Headphones (High Definition
+      Audio Device)") became **UNPLUGGED** (state 0x8) and dropped out of the
+      active-only enumeration (only Speakers remained). So Windows DID report
+      the change; the app's auto-rescan simply never ran — the Core Audio
+      IMMNotificationClient path was not delivering a rescan trigger.
+- [x] Fixes:
+  - **Guaranteed detection**: `root.d` now runs a periodic safety-net
+    audio rescan every 8 s (`_audioRescanTimer` → `_pendingAudioRescan` →
+    `refreshAudioDevices(false, true)`), so device removals are reflected
+    within the interval even if `AudioDeviceNotifications` is unavailable.
+    Background rescans are silent (no Refresh-button flicker) via the new
+    `background` parameter.
+  - **Visible indication**: `AudioDeviceDropdown.updateCaption` now renders an
+    unavailable selection as "Unavailable — <cached name>" and calls
+    `setDanger(true)` so the selector turns red until the device returns.
+- [x] Verified: `dub test` 39 modules pass; app + titlebar configs build; app
+      stable across multiple 8 s rescan cycles (~10.6% of one core incl. the
+      periodic ffmpeg dshow enumeration); clean `CloseMainWindow()`.
+
 ## 2026-08-13 — Icons embedded in the single-exe releases (aurora-cut + aurora-stream)
 - [x] Runtime icon: `bundledicon.d` (auroracut/aurorastream) embeds the app's
       `.ico` bytes (`version (BundledFfmpeg)` + stringImportPaths `assets`),

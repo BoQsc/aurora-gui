@@ -394,7 +394,6 @@ The **Desktop audio (Windows WASAPI loopback)** dropdown lists active playback e
 The **Microphone (FFmpeg DirectShow)** dropdown separately lists recording/capture inputs reported by FFmpeg. Duplicate visible names remain distinct because Aurora Stream stores FFmpeg's alternative DirectShow identifier.
 
 Both dropdowns start with **Disabled** and can be used independently:
-
 - Both disabled: silent stereo AAC is generated so the stream still has a valid audio track.
 - Desktop only: game/system playback from the selected Speakers or Headphones endpoint.
 - Microphone only: the selected DirectShow recording input.
@@ -402,7 +401,7 @@ Both dropdowns start with **Disabled** and can be used independently:
 
 The helper uses event-driven shared-mode loopback and one preallocated 200 ms PCM queue. One helper thread waits on the Windows audio event until the next absolute 20 ms output deadline, drains every available endpoint packet, and sends exactly one RTP packet for that interval. Missing frames remain silent; overflow and late scheduling discard stale audio rather than blocking or burst-delivering it. Only the independently clocked DirectShow microphone uses FFmpeg wall-clock timestamps.
 
-Use **Refresh audio devices** after connecting, removing, or changing hardware. The selected Windows render-endpoint ID and DirectShow microphone ID are saved in `aurora-stream-settings.json`. A temporarily missing endpoint remains visible as **Saved but unavailable**.
+Use **Refresh audio devices** after connecting, removing, or changing hardware. The selected Windows render-endpoint ID and DirectShow microphone ID are saved in `aurora-stream-settings.json`. A temporarily missing endpoint remains visible as **Saved but unavailable** with its cached name (a persistent device-ID → name cache is saved in the settings file, so it survives restarts). Aurora Stream also registers with Windows Core Audio (`IMMNotificationClient`) and automatically rescans both lists whenever audio devices are added, removed, or change state, so the selectors stay current while the program is running.
 
 ### Audio-device diagnostic
 
