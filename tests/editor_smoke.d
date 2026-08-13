@@ -221,6 +221,24 @@ private bool waitForPlaybackReady(EditorRoot editor, PreviewWidget preview)
     return false;
 }
 
+/// Loop playback advances to `nearEnd`, wraps back below `belowAfter`, and is
+/// still running after the wrap.
+private bool waitForLoopWrap(EditorRoot editor, double nearEnd, double belowAfter,
+    int iterations = 1_800)
+{
+    bool reachedEnd;
+    foreach (_; 0 .. iterations)
+    {
+        editor.tickTree(0.02);
+        const position = editor.playbackPositionForTesting();
+        if (position >= nearEnd) reachedEnd = true;
+        if (reachedEnd && position <= belowAfter)
+            return editor.playbackRunningForTesting();
+        Thread.sleep(20.msecs);
+    }
+    return false;
+}
+
 private bool waitForRenderIdle(EditorRoot editor, int iterations = 1_200)
 {
     foreach (_; 0 .. iterations)
@@ -1441,6 +1459,47 @@ int main(string[] arguments)
     driver.pressKey(Key.escape);
 
     writeln("[editor-smoke] non-blocking edits");
+
+    // Loop playback repeats between the work-area In/Out markers: the transport
+    // stays confined to [In, Out] and wraps back to In at the Out marker
+    // instead of stopping.
+    {
+        auto loopButton = requireWidget!Button(editor, "loop-preview");
+        assert(loopButton !is null, "Loop button is missing from the transport");
+        assert(!editor.loopEnabledForTesting(),
+            "Loop playback was enabled before the loop test");
+
+        driver.click(globalCenter(loopButton));
+        assert(editor.loopEnabledForTesting(),
+            "Loop button did not enable loop playback");
+
+        editor.setWorkInForTesting(0.5);
+        editor.setWorkOutForTesting(0.9);
+        timeline.setPlayhead(0.5, false);
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Loop playback did not start the sequence");
+        assert(fabs(editor.playbackStartForTesting() - 0.5) < 0.001 &&
+            fabs(editor.playbackEndForTesting() - 0.9) < 0.001,
+            "Loop playback did not confine the transport to the work-area range");
+        assert(waitForSequencePlayback(editor, preview),
+            "Loop playback never began embedded playback");
+        assert(waitForLoopWrap(editor, 0.85, 0.75),
+            "Loop playback did not wrap at the work-area Out marker");
+        assert(editor.sequencePlaybackForTesting(),
+            "Loop playback stopped instead of wrapping");
+        assert(editor.playbackPositionForTesting() < 0.8,
+            "Loop playback did not return to the work-area In marker");
+
+        driver.click(globalCenter(loopButton));
+        assert(!editor.loopEnabledForTesting(),
+            "Loop button did not disable loop playback");
+        editor.clearWorkRangeForTesting();
+        driver.pressKey(Key.escape);
+        assert(!editor.playbackRunningForTesting(),
+            "Loop test playback did not stop cleanly");
+    }
 
     // Text placement is one-shot, existing clips remain selectable while the
     // Text tool is armed, and both timeline/Preview double-clicks open editing.

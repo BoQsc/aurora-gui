@@ -642,6 +642,7 @@ final class EditorRoot : VBox
     private ProgressBar _progress;
     private Button _sourcePlayButton;
     private Button _sequencePreviewButton;
+    private Button _loopButton;
     private ExportButton _exportButton;
     private Button _revealExportButton;
     private Button _saveProjectButton;
@@ -700,7 +701,6 @@ final class EditorRoot : VBox
     private VBox _inspectorLayerSection;
     private VBox _inspectorFadeSection;
     private VBox _inspectorTextSection;
-    private Label _inspectorScope;
     private Button _resetAllPropertiesButton;
     private CheckBox _mute;
     private CheckBox _audioProxyVisible;
@@ -754,6 +754,7 @@ final class EditorRoot : VBox
     private PopupOverlay _downloadPopup;
     private PopupOverlay _resolutionPopup;
     private PopupOverlay _compressOutputPopup;
+    private PopupOverlay _moveToTrackPopup;
     private bool _openYtDlpDialogAfterInstall;
     private int _ytDlpMaxHeight = 1080;
 
@@ -768,6 +769,9 @@ final class EditorRoot : VBox
     private double _playbackEnd = 0.0;
     private double _playbackPosition = 0.0;
     private bool _playbackRunning;
+    // Loop repeats sequence playback across the work-area In/Out markers, or
+    // the whole sequence when no export range is set.
+    private bool _loopEnabled;
     private double _playbackSourceVolume = 1.0;
     private bool _playbackSourceMuted;
     // Direct sequence passthrough keeps transport positions in sequence time
@@ -924,6 +928,7 @@ final class EditorRoot : VBox
         if (_downloadPopup !is null) _downloadPopup.dismiss();
         if (_resolutionPopup !is null) _resolutionPopup.dismiss();
         if (_compressOutputPopup !is null) _compressOutputPopup.dismiss();
+        if (_moveToTrackPopup !is null) _moveToTrackPopup.dismiss();
         stopPlayback(false);
         _downloadService.shutdown();
         _ytDlpInstallService.shutdown();
@@ -985,7 +990,10 @@ final class EditorRoot : VBox
     double workInForTesting() const { return _workIn; }
     double workOutForTesting() const { return _workOut; }
     void setWorkOutForTesting(double value) { setWorkOut(value); }
+    void setWorkInForTesting(double value) { setWorkIn(value); }
     void clearWorkRangeForTesting() { clearWorkRange(); }
+    bool loopEnabledForTesting() const { return _loopEnabled; }
+    double playbackEndForTesting() const { return _playbackEnd; }
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
     PlaybackWorkerStats audioStatsForTesting() { return _audioPlayer.stats(); }
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
@@ -1703,6 +1711,9 @@ final class EditorRoot : VBox
             "▶", IconKind.none, 42));
         _sourcePlayButton.setId("play-preview");
         _sourcePlayButton.onClick = delegate() { playCurrentContext(); };
+        _loopButton = transport.add(new StableButton("Loop", IconKind.none, 52));
+        _loopButton.setId("loop-preview");
+        _loopButton.onClick = delegate() { toggleLoop(); };
         _scrub = transport.add(new PlaybackScrubber(0.0, 1.0, 0.0));
         _scrub.setId("preview-scrub");
         // Transport updates repaint only this narrow layer, never the complete
@@ -1739,13 +1750,6 @@ final class EditorRoot : VBox
         title.setScale(1);
         title.setColor(Color.fromHex(0xd8dee6));
         title.layoutHints().preferredHeight = 20;
-
-        _inspectorScope = panel.add(new Label(
-            "Select one timeline item"));
-        _inspectorScope.setId("inspector-scope");
-        _inspectorScope.setScale(1);
-        _inspectorScope.setColor(Color.fromHex(0x8f9aa6));
-        _inspectorScope.layoutHints().preferredHeight = 20;
 
         _inspectorSelectionSummary = panel.add(new VBox(2));
         _inspectorSelectionSummary.setId("inspector-selection-summary");
@@ -5139,10 +5143,6 @@ final class EditorRoot : VBox
         const hasAudio = valid && !clip.isText() && asset !is null && asset.hasAudio;
         const hasAudioProxy = hasAudio && track.kind == TrackKind.video;
 
-        _inspectorScope.setText(valid
-            ? format("%s • playhead %s", track.label(),
-                formatTimecode(_timeline.playhead()))
-            : "Select one timeline item");
         // Source trimming belongs to direct timeline edge operations, not the
         // effects/keyframe Inspector. Keep this legacy section permanently hidden.
         _inspectorSourceSection.setVisible(false);
@@ -5546,6 +5546,20 @@ final class EditorRoot : VBox
      * Composition Preview always plays the sequence. Project Media selection
      * changes source details only and never replaces the timeline monitor.
      */
+    private void toggleLoop()
+    {
+        _loopEnabled = !_loopEnabled;
+        updateLoopButton();
+        setStatus(_loopEnabled ?
+            "Loop playback enabled; the sequence repeats between the export range markers." :
+            "Loop playback disabled.");
+    }
+
+    private void updateLoopButton()
+    {
+        if (_loopButton !is null) _loopButton.setAccent(_loopEnabled);
+    }
+
     private void playCurrentContext()
     {
         if (_playbackKind == PlaybackKind.source)
@@ -5625,6 +5639,20 @@ final class EditorRoot : VBox
             _playbackStart = 0.0;
             _playbackEnd = clampValue(end, 0.0, maximumPosition);
             if (_playbackEnd <= 0.001) _playbackEnd = maximumPosition;
+            if (_loopEnabled)
+            {
+                // Loop across the export range, falling back to the complete
+                // sequence when no markers (or only a degenerate range) exist.
+                const loopStart = _hasWorkIn ? _workIn : 0.0;
+                const loopEnd = _hasWorkOut ? _workOut : _playbackEnd;
+                const nextStart = clampValue(loopStart, 0.0, _playbackEnd);
+                const nextEnd = clampValue(loopEnd, nextStart, _playbackEnd);
+                if (nextEnd > nextStart + 0.001)
+                {
+                    _playbackStart = nextStart;
+                    _playbackEnd = nextEnd;
+                }
+            }
             _playbackPosition = clampValue(start, _playbackStart, _playbackEnd);
         }
         else
@@ -6360,12 +6388,17 @@ final class EditorRoot : VBox
 
         if (_playbackPosition >= _playbackEnd - 0.001)
         {
-            _playbackRunning = false;
-            _seekResumePlayback = false;
-            _playbackClockValid = false;
-            _playbackAwaitingFirstFrame = false;
-            _preview.setPlaying(false);
-            requestPlaybackStill();
+            if (_loopEnabled && _playbackKind == PlaybackKind.sequence)
+                loopPlaybackRestart();
+            else
+            {
+                _playbackRunning = false;
+                _seekResumePlayback = false;
+                _playbackClockValid = false;
+                _playbackAwaitingFirstFrame = false;
+                _preview.setPlaying(false);
+                requestPlaybackStill();
+            }
         }
         else if (_seekResumePlayback && _playbackRunning)
         {
@@ -6506,6 +6539,36 @@ final class EditorRoot : VBox
 
         if (restorePreview && hadPlayback)
             scheduleTimelineFrame();
+    }
+
+    /** Wrap sequence playback back to the loop start and restart the streams,
+     * keeping the transport running. Called when loop playback reaches the
+     * loop range's end marker. */
+    private void loopPlaybackRestart()
+    {
+        _playbackPosition = _playbackStart;
+        _playbackRunning = true;
+        _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
+        _playbackVideoWaiting = false;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _liveAudioEnd = -1.0;
+        _liveAudioClipId = 0;
+        _seekResumePlayback = false;
+        clearPendingSeekState();
+        _lastTimeLabelPlaybackPosition = -1.0;
+        _lastPreviewClockPaint = -1.0;
+        _preview.setPlaying(false);
+        if (_playbackKind == PlaybackKind.sequence)
+        {
+            _timeline.setPlayhead(_playbackPosition, false);
+            syncPreviewTitleLayers(_playbackPosition);
+        }
+        _scrub.setValue(_playbackPosition, false);
+        updateTimeLabel();
+        startPlaybackStreams();
+        updatePlaybackButtons();
     }
 
     private void finishPlayback()
@@ -7460,26 +7523,10 @@ final class EditorRoot : VBox
             });
             items ~= ContextMenuItem.separatorItem();
 
-            if (asset !is null && asset.hasVideo)
+            if (asset !is null && (asset.hasVideo || asset.hasAudio))
             {
-                foreach (lane; 0 .. _model.trackCount(TrackKind.video))
-                    addMoveTrackItem(items, TrackAddress(TrackKind.video, lane), track, index);
-                const target = TrackAddress(TrackKind.video,
-                    _model.trackCount(TrackKind.video));
-                items ~= ContextMenuItem.command("Move to new video track", delegate() {
-                    _timeline.setSelection(track, index, false);
-                    moveSelectedToTrack(target);
-                });
-            }
-            if (asset !is null && asset.hasAudio)
-            {
-                foreach (lane; 0 .. _model.trackCount(TrackKind.audio))
-                    addMoveTrackItem(items, TrackAddress(TrackKind.audio, lane), track, index);
-                const target = TrackAddress(TrackKind.audio,
-                    _model.trackCount(TrackKind.audio));
-                items ~= ContextMenuItem.command("Move to new audio track", delegate() {
-                    _timeline.setSelection(track, index, false);
-                    moveSelectedToTrack(target);
+                items ~= ContextMenuItem.command("Move to track…", delegate() {
+                    openMoveToTrackDialog(track, index);
                 });
             }
 
@@ -7662,14 +7709,114 @@ final class EditorRoot : VBox
         showContextMenu(_timeline, point, items);
     }
 
-    private void addMoveTrackItem(ref ContextMenuItem[] items, TrackAddress target,
-        TrackAddress source, int index)
+    private void closeMoveToTrackDialog()
     {
-        const enabled = target != source;
-        items ~= ContextMenuItem.command("Move to " ~ target.label(), delegate() {
+        if (_moveToTrackPopup !is null) _moveToTrackPopup.dismiss();
+        _moveToTrackPopup = null;
+    }
+
+    private void openMoveToTrackDialog(TrackAddress source, int index)
+    {
+        closeMoveToTrackDialog();
+
+        const clip = _model.trackValue(source).clips[cast(size_t) index];
+        const asset = _model.assetForClip(clip);
+        const canVideo = asset !is null && asset.hasVideo;
+        const canAudio = asset !is null && asset.hasAudio;
+
+        ListItem[] rows;
+        TrackAddress[] destinations;
+        bool[] isCurrent;
+
+        void appendOption(TrackKind kind, size_t lane, bool newTrack)
+        {
+            const target = TrackAddress(kind, lane);
+            rows ~= ListItem(newTrack ?
+                (kind == TrackKind.video ? "New video track" : "New audio track") :
+                target.label(), kind == TrackKind.video ?
+                    IconKind.image : IconKind.music);
+            destinations ~= target;
+            isCurrent ~= !newTrack && target == source;
+        }
+
+        if (canVideo)
+        {
+            foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+                appendOption(TrackKind.video, lane, false);
+            appendOption(TrackKind.video, _model.trackCount(TrackKind.video), true);
+        }
+        if (canAudio)
+        {
+            foreach (lane; 0 .. _model.trackCount(TrackKind.audio))
+                appendOption(TrackKind.audio, lane, false);
+            appendOption(TrackKind.audio, _model.trackCount(TrackKind.audio), true);
+        }
+        foreach (rowIndex, current; isCurrent)
+            if (current) rows[rowIndex].disabled = true;
+
+        auto content = new VBox(8, Insets(14));
+        content.setId("move-to-track-popup");
+        content.setBackground(Color.fromHex(0x242a32));
+        content.setBorder(Color.fromHex(0x4a5562), 8);
+
+        auto header = content.add(new HBox(8));
+        header.layoutHints().preferredHeight = 36;
+        auto title = header.add(new Label("Move to track"));
+        title.setScale(2);
+        title.layoutHints().flex = 1.0;
+        auto closeButton = header.add(new IconButton(IconKind.close));
+        closeButton.setFlat(true);
+        closeButton.onClick = delegate() { closeMoveToTrackDialog(); };
+
+        auto hint = content.add(new Label(
+            "Choose a destination track for the selected clip."));
+        hint.setScale(1);
+        hint.setColor(Color.fromHex(0x87919c));
+        hint.layoutHints().preferredHeight = 24;
+
+        auto list = content.add(new ListView());
+        list.setId("move-to-track-list");
+        list.setRowHeight(36);
+        list.layoutHints().flex = 1.0;
+        list.setItems(rows);
+        int firstEnabled = -1;
+        foreach (rowIndex, row; rows)
+            if (!row.disabled) { firstEnabled = rowIndex; break; }
+        list.setSelectedIndex(firstEnabled, false);
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 40;
+        footer.add(new Spacer());
+        auto cancelButton = footer.add(new Button("Cancel"));
+        cancelButton.setId("move-to-track-cancel");
+        cancelButton.onClick = delegate() { closeMoveToTrackDialog(); };
+        auto moveButton = footer.add(new Button("Move", IconKind.start));
+        moveButton.setId("move-to-track-apply");
+        moveButton.setAccent(true);
+
+        void applyMove()
+        {
+            const selected = list.selectedIndex();
+            if (selected < 0 || selected >= cast(int) destinations.length)
+            {
+                setStatus("Select a destination track to move the clip.");
+                return;
+            }
+            closeMoveToTrackDialog();
             _timeline.setSelection(source, index, false);
-            moveSelectedToTrack(target);
-        }, "", enabled);
+            moveSelectedToTrack(destinations[cast(size_t) selected]);
+        }
+        moveButton.onClick = delegate() { applyMove(); };
+        list.onActivated = delegate(int row) { applyMove(); };
+
+        _moveToTrackPopup = showPopup(_timeline,
+            Rect(0, 0, _timeline.bounds().width, _timeline.bounds().height),
+            content, PopupPlacement.centered, Size(360, 420));
+        if (_moveToTrackPopup !is null)
+        {
+            _moveToTrackPopup.onDismissed = delegate() { _moveToTrackPopup = null; };
+            list.requestFocus();
+        }
     }
 
     private void showPreviewContextMenu(Point point)
@@ -8208,7 +8355,12 @@ final class EditorRoot : VBox
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
                 _playbackPosition >= _playbackEnd - 0.001)
-                finishPlayback();
+            {
+                if (false && _loopEnabled && _playbackKind == PlaybackKind.sequence)
+                    loopPlaybackRestart();
+                else
+                    finishPlayback();
+            }
             else if (_playbackRunning && !_playbackAwaitingFirstFrame)
             {
                 // The transport and timeline are visual controls, not clocks.
