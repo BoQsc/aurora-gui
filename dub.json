@@ -58,9 +58,6 @@
       "versions": [
         "BundledFfmpeg"
       ],
-      "sourceFiles-windows": [
-        "embedded/aurora-cut.rsrc.obj"
-      ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
       ],

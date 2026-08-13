@@ -48,19 +48,21 @@
       extracts to `%TEMP%\<App>-assets` on first use; `applicationIconPath()`
       returns it so the window/taskbar/titlebar icon works without an assets
       folder next to the exe. Verified standalone (real .ico extracted).
-- [x] PE/Explorer icon: `scripts/make-ico-rsrc-obj.py` builds a COFF `.rsrc`
-      object (RT_ICON + RT_GROUP_ICON) from the `.ico` with no resource
-      compiler needed; DMD/lld-link links it. `build-portable-windows.py
-      --single-exe` generates `<app>.rsrc.obj` into `embedded/`; the
-      `portable-single-exe` buildType links it via `sourceFiles-windows`.
-      Verified: aurora-cut.exe PE has icon resources [3, 14].
+- [x] PE/Explorer icon: `scripts/patch-pe-icon.py` appends a `.rsrc` section to
+      the linked exe (correct data RVAs) and updates the PE headers — works
+      with any linker. `build-portable-windows.py --single-exe` runs it after
+      `dub build`. The earlier .rsrc COFF-object approach (make-ico-rsrc-obj.py)
+      was abandoned: DMD's bundled lld-link 9 crashes on hand-built resource
+      objects, and lld-link rejects .res files outright.
+      Verified: aurora-cut.exe .rsrc data entries resolve to valid RVAs/sizes
+      and the patched exe runs.
 - [x] Note: DUB 1.41 `resourceFiles` was silently ignored, and DMD x64
-      (lld-link) rejects `.res` ("unknown file type"), so the .rsrc COFF object
-      is the reliable path.
+      (lld-link) rejects `.res` ("unknown file type"), so post-link .rsrc
+      patching is the reliable path.
 - [ ] Not yet verified visually on a clean machine: Explorer shows the app icon
       and the running window/taskbar/titlebar use it (single exe, no assets
-      folder, no installed ffmpeg). v0.60.0 release was created BEFORE icons;
-      needs a re-release (v0.60.1 or updated tag) to include them.
+      folder, no installed ffmpeg). v0.60.1 release was created with the BROKEN
+      icon; needs a re-release (v0.60.2 or updated tag) to include the fix.
 
 ## 2026-08-13 — Aurora Stream: cache audio device names + auto-refresh on device changes
 - [x] User: "we probably need to cache device names like audio so we keep
