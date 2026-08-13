@@ -1,5 +1,107 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Cut: consolidate "Move to V*" context menu into one "Move to track…" dialog
+- [x] User: "replace multiple lots of context menu 'Move to V*' with a single
+      context menu item 'Move to track' that opens dialog."
+- [x] `source/auroracut/editor.d`: removed the per-lane `Move to V1/V2/…`
+      entries from the timeline clip context menu (and the now-unused
+      `addMoveTrackItem` helper), replacing them with one `Move to track…` item
+      that opens `openMoveToTrackDialog(source, index)`. The direct
+      `Move to new video track` / `Move to new audio track` commands are kept
+      as context-menu items (user: "I do not see the new Move to new
+      video/audio track context-menu in the context menu").
+- [x] Text clips (no media asset) previously got NO move options; the move
+      section was gated on `asset !is null && asset.hasVideo`. Diagnosed with a
+      real-GUI headless probe (`tests/menu_probe.d`, deleted after): the media
+      clip menu DID contain the move items, the text clip menu did not (user:
+      "it's clearly not visible"). Extended the gating so text clips also offer
+      `Move to track…` + `Move to new video track` (video-track layers only),
+      and the dialog lists video tracks + `New video track` for them.
+- [x] The dialog (`PopupOverlay`, centered, 360×420, ids
+      `move-to-track-popup` / `move-to-track-list` / `move-to-track-apply` /
+      `move-to-track-cancel`) lists every compatible destination: video tracks
+      V1..Vn + `New video track` when the asset has video, audio tracks A1..An
+      + `New audio track` when the asset has audio. The clip's current track
+      row is disabled; the list preselects the first enabled option. Apply via
+      the `Move` button or Enter/double-click (`onActivated`) runs
+      `moveSelectedToTrack`, preserving the old per-item behavior (same
+      selection + move path, `ensureTrack` creates new lanes).
+- [x] Covered by `tests/editor_smoke.d`: menu no longer lists `Move to V1/V2`,
+      still lists `Move to new video track` (and no `Move to new audio track`
+      for the video-only overlay), the dialog opens and lists
+      V1/V2/V3(disabled)/New video track for the video-only overlay clip,
+      moving to V2 and back through the same dialog restores the clip on V3,
+      a text clip's menu shows `Move to track…` + `Move to new video track`
+      (no audio move), and the long-menu wheel-scroll check still runs on a
+      freshly reopened menu.
+- [x] Verified: `dmd -i -version=AuroraHeadless -Isource
+      -Ivendor\aurora-d-0.4.5\source tests\editor_smoke.d ...` compiles and the
+      editor smoke test passes on Windows.
+
+## 2026-08-13 — Research: timeline playback is not always immediate / lacks performance
+- [x] User: "research if we can do anything about aurora cut timeline
+      performance/playback it is not always feeling immediate and lacking in
+      performance."
+- [x] Studied the whole playback pipeline end-to-end (code, not just bench):
+      `VideoFrameStream`/`PcmAudioPlayer` in `source/auroracut/playback.d`,
+      `PreviewService`/`PreviewWidget` in `preview.d`, the live compositor
+      graph builders in `exporter.d`, and the transport/pacing logic in
+      `editor.d`. Machine under test is 4 logical CPUs and was pinned near 100%
+      load by background apps (explorer/steamwebhelper/nvcontainer), which is a
+      large part of the "lacking performance" feel.
+- [x] Findings, from highest to lowest impact:
+  1. **Live playback stretches non-16:9 sequences (correctness).**
+     `startPlaybackStreams` builds the live composition canvas with
+     `ExportPreset.previewForHeight(renderHeight)` (fixed 16:9, e.g.
+     1280x720) at `editor.d:6145`, while the decode canvas is sequence-aspect
+     (`recommendedDecodeSize(..., _compositionWidth, _compositionHeight)` at
+     `editor.d:6067`). `compositeStreamArguments` then force-scales
+     `[vout]scale=outputW:outputH` (no aspect preservation) at
+     `exporter.d:1093-1099`, so a portrait/square sequence is stretched during
+     LIVE playback. The paused/scrub frame path already uses
+     `previewCompositionPreset` (sequence aspect) at `editor.d:7998-8000`, so
+     pause/scrub and play now disagree for non-16:9 compositions.
+  2. **Live compositor renders at a fixed preset then downscales (perf).** The
+     overlay graph (scale+overlay per layer, `geq` when opacity animated,
+     `gblur` shadows) always runs at 1280x720 in Responsive mode, then the
+     final `scale` downscales to the decode size (e.g. 960x540 when the preview
+     widget is smaller). ~40-55% of compositor pixels are wasted for typical
+     windows. Fixing #1 with the decode-sized `previewCompositionPreset`
+     removes this double render at the same time.
+  3. **Every clip in the timeline is opened+decoded even when out of range.**
+     `collectInputs` (`exporter.d:1244-1276`) includes every non-disabled clip;
+     `appendInputArguments` seeks each to `inPoint` with `-t` = full clip
+     duration (`exporter.d:1307-1311`); the overlay chain uses
+     `eof_action=pass:repeatlast=0:shortest=0`, so ffmpeg pulls/decode each
+     input for the whole playback range even if its sequence window is outside
+     `[rangeStart, rangeEnd]`. Playing a short section of a long multi-clip
+     timeline therefore decodes clips that contribute nothing.
+  4. **Audio process starts only after the first video frame.** In `onTick`
+     the first-frame branch calls `startPlaybackAudio` (`editor.d:8091`) only
+     after `hasBufferedDuration(preroll)` is satisfied, so audio process spawn
+     is serialized behind video process spawn + first frames.
+  5. **No warm/persistent decoder.** Every Play and every committed seek spawns
+     one or two fresh FFmpeg processes (video + audio for live timeline). On
+     Windows process spawn alone is ~50-150 ms before graph build + input open.
+     This dominates the "not immediate" feel on press-Play/seek.
+  6. Minor: audio queue is 6 chunks x 2048 frames (~256 ms) at
+     `playback.d:43-51`; `-threads 2` decode on a 4-core box is conservative;
+     no adaptive resolution exists (the Responsive/Balanced/Fidelity choice is
+     manual and static).
+- [ ] Not yet fixed/verified (open improvement candidates; implement + verify
+      in the running GUI + Playwright):
+      - Use the sequence-aspect, decode-sized preset for live playback
+        (fixes #1 and #2; effect coords are normalized so visuals are
+        unchanged; verify 16:9 and portrait/side sequences match pause frames).
+      - Restrict live `collectInputs` to clips intersecting the playback range
+        (handle straddling clips) to stop decoding out-of-range media.
+      - Start audio (paused, `startPaused=true`) concurrently with video and
+        unpause after video preroll, instead of after first frame.
+      - Consider an "Auto" performance mode that lowers decode height if frames
+        are being dropped (`_videoStream.stats().framesDropped`) and raises it
+        again when headroom returns, for immediate-but-smooth playback.
+      - Reduce live preroll 0.090 -> 0.055 s and/or audio queue depth.
+
 ## 2026-08-13 — Aurora Cut: snap timeline items to playhead and other vertical markers
 - [x] User: introduce the ability for timeline items to snap to the playhead or
       other vertical markers in the timeline.

@@ -77,6 +77,22 @@ private bool menuItemChecked(ContextMenu menu, dstring label)
     return false;
 }
 
+private Point menuItemPoint(ContextMenu menu, dstring label)
+{
+    assert(menu !is null);
+    const items = menu.items();
+    int y = menu.menuRect().y + 3;
+    foreach (index, item; items)
+    {
+        const height = item.separator ? 4 : menu.rowHeightForTesting();
+        if (!item.separator && item.label == label)
+            return Point(menu.menuRect().x + 40, y + height / 2);
+        y += height;
+    }
+    assert(false, "Menu item not found for label");
+    return Point(0, 0);
+}
+
 private Point globalCenter(Widget widget)
 {
     const origin = widget.localToGlobal(Point(0, 0));
@@ -1124,6 +1140,45 @@ int main(string[] arguments)
     assert(editor.audioStatsForTesting().requests >
         audioStatsBeforeDirectPlayback.requests,
         "Direct Composition Preview did not request preview audio");
+
+    // Regression: a video decoder that reaches the end of its range while the
+    // transport is buffering must resume and complete, never halt with "Video
+    // decoder ended before the next frame was ready". First let the direct
+    // stream decode its whole range normally (no halt occurs while not
+    // waiting), then force the buffering state so the finished decoder is
+    // observed while the transport waits. It must resume, never halt.
+    bool decoderEnded;
+    foreach (_; 0 .. 2_000)
+    {
+        editor.tickTree(0.02);
+        if (editor.videoStreamFinishedForTesting())
+        {
+            decoderEnded = true;
+            break;
+        }
+        if (!editor.playbackRunningForTesting()) break;
+        Thread.sleep(2.msecs);
+    }
+    assert(decoderEnded,
+        "Direct video decoder never reached the end of its range");
+    assert(editor.playbackRunningForTesting(),
+        "Playback finished before the completed decoder could be observed");
+    editor.simulateVideoBufferWaitForTesting();
+    assert(editor.playbackVideoWaitingForTesting(),
+        "Simulated video buffer wait was not entered");
+    editor.tickTree(0.02);
+    foreach (_; 0 .. 400)
+    {
+        if (!editor.playbackRunningForTesting()) break;
+        editor.tickTree(0.02);
+        Thread.sleep(5.msecs);
+    }
+    assert(editor.playbackPositionForTesting() >=
+        editor.playbackEndForTesting() - 0.03,
+        "Playback halted before the sequence end after the video stream ended");
+    assert(!editor.statusTextForTesting().canFind(
+        "Video decoder ended before the next frame was ready"),
+        "A finished video decoder spuriously reported a playback failure");
     driver.pressKey(Key.escape);
 
     driver.rightClick(globalCenter(preview));
@@ -1245,16 +1300,77 @@ int main(string[] arguments)
     assert(timelineMenu.menuRect().x == overlayPoint.x + 2 &&
         timelineMenu.menuRect().bottom() == overlayPoint.y - 2,
         "Timeline context menu is not anchored from its bottom-left beside the mouse");
-    assert(menuHasLabel(timelineMenu, "Move to V1"d));
-    assert(menuHasLabel(timelineMenu, "Move to V2"d));
-    assert(menuHasLabel(timelineMenu, "Move to new video track"d));
+    assert(menuHasLabel(timelineMenu, "Move to track…"d));
+    assert(menuHasLabel(timelineMenu, "Move to new video track"d),
+        "Move to new video track command is missing from the clip context menu");
+    assert(!menuHasLabel(timelineMenu, "Move to new audio track"d),
+        "Video-only clip context menu still offers a new audio track");
     assert(menuHasLabel(timelineMenu, "Add video track"d));
     assert(menuHasLabel(timelineMenu, "Add audio track"d));
     assert(menuHasLabel(timelineMenu, "Mute V3"d));
     assert(menuHasLabel(timelineMenu, "Set sequence resolution to 160×90"d),
         "Overlay clip context menu is missing the sequence-resolution command");
     assert(menuHasLabel(timelineMenu, "Reset transform"d));
+    assert(!menuHasLabel(timelineMenu, "Move to V1"d) &&
+        !menuHasLabel(timelineMenu, "Move to V2"d),
+        "Per-lane Move to V* commands still clutter the timeline context menu");
+
+    // The single "Move to track…" command opens a dialog that lists every
+    // compatible destination track instead of one menu entry per lane.
+    driver.click(menuItemPoint(timelineMenu, "Move to track…"d));
+    assert(driver.paint(), "Move to track dialog did not paint");
+    auto moveList = requireWidget!ListView(editor, "move-to-track-list");
+    auto moveApply = requireWidget!Button(editor, "move-to-track-apply");
+    assert(moveList.items().length == 4,
+        "Move to track dialog did not list every destination track");
+    assert(moveList.items()[0].text == "V1"d &&
+        moveList.items()[1].text == "V2"d &&
+        moveList.items()[2].text == "V3"d &&
+        moveList.items()[3].text == "New video track"d,
+        "Move to track dialog listed the wrong destination tracks");
+    assert(moveList.items()[2].disabled,
+        "Move to track dialog did not disable the clip's current track");
+    moveList.setSelectedIndex(1, true);
+    driver.click(globalCenter(moveApply));
+    assert(editor.modelForTesting().trackValue(v2).clips.length == 1 &&
+        editor.modelForTesting().trackValue(v3).clips.length == 2,
+        "Move to track dialog did not move the overlay clip to V2");
+
+    // Moving back through the same dialog restores the original arrangement.
+    driver.rightClick(clipCenter(timeline, v2, 0));
+    auto moveMenu = findOpenContextMenu(editor);
+    assert(moveMenu !is null && menuHasLabel(moveMenu, "Move to track…"d));
+    driver.click(menuItemPoint(moveMenu, "Move to track…"d));
+    assert(driver.paint(), "Move to track dialog did not repaint");
+    moveList = requireWidget!ListView(editor, "move-to-track-list");
+    moveApply = requireWidget!Button(editor, "move-to-track-apply");
+    moveList.setSelectedIndex(2, true);
+    driver.click(globalCenter(moveApply));
+    assert(editor.modelForTesting().trackValue(v3).clips.length == 3 &&
+        editor.modelForTesting().trackValue(v2).clips.length == 0,
+        "Move to track dialog did not restore the overlay clip to V3");
+
+    // Text clips must also offer move commands (video-track layers only).
+    const probeTextIndex = editor.modelForTesting().insertTextClip(v2, 0.8);
+    editor.tickTree(0.05);
+    timeline.setSelection(v2, probeTextIndex);
+    driver.rightClick(clipCenter(timeline, v2, probeTextIndex));
+    auto textMoveMenu = findOpenContextMenu(editor);
+    assert(textMoveMenu !is null &&
+        menuHasLabel(textMoveMenu, "Move to track…"d) &&
+        menuHasLabel(textMoveMenu, "Move to new video track"d),
+        "Text clip context menu is missing its move commands");
+    assert(!menuHasLabel(textMoveMenu, "Move to new audio track"d),
+        "Text clip context menu still offers a new audio track");
+    driver.pressKey(Key.escape);
+    assert(editor.modelForTesting().removeClip(v2, probeTextIndex),
+        "Could not remove the probe text clip");
+
     // A long menu must remain scrollable rather than losing lower commands.
+    driver.rightClick(clipCenter(timeline, v3, 0));
+    timelineMenu = findOpenContextMenu(editor);
+    assert(timelineMenu !is null,
+        "Timeline context menu did not reopen after the move dialog");
     driver.wheel(Point(timelineMenu.menuRect().x + 20,
         timelineMenu.menuRect().y + timelineMenu.menuRect().height / 2), -4);
     driver.pressKey(Key.escape);

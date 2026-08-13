@@ -1351,6 +1351,16 @@ final class VideoFrameStream
         return _finished;
     }
 
+    /** Whether decoded frames are still waiting to be displayed. A finished
+     * stream can still own ready frames; callers deciding whether a transport
+     * can catch up must check this, not `finished()` alone. */
+    bool hasReadyFrames()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _readyFrames.length > 0;
+    }
+
     string error()
     {
         _mutex.lock();

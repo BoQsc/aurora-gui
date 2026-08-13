@@ -997,6 +997,14 @@ final class EditorRoot : VBox
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
     PlaybackWorkerStats audioStatsForTesting() { return _audioPlayer.stats(); }
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
+    bool videoStreamFinishedForTesting() { return _videoStream.finished(); }
+    bool videoStreamHasReadyFramesForTesting() { return _videoStream.hasReadyFrames(); }
+    bool playbackVideoWaitingForTesting() const { return _playbackVideoWaiting; }
+    string statusTextForTesting() const { return _lastStatusText; }
+    /** Force the transport into the "buffering video" state exactly as a
+     * lagging display would, so tests can exercise the finished-while-waiting
+     * path deterministically without depending on decode speed. */
+    void simulateVideoBufferWaitForTesting() { waitForVideoBuffer(); }
     bool seekPendingForTesting() const { return _seekPending; }
     bool deferredSequenceRefreshForTesting() const { return _sequenceRefreshDeferred; }
     ulong playbackRevisionForTesting() const { return _playbackModelRevision; }
@@ -5731,10 +5739,16 @@ final class EditorRoot : VBox
         return clampValue(frameTime, _playbackStart, _playbackEnd);
     }
 
-    private bool displayedVideoBehindPlaybackClock() const
+    private bool displayedVideoBehindPlaybackClock()
     {
         if (_playbackAsset is null || !_playbackAsset.hasVideo ||
             _preview is null || !_preview.hasFrame())
+            return false;
+        // A decoder that has produced every frame in the range cannot catch up
+        // any further. Waiting would pause the audio clock forever for frames
+        // that will never arrive, so the transport must not re-enter the
+        // buffering state once the stream ended with nothing left to display.
+        if (_videoStream.finished() && !_videoStream.hasReadyFrames())
             return false;
         return _playbackPosition - displayedPlaybackFrameTime() >
             playbackVideoLagToleranceSeconds;
@@ -7523,11 +7537,32 @@ final class EditorRoot : VBox
             });
             items ~= ContextMenuItem.separatorItem();
 
-            if (asset !is null && (asset.hasVideo || asset.hasAudio))
+            const clipIsText = clip.isText();
+            const canMoveVideo = clipIsText || (asset !is null && asset.hasVideo);
+            const canMoveAudio = asset !is null && asset.hasAudio;
+            if (canMoveVideo || canMoveAudio)
             {
                 items ~= ContextMenuItem.command("Move to track…", delegate() {
                     openMoveToTrackDialog(track, index);
                 });
+                if (canMoveVideo)
+                {
+                    const target = TrackAddress(TrackKind.video,
+                        _model.trackCount(TrackKind.video));
+                    items ~= ContextMenuItem.command("Move to new video track", delegate() {
+                        _timeline.setSelection(track, index, false);
+                        moveSelectedToTrack(target);
+                    });
+                }
+                if (canMoveAudio)
+                {
+                    const target = TrackAddress(TrackKind.audio,
+                        _model.trackCount(TrackKind.audio));
+                    items ~= ContextMenuItem.command("Move to new audio track", delegate() {
+                        _timeline.setSelection(track, index, false);
+                        moveSelectedToTrack(target);
+                    });
+                }
             }
 
             items ~= ContextMenuItem.separatorItem();
@@ -7721,7 +7756,7 @@ final class EditorRoot : VBox
 
         const clip = _model.trackValue(source).clips[cast(size_t) index];
         const asset = _model.assetForClip(clip);
-        const canVideo = asset !is null && asset.hasVideo;
+        const canVideo = clip.isText() || (asset !is null && asset.hasVideo);
         const canAudio = asset !is null && asset.hasAudio;
 
         ListItem[] rows;
@@ -7781,7 +7816,7 @@ final class EditorRoot : VBox
         list.setItems(rows);
         int firstEnabled = -1;
         foreach (rowIndex, row; rows)
-            if (!row.disabled) { firstEnabled = rowIndex; break; }
+            if (!row.disabled) { firstEnabled = cast(int) rowIndex; break; }
         list.setSelectedIndex(firstEnabled, false);
 
         auto footer = content.add(new HBox(8));
@@ -8325,10 +8360,24 @@ final class EditorRoot : VBox
                 _videoStream.finished())
             {
                 const error = _videoStream.error();
-                const detail = error.length > 0 ?
-                    " " ~ outputTail(error, 500) : "";
-                haltPlaybackForSync(
-                    "Video decoder ended before the next frame was ready." ~ detail);
+                if (error.length > 0)
+                    setStatus("Embedded decoder ended: " ~ outputTail(error, 600));
+                // The decoder reached the end of the playback range while the
+                // transport was waiting for it to catch up. Reaching the last
+                // frame is the normal completion of a range, not a failure, so
+                // waiting must never turn it into a playback error. When no
+                // frames remain there is nothing left to display, so resume so
+                // the transport completes at the range end; otherwise the
+                // waiting branch below continues draining the queued tail.
+                if (!_videoStream.hasReadyFrames())
+                {
+                    double audioPosition;
+                    if (_playbackAudioRequired &&
+                        _audioPlayer.clockPosition(audioPosition))
+                        _playbackPosition = clampValue(audioPosition,
+                            _playbackStart, _playbackEnd);
+                    resumeAfterVideoBuffer();
+                }
             }
             else if (_playbackRunning && _videoStream.finished() &&
                 _playbackAsset.hasVideo)
@@ -8356,7 +8405,7 @@ final class EditorRoot : VBox
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
                 _playbackPosition >= _playbackEnd - 0.001)
             {
-                if (false && _loopEnabled && _playbackKind == PlaybackKind.sequence)
+                if (_loopEnabled && _playbackKind == PlaybackKind.sequence)
                     loopPlaybackRestart();
                 else
                     finishPlayback();

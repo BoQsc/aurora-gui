@@ -1,5 +1,50 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline playback performance / immediacy — analysis (2026-08-13)
+
+End-to-end review of the playback pipeline. Two processes can exist per Play:
+video (`VideoFrameStream`) and audio (`PcmAudioPlayer`), both spawning fresh
+FFmpeg per play/seek. Live timelines use the compositor graph
+(`compositeStreamArguments`) at a fixed 16:9 preset (e.g. 1280x720 in
+Responsive) that is then force-scaled to the decode size; paused/scrub frames
+use `previewCompositionPreset` at the sequence aspect. This is both a
+correctness mismatch (non-16:9 stretched during playback) and a perf waste
+(compositor runs at 720p then downscales).
+
+Key measurement method (noisy machine, so use code reasoning + min-of-N):
+- Raw decode/filter throughput is measured with ffmpeg writing to `NUL`
+  (`-RedirectStandardOutput NUL` in PowerShell) to remove disk I/O; this host
+  bounces 1.0-2.3 s for identical 1 s 720p workloads when the box is ~100%
+  loaded (4 logical CPUs), so single runs are not trustworthy — take minimums
+  and reason from the code.
+- First-frame latency is the real "immediacy" metric: ffmpeg spawn + graph
+  build + input open/seek + preroll wait (0.055 s direct / 0.090 s live) before
+  `_playbackAwaitingFirstFrame` clears (`editor.d` onTick).
+
+How to verify each fix later:
+1. Live-vs-pause aspect parity: build a square or portrait sequence
+   (e.g. 720x720 composition), press Play and Pause; assert both pause-frame
+   and playback-frame use the same aspect (pixel probe / Playwright
+   screenshots; compare against the sequence-aspect decode). Current code
+   stretches playback for non-16:9.
+2. Compositor cost: with the preset changed to the decode size, confirm the
+   `[vout]scale=` tail is elided (`outputWidth==preset.width`) and
+   `Process Explorer`/ffmpeg CPU for a 3-clip 720p timeline drops vs the
+   1280x720-then-downscale baseline at the same decode size.
+3. Range-restricted inputs: `collectInputs` should include only clips that
+   intersect `[rangeStart, rangeEnd]`; verify a 10-clip timeline playing a
+   2 s range starts ~immediately and spawns the same process count.
+4. Audio concurrency: video + audio ffmpeg should both spawn at Play
+   (`PcmAudioPlayer` paused via `startPaused=true`); verify no A/V desync and
+   faster press-Play->sound.
+5. Adaptive mode: with frames being dropped (`PlaybackWorkerStats.framesDropped`
+   from `_videoStream.stats()`), decode height should step down and later step
+   back up; verify `playback_stress.d` still passes.
+6. Regression gate: `tests/playback_stress.d` (rapid seeks must coalesce,
+   `processesStarted < requests/3`), `tests/synced_playback_preroll_smoke.d`,
+   `tests/playback_seek_resilience_smoke.d`, `tests/static_sequence_playback_smoke.d`
+   all pass.
+
 ## Timeline snapping: playhead, In/Out markers, and cross-track clip edges (2026-08-13)
 
 Timeline items now snap to the playhead (already present), the work-area **In**
@@ -1086,6 +1131,38 @@ and needs three generated media files.
   only caps the on-screen decode size for responsiveness.
 - Covered by editor_smoke.d: menu wiring on V1 (320x180) and overlay (160x90)
   clips, plus the shared action via `matchClipResolutionForTesting`.
+
+### Move-to-track dialog (2026-08-13)
+- Timeline clip context menu has ONE `Move to track…` item instead of a
+  per-lane `Move to V1/V2/…` list, but keeps the direct
+  `Move to new video track` / `Move to new audio track` commands (user
+  requested they stay in the context menu).
+  `openMoveToTrackDialog` in `source/auroracut/editor.d` opens a centered
+  `PopupOverlay` (`move-to-track-popup`, 360x420) with a `ListView`
+  (`move-to-track-list`) listing every compatible destination: video tracks +
+  `New video track` when the asset has video (or for text clips), audio tracks
+  + `New audio track` when it has audio. The clip's current track row is
+  disabled and the first enabled row is preselected. `Move`
+  (`move-to-track-apply`) or Enter/double-click moves via
+  `moveSelectedToTrack` (existing selection+move path; `ensureTrack` appends
+  new lanes).
+- Text clips (no media asset) get the move section too (`Move to track…` +
+  `Move to new video track`, video-track layers only); previously they showed
+  none. Verified with a throwaway real-GUI probe (`tests/menu_probe.d`, since
+  deleted) that dumps the full context menu: media clip = all three move
+  commands, text clip = the two video ones.
+- How to test interactively: right-click a timeline clip -> `Move to track…` ->
+  pick a row -> Move; the clip relocates and the status shows
+  `Moved clip to Vn at …`.
+- Covered by `tests/editor_smoke.d`: menu shows `Move to track…` + `Move to
+  new video track` (no `Move to V1/V2`, no `Move to new audio track` for the
+  video-only overlay), dialog lists `V1/V2/V3(disabled)/New video track` for
+  the video-only overlay, move to V2 and back through the same dialog restores
+  the clip on V3, a text clip menu shows `Move to track…` + `Move to new video
+  track` (no audio move), and the long-menu wheel-scroll assertion still runs
+  on a reopened menu. Menu-row clicks use `menuItemPoint(menu, label)` which
+  maps a label to its row center accounting for separators (4px) vs rows
+  (22px).
 
 ## Aurora Image Viewer (aurora-image-viewer)
 
