@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Made the custom-titlebar build the **default** configuration: `dub build` /
+  `dub run` now produce `aurora-stream` with the `TitleBar`-style window. The
+  plain OS-titlebar build moved to a `notitlebar` configuration
+  (`aurora-stream-notitlebar`, launcher `RUN-WINDOWS-NOTITLEBAR.bat`); the old
+  `RUN-WINDOWS-TITLEBAR.bat` and `aurora-stream-titlebar.exe` are gone.
+- Removed the **Aurora-rendered program canvas** feature (the "Program canvas"
+  Settings item, its settings section/editor, the settings keys, and the
+  broadcaster's raw-BGRA canvas pump), as it is outdated and unused. The app
+  always streams desktop capture; the **LIVE SOURCE CANVAS** panel remains as
+  the live desktop-recording preview.
 - Custom-titlebar build: the **minimize** button and system-menu item now
   actually minimize the window, and clicking the **taskbar** icon minimizes it
   again. Root cause: frameless windows were created with `WS_POPUP` but without

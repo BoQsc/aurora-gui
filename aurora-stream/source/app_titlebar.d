@@ -11,12 +11,13 @@ import aurorastream.root : StreamRoot;
 import std.stdio : writeln;
 
 /**
- * Custom-titlebar wrapper for Aurora Stream.
+ * Custom-titlebar entry for Aurora Stream.
  *
  * A frameless window whose top strip is the reusable `TitleBar` widget,
- * hosting the unchanged `StreamRoot` broadcaster UI below it. This is a
- * separate build configuration (`dub run --config=titlebar`); the default
- * `application` configuration and its window handling are untouched.
+ * hosting the unchanged `StreamRoot` broadcaster UI below it. This is the
+ * default build configuration (`application`, target `aurora-stream`); the
+ * `notitlebar` configuration (`aurora-stream-notitlebar`) keeps the plain
+ * OS-titlebar window.
  */
 final class TitleBarStreamRoot : Widget
 {

@@ -2,6 +2,8 @@
 /build/
 /aurora-stream
 /aurora-stream.exe
+/aurora-stream-notitlebar
+/aurora-stream-notitlebar.exe
 /aurora-stream-startup.log
 /aurora-stream-settings.json
 /aurora-stream-settings.json.tmp

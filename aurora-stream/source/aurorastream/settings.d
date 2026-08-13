@@ -1,17 +1,9 @@
 module aurorastream.settings;
 
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings;
-import aurorastream.programcanvas : ProgramSource, ProgramSourceKind,
-    defaultColorSource, defaultTextSource, programSourcesFromJson,
-    programSourcesToJson;
 import std.file : exists, getcwd, readText, remove, rename, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
-
-version (Windows)
-{
-    import aurora.color : Color;
-}
 
 /// Portable settings file kept beside the folder Aurora Stream is launched from.
 enum settingsFileName = "aurora-stream-settings.json";
@@ -117,8 +109,6 @@ private BroadcastSettings settingsFromJson(string source)
     settings.microphoneDevice = jsonString(root, "microphoneDevice",
         settings.microphoneDevice);
 
-    settings.programCanvasEnabled = jsonBool(root, "programCanvasEnabled",
-        settings.programCanvasEnabled);
     settings.liveSourcePreviewEnabled = jsonBool(root,
         "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
 
@@ -130,12 +120,6 @@ private BroadcastSettings settingsFromJson(string source)
                 value.str.length > 0)
                 settings.deviceDisplayNameCache[deviceId] = value.str;
     }
-    const canvasSources = "programCanvasSources" in root;
-    if (canvasSources !is null && canvasSources.type == JSONType.array)
-        settings.programCanvasSources = programSourcesFromJson(*canvasSources);
-    else
-        settings.programCanvasSources = programSourcesFromJson(
-            JSONValue.emptyArray);
 
     // Versions through 0.1.9 incorrectly treated desktop audio as another
     // DirectShow capture input. Those saved values are microphone/filter IDs,
@@ -206,9 +190,6 @@ private string settingsToJson(BroadcastSettings settings)
     root["desktopAudioEnabled"] = settings.desktopAudioEnabled;
     root["desktopAudioDevice"] = settings.desktopAudioDevice;
     root["microphoneDevice"] = settings.microphoneDevice;
-    root["programCanvasEnabled"] = settings.programCanvasEnabled;
-    root["programCanvasSources"] =
-        programSourcesToJson(settings.programCanvasSources);
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
     if (settings.deviceDisplayNameCache.length > 0)
     {
@@ -305,11 +286,6 @@ unittest
     source.desktopAudioDevice = "Desktop Loopback";
     source.desktopAudioEnabled = true;
     source.microphoneDevice = "Microphone";
-    source.programCanvasEnabled = true;
-    source.programCanvasSources = [
-        defaultColorSource(Color.rgb(30, 40, 50)),
-        defaultTextSource("Aurora", Color.rgb(255, 255, 255))
-    ];
 
     const encoded = settingsToJson(source);
     const restored = settingsFromJson(encoded);
@@ -325,12 +301,6 @@ unittest
     assert(restored.desktopAudioDevice == source.desktopAudioDevice);
     assert(restored.desktopAudioEnabled == source.desktopAudioEnabled);
     assert(restored.microphoneDevice == source.microphoneDevice);
-    assert(restored.programCanvasEnabled);
-    assert(restored.programCanvasSources.length == 2);
-    assert(restored.programCanvasSources[0].kind == ProgramSourceKind.color);
-    assert(restored.programCanvasSources[0].color == Color.rgb(30, 40, 50));
-    assert(restored.programCanvasSources[1].kind == ProgramSourceKind.text);
-    assert(restored.programCanvasSources[1].text == "Aurora");
 }
 
 unittest

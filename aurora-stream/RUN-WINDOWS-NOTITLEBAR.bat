@@ -1,5 +1,5 @@
 @echo off
-echo Aurora Stream 0.60.0 (custom titlebar)
+echo Aurora Stream 0.60.0 (no custom titlebar)
 setlocal
 pushd "%~dp0" >nul
 set "code=0"
@@ -19,9 +19,9 @@ if errorlevel 1 (
 
 if exist aurora-stream-startup.log del /q aurora-stream-startup.log >nul 2>nul
 
-echo Starting Aurora Stream with the custom Aurora titlebar...
+echo Starting Aurora Stream with the standard OS window titlebar...
 echo The console will stay open while the broadcaster is running.
-dub run --config=titlebar
+dub run --config=notitlebar
 set "code=%errorlevel%"
 if not "%code%"=="0" (
     echo.

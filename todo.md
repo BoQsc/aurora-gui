@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: make the custom titlebar the default build
+- [x] User: "Make the titlebar the default option and notitlebar suffix for no
+      titlebar that is currently active as default."
+- [x] `dub.json`: the default `application` configuration now builds the custom
+      titlebar (`source/app_titlebar.d`) as `aurora-stream.exe`; the plain
+      OS-titlebar build is the new `notitlebar` configuration
+      (`source/app.d`, target `aurora-stream-notitlebar`); `defaultConfig`
+      is `application`.
+- [x] Scripts/artifacts: removed `RUN-WINDOWS-TITLEBAR.bat` and the tracked
+      `aurora-stream-titlebar.exe` (the titlebar build now outputs the default
+      `aurora-stream.exe`, which is gitignored); added
+      `RUN-WINDOWS-NOTITLEBAR.bat` and `/aurora-stream-notitlebar*` gitignore
+      entries; updated `app_titlebar.d` comments and the testing-progress /
+      changelog docs.
+- [x] Verified: `dub build` links `aurora-stream.exe`, `dub build
+      --config=notitlebar` links `aurora-stream-notitlebar.exe`, `dub test`
+      38 modules pass, and the default titlebar exe launches.
+
 ## 2026-08-13 — Aurora Stream: remove the "Program canvas" feature
 - [x] User: "remove the option of settings: 'Program canvas' this is outdated
       and useless."
@@ -680,7 +698,7 @@
       `application` config untouched) with a frameless window wrapping the
       unchanged `StreamRoot` under the reusable `TitleBar` widget. New main
       `source/app_titlebar.d`, shared CLI helpers
-      `source/aurorastream/entry.d`, launcher `RUN-WINDOWS-TITLEBAR.bat`.
+      `source/aurorastream/entry.d`.
 - [x] `aurora.image` gained `loadIcoImage`/`decodeIcoImage` (parses the ICO
       container little-endian, decodes PNG-compressed and classic 24/32/8-bit
       BMP entries with AND-mask transparency); `TitleBar.setIconImage(RgbaImage)`

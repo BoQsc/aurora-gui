@@ -13,8 +13,7 @@ import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
-import aurorastream.programcanvas : ProgramCanvasEditor, ProgramCanvasPreview,
-    ProgramSource;
+import aurorastream.programcanvas : LiveSourceCanvasPreview;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
 import aurorastream.wasapi : AudioDeviceNotifications;
@@ -41,17 +40,12 @@ final class StreamRoot : VBox
     private enum double audioRescanIntervalSeconds = 8.0;
 
     private SourceQualityDropdown _sourceQuality;
-    private CheckBox _programCanvasEnabled;
-    private ProgramCanvasEditor _canvasEditor;
-    private ProgramCanvasPreview _canvasPreview;
-    private ProgramSource[] _programSources;
+    private LiveSourceCanvasPreview _canvasPreview;
     private Button _settingsMenu;
     private bool _streamingServersVisible;
-    private bool _programCanvasVisible;
     private bool _liveSourcePreviewEnabled;
     private ScrollView _settingsScroll;
     private VBox _twitchServerGroup;
-    private VBox _programCanvasGroup;
     private VBox _canvasPreviewPanel;
     private VBox _statusPanel;
     private Thread _previewCaptureThread;
@@ -118,11 +112,6 @@ final class StreamRoot : VBox
         const saved = loadSettings(settingsLoaded, settingsLoadMessage);
         _selectDefaultDesktopAudio = saved.desktopAudioEnabled &&
             saved.desktopAudioDevice.strip().length == 0;
-        // The program canvas is an advanced scene-compositor milestone tucked
-        // away behind the Settings menu; reveal it only when a session is
-        // actually configured to use it, so an empty canvas never hides the
-        // live desktop capture by surprise.
-        _programCanvasVisible = saved.programCanvasEnabled;
         _liveSourcePreviewEnabled = saved.liveSourcePreviewEnabled;
         foreach (deviceId, name; saved.deviceDisplayNameCache)
             if (deviceId.length > 0 && name.length > 0)
@@ -162,7 +151,6 @@ final class StreamRoot : VBox
             saved.sourceQuality));
         _sourceQuality.onChanged = delegate(BroadcastQuality quality) {
             updateQualitySummary();
-            updateCanvasPreview();
             markSettingsDirty();
         };
         auto sourceHint = settingsContent.add(new Label(
@@ -170,38 +158,6 @@ final class StreamRoot : VBox
         sourceHint.setScale(1);
         sourceHint.setColor(Color.fromHex(0x8793a0));
         sourceHint.layoutHints().preferredHeight = 36;
-
-        _programCanvasGroup = new VBox(8);
-        _programCanvasGroup.add(new Separator());
-        auto programTitle = _programCanvasGroup.add(new Label("PROGRAM CANVAS"));
-        programTitle.setScale(1);
-        programTitle.setColor(Color.fromHex(0xc8d0da));
-        _programCanvasEnabled = _programCanvasGroup.add(new CheckBox(
-            "Aurora-rendered program canvas (replaces desktop capture)",
-            saved.programCanvasEnabled));
-        _programCanvasEnabled.onChanged = delegate(bool checked) {
-            updateQualitySummary();
-            markSettingsDirty();
-        };
-        auto programHint = _programCanvasGroup.add(new Label(
-            "Aurora renders this scene instead of capturing the desktop. Twitch and YouTube are still encoded independently."));
-        programHint.setScale(1);
-        programHint.setColor(Color.fromHex(0x8793a0));
-        programHint.layoutHints().preferredHeight = 36;
-        _canvasEditor = _programCanvasGroup.add(new ProgramCanvasEditor());
-        _canvasEditor.setSources(saved.programCanvasSources);
-        _canvasEditor.onSourcesChanged = delegate(const ProgramSource[] sources) {
-            _programSources.length = 0;
-            foreach (source; sources)
-                _programSources ~= cast(ProgramSource) source;
-            updateCanvasPreview();
-            markSettingsDirty();
-        };
-        _programSources.length = 0;
-        foreach (source; saved.programCanvasSources)
-            _programSources ~= cast(ProgramSource) source;
-        _programCanvasGroup.add(new Separator());
-        settingsContent.add(_programCanvasGroup);
 
         auto twitchHeader = settingsContent.add(new HBox(6));
         twitchHeader.layoutHints().preferredHeight = 38;
@@ -339,7 +295,7 @@ final class StreamRoot : VBox
         _canvasPreviewPanel.setBorder(Color.fromHex(0x343d47), 6);
         _canvasPreviewPanel.layoutHints().flex = 1.0;
         _canvasPreviewPanel.layoutHints().minHeight = 300;
-        _canvasPreview = _canvasPreviewPanel.add(new ProgramCanvasPreview());
+        _canvasPreview = _canvasPreviewPanel.add(new LiveSourceCanvasPreview());
         _canvasPreview.layoutHints().flex = 1.0;
         // Retain the preview as its own compositor layer so updating the live
         // frame repaints only the preview area instead of the whole window
@@ -395,10 +351,8 @@ final class StreamRoot : VBox
         _startStop.onClick = delegate() { toggleStreaming(); };
 
         setStreamingServersVisible(false);
-        setProgramCanvasVisible(_programCanvasVisible);
         setLiveSourcePreviewVisible(_liveSourcePreviewEnabled);
         updateQualitySummary();
-        updateCanvasPreview();
         refreshAudioDevices(false);
         _audioNotifications.start();
 
@@ -406,8 +360,7 @@ final class StreamRoot : VBox
         _previewCapturer = new DesktopPreviewCapturer(previewCaptureWidth,
             previewCaptureHeight);
         _previewCaptureRunning = true;
-        _previewCaptureDesired = _liveSourcePreviewEnabled &&
-            !_programCanvasEnabled.checked();
+        _previewCaptureDesired = _liveSourcePreviewEnabled;
         _previewCaptureThread = new Thread({ previewCaptureLoop(); });
         _previewCaptureThread.isDaemon = true;
         _previewCaptureThread.start();
@@ -458,10 +411,6 @@ final class StreamRoot : VBox
             ContextMenuItem.check("Live source preview",
                 _liveSourcePreviewEnabled, delegate() {
                     setLiveSourcePreviewVisible(!_liveSourcePreviewEnabled);
-                }),
-            ContextMenuItem.check("Program canvas",
-                _programCanvasVisible, delegate() {
-                    setProgramCanvasVisible(!_programCanvasVisible);
                 }),
             ContextMenuItem.check("Unhide streaming servers",
                 _streamingServersVisible, delegate() {
@@ -517,26 +466,6 @@ final class StreamRoot : VBox
         // lower in the settings panel before opening the toolbar menu.
         if (visible && _settingsScroll !is null && _twitchServerGroup !is null)
             _settingsScroll.ensureVisible(_twitchServerGroup.bounds());
-    }
-
-    private void setProgramCanvasVisible(bool visible)
-    {
-        _programCanvasVisible = visible;
-
-        // Only the settings section (checkbox + source editor) is tucked away
-        // behind the Settings menu. The LIVE SOURCE CANVAS preview always stays
-        // visible because it now shows the actual recorded source.
-        if (_programCanvasGroup !is null)
-        {
-            _programCanvasGroup.layoutHints().excludeFromLayout = !visible;
-            _programCanvasGroup.setVisible(visible);
-        }
-
-        layoutTree();
-        invalidate();
-
-        if (visible && _settingsScroll !is null && _programCanvasGroup !is null)
-            _settingsScroll.ensureVisible(_programCanvasGroup.bounds());
     }
 
     /// Turns the live recording preview on/off. Disabling hides the panel,
@@ -708,11 +637,9 @@ final class StreamRoot : VBox
             pathSettings.youtubeEnabled = _youtubeEnabled.checked();
             pathSettings.twitchQuality = BroadcastQuality.fullHD;
             pathSettings.youtubeQuality = youtubeQuality;
-            pathSettings.programCanvasEnabled = _programCanvasEnabled.checked();
             _videoPath.setText(format(
                 "%s • %s • Encoder: %s",
-                _programCanvasEnabled.checked() ? "Program canvas" :
-                    "Capture: " ~ _capture.label,
+                "Capture: " ~ _capture.label,
                 videoPipelineLabel(pathSettings, _encoder, _capture),
                 _encoder.label));
         }
@@ -772,21 +699,11 @@ final class StreamRoot : VBox
         settings.desktopAudioEnabled = _selectDefaultDesktopAudio ||
             settings.desktopAudioDevice.length > 0;
         settings.microphoneDevice = _microphone.selectedDevice().strip();
-        settings.programCanvasEnabled = _programCanvasEnabled.checked();
-        settings.programCanvasSources = _programSources.dup;
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
         settings.deviceDisplayNameCache.clear();
         foreach (deviceId, name; _deviceNameCache)
             settings.deviceDisplayNameCache[deviceId] = name;
         return settings;
-    }
-
-    private void updateCanvasPreview()
-    {
-        if (_canvasPreview is null) return;
-        const sourceQuality = selectedSourceQuality();
-        _canvasPreview.setSources(_programSources,
-            Size(qualityWidth(sourceQuality), qualityHeight(sourceQuality)));
     }
 
     private void toggleStreaming()
@@ -825,11 +742,9 @@ final class StreamRoot : VBox
         _startStop.setDanger(true);
     }
 
-    /// Drives the LIVE SOURCE CANVAS panel. Desktop-capture mode shows the
-    /// latest frame from the background preview-capture thread so the panel
-    /// reflects exactly what is being recorded; program-canvas mode keeps the
-    /// Aurora-rendered composite (the widget already paints the sources, which
-    /// are precisely the recorded frames fed to FFmpeg).
+    /// Drives the LIVE SOURCE CANVAS panel: shows the latest frame from the
+    /// background preview-capture thread so the panel reflects exactly what is
+    /// being recorded.
     private void updateLiveSourcePreview(double deltaSeconds)
     {
         if (_canvasPreview is null) return;
@@ -840,18 +755,11 @@ final class StreamRoot : VBox
             _previewCaptureMutex.unlock();
             return;
         }
-        const canvasMode = _programCanvasEnabled !is null &&
-            _programCanvasEnabled.checked();
         const minimized = _window !is null && _window.isMinimized();
         _previewCaptureMutex.lock();
-        _previewCaptureDesired = !canvasMode && !minimized;
+        _previewCaptureDesired = !minimized;
         RgbaImage latest = _previewCaptureFrame;
         _previewCaptureMutex.unlock();
-        if (canvasMode)
-        {
-            _canvasPreview.clearLiveFrame();
-            return;
-        }
         // Size the capture to the preview panel so the live frame is shown at
         // (near) native resolution instead of upscaled from a small buffer.
         const previewBounds = _canvasPreview.bounds();
@@ -883,7 +791,7 @@ final class StreamRoot : VBox
 
     /// Background loop that grabs the primary monitor at ~30 FPS for the live
     /// source preview, so the UI thread never blocks on GDI capture. Idles when
-    /// the program canvas replaces desktop capture or the app is shutting down.
+    /// the preview is disabled or the app is shutting down.
     private void previewCaptureLoop()
     {
         while (true)
@@ -1087,8 +995,6 @@ final class StreamRoot : VBox
         _twitchEnabled.setEnabled(!active && twitchHasKey);
         _youtubeEnabled.setEnabled(!active && youtubeHasKey);
         _sourceQuality.setEnabled(!active);
-        _programCanvasEnabled.setEnabled(!active);
-        _canvasEditor.setControlsEnabled(!active);
         _youtubeFourK.setEnabled(!active);
         _desktopAudio.setEnabled(!active);
         _microphone.setEnabled(!active);

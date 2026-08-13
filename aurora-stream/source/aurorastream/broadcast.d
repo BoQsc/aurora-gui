@@ -1,11 +1,9 @@
 module aurorastream.broadcast;
 
 import aurorastream.audiobridge : AudioBridgeSession;
-import aurorastream.programcanvas : ProgramSource, ProgramSourceKind,
-    defaultColorSource, paintProgramCanvas;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
-import core.time : MonoTime, dur, msecs;
+import core.time : msecs;
 import std.conv : to;
 import std.file : append, write;
 import std.format : format;
@@ -13,24 +11,6 @@ import std.path : buildPath, dirName;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.stdio : File;
 import std.string : indexOf, replace, split, splitLines, startsWith, strip;
-
-version (Windows)
-{
-    import aurora.canvas : Canvas;
-    import aurora.color : Color;
-    import aurora.image : loadPngImage;
-    import aurora.surface : Surface;
-    import aurora.text.atlas : FontSystem;
-    import aurora.types : Rect, maxInt;
-
-    // CRT low-level write. The frame pump writes the canvas BGRA bytes
-    // directly to the pipe file descriptor, so no phobos `File` object (with
-    // its heap-allocated, manually refcounted Impl) is ever shared across
-    // threads, and the descriptor is closed exactly once by the worker that
-    // owns the pipe.
-    private extern(C) int _write(int fd, const(void)* buffer, uint count)
-        @nogc nothrow;
-}
 
 enum BroadcastQuality
 {
@@ -83,7 +63,7 @@ struct BroadcastSettings
     bool desktopAudioEnabled = true;
     string microphoneDevice;
 
-    // The shared program canvas before service-specific scaling.
+    // The shared source canvas before service-specific scaling.
     BroadcastQuality sourceQuality = BroadcastQuality.fullHD;
 
     // Kept as separate destination profiles even while Twitch is intentionally
@@ -93,12 +73,6 @@ struct BroadcastSettings
 
     int fps = 60;
     int audioBitrateKbps = defaultAudioBitrateKbps;
-
-    // When enabled, the common source canvas is rendered by Aurora itself and
-    // fed to FFmpeg as raw BGRA frames over stdin, replacing direct desktop
-    // capture while keeping the independent Twitch/YouTube output profiles.
-    bool programCanvasEnabled;
-    ProgramSource[] programCanvasSources;
 
     // UI preference: show the live source-canvas preview (background desktop
     // grab) so the broadcaster doubles as a monitor. Toggled off to save
@@ -360,9 +334,6 @@ CaptureSelection detectCaptureBackend()
 bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
-    // Aurora-rendered program canvas produces CPU BGRA frames; there is no
-    // GPU capture to hand off directly to NVENC.
-    if (settings.programCanvasEnabled) return false;
     const oneDestination = settings.twitchEnabled != settings.youtubeEnabled;
     if (!oneDestination ||
         capture.backend != DesktopCaptureBackend.desktopDuplication ||
@@ -381,8 +352,6 @@ bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
 string videoPipelineLabel(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
-    if (settings.programCanvasEnabled)
-        return "Aurora program canvas → CPU composite → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
         return "D3D11 direct hardware frames → NVENC";
     if (capture.backend == DesktopCaptureBackend.desktopDuplication)
@@ -441,21 +410,6 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         settings.youtubeQuality != BroadcastQuality.fourK)
         return "YouTube output must be 1440p60 or 4K60.";
 
-    if (settings.programCanvasEnabled)
-    {
-        bool anyVisibleSource;
-        foreach (source; settings.programCanvasSources)
-        {
-            if (source.enabled)
-            {
-                anyVisibleSource = true;
-                break;
-            }
-        }
-        if (!anyVisibleSource)
-            return "The Aurora program canvas is enabled but has no visible source. Add a color, image, or text source, or disable the program canvas to stream the desktop instead of a black canvas.";
-    }
-
     if (settings.twitchEnabled)
     {
         if (!validServer(settings.twitchServer))
@@ -495,24 +449,6 @@ unittest
     valid.youtubeEnabled = true;
     valid.youtubeKey = "test-key";
     assert(validateBroadcastSettings(valid, encoder).length == 0);
-
-    // A canvas enabled with no visible source would stream a black picture;
-    // validation must reject it before FFmpeg starts.
-    BroadcastSettings emptyCanvas;
-    emptyCanvas.twitchEnabled = false;
-    emptyCanvas.youtubeEnabled = true;
-    emptyCanvas.youtubeKey = "test-key";
-    emptyCanvas.programCanvasEnabled = true;
-    assert(validateBroadcastSettings(emptyCanvas, encoder).length > 0);
-
-    // Disabled sources do not rescue the canvas; one enabled source does.
-    auto hidden = defaultColorSource(Color.rgb(0, 0, 0));
-    hidden.enabled = false;
-    emptyCanvas.programCanvasSources = [hidden];
-    assert(validateBroadcastSettings(emptyCanvas, encoder).length > 0);
-
-    emptyCanvas.programCanvasSources = [defaultColorSource(Color.rgb(0, 0, 0))];
-    assert(validateBroadcastSettings(emptyCanvas, encoder).length == 0);
 }
 
 private string appendPath(string server, string key)
@@ -645,30 +581,11 @@ private string[] captureArguments(const BroadcastSettings settings,
     string[] arguments = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-stats_period", "1", "-progress", "pipe:2",
-        "-thread_queue_size", "512"
+        "-thread_queue_size", "512",
+        "-nostdin"
     ];
-    // The Aurora program canvas feeds frames over stdin, so FFmpeg must not
-    // suppress interactive stdin. Desktop capture keeps `-nostdin` so a stray
-    // keypress can never be mistaken for a capture command.
-    if (!settings.programCanvasEnabled)
-        arguments = arguments[0 .. 1] ~ ["-nostdin"] ~ arguments[1 .. $];
 
-    if (settings.programCanvasEnabled)
-    {
-        // Aurora renders the common source canvas itself at the selected
-        // source quality and writes BGRA frames to stdin. The existing
-        // sourceScaleGraph cadence filter below still normalizes to CFR, so
-        // the frame writer only needs to pace approximately at fps.
-        const width = qualityWidth(settings.sourceQuality);
-        const height = qualityHeight(settings.sourceQuality);
-        arguments ~= [
-            "-f", "rawvideo", "-pix_fmt", "bgra",
-            "-video_size", format("%dx%d", width, height),
-            "-framerate", format("%d", settings.fps),
-            "-i", "pipe:0"
-        ];
-    }
-    else if (capture.backend == DesktopCaptureBackend.desktopDuplication)
+    if (capture.backend == DesktopCaptureBackend.desktopDuplication)
     {
         auto source = format(
             "ddagrab=output_idx=0:framerate=%d:draw_mouse=1:dup_frames=1",
@@ -965,9 +882,6 @@ string[] pacingDiagnosticArguments(BroadcastSettings sourceSettings,
     settings.twitchEnabled = true;
     settings.youtubeEnabled = false;
     settings.twitchQuality = BroadcastQuality.fullHD;
-    // The pacing diagnostic measures the desktop-capture pipeline; it has no
-    // Aurora canvas pump feeding stdin, so it must never emit a raw pipe input.
-    settings.programCanvasEnabled = false;
 
     PreparedDesktopAudio desktopAudio;
     desktopAudio.sdpPath = desktopAudioSdpPath;
@@ -1390,9 +1304,7 @@ final class BroadcastWorker
             format("Desktop audio enabled: %s\r\n",
                 settings.desktopAudioDevice.strip().length > 0) ~
             format("Encoder: %s (%s)\r\n", encoder.label, encoder.name) ~
-            format("Video source: %s\r\n",
-                settings.programCanvasEnabled ? "Aurora program canvas" :
-                capture.label) ~
+            format("Video source: %s\r\n", capture.label) ~
             format("Video path: %s\r\n",
                 videoPipelineLabel(settings, encoder, capture)) ~
             "Output wrapper: bounded non-dropping FIFO isolation per destination\r\n" ~
@@ -1807,10 +1719,7 @@ final class BroadcastWorker
             }
 
             _mutex.lock();
-            if (settings.programCanvasEnabled)
-                appendDiagnostic("Desktop capture: replaced by Aurora program canvas (CPU composite)");
-            else
-                appendDiagnostic("Desktop capture: " ~ capture.label);
+            appendDiagnostic("Desktop capture: " ~ capture.label);
             if (encoder.name == "h264_nvenc" &&
                 encoder.d3d11DirectProbeAttempted)
             {
@@ -1842,8 +1751,7 @@ final class BroadcastWorker
                     "Released the verified non-inheritable receiver reservations immediately before FFmpeg launch.");
             }
             auto pipes = pipeProcess(arguments,
-                settings.programCanvasEnabled ?
-                    Redirect.stderr | Redirect.stdin : Redirect.stderr,
+                Redirect.stderr,
                 cast(const string[string]) null, Config.suppressConsole);
             _mutex.lock();
             _process = pipes.pid;
@@ -1852,27 +1760,6 @@ final class BroadcastWorker
             const shouldStop = !_requestedRunning || _shutdown;
             _mutex.unlock();
             appendPersistentLog("FFmpeg process launched; startup deadline is 12 seconds.");
-
-            Thread canvasPump;
-            if (settings.programCanvasEnabled)
-            {
-                // Only the raw file descriptor crosses the thread boundary.
-                // Phobos `File` keeps a heap-allocated, manually refcounted
-                // `_p` (Impl*) and is @system; sharing that object between the
-                // worker and the pump thread can hand `File.rawWrite` a stale
-                // or zeroed Impl pointer, and fdopen'ing the same fd in the
-                // pump would make two CRT FILE objects close one descriptor.
-                // The pump writes with the raw CRT `_write`, so the descriptor
-                // stays owned and closed exactly once by `pipes` in this frame.
-                auto stdinFd = pipes.stdin.fileno();
-                canvasPump = new Thread({
-                    runCanvasPump(settings, stdinFd);
-                });
-                canvasPump.isDaemon = true;
-                canvasPump.start();
-                appendPersistentLog(
-                    "Aurora program canvas frame pump started (raw BGRA → stdin).");
-            }
 
             auto monitor = new Thread({
                 monitorProcess(pipes.pid, desktopBridge);
@@ -1889,11 +1776,6 @@ final class BroadcastWorker
             foreach (rawLine; pipes.stderr.byLine())
                 parseLine(rawLine.to!string, secrets, desktopBridge);
             exitCode = wait(pipes.pid);
-            if (canvasPump !is null)
-            {
-                try canvasPump.join();
-                catch (Exception) {}
-            }
             appendPersistentLog(format("FFmpeg exited with code %s.", exitCode));
         }
         catch (Exception error)
@@ -1969,97 +1851,5 @@ final class BroadcastWorker
                     format("FFmpeg stopped with exit code %d", exitCode);
         }
         _mutex.unlock();
-    }
-
-    /// Renders the Aurora program canvas at the source canvas resolution and
-    /// writes raw BGRA frames into FFmpeg stdin on a dedicated thread. The
-    /// existing sourceScaleGraph cadence filter (`fps=60:start_time=0:round=
-    /// near`, `setpts=N/(60*TB)`) re-times whatever arrives, so this loop only
-    /// needs to pace approximately at the selected fps; FFmpeg enforces CFR.
-    ///
-    /// `stdinFd` is the raw CRT file descriptor of the pipe write end. The
-    /// worker that spawned `pipeProcess` owns and closes that descriptor; this
-    /// thread only writes through it with the CRT `_write`, never creating a
-    /// second CRT FILE object, so there is no cross-thread phobos `File` and
-    /// no double close.
-    private void runCanvasPump(const BroadcastSettings settings, int stdinFd)
-    {
-        version (Windows)
-        {
-            const width = qualityWidth(settings.sourceQuality);
-            const height = qualityHeight(settings.sourceQuality);
-            // A dedicated font system keeps this thread's glyph atlas and
-            // layout cache independent from the UI thread (same rule as the
-            // offline title rasterizer in aurora-cut's titlelayer.d).
-            auto fonts = new FontSystem();
-            auto sources = loadCanvasImages(settings.programCanvasSources);
-            auto surface = new Surface(width, height);
-            auto frameInterval = dur!"msecs"(
-                1000 / maxInt(1, settings.fps));
-            auto nextFrame = MonoTime.currTime;
-            while (true)
-            {
-                _mutex.lock();
-                const running = _requestedRunning && !_shutdown &&
-                    _processRunning;
-                _mutex.unlock();
-                if (!running) break;
-
-                surface.clear(Color.rgb(0, 0, 0));
-                auto canvas = Canvas(surface, fonts);
-                paintProgramCanvas(canvas, sources,
-                    Rect(0, 0, width, height));
-
-                // Surface pixels are ARGB uint words; on little-endian memory
-                // that is exactly BGRA byte order, matching -pix_fmt bgra.
-                const pixels = cast(ubyte[]) surface.pixels();
-                if (_write(stdinFd, pixels.ptr, cast(uint) pixels.length) < 0)
-                {
-                    // FFmpeg exited or the pipe broke; stop pacing.
-                    break;
-                }
-
-                nextFrame += frameInterval;
-                const now = MonoTime.currTime;
-                if (nextFrame > now)
-                {
-                    try Thread.sleep(nextFrame - now);
-                    catch (Exception) {}
-                }
-            }
-        }
-    }
-
-    /// Loads every image source referenced by the program canvas. Missing or
-    /// unreadable files leave the source visible but with no pixels, matching
-    /// the preview behavior.
-    private static ProgramSource[] loadCanvasImages(
-        const ProgramSource[] sources)
-    {
-        version (Windows)
-        {
-            ProgramSource[] loaded;
-            loaded.reserve(sources.length);
-            foreach (source; sources)
-            {
-                auto copy = cast(ProgramSource) source;
-                if (copy.kind == ProgramSourceKind.image &&
-                    copy.image is null && copy.imagePath.length > 0)
-                {
-                    try copy.image = loadPngImage(copy.imagePath);
-                    catch (Exception) copy.image = null;
-                }
-                loaded ~= copy;
-            }
-            return loaded;
-        }
-        else
-        {
-            ProgramSource[] result;
-            result.reserve(sources.length);
-            foreach (source; sources)
-                result ~= cast(ProgramSource) source;
-            return result;
-        }
     }
 }
