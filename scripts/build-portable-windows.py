@@ -92,10 +92,12 @@ def main() -> int:
             embedded = package_root / "embedded"
             for tool in ("ffmpeg.exe", "ffprobe.exe"):
                 if not (embedded / tool).is_file():
-                    raise SystemExit(
-                        f"missing {embedded / tool}: copy the binaries from the "
-                        f"ffmpeg-minimal-win64 artifact there, or drop --single-exe"
+                    print(
+                        f"::error::missing {embedded / tool}: copy the binaries from "
+                        f"the ffmpeg-minimal-win64 artifact there, or drop --single-exe",
+                        flush=True,
                     )
+                    raise SystemExit(1)
         command = [
             "dub",
             "build",

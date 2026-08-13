@@ -64,8 +64,13 @@ jobs:
             Write-Error "ffmpeg.exe/ffprobe.exe not found under $root"
             exit 1
           }
-          foreach ($app in @("aurora-stream", "aurora-cut")) {
-            $embedded = Join-Path $app "embedded"
+          # aurora-cut lives at the repo root, so its embedded/ is "."; aurora-stream has its own folder.
+          $apps = @(
+            @{ Root = "aurora-stream"; Embedded = "aurora-stream\embedded" }
+            @{ Root = "aurora-cut";    Embedded = "embedded" }
+          )
+          foreach ($app in $apps) {
+            $embedded = Join-Path $app.Root $app.Embedded
             New-Item -ItemType Directory -Force -Path $embedded | Out-Null
             Copy-Item $ffmpegExe.FullName (Join-Path $embedded "ffmpeg.exe") -Force
             Copy-Item $ffprobeExe.FullName (Join-Path $embedded "ffprobe.exe") -Force
