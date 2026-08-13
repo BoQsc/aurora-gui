@@ -305,6 +305,24 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         setFullscreen(!fullscreen());
     }
 
+    /** Minimize the window to the taskbar; false when unsupported. */
+    bool minimize()
+    {
+        return _native !is null && _native.minimize();
+    }
+
+    /** Restore a minimized window; false when unsupported. */
+    bool restore()
+    {
+        return _native !is null && _native.restore();
+    }
+
+    /** True when the window is currently minimized. */
+    bool isMinimized()
+    {
+        return _native !is null && _native.isMinimized();
+    }
+
     int run()
     {
         if (_root !is null)

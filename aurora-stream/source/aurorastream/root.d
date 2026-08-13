@@ -842,8 +842,9 @@ final class StreamRoot : VBox
         }
         const canvasMode = _programCanvasEnabled !is null &&
             _programCanvasEnabled.checked();
+        const minimized = _window !is null && _window.isMinimized();
         _previewCaptureMutex.lock();
-        _previewCaptureDesired = !canvasMode;
+        _previewCaptureDesired = !canvasMode && !minimized;
         RgbaImage latest = _previewCaptureFrame;
         _previewCaptureMutex.unlock();
         if (canvasMode)

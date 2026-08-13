@@ -59,7 +59,7 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setButtonPressedColor(Color.fromHex(0x20262d));
         _titleBar.setCloseHoverColor(Color.fromHex(0xe5484d));
         _titleBar.setClosePressedColor(Color.fromHex(0xbf3438));
-        _titleBar.onMinimize = delegate() {};
+        _titleBar.onMinimize = delegate() { _window.minimize(); };
         _titleBar.onMaximizeToggle = &toggleMaximize;
         _titleBar.onClose = delegate() { _window.close(); };
         _titleBar.onSystemMenu = &showSystemMenu;
@@ -165,6 +165,8 @@ final class TitleBarStreamRoot : Widget
             }, "", _maximized);
         items ~= ContextMenuItem.command(_maximized ? "Restore down" : "Maximize",
             IconKind.maximize, delegate() { toggleMaximize(); });
+        items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
+            delegate() { _window.minimize(); }, "", !_window.isMinimized());
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Close", IconKind.close,
             delegate() { _window.close(); }, "Alt+F4");

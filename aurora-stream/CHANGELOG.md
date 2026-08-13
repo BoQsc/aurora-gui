@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Custom-titlebar build: the **minimize** button and system-menu item now
+  actually minimize the window, and clicking the **taskbar** icon minimizes it
+  again. Root cause: frameless windows were created with `WS_POPUP` but without
+  `WS_MINIMIZEBOX`/`WS_MAXIMIZEBOX` (so the shell ignored taskbar
+  click-to-minimize), the titlebar's `onMinimize` was wired to an empty
+  delegate, and `GuiWindow` had no minimize API. Added
+  `minimize()/restore()/isMinimized()` to the aurora-d window abstraction
+  (`platform/base.d`, `platform/win32.d`, `window.d`) and wired the titlebar to
+  it.
+- Fixed distorted rendering for a few frames when restoring from the taskbar:
+  while minimized the app kept rendering 1×1 frames, so the restore animation
+  scaled a solid 1×1 box up. The window now keeps its last full-size
+  framebuffer while minimized, pauses rendering until restore (also saves
+  energy), and the live source-canvas preview also pauses while minimized.
 - Fixed the periodic audio-device auto-rescan never running: `_audioRescanTimer`
   was D-default NaN (D floats initialize to NaN, not 0), so `NaN >= interval`
   was never true and disconnected/reconnected devices were not picked up while

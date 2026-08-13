@@ -1,5 +1,30 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream titlebar: minimize + restore rendering
+- [x] User: "check if minimization is implemented in titlebar of aurora, maybe
+      we missed it upstream" → taskbar click didn't minimize, and the titlebar
+      minimize button did nothing.
+- [x] Upstream gap confirmed: the `TitleBar` widget has a minimize button and
+      `onMinimize` callback, but `GuiWindow` had NO minimize API. Added
+      `minimize()/restore()/isMinimized()` to the aurora-d window abstraction
+      (`platform/base.d` default-false, `platform/win32.d` ShowWindow
+      SW_MINIMIZE/SW_RESTORE + `_minimized` cached from WM_SIZE, `window.d`
+      forwarding).
+- [x] Taskbar click-to-minimize didn't work because frameless windows used
+      `WS_POPUP` without `WS_MINIMIZEBOX` (the shell ignores it). Added
+      `WS_MINIMIZEBOX | WS_MAXIMIZEBOX` to frameless windows.
+- [x] `app_titlebar.d` wired `_titleBar.onMinimize = _window.minimize()` and
+      added a **Minimize** system-menu item; `root.d` pauses the live
+      source-canvas preview while `_window.isMinimized()`.
+- [x] Restore showed distorted content for a few frames: while minimized the app
+      rendered 1×1 frames, so the restore animation scaled a solid box up. The
+      win32 `WM_SIZE` handler now keeps the last full-size framebuffer while
+      minimized and `paintNow` skips rendering until SIZE_RESTORED, so the
+      restore animation scales real content and rendering is paused (energy).
+- [x] Verified: titlebar + main configs build, `dub test` 39 modules pass; the
+      titlebar app launches and minimize/restore (button, system menu, taskbar)
+      behave cleanly.
+
 ## 2026-08-13 — Aurora Stream: device stayed "Unavailable" after reconnecting
 - [x] User: "I don't know I reinserted the headphones device and it keeps
       visibly showing as unavailable."

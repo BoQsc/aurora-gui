@@ -922,6 +922,7 @@ else version (Windows)
         private bool _shown;
         private bool _inSizeMove;
         private bool _fullscreen;
+        private bool _minimized;
         private bool _hasWindowedPlacement;
         private LONG_PTR _windowedStyle;
         private LONG_PTR _windowedExStyle;
@@ -952,6 +953,12 @@ else version (Windows)
             _displayScale = DisplayScale.fromDpi(_dpi);
 
             DWORD style = options.decorated ? WS_OVERLAPPEDWINDOW : WS_POPUP;
+            // Frameless windows still carry WS_MINIMIZEBOX/WS_MAXIMIZEBOX so the
+            // taskbar button and the Alt+Space system menu can minimize/restore
+            // them; only the drawn caption is custom. Without WS_MINIMIZEBOX
+            // the taskbar click-to-minimize is ignored by the shell.
+            if (!options.decorated)
+                style |= WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
             if (!options.decorated && options.resizable)
                 style |= WS_THICKFRAME;
             if (!options.resizable)
@@ -1397,6 +1404,26 @@ else version (Windows)
             }
         }
 
+        override bool minimize()
+        {
+            if (_hwnd is null) return false;
+            if (_fullscreen) setFullscreen(false);
+            return ShowWindow(_hwnd, SW_MINIMIZE) != FALSE;
+        }
+
+        override bool restore()
+        {
+            if (_hwnd is null) return false;
+            return ShowWindow(_hwnd, SW_RESTORE) != FALSE;
+        }
+
+        override bool isMinimized()
+        {
+            // Cached from WM_SIZE (SIZE_MINIMIZED) so callers can check it every
+            // tick without a user32 round trip; starts false before show.
+            return _minimized;
+        }
+
         override Size clientSize() const
         {
             return _clientSize;
@@ -1710,6 +1737,18 @@ else version (Windows)
                     paintStartupBackground(cast(HDC) wParam);
                     return 1;
                 case WM_SIZE:
+                {
+                    _minimized = cast(DWORD) wParam == SIZE_MINIMIZED;
+                    if (_minimized)
+                    {
+                        // Keep the last full-size framebuffer and content while
+                        // minimized instead of shrinking to 1x1. A 1x1 frame
+                        // would be scaled up as a solid box during the restore
+                        // animation (distorted content). Rendering is paused by
+                        // paintNow until SIZE_RESTORED arrives.
+                        _needsPaint = false;
+                        return 0;
+                    }
                     updateClientSize(cast(int) unsignedLowWord(lParam),
                         cast(int) unsignedHighWord(lParam));
                     if (!_inDpiChange)
@@ -1729,6 +1768,7 @@ else version (Windows)
                         _needsPaint = true;
                     }
                     return 0;
+                }
                 case wmDpiChanged:
                 {
                     // A fullscreen style transition can synchronously produce
@@ -1941,7 +1981,7 @@ else version (Windows)
 
         private void paintNow()
         {
-            if (!_needsPaint || _closed || _painting) return;
+            if (_minimized || !_needsPaint || _closed || _painting) return;
             _needsPaint = false;
             _painting = true;
             scope (exit) _painting = false;

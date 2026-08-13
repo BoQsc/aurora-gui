@@ -148,6 +148,24 @@ abstract class NativeWindow
         setFullscreen(!fullscreen());
     }
 
+    /** Minimize the window to the taskbar; unsupported backends return false. */
+    bool minimize()
+    {
+        return false;
+    }
+
+    /** Restore a minimized window; unsupported backends return false. */
+    bool restore()
+    {
+        return false;
+    }
+
+    /** True when the native window is currently minimized. */
+    bool isMinimized()
+    {
+        return false;
+    }
+
     /** Physical pixel extent consumed by Vulkan or the software presenter. */
     Size framebufferSize() const
     {
