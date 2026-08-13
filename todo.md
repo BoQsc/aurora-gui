@@ -1,5 +1,63 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: live preview was ~8 FPS and brown-tinted
+- [x] User: "why is it low fps and brown color mainly."
+- [x] Low FPS: the preview deliberately captured only ~8 FPS on the UI thread.
+      Moved capture to a dedicated background thread (`previewCaptureLoop`) that
+      grabs the primary monitor at ~30 FPS, publishes the newest frame under a
+      `Mutex`, and idles when the program canvas replaces desktop capture; the
+      UI thread only swaps the latest frame into the widget (`updateLiveSourcePreview`).
+      The thread is stopped and joined in `shutdown()`.
+- [x] Brown tint: the DIB→RGBA conversion had red and blue swapped. 32bpp DIB
+      memory bytes are B,G,R,undefined-alpha on little-endian, but the canvas
+      consumes R,G,B,A, so the old loop wrote BGRA words and every dark
+      blue-gray UI surface rendered brown. Extracted the byte-order transform
+      into `dibPixelToRgbaWord` and added a deterministic regression test
+      (pure red/green/blue DIB words map to the correct RGBA words; gray stays
+      gray).
+- [x] Verified: `dub test` 39 modules pass (incl. the byte-order regression);
+      `dub build` (application) and titlebar link; app launches and stays
+      stable with the 30 FPS background capture running; graceful
+      `CloseMainWindow()` exits with the capture thread joined.
+
+## 2026-08-13 — Aurora Stream: LIVE SOURCE CANVAS now previews the actual recording
+- [x] User: "i thought the program canvas was suppose to show what we are
+      actually recording, wasn't that the idea?" → chose "Build a real live
+      recording preview".
+- [x] Before: the LIVE SOURCE CANVAS panel only painted the Aurora scene
+      compositor sources; in the default desktop-capture mode it showed a
+      static "Aurora program canvas is empty" placeholder and never the real
+      capture.
+- [x] Added `source/aurorastream/desktoppreview.d`: an in-app Windows GDI
+      capture (`GetDC` + `CreateDIBSection` + `StretchBlt` HALFTONE) of the
+      primary monitor into a small 480x270 RGBA `RgbaImage`, with top-down DIB,
+      BGRA→RGBA channel swap, and forced opaque alpha. New unittest
+      (`captureDesktopPreview`) plus a standalone dmd run saved a frame and
+      ffmpeg→PNG pixel analysis confirmed real content (255 unique red values,
+      avg 101.5, all opaque).
+- [x] `ProgramCanvasPreview` gained `setLiveFrame`/`clearLiveFrame` and paints
+      the live frame letterboxed instead of the sources when one is present.
+- [x] `StreamRoot` (`updateLiveSourcePreview` in onTick): desktop-capture mode
+      refreshes the preview ~8 FPS via `captureDesktopPreview`; program-canvas
+      mode keeps the in-app composite (exactly the recorded frames). The panel
+      is always visible; only the program-canvas settings section stays behind
+      the Settings menu (`setProgramCanvasVisible` no longer hides the preview).
+- [x] Verified: `dub test` 39 modules pass; `dub build` (application) links.
+
+## 2026-08-13 — Aurora Stream: move the whole Program canvas section into the Settings menu
+- [x] User: "let's move entire section to settings, I doubt anyone should use it"
+      (the Aurora program canvas section).
+- [x] The **PROGRAM CANVAS** settings section (separator + title + checkbox +
+      hint + source editor) is now wrapped in `_programCanvasGroup` and hidden
+      by default; the dedicated **LIVE SOURCE CANVAS** preview panel is hidden
+      with it and the status panel flexes to fill the monitor column. Both are
+      revealed by the new toolbar **Settings → Program canvas** check item
+      (`setProgramCanvasVisible`, mirroring the streaming-servers toggle).
+      When a saved session has the canvas enabled it is revealed automatically
+      so an active canvas config stays visible.
+- [x] Verified: `dub test` 38 modules pass; `dub build` (application) and
+      `dub build --config=titlebar` link.
+
 ## 2026-08-13 — Aurora Stream: YouTube stream shows only a black screen
 - [x] User: "Nothing is being streamed, only black screen" — then "the aurora
       render canvas is enabled by default for no reason I don't even know why

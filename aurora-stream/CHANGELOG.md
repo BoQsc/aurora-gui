@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- The **LIVE SOURCE CANVAS** panel is now a real live recording preview: in
+  desktop-capture mode a background thread grabs the primary monitor at ~30 FPS
+  through an in-app GDI capture (`desktoppreview.d`) so the panel shows exactly
+  what the stream is recording without blocking the UI, and in program-canvas
+  mode it continues to show the Aurora-rendered composite (which is precisely
+  the recorded content). Fixed the DIB BGRA→RGBA channel conversion so the
+  preview no longer shows red/blue swapped (a dark-blue theme appeared brown),
+  with a deterministic byte-order regression test. The panel stays visible by
+  default; only the program-canvas **settings** section remains behind the
+  Settings menu.
+- Moved the **Program canvas** settings section and the **LIVE SOURCE CANVAS**
+  preview behind the toolbar **Settings → Program canvas** toggle, hidden by
+  default (revealed automatically only when a saved session has the canvas
+  enabled). The status panel fills the monitor column while the preview is
+  hidden, keeping the default layout focused on desktop capture.
 - Reject **Start streaming** when the Aurora program canvas is enabled but has
   no visible source, instead of streaming a pure-black canvas with healthy
   encoder stats. The settings now fail with an explicit message pointing to

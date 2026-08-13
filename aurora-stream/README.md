@@ -213,13 +213,15 @@ When scaling is required, FFmpeg normalizes the captured Windows desktop into th
 
 ### Aurora-rendered program canvas
 
-The **Program canvas** settings section (below the source-canvas dropdown) can replace direct desktop capture entirely. When **Aurora-rendered program canvas (replaces desktop capture)** is checked, Aurora renders the common source canvas itself at the selected source resolution instead of FFmpeg capturing the desktop:
+The **Program canvas** section is tucked away behind the toolbar **Settings** menu (toggle **Program canvas**) because it is an advanced scene-compositor milestone most sessions do not need. When revealed and **Aurora-rendered program canvas (replaces desktop capture)** is checked, Aurora renders the common source canvas itself at the selected source resolution instead of FFmpeg capturing the desktop:
 
 - **Color sources** fill a rectangle with a solid color.
 - **Image sources** load a PNG and scale it into a rectangle.
 - **Text sources** render live text through Aurora's own text engine.
 
 Each source has its own visibility, opacity, and stacking order (use ▲/▼ to reorder). A live preview of the composite appears in the **LIVE SOURCE CANVAS** panel on the right. When enabled, the broadcaster feeds the rendered BGRA frames to FFmpeg over stdin as raw video (`-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0`), so the common source canvas, Twitch output, and YouTube output remain three independent layers. Sources are persisted in the settings file (schema 5) and re-render on every frame the canvas is active.
+
+With the program canvas disabled (the normal desktop-capture mode), the **LIVE SOURCE CANVAS** panel becomes a real live recording preview: a background thread grabs the primary monitor in-app at ~30 FPS so you can see exactly what the stream is recording before and during a broadcast.
 
 Program-canvas mode disables the direct D3D11/NVENC handoff (the canvas is CPU-composited), but keeps the independent Twitch/YouTube scaling and encoding paths unchanged.
 

@@ -149,6 +149,7 @@ private Rect aspectTarget(Size logical, Rect outer)
 final class ProgramCanvasPreview : Widget
 {
     private ProgramSource[] _sources;
+    private RgbaImage _captureFrame;
     private Size _logicalSize = Size(1920, 1080);
 
     void setSources(const ProgramSource[] sources, Size logicalSize)
@@ -159,12 +160,33 @@ final class ProgramCanvasPreview : Widget
         invalidate();
     }
 
+    /// Shows a live capture frame of the actual recorded source (desktop
+    /// capture) instead of the Aurora-rendered composite.
+    void setLiveFrame(RgbaImage frame)
+    {
+        _captureFrame = frame;
+        invalidate();
+    }
+
+    void clearLiveFrame()
+    {
+        _captureFrame = null;
+        invalidate();
+    }
+
     const(ProgramSource)[] sources() const { return _sources; }
 
     protected override void onPaint(ref Canvas canvas)
     {
         const full = Rect(0, 0, bounds().width, bounds().height);
         canvas.fillRect(full, Color.rgb(4, 5, 7));
+        if (_captureFrame !is null)
+        {
+            const target = aspectTarget(_logicalSize, full);
+            canvas.drawImage(target, _captureFrame, _captureFrame.bounds(),
+                Color(255, 255, 255, 255), true);
+            return;
+        }
         if (_sources.length == 0)
         {
             canvas.drawTextInRect(full,
