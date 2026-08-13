@@ -49,7 +49,7 @@ jobs:
           run_id="$(gh run list --workflow minimal-ffmpeg.yml --status success --limit 1 \
             --json databaseId --jq '.[0].databaseId')"
           echo "using minimal-ffmpeg run $run_id"
-          gh run download --repo "${{ github.repository }}" --run-id "$run_id" \
+          gh run download "$run_id" --repo "${{ github.repository }}" \
             --name ffmpeg-minimal-win64 --dir "$RUNNER_TEMP/ffmpeg"
           ls -R "$RUNNER_TEMP/ffmpeg"
 
