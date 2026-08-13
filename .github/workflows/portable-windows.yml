@@ -1,4 +1,5 @@
-name: Portable Windows executables
+name: Build portable executables
+run-name: Build portable executables (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
@@ -12,8 +13,6 @@ on:
       - scripts/verify-windows-portability.py
       - scripts/verify-windows-gui-subsystem.py
       - scripts/version.py
-      - dub.json
-      - aurora-stream/dub.json
       - source/**
       - aurora-stream/source/**
 
