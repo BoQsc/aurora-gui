@@ -64,12 +64,16 @@
       files exist, uses `portable-single-exe` build type).
 - [x] `embedded/` is gitignored except `.gitkeep`; dev builds (no
       `BundledFfmpeg`) are unaffected.
-- [ ] Not yet done: put the REAL ffmpeg.exe/ffprobe.exe from the
-      `ffmpeg-minimal-win64` artifact into each `embedded/`, run the portable
-      workflow, and on a clean machine confirm the single exe extracts and
-      streams/exports without any installed ffmpeg.
-- [ ] Not yet tested: single exe on a machine with NO ffmpeg on PATH
-      (extraction + streaming + import/export).
+- [x] CI green: "Portable Windows executables" run #7 (commit 9a3240c) built
+      everything with the REAL minimal ffmpeg embedded; artifact
+      `aurora-windows-portable` (26.8MB zip) contains the single-exe
+      aurora-cut.exe + aurora-stream.exe. (Iteration fixes: GH_TOKEN for gh,
+      positional run id, recursive artifact staging, aurora-cut embedded dir
+      is repo-root `embedded/`, build failures surfaced as annotations.)
+- [ ] Not yet tested: download run #7's `aurora-windows-portable` artifact and
+      on a machine with NO ffmpeg installed launch aurora-cut.exe /
+      aurora-stream.exe — confirm they extract ffmpeg to `%TEMP%` and
+      import/export/stream work.
 
 ## 2026-08-13 — Aurora Stream: live preview was ~8 FPS and brown-tinted
 - [x] User: "why is it low fps and brown color mainly."
