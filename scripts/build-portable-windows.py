@@ -32,7 +32,17 @@ APPLICATIONS = {
 
 def run(command: list[str], cwd: Path) -> None:
     print(f"+ ({cwd}) {' '.join(command)}", flush=True)
-    subprocess.run(command, cwd=cwd, check=True)
+    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, errors="replace")
+    if result.stdout:
+        print(result.stdout, end="", flush=True)
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr, flush=True)
+    if result.returncode != 0:
+        combined = (result.stderr or "") + (result.stdout or "")
+        tail = combined.strip().splitlines()[-40:]
+        msg = "%0A".join(line[:200] for line in tail)
+        print(f"::error::command failed (exit {result.returncode}):%0A{msg}", flush=True)
+        raise SystemExit(result.returncode)
 
 
 def main() -> int:
