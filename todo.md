@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — Aurora Stream: remove the "Program canvas" feature
+- [x] User: "remove the option of settings: 'Program canvas' this is outdated
+      and useless."
+- [x] Removed the feature end to end: deleted `source/aurorastream/programcanvas.d`
+      (sources/compositor/preview/editor), removed the Settings menu item, the
+      PROGRAM CANVAS settings section, and the editor/checkbox from `root.d`,
+      dropped `programCanvasEnabled`/`programCanvasSources` from
+      `BroadcastSettings` and the settings serialization, removed the
+      broadcaster's raw-BGRA canvas frame-pump path (`captureArguments` pipe:0
+      branch, `runCanvasPump`, `loadCanvasImages`, validation guard, canvas
+      video-pipeline label, `Redirect.stdin`), and trimmed the canvas tests from
+      `tests/broadcast_model_smoke.d` and the program-canvas docs (README,
+      ROADMAP, VALIDATION).
+- [x] The **LIVE SOURCE CANVAS** panel stays, now purely a live desktop-recording
+      preview (`LiveSourceCanvasPreview` inline widget showing the capture frame).
+      Streaming is always desktop capture.
+- [x] Verified: `dub test` 39 modules pass; application + titlebar configs
+      build; the app launches without the canvas section.
+
 ## 2026-08-13 — Aurora Stream titlebar: minimize + restore rendering
 - [x] User: "check if minimization is implemented in titlebar of aurora, maybe
       we missed it upstream" → taskbar click didn't minimize, and the titlebar
@@ -76,18 +95,18 @@
 - [x] PE/Explorer icon: `scripts/patch-pe-icon.py` appends a `.rsrc` section to
       the linked exe (correct data RVAs) and updates the PE headers — works
       with any linker. `build-portable-windows.py --single-exe` runs it after
-      `dub build`. The earlier .rsrc COFF-object approach (make-ico-rsrc-obj.py)
-      was abandoned: DMD's bundled lld-link 9 crashes on hand-built resource
-      objects, and lld-link rejects .res files outright.
-      Verified: aurora-cut.exe .rsrc data entries resolve to valid RVAs/sizes
-      and the patched exe runs.
-- [x] Note: DUB 1.41 `resourceFiles` was silently ignored, and DMD x64
-      (lld-link) rejects `.res` ("unknown file type"), so post-link .rsrc
-      patching is the reliable path.
-- [ ] Not yet verified visually on a clean machine: Explorer shows the app icon
-      and the running window/taskbar/titlebar use it (single exe, no assets
-      folder, no installed ffmpeg). v0.60.1 release was created with the BROKEN
-      icon; needs a re-release (v0.60.2 or updated tag) to include the fix.
+      `dub build`.
+- [x] BUG FOUND + FIXED: the resource data-entry RVAs were off by the size of
+      the data-entry region (112 bytes), so the RT_ICON data pointers were
+      wrong and Windows could NOT decode the icon (LoadImageW failed even
+      though FindResource/SizeofResource looked right). Verified the fix with a
+      direct Win32 probe: LoadLibraryExW + FindResourceW(RT_GROUP_ICON) +
+      LoadImageW now returns a valid HICON, and the 90-byte group data is
+      correct (reserved=0 type=1 count=6, ids 1..6 matching the PNG images).
+- [x] Release assets are now versioned (aurora-cut-v0.60.3.exe) so the
+      Explorer icon cache can't serve a stale default icon for a new build.
+- [ ] Final visual check on a clean machine: v0.60.3 release files show the app
+      icon in Explorer and the running window/taskbar/titlebar use it.
 
 ## 2026-08-13 — Aurora Stream: cache audio device names + auto-refresh on device changes
 - [x] User: "we probably need to cache device names like audio so we keep
