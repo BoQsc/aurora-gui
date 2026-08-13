@@ -1,5 +1,33 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Single-exe PE icon (Explorer/taskbar) via post-link .rsrc patch (2026-08-13)
+
+DMD's bundled lld-link is 9.0.0 (2019): it rejects `.res` files ("unknown file
+type") and CRASHES on hand-built COFF resource objects (two-section
+.rsrc$01/.rsrc$02 + @feat.00 + $R symbols + ADDR32NB relocations were emitted
+correctly per llvm-cvtres, but LLD 9 still segfaults). So the icon is added
+POST-LINK instead:
+
+- `scripts/patch-pe-icon.py icon.ico exe [out]` appends a `.rsrc` section to
+  the linked exe and updates the PE headers (NumberOfSections, section table,
+  SizeOfImage, resource data directory). Resource data-entry RVAs are computed
+  from the new section RVA, so no linker relocation support is needed.
+- `scripts/build-portable-windows.py --single-exe` runs it after `dub build`
+  for aurora-cut/aurora-stream.
+- Resource tree layout is identical to llvm-cvtres (BFS, RT_ICON ids 1..N +
+  RT_GROUP_ICON id 1, language 0x0409).
+
+How to verify the icon is truly embedded (not just present in the directory):
+`scripts/../temp tool` walk the .rsrc section and confirm every
+IMAGE_RESOURCE_DATA_ENTRY.OffsetToData resolves to a real RVA inside .rsrc and
+the DataSize matches the .ico image sizes (803/2449/4664/7566/24293/82423 +
+90-byte group). DataRVAs left as section-relative offsets (the earlier bug)
+means Windows cannot read the icon even though the directory lists RT_ICON.
+
+Explorer icon cache: after re-downloading a fixed exe at the same path, Windows
+may keep showing the cached default icon; rename the file or clear the icon
+cache to confirm.
+
 ## True single portable exe with embedded ffmpeg (2026-08-13)
 
 Goal: ship `aurora-cut.exe` / `aurora-stream.exe` as one self-contained file
