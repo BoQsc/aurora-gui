@@ -23,3 +23,5 @@
 *.aac
 
 *.auroracut
+/embedded/*
+!/embedded/.gitkeep

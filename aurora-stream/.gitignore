@@ -15,3 +15,5 @@
 /aurora-stream-*diagnostic*.txt
 /quality-diagnostic-artifacts/
 /stream-pacing-diagnostic/
+/embedded/*
+!/embedded/.gitkeep

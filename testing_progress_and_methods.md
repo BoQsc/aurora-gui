@@ -1,5 +1,51 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## True single portable exe with embedded ffmpeg (2026-08-13)
+
+Goal: ship `aurora-cut.exe` / `aurora-stream.exe` as one self-contained file
+that needs no installed ffmpeg.
+
+Mechanism (both apps, mirrored):
+- New module `aurorastream/auroracut.ffmpegbundle`: under `version
+  (BundledFfmpeg)` it embeds `ffmpeg.exe` + `ffprobe.exe` via D string imports
+  (`cast(ubyte[]) import("ffmpeg.exe")`), resolved through
+  `stringImportPaths: ["embedded"]` in dub.json.
+- At startup (`main()` in app.d / app_titlebar.d) `enableBundledFfmpeg()`
+  extracts the two exes into `%TEMP%\Aurora-Stream-ffmpeg` (cut:
+  `Aurora-Cut-ffmpeg`) — size-cached so it runs once — and prepends that dir to
+  the process `PATH`. Every bare `"ffmpeg"`/`"ffprobe"` call (media.d,
+  exporter.d, playback.d, preview.d, ytdlp.d, broadcast.d, ...) then resolves
+  to the bundle with zero call-site changes. Dev builds (no BundledFfmpeg)
+  fall back to system PATH.
+
+Build:
+- `dub build --build=portable-single-exe` (buildType adds
+  `versions: [BundledFfmpeg]`, same `-mscrtlib=libcmt` static-CRT flags as
+  portable-release).
+- CI: `portable-windows.yml` downloads the latest successful
+  `ffmpeg-minimal-win64` artifact (`gh run download`), copies ffmpeg.exe +
+  ffprobe.exe into `aurora-stream/embedded/` and `aurora-cut/embedded/`, then
+  runs `scripts/build-portable-windows.py --single-exe`.
+- `embedded/` is gitignored (only `.gitkeep` is committed).
+
+How to verify the mechanism (no GUI):
+1. Drop placeholder (or real) `ffmpeg.exe`/`ffprobe.exe` into `embedded/`.
+2. `dub build --build=portable-single-exe` in the app dir; confirm the exe
+   links (local link needs MSVC's libcmt.lib — present on CI windows-latest;
+   locally drop `-mscrtlib=libcmt` temporarily to link with DMD's default CRT).
+3. Standalone: compile `ffmpegbundle.d` with `-version=BundledFfmpeg
+   -Jembedded`, run a main that calls `enableBundledFfmpeg()`, assert the files
+   landed in `%TEMP%\<App>-ffmpeg` with correct sizes and PATH is prepended;
+   run twice to prove idempotency.
+
+How to verify the REAL single exe (on a clean machine, no ffmpeg installed):
+1. Build via the portable workflow, or locally with the real artifact binaries
+   in `embedded/`.
+2. Delete any system ffmpeg from PATH; launch the single exe.
+3. aurora-stream: RUN-ALL-DIAGNOSTICS / a local .flv output stream; confirm
+   `%TEMP%\Aurora-Stream-ffmpeg\ffmpeg.exe` appears on first run.
+4. aurora-cut: import + export MP4/MP3; confirm `%TEMP%\Aurora-Cut-ffmpeg`.
+
 ## Background playback prewarm on playhead changes (2026-08-13)
 
 User: "after playhead changes we immediately try to start loading in the

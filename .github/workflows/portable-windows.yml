@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -26,8 +27,30 @@ jobs:
       - name: Enforce single-source version policy
         run: python -X utf8 scripts/version.py check
 
+      - name: Download minimal ffmpeg artifact
+        shell: bash
+        run: |
+          run_id="$(gh run list --workflow minimal-ffmpeg.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          echo "using minimal-ffmpeg run $run_id"
+          gh run download --repo "${{ github.repository }}" --run-id "$run_id" \
+            --name ffmpeg-minimal-win64 --dir "$RUNNER_TEMP/ffmpeg"
+          ls -R "$RUNNER_TEMP/ffmpeg"
+
+      - name: Stage embedded ffmpeg for single-exe builds
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:RUNNER_TEMP "ffmpeg\ffmpeg-minimal-win64"
+          foreach ($app in @("aurora-stream", "aurora-cut")) {
+            $embedded = Join-Path $app "embedded"
+            New-Item -ItemType Directory -Force -Path $embedded | Out-Null
+            Copy-Item (Join-Path $src "ffmpeg.exe") (Join-Path $embedded "ffmpeg.exe") -Force
+            Copy-Item (Join-Path $src "ffprobe.exe") (Join-Path $embedded "ffprobe.exe") -Force
+          }
+          Get-ChildItem -Recurse aurora-stream\embedded, aurora-cut\embedded | Select-Object FullName, Length
+
       - name: Build and verify portable executables
-        run: python -X utf8 scripts/build-portable-windows.py --compiler dmd
+        run: python -X utf8 scripts/build-portable-windows.py --compiler dmd --single-exe
 
       - name: Upload portable executables
         uses: actions/upload-artifact@v7

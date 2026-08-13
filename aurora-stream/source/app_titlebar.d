@@ -5,6 +5,7 @@ import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audiobridge : runAudioBridgeHelper;
 import aurorastream.entry : applicationIconPath, printAudioEndpointsJson,
     recordStartupFailure, runAudioBridgeSessionTest;
+import aurorastream.ffmpegbundle : enableBundledFfmpeg;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.root : StreamRoot;
 import std.stdio : writeln;
@@ -220,6 +221,11 @@ private int runTitleBarApplication(string executablePath)
 
 int main(string[] arguments)
 {
+    // A single-exe build embeds ffmpeg.exe/ffprobe.exe; extract them (first
+    // run) and put them first on PATH so every "ffmpeg"/"ffprobe" invocation
+    // in this process uses the bundled copies.
+    enableBundledFfmpeg();
+
     // The titlebar build is GUI-subsystem (no console), so a diagnostic
     // command must create one for its stdout output.
     if (arguments.length > 1 && isDiagnosticCommand(arguments[1]))

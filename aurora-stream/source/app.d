@@ -3,6 +3,7 @@ module app;
 import aurora;
 import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audiobridge : AudioBridgeSession, runAudioBridgeHelper;
+import aurorastream.ffmpegbundle : enableBundledFfmpeg;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
 import aurorastream.root : StreamRoot;
@@ -168,6 +169,11 @@ private int runApplication(string executablePath)
 
 int main(string[] arguments)
 {
+    // A single-exe build embeds ffmpeg.exe/ffprobe.exe; extract them (first
+    // run) and put them first on PATH so every "ffmpeg"/"ffprobe" invocation
+    // in this process uses the bundled copies.
+    enableBundledFfmpeg();
+
     // The app links as the Windows GUI subsystem (no console), so a diagnostic
     // command must allocate one for its stdout output.
     if (arguments.length > 1 && isDiagnosticCommand(arguments[1]))

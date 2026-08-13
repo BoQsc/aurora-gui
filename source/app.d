@@ -3,6 +3,7 @@ module app;
 import aurora;
 import auroracut.appversion : appDisplayName, appFullVersion, appVersion;
 import auroracut.editor : EditorRoot;
+import auroracut.ffmpegbundle : enableBundledFfmpeg;
 import auroracut.util : appLog;
 import std.file : append, exists, thisExePath;
 import std.path : buildPath, dirName;
@@ -132,6 +133,11 @@ private int runEditor()
 
 int main(string[] arguments)
 {
+    // A single-exe build embeds ffmpeg.exe/ffprobe.exe; extract them (first
+    // run) and put them first on PATH so every "ffmpeg"/"ffprobe" invocation
+    // in this process uses the bundled copies.
+    enableBundledFfmpeg();
+
     foreach (argument; arguments[1 .. $])
     {
         if (argument == "--version" || argument == "-v")

@@ -1,5 +1,35 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-13 — True single portable exe (ffmpeg embedded) for aurora-cut + aurora-stream
+- [x] Minimal ffmpeg build (covers both apps) is green: run #15 of the
+      `minimal-ffmpeg.yml` workflow; artifact `ffmpeg-minimal-win64` ~10MB
+      (ffmpeg.exe + ffprobe.exe). Includes cut's codecs/filters/GPU encoders
+      AND stream's ddagrab/dshow/gdigrab + udp/rtp/rtmp/rtmps + flv/fifo.
+- [x] Single-exe mechanism: new `aurorastream.ffmpegbundle` /
+      `auroracut.ffmpegbundle` embeds ffmpeg.exe+ffprobe.exe at compile time
+      (`version (BundledFfmpeg)` + `stringImportPaths: ["embedded"]`), extracts
+      them on first run to `%TEMP%\Aurora-Stream-ffmpeg` / `Aurora-Cut-ffmpeg`
+      (size-cached, idempotent) and prepends that dir to PATH so every bare
+      "ffmpeg"/"ffprobe" invocation resolves to the bundle. Zero call-site
+      changes needed.
+- [x] Both apps link as single exes with embedded copies (verified locally with
+      placeholder files: aurora-cut.exe + aurora-stream.exe compile+link under
+      `dub build --build=portable-single-exe`); extract+PATH mechanism verified
+      with a standalone smoke program.
+- [x] CI wired: `portable-windows.yml` now downloads the latest successful
+      `ffmpeg-minimal-win64` artifact, stages the binaries into each app's
+      `embedded/`, and builds via `build-portable-windows.py --single-exe`.
+      `build-portable-windows.py` gained `--single-exe` (validates embedded
+      files exist, uses `portable-single-exe` build type).
+- [x] `embedded/` is gitignored except `.gitkeep`; dev builds (no
+      `BundledFfmpeg`) are unaffected.
+- [ ] Not yet done: put the REAL ffmpeg.exe/ffprobe.exe from the
+      `ffmpeg-minimal-win64` artifact into each `embedded/`, run the portable
+      workflow, and on a clean machine confirm the single exe extracts and
+      streams/exports without any installed ffmpeg.
+- [ ] Not yet tested: single exe on a machine with NO ffmpeg on PATH
+      (extraction + streaming + import/export).
+
 ## 2026-08-13 — Aurora Stream: live preview was ~8 FPS and brown-tinted
 - [x] User: "why is it low fps and brown color mainly."
 - [x] Low FPS: the preview deliberately captured only ~8 FPS on the UI thread.

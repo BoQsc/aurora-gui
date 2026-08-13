@@ -56,6 +56,14 @@ def main() -> int:
         action="store_true",
         help="allow DUB to reuse an existing build instead of forcing a relink",
     )
+    parser.add_argument(
+        "--single-exe",
+        action="store_true",
+        help=(
+            "embed the minimal ffmpeg/ffprobe into aurora-cut and "
+            "aurora-stream (requires <app>/embedded/ffmpeg.exe + ffprobe.exe)"
+        ),
+    )
     args = parser.parse_args()
 
     if sys.platform != "win32":
@@ -64,14 +72,24 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     verifier = repo_root / "scripts/verify-windows-portability.py"
     selected = args.applications or list(APPLICATIONS)
+    embedded_apps = {"aurora-cut", "aurora-stream"}
 
     run([sys.executable, "-X", "utf8", str(verifier)], repo_root)
     for name in selected:
         package_root, executable = APPLICATIONS[name]
+        single_exe = args.single_exe and name in embedded_apps
+        if single_exe:
+            embedded = package_root / "embedded"
+            for tool in ("ffmpeg.exe", "ffprobe.exe"):
+                if not (embedded / tool).is_file():
+                    raise SystemExit(
+                        f"missing {embedded / tool}: copy the binaries from the "
+                        f"ffmpeg-minimal-win64 artifact there, or drop --single-exe"
+                    )
         command = [
             "dub",
             "build",
-            "--build=portable-release",
+            "--build=portable-single-exe" if single_exe else "--build=portable-release",
             f"--compiler={args.compiler}",
         ]
         if not args.no_force:

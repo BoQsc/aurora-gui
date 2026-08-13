@@ -10,12 +10,31 @@
     "source",
     "../vendor/aurora-d-0.4.5/source"
   ],
+  "stringImportPaths": [
+    "embedded"
+  ],
   "buildTypes": {
     "portable-release": {
       "buildOptions": [
         "releaseMode",
         "optimize",
         "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    },
+    "portable-single-exe": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "versions": [
+        "BundledFfmpeg"
       ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
