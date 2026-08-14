@@ -18,7 +18,9 @@
 - [x] Minimal-FFmpeg CI run #16 passed with `ddagrab`/`hwdownload` and
       `gdigrab`/`dshow`/`lavfi` present. Portable run #39 attempt 2 accepted the
       new payload, built all single-exe applications, and passed static-CRT
-      checks. The 0.66.1 release tag is the remaining publication step.
+      checks. Release run #40 published v0.66.1 with five assets. The downloaded
+      Aurora Stream asset matched its published SHA-256 and passed headless
+      version plus synthetic audio-bridge checks.
 
 ## 2026-08-14 — Development-process complaint: tests disturbed desktop use
 - [x] User complaint: a fullscreen quality diagnostic interfered with normal

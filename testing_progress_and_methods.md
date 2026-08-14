@@ -28,6 +28,14 @@
   payload, rebuilt the D-only hook and all single-exe applications, passed the
   static-CRT checks, and produced artifact SHA-256
   `67bffc2a7e926cfec23ad9ca6c6ffa150716f1564779497d99989c468bbd9e53`.
+- Tag workflow run #40 (`31833961645`) passed from commit `8edd708`, including
+  the FFmpeg inventory, optimized D-only hook build, and all portable PE checks,
+  then published five v0.66.1 assets. The downloaded 29,929,900-byte
+  `aurora-stream-v0.66.1.exe` matched SHA-256
+  `9f6d26c119029536c4d697f17f91d41d1bdebe88933cc3933dfbef8911f09602`;
+  `--version` and `--audio-bridge-session-test --synthetic` both exited zero.
+  The synthetic release-binary run sent 152 RTP packets with no overflow,
+  pacing skips, discontinuities, or send failures.
 
 ## Aurora Stream: D3D11 game-capture release integration (2026-08-14)
 

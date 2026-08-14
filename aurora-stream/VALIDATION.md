@@ -34,7 +34,15 @@ Portable Windows run
 accepted that payload, rebuilt the optimized D-only hook and every single-exe
 application, passed PE static-runtime checks, and uploaded artifact SHA-256
 `67bffc2a7e926cfec23ad9ca6c6ffa150716f1564779497d99989c468bbd9e53`.
-No fullscreen or foreground acceptance test is permitted.
+Tag workflow run
+[#40](https://github.com/BoQsc/aurora-gui/actions/runs/31833961645) passed the
+same inventory, hook, and portable checks and published five public v0.66.1
+assets. The downloaded 29,929,900-byte `aurora-stream-v0.66.1.exe` matched its
+published SHA-256
+`9f6d26c119029536c4d697f17f91d41d1bdebe88933cc3933dfbef8911f09602`.
+Headless `--version` and `--audio-bridge-session-test --synthetic` both passed;
+the latter sent 152 RTP packets with no overflow, pacing skips, discontinuities,
+or send failures. No fullscreen or foreground acceptance test is permitted.
 
 ## 0.66.0 D3D11 game/window capture release gate
 
