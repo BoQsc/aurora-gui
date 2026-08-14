@@ -90,7 +90,18 @@ private string windowTitle(HWND hwnd)
     const count = GetWindowTextW(hwnd, buffer.ptr, buffer.length);
     if (count <= 0) return "";
     auto wide = buffer[0 .. cast(size_t) count];
-    return toUTF8(wide).idup;
+    // Some applications expose malformed titles (lone UTF-16 surrogates).
+    // Replace them so the label and any log line derived from it stay valid
+    // UTF-8 instead of corrupting the activity log with a truncated sequence.
+    wchar[512] cleaned;
+    foreach (index, ch; wide)
+    {
+        if (ch >= 0xD800 && ch <= 0xDFFF)
+            cleaned[index] = 0xFFFD;
+        else
+            cleaned[index] = ch;
+    }
+    return toUTF8(cleaned[0 .. wide.length]).idup;
 }
 
 /// `PROCESS_QUERY_LIMITED_INFORMATION` is not exported by druntime's headers.

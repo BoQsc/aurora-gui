@@ -1,5 +1,6 @@
 module aurorastream.broadcast;
 
+import aurorastream.activitylog : ActivityLog;
 import aurorastream.audiobridge : AudioBridgeSession;
 import aurorastream.browser : BrowserChoice;
 import aurorastream.windowsources : windowExists, windowIsMinimized;
@@ -97,8 +98,9 @@ struct BroadcastSettings
     // UI preference: when a stream starts, hide the main window into the
     // system tray. A tray icon appears with Start/Stop, Show window, and Exit
     // actions; the stream keeps running in the background.
-    // On by default; an explicitly saved "false" is respected.
-    bool minimizeToTrayOnStart = true;
+    // Off by default (auto-hiding while streaming is confusing); an explicitly
+    // saved "true" is respected.
+    bool minimizeToTrayOnStart = false;
 
     // UI preference: pressing the window Close button hides to the tray
     // instead of exiting the application. Exiting is always available from
@@ -1417,6 +1419,7 @@ final class BroadcastWorker
     private Thread _thread;
     private Pid _process;
     private string _executablePath;
+    private ActivityLog _activityLog;
     private bool _requestedRunning;
     private bool _processRunning;
     private bool _shutdown;
@@ -1438,6 +1441,7 @@ final class BroadcastWorker
     private string _captureFailureStatus;
     private bool _captureLossRecoverable;
     private bool _captureLossRecoverableDiagnosed;
+    private bool _failureLoggedToActivity;
     private string _startupLogPath;
     private string _status = "Ready";
     private string _diagnostics;
@@ -1449,10 +1453,11 @@ final class BroadcastWorker
     private string _droppedFrames;
     private string _outputTime;
 
-    this(string executablePath)
+    this(string executablePath, ActivityLog activityLog = null)
     {
         _mutex = new Mutex();
         _executablePath = executablePath.idup;
+        _activityLog = activityLog;
         const folder = executablePath.length > 0 ? dirName(executablePath) : ".";
         _startupLogPath = buildPath(folder, "aurora-stream-startup.log");
     }
@@ -1461,7 +1466,11 @@ final class BroadcastWorker
         const CaptureSelection capture, out string error)
     {
         error = validateBroadcastSettings(settings, encoder);
-        if (error.length > 0) return false;
+        if (error.length > 0)
+        {
+            activityError("Stream start rejected: " ~ error);
+            return false;
+        }
 
         Thread completedWorker;
         _mutex.lock();
@@ -1469,12 +1478,14 @@ final class BroadcastWorker
         {
             _mutex.unlock();
             error = "A broadcast is already running.";
+            activityWarning("Stream start rejected: " ~ error);
             return false;
         }
         if (_shutdown)
         {
             _mutex.unlock();
             error = "The broadcaster is shutting down.";
+            activityWarning("Stream start rejected: " ~ error);
             return false;
         }
 
@@ -1500,6 +1511,7 @@ final class BroadcastWorker
         _captureFailureStatus = "";
         _captureLossRecoverable = false;
         _captureLossRecoverableDiagnosed = false;
+        _failureLoggedToActivity = false;
         _status = "Starting FFmpeg…";
         _diagnostics = "";
         _frame = "";
@@ -1546,6 +1558,7 @@ final class BroadcastWorker
             _diagnostics = threadError.msg;
             _mutex.unlock();
             error = "Could not start broadcast worker: " ~ threadError.msg;
+            activityError("Stream start rejected: " ~ error);
             return false;
         }
     }
@@ -1597,6 +1610,28 @@ final class BroadcastWorker
             try _thread.join();
             catch (Exception) {}
         }
+    }
+
+    /// Mirrors a message into the always-on activity log when one is wired in
+    /// (null-safe so unit tests can construct a worker without one).
+    private void activityInfo(string message)
+    {
+        if (_activityLog !is null) _activityLog.info(message);
+    }
+
+    private void activityWarning(string message)
+    {
+        if (_activityLog !is null) _activityLog.warning(message);
+    }
+
+    private void activityError(string message)
+    {
+        if (_activityLog !is null) _activityLog.error(message);
+    }
+
+    private void activityAction(string message)
+    {
+        if (_activityLog !is null) _activityLog.action(message);
     }
 
     private void resetPersistentLog(const BroadcastSettings settings,
@@ -1663,6 +1698,7 @@ final class BroadcastWorker
         {
             _audioBridgeFailed = true;
             _requestedRunning = false;
+            _failureLoggedToActivity = true;
             appendDiagnostic("Desktop audio helper failed: " ~ bridgeError);
             process = _process;
         }
@@ -1670,6 +1706,8 @@ final class BroadcastWorker
         if (process !is null)
         {
             appendPersistentLog("AUDIO HELPER FAILURE: " ~ bridgeError);
+            activityError("Desktop audio helper failed: " ~ bridgeError);
+            activityAction("Action taken: FFmpeg was terminated because the desktop-audio helper failed.");
             try kill(process);
             catch (Exception error)
             {
@@ -1731,11 +1769,19 @@ final class BroadcastWorker
                 _mutex.unlock();
             }
             if (captureBecameActive)
+            {
                 appendPersistentLog(
                     "Desktop audio capture became active (real WASAPI packets observed).");
+                activityInfo(
+                    "Desktop audio capture became active (real WASAPI packets observed).");
+            }
             if (logSilentEndpoint)
+            {
                 appendPersistentLog(
                     "Desktop audio notice: no WASAPI packets after three seconds; continuing with bounded RTP silence.");
+                activityWarning(
+                    "Desktop audio: no WASAPI packets after three seconds; continuing with bounded RTP silence.");
+            }
 
             bool terminate;
             bool startupTermination;
@@ -1767,6 +1813,7 @@ final class BroadcastWorker
                     _requestedRunning = false;
                     _status = "FFmpeg startup timed out";
                     appendDiagnostic(failureReason);
+                    _failureLoggedToActivity = true;
                     terminate = true;
                 }
             }
@@ -1855,6 +1902,7 @@ final class BroadcastWorker
                     _requestedRunning = false;
                     _status = "Live output stalled";
                     appendDiagnostic(failureReason);
+                    _failureLoggedToActivity = true;
                     terminate = true;
                 }
                 else if (_videoCaptureFailed)
@@ -1863,6 +1911,7 @@ final class BroadcastWorker
                     _requestedRunning = false;
                     _status = "Desktop capture stalled";
                     appendDiagnostic(failureReason);
+                    _failureLoggedToActivity = true;
                     terminate = true;
                 }
             }
@@ -1892,6 +1941,7 @@ final class BroadcastWorker
                     _failed = true;
                     _requestedRunning = false;
                     appendDiagnostic(failureReason);
+                    _failureLoggedToActivity = true;
                     terminate = true;
                 }
                 else if (!contentCapture &&
@@ -1906,6 +1956,7 @@ final class BroadcastWorker
                     _failed = true;
                     _requestedRunning = false;
                     appendDiagnostic(failureReason);
+                    _failureLoggedToActivity = true;
                     terminate = true;
                 }
             }
@@ -1917,6 +1968,8 @@ final class BroadcastWorker
                     "STARTUP FAILURE: " : videoCaptureTermination ?
                     "VIDEO CAPTURE FAILURE: " : "LIVE OUTPUT FAILURE: ") ~
                     failureReason);
+                activityError("Stream failed: " ~ failureReason);
+                activityAction("Action taken: FFmpeg was terminated.");
                 try kill(process);
                 catch (Exception error)
                 {
@@ -1961,31 +2014,49 @@ final class BroadcastWorker
                 _mutex.unlock();
                 if (!running) break;
 
-                bool wrote;
+                // Grab the newest frame. PrintWindow can take much longer than
+                // one frame interval (VLC-sized composited windows, busy apps),
+                // so this call may block for several slots.
+                bool captured;
                 if (capturer.capture(frame))
                 {
-                    wrote = writeFrame(stdinFd, frame, frameBytes);
-                    if (wrote)
-                    {
-                        heldFrame[] = frame[];
-                        haveHeldFrame = true;
-                    }
-                }
-                else if (haveHeldFrame)
-                {
-                    // Window minimized/closed mid-stream: keep streaming the
-                    // last good frame so the picture freezes cleanly instead of
-                    // the stream stopping, and resumes when restored.
-                    wrote = writeFrame(stdinFd, heldFrame, frameBytes);
+                    heldFrame[] = frame[];
+                    haveHeldFrame = true;
+                    captured = true;
                 }
 
-                if (!wrote) break; // FFmpeg exited or the pipe broke.
+                // Write the best frame we have for the current slot, then
+                // advance the cadence. FFmpeg's rawvideo demuxer stamps frames
+                // by COUNT at `-framerate` (not by arrival time), so if the pump
+                // fell behind (slow PrintWindow) the stamped video duration
+                // would compress and drift ahead of the wall-clock audio —
+                // a huge A/V desync. Duplicating the last good frame into every
+                // missed slot keeps the delivered rate at ~fps frames per real
+                // second, so the video stays in sync even when capture is slow
+                // (the picture simply repeats, slightly choppy but not faster
+                // than the audio).
+                bool wrote = true;
+                if (captured || haveHeldFrame)
+                    wrote = writeFrame(stdinFd,
+                        haveHeldFrame ? heldFrame : frame, frameBytes);
 
                 nextFrame += frameInterval;
                 const now = MonoTime.currTime;
-                if (nextFrame > now)
+                if (wrote)
                 {
-                    try Thread.sleep(nextFrame - now);
+                    while (nextFrame <= now)
+                    {
+                        if (!haveHeldFrame) break;
+                        wrote = writeFrame(stdinFd, heldFrame, frameBytes);
+                        if (!wrote) break;
+                        nextFrame += frameInterval;
+                    }
+                }
+                if (!wrote) break; // FFmpeg exited or the pipe broke.
+
+                if (nextFrame > MonoTime.currTime)
+                {
+                    try Thread.sleep(nextFrame - MonoTime.currTime);
                     catch (Exception) {}
                 }
             }
@@ -2031,6 +2102,7 @@ final class BroadcastWorker
             Pid process;
             _mutex.lock();
             _captureLossRecoverable = true; // monitor exits on this flag so run() can relaunch
+            _failureLoggedToActivity = true;
             if (!_captureLossRecoverableDiagnosed)
             {
                 _captureLossRecoverableDiagnosed = true;
@@ -2040,6 +2112,9 @@ final class BroadcastWorker
             process = _process;
             _mutex.unlock();
             appendPersistentLog("DESKTOP CAPTURE OUTPUT LOST: " ~ reason);
+            activityError("Desktop capture output lost: " ~ line ~
+                ". This usually happens on alt-tab to/from a fullscreen-exclusive " ~
+                "application or a display-mode change.");
             if (process !is null)
             {
                 try kill(process);
@@ -2101,6 +2176,10 @@ final class BroadcastWorker
         _mutex.lock();
         appendDiagnostic(line);
         _mutex.unlock();
+        // Under `-loglevel warning` every non-progress stderr line is a
+        // genuine warning or error, so mirror it into the activity log as the
+        // "what happened" record (the line is already secret-sanitized).
+        activityWarning("FFmpeg: " ~ line);
     }
 
     private void run(const BroadcastSettings settings,
@@ -2116,6 +2195,15 @@ final class BroadcastWorker
         resetPersistentLog(settings, encoder, capture);
         appendPersistentLog("Broadcast worker started.");
 
+        string destinations;
+        if (settings.twitchEnabled) destinations ~= "Twitch";
+        if (settings.youtubeEnabled)
+            destinations ~= (destinations.length > 0 ? "+" : "") ~ "YouTube";
+        if (destinations.length == 0) destinations = "none";
+        activityInfo(format("Stream start: %s, encoder %s (%s), capture %s.",
+            destinations, encoder.label, encoder.name,
+            captureSourceLabel(settings, capture)));
+
         try
         {
             if (settings.desktopAudioDevice.strip().length > 0)
@@ -2128,7 +2216,17 @@ final class BroadcastWorker
                 string bridgeError;
                 if (!desktopBridge.start(settings.desktopAudioDevice, false,
                     bridgeError))
+                {
+                    _mutex.lock();
+                    _startupFailed = true;
+                    _startupFailureReason = bridgeError;
+                    _failureLoggedToActivity = true;
+                    appendDiagnostic(bridgeError);
+                    _mutex.unlock();
+                    activityError("Desktop audio helper failed to start: " ~
+                        bridgeError);
                     throw new Exception(bridgeError);
+                }
                 string handoffError;
                 if (!desktopBridge.validateReceiverReservationHandoff(
                     handoffError))
@@ -2138,8 +2236,11 @@ final class BroadcastWorker
                     _mutex.lock();
                     _startupFailed = true;
                     _startupFailureReason = handoffError;
+                    _failureLoggedToActivity = true;
                     appendDiagnostic(handoffError);
                     _mutex.unlock();
+                    activityError("Desktop audio port handoff failed: " ~
+                        handoffError);
                     throw new Exception(handoffError);
                 }
                 desktopAudio.sdpPath = desktopBridge.sdpPath;
@@ -2215,6 +2316,9 @@ final class BroadcastWorker
                 _mutex.unlock();
                 appendPersistentLog(format(
                     "FFmpeg process launched (attempt %s/%s); startup deadline is 12 seconds.",
+                    attempt, maxLaunchAttempts));
+                activityInfo(format(
+                    "FFmpeg launched (attempt %s/%s); startup deadline is 12 seconds.",
                     attempt, maxLaunchAttempts));
 
                 // Window-content capture pumps PrintWindow frames into FFmpeg's
@@ -2293,6 +2397,7 @@ final class BroadcastWorker
                     // is visible again. Relaunch FFmpeg (bounded) so the stream
                     // survives the transition instead of stopping.
                     bool relaunchCapture;
+                    bool budgetExhausted;
                     _mutex.lock();
                     if (_captureLossRecoverable)
                     {
@@ -2309,6 +2414,7 @@ final class BroadcastWorker
                             _videoCaptureFailureReason = "";
                             _captureFailureStatus = "";
                             _failed = false;
+                            _failureLoggedToActivity = false;
                             _process = null;
                             _processRunning = false;
                             _startupComplete = false;
@@ -2330,6 +2436,7 @@ final class BroadcastWorker
                                 "Desktop capture failed (did not recover after " ~
                                 maxCaptureRelaunches.to!string ~ " relaunches)";
                             _failed = true;
+                            budgetExhausted = true;
                         }
                     }
                     _mutex.unlock();
@@ -2338,10 +2445,16 @@ final class BroadcastWorker
                         appendPersistentLog(format(
                             "RELAUNCH: Desktop Duplication loss was transient; relaunching FFmpeg (recovery %s of %s).",
                             captureRelaunches, maxCaptureRelaunches));
+                        activityAction(format(
+                            "Action taken: relaunching FFmpeg after a transient Desktop Duplication loss (recovery %s of %s).",
+                            captureRelaunches, maxCaptureRelaunches));
                         Thread.sleep(300.msecs);
                         launched = false;
                         continue;
                     }
+                    if (budgetExhausted)
+                        activityError("Stream failed: " ~
+                            _videoCaptureFailureReason);
                 }
                 else
                 {
@@ -2358,6 +2471,11 @@ final class BroadcastWorker
                         appendPersistentLog(format(
                             "Transient Windows UDP -10048 bind race; retrying launch (%s of %s).",
                             attempt, maxLaunchAttempts - 1));
+                        activityWarning(
+                            "Windows UDP -10048 bind race during FFmpeg launch.");
+                        activityAction(format(
+                            "Action taken: retrying FFmpeg launch (attempt %s of %s).",
+                            attempt + 1, maxLaunchAttempts));
                         Thread.sleep(300.msecs);
                     }
                     else
@@ -2365,6 +2483,11 @@ final class BroadcastWorker
                         appendPersistentLog(
                             bindRace ? "Gave up after repeated UDP -10048 bind races."
                                      : "FFmpeg exited before the startup deadline.");
+                        _failureLoggedToActivity = true;
+                        if (bindRace)
+                            activityError("Stream failed: repeated Windows UDP -10048 bind races prevented FFmpeg from launching.");
+                        else
+                            activityError("Stream failed: FFmpeg exited before the startup deadline (see aurora-stream-startup.log for the full output).");
                     }
                 }
             }
@@ -2373,9 +2496,22 @@ final class BroadcastWorker
         {
             const safeError = sanitize(error.msg, secrets);
             appendPersistentLog("BROADCAST EXCEPTION: " ~ safeError);
+            bool alreadyLogged;
+            bool userStoppedDuringStartup;
             _mutex.lock();
-            appendDiagnostic(safeError);
+            alreadyLogged = _failureLoggedToActivity;
+            userStoppedDuringStartup = !_requestedRunning || _shutdown;
+            if (!alreadyLogged)
+            {
+                appendDiagnostic(safeError);
+                if (!userStoppedDuringStartup)
+                    _failureLoggedToActivity = true;
+            }
             _mutex.unlock();
+            if (userStoppedDuringStartup)
+                activityInfo("Stream start was cancelled by the user.");
+            else if (!alreadyLogged)
+                activityError("Stream session aborted: " ~ safeError);
         }
         finally
         {
@@ -2404,6 +2540,7 @@ final class BroadcastWorker
         const videoCaptureFailed = _videoCaptureFailed;
         const videoCaptureFailureReason = _videoCaptureFailureReason;
         const captureFailureStatus = _captureFailureStatus;
+        const failureLogged = _failureLoggedToActivity;
         _process = null;
         _processRunning = false;
         _requestedRunning = false;
@@ -2448,6 +2585,25 @@ final class BroadcastWorker
                 _status = exitCode == 0 ? "FFmpeg ended unexpectedly" :
                     format("FFmpeg stopped with exit code %d", exitCode);
         }
+        const finalStatus = _status;
         _mutex.unlock();
+
+        // Final session-end line into the always-on activity log. Failures that
+        // were already logged with their exact reason + the action taken at the
+        // moment they happened (monitorProcess / parseLine / inspectDesktopAudio
+        // / pre-launch helper checks / launch give-up) only get a concise
+        // summary here; the other branches carry the reason directly.
+        if (failureLogged)
+            activityError("Stream session ended with failure: " ~ finalStatus);
+        else if (startupFailed)
+            activityError("Stream failed to start: " ~
+                (startupFailureReason.length > 0 ? startupFailureReason :
+                    finalStatus));
+        else if (userStopped && !helperFailed)
+            activityInfo("Stream session ended: " ~ finalStatus);
+        else
+            activityError("Stream session ended with failure: " ~ finalStatus ~
+                (finalStatus.indexOf("aurora-stream-startup.log") >= 0 ? "" :
+                    " (details in aurora-stream-startup.log)"));
     }
 }

@@ -2,12 +2,12 @@ module aurorastream.root;
 
 import aurora;
 import aurorastream.appupdate : launchUpdater, newerReleaseTag, stageLatestUpdate;
-import aurorastream.appversion : appDisplayName;
+import aurorastream.appversion : appDisplayName, appFullVersion;
 import aurorastream.audioendpoint : AudioEndpoint;
 import aurorastream.audiodevices : AudioDeviceScanner;
 import aurorastream.bitratedropdown : BitrateDropdown;
 import aurorastream.browser : BrowserChoice, availableBrowserChoices,
-    browserChoiceLabel, openPacingDiagnostic, openUrlInBrowser;
+    browserChoiceLabel, openLocalFile, openPacingDiagnostic, openUrlInBrowser;
 import aurorastream.activitylog : ActivityLog;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     BroadcastSnapshot, BroadcastWorker, CaptureSelection, EncoderSelection,
@@ -19,6 +19,7 @@ import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
 import aurorastream.entry : applicationIconPath;
+import aurorastream.environment : settingsReport, systemEnvironmentReport;
 import aurorastream.programcanvas : LiveSourceCanvasPreview;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
@@ -47,7 +48,9 @@ final class StreamRoot : VBox
     private AudioDeviceScanner _audioScanner;
     private AudioDeviceNotifications _audioNotifications;
     private string[string] _deviceNameCache;
+    private string _lastAudioScanSummary;
     private bool _pendingAudioRescan;
+    private bool[string] _fieldWasPopulated;
     private double _audioRescanTimer = 0.0; // D floats default to NaN; explicit 0.0
     private enum double audioRescanIntervalSeconds = 8.0;
 
@@ -127,15 +130,37 @@ final class StreamRoot : VBox
         super(8, Insets(10));
         _window = window;
         _updateMutex = new Mutex();
-        startUpdateCheck();
         _activityLog = new ActivityLog(executablePath);
         _activityLog.start();
+        _activityLog.info(appFullVersion ~ " starting.");
+        startUpdateCheck();
         _lastMinimized = _window.isMinimized();
-        _worker = new BroadcastWorker(executablePath);
+        _worker = new BroadcastWorker(executablePath, _activityLog);
         _audioScanner = new AudioDeviceScanner();
         _audioNotifications = new AudioDeviceNotifications();
         _encoder = detectEncoder();
         _capture = detectCaptureBackend(_encoder);
+
+        if (_encoder.ffmpegAvailable)
+        {
+            _activityLog.info(format("Encoder: %s (%s).",
+                _encoder.label, _encoder.name));
+            if (_encoder.name == "h264_nvenc" &&
+                _encoder.d3d11DirectProbeAttempted &&
+                !_encoder.d3d11DirectSupported)
+                _activityLog.warning(
+                    "Direct D3D11 to NVENC hardware-frame path is not supported " ~
+                    "on this GPU/driver; the CPU compatibility path will be used.");
+        }
+        else
+        {
+            _activityLog.error(
+                "FFmpeg was not found on PATH; streaming is unavailable.");
+        }
+        _activityLog.info("Capture backend: " ~ _capture.label ~ ".");
+        _activityLog.info("Settings file: " ~ settingsFilePath());
+        foreach (reportLine; systemEnvironmentReport())
+            _activityLog.info(reportLine);
 
         bool settingsLoaded;
         string settingsLoadMessage;
@@ -150,6 +175,19 @@ final class StreamRoot : VBox
         _settingsLoadFailed = !settingsLoaded &&
             settingsLoadMessage.startsWith("Could not load");
         _settingsMessageError = _settingsLoadFailed;
+        if (_settingsLoadFailed)
+        {
+            _activityLog.error("Settings problem: " ~ settingsLoadMessage);
+            _activityLog.action(
+                "Action taken: started with default settings; the unreadable " ~
+                "settings file was left untouched.");
+        }
+        else
+        {
+            _activityLog.info(settingsLoadMessage);
+        }
+        foreach (reportLine; settingsReport(saved, _encoder, _capture))
+            _activityLog.info(reportLine);
         _browserChoice = saved.browserChoice;
         _minimizeToTrayOnStart = saved.minimizeToTrayOnStart;
         _closeToTray = saved.closeToTray;
@@ -193,6 +231,9 @@ final class StreamRoot : VBox
                 _settingsMessage ~ " " ~ captureFallbackMessage :
                 captureFallbackMessage;
             markSettingsDirty();
+            _activityLog.warning(captureFallbackMessage);
+            _activityLog.action(
+                "Action taken: capture source was reset to the entire desktop.");
         }
 
         auto header = add(new HBox(8));
@@ -203,7 +244,10 @@ final class StreamRoot : VBox
         _settingsMenu = header.add(new Button("Settings ▼"));
         _settingsMenu.layoutHints().preferredWidth = 105;
         _settingsMenu.layoutHints().preferredHeight = 34;
-        _settingsMenu.onClick = delegate() { openSettingsMenu(); };
+        _settingsMenu.onClick = delegate() {
+            _activityLog.info("Settings menu opened.");
+            openSettingsMenu();
+        };
         string initialSummary = "Source 1080p60";
         if (saved.twitchEnabled) initialSummary ~= " • Twitch 1080p60";
         if (saved.youtubeEnabled) initialSummary ~= " • YouTube 1080p60";
@@ -228,6 +272,14 @@ final class StreamRoot : VBox
         _captureSource.onChanged = delegate(string value) {
             updateQualitySummary();
             markSettingsDirty();
+            const label = _captureSource.selectedLabel();
+            const hwnd = _captureSource.selectedHwnd();
+            if (hwnd.strip().length > 0)
+                _activityLog.info("Capture source changed to " ~
+                    (label.strip().length > 0 ? label : "window " ~ hwnd) ~ ".");
+            else
+                _activityLog.info(
+                    "Capture source changed to the entire desktop.");
         };
         auto captureHint = settingsContent.add(new Label(
             "Pick a single game or app window to stream only that window — viewers never see the rest of your desktop. Entire desktop captures everything."));
@@ -240,6 +292,9 @@ final class StreamRoot : VBox
         _windowContentCapture.onChanged = delegate(bool checked) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info(checked ?
+                "Window-content capture enabled (window's own content)." :
+                "Window-content capture disabled (on-screen pixels).");
         };
 
         settingsContent.add(new Separator());
@@ -251,6 +306,8 @@ final class StreamRoot : VBox
         _sourceQuality.onChanged = delegate(BroadcastQuality quality) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info("Common source canvas set to " ~
+                qualityShortLabel(quality) ~ ".");
         };
         auto sourceHint = settingsContent.add(new Label(
             "1080p60 is the default. This shared canvas is scaled separately for every enabled destination."));
@@ -283,6 +340,8 @@ final class StreamRoot : VBox
         _twitchEnabled.onChanged = delegate(bool checked) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info(checked ?
+                "Stream to Twitch enabled." : "Stream to Twitch disabled.");
         };
         auto twitchProfile = settingsContent.add(new Label(
             "1920×1080 • 60 FPS • 6000 kbps CBR • independent H.264 encoder"));
@@ -295,7 +354,7 @@ final class StreamRoot : VBox
         _twitchKey = addStreamKeyField(settingsContent, "Twitch stream key",
             saved.twitchKey, "Paste the Twitch stream key", _twitchPaste);
         _twitchKey.onChanged = delegate() {
-            streamKeyChanged(_twitchKey, _twitchEnabled);
+            streamKeyChanged("Twitch", _twitchKey, _twitchEnabled);
         };
         _twitchPaste.onClick = delegate() {
             pasteStreamKey("Twitch", _twitchKey);
@@ -340,18 +399,24 @@ final class StreamRoot : VBox
         _youtubeEnabled.onChanged = delegate(bool checked) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info(checked ?
+                "Stream to YouTube enabled." : "Stream to YouTube disabled.");
         };
         _youtubeQuality = youtubeDestinationRow.add(new SourceQualityDropdown(
             saved.youtubeQuality));
         _youtubeQuality.onChanged = delegate(BroadcastQuality quality) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info("YouTube output quality set to " ~
+                qualityShortLabel(quality) ~ ".");
         };
         _youtubeBitrate = youtubeDestinationRow.add(new BitrateDropdown(
             saved.youtubeBitrateKbps));
         _youtubeBitrate.onChanged = delegate(int kbps) {
             updateQualitySummary();
             markSettingsDirty();
+            _activityLog.info(format(
+                "YouTube output bitrate set to %d kbps.", kbps));
         };
         youtubeRowWrap.add(new Spacer(1.0));
         _youtubeProfile = settingsContent.add(new Label(
@@ -365,7 +430,7 @@ final class StreamRoot : VBox
         _youtubeKey = addStreamKeyField(settingsContent, "YouTube stream key",
             saved.youtubeKey, "Paste the YouTube stream key", _youtubePaste);
         _youtubeKey.onChanged = delegate() {
-            streamKeyChanged(_youtubeKey, _youtubeEnabled);
+            streamKeyChanged("YouTube", _youtubeKey, _youtubeEnabled);
         };
         _youtubePaste.onClick = delegate() {
             pasteStreamKey("YouTube", _youtubeKey);
@@ -383,15 +448,25 @@ final class StreamRoot : VBox
         _desktopAudio.onChanged = delegate(string value) {
             _selectDefaultDesktopAudio = false;
             markSettingsDirty();
+            _activityLog.info("Desktop audio device set to " ~
+                deviceDisplayName(value) ~ ".");
         };
         _microphone = addAudioDeviceDropdown(settingsContent,
             "Microphone (FFmpeg DirectShow)",
             saved.microphoneDevice,
             "No DirectShow microphone devices found");
+        _microphone.onChanged = delegate(string value) {
+            markSettingsDirty();
+            _activityLog.info("Microphone set to " ~
+                deviceDisplayName(value) ~ ".");
+        };
 
         auto deviceRow = settingsContent.add(new HBox(6));
         _refreshAudioDevices = deviceRow.add(new Button("Refresh audio devices"));
-        _refreshAudioDevices.onClick = delegate() { refreshAudioDevices(true); };
+        _refreshAudioDevices.onClick = delegate() {
+            _activityLog.action("Audio devices refresh requested by the user.");
+            refreshAudioDevices(true);
+        };
         auto audioHint = deviceRow.add(new Label(
             "Desktop lists speakers/headphones. Microphone lists recording inputs. Either can remain Disabled."));
         audioHint.setScale(1);
@@ -495,6 +570,29 @@ final class StreamRoot : VBox
         openBrowserIn(pageName, url, _browserChoice);
     }
 
+    /// Opens the always-on activity log file with the OS default handler so the
+    /// operator can see the exact problems and actions the app recorded.
+    private void openActivityLog()
+    {
+        const path = _activityLog !is null ?
+            _activityLog.path() : "aurora-stream-activity.log";
+        string error;
+        if (openLocalFile(path, error))
+        {
+            _localStatus = "Opened the activity log (" ~ path ~ ").";
+            _localStatusError = false;
+            _status.setText(_localStatus);
+            _status.setColor(Color.fromHex(0x9fd4af));
+            _activityLog.info("Activity log opened by the user.");
+            return;
+        }
+        _localStatus = "Could not open the activity log: " ~ error;
+        _localStatusError = true;
+        _status.setText(_localStatus);
+        _status.setColor(Color.fromHex(0xe19a9a));
+        _activityLog.error("Could not open the activity log: " ~ error);
+    }
+
     private void openBrowserIn(string pageName, string url, BrowserChoice choice)
     {
         string error;
@@ -505,6 +603,8 @@ final class StreamRoot : VBox
             _localStatusError = false;
             _status.setText(_localStatus);
             _status.setColor(Color.fromHex(0x9fd4af));
+            _activityLog.info(pageName ~ " opened in " ~
+                browserChoiceLabel(choice) ~ ".");
             return;
         }
 
@@ -512,6 +612,7 @@ final class StreamRoot : VBox
         _localStatusError = true;
         _status.setText(_localStatus);
         _status.setColor(Color.fromHex(0xe19a9a));
+        _activityLog.error("Could not open " ~ pageName ~ ": " ~ error);
     }
 
     private void chooseBrowser(BrowserChoice choice)
@@ -519,6 +620,8 @@ final class StreamRoot : VBox
         if (choice == _browserChoice) return;
         _browserChoice = choice;
         markSettingsDirty();
+        _activityLog.info("Browser choice set to " ~
+            browserChoiceLabel(choice) ~ ".");
     }
 
     private VBox addFieldGroup(VBox panel, string title, string value,
@@ -538,7 +641,10 @@ final class StreamRoot : VBox
         label.layoutHints().preferredHeight = 19;
         field = group.add(new ClipboardTextField(value));
         field.setPlaceholder(placeholder);
-        field.onChanged = delegate() { markSettingsDirty(); };
+        field.onChanged = delegate() {
+            markSettingsDirty();
+            logFieldPopulatedChange(title, field.textUtf8());
+        };
         return group;
     }
 
@@ -548,20 +654,28 @@ final class StreamRoot : VBox
             ContextMenuItem.check("Live source preview",
                 _liveSourcePreviewEnabled, delegate() {
                     setLiveSourcePreviewVisible(!_liveSourcePreviewEnabled);
+                    _activityLog.info("Live source preview " ~
+                        (_liveSourcePreviewEnabled ? "enabled." : "disabled."));
                 }),
             ContextMenuItem.check("Unhide streaming servers",
                 _streamingServersVisible, delegate() {
                     setStreamingServersVisible(!_streamingServersVisible);
+                    _activityLog.info("Streaming server fields " ~
+                        (_streamingServersVisible ? "shown." : "hidden."));
                 }),
             ContextMenuItem.check("Minimize to tray when streaming starts",
                 _minimizeToTrayOnStart, delegate() {
                     _minimizeToTrayOnStart = !_minimizeToTrayOnStart;
                     markSettingsDirty();
+                    _activityLog.info("Minimize-to-tray on stream start " ~
+                        (_minimizeToTrayOnStart ? "enabled." : "disabled."));
                 }),
             ContextMenuItem.check("Close button hides to tray instead of exiting",
                 _closeToTray, delegate() {
                     _closeToTray = !_closeToTray;
                     markSettingsDirty();
+                    _activityLog.info("Close-to-tray " ~
+                        (_closeToTray ? "enabled." : "disabled."));
                 }),
             ContextMenuItem.separatorItem(),
             ContextMenuItem.command("Run A/V pacing diagnostic", delegate() {
@@ -578,10 +692,17 @@ final class StreamRoot : VBox
                 {
                     _localStatus = "Could not open A/V pacing diagnostic: " ~ error;
                     _localStatusError = true;
+                    _activityLog.error(
+                        "Could not open A/V pacing diagnostic: " ~ error);
                     return;
                 }
                 _localStatus = "Opened the A/V pacing diagnostic in a separate terminal.";
                 _localStatusError = false;
+                _activityLog.info(
+                    "A/V pacing diagnostic opened in a separate terminal.");
+            }),
+            ContextMenuItem.command("View activity log", delegate() {
+                openActivityLog();
             })
         ];
 
@@ -606,6 +727,9 @@ final class StreamRoot : VBox
             _updateAvailable = tag;
             _updateChecked = true;
             _updateMutex.unlock();
+            if (tag.length > 0)
+                _activityLog.info("Update available: " ~ tag ~
+                    " (install it from the Settings menu).");
         });
         worker.isDaemon = true;
         worker.start();
@@ -617,17 +741,22 @@ final class StreamRoot : VBox
     {
         _localStatus = "Downloading update…";
         _localStatusError = false;
+        _activityLog.action("Update install requested by the user.");
         const staged = stageLatestUpdate();
         if (staged.length == 0)
         {
             _localStatus = "Could not download the update. Try again later.";
             _localStatusError = true;
+            _activityLog.error(
+                "Could not download the update; try again later.");
             return;
         }
         if (launchUpdater(staged))
         {
             _localStatus = "Restarting to install the update…";
             _localStatusError = false;
+            _activityLog.action(
+                "Updater launched; restarting to install the update.");
             // The updater must relaunch even when close-to-tray is enabled.
             _forceExit = true;
             if (_tray !is null) _tray.remove();
@@ -637,6 +766,7 @@ final class StreamRoot : VBox
         {
             _localStatus = "Could not start the updater.";
             _localStatusError = true;
+            _activityLog.error("Could not start the update installer.");
         }
     }
 
@@ -714,10 +844,11 @@ final class StreamRoot : VBox
         return field;
     }
 
-    private void streamKeyChanged(ClipboardTextField field,
+    private void streamKeyChanged(string service, ClipboardTextField field,
         CheckBox destination)
     {
-        const hasKey = field.textUtf8().strip().length > 0;
+        const text = field.textUtf8();
+        const hasKey = text.strip().length > 0;
         destination.setChecked(hasKey, false);
 
         const snapshot = _worker.snapshot();
@@ -725,6 +856,8 @@ final class StreamRoot : VBox
         destination.setEnabled(hasKey && !active);
         updateQualitySummary();
         markSettingsDirty();
+        // Never log the key itself — only the populated/cleared transition.
+        logFieldPopulatedChange(service ~ " stream key", text);
     }
 
     private void pasteStreamKey(string service, ClipboardTextField field)
@@ -746,6 +879,8 @@ final class StreamRoot : VBox
         _localStatusError = true;
         _status.setText(_localStatus);
         _status.setColor(Color.fromHex(0xe19a9a));
+        _activityLog.info("The clipboard contained no " ~ service ~
+            " stream key; nothing was pasted.");
     }
 
     private AudioDeviceDropdown addAudioDeviceDropdown(VBox panel,
@@ -785,6 +920,29 @@ final class StreamRoot : VBox
         _settingsSaveDelay = 0.45;
     }
 
+    /// Resolves a device ID to its friendly cached name, or "Disabled" when
+    /// nothing is selected. Only the display name is logged — never a raw ID.
+    private string deviceDisplayName(string id)
+    {
+        if (id.strip().length == 0) return "Disabled";
+        const name = id in _deviceNameCache;
+        if (name !is null && name.length > 0) return *name;
+        return id;
+    }
+
+    /// Logs when a text field transitions between empty and populated. The
+    /// field CONTENT is never logged (stream keys and server URLs are
+    /// sensitive); only the field's name and the transition are recorded.
+    private void logFieldPopulatedChange(string name, string current)
+    {
+        const populated = current.strip().length > 0;
+        const previous = name in _fieldWasPopulated;
+        const wasPopulated = previous !is null && *previous;
+        if (populated == wasPopulated) return;
+        _fieldWasPopulated[name] = populated;
+        _activityLog.info(name ~ (populated ? " entered." : " cleared."));
+    }
+
     private bool saveSettingsNow()
     {
         if (_settingsLoadFailed && !_settingsDirty) return false;
@@ -797,12 +955,14 @@ final class StreamRoot : VBox
             _settingsMessage = "Settings saved to " ~ settingsFilePath() ~
                 ". This file contains the stream keys.";
             _settingsMessageError = false;
+            _activityLog.info("Settings saved to " ~ settingsFilePath() ~ ".");
             return true;
         }
 
         _settingsMessage = "Could not save settings: " ~ error;
         _settingsMessageError = true;
         _settingsSaveDelay = 2.0;
+        _activityLog.error("Could not save settings: " ~ error);
         return false;
     }
 
@@ -938,6 +1098,7 @@ final class StreamRoot : VBox
         if (snapshot.requestedRunning || snapshot.processRunning)
         {
             _worker.stop();
+            _activityLog.action("Stop streaming requested by the user.");
             return "";
         }
 
@@ -951,6 +1112,7 @@ final class StreamRoot : VBox
         }
 
         saveSettingsNow();
+        _activityLog.action("Start streaming requested by the user.");
 
         string error;
         if (!_worker.start(collectSettings(), _encoder, _capture, error))
@@ -1246,7 +1408,12 @@ final class StreamRoot : VBox
         if (streamActive != _lastStreamActive)
         {
             _lastStreamActive = streamActive;
-            _activityLog.note(streamActive ? "Stream started." : "Stream stopped.");
+            if (streamActive)
+                _activityLog.info("Stream started.");
+            else
+                _activityLog.info(streamSnapshot.failed ?
+                    "Stream stopped (failed: " ~ streamSnapshot.status ~ ")." :
+                    "Stream stopped.");
             if (_tray !is null) _tray.setStreaming(streamActive);
         }
         _activityLog.setSnapshot(format(
@@ -1333,16 +1500,27 @@ final class StreamRoot : VBox
             {
                 _localStatus = scanError;
                 _localStatusError = true;
+                _activityLog.warning(
+                    "Audio device scan problem: " ~ scanError);
             }
             else
             {
-                _localStatus = format(
+                const summary = format(
                     "Found %d Windows playback endpoint%s and %d microphone%s.",
                     audioScan.desktopDevices.length,
                     audioScan.desktopDevices.length == 1 ? "" : "s",
                     audioScan.microphoneDevices.length,
                     audioScan.microphoneDevices.length == 1 ? "" : "s");
+                _localStatus = summary;
                 _localStatusError = false;
+                // The safety-net rescan runs every few seconds even when
+                // nothing changed; only log when the device inventory actually
+                // changed so the activity log stays sparse.
+                if (summary != _lastAudioScanSummary)
+                {
+                    _lastAudioScanSummary = summary;
+                    _activityLog.info(summary);
+                }
             }
         }
 

@@ -17,6 +17,7 @@ import std.file : write;
 import std.path : buildPath;
 import std.process : environment;
 import std.utf : toUTF16, toUTF16z;
+import std.algorithm : min;
 
 __gshared HANDLE g_pipe;
 __gshared int g_framesRead;
@@ -73,10 +74,16 @@ void main(string[] args)
     GetWindowThreadProcessId(hwnd, &pid);
     mark("hwnd=" ~ (cast(ulong) hwnd).to!string ~ " pid=" ~ pid.to!string);
 
-    // 3. Create the frame pipe (server side) and connect it.
+    // 3. Create the frame pipe (server side) and connect it. The named-pipe
+    // default buffer is 4096 bytes, but a 640x480 BGRA frame is ~1.2 MB; a
+    // small buffer makes the hook's WriteFile block mid-frame while the reader
+    // waits for a full frame (deadlock). Use large buffers so a whole frame
+    // fits before the reader drains it.
     const pipeName = "\\\\.\\pipe\\aurora-gamecap-" ~ to!string(pid);
+    const pipeBufferSize = 8 * 1024 * 1024;
     g_pipe = CreateNamedPipeW(toUTF16z(pipeName), PIPE_ACCESS_INBOUND,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 0, 0, 0, null);
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1,
+        pipeBufferSize, pipeBufferSize, 0, null);
     if (g_pipe == INVALID_HANDLE_VALUE)
     {
         mark("pipe create failed " ~ GetLastError().to!string);
@@ -130,25 +137,44 @@ void main(string[] args)
     GetExitCodeThread(remoteThread, &moduleHandle);
     mark("injected base=" ~ moduleHandle.to!string);
 
-    // 6. Read frames for ~3 seconds.
+    // 6. Read frames for ~4 seconds, reassembling partial reads (the hook can
+    // write while the reader drains, so a frame may arrive in pieces).
     const frameBytes = 640 * 480 * 4;
     auto frame = new ubyte[frameBytes];
-    const readDeadline = GetTickCount() + 3000;
+    const readDeadline = GetTickCount() + 4000;
     int nonBlack;
     int changing;
     int lastChecksum;
     while (GetTickCount() < readDeadline)
     {
-        DWORD avail;
-        if (!PeekNamedPipe(g_pipe, null, 0, null, &avail, null)) break;
-        if (avail < frameBytes)
+        size_t got;
+        bool pipeAlive = true;
+        while (got < frameBytes)
         {
-            Thread.sleep(2.msecs);
-            continue;
+            DWORD avail;
+            if (!PeekNamedPipe(g_pipe, null, 0, null, &avail, null))
+            {
+                pipeAlive = false;
+                break;
+            }
+            if (avail == 0)
+            {
+                Thread.sleep(1.msecs);
+                if (GetTickCount() >= readDeadline) break;
+                continue;
+            }
+            const take = min(avail, cast(DWORD) (frameBytes - got));
+            DWORD readCount;
+            if (!ReadFile(g_pipe, frame.ptr + got, take, &readCount, null))
+            {
+                pipeAlive = false;
+                break;
+            }
+            if (readCount == 0) continue;
+            got += readCount;
         }
-        DWORD readCount;
-        if (!ReadFile(g_pipe, frame.ptr, frameBytes, &readCount, null)) break;
-        if (readCount != frameBytes) break;
+        if (!pipeAlive) break;
+        if (got < frameBytes) break;
         ++g_framesRead;
         // Checksum + color stats.
         uint sum;

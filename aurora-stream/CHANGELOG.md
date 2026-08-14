@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Improved always-on diagnostic logging.** `aurora-stream-activity.log` (beside
+  the exe) is now the single session-spanning record of what happened and what
+  the app did about it. Every line carries a severity tag:
+  - `[ERROR]` failures with the exact reason (stream start rejected, FFmpeg
+    startup timeout, live-output stall, desktop capture stall, captured window
+    closed/minimized, Desktop Duplication loss, audio-helper failure, UDP
+    bind-race give-up, unexpected FFmpeg exit).
+  - `[ACTION]` what the app automatically did in response (FFmpeg terminated,
+    capture relaunch "recovery N of 3", launch retry, settings fallback,
+    capture reset to desktop, updater launched).
+  - `[WARNING]` degraded state (encoder fallback, D3D11-direct probe fail,
+    audio scan errors, FFmpeg warning lines, silent audio endpoint, stale
+    capture-window fallback).
+  - `[INFO]` lifecycle + user actions: startup (with an OS/CPU/RAM/GPU/display/
+    FFmpeg environment block and a safe settings summary — stream keys and
+    server URLs are never written), encoder/capture selection, settings
+    load/save, audio device inventory, update check, and every settings
+    interaction (capture source, qualities, bitrate, destinations, audio
+    devices, tray options, browser, ...).
+  - Settings menu → **View activity log** opens the file with the OS default
+    handler.
+
 - **Minimize to tray.** Two new settings-menu options: "Minimize to tray when
   streaming starts" hides the window into the system tray the moment a stream
   starts (the stream keeps running), and "Close button hides to tray instead of
@@ -42,9 +64,9 @@
     app never posts notifications to the notification center. Re-enable by
     setting that flag to `true` when notifications are refined later.
   - Persisted as `minimizeToTrayOnStart` / `closeToTray` (settings schema 8).
-    **Both are ON by default** (a saved/absent key falls back to enabled, so
-    fresh installs and older settings files get the tray behavior; an
-    explicitly saved `false` is respected). Requires the new `TrayIcon` module
+    **Minimize-to-tray is OFF by default** (auto-hiding while streaming is
+    confusing), **close-to-tray is ON by default**; an explicitly saved value
+    is respected. Requires the new `TrayIcon` module
     and `setVisible()` on the aurora-d window backend (SW_SHOW/SW_HIDE;
     rendering pauses while hidden).
 
@@ -56,9 +78,19 @@
   it is covered by other windows, off the visible desktop, or running in the
   background. While the window is minimized — which no capture API can render —
   the stream keeps going on the last good frame and resumes automatically on
-  restore, instead of stopping. GPU-rendered content (DirectX/Vulkan games)
-  may render black through this path, so it is an opt-in checkbox.
+  restore, instead of stopping. GPU-rendered content (DirectX/Vulkan games,
+  hardware-accelerated video players) may render black or partially through
+  this path, so it is an opt-in checkbox.
   (`windowContentCapture` settings key, schema 7.)
+- **Window-content capture stays in A/V sync even when PrintWindow is slow.**
+  `PrintWindow` on a large/composited window (e.g. VLC) can take several frame
+  intervals, and FFmpeg's rawvideo demuxer stamps frames by COUNT at the
+  configured `-framerate` — so a slow pump previously produced a video stream
+  whose stamped duration was shorter than the wall-clock audio, making video
+  run ahead of audio (huge mismatch). The pump now duplicates the last good
+  frame into every missed slot so it still delivers ~fps frames per real
+  second; the picture may repeat (slightly choppy) when capture is slow, but it
+  no longer drifts ahead of the audio.
 - **CAPTURE SOURCE selector no longer drowns in minimized windows.** A busy
   desktop is mostly minimized windows (this machine: 54 of 69), each previously
   listed as "(minimized — not capturable)", burying the usable rows and making

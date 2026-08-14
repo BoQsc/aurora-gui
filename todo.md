@@ -1,5 +1,54 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream: improved always-on activity logging — DONE
+- [x] User: "improve logging so that final release of aurora stream would show
+      exactly what errors and what problems happen and what actions are taken,
+      so we know exactly how to resolve things once problems appear or target
+      things faster and resolve faster."
+- [x] `ActivityLog` gained severity-tagged helpers (`info`/`warning`/`error`/
+      `action`) + a `path()` accessor; documented the tag format in the module
+      doc comment. The always-on `aurora-stream-activity.log` is now the single
+      session-spanning problem/action record.
+- [x] `BroadcastWorker` receives the `ActivityLog` and mirrors exact failure
+      reasons + actions: stream start rejected, FFmpeg startup timeout, live
+      output stall, desktop capture stall, window closed/minimized mid-stream,
+      Desktop Duplication loss + relaunch (recovery N of 3), audio-helper
+      failure, UDP -10048 bind race retry/give-up, unexpected exit, and a final
+      session-end line. FFmpeg warning lines are mirrored as `[WARNING] FFmpeg:`
+      (secret-sanitized).
+- [x] `StreamRoot` logs startup version, encoder/capture detection (incl.
+      D3D11-direct fallback warning), settings load/save results, capture-window
+      fallback, audio device inventory (deduplicated on change) and scan errors,
+      update check/install, browser-open failures. `toggleStreaming` logs the
+      user start/stop request as `[ACTION]`.
+- [x] Settings menu -> "View activity log" opens the file with the OS default
+      handler (`openLocalFile` added to `browser.d`).
+- [x] User actions are logged too (user: "do we log what user does too? yeah
+      but don't expose stuff like stream keys or sensitive data"): capture
+      source, source/YouTube quality, YouTube bitrate, Twitch/YouTube enable
+      toggles, window-content capture, live source preview, streaming-server
+      fields, minimize-to-tray / close-to-tray, desktop audio / microphone
+      selection (friendly name only), audio refresh, browser quick-link opens,
+      browser choice, settings menu opens. **Stream keys are NEVER logged** —
+      text fields log only populated/cleared transitions via
+      `logFieldPopulatedChange` (content stays out of the log; paste success is
+      reported without the key).
+- [x] Environment + settings report (user: "i hope log include settings/options
+      and os and other things we might need"): new `aurorastream/environment.d`
+      logs a startup `[INFO]` block with OS name/build/edition + architecture
+      (from the registry, reliable on Win10/11), CPU model + logical processor
+      count (registry), RAM, GPU adapter(s) + current display mode via
+      `EnumDisplayDevicesW`/`EnumDisplaySettingsW`, the FFmpeg build actually
+      in use, and a safe settings summary (destinations, encoder, capture,
+      qualities/bitrate, audio devices, window-content capture, live preview,
+      tray options, browser, config mode, and stream-key *presence* only).
+      Stream keys and server URLs never appear. Added `advapi32` to
+      `dub.json` libs for the registry read (`RegGetValueW`).
+- [x] Verified: `dub test` (44 modules pass, incl. the environment settings-
+      report unittest asserting no key leakage), `dub build` (application) and
+      `dub build --config=notitlebar` link, and a live launch logged the full
+      OS/CPU/RAM/GPU/FFmpeg + Settings block in `aurora-stream-activity.log`.
+
 ## 2026-08-14 — Aurora Stream: OBS-style game capture (D3D11 render hook) — IN PROGRESS
 - [x] User: "We want to stream a window even if it's minimized or out of focus
       or not here. That's the main point." → then "we need just like obs per
@@ -20,16 +69,30 @@
       CRITICAL gotcha: `&LoadLibraryW` in D = this exe's import thunk, NOT the
       kernel32 function — must use
       `GetProcAddress(GetModuleHandleW("kernel32"),"LoadLibraryW")`.
-- [ ] **BLOCKER**: `ID3D11Device::GetImmediateContext` (slot 38) returns null
-      even on a directly-created device; probing slots 30-60 found no slot that
-      writes the known-good context. Until the context resolves, `captureFrame`
-      can't CopyResource/Map → framesRead=0. See testing_progress_and_methods.md
-      for the exact next steps (probe per-slot in separate runs, or QI the
-      device for the context IID).
-- [ ] Also: after ~20 repeated D3D11 device creations, `d3d11test_app.exe` hangs
-      at `D3D11CreateDeviceAndSwapChain` (GPU state wedge — needs a reboot).
-- [ ] Remaining: resolve context → verify frames → wire into aurora-stream as a
-      capture mode feeding the existing rawvideo FFmpeg pump → ship the hook DLL.
+- [x] **BLOCKER RESOLVED — D3D11 vtable layout was wrong.** The device vtable has
+      `GetCreationFlags` (38) and `GetDeviceRemovedReason` (39) BEFORE
+      `GetImmediateContext`, so the real slot is **40**, not 38. Verified against
+      the authoritative mingw-w64 `d3d11.h` (fetched). `GetImmediateContext` now
+      returns the real context (`match=true`).
+- [x] **Frame capture works end-to-end.** Hook → back-buffer GetBuffer →
+      staging texture → CopyResource → Map → BGRA → named pipe → reader.
+      Verified: **127-128 non-black frames in 4 s, ~124 changing** (the D3D11
+      test app's animated clear color). Key fixes along the way:
+      - named-pipe default buffer is 4096 bytes → 1.2 MB frames deadlocked;
+        server now uses 8 MB buffers + the reader reassembles partial reads.
+      - releasing COM objects must go through the OBJECT's own vtable with an
+        `extern(C)` call (`comRelease`); releasing through another object's
+        vtable (or `extern(D)`) crashes.
+      - `scope(exit)` cleanup in the betterC hook was unreliable → explicit
+        cleanup.
+      - hook rate-limits to ~60 fps (a 4000 fps test app saturated the GPU and
+        stalled its own render loop).
+- [ ] Remaining: wire into aurora-stream as a capture mode (inject on
+      Start streaming, read the hook pipe, feed the existing rawvideo FFmpeg
+      pump), ship `gamecaphook.dll` embedded in the single exe, add the
+      "Game capture (render hook)" option. x64-only; anti-cheat games block
+      injection (same as OBS). Also strip the hook's setup debug markers
+      (`C:\temp\gamecaphook_dbg.txt`) for release.
 
 ## 2026-08-14 — Aurora Stream: minimize to tray (auto-hide on start + close-to-tray + tray icon controls)
 - [x] User: "let's consider if we could do 'minimize to tray' for aurora stream.
@@ -76,11 +139,10 @@
 - [x] Settings (schema 8): `minimizeToTrayOnStart` ("Minimize to tray when
       streaming starts" — pressing Start hides to the tray) and `closeToTray`
       ("Close button hides to tray instead of exiting"), both toggleable from
-      the Settings menu, both persisted. **Both default to enabled** (struct
-      defaults `true`); an explicitly saved `false` is respected, while fresh
-      installs and older files without the keys fall back to enabled. The
-      saved install's own settings were updated to `true`/`true` so the options
-      are actually on here.
+      the Settings menu, both persisted. **Minimize-to-tray defaults to OFF**
+      (auto-hiding while streaming is confusing), **close-to-tray defaults to
+      ON**; an explicitly saved value is respected, while fresh installs and
+      older files without the keys fall back to those defaults.
 - [x] `StreamRoot` wiring: `hideToTray()` (create tray lazily, SW_HIDE, balloon,
       activity-log note; falls back to a plain minimize if the shell refuses the
       icon), `showWindowFromTray()` (restore + SW_SHOW + SetForegroundWindow),
@@ -192,6 +254,24 @@
 - [x] Verified: `dub test` → 42 modules pass (was 41); `application` +
       `notitlebar` configs build; default app launches/closes cleanly; settings
       round-trip + broadcast-arguments tests cover the new key and pipe args.
+- [x] **BUGFIX (user: VLC capture — "huge mismatch and unsynced video and
+      audio")**: `PrintWindow` on a large/composited window (VLC) can take
+      several frame intervals, so the content pump delivered fewer frames/sec
+      than the configured `-framerate`; FFmpeg's rawvideo demuxer stamps frames
+      by COUNT at that rate, so the video stream's stamped duration compressed
+      and ran ahead of the wall-clock WASAPI audio. Fixed in
+      `runWindowContentPump`: the pump now duplicates the last good frame into
+      every missed slot, keeping the delivered rate at ~fps frames per real
+      second (picture may repeat when capture is slow, but no longer drifts
+      ahead of audio). `dub test` → 43 modules pass.
+- [x] NOTE: the user's real VLC capture left `aurora-stream-activity.log`
+      containing an invalid UTF-8 sequence, which made the `activitylog`
+      unittest fail on `readText` (it appended to the existing real log). Made
+      the unittest start from a clean file AND fixed the root cause:
+      `windowsources.windowTitle` now replaces lone UTF-16 surrogates (some
+      apps expose malformed titles) with U+FFFD, and `activitylog.note`
+      sanitizes every line through a tolerant UTF-8 decode so no invalid
+      sequence can ever reach the log file.
 - [ ] Remaining/possible follow-ups: a Windows.Graphics.Capture (WinRT) engine
       would also capture GPU/DirectX window content when occluded (the
       industry-standard OBS/Xbox-Game-Bar approach), but druntime has no WinRT

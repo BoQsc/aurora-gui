@@ -199,10 +199,12 @@ version (Windows)
         extern(C) HRESULT function(void*, const GUID*, uint*, void*) _s34; // 34
         extern(C) HRESULT function(void*, const GUID*, uint, const void*) _s35; // 35
         extern(C) HRESULT function(void*, const GUID*, void*) _s36; // 36
-        extern(C) uint function(void*) _s37; // 37
-        extern(C) void function(void*, void**) GetImmediateContext; // 38
-        extern(C) uint function(void*, uint) _s39; // 39
-        extern(C) uint function(void*) _s40; // 40
+        extern(C) uint function(void*) GetFeatureLevel; // 37
+        extern(C) uint function(void*) GetCreationFlags; // 38
+        extern(C) HRESULT function(void*) GetDeviceRemovedReason; // 39
+        extern(C) void function(void*, void**) GetImmediateContext; // 40
+        extern(C) HRESULT function(void*, uint) SetExceptionMode; // 41
+        extern(C) uint function(void*) GetExceptionMode; // 42
     }
     struct ID3D11DeviceObj { ID3D11DeviceVtbl* lpVtbl; }
 

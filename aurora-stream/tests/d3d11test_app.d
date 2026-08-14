@@ -4,6 +4,8 @@ import aurorastream.d3d11;
 import core.sys.windows.windows;
 import core.sys.windows.wingdi;
 import core.sys.windows.winuser;
+import core.thread : Thread;
+import core.time : msecs;
 import std.stdio;
 import std.utf : toUTF16z;
 import std.conv : to;
@@ -141,6 +143,7 @@ void main(string[] args)
         hr = swapchain.lpVtbl.Present(swapchain, 0, 0);
         if (hr != 0) { mark("present failed " ~ hr.to!string); break; }
         ++frameCount;
+        Thread.sleep(16.msecs); // ~60 fps, like a real game
     }
     mark("presented=" ~ frameCount.to!string);
 

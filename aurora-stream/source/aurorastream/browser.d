@@ -214,3 +214,40 @@ bool openPacingDiagnostic(out string error)
         return false;
     }
 }
+
+/** Opens a local file with the operating system's default handler (used to
+ * show the always-on activity log). */
+bool openLocalFile(string path, out string error)
+{
+    error = "";
+    if (path.length == 0)
+    {
+        error = "The file path is empty.";
+        return false;
+    }
+    version (Windows)
+    {
+        try
+        {
+            const result = cast(size_t) ShellExecuteW(null,
+                toUTF16z("open"), toUTF16z(path), null, null, 1);
+            if (result <= 32)
+            {
+                error = "Windows could not open " ~ path ~
+                    " (ShellExecute code " ~ result.to!string ~ ").";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception failure)
+        {
+            error = failure.msg;
+            return false;
+        }
+    }
+    else
+    {
+        error = "Opening local files currently requires Windows.";
+        return false;
+    }
+}

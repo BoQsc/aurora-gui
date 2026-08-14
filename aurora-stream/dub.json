@@ -65,7 +65,8 @@
         "ole32",
         "avrt",
         "kernel32",
-        "wininet"
+        "wininet",
+        "advapi32"
       ],
       "lflags-windows": [
         "/SUBSYSTEM:WINDOWS",
@@ -99,7 +100,8 @@
         "ole32",
         "avrt",
         "kernel32",
-        "wininet"
+        "wininet",
+        "advapi32"
       ],
       "lflags-windows": [
         "/SUBSYSTEM:WINDOWS",

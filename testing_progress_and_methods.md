@@ -1,5 +1,89 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: improved always-on activity logging (2026-08-14)
+
+User request: "can we improve logging so that final release of aurora stream
+would show exactly what errors and what problems happen and what actions are
+taken, so we know exactly how to resolve things once problems appear or target
+things faster and resolve faster."
+
+Implemented: the always-on `aurora-stream-activity.log` (beside the exe, same
+folder as `aurora-stream-startup.log`) is now the single session-spanning
+record of what happened and what the app did about it. Every line carries a
+severity tag:
+
+- `[INFO]` normal lifecycle: version at startup, encoder/capture selection,
+  settings load/save, stream start (with destinations + encoder + capture),
+  FFmpeg launch attempts, update available, audio device inventory.
+- `[WARNING]` recoverable problems: D3D11-direct-to-NVENC probe fail (CPU path
+  fallback), audio scan errors, UDP -10048 bind race, FFmpeg warning lines,
+  silent audio endpoint, stale/minimized capture-window fallback.
+- `[ERROR]` failures with the exact reason: stream start rejected, FFmpeg
+  startup timeout, live-output stall, desktop-capture stall, captured window
+  closed or minimized mid-stream, Desktop Duplication output lost, audio-helper
+  failure, bind-race give-up, unexpected FFmpeg exit.
+- `[ACTION]` what the app did in response: FFmpeg terminated, capture relaunch
+  (recovery N of 3), FFmpeg launch retry, settings fallback to defaults,
+  capture reset to desktop, updater launched, update install.
+
+Where the lines come from:
+- `BroadcastWorker` (`broadcast.d`) now takes the `ActivityLog` and mirrors its
+  failure reasons + actions into it. Before, those details only went to
+  `aurora-stream-startup.log`, which is reset on every stream start.
+- `StreamRoot` (`root.d`) logs startup/encoder/capture/settings/audio/update/
+  browser/tray events. The Settings menu gained a "View activity log" entry
+  that opens the file with the OS default handler (`openLocalFile` in
+  `browser.d`).
+- User actions are logged as `[INFO]`: capture source, source/YouTube quality,
+  YouTube bitrate, Twitch/YouTube enable toggles, window-content capture, live
+  source preview, streaming-server fields, minimize-to-tray / close-to-tray,
+  desktop audio / microphone selection (friendly name only), audio refresh,
+  browser quick-link opens, browser choice, settings menu opens. **Stream keys
+  and server URLs are NEVER logged** — text fields record only the
+  populated/cleared transition (`logFieldPopulatedChange` in `root.d`), never
+  the content.
+- `ActivityLog` (`activitylog.d`) gained `info/warning/error/action` helpers
+  (tagged `note` lines); app-authored text is ASCII, file is UTF-8.
+- Environment + settings block at startup (`aurorastream/environment.d`):
+  `[INFO] OS: <name> <edition> (build NNNNN) (arch).`, `[INFO] CPU: <model>
+  (<N> logical processors).`, `[INFO] RAM: <GB>.`, `[INFO] GPU: <adapter>
+  (\\.\DISPLAYn). Display <W>x<H> @<Hz>.`, `[INFO] FFmpeg: <version line>.`,
+  then `[INFO] Settings: ...` lines covering destinations, encoder, capture,
+  qualities/bitrate, audio devices, window-content capture, live preview,
+  tray options, browser, config mode, and stream-key PRESENCE only. OS/CPU come
+  from the registry (`RegGetValueW` on `HKLM`, requires `advapi32` in
+  `dub.json` libs); GPU/display from `EnumDisplayDevicesW`/
+  `EnumDisplaySettingsW`; RAM from `GlobalMemoryStatusEx`. Keys and server URLs
+  are never written (a unittest asserts the report never contains them).
+
+Verify (no stream keys needed):
+1. `dub test` in `aurora-stream` (43 modules pass; new unittest asserts the
+   four severity helpers write tagged lines).
+2. `dub build` (application) and `dub build --config=notitlebar` both link.
+3. Launch `aurora-stream.exe`, wait ~8 s, kill it, then read the tail of
+   `aurora-stream-activity.log`: expect `[INFO] Aurora Stream 0.63.0 (build
+   dev) starting.`, `[INFO] Encoder: ...`, `[INFO] Capture backend: ...`,
+   `[INFO] Settings file: ...`, `[INFO] Loaded settings ...`, `[INFO] Found N
+   Windows playback endpoints ...`.
+4. To exercise failure/action lines, start a stream with a bad Twitch/YouTube
+   key: expect `[INFO] Stream start: ...`, `[INFO] FFmpeg launched ...`,
+   FFmpeg `[WARNING]` lines, then on failure `[ERROR] Stream failed: <exact
+   reason>` + `[ACTION] Action taken: FFmpeg was terminated.` and a final
+   `[ERROR] Stream session ended with failure: ...`. An alt-tab away/back on a
+   Desktop-Duplication capture logs `[ERROR] Desktop capture output lost ...`
+   + `[ACTION] Action taken: relaunching FFmpeg ... (recovery 1 of 3)`.
+5. Settings menu -> "View activity log" opens the file in the default editor.
+6. User-action lines: change any dropdown/checkbox in the UI and watch the log
+   for `[INFO] <control> ...`; type/paste a stream key and confirm the log only
+   says "Twitch stream key entered." / "pasted" — the key itself never appears.
+   On first launch with no saved desktop-audio selection, the auto-selected
+   default endpoint logs `[INFO] Desktop audio device set to <name>`.
+7. Environment block: the first session in a log shows `[INFO] OS: ...`,
+   `[INFO] CPU: ...`, `[INFO] RAM: ...`, `[INFO] GPU: ...`, `[INFO] FFmpeg: ...`
+   and the `[INFO] Settings: ...` lines, with stream keys reported only as
+   "configured (hidden)" / "not configured". Verify the FFmpeg line matches the
+   bundled build (version.py / single-exe) or the PATH ffmpeg.
+
 ## Aurora Stream: OBS-style game capture via D3D11 render hook — in progress (2026-08-14)
 
 User: "We want to stream a window even if it's minimized or out of focus or not
@@ -40,45 +124,50 @@ and `dmd`).
   runs.
 
 ### Current BLOCKER (frame capture step)
-- `ID3D11Device::GetImmediateContext` (vtable slot 38, verified against the
-  documented method order) returns **null** even when called on the device
-  returned directly by `D3D11CreateDeviceAndSwapChain` (test app printed
-  `GetImmediateContext ctx=0`). Probing slots 30-60 for the slot that writes the
-  known-good context pointer found NO match (each probe returned 0 or crashed the
-  app). So either the device vtable on this system differs from the documented
-  layout, or something subtler is wrong. Until `GetImmediateContext` returns a
-  valid context, `captureFrame` cannot `CopyResource`+`Map` the back buffer, so
-  no frames reach the pipe (framesRead=0).
-- Secondary: after many repeated D3D11 device creations (the hook creates a dummy
-  device per injection and the test ran ~20 times), `d3d11test_app.exe` now
-  HANGS at `D3D11CreateDeviceAndSwapChain` (GPU/driver state wedge; worked
-  initially, 16k frames). A graphics reset or reboot should clear it.
+- [RESOLVED] `ID3D11Device::GetImmediateContext` — the D3D11 device vtable has
+  `GetCreationFlags` (slot 38) and `GetDeviceRemovedReason` (slot 39) BEFORE
+  `GetImmediateContext`, so its real slot is **40**, not 38 (my original layout
+  was missing those two methods). Verified by fetching the authoritative
+  mingw-w64 `d3d11.h` and re-checking. `GetImmediateContext` now returns the
+  real context. The probe that found it: create a plain device with
+  `D3D11CreateDevice`, read the vtable, call each slot with
+  `void(this, void**)` + a sentinel (0x12345678) and find the one that writes
+  the known context — but the vtable dump + header comparison is what settled it.
+- [RESOLVED] **Frame capture works end-to-end**: the hook copies the back
+  buffer to a staging texture, maps it, and delivers BGRA frames to the pipe.
+  Verified 127-128 non-black frames in 4 s (≈124 changing). Two more pitfalls
+  fixed: (a) named-pipe default buffer is 4096 bytes → 1.2 MB frames deadlock;
+  server must set 8 MB buffers and the reader reassembles partial reads;
+  (b) releasing a COM object must go through ITS OWN vtable slot 2 as an
+  `extern(C)` call (`comRelease` helper) — releasing through another object's
+  vtable, or via a `extern(D)` function pointer, crashes/hangs.
+- [RESOLVED] The `d3d11test_app.exe` GPU hang at device creation was a driver
+  wedge from ~20 repeated D3D11 device creations; it recovered on its own.
+  The test app now renders at ~60 fps (16 ms sleep) like a real game, and the
+  hook rate-limits to ~60 fps.
 
-### Exact next steps
-1. Resolve the real `GetImmediateContext` slot: on a fresh GPU state, dump the
-   device vtable function-pointer addresses (slots 0-45) and identify
-   GetImmediateContext by comparing the function at each slot against the
-   context returned by `D3D11CreateDeviceAndSwapChain`'s `ppImmediateContext`
-   (call each candidate slot with `void(this, void**)` in its OWN process run so
-   a crash doesn't lose all results). Alternatively QueryInterface the device
-   for `ID3D11DeviceContext` directly (QI to the context IID) which avoids the
-   device slot entirely.
-2. Once the context is obtained, `captureFrame` does: back-buffer GetBuffer →
-   staging texture (STAGING + CPU_ACCESS_READ) → CopyResource → Map → copy BGRA
-   rows → WriteFile(pipe). The reader (`gamecap_test`) then validates non-black +
-   changing frames.
-3. Then wire into `aurora-stream` as a capture mode: reuse the rawvideo-pipe
-   FFmpeg pump from the PrintWindow work (`runWindowContentPump`), feed it from
-   the hook pipe reader, add a "Game capture (render hook)" option, ship
-   `gamecaphook.dll` embedded next to the exe.
-4. Build/verify commands:
-   ```
-   dmd -m64 -shared -betterC gamecaphook.d source\aurorastream\d3d11.d -Isource -I..\vendor\aurora-d-0.4.5\source -of=gamecaphook.dll -L/NODEFAULTLIB -L/ENTRY:gamecaphookEntry -L"C:\D\dmd2\windows\lib64\mingw\kernel32.lib" -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib" -L"C:\D\dmd2\windows\lib64\mingw\ucrtbase.lib"
-   dmd -m64 -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\gamecap_test.d -of=..\gamecap_test.exe -L/SUBSYSTEM:CONSOLE -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib"
-   ```
-   Debug markers: `hookDebug` writes to `C:\temp\gamecaphook_dbg.txt`; the test
-   traces to `gamecap_test_trace.txt` (cwd) — use PowerShell Start-Process +
-   WaitForExit(timeout) + Kill since the D3D11 test app runs 20 s.
+### Next steps
+1. Wire into `aurora-stream` as a capture mode: on Start streaming with the
+   game-capture option, create the pipe server, write the hook config, inject
+   `gamecaphook.dll` (GetProcAddress LoadLibraryW), read the pipe on a thread,
+   and feed frames into the existing rawvideo FFmpeg pump
+   (`runWindowContentPump` — it already handles the frame-cadence/duplication
+   for A/V sync). Add a "Game capture (render hook)" option to CAPTURE SOURCE.
+2. Ship `gamecaphook.dll` embedded in the single exe (same mechanism as
+   `ffmpegbundle.d`/`bundledicon.d`: `import("gamecaphook.dll")` under
+   `version (BundledFfmpeg)`, extract to `%TEMP%`, use the path for injection).
+3. x64-only; anti-cheat games (EAC/BattlEye/Vanguard) block injection (same as
+   OBS Game Capture). Strip the hook's setup debug markers
+   (`C:\temp\gamecaphook_dbg.txt`) for release.
+
+### Build/verify commands
+```
+dmd -m64 -shared -betterC gamecaphook.d source\aurorastream\d3d11.d -Isource -I..\vendor\aurora-d-0.4.5\source -of=gamecaphook.dll -L/NODEFAULTLIB -L/ENTRY:gamecaphookEntry -L"C:\D\dmd2\windows\lib64\mingw\kernel32.lib" -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib" -L"C:\D\dmd2\windows\lib64\mingw\ucrtbase.lib"
+dmd -m64 -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\gamecap_test.d -of=..\gamecap_test.exe -L/SUBSYSTEM:CONSOLE -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib"
+```
+Debug markers: `hookDebug` writes to `C:\temp\gamecaphook_dbg.txt`; the test
+traces to `gamecap_test_trace.txt` (cwd) — use PowerShell Start-Process +
+WaitForExit(timeout) + Kill since the D3D11 test app runs 20 s.
 
 ### Hard-won facts (recorded so they are not rediscovered)
 - `dmd -shared` D DLLs default to `msvcrt120` (missing on this system) and do
@@ -101,10 +190,9 @@ Start), `Settings → Close button hides to tray instead of exiting`, and a tray
 icon whose **single-click** toggles Start/Stop streaming, **double-click**
 restores the window, and **right-click** opens a custom dark menu
 (Show window / Start-Stop / Status / Exit). Persisted as
-`minimizeToTrayOnStart` / `closeToTray` (settings schema 8). **Both options
-default to enabled** (struct defaults `true`): fresh installs and older files
-without the keys get the tray behavior, while an explicitly saved `false` is
-respected.
+`minimizeToTrayOnStart` / `closeToTray` (settings schema 8). **Minimize-to-tray
+defaults to OFF** (auto-hiding while streaming is confusing), **close-to-tray
+defaults to ON**; an explicitly saved value is respected.
 
 ### Implementation notes
 - `aurora-stream/source/aurorastream/trayicon.d` (new): `Shell_NotifyIcon`

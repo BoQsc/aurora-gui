@@ -38,28 +38,43 @@ version (Windows)
     private __gshared void* g_frameBuffer;
     private __gshared size_t g_frameCapacity;
     private __gshared int g_hookActive;
-    private __gshared int g_loggedHook;
+    private __gshared uint g_lastCaptureTick;
 
     private extern (C) HRESULT hookPresent(void* self, uint syncInterval,
         uint flags)
     {
-        // Fast path: not the target swapchain, or a capture is in flight.
+        // Fast path: not the target swapchain, a capture is in flight, or we
+        // already captured this frame slot. Rate-limit to ~60 fps so a game
+        // rendering much faster (uncapped/4000 fps) does not saturate the GPU
+        // with per-present copies and stall its render loop.
         if (g_targetHwnd == 0 || g_stopCapturing || g_captureBusy)
+            return g_originalPresent(self, syncInterval, flags);
+        const nowTick = GetTickCount();
+        if (nowTick - g_lastCaptureTick < 16)
             return g_originalPresent(self, syncInterval, flags);
 
         auto swapchain = cast(IDXGISwapChainObj*) self;
         if (!isTargetSwapchain(swapchain))
-        {
-            if (!g_loggedHook) { g_loggedHook = 1; hookDebug("hook: not target"); }
             return g_originalPresent(self, syncInterval, flags);
-        }
-        if (!g_loggedHook) { g_loggedHook = 1; hookDebug("hook: target, capturing"); }
 
         g_captureBusy = 1;
         captureFrame(swapchain);
         g_captureBusy = 0;
+        g_lastCaptureTick = nowTick;
 
         return g_originalPresent(self, syncInterval, flags);
+    }
+
+    /// Releases any COM object through its OWN vtable (slot 2 = IUnknown
+    /// Release, an extern(C) function). Never release an object through another
+    /// object's vtable.
+    private void comRelease(void* obj)
+    {
+        if (obj is null) return;
+        auto fn = (cast(void**) obj)[2];
+        if (fn is null) return;
+        alias ReleaseFn = extern(C) uint function(void*);
+        (cast(ReleaseFn) fn)(obj);
     }
 
     private bool isTargetSwapchain(IDXGISwapChainObj* swapchain)
@@ -76,50 +91,30 @@ version (Windows)
 
         void* deviceRaw;
         if (swapchain.lpVtbl.GetDevice(swapchain, &IID_ID3D11Device, &deviceRaw) != 0)
-        {
-            hookDebug("cap: GetDevice failed");
             return;
-        }
         auto device = cast(ID3D11DeviceObj*) deviceRaw;
         void* contextRaw;
         device.lpVtbl.GetImmediateContext(device, &contextRaw);
         auto context = cast(ID3D11DeviceContextObj*) contextRaw;
-        {
-            char[80] dbg;
-            size_t d = 0;
-            ulong a1 = cast(ulong) deviceRaw;
-            char[24] nb;
-            size_t nd = 0;
-            while (a1 > 0) { nb[nd++] = cast(char)('0' + a1 % 10); a1 /= 10; }
-            foreach (i; 0 .. nd) dbg[d++] = nb[nd - 1 - i];
-            dbg[d++] = ':';
-            nd = 0; a1 = cast(ulong) contextRaw;
-            while (a1 > 0) { nb[nd++] = cast(char)('0' + a1 % 10); a1 /= 10; }
-            foreach (i; 0 .. nd) dbg[d++] = nb[nd - 1 - i];
-            dbg[d] = 0;
-            hookDebug(dbg.ptr);
-        }
         if (context is null) return;
 
         void* backBuffer;
         if (swapchain.lpVtbl.GetBuffer(swapchain, 0, &IID_ID3D11Texture2D, &backBuffer) != 0)
-        {
-            hookDebug("cap: GetBuffer failed");
             return;
-        }
-        hookDebug("cap: GetBuffer ok");
-        scope (exit) swapchain.lpVtbl.Release(backBuffer);
 
         DXGI_SWAP_CHAIN_DESC desc;
         if (swapchain.lpVtbl.GetDesc(swapchain, &desc) != 0)
         {
-            hookDebug("cap: GetDesc failed");
+            comRelease(backBuffer);
             return;
         }
-        hookDebug("cap: GetDesc ok");
         const width = desc.BufferDesc.Width;
         const height = desc.BufferDesc.Height;
-        if (width == 0 || height == 0) return;
+        if (width == 0 || height == 0)
+        {
+            comRelease(backBuffer);
+            return;
+        }
         const rowPitch = width * 4;
         const byteCount = cast(size_t) rowPitch * height;
 
@@ -128,7 +123,11 @@ version (Windows)
             if (g_frameBuffer !is null) HeapFree(GetProcessHeap(), 0, g_frameBuffer);
             g_frameBuffer = HeapAlloc(GetProcessHeap(), 0, byteCount);
             g_frameCapacity = byteCount;
-            if (g_frameBuffer is null) return;
+            if (g_frameBuffer is null)
+            {
+                comRelease(backBuffer);
+                return;
+            }
         }
 
         D3D11_TEXTURE2D_DESC stagingDesc;
@@ -143,22 +142,18 @@ version (Windows)
         void* staging;
         if (device.lpVtbl.CreateTexture2D(device, &stagingDesc, null, &staging) != 0)
         {
-            hookDebug("cap: CreateTexture2D failed");
+            comRelease(backBuffer);
             return;
         }
-        hookDebug("cap: staging ok");
-        scope (exit) device.lpVtbl.Release(staging);
 
         context.lpVtbl.CopyResource(context, staging, backBuffer);
-        hookDebug("cap: copy ok");
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (context.lpVtbl.Map(context, staging, 0, D3D11_MAP_READ, 0, &mapped) != 0)
         {
-            hookDebug("cap: Map failed");
+            comRelease(staging);
+            comRelease(backBuffer);
             return;
         }
-        hookDebug("cap: map ok");
-        scope (exit) context.lpVtbl.Unmap(context, staging, 0);
 
         auto src = cast(const(ubyte)*) mapped.pData;
         auto dst = cast(ubyte*) g_frameBuffer;
@@ -170,8 +165,13 @@ version (Windows)
                 memcpy(dst + cast(size_t) y * rowPitch,
                     src + cast(size_t) y * mapped.RowPitch, rowPitch);
         }
+
+        // Explicit cleanup (no scope(exit) in the betterC hook).
+        context.lpVtbl.Unmap(context, staging, 0);
+        comRelease(staging);
+        comRelease(backBuffer);
+
         writeFrame(g_frameBuffer, byteCount);
-        hookDebug("cap: frame written");
     }
 
     private void writeFrame(const(void)* data, size_t byteCount)

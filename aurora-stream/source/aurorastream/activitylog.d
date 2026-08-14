@@ -12,21 +12,40 @@ import std.path : buildPath, dirName;
  * Persistent, timestamped diagnostic activity log written beside the
  * executable (the same folder as `aurora-stream-startup.log`).
  *
- * It records UI-thread heartbeats, window events (focus / minimize / restore),
- * stream lifecycle transitions, and UI-stall events, so a later freeze or an
- * alt-tab stream stop can be reconstructed from one file:
+ * It is the single always-on, session-spanning record of what the app did and
+ * what went wrong. Every notable event carries a severity tag so a problem can
+ * be found and understood without reading FFmpeg's raw log:
+ *
+ * ```text
+ * [INFO]    normal lifecycle events: startup, settings load, encoder/capture
+ *           selection, stream start/stop, update check, FFmpeg launch.
+ * [WARNING] recoverable problems or degraded state: encoder fallbacks, audio
+ *           scan errors, FFmpeg warning lines, UDP bind races.
+ * [ERROR]   failures that ended or blocked an operation, each with the exact
+ *           reason (startup timeout, live-output stall, capture loss, ...).
+ * [ACTION]  an automatic action the app took in response to a problem, e.g.
+ *           "FFmpeg terminated", "relaunching capture (recovery 1 of 3)".
+ * ```
+ *
+ * Example:
  *
  * ```text
  * 2026-08-14T08:23:31.123456  Aurora Stream activity log started.
- * 2026-08-14T08:23:31.700000  Window focus gained.
- * 2026-08-14T08:23:45.100000  Stream started (YouTube only).
- * 2026-08-14T08:24:02.500000  UI STALL DETECTED: no UI tick for 4.3 s. Last state: ...
- * 2026-08-14T08:24:07.900000  UI STALL RESOLVED: UI thread resumed after 5.4 s.
+ * 2026-08-14T08:23:31.700000  [INFO] Aurora Stream v0.63.0 starting.
+ * 2026-08-14T08:23:45.100000  [INFO] Stream start: YouTube, encoder NVIDIA NVENC (h264_nvenc), capture Desktop Duplication (cursor-safe).
+ * 2026-08-14T08:24:02.500000  [ERROR] Desktop Duplication output lost: [ddagrab @ 000001] AcquireNextFrame failed: error.
+ * 2026-08-14T08:24:02.900000  [ACTION] Action taken: relaunching FFmpeg after a transient Desktop Duplication loss (recovery 1 of 3).
+ * 2026-08-14T08:25:00.000000  UI STALL DETECTED: no UI tick for 4.3 s. Last state: ...
+ * 2026-08-14T08:25:05.400000  UI STALL RESOLVED: UI thread resumed after 5.4 s.
  * ```
  *
  * A dedicated watchdog thread performs the stall detection, so even when the
  * UI thread is fully frozen it can still record the stall start, the last
  * known stream state, and (once ticks resume) the total stall duration.
+ *
+ * App-authored messages use plain ASCII so they are greppable and safe under
+ * any console codepage; raw user content (window titles) and FFmpeg output are
+ * forwarded verbatim and the file is written as UTF-8.
  */
 final class ActivityLog
 {
@@ -49,6 +68,13 @@ final class ActivityLog
         _path = buildPath(folder, "aurora-stream-activity.log");
         _mutex = new Mutex();
         note("Aurora Stream activity log started.");
+    }
+
+    /// The full path of the activity log file (for the UI "View activity log"
+    /// action). The file is created lazily on the first write.
+    string path() const
+    {
+        return _path;
     }
 
     /** Starts the stall-detection watchdog thread. Call once after
@@ -116,14 +142,16 @@ final class ActivityLog
         _mutex.unlock();
     }
 
-    /** Append a timestamped line. Safe from any thread. */
+    /** Append a timestamped line. Safe from any thread. The line is sanitized
+     * so a message that happens to contain invalid UTF-8 (e.g. a malformed
+     * window title) can never corrupt the log file. */
     void note(string line)
     {
         if (line.length == 0) return;
         string stamp;
         try stamp = Clock.currTime.toLocalTime().toISOExtString();
         catch (Exception) stamp = "????????";
-        const full = format("%s  %s\r\n", stamp, line);
+        const full = format("%s  %s\r\n", stamp, sanitizeUtf8(line));
         _mutex.lock();
         scope (exit) _mutex.unlock();
         try
@@ -136,6 +164,60 @@ final class ActivityLog
             append(_path, full);
         }
         catch (Exception) {}
+    }
+
+    /// Replaces any invalid UTF-8 byte with U+FFFD so the log file is always
+    /// decodable.
+    private static string sanitizeUtf8(string input)
+    {
+        import std.utf : decode, toUTF8, UTFException;
+        dstring result;
+        size_t index;
+        while (index < input.length)
+        {
+            try
+            {
+                const code = decode(input, index);
+                result ~= code;
+            }
+            catch (UTFException)
+            {
+                result ~= '\uFFFD';
+                ++index;
+            }
+        }
+        return toUTF8(result);
+    }
+
+    /// Normal lifecycle event (startup, settings load, encoder/capture
+    /// selection, stream start/stop, update check). Safe from any thread.
+    void info(string message)
+    {
+        note("[INFO] " ~ message);
+    }
+
+    /// Recoverable problem or degraded state that does not (yet) end an
+    /// operation: encoder fallback, audio-scan error, UDP bind race, an
+    /// FFmpeg warning line. Safe from any thread.
+    void warning(string message)
+    {
+        note("[WARNING] " ~ message);
+    }
+
+    /// Failure that ended or blocked an operation. The message must contain
+    /// the exact reason so it can be acted on without re-diagnosing. Safe from
+    /// any thread.
+    void error(string message)
+    {
+        note("[ERROR] " ~ message);
+    }
+
+    /// An automatic action the app took in response to a problem, e.g.
+    /// "Action taken: FFmpeg was terminated." or "Action taken: relaunching
+    /// FFmpeg (recovery 1 of 3)." Safe from any thread.
+    void action(string message)
+    {
+        note("[ACTION] " ~ message);
     }
 
     private void watchdogLoop()
@@ -205,5 +287,29 @@ final class ActivityLog
         log._mutex.lock();
         assert(!log._stalled);
         log._mutex.unlock();
+    }
+
+    unittest
+    {
+        // Severity helpers must write tagged, greppable lines to the same
+        // always-on activity log file. Start from a clean file so a pre-existing
+        // (possibly app-generated, non-UTF-8) log does not fail the read.
+        import std.file : exists, readText, remove;
+        import std.string : indexOf;
+        auto log = new ActivityLog(".");
+        if (exists(log._path))
+        {
+            try remove(log._path);
+            catch (Exception) {}
+        }
+        log.info("probe info event");
+        log.warning("probe warning event");
+        log.error("probe error event");
+        log.action("probe action event");
+        const content = readText(log._path);
+        assert(content.indexOf("[INFO] probe info event") >= 0);
+        assert(content.indexOf("[WARNING] probe warning event") >= 0);
+        assert(content.indexOf("[ERROR] probe error event") >= 0);
+        assert(content.indexOf("[ACTION] probe action event") >= 0);
     }
 }

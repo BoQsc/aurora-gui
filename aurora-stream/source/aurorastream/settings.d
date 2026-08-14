@@ -553,9 +553,10 @@ unittest
 
 unittest
 {
-    // Schema 8 tray preferences round-trip; the tray options are ON by
-    // default for fresh installs / files that never saved the keys, while an
-    // explicitly saved "false" is respected.
+    // Schema 8 tray preferences round-trip. Minimize-to-tray is OFF by default
+    // for fresh installs / files that never saved the key (auto-hiding while
+    // streaming is confusing in practice), while close-to-tray is ON by
+    // default; an explicitly saved value is respected.
     BroadcastSettings source;
     source.minimizeToTrayOnStart = true;
     source.closeToTray = true;
@@ -564,7 +565,7 @@ unittest
     assert(restored.closeToTray);
 
     const defaults = settingsFromJson(`{"schemaVersion":7}`);
-    assert(defaults.minimizeToTrayOnStart);
+    assert(!defaults.minimizeToTrayOnStart);
     assert(defaults.closeToTray);
 
     const explicitOn = settingsFromJson(
