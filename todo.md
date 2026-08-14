@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream self-update feature (release builds only)
+- [x] appupdate.d: GitHub releases latest-version check via WinINet HTTPS (with
+      User-Agent header; GitHub API 403s without one), asset download, and a
+      `--apply-update` mode that archives the current exe to
+      `%APPDATA%\Aurora Stream\versions\<version>\` (rollback, last 3 kept),
+      replaces it with the staged exe via a temp-copy updater, and relaunches.
+- [x] Settings menu shows "Update available: vX.Y.Z — install & restart" only
+      when a newer release exists AND the build is a release build
+      (appBuildId != "dev"); dev builds never poll.
+- [x] Verified end-to-end locally: detects v0.61.0 from an older version,
+      downloads the 29.6MB asset, and the apply-update flow archives OLD +
+      installs NEW. `--apply-update` added to both app.d and app_titlebar.d
+      mains; wininet added to both stream configs.
+- [ ] Not yet tested as a real upgrade on a release build (needs a newer
+      release to exist while an older release exe runs).
+- [ ] aurora-cut does not have the updater yet (only aurora-stream); port the
+      module if desired.
+
 ## 2026-08-14 — Aurora Stream: "stops when I alt-tab" + one-time freeze (logging + alt-tab recovery)
 - [x] User: "some user of aurora stream reported 'it stops when i alt tab' and
       it happened to freeze 1 time" — plan agreed: "we will start logging to
