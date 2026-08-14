@@ -15,7 +15,9 @@ on:
       - scripts/verify-windows-gui-subsystem.py
       - scripts/version.py
       - source/**
+      - '!source/**/appversion.d'
       - aurora-stream/source/**
+      - '!aurora-stream/source/**/appversion.d'
 
 permissions:
   contents: write
