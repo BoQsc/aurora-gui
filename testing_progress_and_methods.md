@@ -20,8 +20,14 @@
   `application` and `notitlebar` builds pass. Direct/FIFO RTP+SDP, transport,
   output isolation, synthetic audio, GUI/static-CRT policies, and both 720-frame
   loaded A/V phases pass. The rebuilt minimized BGRA/RGBA/RGB10 hook matrix also
-  passes with zero production drops/gaps. New minimal-FFmpeg and portable CI
-  results remain required before the 0.66.1 tag.
+  passes with zero production drops/gaps.
+- Minimal-FFmpeg Actions run #16 (`31833093268`) compiled `vsrc_ddagrab.o`,
+  passed the explicit inventory, and produced artifact SHA-256
+  `17c51737afb30eec18b4d4dd20498183672be9b16636740cf3cce56f1a3cdf55`.
+  Portable Windows run #39 (`31833093342`), attempt 2, accepted that new
+  payload, rebuilt the D-only hook and all single-exe applications, passed the
+  static-CRT checks, and produced artifact SHA-256
+  `67bffc2a7e926cfec23ad9ca6c6ffa150716f1564779497d99989c468bbd9e53`.
 
 ## Aurora Stream: D3D11 game-capture release integration (2026-08-14)
 

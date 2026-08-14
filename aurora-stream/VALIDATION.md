@@ -25,8 +25,16 @@ phases at final 0.996x with no transport/pacing failure. Rebuilt minimized game
 hook rounds passed BGRA8, RGBA8, and RGB10A2 with zero production hook drops or
 sequence gaps.
 The locally staged 0.66.0 FFmpeg is correctly rejected because it lacks
-`ddagrab`; the new minimal-FFmpeg and portable-single-exe CI runs are required
-before tagging 0.66.1. No fullscreen or foreground acceptance test is permitted.
+`ddagrab`. Minimal-FFmpeg Actions run
+[#16](https://github.com/BoQsc/aurora-gui/actions/runs/31833093268) compiled
+`vsrc_ddagrab.o`, passed the filter/device inventory, and uploaded artifact
+SHA-256 `17c51737afb30eec18b4d4dd20498183672be9b16636740cf3cce56f1a3cdf55`.
+Portable Windows run
+[#39](https://github.com/BoQsc/aurora-gui/actions/runs/31833093342), attempt 2,
+accepted that payload, rebuilt the optimized D-only hook and every single-exe
+application, passed PE static-runtime checks, and uploaded artifact SHA-256
+`67bffc2a7e926cfec23ad9ca6c6ffa150716f1564779497d99989c468bbd9e53`.
+No fullscreen or foreground acceptance test is permitted.
 
 ## 0.66.0 D3D11 game/window capture release gate
 
