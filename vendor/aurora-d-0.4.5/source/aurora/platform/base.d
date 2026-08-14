@@ -166,6 +166,16 @@ abstract class NativeWindow
         return false;
     }
 
+    /**
+     * Hide or show the native window (used for minimize-to-tray, where the
+     * taskbar button disappears but the process keeps running). Unsupported
+     * backends return false.
+     */
+    bool setVisible(bool visible)
+    {
+        return false;
+    }
+
     /** Physical pixel extent consumed by Vulkan or the software presenter. */
     Size framebufferSize() const
     {

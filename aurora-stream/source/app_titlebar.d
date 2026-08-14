@@ -62,7 +62,10 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setButtonPressedColor(Color.fromHex(0x20262d));
         _titleBar.setCloseHoverColor(Color.fromHex(0xe5484d));
         _titleBar.setClosePressedColor(Color.fromHex(0xbf3438));
-        _titleBar.onMinimize = delegate() { _window.minimize(); };
+        _titleBar.onMinimize = delegate() {
+            // With a tray icon present, minimize keeps the app in the tray.
+            if (!_stream.requestMinimize()) _window.minimize();
+        };
         _titleBar.onMaximizeToggle = &toggleMaximize;
         _titleBar.onClose = delegate() { _window.close(); };
         _titleBar.onSystemMenu = &showSystemMenu;
@@ -76,6 +79,13 @@ final class TitleBarStreamRoot : Widget
     void shutdown()
     {
         _stream.shutdown();
+    }
+
+    /// Lets the window close request defer to the broadcaster: false keeps the
+    /// app running hidden in the tray instead of exiting.
+    bool closeRequested()
+    {
+        return _stream.closeRequested();
     }
 
     private void toggleMaximize()
@@ -169,7 +179,9 @@ final class TitleBarStreamRoot : Widget
         items ~= ContextMenuItem.command(_maximized ? "Restore down" : "Maximize",
             IconKind.maximize, delegate() { toggleMaximize(); });
         items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
-            delegate() { _window.minimize(); }, "", !_window.isMinimized());
+            delegate() {
+                if (!_stream.requestMinimize()) _window.minimize();
+            }, "", !_window.isMinimized());
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Close", IconKind.close,
             delegate() { _window.close(); }, "Alt+F4");
@@ -218,8 +230,12 @@ private int runTitleBarApplication(string executablePath)
     auto root = new TitleBarStreamRoot(window, executablePath);
     window.setRoot(root);
     window.onCloseRequested = delegate() {
-        root.shutdown();
-        return true;
+        if (root.closeRequested())
+        {
+            root.shutdown();
+            return true;
+        }
+        return false;
     };
     return window.run();
 }

@@ -788,6 +788,7 @@ final class EditorRoot : VBox
     private bool _playbackAwaitingAudioClock;
     private bool _playbackVideoWaiting;
     private double _playbackVideoWaitClock;
+    private MonoTime _playbackVideoWaitClockStarted;
     private double _playbackAudioClockWait;
     private double _playbackAudioClockLostWait;
     private ulong _playbackModelRevision;
@@ -803,6 +804,13 @@ final class EditorRoot : VBox
     private string _playbackPrewarmAudioSignature;
     private bool _playbackPrewarmHasVideoStream;
     private double _playbackPrewarmPosition = -1.0;
+    // Direct-mode prewarm launch geometry (media source time and remaining
+    // duration), kept separately from the identity key so a playhead moved
+    // inside the buffered window still adopts the warm streams.
+    private double _playbackPrewarmVideoPosition = -1.0;
+    private double _playbackPrewarmVideoRemaining = -1.0;
+    private double _playbackPrewarmAudioPosition = -1.0;
+    private double _playbackPrewarmAudioRemaining = -1.0;
     private ulong _playbackPrewarmRevision;
 
     private bool _canvasDragEditing;
@@ -834,14 +842,27 @@ final class EditorRoot : VBox
     private enum double directPlaybackPrerollSeconds = 0.055;
     private enum double livePlaybackPrerollSeconds = 0.090;
     // Debounce before a background playback prewarm is started after the
-    // playhead settles, and how long an idle prewarm is kept before it is
-    // released so a paused editor does not hold FFmpeg processes forever.
+    // playhead settles. Once active, the prewarm is kept alive (quiescent)
+    // while the playhead stays inside its buffered window; it is only torn
+    // down by an edit, a playhead exit, or a Play that does not adopt it.
     private enum double playbackPrewarmDelaySeconds = 0.10;
-    private enum double playbackPrewarmIdleSeconds = 45.0;
+    // Readiness gates: how long to wait for the audio device clock before
+    // falling back to the monotonic transport clock (video plays muted), and
+    // how long to wait for the first decoded frame before reporting a failure
+    // instead of leaving the transport in "preparing" indefinitely.
+    private enum double playbackAudioClockFallbackSeconds = 5.0;
+    private enum double playbackFirstFrameTimeoutSeconds = 12.0;
+    // A paused prewarm stays alive while the playhead remains inside its
+    // buffered window, so Play (and forward frame stepping) adopt it instead of
+    // spawning fresh decoders. The forward window is roughly two buffered
+    // slot-queues ahead; the behind window tolerates sub-frame jitter.
+    private enum double prewarmBehindWindowSeconds = 0.06;
     private MonoTime _playbackClockStarted;
     private double _playbackClockBase = 0.0;
     private bool _playbackClockValid;
     private bool _playbackAwaitingFirstFrame;
+    private double _playbackFirstFrameWait;
+    private double _playbackPrewarmForwardWindow = 0.5;
     private bool _seekPending;
     private bool _seekGesture;
     private bool _seekResumePlayback;
@@ -1019,6 +1040,11 @@ final class EditorRoot : VBox
     bool videoStreamFinishedForTesting() { return _videoStream.finished(); }
     bool videoStreamHasReadyFramesForTesting() { return _videoStream.hasReadyFrames(); }
     bool playbackVideoWaitingForTesting() const { return _playbackVideoWaiting; }
+    bool playbackReadyForTesting() const { return playbackReady(); }
+    double playbackPrewarmForwardWindowForTesting() const
+    {
+        return _playbackPrewarmForwardWindow;
+    }
     string statusTextForTesting() const { return _lastStatusText; }
     /** Force the transport into the "buffering video" state exactly as a
      * lagging display would, so tests can exercise the finished-while-waiting
@@ -5379,14 +5405,50 @@ final class EditorRoot : VBox
     private void playheadChanged(double value)
     {
         _lastSelectionIsMedia = false;
-        notePlaybackPrewarmDirty();
+        notePlaybackPrewarmDirty(value);
         _scrub.setValue(value, false);
         updateTimeLabel();
         if (_timeline.selectedIndex() >= 0) syncInspector();
         if (_playbackKind == PlaybackKind.sequence)
+        {
+            // While paused, a step into the warm prewarm window is served from
+            // the already-decoded stream (no FFmpeg spawn, no still renderer).
+            if (!_playbackRunning && tryStepSequenceFromPrewarm(value)) return;
             seekPlayback(value);
+        }
         else if (_playbackKind == PlaybackKind.none)
             scheduleTimelineFrame();
+    }
+
+    /** Serve a paused sequence frame step from the warm prewarm stream when the
+     * target is inside its buffered forward window. Returns false (so the
+     * caller falls back to the still-frame renderer / seek path) when the
+     * stream cannot supply the exact frame synchronously. */
+    private bool tryStepSequenceFromPrewarm(double value)
+    {
+        if (_seekPending || !_playbackPrewarmActive ||
+            !_playbackPrewarmHasVideoStream) return false;
+        if (_videoStream.finished() || !_videoStream.running()) return false;
+        // Never rewind past the frame already on screen; the warm queue is
+        // forward-only. Backward steps keep using the still-frame renderer.
+        const displayed = _preview !is null && _preview.hasFrame() ?
+            displayedPlaybackFrameTime() : -1.0;
+        if (value < displayed - 0.0005) return false;
+        const targetSource = playbackSourceClockTime(value);
+        PreviewFrame frame;
+        if (!_videoStream.canTakeReadyAtOrAfter(targetSource)) return false;
+        if (!_videoStream.takeReadyAtOrAfter(targetSource, frame) ||
+            !frame.valid()) return false;
+        _preview.setFrame(frame);
+        _preview.setPlaying(false);
+        _playbackPosition = value;
+        _playbackClockValid = false;
+        _playbackFirstFrameWait = 0.0;
+        _pendingPreviewKind = PendingPreviewKind.none;
+        _timeline.setPlayhead(value, false);
+        _scrub.setValue(value, false);
+        updateTimeLabel();
+        return true;
     }
 
     private double frameStepSecondsAt(double sequenceTime) const
@@ -5793,28 +5855,27 @@ final class EditorRoot : VBox
             _playbackSourceVolume > 0.000_001;
     }
 
-    /** Opaque signature of the direct-mode video stream parameters, shared by
-     * the background prewarm and the playback start so a prewarmed stream can
-     * be adopted only when the request is byte-for-byte identical. */
-    private static string directVideoSignature(string path, double mediaPosition,
-        double duration, int width, int height, int fps, string[] opts,
-        double mediaOffset)
+    /** Opaque identity key of the direct-mode video stream, shared by the
+     * background prewarm and the playback start. The launch position and
+     * remaining duration are deliberately excluded: the prewarm is adopted
+     * when the playhead is inside its buffered window, so a small scrub or
+     * frame step before Play does not tear the warm decoder down. */
+    private static string directVideoSignature(string path, int width, int height,
+        int fps, string[] opts, double mediaOffset)
     {
-        return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", mediaPosition) ~
-            "\x1f" ~ format("%.6f", duration) ~ "\x1f" ~ format("%d", width) ~
+        return "direct\x1f" ~ path ~ "\x1f" ~ format("%d", width) ~
             "\x1f" ~ format("%d", height) ~ "\x1f" ~ format("%d", fps) ~
             "\x1f" ~ join(opts, "\x1f") ~ "\x1f" ~ format("%.6f", mediaOffset);
     }
 
-    private static string directAudioSignature(string path, double mediaPosition,
-        double duration, double volume, double displayStart, bool muted)
+    private static string directAudioSignature(string path, double volume,
+        bool muted)
     {
-        return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", mediaPosition) ~
-            "\x1f" ~ format("%.6f", duration) ~ "\x1f" ~ format("%.6f", volume) ~
-            "\x1f" ~ format("%.6f", displayStart) ~ "\x1f" ~ (muted ? "1" : "0");
+        return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", volume) ~
+            "\x1f" ~ (muted ? "1" : "0");
     }
 
-    /** The exact video stream the current playback state would start, or ""
+    /** The video stream identity the current playback state would start, or ""
      * when the state has no streaming video decode. */
     private string buildCurrentVideoSignature()
     {
@@ -5836,18 +5897,37 @@ final class EditorRoot : VBox
             return "live\x1f" ~ join(arguments, "\x1f");
         }
         if (_playbackAsset is null || !_playbackAsset.hasVideo) return "";
-        const mediaPosition = clampValue(_playbackPosition + _playbackMediaOffset,
-            0.0, _playbackAsset.duration);
-        return directVideoSignature(_playbackAsset.path, mediaPosition,
-            _playbackEnd - _playbackPosition, decode.width, decode.height, fps,
-            playbackDecodeInputOptions(_playbackAsset), _playbackMediaOffset);
+        return directVideoSignature(_playbackAsset.path, decode.width,
+            decode.height, fps, playbackDecodeInputOptions(_playbackAsset),
+            _playbackMediaOffset);
     }
 
-    private void notePlaybackPrewarmDirty()
+    private void notePlaybackPrewarmDirty(double position)
     {
-        if (_playbackPrewarmActive) cancelPlaybackPrewarm();
+        if (_playbackPrewarmActive)
+        {
+            // A playhead move inside the prewarm's buffered window must not
+            // tear the warm decoders down: the same stream still covers Play
+            // (and forward frame steps) from the new position.
+            if (positionInsidePrewarmWindow(position))
+            {
+                _playbackPrewarmDelay = 0.0;
+                _playbackPrewarmIdle = 0.0;
+                return;
+            }
+            cancelPlaybackPrewarm();
+        }
         _playbackPrewarmDelay = 0.0;
         _playbackPrewarmIdle = 0.0;
+    }
+
+    /** Whether a paused playhead position is covered by the active prewarm's
+     * buffered forward window plus a small behind tolerance. */
+    private bool positionInsidePrewarmWindow(double position) const
+    {
+        if (!_playbackPrewarmActive) return false;
+        return position >= _playbackPrewarmPosition - prewarmBehindWindowSeconds &&
+            position <= _playbackPrewarmPosition + _playbackPrewarmForwardWindow;
     }
 
     private void cancelPlaybackPrewarm()
@@ -5859,6 +5939,10 @@ final class EditorRoot : VBox
         _playbackPrewarmVideoSignature = "";
         _playbackPrewarmAudioSignature = "";
         _playbackPrewarmHasVideoStream = false;
+        _playbackPrewarmVideoPosition = -1.0;
+        _playbackPrewarmVideoRemaining = -1.0;
+        _playbackPrewarmAudioPosition = -1.0;
+        _playbackPrewarmAudioRemaining = -1.0;
         _videoStream.stop();
         _audioPlayer.stop();
     }
@@ -5897,6 +5981,13 @@ final class EditorRoot : VBox
         const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
             _compositionWidth, _compositionHeight);
         const fps = livePlaybackFps(decode);
+        // Nothing meaningful to buffer when the playhead is already inside the
+        // final frames of the range. This also prevents a cancel/restart churn
+        // loop when a prewarm reaches a clean EOF right at the range end.
+        const effectiveRemaining = _playbackKind == PlaybackKind.sequence ?
+            _playbackEnd - _playbackPosition :
+            _model.sequenceDuration() - _timeline.playhead();
+        if (effectiveRemaining <= 0.4) return;
         try
         {
             if (_playbackKind == PlaybackKind.sequence)
@@ -5945,10 +6036,14 @@ final class EditorRoot : VBox
                             mediaPosition, remaining, decode.width, decode.height,
                             fps, _playbackAsset.name, opts);
                         _playbackPrewarmVideoSignature = started ?
-                            directVideoSignature(_playbackAsset.path, mediaPosition,
-                                remaining, decode.width, decode.height, fps, opts,
-                                _playbackMediaOffset) : "";
+                            directVideoSignature(_playbackAsset.path, decode.width,
+                                decode.height, fps, opts, _playbackMediaOffset) : "";
                         _playbackPrewarmHasVideoStream = started;
+                        if (started)
+                        {
+                            _playbackPrewarmVideoPosition = mediaPosition;
+                            _playbackPrewarmVideoRemaining = remaining;
+                        }
                     }
                     else
                     {
@@ -5962,9 +6057,13 @@ final class EditorRoot : VBox
                             _playbackAsset.path, mediaPosition, remaining,
                             _playbackSourceVolume, _playbackPosition, true);
                         _playbackPrewarmAudioSignature = audioStarted ?
-                            directAudioSignature(_playbackAsset.path, mediaPosition,
-                                remaining, _playbackSourceVolume,
-                                _playbackPosition, _playbackSourceMuted) : "";
+                            directAudioSignature(_playbackAsset.path,
+                                _playbackSourceVolume, _playbackSourceMuted) : "";
+                        if (audioStarted)
+                        {
+                            _playbackPrewarmAudioPosition = mediaPosition;
+                            _playbackPrewarmAudioRemaining = remaining;
+                        }
                     }
                     else
                         _playbackPrewarmAudioSignature = "";
@@ -6000,10 +6099,14 @@ final class EditorRoot : VBox
                             mediaPosition, remaining, decode.width, decode.height,
                             fps, playbackAsset.name, opts);
                         _playbackPrewarmVideoSignature = started ?
-                            directVideoSignature(playbackAsset.path, mediaPosition,
-                                remaining, decode.width, decode.height, fps, opts,
-                                mediaOffset) : "";
+                            directVideoSignature(playbackAsset.path, decode.width,
+                                decode.height, fps, opts, mediaOffset) : "";
                         _playbackPrewarmHasVideoStream = started;
+                        if (started)
+                        {
+                            _playbackPrewarmVideoPosition = mediaPosition;
+                            _playbackPrewarmVideoRemaining = remaining;
+                        }
                     }
                     else
                     {
@@ -6018,8 +6121,13 @@ final class EditorRoot : VBox
                             playbackAsset.path, mediaPosition, remaining,
                             directClip.volume, start, true);
                         _playbackPrewarmAudioSignature = audioStarted ?
-                            directAudioSignature(playbackAsset.path, mediaPosition,
-                                remaining, directClip.volume, start, muted) : "";
+                            directAudioSignature(playbackAsset.path,
+                                directClip.volume, muted) : "";
+                        if (audioStarted)
+                        {
+                            _playbackPrewarmAudioPosition = mediaPosition;
+                            _playbackPrewarmAudioRemaining = remaining;
+                        }
                     }
                     else
                         _playbackPrewarmAudioSignature = "";
@@ -6059,6 +6167,13 @@ final class EditorRoot : VBox
             if (!_playbackPrewarmHasVideoStream &&
                 _playbackPrewarmAudioSignature.length == 0)
                 return;
+            // The prewarm decoder stays useful while the playhead remains
+            // within roughly two buffered slot-queues ahead (the decoder keeps
+            // producing as consumed frames free slots), so a modest scrub does
+            // not tear the warm streams down.
+            _playbackPrewarmForwardWindow =
+                _playbackPrewarmHasVideoStream ?
+                cast(double) 32 / cast(double) max(1, fps) : 0.6;
             _playbackPrewarmActive = true;
             _playbackPrewarmRevision = _modelRevision;
             appLog(format("Prewarmed %s playback at %.3f",
@@ -6090,24 +6205,41 @@ final class EditorRoot : VBox
             _playbackPosition : _timeline.playhead();
         if (_playbackPrewarmActive)
         {
-            _playbackPrewarmIdle += deltaSeconds;
-            if (_playbackPrewarmIdle >= playbackPrewarmIdleSeconds ||
-                _playbackPrewarmRevision != _modelRevision ||
-                fabs(_playbackPrewarmPosition - position) > 0.02)
+            // A prewarm whose video stream decoded to the end of its range
+            // with nothing left to buffer is dead weight: cancel it so a later
+            // Play restarts fresh instead of adopting an exhausted stream.
+            const finishedDead = _playbackPrewarmHasVideoStream &&
+                _videoStream.finished() && !_videoStream.hasReadyFrames() &&
+                !_audioPlayer.running();
+            if (_playbackPrewarmRevision != _modelRevision ||
+                !positionInsidePrewarmWindow(position) || finishedDead)
             {
                 cancelPlaybackPrewarm();
+                // Only reseed when the position is actually out of window; a
+                // finished prewarm at the range end must not restart into an
+                // immediate re-finish churn loop.
+                if (finishedDead) return;
+                _playbackPrewarmDelay = 0.0;
                 return;
             }
+            // Keep a complete, unchanged prewarm alive. The decoder is
+            // quiescent once its bounded slot queue is full (FFmpeg blocks on
+            // the pipe), so holding it is cheap and makes Play instant. This
+            // replaces the 45 s cancel/restart churn at the same position.
+            _playbackPrewarmIdle = 0.0;
+            return;
         }
-        if (_playbackPrewarmActive) return;
         _playbackPrewarmDelay += deltaSeconds;
         if (_playbackPrewarmDelay < playbackPrewarmDelaySeconds) return;
         _playbackPrewarmDelay = 0.0;
         startPlaybackPrewarm();
     }
 
-    /** True when the running prewarm exactly matches the current playback
-     * intent, so its buffered stream can be adopted without a restart. */
+    /** True when the running prewarm matches the current playback intent, so
+     * its buffered stream can be adopted without a restart. Direct streams
+     * match on identity plus the current playhead being inside the prewarm's
+     * buffered forward window (position and duration are not part of the key),
+     * so scrubbing or stepping within the window before Play still adopts. */
     private bool adoptPlaybackVideoPrewarm()
     {
         if (!_playbackPrewarmActive ||
@@ -6115,6 +6247,18 @@ final class EditorRoot : VBox
         const target = buildCurrentVideoSignature();
         if (target != _playbackPrewarmVideoSignature) return false;
         if (_playbackPrewarmHasVideoStream && !_videoStream.running()) return false;
+        if (_sequencePlaybackDirect && _playbackPrewarmVideoPosition >= 0.0)
+        {
+            const targetPosition = clampValue(_playbackPosition + _playbackMediaOffset,
+                0.0, _playbackAsset.duration);
+            const targetRemaining = _playbackEnd - _playbackPosition;
+            if (targetPosition <
+                    _playbackPrewarmVideoPosition - prewarmBehindWindowSeconds ||
+                targetPosition >
+                    _playbackPrewarmVideoPosition + _playbackPrewarmForwardWindow ||
+                targetRemaining > _playbackPrewarmVideoRemaining + 0.001)
+                return false;
+        }
         return true;
     }
 
@@ -6147,11 +6291,24 @@ final class EditorRoot : VBox
         }
         else if (asset !is null && asset.hasVideo)
         {
-            const mediaPosition = clampValue(start + mediaOffset, 0.0,
-                asset.duration);
-            target = directVideoSignature(asset.path, mediaPosition,
-                max(0.0, end - start), decode.width, decode.height, fps,
-                playbackDecodeInputOptions(asset), mediaOffset);
+            target = directVideoSignature(asset.path, decode.width, decode.height,
+                fps, playbackDecodeInputOptions(asset), mediaOffset);
+            if (target != _playbackPrewarmVideoSignature) return false;
+            if (directSequence && _playbackPrewarmVideoPosition >= 0.0)
+            {
+                const mediaPosition = clampValue(start + mediaOffset, 0.0,
+                    asset.duration);
+                const remaining = max(0.0, end - start);
+                if (mediaPosition <
+                        _playbackPrewarmVideoPosition - prewarmBehindWindowSeconds ||
+                    mediaPosition >
+                        _playbackPrewarmVideoPosition + _playbackPrewarmForwardWindow ||
+                    remaining > _playbackPrewarmVideoRemaining + 0.001)
+                    return false;
+            }
+            if (_playbackPrewarmHasVideoStream && !_videoStream.running())
+                return false;
+            return true;
         }
         else
             return false;
@@ -6204,9 +6361,43 @@ final class EditorRoot : VBox
         _playbackAudioClockLostWait = 0.0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = true;
+        _playbackFirstFrameWait = 0.0;
         _preview.setPlaying(false);
         updatePlaybackButtons();
         setStatus(statusText);
+    }
+
+    /** The transport is genuinely ready to present: a prerolled frame is
+     * buffered, any required audio clock has been acquired (or explicitly
+     * waived), and no catch-up wait is active. This is the single readiness
+     * gate Play uses before the preview starts presenting frames. */
+    private bool playbackReady() const
+    {
+        return !_playbackAwaitingFirstFrame && !_playbackAwaitingAudioClock &&
+            !_playbackVideoWaiting && _playbackClockValid;
+    }
+
+    /** Bound a stuck playback start: stop the streams and report the failure
+     * instead of leaving the transport waiting for frames forever. */
+    private void failPlaybackStart(string message)
+    {
+        appLog(message);
+        _playbackRunning = false;
+        _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackVideoWaiting = false;
+        _playbackAudioStarted = false;
+        _playbackAudioRequired = false;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackFirstFrameWait = 0.0;
+        _seekResumePlayback = false;
+        _videoStream.stop();
+        _audioPlayer.stop();
+        _preview.setPlaying(false);
+        updatePlaybackButtons();
+        setStatus(message);
     }
 
     private string playbackPreparingStatus() const
@@ -6281,6 +6472,11 @@ final class EditorRoot : VBox
         if (_playbackVideoWaiting || _playbackKind == PlaybackKind.none)
             return;
         _playbackVideoWaitClock = clockPlaybackPosition();
+        // The buffering reference must keep advancing in wall-clock time even
+        // while the audio device clock is frozen under pause (waveOutPause /
+        // the headless paused clock). Otherwise a decoder that finished ahead
+        // of the paused clock leaves queued tail frames undrained forever.
+        _playbackVideoWaitClockStarted = MonoTime.currTime;
         _playbackPosition = clampValue(displayedPlaybackFrameTime(),
             _playbackStart, _playbackEnd);
         _playbackVideoWaiting = true;
@@ -6300,6 +6496,16 @@ final class EditorRoot : VBox
         _preview.setPlaying(true);
         updatePlaybackButtons();
         setStatus(playbackRunningStatus());
+    }
+
+    /** The transport position implied by the buffering wait: the anchor
+     * captured at entry advanced by real elapsed time, independent of any
+     * paused audio device clock. */
+    private double advancingVideoWaitClock() const
+    {
+        const elapsed = MonoTime.currTime - _playbackVideoWaitClockStarted;
+        return _playbackVideoWaitClock +
+            cast(double) elapsed.total!"hnsecs" / 10_000_000.0;
     }
 
     private int liveDecodeHeight() const
@@ -6485,21 +6691,38 @@ final class EditorRoot : VBox
             else if (_playbackAsset.hasAudio && !_playbackSourceMuted &&
                 _playbackSourceVolume > 0.000_001)
             {
-                const mediaPosition = clampValue(_playbackPosition +
-                    _playbackMediaOffset, 0.0, _playbackAsset.duration);
-                target = directAudioSignature(_playbackAsset.path, mediaPosition,
-                    remaining, _playbackSourceVolume, _playbackPosition,
-                    _playbackSourceMuted);
+                target = directAudioSignature(_playbackAsset.path,
+                    _playbackSourceVolume, _playbackSourceMuted);
             }
             if (target.length > 0 && target == _playbackPrewarmAudioSignature)
             {
-                // Re-anchor the headless fallback clock so the time spent
-                // buffering while paused is not reported as playback position.
-                _audioPlayer.reanchorClock(_playbackPosition);
-                _playbackPrewarmActive = false;
-                _playbackPrewarmVideoSignature = "";
-                _playbackPrewarmAudioSignature = "";
-                return true;
+                // Direct streams additionally require the current playhead to
+                // sit inside the prewarmed audio window, mirroring the video
+                // adoption so a pre-Play scrub or step keeps both streams.
+                bool adoptable = true;
+                if (!_sequencePlaybackLive &&
+                    _playbackPrewarmAudioPosition >= 0.0)
+                {
+                    const mediaPosition = clampValue(_playbackPosition +
+                        _playbackMediaOffset, 0.0, _playbackAsset.duration);
+                    if (mediaPosition <
+                            _playbackPrewarmAudioPosition -
+                                prewarmBehindWindowSeconds ||
+                        mediaPosition > _playbackPrewarmAudioPosition +
+                            _playbackPrewarmForwardWindow ||
+                        remaining > _playbackPrewarmAudioRemaining + 0.001)
+                        adoptable = false;
+                }
+                if (adoptable)
+                {
+                    // Re-anchor the headless fallback clock so the time spent
+                    // buffering while paused is not reported as playback position.
+                    _audioPlayer.reanchorClock(_playbackPosition);
+                    _playbackPrewarmActive = false;
+                    _playbackPrewarmVideoSignature = "";
+                    _playbackPrewarmAudioSignature = "";
+                    return true;
+                }
             }
         }
 
@@ -8656,6 +8879,19 @@ final class EditorRoot : VBox
 
         if (_playbackRunning && !_seekPending && _playbackAsset !is null)
         {
+            // First-frame readiness is bounded: if no decoded frame arrives
+            // within the timeout the transport reports a failure instead of
+            // remaining in "preparing" forever. Re-prerolls (after a lagging
+            // display re-enters the wait) reset the timer on the next frame.
+            if (_playbackAwaitingFirstFrame)
+            {
+                _playbackFirstFrameWait += deltaSeconds;
+                if (_playbackFirstFrameWait >= playbackFirstFrameTimeoutSeconds)
+                    failPlaybackStart(
+                        "Playback could not start: no decoded frames arrived.");
+            }
+            else
+                _playbackFirstFrameWait = 0.0;
             if (_playbackAwaitingAudioClock)
             {
                 _playbackAudioClockWait += deltaSeconds;
@@ -8682,6 +8918,23 @@ final class EditorRoot : VBox
                 else if (_playbackAudioClockWait >= 0.85)
                 {
                     setStatus("Waiting for audio output before playback starts.");
+                }
+                else if (_playbackAudioClockWait >=
+                    playbackAudioClockFallbackSeconds)
+                {
+                    // The audio device clock never became readable. Video is
+                    // ready and buffered; play it muted on the monotonic clock
+                    // instead of leaving the transport in a permanent wait.
+                    _audioPlayer.stop();
+                    _playbackAudioStarted = false;
+                    _playbackAudioRequired = false;
+                    _playbackAwaitingAudioClock = false;
+                    _playbackAwaitingFirstFrame = false;
+                    _playbackAudioClockWait = 0.0;
+                    _playbackAudioClockLostWait = 0.0;
+                    resetPlaybackClock();
+                    _preview.setPlaying(true);
+                    setStatus("Audio output is unavailable; playing without sound.");
                 }
             }
 
@@ -8731,13 +8984,16 @@ final class EditorRoot : VBox
             }
             bool receivedFrame;
             PreviewFrame frame;
+            const firstFrameTarget = playbackSourceClockTime(_playbackPosition);
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
                 _playbackAwaitingFirstFrame &&
                 // Start from a small real buffer instead of a single frame.
                 // This prevents the transport from immediately pausing again
                 // on machines where FFmpeg needs a few frames to settle.
                 _videoStream.hasBufferedDuration(playbackPrerollSeconds()) &&
-                _videoStream.takeReady(frame))
+                (_videoStream.canTakeReadyAtOrAfter(firstFrameTarget) ?
+                 _videoStream.takeReadyAtOrAfter(firstFrameTarget, frame) :
+                 _videoStream.takeReady(frame)))
             {
                 receivedFrame = true;
                 bool handledFrame;
@@ -8752,9 +9008,20 @@ final class EditorRoot : VBox
                         _audioPlayer.clockPosition(audioPosition);
                     if (audioRequired && !audioStarted)
                     {
+                        // Audio genuinely cannot start (no device, no ffmpeg, or
+                        // a decode error). Play the buffered video muted on the
+                        // monotonic clock instead of retrying forever in a
+                        // "preparing" state.
+                        _playbackAudioRequired = false;
+                        _playbackAudioStarted = false;
                         _preview.setFrame(frame);
-                        waitForPlaybackPreroll(
-                            "Waiting for audio output before playback starts.");
+                        _playbackAwaitingFirstFrame = false;
+                        _playbackFirstFrameWait = 0.0;
+                        resetPlaybackClock();
+                        _preview.setPlaying(true);
+                        setStatus("Playing video without audio: " ~
+                            (_audioPlayer.error().length > 0 ?
+                             _audioPlayer.error() : "audio output could not start."));
                         handledFrame = true;
                     }
                     else if (audioStarted && !audioClockReady)
@@ -8803,7 +9070,7 @@ final class EditorRoot : VBox
                 !_playbackAwaitingFirstFrame && _playbackVideoWaiting)
             {
                 const bufferedClock = _playbackAudioRequired ?
-                    clockPlaybackPosition() : _playbackVideoWaitClock;
+                    advancingVideoWaitClock() : _playbackVideoWaitClock;
                 const maximumFrameTime = playbackSourceClockTime(bufferedClock) +
                     playbackVideoLeadSeconds;
                 if (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame) &&

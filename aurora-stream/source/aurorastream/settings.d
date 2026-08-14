@@ -12,7 +12,7 @@ import std.string : endsWith;
 /// Settings file name, shared by both the per-user and portable locations.
 enum settingsFileName = "aurora-stream-settings.json";
 
-enum settingsSchemaVersion = 6;
+enum settingsSchemaVersion = 8;
 
 private bool _portableConfigMode;
 
@@ -187,9 +187,15 @@ private BroadcastSettings settingsFromJson(string source)
         settings.windowCaptureHwnd);
     settings.windowCaptureLabel = jsonString(root, "windowCaptureLabel",
         settings.windowCaptureLabel);
+    settings.windowContentCapture = jsonBool(root, "windowContentCapture",
+        settings.windowContentCapture);
 
     settings.liveSourcePreviewEnabled = jsonBool(root,
         "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
+
+    settings.minimizeToTrayOnStart = jsonBool(root, "minimizeToTrayOnStart",
+        settings.minimizeToTrayOnStart);
+    settings.closeToTray = jsonBool(root, "closeToTray", settings.closeToTray);
 
     settings.browserChoice = browserChoiceFromKey(jsonString(root,
         "browserChoice", browserChoiceKey(settings.browserChoice)));
@@ -277,7 +283,10 @@ private string settingsToJson(BroadcastSettings settings)
     root["microphoneDevice"] = settings.microphoneDevice;
     root["windowCaptureHwnd"] = settings.windowCaptureHwnd;
     root["windowCaptureLabel"] = settings.windowCaptureLabel;
+    root["windowContentCapture"] = settings.windowContentCapture;
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
+    root["minimizeToTrayOnStart"] = settings.minimizeToTrayOnStart;
+    root["closeToTray"] = settings.closeToTray;
     root["browserChoice"] = browserChoiceKey(settings.browserChoice);
     if (settings.deviceDisplayNameCache.length > 0)
     {
@@ -516,6 +525,21 @@ unittest
     const legacy = settingsFromJson(`{"schemaVersion":5}`);
     assert(legacy.windowCaptureHwnd.length == 0);
     assert(legacy.windowCaptureLabel.length == 0);
+
+    // Schema 7 adds the window-content-capture toggle; older files (and files
+    // that omit it) keep the default off so gdigrab behavior is preserved.
+    assert(!legacy.windowContentCapture);
+    BroadcastSettings contentSource;
+    contentSource.windowCaptureHwnd = "1841952";
+    contentSource.windowContentCapture = true;
+    const contentRestored = settingsFromJson(settingsToJson(contentSource));
+    assert(contentRestored.windowContentCapture);
+    const contentExplicitOff = settingsFromJson(
+        `{"schemaVersion":7,"windowContentCapture":false}`);
+    assert(!contentExplicitOff.windowContentCapture);
+    const contentExplicitOn = settingsFromJson(
+        `{"schemaVersion":7,"windowContentCapture":true}`);
+    assert(contentExplicitOn.windowContentCapture);
 }
 
 unittest
@@ -525,6 +549,35 @@ unittest
     source.windowCaptureHwnd = "464340";
     const restored = settingsFromJson(settingsToJson(source));
     assert(restored.windowCaptureHwnd == "464340");
+}
+
+unittest
+{
+    // Schema 8 tray preferences round-trip; the tray options are ON by
+    // default for fresh installs / files that never saved the keys, while an
+    // explicitly saved "false" is respected.
+    BroadcastSettings source;
+    source.minimizeToTrayOnStart = true;
+    source.closeToTray = true;
+    const restored = settingsFromJson(settingsToJson(source));
+    assert(restored.minimizeToTrayOnStart);
+    assert(restored.closeToTray);
+
+    const defaults = settingsFromJson(`{"schemaVersion":7}`);
+    assert(defaults.minimizeToTrayOnStart);
+    assert(defaults.closeToTray);
+
+    const explicitOn = settingsFromJson(
+        `{"schemaVersion":8,"minimizeToTrayOnStart":true}`);
+    assert(explicitOn.minimizeToTrayOnStart);
+    // closeToTray was not specified, so it keeps the enabled default.
+    assert(explicitOn.closeToTray);
+
+    // A user who explicitly disabled the option keeps it disabled.
+    const explicitOff = settingsFromJson(
+        `{"schemaVersion":8,"closeToTray":false,"minimizeToTrayOnStart":false}`);
+    assert(!explicitOff.minimizeToTrayOnStart);
+    assert(!explicitOff.closeToTray);
 }
 
 unittest

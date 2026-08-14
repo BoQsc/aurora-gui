@@ -167,8 +167,12 @@ private int runApplication(string executablePath)
     auto root = new StreamRoot(window, executablePath);
     window.setRoot(root);
     window.onCloseRequested = delegate() {
-        root.shutdown();
-        return true;
+        if (root.closeRequested())
+        {
+            root.shutdown();
+            return true;
+        }
+        return false;
     };
     return window.run();
 }

@@ -180,6 +180,22 @@ WindowSource[] enumerateWindows()
     return collector.windows;
 }
 
+/// The windows that can actually be captured right now: the full enumeration
+/// minus any minimized windows. A minimized window's client area is 0×0, so
+/// FFmpeg's `gdigrab` fails on it; listing those rows first (and a busy desktop
+/// has mostly minimized windows) buried the usable windows and made the
+/// selector feel broken. The current selection, if minimized, is still surfaced
+/// separately through the saved-selection item so the user can switch away.
+version (Windows)
+WindowSource[] capturableWindows(const WindowSource[] windows)
+{
+    WindowSource[] result;
+    foreach (window; windows)
+        if (!windowIsMinimized(hwndToText(window.hwnd)))
+            result ~= window;
+    return result;
+}
+
 version (Windows)
 unittest
 {
@@ -209,6 +225,28 @@ unittest
                 assert(window.hwnd != windows[j].hwnd);
         assert(windowExists(hwndToText(windows[0].hwnd)));
     }
+
+    // The capturable-window filter removes every minimized window so a busy
+    // desktop does not bury the usable windows, but it must never invent
+    // entries or drop non-minimized ones.
+    const capturable = capturableWindows(windows);
+    assert(capturable.length <= windows.length);
+    foreach (window; capturable)
+    {
+        assert(!windowIsMinimized(hwndToText(window.hwnd)));
+        bool foundInSource;
+        foreach (candidate; windows)
+            if (candidate.hwnd == window.hwnd) foundInSource = true;
+        assert(foundInSource);
+    }
+    foreach (window; windows)
+        if (!windowIsMinimized(hwndToText(window.hwnd)))
+        {
+            bool foundInResult;
+            foreach (candidate; capturable)
+                if (candidate.hwnd == window.hwnd) foundInResult = true;
+            assert(foundInResult);
+        }
 }
 else
 {
@@ -219,6 +257,11 @@ else
     bool windowIsMinimized(string hwndText) { return false; }
 
     WindowSource[] enumerateWindows() { return []; }
+
+    WindowSource[] capturableWindows(const WindowSource[] windows)
+    {
+        return windows.dup;
+    }
 }
 
 /// Aurora-native capture-source selector: "Entire desktop" or one window.
@@ -231,6 +274,7 @@ final class CaptureSourceDropdown : Button
     private string _selectedLabel;
     private WindowSource[] _windows;
     private bool _windowsKnown;
+    private size_t _enumeratedCount;
     private string _emptyMessage;
 
     void delegate(string hwnd) onChanged;
@@ -268,7 +312,13 @@ final class CaptureSourceDropdown : Button
 
     private void refreshWindows()
     {
-        _windows = enumerateWindows();
+        const all = enumerateWindows();
+        _enumeratedCount = all.length;
+        // Only windows that can be captured right now appear in the list; a
+        // desktop full of minimized windows (the common case on a busy session)
+        // no longer buries the usable windows behind rows of
+        // "(minimized — not capturable)".
+        _windows = capturableWindows(all);
         _windowsKnown = true;
         updateCaption();
     }
@@ -304,7 +354,21 @@ final class CaptureSourceDropdown : Button
             else if (_windowsKnown)
             {
                 if (windowExists(_selected))
-                    caption = "Window: " ~ savedWindowLabel();
+                {
+                    // The selected window is usually in the (capturable-only)
+                    // list; this branch covers a minimized selection that was
+                    // filtered out — it still cannot be captured, so keep the
+                    // same red warning.
+                    if (windowIsMinimized(_selected))
+                    {
+                        caption = "Window (minimized): " ~ savedWindowLabel();
+                        unavailable = true;
+                    }
+                    else
+                    {
+                        caption = "Window: " ~ savedWindowLabel();
+                    }
+                }
                 else
                 {
                     caption = "Window closed: " ~ savedWindowLabel();
@@ -342,9 +406,14 @@ final class CaptureSourceDropdown : Button
 
         if (_windows.length == 0)
         {
-            items ~= ContextMenuItem.command(
-                _windowsKnown ? _emptyMessage : "Scanning for windows…",
-                delegate() {}, "", false);
+            // Distinguish "no windows found at all" from "every window is
+            // minimized right now" so the message is not misleading.
+            string message;
+            if (_windowsKnown && _enumeratedCount > 0)
+                message = "All visible windows are minimized — restore one to capture it";
+            else
+                message = _windowsKnown ? _emptyMessage : "Scanning for windows…";
+            items ~= ContextMenuItem.command(message, delegate() {}, "", false);
         }
         else
         {
@@ -359,11 +428,15 @@ final class CaptureSourceDropdown : Button
         {
             immutable saved = _selected.idup;
             immutable savedLabel = savedWindowLabel().idup;
+            string savedPrefix;
+            if (windowExists(_selected))
+                savedPrefix = windowIsMinimized(_selected) ?
+                    "Saved window (minimized — not capturable): " :
+                    "Saved window: ";
+            else
+                savedPrefix = "Saved window closed: ";
             items ~= ContextMenuItem.separatorItem();
-            items ~= ContextMenuItem.check(
-                (windowExists(_selected) ? "Saved window: " : "Saved window closed: ") ~
-                    savedLabel,
-                true,
+            items ~= ContextMenuItem.check(savedPrefix ~ savedLabel, true,
                 delegate() { setSelected(saved, savedLabel); });
         }
 

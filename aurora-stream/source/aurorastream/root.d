@@ -18,11 +18,14 @@ import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
+import aurorastream.entry : applicationIconPath;
 import aurorastream.programcanvas : LiveSourceCanvasPreview;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
+import aurorastream.trayicon : TrayIcon;
 import aurorastream.wasapi : AudioDeviceNotifications;
-import aurorastream.windowsources : CaptureSourceDropdown;
+import aurorastream.windowsources : CaptureSourceDropdown, windowExists,
+    windowIsMinimized;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : dur, msecs;
@@ -52,6 +55,7 @@ final class StreamRoot : VBox
     private LiveSourceCanvasPreview _canvasPreview;
     private Button _settingsMenu;
     private CaptureSourceDropdown _captureSource;
+    private CheckBox _windowContentCapture;
     private bool _streamingServersVisible;
     private bool _liveSourcePreviewEnabled;
     private ScrollView _settingsScroll;
@@ -112,6 +116,11 @@ final class StreamRoot : VBox
     private Mutex _updateMutex;
     private string _updateAvailable;
     private bool _updateChecked;
+    private TrayIcon _tray;
+    private bool _trayHidden;
+    private bool _forceExit;
+    private bool _minimizeToTrayOnStart;
+    private bool _closeToTray;
 
     this(GuiWindow window, string executablePath)
     {
@@ -142,6 +151,49 @@ final class StreamRoot : VBox
             settingsLoadMessage.startsWith("Could not load");
         _settingsMessageError = _settingsLoadFailed;
         _browserChoice = saved.browserChoice;
+        _minimizeToTrayOnStart = saved.minimizeToTrayOnStart;
+        _closeToTray = saved.closeToTray;
+
+        // A saved window-capture selection that can no longer be streamed (the
+        // window is closed, belongs to an earlier Windows session, or is
+        // minimized right now — a minimized window has a 0×0 client area that
+        // gdigrab cannot capture) must not leave the capture-source selector
+        // stuck on a red, non-streamable selection. Fall back to the entire
+        // desktop and say so; the fallback is persisted on the next save so it
+        // does not re-appear on every launch.
+        string captureFallbackMessage;
+        string initialCaptureHwnd = saved.windowCaptureHwnd.strip();
+        string initialCaptureLabel = saved.windowCaptureLabel.strip();
+        if (initialCaptureHwnd.length > 0)
+        {
+            const captureWindow = initialCaptureHwnd;
+            const captureLabel = initialCaptureLabel.length > 0 ?
+                initialCaptureLabel : "window " ~ captureWindow;
+            if (!windowExists(captureWindow))
+            {
+                captureFallbackMessage = "The saved capture window (" ~
+                    captureLabel ~ ") is no longer open, so Aurora Stream " ~
+                    "will capture the entire desktop instead.";
+                initialCaptureHwnd = "";
+                initialCaptureLabel = "";
+            }
+            else if (windowIsMinimized(captureWindow))
+            {
+                captureFallbackMessage = "The saved capture window (" ~
+                    captureLabel ~ ") is minimized, so it cannot be captured " ~
+                    "right now. Aurora Stream will capture the entire desktop " ~
+                    "instead; restore the window to select it again.";
+                initialCaptureHwnd = "";
+                initialCaptureLabel = "";
+            }
+        }
+        if (captureFallbackMessage.length > 0)
+        {
+            _settingsMessage = _settingsMessage.length > 0 ?
+                _settingsMessage ~ " " ~ captureFallbackMessage :
+                captureFallbackMessage;
+            markSettingsDirty();
+        }
 
         auto header = add(new HBox(8));
         header.layoutHints().preferredHeight = 44;
@@ -172,7 +224,7 @@ final class StreamRoot : VBox
         captureTitle.setScale(1);
         captureTitle.setColor(Color.fromHex(0xc8d0da));
         _captureSource = settingsContent.add(new CaptureSourceDropdown(
-            saved.windowCaptureHwnd, saved.windowCaptureLabel));
+            initialCaptureHwnd, initialCaptureLabel));
         _captureSource.onChanged = delegate(string value) {
             updateQualitySummary();
             markSettingsDirty();
@@ -182,6 +234,13 @@ final class StreamRoot : VBox
         captureHint.setScale(1);
         captureHint.setColor(Color.fromHex(0x8793a0));
         captureHint.layoutHints().preferredHeight = 36;
+        _windowContentCapture = settingsContent.add(new CheckBox(
+            "Capture window content (keeps showing the window when it is covered or minimized; black for GPU/games)", saved.windowContentCapture));
+        _windowContentCapture.layoutHints().preferredHeight = 22;
+        _windowContentCapture.onChanged = delegate(bool checked) {
+            updateQualitySummary();
+            markSettingsDirty();
+        };
 
         settingsContent.add(new Separator());
         auto sourceTitle = settingsContent.add(new Label("COMMON SOURCE CANVAS"));
@@ -494,6 +553,16 @@ final class StreamRoot : VBox
                 _streamingServersVisible, delegate() {
                     setStreamingServersVisible(!_streamingServersVisible);
                 }),
+            ContextMenuItem.check("Minimize to tray when streaming starts",
+                _minimizeToTrayOnStart, delegate() {
+                    _minimizeToTrayOnStart = !_minimizeToTrayOnStart;
+                    markSettingsDirty();
+                }),
+            ContextMenuItem.check("Close button hides to tray instead of exiting",
+                _closeToTray, delegate() {
+                    _closeToTray = !_closeToTray;
+                    markSettingsDirty();
+                }),
             ContextMenuItem.separatorItem(),
             ContextMenuItem.command("Run A/V pacing diagnostic", delegate() {
                 const snapshot = _worker.snapshot();
@@ -559,6 +628,9 @@ final class StreamRoot : VBox
         {
             _localStatus = "Restarting to install the update…";
             _localStatusError = false;
+            // The updater must relaunch even when close-to-tray is enabled.
+            _forceExit = true;
+            if (_tray !is null) _tray.remove();
             _window.close();
         }
         else
@@ -844,21 +916,29 @@ final class StreamRoot : VBox
         settings.microphoneDevice = _microphone.selectedDevice().strip();
         settings.windowCaptureHwnd = _captureSource.selectedHwnd();
         settings.windowCaptureLabel = _captureSource.selectedLabel();
+        settings.windowContentCapture = _windowContentCapture !is null &&
+            _windowContentCapture.checked();
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
         settings.browserChoice = _browserChoice;
+        settings.minimizeToTrayOnStart = _minimizeToTrayOnStart;
+        settings.closeToTray = _closeToTray;
         settings.deviceDisplayNameCache.clear();
         foreach (deviceId, name; _deviceNameCache)
             settings.deviceDisplayNameCache[deviceId] = name;
         return settings;
     }
 
-    private void toggleStreaming()
+    /// Starts or stops the broadcast. Returns an error message (or an empty
+    /// string on success / a requested stop). Callers that invoke this from a
+    /// place without a visible window (the tray icon) surface the error as a
+    /// balloon instead of an invisible status line.
+    private string toggleStreaming()
     {
         const snapshot = _worker.snapshot();
         if (snapshot.requestedRunning || snapshot.processRunning)
         {
             _worker.stop();
-            return;
+            return "";
         }
 
         if (_selectDefaultDesktopAudio &&
@@ -867,7 +947,7 @@ final class StreamRoot : VBox
             _localStatus =
                 "Wait for Windows desktop-audio detection to finish, then start streaming.";
             _localStatusError = true;
-            return;
+            return _localStatus;
         }
 
         saveSettingsNow();
@@ -879,13 +959,156 @@ final class StreamRoot : VBox
             _localStatusError = true;
             _status.setText(error);
             _status.setColor(Color.fromHex(0xe19a9a));
-            return;
+            return error;
         }
         _localStatus = "";
         _localStatusError = false;
         _status.useThemeColor();
         _startStop.setText("Stop streaming");
         _startStop.setDanger(true);
+        if (_minimizeToTrayOnStart && !_trayHidden) hideToTray();
+        return "";
+    }
+
+    private bool streamingActive()
+    {
+        const snapshot = _worker.snapshot();
+        return snapshot.requestedRunning || snapshot.processRunning;
+    }
+
+    /// Creates the tray icon on first use and wires it to the broadcaster.
+    /// Failing to create it (no shell, restricted session) leaves `_tray`
+    /// null so callers fall back to a plain minimize.
+    private void ensureTrayIcon()
+    {
+        if (_tray !is null) return;
+        auto tray = new TrayIcon();
+        tray.onToggleStream = &toggleStreamingFromTray;
+        tray.onShowWindow = &showWindowFromTray;
+        tray.onExit = &exitFromTray;
+        tray.isStreaming = &streamingActive;
+        tray.statusText = delegate() {
+            const snapshot = _worker.snapshot();
+            return snapshot.status.length > 0 ? snapshot.status : "Idle";
+        };
+        if (!tray.show(applicationIconPath(), "Aurora Stream — Idle"))
+        {
+            tray.shutdown();
+            return;
+        }
+        _tray = tray;
+    }
+
+    /// Hides the main window and keeps the app alive in the tray. Called from
+    /// Start streaming (when minimize-to-tray is enabled) and from the close
+    /// button (when close-to-tray is enabled).
+    private void hideToTray()
+    {
+        if (_trayHidden) return;
+        ensureTrayIcon();
+        if (_tray is null)
+        {
+            // The tray could not be created; fall back to a plain minimize.
+            _window.minimize();
+            return;
+        }
+        _trayHidden = true;
+        _window.setVisible(false);
+        _tray.setStreaming(streamingActive());
+        _tray.showBalloon("Aurora Stream",
+            "Aurora Stream is running in the tray. Double-click the tray icon to restore the window.",
+            false);
+        if (_activityLog !is null)
+            _activityLog.note("Window hidden to the system tray.");
+    }
+
+    /// Restores the main window (double-click on the tray icon, or the Show
+    /// entry in the tray menu).
+    private void showWindowFromTray()
+    {
+        _trayHidden = false;
+        if (_window is null) return;
+        if (_window.isMinimized()) _window.restore();
+        _window.setVisible(true);
+        version (Windows)
+        {
+            import core.sys.windows.windows : HWND, SetForegroundWindow;
+            const info = _window.nativeWindow().nativeSurfaceInfo();
+            auto hwnd = cast(HWND) info.handleB;
+            if (hwnd !is null) SetForegroundWindow(hwnd);
+        }
+        if (_activityLog !is null)
+            _activityLog.note("Window restored from the system tray.");
+    }
+
+    /// Single-click on the tray icon: toggle Start/Stop streaming, reporting
+    /// the outcome as a tray balloon because the window is not visible.
+    private void toggleStreamingFromTray()
+    {
+        const wasActive = streamingActive();
+        const error = toggleStreaming();
+        const nowActive = streamingActive();
+        if (_tray is null) return;
+        if (error.length > 0 && !wasActive)
+        {
+            _tray.showBalloon("Aurora Stream",
+                "Could not start streaming: " ~ error, true);
+        }
+        else if (!wasActive && nowActive)
+        {
+            _tray.setStreaming(true);
+            _tray.showBalloon("Aurora Stream",
+                "Streaming started. Double-click the tray icon to restore the window.",
+                false);
+        }
+        else if (wasActive && !nowActive)
+        {
+            _tray.setStreaming(false);
+            _tray.showBalloon("Aurora Stream", "Streaming stopped.", false);
+        }
+    }
+
+    /// Tray menu Exit: quit the application entirely, even while streaming or
+    /// with close-to-tray enabled.
+    private void exitFromTray()
+    {
+        _forceExit = true;
+        if (_tray !is null) _tray.remove();
+        if (_window !is null) _window.close();
+    }
+
+    /// The minimize button / system-menu minimize. Once the tray icon exists,
+    /// minimize keeps the app in the tray (no taskbar button) instead of
+    /// minimizing to the taskbar. Returns true when the request was consumed
+    /// as a tray-hide so the caller skips a plain minimize.
+    bool requestMinimize()
+    {
+        if (_tray !is null)
+        {
+            hideToTray();
+            return true;
+        }
+        return false;
+    }
+
+    /// Called by the entry point when the window close (X, Alt+F4, system
+    /// menu) is requested. Returns true when the app should actually shut
+    /// down; false keeps it running (hidden into the tray).
+    bool closeRequested()
+    {
+        if (_forceExit) return true;
+        // Once the tray icon exists, X never exits — it stays in the tray.
+        if (_tray !is null)
+        {
+            hideToTray();
+            return false;
+        }
+        if (_closeToTray)
+        {
+            hideToTray();
+            return false;
+        }
+        return true;
     }
 
     /// Drives the LIVE SOURCE CANVAS panel: shows the latest frame from the
@@ -901,7 +1124,8 @@ final class StreamRoot : VBox
             _previewCaptureMutex.unlock();
             return;
         }
-        const minimized = _window !is null && _window.isMinimized();
+        const minimized = _window !is null &&
+            (_trayHidden || _window.isMinimized());
         _previewCaptureMutex.lock();
         _previewCaptureDesired = !minimized;
         _previewCaptureWindowHwnd = _captureSource.selectedHwnd();
@@ -1011,6 +1235,11 @@ final class StreamRoot : VBox
             _lastMinimized = minimized;
             _activityLog.note(minimized ? "Window minimized." : "Window restored.");
         }
+        // Once the tray icon exists, a minimize from any path (taskbar click,
+        // Alt+Space system menu) converts into a tray-hide so the app stays in
+        // the tray instead of leaving a taskbar button.
+        if (_tray !is null && !_trayHidden && _window.isMinimized())
+            hideToTray();
         const streamSnapshot = _worker.snapshot();
         const streamActive = streamSnapshot.requestedRunning ||
             streamSnapshot.processRunning;
@@ -1018,6 +1247,7 @@ final class StreamRoot : VBox
         {
             _lastStreamActive = streamActive;
             _activityLog.note(streamActive ? "Stream started." : "Stream stopped.");
+            if (_tray !is null) _tray.setStreaming(streamActive);
         }
         _activityLog.setSnapshot(format(
             "stream=%s status=%s metrics=[%s]", streamActive ? "on" : "off",
@@ -1180,6 +1410,11 @@ final class StreamRoot : VBox
         _desktopAudio.setEnabled(!active);
         _microphone.setEnabled(!active);
         _captureSource.setEnabled(!active);
+        if (_windowContentCapture !is null)
+        {
+            const hasWindow = _captureSource.selectedHwnd().strip().length > 0;
+            _windowContentCapture.setEnabled(!active && hasWindow);
+        }
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);
         _refreshAudioDevices.setText(audioScan.running ?
             "Refreshing audio devices…" : "Refresh audio devices");
@@ -1198,6 +1433,11 @@ final class StreamRoot : VBox
         {
             try _previewCaptureThread.join();
             catch (Exception) {}
+        }
+        if (_tray !is null)
+        {
+            _tray.shutdown();
+            _tray = null;
         }
         if (_audioNotifications !is null) _audioNotifications.shutdown();
         saveSettingsNow();

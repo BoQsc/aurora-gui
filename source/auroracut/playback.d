@@ -216,6 +216,7 @@ final class PcmAudioPlayer
     private bool _requestedRunning;
     private bool _resumeRequested;
     private bool _transportPaused;
+    private bool _prerollPaused;
     private ulong _generation;
     private PlaybackWorkerStats _stats;
     private string _error;
@@ -248,12 +249,23 @@ final class PcmAudioPlayer
             double startTime;
             MonoTime started;
             bool valid;
+            bool paused;
             _mutex.lock();
             startTime = _clockStartTime;
             started = _fallbackClockStarted;
             valid = _fallbackClockValid;
+            paused = _transportPaused || _prerollPaused;
             _mutex.unlock();
             if (!valid) return false;
+            // A paused transport must not advance its clock. This mirrors the
+            // waveOut device clock, whose sample counter freezes under
+            // waveOutPause, so preroll/preroll-buffering time never leaks into
+            // the published transport position.
+            if (paused)
+            {
+                position = startTime;
+                return true;
+            }
             const elapsed = MonoTime.currTime - started;
             position = startTime +
                 cast(double) elapsed.total!"hnsecs" / 10_000_000.0;
@@ -292,6 +304,7 @@ final class PcmAudioPlayer
         _clockStartTime = displayStartTime;
         _fallbackClockStarted = MonoTime.currTime;
         _fallbackClockValid = true;
+        _prerollPaused = false;
         _mutex.unlock();
     }
 
@@ -349,7 +362,6 @@ final class PcmAudioPlayer
     private bool enqueue(ref AudioRequest request)
     {
         Pid process;
-        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         if (_shutdown)
         {
@@ -362,26 +374,17 @@ final class PcmAudioPlayer
         _requestedRunning = true;
         _resumeRequested = false;
         _transportPaused = false;
+        _prerollPaused = false;
         _error = "";
-        version (Windows)
-        {
-            handle = _clockHandle;
-            _clockHandle = null;
-        }
+        // The running worker still owns the previous generation's sink. It
+        // resets and closes it on the worker thread once it observes the
+        // generation bump below, so no device call happens on this thread.
         _fallbackClockValid = false;
         ++_stats.requests;
         process = _process;
         _condition.notify();
         _mutex.unlock();
 
-        version (Windows)
-        {
-            if (handle !is null)
-            {
-                try waveOutReset(handle);
-                catch (Throwable) {}
-            }
-        }
         // The worker owns wait()/reaping. Termination itself is non-blocking.
         if (process !is null)
         {
@@ -402,6 +405,7 @@ final class PcmAudioPlayer
         }
         _transportPaused = false;
         _resumeRequested = true;
+        _prerollPaused = false;
         _condition.notifyAll();
         version (Windows) handle = _clockHandle;
         _mutex.unlock();
@@ -446,32 +450,21 @@ final class PcmAudioPlayer
     void stop()
     {
         Pid process;
-        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         ++_generation;
         _hasPending = false;
         _requestedRunning = false;
         _resumeRequested = false;
         _transportPaused = false;
+        _prerollPaused = false;
         process = _process;
-        version (Windows)
-        {
-            handle = _clockHandle;
-            _clockHandle = null;
-        }
         _fallbackClockValid = false;
         if (process !is null) ++_stats.cancellations;
         _condition.notify();
         _mutex.unlock();
 
-        version (Windows)
-        {
-            if (handle !is null)
-            {
-                try waveOutReset(handle);
-                catch (Throwable) {}
-            }
-        }
+        // The worker resets/closes the previous generation's sink when it sees
+        // the generation bump; no device call is made from this thread.
         if (process !is null)
         {
             try kill(process);
@@ -483,7 +476,6 @@ final class PcmAudioPlayer
     void shutdown()
     {
         Pid process;
-        version (Windows) HWAVEOUT handle;
         _mutex.lock();
         if (!_shutdown)
         {
@@ -493,25 +485,15 @@ final class PcmAudioPlayer
             _requestedRunning = false;
             _resumeRequested = false;
             _transportPaused = false;
+            _prerollPaused = false;
             process = _process;
-            version (Windows)
-            {
-                handle = _clockHandle;
-                _clockHandle = null;
-            }
             _fallbackClockValid = false;
             _condition.notifyAll();
         }
         _mutex.unlock();
 
-        version (Windows)
-        {
-            if (handle !is null)
-            {
-                try waveOutReset(handle);
-                catch (Throwable) {}
-            }
-        }
+        // The worker resets/closes the previous generation's sink when it sees
+        // the generation bump; no device call is made from this thread.
         if (process !is null)
         {
             try kill(process);
@@ -570,7 +552,18 @@ final class PcmAudioPlayer
             _clockStartTime = startTime;
             _fallbackClockStarted = MonoTime.currTime;
             _fallbackClockValid = true;
+            _prerollPaused = false;
         }
+        _mutex.unlock();
+    }
+
+    /** Enter the frozen pre-roll-paused clock state. While the worker waits
+     * for resume, `clockPosition` returns the launch position instead of
+     * advancing, matching the waveOut device clock under `waveOutPause`. */
+    private void markPrerollPaused(ulong generation)
+    {
+        _mutex.lock();
+        if (generation == _generation && !_shutdown) _prerollPaused = true;
         _mutex.unlock();
     }
 
@@ -698,6 +691,7 @@ final class PcmAudioPlayer
                     clockPublished = true;
                     if (request.startPaused)
                     {
+                        markPrerollPaused(request.generation);
                         if (!waitForResume(request.generation)) break;
                         publishMonotonicClock(request.generation,
                             request.displayStartTime);
@@ -1309,6 +1303,37 @@ final class VideoFrameStream
         return true;
     }
 
+    /** Whether the front queued frame is already at or before `minimumSourceTime`.
+     * Paused frame stepping uses this to serve a step from the buffered stream
+     * without spawning the still-frame renderer. */
+    bool canTakeReadyAtOrAfter(double minimumSourceTime)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        if (_readyFrames.length == 0) return false;
+        return readySourceTime(_readyFrames[0]) <= minimumSourceTime + 1e-9;
+    }
+
+    /** Consume the first queued frame whose timestamp is at or after
+     * `minimumSourceTime`, dropping obsolete frames before it. Callers must
+     * first confirm `canTakeReadyAtOrAfter` so they never drop frames while
+     * seeking a target the decoder has not produced yet. */
+    bool takeReadyAtOrAfter(double minimumSourceTime, out PreviewFrame frame)
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        while (_readyFrames.length > 0 &&
+            readySourceTime(_readyFrames[0]) < minimumSourceTime - 1e-9)
+        {
+            ++_stats.framesDropped;
+            dropReadyFront();
+        }
+        if (_readyFrames.length == 0) return false;
+        frame = previewFrame(popReadyFront());
+        _condition.notifyAll();
+        return true;
+    }
+
     /** Whether the decoder has accumulated a contiguous preroll window. */
     bool hasBufferedDuration(double minimumSeconds)
     {
@@ -1331,6 +1356,15 @@ final class VideoFrameStream
         _readyFrames.length = _readyFrames.length - 1;
         _displayedSlot = ready.slot;
         return ready;
+    }
+
+    /** Discard the front ready frame without displaying it. Its slot is not
+     * marked displayed, so the decoder may immediately reuse it. */
+    private void dropReadyFront()
+    {
+        foreach (index; 0 .. _readyFrames.length - 1)
+            _readyFrames[index] = _readyFrames[index + 1];
+        _readyFrames.length = _readyFrames.length - 1;
     }
 
     private double readySourceTime(const ReadyVideoFrame ready) const

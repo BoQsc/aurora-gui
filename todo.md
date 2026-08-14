@@ -1,5 +1,205 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream: OBS-style game capture (D3D11 render hook) — IN PROGRESS
+- [x] User: "We want to stream a window even if it's minimized or out of focus
+      or not here. That's the main point." → then "we need just like obs per
+      game render hooks." The proper fix = OBS Game Capture-style render hooks
+      (hook `IDXGISwapChain::Present` inside the game, capture the back buffer),
+      built entirely in D (no C toolchain on this machine).
+- [x] Built `aurorastream/d3d11.d`: raw D3D11/DXGI COM bindings (explicit
+      vtable-struct layouts; D `interface` does NOT dispatch through native COM
+      vtables). Verified device/swapchain/RTV/clear/present in a D test app
+      (16,684 frames).
+- [x] Built `gamecaphook.d`: an injectable `-betterC` DLL with a custom entry
+      (`/ENTRY`, `/NODEFAULTLIB`) — a normal DMD DLL crashes in a foreign
+      process (0xC0000409, verified). Reads `%TEMP%\aurora-gamecap-<pid>.cfg`,
+      patches the shared `IDXGISwapChain` vtable Present slot, connects a named
+      pipe. VERIFIED: injects into notepad + a D3D11 app, patches, connects the
+      pipe, and `hookPresent` reaches `captureFrame`.
+- [x] Injector + transport (`tests/gamecap_test.d`, `inject_notepad.d`).
+      CRITICAL gotcha: `&LoadLibraryW` in D = this exe's import thunk, NOT the
+      kernel32 function — must use
+      `GetProcAddress(GetModuleHandleW("kernel32"),"LoadLibraryW")`.
+- [ ] **BLOCKER**: `ID3D11Device::GetImmediateContext` (slot 38) returns null
+      even on a directly-created device; probing slots 30-60 found no slot that
+      writes the known-good context. Until the context resolves, `captureFrame`
+      can't CopyResource/Map → framesRead=0. See testing_progress_and_methods.md
+      for the exact next steps (probe per-slot in separate runs, or QI the
+      device for the context IID).
+- [ ] Also: after ~20 repeated D3D11 device creations, `d3d11test_app.exe` hangs
+      at `D3D11CreateDeviceAndSwapChain` (GPU state wedge — needs a reboot).
+- [ ] Remaining: resolve context → verify frames → wire into aurora-stream as a
+      capture mode feeding the existing rawvideo FFmpeg pump → ship the hook DLL.
+
+## 2026-08-14 — Aurora Stream: minimize to tray (auto-hide on start + close-to-tray + tray icon controls)
+- [x] User: "let's consider if we could do 'minimize to tray' for aurora stream.
+      and add option 'if we click start stream' it would minimize to tray icon
+      with options of stop stream or exit entirely or show up window back. I also
+      wonder if we could just make it possible to single click tray and toggle
+      between start stream and stop stream. Double clicking would show up window
+      back."
+- [x] `aurorastream/trayicon.d` (new, Windows): a real `Shell_NotifyIcon` tray
+      icon owned by a small hidden Win32 window whose messages are pumped by the
+      main Aurora loop (a normal hidden top-level window, not HWND_MESSAGE, for
+      shell compatibility). Loads the app icon (`applicationIconPath`), tooltip
+      reflects Idle/Streaming, balloon notifications (`NIF_INFO`) report
+      tray-triggered outcomes, and it re-adds the icon on Explorer restart
+      (`TaskbarCreated`).
+  - **Single click** = toggle Start/Stop streaming, deferred through a
+    `GetDoubleClickTime()` timer so the first click of a double-click cannot
+    toggle; **double click** = restore the window (the trailing UP of a real
+    double-click is suppressed via a DBLCLK timestamp).
+  - **Right click = a fully custom, self-drawn tray menu** (user: "I asked for
+    custom tray context menu just like steam tray have ... completely
+    customized"). `TrayContextMenu` is a borderless topmost popup window
+    rendered with GDI in the app's dark gray palette (`#252c34` bg, `#2b333d`
+    hover, separators, bold default item, disabled status row, 1 px border) —
+    never the OS (light) menu. It opens at the cursor (clamped to the work
+    area), highlights on hover, and posts the chosen command (`wmMenuAction`)
+    to the owner tray window so the action runs after the window is gone.
+    Replaces the earlier TrackPopupMenu version AND the SetPreferredAppMode
+    (ForceDark) attempt (which did not actually darken native menus on this
+    machine).
+  - **Menu did not close on outside click (user report "tray context never
+    closes unless you click item").** Reproduced in the real app: Escape closed
+    the menu but a real click on the desktop left it open. Root cause (debug
+    log): `SetCapture` does NOT reliably deliver clicks on shell/desktop
+    windows to the captured window — the menu received no `WM_LBUTTONDOWN` at
+    all. Fix: the menu now (a) shows ACTIVATED (`SW_SHOW` +
+    `SetForegroundWindow`) so an outside click deactivates it and
+    `WM_ACTIVATE WA_INACTIVE` closes it, and (b) installs a `WH_MOUSE_LL`
+    low-level mouse hook while open that closes the menu on any press outside
+    its rectangle (posted via `wmMenuCloseRequest` to avoid reentrancy). The
+    hook is the guaranteed path for desktop/taskbar clicks; capture + the
+    Escape hotkey remain as additional layers. Verified with a real-input
+    driver against the running app: Escape closes, outside click closes.
+- [x] Settings (schema 8): `minimizeToTrayOnStart` ("Minimize to tray when
+      streaming starts" — pressing Start hides to the tray) and `closeToTray`
+      ("Close button hides to tray instead of exiting"), both toggleable from
+      the Settings menu, both persisted. **Both default to enabled** (struct
+      defaults `true`); an explicitly saved `false` is respected, while fresh
+      installs and older files without the keys fall back to enabled. The
+      saved install's own settings were updated to `true`/`true` so the options
+      are actually on here.
+- [x] `StreamRoot` wiring: `hideToTray()` (create tray lazily, SW_HIDE, balloon,
+      activity-log note; falls back to a plain minimize if the shell refuses the
+      icon), `showWindowFromTray()` (restore + SW_SHOW + SetForegroundWindow),
+      `toggleStreamingFromTray()` (toggle + outcome balloon; `toggleStreaming`
+      now returns an error string), `exitFromTray()` (force-exit even while
+      streaming or with close-to-tray on), `closeRequested()` gate for the
+      entry points. The live source preview idles while tray-hidden; the tray
+      tooltip tracks stream state; the update-restart path force-exits so the
+      updater still relaunches.
+- [x] aurora-d backend: new `NativeWindow.setVisible(bool)` (base default
+      false) implemented on win32 via ShowWindow(SW_SHOW/SW_HIDE); rendering is
+      paused while hidden (`_visible` gate in `paintNow`) and re-presented
+      immediately on show; `GuiWindow.setVisible` forwards it.
+- [x] Both entry points (`app_titlebar.d`, `app.d`) now route `onCloseRequested`
+      through `root.closeRequested()` so X/Alt+F4 honors close-to-tray.
+- [x] Refinement (user: "if tray is already there, then make sure that pressing
+      x to shutdown or minimize would not shutdown or minimize and instead
+      remain as tray"): once the tray icon exists, the app can never be closed
+      or taskbar-minimized — X hides to the tray (`closeRequested`), the
+      titlebar/system-menu minimize routes through the new `requestMinimize()`
+      (tray-hide when the icon is present), and a taskbar/Alt+Space minimize is
+      converted to a tray-hide in `onTick`. The only way out is the tray menu's
+      Exit. With no tray feature enabled the old behavior is unchanged (X exits,
+      minimize minimizes).
+- [x] Windows toast/balloon notifications disabled for now (user: "I would
+      prefer to have windows notifications disabled for now ... don't remove it,
+      just make sure it's disabled so we can make it sensible in the future").
+      `TrayIcon.notificationsEnabled` defaults to `false`; `showBalloon` and all
+      call sites stay in place, so re-enabling later is one flag.
+- [x] Verified:
+  - `dub test` → 43 modules pass (new trayicon menu-structure + settings
+    round-trip tests).
+  - `dub build` (application) and `dub build --config=notitlebar` link.
+  - Standalone `build/trayicon_probe.d`: real tray icon created; synthesized
+    WM_LBUTTONUP → exactly one toggle; UP/DBLCLK/UP → one window-show and NO
+    toggle (regression fixed: the trailing UP of a double-click re-armed the
+    single-click timer, so a double-click toggled the stream too).
+  - Standalone `build/tray_darkmenu_probe.d` against the real custom menu:
+    right-click opens the menu window; clicking the Exit row dispatches exit
+    exactly once and destroys the window; Escape (hotkey) and outside-click
+    dismiss without an action. Rendering verified with a solid-red fullscreen
+    backdrop: the menu pixels are 96% dark with avg RGB (45,52,60) — the
+    intended dark gray, not the OS light menu.
+  - Real-app run (settings pre-set to closeToTray/minimizeToTrayOnStart=true):
+    WM_CLOSE hid the window and kept the process alive; a simulated tray
+    double-click (PostMessage to the tray window with the registered callback
+    message) restored the window. `aurora-stream-activity.log` records
+    "Window hidden to the system tray." / "Window restored from the system
+    tray.".
+  - Refinement runtime checks (PowerShell driver, settings pre-set per phase):
+    A) no tray feature → X exits the app normally; B) closeToTray on → X hides
+    to tray; C) tray present → X hides to tray (never exits); D) tray present →
+    ShowWindow(SW_MINIMIZE) converts to a tray-hide (window hidden, process
+    alive).
+  - User settings were backed up before the probe runs and restored afterward
+    (a launched app rewrites the settings file on save/shutdown, so the exact
+    original bytes were restored, including the Twitch/YouTube keys and the
+    `firefox` browser choice).
+- [ ] Not yet tested: a real live stream started with minimizeToTrayOnStart
+      (auto-hides after a successful Start; uses the already-verified
+      `hideToTray()` path but needs a real stream to confirm the handoff
+      sequence). The native right-click menu's real interaction (menu opens,
+      item commands dispatch) was not desktop-automated.
+
+## 2026-08-14 — Aurora Stream: capture source "trouble selecting windows" + "keeps entire option red all the time"
+- [x] User: "capture source feature seems to have trouble with selecting windows
+      and also keeps entire option highlighted as red all the time." Then: "We
+      want to stream a window even if it's minimized or out of focus or not
+      here. That's the main point."
+- [x] **Diagnosed (verified, not guessed)** with headless UI probes driving the
+      real `CaptureSourceDropdown` and Win32/FFmpeg tests:
+  - The published version's saved settings selected a **minimized** cmd.exe
+    window (`windowCaptureHwnd: 3867700`). A minimized window cannot be
+    captured (0×0 client area), so once the dropdown refreshed it showed the
+    red "Window (minimized): …" danger caption and stayed red until changed.
+  - The window list is dominated by minimized windows on a busy desktop (this
+    machine: 54 of 69), each flagged "(minimized — not capturable)", burying
+    the usable rows — that is the "trouble selecting windows".
+  - Verified empirically: `gdigrab hwnd=` on a minimized window → `I/O error`;
+    `PrintWindow(PW_RENDERFULLCONTENT)` on a truly minimized window only
+    recovers a 159×27 taskbar stub (no rendered surface exists — no capture API
+    can fix a window that is not rendering).
+- [x] **Fixes (windowsources.d / root.d / settings.d):**
+  - `capturableWindows()` filters minimized windows out of the CAPTURE SOURCE
+    list; a saved minimized selection is shown as one "Saved window (minimized
+    — not capturable)" row so the user can switch away. Menu now lists 15 clean
+    capturable windows instead of 69 rows with 54 minimized flags.
+  - Startup self-heal: a saved capture window that is closed or minimized falls
+    back to "Entire desktop" with a status message, persisted (schema 7), so
+    the dropdown can no longer be stuck red on every launch.
+- [x] **New feature — window-content capture** (the "main point"): a
+      `WindowContentCapturer` (`windowcontent.d`) uses
+      `PrintWindow(PW_RENDERFULLCONTENT)` to grab the window's OWN content
+      instead of the on-screen pixels. Proven occlusion-immune with a
+      deterministic probe (a red window fully covered by a black window still
+      PrintWindow-captures 86k red pixels). Wired into the broadcaster as a
+      rawvideo-pipe input (pump → FFmpeg stdin), opt-in via the new "Capture
+      window content" checkbox:
+  - Covered/background windows now stream their real content.
+  - While minimized, the pump re-sends the last good frame, so the stream stays
+    alive (encoder healthy) and resumes automatically on restore — instead of
+    the old hard stop. Verified end-to-end: 3 s rawvideo-pipe run, minimize +
+    restore mid-run; frames at both t=1.6 s (minimized, held) and t=2.6 s
+    (restored) show the window's real content (SATAVG≈62.5), ffmpeg exit 0.
+  - Caveat documented in UI/CHANGELOG: GPU/DirectX games may render black
+    through PrintWindow, so it is opt-in; a truly minimized window still has no
+    first frame, so Start still rejects a minimized selection (now with a
+    content-aware message).
+- [x] Verified: `dub test` → 42 modules pass (was 41); `application` +
+      `notitlebar` configs build; default app launches/closes cleanly; settings
+      round-trip + broadcast-arguments tests cover the new key and pipe args.
+- [ ] Remaining/possible follow-ups: a Windows.Graphics.Capture (WinRT) engine
+      would also capture GPU/DirectX window content when occluded (the
+      industry-standard OBS/Xbox-Game-Bar approach), but druntime has no WinRT
+      types and no Win10 SDK is installed here, so that is a separate
+      hand-written-WinRT project. Minimized windows remain uncapturable by any
+      API (no rendered surface); only per-game render hooks (OBS Game Capture)
+      can do that.
+
 ## 2026-08-14 — Aurora Stream self-update feature (release builds only)
 - [x] appupdate.d: GitHub releases latest-version check via WinINet HTTPS (with
       User-Agent header; GitHub API 403s without one), asset download, and a
@@ -1720,3 +1920,47 @@
 - Preview decode surface is fixed 16:9 (`recommendedDecodeSize`), so a
   non-16:9 composition can appear stretched in the live preview even though
   export renders the correct canvas. Existing limitation, not introduced here.
+
+## 2026-08-14 — Aurora Cut playback rework: performant, gated, prewarm-keep-alive (user request)
+- [x] User: playback has "huge problems"; wants it performant and non-blocking,
+      never to play unless ready, always smooth by prewarming/caching after
+      moving the playhead, and instant per-frame playhead movement.
+- [x] **Readiness gate (Phase 1/2):** single `playbackReady()` predicate;
+      audio device clock is no longer a hard gate — if audio cannot start or
+      its clock never becomes readable (`playbackAudioClockFallbackSeconds`
+      5 s) the buffered video plays muted on the monotonic clock with a status
+      instead of hanging on "Waiting for audio output…". First-frame readiness
+      is bounded (`playbackFirstFrameTimeoutSeconds` 12 s →
+      `failPlaybackStart`), so a stuck decoder reports a failure instead of
+      staying in "preparing" forever.
+- [x] **Prewarm keep-alive (Phase 3):** a complete, unchanged prewarm stays
+      alive while the playhead is inside its forward window (`32/fps` s ≈ two
+      slot-queues), killing the 45 s cancel/restart churn seen every ~45 s in
+      aurora-cut.log at the same position. Direct-mode video/audio signatures
+      no longer embed position/duration; adoption now matches identity +
+      playhead-inside-window + remaining-not-exceeded, so a scrub/step before
+      Play still adopts the warm streams. End-of-range prewarms are skipped and
+      finished dead ones cancelled (no churn at the range end).
+- [x] **Instant warm steps (Phase 4):** `canTakeReadyAtOrAfter` /
+      `takeReadyAtOrAfter` on `VideoFrameStream` + `tryStepSequenceFromPrewarm`
+      in `playheadChanged` serve forward steps inside the buffered window with
+      zero FFmpeg spawn and zero still-renderer request; the first-frame handler
+      prefers the frame at the playhead when the adopted decoder is ahead.
+- [x] **Non-blocking audit (Phase 5):** removed caller-thread `waveOutReset`
+      from `PcmAudioPlayer` enqueue/stop/shutdown (worker resets/closes the
+      previous generation's sink itself). Headless clock freezes while paused
+      (`_prerollPaused`), fixing the pre-existing `audio_clock_smoke.d` failure
+      and stopping preroll buffering time leaking into the transport position.
+- [x] **Repaired `tests/synced_playback_preroll_smoke.d`** (failed at line 112
+      on base): assertions were written for synchronous frame-step previews,
+      but previews are debounced and a cache hit still dispatches a request
+      (no new process). Rewrote to match real behavior and added a warm-step
+      block (pause → re-warm → step → no seek, no preview request, buffered
+      frame displays).
+- [x] **Verified:** `dub test` 33 modules; editor/playback/audio-clock/
+      seek-resilience/static-sequence/synced-preroll/layout/export/gpu-decode/
+      model/proxy smoke tests all pass; `dub build` links. Full details in
+      testing_progress_and_methods.md.
+- [ ] Not yet manually played in the real GUI (headless + smoke verified); a
+      human Play/Pause/scrub/step pass on this 4-CPU host is still worthwhile,
+      especially live-mode composition playback and the muted-fallback path.

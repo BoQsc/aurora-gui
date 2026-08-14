@@ -920,6 +920,7 @@ else version (Windows)
         private bool _wakePosted;
         private bool _painting;
         private bool _shown;
+        private bool _visible = true;
         private bool _inSizeMove;
         private bool _fullscreen;
         private bool _minimized;
@@ -1422,6 +1423,23 @@ else version (Windows)
             // Cached from WM_SIZE (SIZE_MINIMIZED) so callers can check it every
             // tick without a user32 round trip; starts false before show.
             return _minimized;
+        }
+
+        override bool setVisible(bool visible)
+        {
+            if (_hwnd is null) return false;
+            if (!visible && _fullscreen) setFullscreen(false);
+            _visible = visible;
+            ShowWindow(_hwnd, visible ? SW_SHOW : SW_HIDE);
+            if (visible)
+            {
+                // Make the restored surface present immediately instead of
+                // waiting for the next queued frame.
+                _needsPaint = true;
+                invalidate();
+                paintNow();
+            }
+            return true;
         }
 
         override Size clientSize() const
@@ -1981,7 +1999,7 @@ else version (Windows)
 
         private void paintNow()
         {
-            if (_minimized || !_needsPaint || _closed || _painting) return;
+            if (!_visible || _minimized || !_needsPaint || _closed || _painting) return;
             _needsPaint = false;
             _painting = true;
             scope (exit) _painting = false;

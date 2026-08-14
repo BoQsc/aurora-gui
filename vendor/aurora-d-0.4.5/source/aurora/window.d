@@ -323,6 +323,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         return _native !is null && _native.isMinimized();
     }
 
+    /** Hide or show the window (minimize-to-tray); false when unsupported. */
+    bool setVisible(bool visible)
+    {
+        return _native !is null && _native.setVisible(visible);
+    }
+
     int run()
     {
         if (_root !is null)

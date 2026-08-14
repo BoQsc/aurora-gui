@@ -14,6 +14,11 @@ import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.stdio : File;
 import std.string : indexOf, replace, split, splitLines, startsWith, strip;
 
+/// The CRT `_write` from `<io.h>`, used to push raw BGRA frames into FFmpeg's
+/// stdin from the content-capture pump thread. Druntime does not export it.
+version (Windows)
+private extern (C) int _write(int fd, const(void)* buffer, uint count);
+
 enum BroadcastQuality
 {
     fullHD,
@@ -89,6 +94,18 @@ struct BroadcastSettings
     // CPU/energy; it never changes what is streamed.
     bool liveSourcePreviewEnabled = true;
 
+    // UI preference: when a stream starts, hide the main window into the
+    // system tray. A tray icon appears with Start/Stop, Show window, and Exit
+    // actions; the stream keeps running in the background.
+    // On by default; an explicitly saved "false" is respected.
+    bool minimizeToTrayOnStart = true;
+
+    // UI preference: pressing the window Close button hides to the tray
+    // instead of exiting the application. Exiting is always available from
+    // the tray icon menu. On by default; an explicitly saved "false" is
+    // respected.
+    bool closeToTray = true;
+
     // UI preference: which browser the Twitch/YouTube quick links use.
     // `default` hands the URL to the operating system's default handler;
     // the concrete choices require a detected installation.
@@ -109,6 +126,14 @@ struct BroadcastSettings
     // Cached friendly "process — title" label for the selected window, kept so
     // the UI still shows a meaningful name while the window is not enumerated.
     string windowCaptureLabel;
+    // When true, window capture uses PrintWindow(PW_RENDERFULLCONTENT) to grab
+    // the window's OWN content instead of gdigrab's on-screen pixels. The
+    // stream then keeps showing the window even when it is covered by other
+    // windows, off the visible desktop, or running in the background — and it
+    // keeps streaming the last good frame while the window is minimized,
+    // resuming automatically on restore. GPU-rendered content (games) may
+    // render black through this path, so it is opt-in.
+    bool windowContentCapture;
 }
 
 struct BroadcastSnapshot
@@ -390,7 +415,9 @@ string videoPipelineLabel(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
     if (settings.windowCaptureHwnd.strip().length > 0)
-        return "Window capture (GDI) → CPU processing → encoder";
+        return settings.windowContentCapture ?
+            "Window content capture → CPU processing → encoder" :
+            "Window capture (GDI) → CPU processing → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
         return "D3D11 direct hardware frames → NVENC";
     if (capture.backend == DesktopCaptureBackend.desktopDuplication)
@@ -412,7 +439,9 @@ string captureSourceLabel(const BroadcastSettings settings,
     const window = settings.windowCaptureHwnd.strip();
     if (window.length == 0) return capture.label;
     if (settings.windowCaptureLabel.strip().length > 0)
-        return "Window capture: " ~ settings.windowCaptureLabel;
+        return settings.windowContentCapture ?
+            "Window content: " ~ settings.windowCaptureLabel :
+            "Window capture: " ~ settings.windowCaptureLabel;
     return "Window capture (" ~ window ~ ")";
 }
 
@@ -458,7 +487,9 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         if (!windowExists(settings.windowCaptureHwnd))
             return "The selected capture window is no longer open (it closed, or the saved selection is from an earlier Windows session). Reopen the window or switch the capture source back to the entire desktop.";
         if (windowIsMinimized(settings.windowCaptureHwnd))
-            return "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
+            return settings.windowContentCapture ?
+                "The selected capture window is minimized. Restore it once so Aurora Stream can capture its first frame — after that it keeps streaming the window even if you minimize it again." :
+                "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
     }
     if (!validQuality(settings.sourceQuality))
         return "Select a valid common source resolution.";
@@ -650,14 +681,33 @@ private string[] captureArguments(const BroadcastSettings settings,
     const windowCapture = settings.windowCaptureHwnd.strip();
     if (windowCapture.length > 0)
     {
-        // Game/window capture: grab only the selected window via gdigrab's
-        // window-handle form so viewers never see the rest of the desktop. As
-        // with the desktop GDI fallback, keep the cursor path off to avoid
-        // disturbing the real Windows pointer.
-        arguments ~= [
-            "-f", "gdigrab", "-framerate", format("%d", settings.fps),
-            "-draw_mouse", "0", "-i", "hwnd=" ~ windowCapture
-        ];
+        if (settings.windowContentCapture)
+        {
+            // Window-content capture: the app pumps PrintWindow frames of the
+            // window's own content into stdin (raw BGRA), so the stream keeps
+            // showing the window even when it is covered or in the background.
+            // The held last frame is re-sent while the window is minimized so
+            // the encoder stays healthy and resumes automatically on restore.
+            const width = qualityWidth(settings.sourceQuality);
+            const height = qualityHeight(settings.sourceQuality);
+            arguments ~= [
+                "-f", "rawvideo", "-pix_fmt", "bgra",
+                "-video_size", format("%dx%d", width, height),
+                "-framerate", format("%d", settings.fps),
+                "-i", "pipe:0"
+            ];
+        }
+        else
+        {
+            // Game/window capture: grab only the selected window via gdigrab's
+            // window-handle form so viewers never see the rest of the desktop. As
+            // with the desktop GDI fallback, keep the cursor path off to avoid
+            // disturbing the real Windows pointer.
+            arguments ~= [
+                "-f", "gdigrab", "-framerate", format("%d", settings.fps),
+                "-draw_mouse", "0", "-i", "hwnd=" ~ windowCapture
+            ];
+        }
     }
     else if (capture.backend == DesktopCaptureBackend.desktopDuplication)
     {
@@ -1220,6 +1270,57 @@ unittest
 
 unittest
 {
+    // Window-content capture replaces the gdigrab screen grab with a rawvideo
+    // pipe that the app pumps PrintWindow frames into, so covered/background
+    // windows keep streaming their own content.
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "test-key";
+    settings.youtubeEnabled = false;
+    settings.sourceQuality = BroadcastQuality.fullHD;
+    settings.windowCaptureHwnd = "1841952";
+    settings.windowCaptureLabel = "notepad.exe — Notes";
+    settings.windowContentCapture = true;
+
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+
+    CaptureSelection capture;
+    capture.backend = DesktopCaptureBackend.desktopDuplication;
+    capture.nativeWidth = 1920;
+    capture.nativeHeight = 1080;
+
+    const arguments = broadcastArguments(settings, encoder, capture);
+    bool foundRawvideo;
+    bool foundPipe;
+    bool foundPipeSize;
+    bool foundBgra;
+    bool foundGdigrab;
+    bool foundHwnd;
+    foreach (index, argument; arguments)
+    {
+        if (argument == "rawvideo") foundRawvideo = true;
+        if (argument == "pipe:0") foundPipe = true;
+        if (argument == "1920x1080") foundPipeSize = true;
+        if (argument == "bgra") foundBgra = true;
+        if (argument == "gdigrab") foundGdigrab = true;
+        if (argument.indexOf("hwnd=") >= 0) foundHwnd = true;
+    }
+    assert(foundRawvideo);
+    assert(foundPipe);
+    assert(foundPipeSize);
+    assert(foundBgra);
+    assert(!foundGdigrab);
+    assert(!foundHwnd);
+    assert(videoPipelineLabel(settings, encoder, capture) ==
+        "Window content capture → CPU processing → encoder");
+    assert(captureSourceLabel(settings, capture) ==
+        "Window content: notepad.exe — Notes");
+}
+
+unittest
+{
     // A stale window handle is rejected at start instead of silently capturing
     // the desktop; an empty handle (desktop mode) remains valid.
     BroadcastSettings settings;
@@ -1580,7 +1681,7 @@ final class BroadcastWorker
     }
 
     private void monitorProcess(Pid process, AudioBridgeSession bridge,
-        string windowCaptureHwnd)
+        string windowCaptureHwnd, bool contentCapture = false)
     {
         enum startupDeadlineTicks = 120; // 12 seconds at 100 ms per tick.
         enum liveProgressDeadlineTicks = 120;
@@ -1771,21 +1872,37 @@ final class BroadcastWorker
             // becomes 0×0) while all encoder/timestamps keep advancing, so the
             // stream would sit on a frozen last frame indefinitely without any
             // other watchdog firing. Stop immediately with a clear message.
+            //
+            // Content capture is different: the pump keeps sending the last
+            // good frame while the window is minimized (a minimized window has
+            // no rendered content), so the stream stays alive and resumes
+            // automatically on restore — the monitor only stops it when the
+            // window is actually closed.
             if (!_videoCaptureFailed && windowCaptureHwnd.strip().length > 0)
             {
                 const gone = !windowExists(windowCaptureHwnd);
-                const minimized = !gone && windowIsMinimized(windowCaptureHwnd);
-                if (gone || minimized)
+                if (gone)
                 {
-                    failureReason = gone ?
-                        "The captured window was closed, so the stream stopped instead of freezing on its last frame. Reopen the window and start streaming again." :
-                        "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again (a minimized window cannot be captured).";
+                    failureReason = "The captured window was closed, so the stream stopped instead of freezing on its last frame. Reopen the window and start streaming again.";
                     videoCaptureTermination = true;
                     _videoCaptureFailed = true;
                     _videoCaptureFailureReason = failureReason;
                     _captureFailureStatus =
-                        "Window capture stopped — the captured window was " ~
-                        (gone ? "closed" : "minimized");
+                        "Window capture stopped — the captured window was closed";
+                    _failed = true;
+                    _requestedRunning = false;
+                    appendDiagnostic(failureReason);
+                    terminate = true;
+                }
+                else if (!contentCapture &&
+                    windowIsMinimized(windowCaptureHwnd))
+                {
+                    failureReason = "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again (a minimized window cannot be captured).";
+                    videoCaptureTermination = true;
+                    _videoCaptureFailed = true;
+                    _videoCaptureFailureReason = failureReason;
+                    _captureFailureStatus =
+                        "Window capture stopped — the captured window was minimized";
                     _failed = true;
                     _requestedRunning = false;
                     appendDiagnostic(failureReason);
@@ -1808,6 +1925,84 @@ final class BroadcastWorker
                 }
                 return;
             }
+        }
+    }
+
+    /// Background loop that pumps PrintWindow window-content frames into
+    /// FFmpeg's stdin as raw BGRA at the configured rate. While the window is
+    /// minimized (no rendered content) it keeps sending the last good frame so
+    /// the encoder stays healthy and the stream resumes automatically on
+    /// restore. Stops when FFmpeg exits (write fails) or the worker stops.
+    private void runWindowContentPump(const BroadcastSettings settings,
+        int stdinFd)
+    {
+        version (Windows)
+        {
+            import aurorastream.windowcontent : WindowContentCapturer;
+            import core.sync.mutex : Mutex;
+
+            const width = qualityWidth(settings.sourceQuality);
+            const height = qualityHeight(settings.sourceQuality);
+            const frameBytes = cast(size_t) width * height * 4;
+            auto capturer = new WindowContentCapturer(width, height);
+            capturer.setWindowTarget(settings.windowCaptureHwnd);
+            auto frame = new ubyte[frameBytes];
+            auto heldFrame = new ubyte[frameBytes];
+            bool haveHeldFrame;
+
+            const frameInterval = dur!"msecs"(
+                1000 / (settings.fps > 0 ? settings.fps : 60));
+            auto nextFrame = MonoTime.currTime;
+            while (true)
+            {
+                _mutex.lock();
+                const running = _requestedRunning && !_shutdown &&
+                    _processRunning;
+                _mutex.unlock();
+                if (!running) break;
+
+                bool wrote;
+                if (capturer.capture(frame))
+                {
+                    wrote = writeFrame(stdinFd, frame, frameBytes);
+                    if (wrote)
+                    {
+                        heldFrame[] = frame[];
+                        haveHeldFrame = true;
+                    }
+                }
+                else if (haveHeldFrame)
+                {
+                    // Window minimized/closed mid-stream: keep streaming the
+                    // last good frame so the picture freezes cleanly instead of
+                    // the stream stopping, and resumes when restored.
+                    wrote = writeFrame(stdinFd, heldFrame, frameBytes);
+                }
+
+                if (!wrote) break; // FFmpeg exited or the pipe broke.
+
+                nextFrame += frameInterval;
+                const now = MonoTime.currTime;
+                if (nextFrame > now)
+                {
+                    try Thread.sleep(nextFrame - now);
+                    catch (Exception) {}
+                }
+            }
+        }
+    }
+
+    private bool writeFrame(int stdinFd, const(ubyte)[] frame,
+        size_t byteCount)
+    {
+        version (Windows)
+        {
+            const written = _write(stdinFd, frame.ptr, cast(uint) byteCount);
+            return written == cast(int) byteCount;
+        }
+        else
+        {
+            return false;
         }
     }
 
@@ -2009,7 +2204,8 @@ final class BroadcastWorker
                         "Released the verified non-inheritable receiver reservations immediately before FFmpeg launch.");
                 }
                 auto pipes = pipeProcess(arguments,
-                    Redirect.stderr,
+                    settings.windowContentCapture ?
+                        Redirect.stderr | Redirect.stdin : Redirect.stderr,
                     cast(const string[string]) null, Config.suppressConsole);
                 _mutex.lock();
                 _process = pipes.pid;
@@ -2020,6 +2216,25 @@ final class BroadcastWorker
                 appendPersistentLog(format(
                     "FFmpeg process launched (attempt %s/%s); startup deadline is 12 seconds.",
                     attempt, maxLaunchAttempts));
+
+                // Window-content capture pumps PrintWindow frames into FFmpeg's
+                // stdin. Only the raw file descriptor crosses the thread
+                // boundary (Phobos `File` is @system and sharing it between
+                // threads can hand a stale Impl pointer to the pump; the pump
+                // writes with the raw CRT `_write`, so the descriptor stays
+                // owned and closed exactly once by `pipes` here).
+                Thread contentPump;
+                if (settings.windowContentCapture)
+                {
+                    auto stdinFd = pipes.stdin.fileno();
+                    contentPump = new Thread({
+                        runWindowContentPump(settings, stdinFd);
+                    });
+                    contentPump.isDaemon = true;
+                    contentPump.start();
+                    appendPersistentLog(
+                        "Window content capture frame pump started (PrintWindow → raw BGRA → stdin).");
+                }
 
                 // Drain stderr on a background thread so the pipe can never
                 // fill and block FFmpeg; flag a UDP bind race if it appears.
@@ -2051,7 +2266,8 @@ final class BroadcastWorker
                     launched = true;
                     auto monitor = new Thread({
                         monitorProcess(pipes.pid, desktopBridge,
-                            settings.windowCaptureHwnd);
+                            settings.windowCaptureHwnd,
+                            settings.windowContentCapture);
                     });
                     monitor.isDaemon = true;
                     monitor.start();
@@ -2062,6 +2278,11 @@ final class BroadcastWorker
                     }
                     try reader.join();
                     catch (Exception) {}
+                    if (contentPump !is null)
+                    {
+                        try contentPump.join();
+                        catch (Exception) {}
+                    }
                     exitCode = wait(pipes.pid);
                     appendPersistentLog(
                         format("FFmpeg exited with code %s.", exitCode));

@@ -2,6 +2,77 @@
 
 ## Unreleased
 
+- **Minimize to tray.** Two new settings-menu options: "Minimize to tray when
+  streaming starts" hides the window into the system tray the moment a stream
+  starts (the stream keeps running), and "Close button hides to tray instead of
+  exiting" turns the X/Alt+F4 close into a tray-hide. While hidden, Aurora
+  Stream lives as a tray icon whose tooltip shows whether it is streaming.
+  - **Single-click the tray icon** toggles Start streaming / Stop streaming.
+  - **Double-click the tray icon** restores the main window.
+  - **Right-click opens a fully custom, self-drawn tray menu in the app's dark
+    gray theme** (like Steam's tray menu): a borderless, topmost popup window
+    rendered with GDI (`#252c34` background, hover highlight, separators,
+    bold default item, disabled status row, 1 px border). It never depends on
+    the OS (light) theme, supports hover, item clicks, Escape, and dismissing
+    by clicking outside. Items: Show Aurora Stream window (bold default),
+    Start/Stop streaming, Status (disabled), and Exit Aurora Stream. Exit works
+    even while streaming or with close-to-tray enabled.
+  - The menu closes reliably on **Escape** and on **clicking anywhere
+    outside** it. Fix: `SetCapture` alone does not deliver clicks on the
+    shell/desktop to the captured window (reproduced: the menu stayed open),
+    so the menu now also activates itself (outside clicks deactivate it →
+    `WM_ACTIVATE WA_INACTIVE` closes it) and installs a `WH_MOUSE_LL`
+    low-level hook that closes it on any press outside its rectangle — the
+    guaranteed path even when the click target is the desktop or taskbar.
+  - Outcomes of tray-triggered actions are reported as tray balloons because
+    the window is not visible (e.g. "Could not start streaming: …").
+  - **Once the tray icon exists, X and minimize no longer exit / taskbar-
+    minimize**: they keep the app in the tray. The titlebar minimize button and
+    system-menu Minimize route through `requestMinimize()` (tray-hide when the
+    icon is present, plain minimize otherwise), a taskbar/Alt+Space minimize is
+    converted to a tray-hide on the next tick, and X always hides to the tray
+    (only the tray menu's Exit really quits). Without any tray feature enabled
+    nothing changes: X exits and minimize works normally.
+  - The live source preview pauses while the window is hidden in the tray; the
+    audio-device rescan and activity heartbeat keep running so the broadcaster
+    stays live in the background.
+  - **Windows toast/balloon notifications are disabled for now.** The tray
+    balloon plumbing (`showBalloon` → `NIF_INFO` and every call site) stays
+    intact, but `TrayIcon.notificationsEnabled` defaults to `false`, so the
+    app never posts notifications to the notification center. Re-enable by
+    setting that flag to `true` when notifications are refined later.
+  - Persisted as `minimizeToTrayOnStart` / `closeToTray` (settings schema 8).
+    **Both are ON by default** (a saved/absent key falls back to enabled, so
+    fresh installs and older settings files get the tray behavior; an
+    explicitly saved `false` is respected). Requires the new `TrayIcon` module
+    and `setVisible()` on the aurora-d window backend (SW_SHOW/SW_HIDE;
+    rendering pauses while hidden).
+
+- **Window-content capture** (new "Capture window content" checkbox under
+  CAPTURE SOURCE): instead of gdigrab reading the on-screen pixels, Aurora
+  Stream pumps the window's OWN content into FFmpeg via `PrintWindow(
+  PW_RENDERFULLCONTENT)` (the same occlusion-immune technique professional
+  tools use). The stream therefore keeps showing the selected window even when
+  it is covered by other windows, off the visible desktop, or running in the
+  background. While the window is minimized — which no capture API can render —
+  the stream keeps going on the last good frame and resumes automatically on
+  restore, instead of stopping. GPU-rendered content (DirectX/Vulkan games)
+  may render black through this path, so it is an opt-in checkbox.
+  (`windowContentCapture` settings key, schema 7.)
+- **CAPTURE SOURCE selector no longer drowns in minimized windows.** A busy
+  desktop is mostly minimized windows (this machine: 54 of 69), each previously
+  listed as "(minimized — not capturable)", burying the usable rows and making
+  the dropdown feel broken. The list now shows only windows that can be
+  captured right now; a saved-but-minimized selection is still surfaced as a
+  single "Saved window (minimized — not capturable)" row so you can switch away.
+  If every visible window is minimized the menu says so instead of pretending
+  nothing was found.
+- **A saved capture window that is closed or minimized no longer leaves the
+  selector stuck red.** On startup Aurora Stream checks the saved selection;
+  if the window is gone or minimized (and therefore cannot be captured), it
+  switches back to the entire desktop and explains why in the status line, and
+  the fallback is persisted. The previously seen "Window (minimized): …" red
+  danger state therefore cannot keep the whole dropdown red on every launch.
 - Added a persistent **activity log** (`aurora-stream-activity.log` beside the
   executable) plus a UI-thread **stall detector**. The log records UI
   heartbeats, window focus/minimize/restore events, stream start/stop, and any
