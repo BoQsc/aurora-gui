@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,55 @@ def patch_icon(repo_root: Path, ico_path: Path, exe_path: Path) -> None:
     )
 
 
+def build_game_capture_hook(repo_root: Path, compiler: str) -> None:
+    """Build the D-only injectable hook before embedding the stream exe.
+
+    The hook deliberately uses betterC/custom entry-point linking because it is
+    loaded into a foreign process. It is staged only for --single-exe builds;
+    normal development builds continue to use a separately built DLL.
+    """
+    stream_root = repo_root / "aurora-stream"
+    embedded = stream_root / "embedded"
+    output = embedded / "gamecaphook.dll"
+    resolved = shutil.which(compiler) or compiler
+    compiler_path = Path(resolved)
+    if compiler_path.exists():
+        compiler_path = compiler_path.resolve()
+    libdir_candidates = []
+    if compiler_path.exists():
+        # DMD's Windows layout is <dmd>/windows/bin/dmd.exe and its MinGW
+        # import libraries are in <dmd>/windows/lib64/mingw.
+        libdir_candidates.append(compiler_path.parent.parent / "lib64" / "mingw")
+    libdir_candidates.append(Path(r"C:\D\dmd2\windows\lib64\mingw"))
+    libdir = next((candidate for candidate in libdir_candidates if candidate.is_dir()), None)
+
+    command = [
+        compiler,
+        "-m64",
+        "-shared",
+        "-betterC",
+        "-O",
+        "-release",
+        "-inline",
+        "-boundscheck=off",
+        "gamecaphook.d",
+        "source/aurorastream/d3d11.d",
+        "-Isource",
+        "-I../vendor/aurora-d-0.4.5/source",
+        f"-of={output}",
+        "-L/NODEFAULTLIB",
+        "-L/ENTRY:gamecaphookEntry",
+        "-L/OPT:REF",
+        "-L/OPT:ICF",
+    ]
+    for library in ("kernel32.lib", "user32.lib", "gdi32.lib", "ucrtbase.lib"):
+        command.append(f"-L{libdir / library if libdir else library}")
+    run(command, stream_root)
+    if not output.is_file():
+        print(f"::error::hook compiler did not produce {output}", flush=True)
+        raise SystemExit(1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build Aurora's statically linked portable Windows executables."
@@ -87,7 +137,8 @@ def main() -> int:
         action="store_true",
         help=(
             "embed the minimal ffmpeg/ffprobe into aurora-cut and "
-            "aurora-stream (requires <app>/embedded/ffmpeg.exe + ffprobe.exe)"
+            "aurora-stream (requires <app>/embedded/ffmpeg.exe + ffprobe.exe; "
+            "aurora-stream also builds/embeds gamecaphook.dll with DMD)"
         ),
     )
     args = parser.parse_args()
@@ -118,6 +169,8 @@ def main() -> int:
             if not ico.is_file():
                 print(f"::error::missing icon {ico}", flush=True)
                 raise SystemExit(1)
+            if name == "aurora-stream":
+                build_game_capture_hook(repo_root, args.compiler)
         command = [
             "dub",
             "build",

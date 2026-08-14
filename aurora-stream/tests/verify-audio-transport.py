@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static acceptance checks for Aurora Stream 0.4.9's A/V redesign and quality diagnostic."""
+"""Static acceptance checks for Aurora Stream's A/V design and quality diagnostic."""
 
 from pathlib import Path
 
@@ -322,4 +322,4 @@ require("run-quality-diagnostic.py" in QUALITY_DIAGNOSTIC_BAT and
         "aurora-stream-quality-diagnostic.txt" in QUALITY_DIAGNOSTIC_BAT,
         "one-click quality runner does not produce the single aggregate report")
 
-print("Aurora Stream 0.4.9 audio/video redesign and quality checks passed")
+print("Aurora Stream audio/video architecture and quality checks passed")

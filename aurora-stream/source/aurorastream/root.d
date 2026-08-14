@@ -59,6 +59,7 @@ final class StreamRoot : VBox
     private Button _settingsMenu;
     private CaptureSourceDropdown _captureSource;
     private CheckBox _windowContentCapture;
+    private CheckBox _gameCaptureMode;
     private bool _streamingServersVisible;
     private bool _liveSourcePreviewEnabled;
     private ScrollView _settingsScroll;
@@ -215,7 +216,7 @@ final class StreamRoot : VBox
                 initialCaptureHwnd = "";
                 initialCaptureLabel = "";
             }
-            else if (windowIsMinimized(captureWindow))
+            else if (windowIsMinimized(captureWindow) && !saved.gameCaptureMode)
             {
                 captureFallbackMessage = "The saved capture window (" ~
                     captureLabel ~ ") is minimized, so it cannot be captured " ~
@@ -275,6 +276,8 @@ final class StreamRoot : VBox
             markSettingsDirty();
             const label = _captureSource.selectedLabel();
             const hwnd = _captureSource.selectedHwnd();
+            if (hwnd.strip().length == 0 && _gameCaptureMode !is null)
+                _gameCaptureMode.setChecked(false, false);
             if (hwnd.strip().length > 0)
                 _activityLog.info("Capture source changed to " ~
                     (label.strip().length > 0 ? label : "window " ~ hwnd) ~ ".");
@@ -283,19 +286,34 @@ final class StreamRoot : VBox
                     "Capture source changed to the entire desktop.");
         };
         auto captureHint = settingsContent.add(new Label(
-            "Pick a single game or app window to stream only that window — viewers never see the rest of your desktop. Entire desktop captures everything."));
+            "Pick a single game or app window. PrintWindow captures its content; Game capture hooks D3D11 Present for background/minimized rendering. Entire desktop captures everything."));
         captureHint.setScale(1);
         captureHint.setColor(Color.fromHex(0x8793a0));
         captureHint.layoutHints().preferredHeight = 36;
         _windowContentCapture = settingsContent.add(new CheckBox(
-            "Capture window content (keeps showing the window when it is covered or minimized; black for GPU/games)", saved.windowContentCapture));
+            "PrintWindow: capture window content (covered/background; not reliable for GPU games)", saved.windowContentCapture));
         _windowContentCapture.layoutHints().preferredHeight = 22;
         _windowContentCapture.onChanged = delegate(bool checked) {
+            if (checked && _gameCaptureMode !is null)
+                _gameCaptureMode.setChecked(false, false);
             updateQualitySummary();
             markSettingsDirty();
             _activityLog.info(checked ?
                 "Window-content capture enabled (window's own content)." :
                 "Window-content capture disabled (on-screen pixels).");
+        };
+        _gameCaptureMode = settingsContent.add(new CheckBox(
+            "Game capture: D3D11 render hook (works out of focus/minimized when the game keeps presenting)",
+            saved.gameCaptureMode));
+        _gameCaptureMode.layoutHints().preferredHeight = 22;
+        _gameCaptureMode.onChanged = delegate(bool checked) {
+            if (checked && _windowContentCapture !is null)
+                _windowContentCapture.setChecked(false, false);
+            updateQualitySummary();
+            markSettingsDirty();
+            _activityLog.info(checked ?
+                "Game capture enabled (D3D11 Present render hook)." :
+                "Game capture disabled.");
         };
 
         settingsContent.add(new Separator());
@@ -1037,6 +1055,10 @@ final class StreamRoot : VBox
             pathSettings.youtubeBitrateKbps = selectedYoutubeBitrateKbps();
             pathSettings.windowCaptureHwnd = _captureSource.selectedHwnd();
             pathSettings.windowCaptureLabel = _captureSource.selectedLabel();
+            pathSettings.windowContentCapture = _windowContentCapture !is null &&
+                _windowContentCapture.checked();
+            pathSettings.gameCaptureMode = _gameCaptureMode !is null &&
+                _gameCaptureMode.checked();
             _videoPath.setText(format(
                 "%s • %s • Encoder: %s",
                 "Capture: " ~ captureSourceLabel(pathSettings, _capture),
@@ -1109,6 +1131,9 @@ final class StreamRoot : VBox
         settings.windowCaptureLabel = _captureSource.selectedLabel();
         settings.windowContentCapture = _windowContentCapture !is null &&
             _windowContentCapture.checked() && !selectedWindowIsVlc();
+        settings.gameCaptureMode = _gameCaptureMode !is null &&
+            _gameCaptureMode.checked() && settings.windowCaptureHwnd.length > 0;
+        if (settings.gameCaptureMode) settings.windowContentCapture = false;
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
         settings.browserChoice = _browserChoice;
         settings.minimizeToTrayOnStart = _minimizeToTrayOnStart;
@@ -1626,6 +1651,9 @@ final class StreamRoot : VBox
             _windowContentCapture.setEnabled(!active && hasWindow &&
                 !selectedWindowIsVlc());
         }
+        if (_gameCaptureMode !is null)
+            _gameCaptureMode.setEnabled(!active &&
+                _captureSource.selectedHwnd().strip().length > 0);
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);
         _refreshAudioDevices.setText(audioScan.running ?
             "Refreshing audio devices…" : "Refresh audio devices");

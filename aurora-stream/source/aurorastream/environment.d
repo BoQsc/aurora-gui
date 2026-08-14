@@ -81,6 +81,8 @@ string[] settingsReport(const BroadcastSettings settings,
         effectiveYoutubeBitrateKbps(settings));
     lines ~= "Settings: window-content capture " ~
         (settings.windowContentCapture ? "on" : "off") ~ ".";
+    lines ~= "Settings: D3D11 game capture " ~
+        (settings.gameCaptureMode ? "on" : "off") ~ ".";
     lines ~= "Settings: desktop audio " ~
         deviceName(settings.desktopAudioDevice,
             settings.deviceDisplayNameCache) ~ "; microphone " ~

@@ -159,6 +159,23 @@ version (Windows)
         extern(C) void function(void*, void**) GetDevice; // 3
     }
 
+    // ---- ID3D11Texture2D (IUnknown + DeviceChild + Resource) ----
+    struct ID3D11Texture2DVtbl
+    {
+        extern(C) HRESULT function(void*, const GUID*, void**) QueryInterface; // 0
+        extern(C) uint function(void*) AddRef; // 1
+        extern(C) uint function(void*) Release; // 2
+        extern(C) void function(void*, void**) GetDevice; // 3
+        extern(C) HRESULT function(void*, const GUID*, uint*, void*) _s4; // 4
+        extern(C) HRESULT function(void*, const GUID*, uint, const void*) _s5; // 5
+        extern(C) HRESULT function(void*, const GUID*, void*) _s6; // 6
+        extern(C) void function(void*, uint*) _s7; // 7 GetType
+        extern(C) void function(void*, uint) _s8; // 8 SetEvictionPriority
+        extern(C) uint function(void*) _s9; // 9 GetEvictionPriority
+        extern(C) void function(void*, D3D11_TEXTURE2D_DESC*) GetDesc; // 10
+    }
+    struct ID3D11Texture2DObj { ID3D11Texture2DVtbl* lpVtbl; }
+
     // ---- ID3D11Device ----
     struct ID3D11DeviceVtbl
     {
@@ -268,7 +285,7 @@ version (Windows)
         extern(C) void function(void*, void*) _s54; // 54
         extern(C) void function(void*, void*, float) _s55; // 55
         extern(C) void function(void*, void*, uint, void*, uint, uint) _s56; // 56
-        extern(C) void function(void*, void*, BOOL) _s57; // 57
+        extern(C) void function(void*, void*, uint, void*, uint, uint) ResolveSubresource; // 57
     }
     struct ID3D11DeviceContextObj { ID3D11DeviceContextVtbl* lpVtbl; }
 
@@ -295,12 +312,16 @@ version (Windows)
     enum D3D11_BIND_RENDER_TARGET = 0x2;
     enum D3D11_CPU_ACCESS_READ = 0x20000;
     enum D3D11_MAP_READ = 1;
+    enum D3D11_MAP_FLAG_DO_NOT_WAIT = 0x100000;
     enum D3D11_RTV_DIMENSION_TEXTURE2D = 4;
     enum D3D11_USAGE_DEFAULT = 0;
     enum D3D11_USAGE_STAGING = 3;
     enum DXGI_USAGE_RENDER_TARGET_OUTPUT = 0x20;
     enum DXGI_FORMAT_R8G8B8A8_UNORM = 28;
+    enum DXGI_FORMAT_R8G8B8A8_UNORM_SRGB = 29;
+    enum DXGI_FORMAT_R10G10B10A2_UNORM = 24;
     enum DXGI_FORMAT_B8G8R8A8_UNORM = 87;
+    enum DXGI_FORMAT_B8G8R8A8_UNORM_SRGB = 91;
     enum DXGI_SWAP_EFFECT_DISCARD = 0;
     enum DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH = 2;
 

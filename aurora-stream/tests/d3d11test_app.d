@@ -22,7 +22,11 @@ extern (C)
 {
     import core.sys.windows.windows : HRESULT;
     HRESULT CreateDXGIFactory1(const GUID* riid, void** ppFactory);
+    HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes,
+        LPCWSTR name, DWORD flags, DWORD desiredAccess);
 }
+
+private enum uint createWaitableTimerHighResolution = 0x00000002;
 
 void main(string[] args)
 {
@@ -34,6 +38,14 @@ void main(string[] args)
         writeln(message);
     }
     mark("start");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    uint swapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    foreach (argument; args[1 .. $])
+    {
+        if (argument == "--rgba") swapFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (argument == "--rgb10") swapFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    }
+    mark("swap format=" ~ swapFormat.to!string);
 
     alias CreateDeviceFn = extern(C) HRESULT function(void*, uint, HMODULE,
         uint, const uint*, uint, uint, void**, uint*, void**);
@@ -57,8 +69,11 @@ void main(string[] args)
     HWND hwnd = CreateWindowExW(0, className.ptr, className.ptr,
         WS_OVERLAPPEDWINDOW, 100, 100, 640, 480, null, null, instance, null);
     if (hwnd is null) { mark("create window failed"); return; }
-    ShowWindow(hwnd, SW_SHOWNORMAL);
-    mark("window shown");
+    // The release gate must never steal focus or cover the user's desktop.
+    // Keep presenting while minimized so the render hook is exercised exactly
+    // like a background/minimized game that continues rendering.
+    ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+    mark("window minimized without activation");
 
     // Device + swapchain in one call (avoids the DXGI factory path).
     void* deviceRaw;
@@ -68,11 +83,11 @@ void main(string[] args)
     uint featureLevels = D3D_FEATURE_LEVEL_11_0;
 
     DXGI_SWAP_CHAIN_DESC scDesc;
-    scDesc.BufferDesc.Width = 640;
-    scDesc.BufferDesc.Height = 480;
+    scDesc.BufferDesc.Width = 1920;
+    scDesc.BufferDesc.Height = 1080;
     scDesc.BufferDesc.RefreshRate.Numerator = 60;
     scDesc.BufferDesc.RefreshRate.Denominator = 1;
-    scDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scDesc.BufferDesc.Format = swapFormat;
     scDesc.SampleDesc.Count = 1;
     scDesc.SampleDesc.Quality = 0;
     scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -119,7 +134,7 @@ void main(string[] args)
     if (hr != 0 || backBuffer is null) { mark("getbuffer failed " ~ hr.to!string); return; }
     void* rtv;
     D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
-    rtvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    rtvDesc.Format = swapFormat;
     rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
     rtvDesc.Texture2D_MipSlice = 0;
     hr = device.lpVtbl.CreateRenderTargetView(device, backBuffer, &rtvDesc, &rtv);
@@ -128,8 +143,17 @@ void main(string[] args)
 
     // Render loop: clear to a cycling color and present until closed.
     const start = GetTickCount();
+    auto presentTimer = CreateWaitableTimerExW(null, null,
+        createWaitableTimerHighResolution, TIMER_ALL_ACCESS);
+    if (presentTimer is null)
+        presentTimer = CreateWaitableTimerW(null, false, null);
+    scope(exit) if (presentTimer !is null) CloseHandle(presentTimer);
+    LARGE_INTEGER firstPresent;
+    firstPresent.QuadPart = -10_000; // one millisecond, in relative 100 ns units
+    if (presentTimer !is null)
+        SetWaitableTimer(presentTimer, &firstPresent, 4, null, null, false);
     uint frameCount;
-    while (GetTickCount() - start < 20000)
+    while (GetTickCount() - start < 30000)
     {
         MSG msg;
         while (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0)
@@ -141,9 +165,15 @@ void main(string[] args)
         float[4] color = [ 1.0f, 0.5f + 0.5f * sin(phase), 0.5f + 0.5f * cos(phase), 1.0f ];
         context.lpVtbl.ClearRenderTargetView(context, rtv, color.ptr);
         hr = swapchain.lpVtbl.Present(swapchain, 0, 0);
-        if (hr != 0) { mark("present failed " ~ hr.to!string); break; }
+        // A minimized swapchain returns DXGI_STATUS_OCCLUDED (a positive
+        // success status). Keep rendering; only negative HRESULTs are errors.
+        if (hr < 0) { mark("present failed " ~ hr.to!string); break; }
         ++frameCount;
-        Thread.sleep(16.msecs); // ~60 fps, like a real game
+        // A 250 FPS high-resolution waitable timer models an uncapped game
+        // without letting an invisible test swapchain monopolize a CPU/GPU.
+        // This remains well above the hook's 60 FPS capture limiter.
+        if (presentTimer !is null)
+            WaitForSingleObject(presentTimer, INFINITE);
     }
     mark("presented=" ~ frameCount.to!string);
 

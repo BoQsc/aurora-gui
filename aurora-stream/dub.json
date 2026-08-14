@@ -35,7 +35,8 @@
         "inline"
       ],
       "versions": [
-        "BundledFfmpeg"
+        "BundledFfmpeg",
+        "BundledGameCapture"
       ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
@@ -120,5 +121,5 @@
       ]
     }
   ],
-  "version": "0.65.0"
+  "version": "0.66.0"
 }

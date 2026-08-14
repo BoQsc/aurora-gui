@@ -205,33 +205,51 @@ everything (the default, unchanged behavior) or pick any visible titled window;
 the list is re-enumerated every time the dropdown opens and includes a
 **Refresh window list** item so games launched after startup appear immediately.
 Each window is shown as `process.exe — Window Title`, and the selection is
-saved in `aurora-stream-settings.json` (schema 6).
+saved in `aurora-stream-settings.json` (schema 9).
 
-A captured window is streamed through FFmpeg's `gdigrab hwnd=` path at the same
-60 FPS, scaled into the selected source canvas and each destination exactly like
-the desktop capture, so all existing quality/bitrate/audio behavior is
-unchanged. The status panel shows `Window capture (GDI) → CPU processing →
-encoder` because window capture is a GDI path (the D3D11 zero-copy handoff
-applies only to full-desktop Desktop Duplication). The **LIVE SOURCE CANVAS**
-preview also switches to the selected window so what you see matches what
-viewers see.
+The selected window has three mutually exclusive capture paths:
+
+- **Visible window capture** uses FFmpeg `gdigrab hwnd=`. It is the broadest
+  compatibility path, but captures the window as it appears on screen and
+  therefore requires it to remain visible and restored.
+- **PrintWindow** asks the application to paint its client content into an
+  off-screen DIB. Covered/background software-rendered apps remain private and
+  capturable. Slow captures repeat the last good frame at an exact 60 FPS output
+  cadence, so video timestamps cannot drift away from desktop audio. VLC is
+  automatically kept on visible-window capture because its hardware video
+  surface is not composed reliably by PrintWindow.
+- **Game capture: D3D11 render hook** injects Aurora's D-only x64 hook into the
+  selected process and captures its `IDXGISwapChain::Present` back buffer. The
+  game may be covered, out of focus, or minimized as long as it continues to
+  render Presents. The hook uses asynchronous staging textures, never performs
+  pipe I/O on the game render thread, publishes pixels through a three-slot
+  shared-memory ring, and keeps bounded latest-frame queues on both sides. The
+  control pipe carries only small versioned headers. BGRA8, RGBA8, sRGB variants, and RGB10A2 swap chains are converted
+  to BGRA8; non-native source sizes are aspect-fitted with black bars and a
+  reusable HALFTONE scaler.
+
+Both background paths feed a paced raw-video input. If the source produces a
+frame late or pauses, Aurora repeats the held frame rather than shortening the
+video timeline, preserving A/V cadence. The activity/startup logs report hook
+connection failures plus received, dropped, superseded, sequence-gap, and source
+DXGI-format metrics when a session ends.
 
 Notes:
 
-- A window is captured as it appears on screen, so keep it visible and **not
-  minimized**. A minimized window has a 0×0 client area that FFmpeg's `gdigrab`
-  cannot capture: minimized windows are marked `(minimized — not capturable)`
-  in the CAPTURE SOURCE list, Start refuses a minimized selection with a clear
-  message, and if the captured window is minimized (or closed) **during** a
-  stream, Aurora Stream stops it immediately ("Window capture stopped — the
-  captured window was minimized/closed") instead of leaving viewers on a frozen
-  last frame. The LIVE SOURCE CANVAS preview likewise keeps its last good frame
-  while the selected window is minimized.
+- Visible-window capture requires a non-minimized window. PrintWindow keeps the
+  last good image while minimized and resumes after restore. Game capture can
+  keep updating while minimized only when the game itself keeps presenting.
 - The window handle is only valid in the Windows session it was chosen. A saved
   selection that is closed, or carried from an earlier session, is detected at
   Start and reported clearly instead of silently streaming the desktop.
-- Borderless-windowed games work well. Exclusive-fullscreen games already cover
-  the whole desktop, so window capture is not needed for them.
+- Game capture is currently x64 D3D11 only. D3D12, Vulkan, OpenGL, 32-bit games,
+  and HDR16 swap chains are not supported by this hook. Anti-cheat or elevated
+  processes may reject injection; Aurora reports that failure instead of
+  silently exposing the desktop. Run Aurora at the same privilege level as the
+  game.
+- The live source preview is an on-screen safety preview. For covered/minimized
+  Game capture, use the capture-path status and diagnostics as authoritative;
+  the preview cannot independently read the injected render surface.
 
 ## Simplified server controls and native-style text menus
 

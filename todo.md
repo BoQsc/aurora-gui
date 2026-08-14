@@ -71,7 +71,7 @@
       `dub build --config=notitlebar` link, and a live launch logged the full
       OS/CPU/RAM/GPU/FFmpeg + Settings block in `aurora-stream-activity.log`.
 
-## 2026-08-14 — Aurora Stream: OBS-style game capture (D3D11 render hook) — IN PROGRESS
+## 2026-08-14 — Aurora Stream: OBS-style game capture (D3D11 render hook) — IMPLEMENTED
 - [x] User: "We want to stream a window even if it's minimized or out of focus
       or not here. That's the main point." → then "we need just like obs per
       game render hooks." The proper fix = OBS Game Capture-style render hooks
@@ -97,24 +97,45 @@
       the authoritative mingw-w64 `d3d11.h` (fetched). `GetImmediateContext` now
       returns the real context (`match=true`).
 - [x] **Frame capture works end-to-end.** Hook → back-buffer GetBuffer →
-      staging texture → CopyResource → Map → BGRA → named pipe → reader.
-      Verified: **127-128 non-black frames in 4 s, ~124 changing** (the D3D11
-      test app's animated clear color). Key fixes along the way:
-      - named-pipe default buffer is 4096 bytes → 1.2 MB frames deadlocked;
-        server now uses 8 MB buffers + the reader reassembles partial reads.
+      asynchronous staging ring → nonblocking Map → BGRA → worker-owned shared
+      ring/control pipe → bounded host reader. Final minimized 1920×1080 tests cover BGRA8,
+      RGBA8, and RGB10A2, two unload/reinject rounds plus the production session
+      per format. Final shared-memory rounds delivered 236–237 non-black, changing,
+      color-correct frames in four seconds; production received 238–239 with
+      ordered protocol sequences.
+      - named-pipe frame payloads consumed roughly 500 MB/s at 1080p60; pixels
+        now cross a three-slot shared-memory ring and a 64 KiB pipe carries only
+        versioned control/frame headers.
       - releasing COM objects must go through the OBJECT's own vtable with an
         `extern(C)` call (`comRelease`); releasing through another object's
         vtable (or `extern(D)`) crashes.
       - `scope(exit)` cleanup in the betterC hook was unreliable → explicit
         cleanup.
-      - hook rate-limits to ~60 fps (a 4000 fps test app saturated the GPU and
-        stalled its own render loop).
-- [ ] Remaining: wire into aurora-stream as a capture mode (inject on
-      Start streaming, read the hook pipe, feed the existing rawvideo FFmpeg
-      pump), ship `gamecaphook.dll` embedded in the single exe, add the
-      "Game capture (render hook)" option. x64-only; anti-cheat games block
-      injection (same as OBS). Also strip the hook's setup debug markers
-      (`C:\temp\gamecaphook_dbg.txt`) for release.
+      - hook rate-limits on QPC to 60 fps; the background test target uses a
+        high-resolution waitable timer at 250 fps instead of monopolizing the
+        GPU with an unbounded minimized swapchain.
+- [x] Aurora Stream now persists a separate `gameCaptureMode`, exposes a
+      mutually-exclusive Game capture (D3D11 render hook) option beside the
+      selected window, creates the shared ring/control pipe/config, injects through the
+      real kernel32 `LoadLibraryW` export + `CreateRemoteThread`, parses the
+      versioned 72-byte protocol, aspect-fits through a reusable HALFTONE DIB,
+      and reuses the exact-cadence rawvideo pump with held-frame duplication.
+- [x] `gamecaphook.dll` is embedded/extracted for `portable-single-exe`; the
+      portable Windows script builds/stages it with DMD only. The hook debug
+      file body is version-gated behind `GameCaptureDebug`, so release builds
+      do not emit `C:\temp\gamecaphook_dbg.txt`.
+- [x] Verified with all 45 D unittests, x64 debug application + notitlebar
+      builds, the three-format framed hook/session matrix, audio/RTP/network
+      scripts, and both 720-frame loaded A/V phases. Screen gdigrab and
+      PrintWindow remain separate paths. x64-only; anti-cheat games can still
+      block injection (same operational limitation as OBS).
+- [ ] Not tested: a real authenticated network stream using the new mode; no
+      autonomous test has stream keys.
+- [ ] Official portable single-exe CI result. A verified minimal-FFmpeg Actions
+      artifact was staged and the local full build passed policy, hook build,
+      and embedding, then stopped at the final link because this DMD install has
+      no `libcmt.lib`. Do not weaken static-CRT packaging; Windows CI supplies
+      the release toolchain and is the authority before tagging.
 
 ## 2026-08-14 — Aurora Stream: minimize to tray (auto-hide on start + close-to-tray + tray icon controls)
 - [x] User: "let's consider if we could do 'minimize to tray' for aurora stream.

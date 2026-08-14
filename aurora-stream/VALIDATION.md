@@ -1,6 +1,42 @@
 # Aurora Stream validation
 
-Aurora Stream version: 0.4.9
+Aurora Stream version: 0.66.0
+
+## 0.66.0 D3D11 game/window capture release gate
+
+All autonomous tests must remain background-only: do not open the fullscreen
+visual quality card. A release candidate is accepted for manual YouTube testing
+only after all of these checks pass:
+
+1. `dub test --compiler=dmd --force` reports all 45 modules passing, and debug
+   builds of both `application` and `notitlebar` configurations link.
+2. Build `gamecaphook.dll` with DMD `-m64 -shared -betterC -O -release -inline
+   -boundscheck=off`, `/NODEFAULTLIB`, and `/ENTRY:gamecaphookEntry`.
+3. Run the minimized/background `gamecap_test` matrix for BGRA8, RGBA8, and
+   RGB10A2. Every format must pass two hook injection/unload/reinjection rounds
+   plus one real `GameCaptureSession` round at 1920×1080. Packets must stay in
+   order, pixels must be non-black/changing/color-correct, and the bounded-drop
+   thresholds must pass. The production session must receive at least 220
+   frames in four seconds; its consumer intentionally keeps only the newest
+   frame while the broadcaster repeats the held image at exact output cadence.
+4. `verify-audio-transport.py`, `verify-rtp-sdp.py`, and
+   `verify-network-output-isolation.py` must pass. The headless
+   `run-quality-diagnostic.py --loaded-audio` run must encode 720/720 frames in
+   both 12-second phases with MMCSS active and no RTP loss, pacing skip, send
+   failure, queue warning, or overrun.
+5. Run the portable staging helper and the complete `--single-exe` workflow.
+   The local DMD distribution may stop only at its known missing `libcmt.lib`;
+   the official `windows-latest` release workflow, which supplies the static
+   runtime and verified minimal FFmpeg artifact, is the packaging authority and
+   must pass before tagging.
+
+Current local result (2026-08-14): all compile/unit/audio/network checks pass.
+The final shared-memory game-capture runs passed at 236–237 manual frames and
+238–239 production-received frames per four seconds, with ordered/color-correct
+output. The last production round for each format reported zero sequence gaps
+and zero hook drops. The full single-exe build reached the final link and was
+blocked locally only by the absent `libcmt.lib`; authenticated YouTube ingest
+and fullscreen-exclusive/anti-cheat behavior remain manual post-release tests.
 
 ## Unreleased loaded-audio regression
 

@@ -2,12 +2,12 @@ module aurorastream.windowcontent;
 
 version (Windows)
 {
-    import core.sys.windows.windows : BOOL, COLORONCOLOR, CreateCompatibleDC,
+    import core.sys.windows.windows : BOOL, CreateCompatibleDC,
         CreateDIBSection, DeleteDC, DeleteObject, DIB_RGB_COLORS, GetDC,
-        GetClientRect, GetWindowRect, HBITMAP, HDC, HGDIOBJ, HWND, IsIconic,
-        IsWindow, RECT, ReleaseDC, SelectObject, SetStretchBltMode, SRCCOPY,
-        StretchBlt;
-    import core.sys.windows.wingdi : BITMAPINFO, BITMAPINFOHEADER, BI_RGB;
+        GetClientRect, HBITMAP, HDC, HGDIOBJ, HWND, IsIconic, IsWindow, RECT,
+        ReleaseDC, SelectObject, SetStretchBltMode, SRCCOPY, StretchBlt;
+    import core.sys.windows.wingdi : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        HALFTONE;
     import core.sys.windows.winuser : PrintWindow;
     import core.stdc.string : memcpy, memset;
     import aurorastream.windowsources : hwndFromText;
@@ -188,7 +188,6 @@ final class WindowContentCapturer
         if (IsWindow(_window) == 0) return false;
         if (IsIconic(_window) != 0) return false; // minimized: nothing renders
         if (!ensureWindowSurface()) return false;
-        if (!ensureTargetSurface()) return false;
 
         // PrintWindow may not repaint every child/composited surface. Clear
         // first so any region it leaves untouched is black, not stale DIB data.
@@ -198,15 +197,41 @@ final class WindowContentCapturer
             pwClientOnly | pwRenderFullContent) == 0)
             return false;
 
-        if (StretchBlt(_targetDC, 0, 0, _targetWidth, _targetHeight,
-            _windowDC, 0, 0, _windowWidth, _windowHeight, SRCCOPY) == 0)
-            return false;
-
-        // DIB memory is BGRA bytes on little-endian, matching -pix_fmt bgra.
         const byteCount = cast(size_t) _targetWidth * _targetHeight * 4;
-        const source = cast(const(ubyte)*) _targetBits;
         auto target = cast(ubyte*) bgra.ptr;
-        memcpy(target, source, byteCount);
+        if (_windowWidth == _targetWidth && _windowHeight == _targetHeight)
+        {
+            // The common native-size path avoids an unnecessary GDI scale and
+            // copy through the second DIB.
+            memcpy(target, _windowBits, byteCount);
+        }
+        else
+        {
+            if (!ensureTargetSurface()) return false;
+            // Preserve the client aspect ratio rather than stretching a game or
+            // video to the configured canvas. HALFTONE is GDI's highest-quality
+            // resampler; unused canvas pixels stay black.
+            ulong scaledWidth = _targetWidth;
+            ulong scaledHeight = cast(ulong) _targetWidth * _windowHeight /
+                _windowWidth;
+            if (scaledHeight > _targetHeight)
+            {
+                scaledHeight = _targetHeight;
+                scaledWidth = cast(ulong) _targetHeight * _windowWidth /
+                    _windowHeight;
+            }
+            if (scaledWidth == 0 || scaledHeight == 0) return false;
+            const offsetX = (_targetWidth - cast(int) scaledWidth) / 2;
+            const offsetY = (_targetHeight - cast(int) scaledHeight) / 2;
+            memset(_targetBits, 0, byteCount);
+            SetStretchBltMode(_targetDC, HALFTONE);
+            if (StretchBlt(_targetDC, offsetX, offsetY,
+                cast(int) scaledWidth, cast(int) scaledHeight,
+                _windowDC, 0, 0, _windowWidth, _windowHeight, SRCCOPY) == 0)
+                return false;
+            memcpy(target, _targetBits, byteCount);
+        }
+        // DIB memory is BGRA bytes on little-endian, matching -pix_fmt bgra.
         // GDI leaves the DIB alpha byte undefined; force opaque alpha so the
         // encoder never sees garbage alpha values.
         for (size_t offset = 3; offset < byteCount; offset += 4)
@@ -246,7 +271,8 @@ unittest
     // then legitimately returns false.
     import core.sys.windows.windows : CreateWindowExW, DefWindowProcW,
         DestroyWindow, GetModuleHandleW, GetTickCount, HWND, LRESULT, LPARAM,
-        MSG, PeekMessageW, PM_REMOVE, RegisterClassW, ShowWindow, SW_SHOWNORMAL,
+        MSG, PeekMessageW, PM_REMOVE, RegisterClassW, ShowWindow,
+        SW_SHOWNOACTIVATE,
         TranslateMessage, DispatchMessageW, WNDCLASSW, WPARAM,
         WS_OVERLAPPEDWINDOW;
     extern (Windows) LRESULT contentProbeProc(HWND hwnd, uint msg,
@@ -262,11 +288,11 @@ unittest
     if (RegisterClassW(&wc) != 0)
     {
         auto probeWindow = CreateWindowExW(0, probeClass.ptr, probeClass.ptr,
-            WS_OVERLAPPEDWINDOW, 50, 50, 320, 240, null, null,
+            WS_OVERLAPPEDWINDOW, -32_000, -32_000, 320, 240, null, null,
             GetModuleHandleW(null), null);
         if (probeWindow !is null)
         {
-            ShowWindow(probeWindow, SW_SHOWNORMAL);
+            ShowWindow(probeWindow, SW_SHOWNOACTIVATE);
             MSG msg;
             const deadline = GetTickCount() + 500;
             while (GetTickCount() < deadline)

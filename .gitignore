@@ -3,6 +3,8 @@
 /dist/
 /release/
 /releases/
+/build-validation/
+**/__pycache__/
 /aurora-cut
 /aurora-cut.exe
 *.o

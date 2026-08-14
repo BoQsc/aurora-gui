@@ -1,3 +1,23 @@
+Aurora Suite 0.66.0
+Aurora Stream game/window capture release
+-----------------------------------------
+
+- Added OBS-style x64 D3D11 per-game capture that keeps the desktop private
+  while a game is covered, out of focus, or minimized and still presenting.
+- The D-only hook uses asynchronous staging, a shared-memory frame ring with a
+  header-only control pipe, bounded low-latency queues, safe restore/self-unload,
+  and reinjection.
+- Added BGRA8, RGBA8/sRGB, and RGB10A2 support, exact 60 FPS held-frame pacing
+  for A/V stability, aspect-preserving HALFTONE scaling, and detailed capture
+  sequence/drop/source-format diagnostics.
+- Improved PrintWindow client geometry, background cadence, black clearing,
+  aspect scaling, and VLC fallback behavior.
+- Integrated the optimized hook into the portable single-exe build before the
+  bundled FFmpeg payload is embedded.
+- Automated validation is background-only. D3D12/Vulkan/OpenGL, 32-bit games,
+  anti-cheat-rejected injection, HDR16, and authenticated YouTube ingest remain
+  explicit limitations/manual tests.
+
 Aurora Stream 0.4.9
 Deterministic quality diagnostic
 --------------------------------

@@ -1286,11 +1286,11 @@ def build_project(report: Report) -> Path:
     return executable
 
 
-def run_real_phase(executable: Path, endpoint_id: str, name: str,
-                   description: str, video_mode: str, audio_mode: str,
-                   fifo: bool, report: Report,
-                   analyse_video: bool = True,
-                   synthetic_helper: bool = False) -> PhaseResult:
+def _run_real_phase_once(executable: Path, endpoint_id: str, name: str,
+                         description: str, video_mode: str, audio_mode: str,
+                         fifo: bool, report: Report,
+                         analyse_video: bool = True,
+                         synthetic_helper: bool = False) -> PhaseResult:
     dual_output = video_mode == "dual-default"
     output = ARTIFACTS / (
         f"{name}-twitch.flv" if dual_output else f"{name}.flv"
@@ -1348,6 +1348,40 @@ def run_real_phase(executable: Path, endpoint_id: str, name: str,
         expect_tone=not synthetic_helper, report=report
     )
     return phase
+
+
+def run_real_phase(executable: Path, endpoint_id: str, name: str,
+                   description: str, video_mode: str, audio_mode: str,
+                   fifo: bool, report: Report,
+                   analyse_video: bool = True,
+                   synthetic_helper: bool = False) -> PhaseResult:
+    """Run a phase, retrying only Windows' narrow UDP handoff race.
+
+    The diagnostic reserves both RTP ports until immediately before FFmpeg
+    starts.  On Windows, another process can still claim a just-released UDP
+    port in that tiny handoff interval.  A fresh adjacent pair is the only safe
+    recovery; retrying encoder, capture, or transport failures would hide real
+    regressions.
+    """
+    maximum_attempts = 3
+    for attempt in range(1, maximum_attempts + 1):
+        phase = _run_real_phase_once(
+            executable, endpoint_id, name, description, video_mode, audio_mode,
+            fifo, report, analyse_video, synthetic_helper,
+        )
+        output = phase.stderr.lower()
+        port_collision = (
+            phase.returncode != 0 and
+            ("error number -10048" in output or
+             "address already in use" in output)
+        )
+        if not port_collision or attempt == maximum_attempts:
+            return phase
+        report.line(
+            f"{name}: Windows reclaimed the released RTP port; retrying with "
+            f"a fresh pair ({attempt}/{maximum_attempts - 1} retries)."
+        )
+    raise AssertionError("unreachable")
 
 
 def audio_only_main() -> int:

@@ -1,6 +1,40 @@
 # Aurora Stream changelog
 
-## Unreleased
+## 0.66.0 — 2026-08-14
+
+- **OBS-style per-game D3D11 capture.** Aurora can inject a D-only x64
+  `IDXGISwapChain::Present` hook into the selected game and capture it without
+  exposing the desktop while it is covered, out of focus, or minimized (when
+  the game continues presenting). The hook uses asynchronous reusable staging
+  textures, bounded latest-frame queues, a dedicated pipe writer, and exact
+  60 FPS held-frame pacing so rendering never waits for FFmpeg and video cannot
+  drift from audio.
+- The versioned framed protocol validates readiness, dimensions, shared BGRA slots,
+  sequence numbers, QPC capture timestamps, source DXGI format, and cumulative
+  drops. Aurora logs received/hook-dropped/superseded/gap metrics and stops with
+  a concrete diagnostic on protocol, pipe, architecture, privilege, format, or
+  injection failure.
+- BGRA8, RGBA8/sRGB, and RGB10A2 swap chains are supported. Channel conversion
+  runs on the hook worker with x64-baseline SIMD; non-native source sizes use a
+  reusable aspect-preserving HALFTONE DIB scaler instead of a per-pixel
+  nearest-neighbor loop.
+- Pixel frames now cross through a bounded shared-memory ring; the named pipe
+  carries only small control/frame headers instead of roughly 500 MB/s of 1080p
+  BGRA payload. Hook shutdown restores Present, waits for in-flight calls, detects a closed
+  server while the game is paused, self-unloads, and supports reinjection in the
+  same game process. The host cancels blocked pipe I/O and uses content-addressed
+  extracted hook names to prevent stale or locked DLL reuse.
+- The single-exe Windows release workflow now builds the hook with optimized
+  DMD `-betterC` flags and embeds it beside the bundled FFmpeg payload. No C
+  compiler or C runtime toolchain is used for the hook.
+- PrintWindow capture now uses client geometry, full-content/client flags,
+  black clearing, exact cadence recovery, aspect-preserving HALFTONE scaling,
+  and a fast native-size copy. VLC automatically stays on its verified visible
+  window path because its hardware video surface is unreliable through
+  PrintWindow.
+- The loaded A/V diagnostic retries only Windows' narrow UDP error-10048 port
+  handoff race with a newly reserved pair; encoder and transport failures are
+  never retried or hidden.
 
 - **Improved always-on diagnostic logging.** `aurora-stream-activity.log` (beside
   the exe) is now the single session-spanning record of what happened and what

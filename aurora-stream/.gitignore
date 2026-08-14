@@ -17,5 +17,11 @@
 /aurora-stream-*diagnostic*.txt
 /quality-diagnostic-artifacts/
 /stream-pacing-diagnostic/
+/gamecaphook.dll
+/gamecaphook.lib
+/d3d11test_app.exe
+/gamecap_test.exe
+/d3dtest_debug.txt
+/gamecap_test_trace.txt
 /embedded/*
 !/embedded/.gitkeep

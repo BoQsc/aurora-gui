@@ -12,7 +12,7 @@ import std.string : endsWith;
 /// Settings file name, shared by both the per-user and portable locations.
 enum settingsFileName = "aurora-stream-settings.json";
 
-enum settingsSchemaVersion = 8;
+enum settingsSchemaVersion = 9;
 
 private bool _portableConfigMode;
 
@@ -189,6 +189,12 @@ private BroadcastSettings settingsFromJson(string source)
         settings.windowCaptureLabel);
     settings.windowContentCapture = jsonBool(root, "windowContentCapture",
         settings.windowContentCapture);
+    settings.gameCaptureMode = jsonBool(root, "gameCaptureMode",
+        settings.gameCaptureMode);
+    // A hand-edited file must not select two stdin/frame producers at once.
+    // Game capture is the more explicit newer mode, so it wins this malformed
+    // combination while older files keep their PrintWindow behavior.
+    if (settings.gameCaptureMode) settings.windowContentCapture = false;
 
     settings.liveSourcePreviewEnabled = jsonBool(root,
         "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
@@ -284,6 +290,7 @@ private string settingsToJson(BroadcastSettings settings)
     root["windowCaptureHwnd"] = settings.windowCaptureHwnd;
     root["windowCaptureLabel"] = settings.windowCaptureLabel;
     root["windowContentCapture"] = settings.windowContentCapture;
+    root["gameCaptureMode"] = settings.gameCaptureMode;
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
     root["minimizeToTrayOnStart"] = settings.minimizeToTrayOnStart;
     root["closeToTray"] = settings.closeToTray;
@@ -514,6 +521,7 @@ unittest
     BroadcastSettings source;
     source.windowCaptureHwnd = "1841952";
     source.windowCaptureLabel = "notepad.exe — Notes";
+    source.gameCaptureMode = true;
     source.desktopAudioEnabled = true;
     source.twitchEnabled = false;
     source.youtubeEnabled = false;
@@ -521,6 +529,7 @@ unittest
     const restored = settingsFromJson(settingsToJson(source));
     assert(restored.windowCaptureHwnd == "1841952");
     assert(restored.windowCaptureLabel == "notepad.exe — Notes");
+    assert(restored.gameCaptureMode);
 
     const legacy = settingsFromJson(`{"schemaVersion":5}`);
     assert(legacy.windowCaptureHwnd.length == 0);
@@ -540,6 +549,15 @@ unittest
     const contentExplicitOn = settingsFromJson(
         `{"schemaVersion":7,"windowContentCapture":true}`);
     assert(contentExplicitOn.windowContentCapture);
+
+    const gameSource = settingsFromJson(
+        `{"schemaVersion":9,"gameCaptureMode":true}`);
+    assert(gameSource.gameCaptureMode);
+    assert(!gameSource.windowContentCapture);
+    const bothModes = settingsFromJson(
+        `{"schemaVersion":9,"windowContentCapture":true,"gameCaptureMode":true}`);
+    assert(bothModes.gameCaptureMode);
+    assert(!bothModes.windowContentCapture);
 }
 
 unittest

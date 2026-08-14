@@ -1,5 +1,31 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: D3D11 game-capture release integration (2026-08-14)
+
+- `dub test --compiler=dmd --force` passed all 45 modules. Forced x64 debug
+  builds passed for both `application` and `notitlebar`.
+- The optimized standalone D-only hook built with `-betterC`,
+  `/NODEFAULTLIB`, and `/ENTRY:gamecaphookEntry`; no C compiler is involved.
+- The final background-only 1920×1080 harness matrix passed BGRA8, RGBA8, and
+  RGB10A2. Each format completed two injection → capture → restore → self-unload
+  rounds and a third round through the production `GameCaptureSession`. Manual
+  rounds delivered 236–237 non-black/color-correct frames in four seconds; the
+  production reader received 238–239. Final production metrics had zero hook
+  drops and zero sequence gaps for every format.
+- The 72-byte v2 protocol covers ready/frame/error messages, QPC timestamps,
+  source DXGI format, cumulative drops, sequence validation, and bounded shared
+  BGRA8 slots. The named pipe carries headers only. Settings cover persisted mutually-exclusive game
+  and PrintWindow modes; broadcaster tests require raw BGRA stdin.
+- Present submits reusable asynchronous GPU copies and performs only a
+  nonblocking readback/CPU-slot handoff. Channel conversion and named-pipe I/O
+  run on the hook worker. Both hook and host use bounded latest-frame queues;
+  Aurora duplicates the held image on exact 60 FPS cadence for A/V stability.
+- The portable staging helper passed. A verified minimal-FFmpeg Actions artifact
+  (SHA-256 matched GitHub's artifact digest) allowed the complete local
+  `--single-exe` workflow to reach the final link. This DMD installation lacks
+  `libcmt.lib`, so official Windows CI remains the packaging authority.
+- No authenticated YouTube stream or fullscreen foreground test was run.
+
 ## Standard-flow verification and non-interference rule (2026-08-14)
 
 - Headless checks passed: `verify-audio-transport.py`, `verify-rtp-sdp.py`
@@ -104,7 +130,7 @@ Verify (no stream keys needed):
    "configured (hidden)" / "not configured". Verify the FFmpeg line matches the
    bundled build (version.py / single-exe) or the PATH ffmpeg.
 
-## Aurora Stream: OBS-style game capture via D3D11 render hook — in progress (2026-08-14)
+## Aurora Stream: OBS-style game capture via D3D11 render hook — implemented (2026-08-14)
 
 User: "We want to stream a window even if it's minimized or out of focus or not
 here. That's the main point." and then "we need just like obs per game render
@@ -131,8 +157,8 @@ and `dmd`).
   for a trivial DLL). The hook reads a config file
   (`%TEMP%\aurora-gamecap-<pid>.cfg`, `hwnd=` + `pipe=`), creates a dummy
   D3D11 device+swapchain to obtain the process-shared `IDXGISwapChain` vtable,
-  replaces the `Present` slot (index 8) with `hookPresent`, and writes captured
-  BGRA frames into the named pipe.
+  replaces the `Present` slot (index 8) with `hookPresent`, and publishes
+  captured BGRA frames through the shared-memory ring.
 - Injection + transport (`tests/gamecap_test.d`, `tests/inject_notepad.d`):
   `CreateRemoteThread(GetProcAddress(kernel32,"LoadLibraryW"))`. CRITICAL:
   `&LoadLibraryW` in D resolves to THIS EXE's import thunk, NOT the kernel32
@@ -143,7 +169,7 @@ and `dmd`).
   `hookPresent` is reached, `isTargetSwapchain` matches, and `captureFrame`
   runs.
 
-### Current BLOCKER (frame capture step)
+### Resolved capture and integration details
 - [RESOLVED] `ID3D11Device::GetImmediateContext` — the D3D11 device vtable has
   `GetCreationFlags` (slot 38) and `GetDeviceRemovedReason` (slot 39) BEFORE
   `GetImmediateContext`, so its real slot is **40**, not 38 (my original layout
@@ -154,40 +180,38 @@ and `dmd`).
   `void(this, void**)` + a sentinel (0x12345678) and find the one that writes
   the known context — but the vtable dump + header comparison is what settled it.
 - [RESOLVED] **Frame capture works end-to-end**: the hook copies the back
-  buffer to a staging texture, maps it, and delivers BGRA frames to the pipe.
-  Verified 127-128 non-black frames in 4 s (≈124 changing). Two more pitfalls
-  fixed: (a) named-pipe default buffer is 4096 bytes → 1.2 MB frames deadlock;
-  server must set 8 MB buffers and the reader reassembles partial reads;
+  buffer through a reusable asynchronous staging ring, performs nonblocking
+  readback, and delivers versioned BGRA frames on a dedicated worker. The final
+  minimized 1920×1080 matrix covered BGRA8, RGBA8, and RGB10A2 with two restart
+  rounds and the production session for each. Two earlier pitfalls fixed:
+  (a) moving multi-megabyte frames through a named pipe consumed roughly
+  500 MB/s at 1080p60 and was load-sensitive; pixels now use a three-slot
+  shared-memory ring and the 64 KiB pipe carries only framed control headers;
   (b) releasing a COM object must go through ITS OWN vtable slot 2 as an
   `extern(C)` call (`comRelease` helper) — releasing through another object's
   vtable, or via a `extern(D)` function pointer, crashes/hangs.
-- [RESOLVED] The `d3d11test_app.exe` GPU hang at device creation was a driver
-  wedge from ~20 repeated D3D11 device creations; it recovered on its own.
-  The test app now renders at ~60 fps (16 ms sleep) like a real game, and the
-  hook rate-limits to ~60 fps.
-
-### Next steps
-1. Wire into `aurora-stream` as a capture mode: on Start streaming with the
-   game-capture option, create the pipe server, write the hook config, inject
-   `gamecaphook.dll` (GetProcAddress LoadLibraryW), read the pipe on a thread,
-   and feed frames into the existing rawvideo FFmpeg pump
-   (`runWindowContentPump` — it already handles the frame-cadence/duplication
-   for A/V sync). Add a "Game capture (render hook)" option to CAPTURE SOURCE.
-2. Ship `gamecaphook.dll` embedded in the single exe (same mechanism as
-   `ffmpegbundle.d`/`bundledicon.d`: `import("gamecaphook.dll")` under
-   `version (BundledFfmpeg)`, extract to `%TEMP%`, use the path for injection).
-3. x64-only; anti-cheat games (EAC/BattlEye/Vanguard) block injection (same as
-   OBS Game Capture). Strip the hook's setup debug markers
-   (`C:\temp\gamecaphook_dbg.txt`) for release.
+- [RESOLVED] The test target now uses a minimized, never-activated 1920×1080
+  swap chain paced by a high-resolution waitable timer at 250 FPS. It stresses
+  a 60 FPS capture without monopolizing the GPU or opening a foreground window.
+- [RESOLVED] Aurora persists `gameCaptureMode`, injects with the real kernel32
+  `LoadLibraryW`, continuously drains the pipe into a bounded latest-frame
+  queue, reports structured metrics, aspect-fits non-native frames with a
+  reusable HALFTONE DIB, and feeds the existing exact-cadence rawvideo input.
+- [RESOLVED] The portable single-exe workflow builds the optimized hook before
+  DUB embeds it. Extraction uses a content-derived filename and verifies bytes,
+  preventing a same-size stale or locked DLL from being reused.
+- Remaining inherent limits: x64/D3D11 only; anti-cheat/elevated processes may
+  block injection; D3D12/Vulkan/OpenGL/HDR16 need separate hooks. Authenticated
+  YouTube ingest is the next manual release test.
 
 ### Build/verify commands
 ```
-dmd -m64 -shared -betterC gamecaphook.d source\aurorastream\d3d11.d -Isource -I..\vendor\aurora-d-0.4.5\source -of=gamecaphook.dll -L/NODEFAULTLIB -L/ENTRY:gamecaphookEntry -L"C:\D\dmd2\windows\lib64\mingw\kernel32.lib" -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib" -L"C:\D\dmd2\windows\lib64\mingw\ucrtbase.lib"
-dmd -m64 -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\gamecap_test.d -of=..\gamecap_test.exe -L/SUBSYSTEM:CONSOLE -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib"
+dmd -m64 -shared -betterC -O -release -inline -boundscheck=off gamecaphook.d source\aurorastream\d3d11.d -Isource -I..\vendor\aurora-d-0.4.5\source -of=embedded\gamecaphook.dll -L/NODEFAULTLIB -L/ENTRY:gamecaphookEntry -L/OPT:REF -L/OPT:ICF -L"C:\D\dmd2\windows\lib64\mingw\kernel32.lib" -L"C:\D\dmd2\windows\lib64\mingw\user32.lib" -L"C:\D\dmd2\windows\lib64\mingw\gdi32.lib" -L"C:\D\dmd2\windows\lib64\mingw\ucrtbase.lib"
+dmd -m64 -O -release -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\gamecap_test.d -of=gamecap_test.exe
 ```
-Debug markers: `hookDebug` writes to `C:\temp\gamecaphook_dbg.txt`; the test
-traces to `gamecap_test_trace.txt` (cwd) — use PowerShell Start-Process +
-WaitForExit(timeout) + Kill since the D3D11 test app runs 20 s.
+`hookDebug` is compiled out unless `GameCaptureDebug` is explicitly enabled.
+The harness writes `gamecap_test_trace.txt` and owns/terminates its background
+test target; it does not need a foreground process-control wrapper.
 
 ### Hard-won facts (recorded so they are not rediscovered)
 - `dmd -shared` D DLLs default to `msvcrt120` (missing on this system) and do

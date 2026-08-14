@@ -3,6 +3,8 @@ module aurorastream.broadcast;
 import aurorastream.activitylog : ActivityLog;
 import aurorastream.audiobridge : AudioBridgeSession;
 import aurorastream.browser : BrowserChoice;
+import aurorastream.gamecapture : GameCaptureSession, GameCaptureFrame,
+    gameCaptureHookPath;
 import aurorastream.windowsources : windowExists, windowIsMinimized;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
@@ -18,7 +20,15 @@ import std.string : indexOf, replace, split, splitLines, startsWith, strip;
 /// The CRT `_write` from `<io.h>`, used to push raw BGRA frames into FFmpeg's
 /// stdin from the content-capture pump thread. Druntime does not export it.
 version (Windows)
-private extern (C) int _write(int fd, const(void)* buffer, uint count);
+{
+    import core.stdc.string : memcpy, memset;
+    import core.sys.windows.windows : CreateCompatibleDC, CreateDIBSection,
+        DeleteDC, DeleteObject, DIB_RGB_COLORS, GetDC, HBITMAP, HDC, HGDIOBJ,
+        ReleaseDC, SelectObject, SetStretchBltMode, SRCCOPY, StretchDIBits;
+    import core.sys.windows.wingdi : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        GDI_ERROR, HALFTONE;
+    private extern (C) int _write(int fd, const(void)* buffer, uint count);
+}
 
 enum BroadcastQuality
 {
@@ -136,6 +146,10 @@ struct BroadcastSettings
     // resuming automatically on restore. GPU-rendered content (games) may
     // render black through this path, so it is opt-in.
     bool windowContentCapture;
+
+    // When true, inject gamecaphook.dll and capture D3D11 Present frames from
+    // the selected process. This is intentionally separate from PrintWindow.
+    bool gameCaptureMode;
 }
 
 struct BroadcastSnapshot
@@ -417,7 +431,9 @@ string videoPipelineLabel(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
     if (settings.windowCaptureHwnd.strip().length > 0)
-        return settings.windowContentCapture ?
+        return settings.gameCaptureMode ?
+            "Game capture (D3D11 render hook) → CPU processing → encoder" :
+            settings.windowContentCapture ?
             "Window content capture → CPU processing → encoder" :
             "Window capture (GDI) → CPU processing → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
@@ -441,7 +457,9 @@ string captureSourceLabel(const BroadcastSettings settings,
     const window = settings.windowCaptureHwnd.strip();
     if (window.length == 0) return capture.label;
     if (settings.windowCaptureLabel.strip().length > 0)
-        return settings.windowContentCapture ?
+        return settings.gameCaptureMode ?
+            "Game capture: " ~ settings.windowCaptureLabel :
+            settings.windowContentCapture ?
             "Window content: " ~ settings.windowCaptureLabel :
             "Window capture: " ~ settings.windowCaptureLabel;
     return "Window capture (" ~ window ~ ")";
@@ -488,10 +506,16 @@ string validateBroadcastSettings(const BroadcastSettings settings,
     {
         if (!windowExists(settings.windowCaptureHwnd))
             return "The selected capture window is no longer open (it closed, or the saved selection is from an earlier Windows session). Reopen the window or switch the capture source back to the entire desktop.";
-        if (windowIsMinimized(settings.windowCaptureHwnd))
+        if (!settings.gameCaptureMode && windowIsMinimized(settings.windowCaptureHwnd))
             return settings.windowContentCapture ?
                 "The selected capture window is minimized. Restore it once so Aurora Stream can capture its first frame — after that it keeps streaming the window even if you minimize it again." :
                 "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
+        if (settings.gameCaptureMode && size_t.sizeof != 8)
+            return "D3D11 game capture requires a 64-bit Aurora Stream build.";
+    }
+    else if (settings.gameCaptureMode)
+    {
+        return "Game capture requires a selected window.";
     }
     if (!validQuality(settings.sourceQuality))
         return "Select a valid common source resolution.";
@@ -683,13 +707,11 @@ private string[] captureArguments(const BroadcastSettings settings,
     const windowCapture = settings.windowCaptureHwnd.strip();
     if (windowCapture.length > 0)
     {
-        if (settings.windowContentCapture)
+        if (settings.gameCaptureMode || settings.windowContentCapture)
         {
-            // Window-content capture: the app pumps PrintWindow frames of the
-            // window's own content into stdin (raw BGRA), so the stream keeps
-            // showing the window even when it is covered or in the background.
-            // The held last frame is re-sent while the window is minimized so
-            // the encoder stays healthy and resumes automatically on restore.
+            // Both background-window modes use the same fixed-size raw BGRA
+            // stdin contract. The worker selects either the PrintWindow pump or
+            // the shared-memory D3D11 hook pump after FFmpeg starts.
             const width = qualityWidth(settings.sourceQuality);
             const height = qualityHeight(settings.sourceQuality);
             arguments ~= [
@@ -1323,6 +1345,39 @@ unittest
 
 unittest
 {
+    // Game capture is a distinct rawvideo source, not PrintWindow or gdigrab.
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "test-key";
+    settings.youtubeEnabled = false;
+    settings.windowCaptureHwnd = "1841952";
+    settings.windowCaptureLabel = "game.exe — Game";
+    settings.gameCaptureMode = true;
+
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+    const arguments = broadcastArguments(settings, encoder, CaptureSelection.init);
+    bool rawvideo;
+    bool gdigrab;
+    bool ddagrab;
+    foreach (argument; arguments)
+    {
+        if (argument == "rawvideo") rawvideo = true;
+        if (argument == "gdigrab") gdigrab = true;
+        if (argument.indexOf("ddagrab") >= 0) ddagrab = true;
+    }
+    assert(rawvideo);
+    assert(!gdigrab);
+    assert(!ddagrab);
+    assert(videoPipelineLabel(settings, encoder, CaptureSelection.init) ==
+        "Game capture (D3D11 render hook) → CPU processing → encoder");
+    assert(captureSourceLabel(settings, CaptureSelection.init) ==
+        "Game capture: game.exe — Game");
+}
+
+unittest
+{
     // A stale window handle is rejected at start instead of silently capturing
     // the desktop; an empty handle (desktop mode) remains valid.
     BroadcastSettings settings;
@@ -1719,7 +1774,7 @@ final class BroadcastWorker
     }
 
     private void monitorProcess(Pid process, AudioBridgeSession bridge,
-        string windowCaptureHwnd, bool contentCapture = false)
+        string windowCaptureHwnd, bool holdsLastFrame = false)
     {
         enum startupDeadlineTicks = 120; // 12 seconds at 100 ms per tick.
         enum liveProgressDeadlineTicks = 120;
@@ -1907,9 +1962,12 @@ final class BroadcastWorker
                 }
                 else if (_videoCaptureFailed)
                 {
+                    if (_videoCaptureFailureReason.length > 0)
+                        failureReason = _videoCaptureFailureReason;
                     _failed = true;
                     _requestedRunning = false;
-                    _status = "Desktop capture stalled";
+                    _status = _captureFailureStatus.length > 0 ?
+                        _captureFailureStatus : "Desktop capture stalled";
                     appendDiagnostic(failureReason);
                     _failureLoggedToActivity = true;
                     terminate = true;
@@ -1944,7 +2002,7 @@ final class BroadcastWorker
                     _failureLoggedToActivity = true;
                     terminate = true;
                 }
-                else if (!contentCapture &&
+                else if (!holdsLastFrame &&
                     windowIsMinimized(windowCaptureHwnd))
                 {
                     failureReason = "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again (a minimized window cannot be captured).";
@@ -2003,8 +2061,9 @@ final class BroadcastWorker
             auto heldFrame = new ubyte[frameBytes];
             bool haveHeldFrame;
 
-            const frameInterval = dur!"msecs"(
-                1000 / (settings.fps > 0 ? settings.fps : 60));
+            const cadenceFps = settings.fps > 0 ? settings.fps : 60;
+            const frameInterval = dur!"nsecs"(
+                1_000_000_000L / cadenceFps);
             auto nextFrame = MonoTime.currTime;
             while (true)
             {
@@ -2063,13 +2122,207 @@ final class BroadcastWorker
         }
     }
 
+    /// Resizes a hook frame into the fixed source canvas expected by FFmpeg.
+    /// This matches the later scale/pad graph: preserve aspect ratio, center
+    /// the image, and leave unused canvas pixels black.
+    version (Windows)
+    version (Windows)
+    private final class BgraFrameScaler
+    {
+        private int _targetWidth;
+        private int _targetHeight;
+        private HDC _targetDC;
+        private HBITMAP _targetBitmap;
+        private HGDIOBJ _targetPrevious;
+        private void* _targetBits;
+
+        this(int targetWidth, int targetHeight)
+        {
+            _targetWidth = targetWidth;
+            _targetHeight = targetHeight;
+        }
+
+        ~this()
+        {
+            close();
+        }
+
+        void close()
+        {
+            if (_targetDC !is null && _targetPrevious !is null)
+                SelectObject(_targetDC, _targetPrevious);
+            _targetPrevious = null;
+            if (_targetBitmap !is null) DeleteObject(_targetBitmap);
+            _targetBitmap = null;
+            if (_targetDC !is null) DeleteDC(_targetDC);
+            _targetDC = null;
+            _targetBits = null;
+        }
+
+        private bool ensureTargetSurface()
+        {
+            if (_targetDC !is null && _targetBits !is null) return true;
+            auto screenDC = GetDC(null);
+            if (screenDC is null) return false;
+            scope(exit) ReleaseDC(null, screenDC);
+            _targetDC = CreateCompatibleDC(screenDC);
+            if (_targetDC is null) return false;
+
+            BITMAPINFO info;
+            info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+            info.bmiHeader.biWidth = _targetWidth;
+            info.bmiHeader.biHeight = -_targetHeight;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            _targetBitmap = CreateDIBSection(_targetDC, &info,
+                DIB_RGB_COLORS, &_targetBits, null, 0);
+            if (_targetBitmap is null || _targetBits is null) return false;
+            _targetPrevious = SelectObject(_targetDC,
+                cast(HGDIOBJ) _targetBitmap);
+            SetStretchBltMode(_targetDC, HALFTONE);
+            return _targetPrevious !is null;
+        }
+
+        bool fit(const GameCaptureFrame source, ubyte[] target)
+        {
+            const targetBytes = cast(size_t) _targetWidth * _targetHeight * 4;
+            if (source is null || target.length < targetBytes ||
+                source.width == 0 || source.height == 0 ||
+                source.pixels.length <
+                    cast(size_t) source.width * source.height * 4)
+                return false;
+            if (source.width == _targetWidth &&
+                source.height == _targetHeight)
+            {
+                memcpy(target.ptr, source.pixels.ptr, targetBytes);
+                return true;
+            }
+
+            if (!ensureTargetSurface()) return false;
+            ulong scaledWidth = _targetWidth;
+            ulong scaledHeight = cast(ulong) _targetWidth * source.height /
+                source.width;
+            if (scaledHeight > _targetHeight)
+            {
+                scaledHeight = _targetHeight;
+                scaledWidth = cast(ulong) _targetHeight * source.width /
+                    source.height;
+            }
+            if (scaledWidth == 0 || scaledHeight == 0) return false;
+            const offsetX = (_targetWidth - cast(int) scaledWidth) / 2;
+            const offsetY = (_targetHeight - cast(int) scaledHeight) / 2;
+
+            BITMAPINFO sourceInfo;
+            sourceInfo.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+            sourceInfo.bmiHeader.biWidth = cast(int) source.width;
+            sourceInfo.bmiHeader.biHeight = -cast(int) source.height;
+            sourceInfo.bmiHeader.biPlanes = 1;
+            sourceInfo.bmiHeader.biBitCount = 32;
+            sourceInfo.bmiHeader.biCompression = BI_RGB;
+            memset(_targetBits, 0, targetBytes);
+            const copiedLines = StretchDIBits(_targetDC, offsetX, offsetY,
+                cast(int) scaledWidth, cast(int) scaledHeight, 0, 0,
+                cast(int) source.width, cast(int) source.height,
+                source.pixels.ptr, &sourceInfo, DIB_RGB_COLORS, SRCCOPY);
+            if (copiedLines == 0 || copiedLines == cast(int) GDI_ERROR)
+                return false;
+            memcpy(target.ptr, _targetBits, targetBytes);
+            return true;
+        }
+    }
+
+    /// Reads shared D3D11 Present output and feeds the same paced rawvideo
+    /// stdin path as PrintWindow. The newest completed frame replaces the held
+    /// image; every missed cadence slot receives the held image instead.
+    private void runGameCapturePump(const BroadcastSettings settings,
+        int stdinFd, GameCaptureSession session)
+    {
+        version (Windows)
+        {
+            const width = qualityWidth(settings.sourceQuality);
+            const height = qualityHeight(settings.sourceQuality);
+            const frameBytes = cast(size_t) width * height * 4;
+            auto heldFrame = new ubyte[frameBytes];
+            auto scaler = new BgraFrameScaler(width, height);
+            scope(exit) scaler.close();
+            bool haveHeldFrame;
+            const cadenceFps = settings.fps > 0 ? settings.fps : 60;
+            const frameInterval = dur!"nsecs"(
+                1_000_000_000L / cadenceFps);
+            auto nextFrame = MonoTime.currTime;
+            while (true)
+            {
+                _mutex.lock();
+                const running = _requestedRunning && !_shutdown &&
+                    _processRunning;
+                _mutex.unlock();
+                if (!running) break;
+
+                GameCaptureFrame latest;
+                if (session.readLatestFrame(latest))
+                {
+                    try haveHeldFrame = scaler.fit(latest, heldFrame) ||
+                        haveHeldFrame;
+                    finally session.releaseFrame(latest);
+                }
+
+                const captureFailure = session.failure();
+                if (captureFailure.length > 0)
+                {
+                    _mutex.lock();
+                    _videoCaptureFailed = true;
+                    _videoCaptureFailureReason = captureFailure;
+                    _captureFailureStatus = "Game capture stopped";
+                    _mutex.unlock();
+                    break;
+                }
+
+                bool wrote = true;
+                if (haveHeldFrame)
+                    wrote = writeFrame(stdinFd, heldFrame, frameBytes);
+
+                nextFrame += frameInterval;
+                const now = MonoTime.currTime;
+                if (wrote)
+                {
+                    while (nextFrame <= now)
+                    {
+                        if (!haveHeldFrame) break;
+                        wrote = writeFrame(stdinFd, heldFrame, frameBytes);
+                        if (!wrote) break;
+                        nextFrame += frameInterval;
+                    }
+                }
+                if (!wrote) break;
+                if (nextFrame > MonoTime.currTime)
+                {
+                    try Thread.sleep(nextFrame - MonoTime.currTime);
+                    catch (Exception) {}
+                }
+            }
+            appendPersistentLog("GAME CAPTURE METRICS: " ~
+                session.diagnosticsSummary());
+            const failure = session.failure();
+            if (failure.length > 0)
+                appendPersistentLog("GAME CAPTURE: " ~ failure);
+        }
+    }
+
     private bool writeFrame(int stdinFd, const(ubyte)[] frame,
         size_t byteCount)
     {
         version (Windows)
         {
-            const written = _write(stdinFd, frame.ptr, cast(uint) byteCount);
-            return written == cast(int) byteCount;
+            size_t offset;
+            while (offset < byteCount)
+            {
+                const written = _write(stdinFd, frame.ptr + offset,
+                    cast(uint) (byteCount - offset));
+                if (written <= 0) return false;
+                offset += cast(size_t) written;
+            }
+            return true;
         }
         else
         {
@@ -2191,6 +2444,7 @@ final class BroadcastWorker
         bool bindRace;
         AudioBridgeSession desktopBridge;
         PreparedDesktopAudio desktopAudio;
+        GameCaptureSession gameCapture;
 
         resetPersistentLog(settings, encoder, capture);
         appendPersistentLog("Broadcast worker started.");
@@ -2281,6 +2535,26 @@ final class BroadcastWorker
                 desktopAudio, capture);
             appendArgumentLog(arguments, secrets);
 
+            if (settings.gameCaptureMode)
+            {
+                version (Windows)
+                {
+                    const hookPath = gameCaptureHookPath(_executablePath);
+                    if (hookPath.length == 0)
+                        throw new Exception(
+                            "gamecaphook.dll was not found. Build it beside Aurora Stream or use a single-exe build with the embedded hook.");
+                    gameCapture = new GameCaptureSession(hookPath);
+                    string hookError;
+                    if (!gameCapture.start(settings.windowCaptureHwnd,
+                        hookError))
+                        throw new Exception(hookError);
+                    appendPersistentLog(
+                        "Game capture hook injected; shared BGRA ring and framed control pipe are connected.");
+                    activityInfo(
+                        "Game capture hook injected and frame pipe connected.");
+                }
+            }
+
             // Windows can transiently refuse to re-bind the just-released RTP
             // UDP port with WSAEADDRINUSE (-10048) even though the handoff
             // proved it free (the diagnostic matrix retries this race with
@@ -2305,7 +2579,7 @@ final class BroadcastWorker
                         "Released the verified non-inheritable receiver reservations immediately before FFmpeg launch.");
                 }
                 auto pipes = pipeProcess(arguments,
-                    settings.windowContentCapture ?
+                    (settings.windowContentCapture || settings.gameCaptureMode) ?
                         Redirect.stderr | Redirect.stdin : Redirect.stderr,
                     cast(const string[string]) null, Config.suppressConsole);
                 _mutex.lock();
@@ -2328,15 +2602,19 @@ final class BroadcastWorker
                 // writes with the raw CRT `_write`, so the descriptor stays
                 // owned and closed exactly once by `pipes` here).
                 Thread contentPump;
-                if (settings.windowContentCapture)
+                if (settings.windowContentCapture || settings.gameCaptureMode)
                 {
                     auto stdinFd = pipes.stdin.fileno();
                     contentPump = new Thread({
-                        runWindowContentPump(settings, stdinFd);
+                        if (settings.gameCaptureMode)
+                            runGameCapturePump(settings, stdinFd, gameCapture);
+                        else
+                            runWindowContentPump(settings, stdinFd);
                     });
                     contentPump.isDaemon = true;
                     contentPump.start();
-                    appendPersistentLog(
+                    appendPersistentLog(settings.gameCaptureMode ?
+                        "Game capture frame pump started (shared hook BGRA → paced rawvideo stdin)." :
                         "Window content capture frame pump started (PrintWindow → raw BGRA → stdin).");
                 }
 
@@ -2371,7 +2649,8 @@ final class BroadcastWorker
                     auto monitor = new Thread({
                         monitorProcess(pipes.pid, desktopBridge,
                             settings.windowCaptureHwnd,
-                            settings.windowContentCapture);
+                            settings.windowContentCapture ||
+                            settings.gameCaptureMode);
                     });
                     monitor.isDaemon = true;
                     monitor.start();
@@ -2515,6 +2794,8 @@ final class BroadcastWorker
         }
         finally
         {
+            if (gameCapture !is null)
+                gameCapture.shutdown();
             if (desktopBridge !is null)
             {
                 desktopBridge.shutdown();
