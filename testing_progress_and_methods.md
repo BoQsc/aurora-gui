@@ -1,5 +1,32 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## TitleBar: cursor no longer changes to "move" while dragging the window (2026-08-14)
+
+User: dragging the window by the custom titlebar should not change the cursor.
+
+Root cause in `vendor/aurora-d-0.4.5/source/aurora/widgets/titlebar.d`: when a
+real drag starts (`onMouseMove`, movement threshold crossed) the bar called
+`setCursor(CursorKind.move)`, so the pointer flipped to the move cursor for the
+whole drag. Dragging a window is not a resize/move cursor situation — the
+pointer should stay an arrow (drag only starts from the title/icon area, which
+already uses the arrow cursor, so the arrow is left untouched).
+
+What changed:
+- Removed the `setCursor(CursorKind.move)` call at drag start; the drag now
+  leaves the existing arrow cursor in place.
+- The comment in `onMouseMove`'s `_dragging` branch now says "keep the cursor
+  and the hover visuals frozen" (the move-cursor rationale is gone).
+- `setDraggable(false)` and `onMouseUp` still reset to `CursorKind.arrow`
+  (unchanged — correct and harmless).
+
+How to verify:
+- `dub test` in `vendor/aurora-d-0.4.5` → all unit tests pass (the drag
+  self-move unittest exercises the exact code path that used to set the move
+  cursor).
+- `dub build --config=application` in `aurora-stream` links.
+- Manual: drag the titlebar; the cursor must stay the arrow and never flip to
+  the move cursor. Caption-button hover (hand cursor) is unchanged.
+
 ## Single-exe PE icon (Explorer/taskbar) via post-link .rsrc patch (2026-08-13)
 
 DMD's bundled lld-link is 9.0.0 (2019): it rejects `.res` files ("unknown file

@@ -652,7 +652,7 @@ class TitleBar : Widget
     {
         if (_dragging)
         {
-            // While dragging, keep the move cursor and the hover visuals frozen:
+            // While dragging, keep the cursor and the hover visuals frozen:
             // synthesized mouse-moves arrive as the window moves under the
             // pointer, and re-running the hot control would flicker the cursor.
             const pointer = pointerPosition(event);
@@ -695,8 +695,9 @@ class TitleBar : Widget
                     return true;
                 }
                 _dragging = true;
-                setCursor(CursorKind.move);
-                // Re-enter capture now that wantsContinuousPointerFrames() is
+                // Leave the arrow cursor untouched: dragging the window should
+                // not change the pointer. Re-enter capture now that
+                // wantsContinuousPointerFrames() is
                 // true, activating Aurora's late-latched synchronized pointer.
                 captureMouse();
                 if (onDragStarted !is null)
