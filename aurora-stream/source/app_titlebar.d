@@ -2,6 +2,7 @@ module app_titlebar;
 
 import aurora;
 import aurorastream.appversion : appDisplayName, appFullVersion;
+import aurorastream.appupdate : runApplyUpdateMode;
 import aurorastream.audiobridge : runAudioBridgeHelper;
 import aurorastream.entry : applicationIconPath, printAudioEndpointsJson,
     recordStartupFailure, runAudioBridgeSessionTest;
@@ -254,6 +255,8 @@ int main(string[] arguments)
         return runAudioBridgeHelper(arguments);
     if (arguments.length > 1 && arguments[1] == "--pacing-test")
         return runStreamPacingDiagnostic(arguments[0]);
+    if (arguments.length > 1 && arguments[1] == "--apply-update")
+        return runApplyUpdateMode(arguments);
 
     try return runTitleBarApplication(arguments[0]);
     catch (Throwable error)

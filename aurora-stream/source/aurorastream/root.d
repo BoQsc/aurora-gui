@@ -1,6 +1,7 @@
 module aurorastream.root;
 
 import aurora;
+import aurorastream.appupdate : launchUpdater, newerReleaseTag, stageLatestUpdate;
 import aurorastream.appversion : appDisplayName;
 import aurorastream.audioendpoint : AudioEndpoint;
 import aurorastream.audiodevices : AudioDeviceScanner;
@@ -108,11 +109,16 @@ final class StreamRoot : VBox
     private bool _settingsMessageError;
     private bool _settingsLoadFailed;
     private BrowserChoice _browserChoice;
+    private Mutex _updateMutex;
+    private string _updateAvailable;
+    private bool _updateChecked;
 
     this(GuiWindow window, string executablePath)
     {
         super(8, Insets(10));
         _window = window;
+        _updateMutex = new Mutex();
+        startUpdateCheck();
         _activityLog = new ActivityLog(executablePath);
         _activityLog.start();
         _lastMinimized = _window.isMinimized();
@@ -510,7 +516,56 @@ final class StreamRoot : VBox
             })
         ];
 
+        string updateTag;
+        _updateMutex.lock();
+        updateTag = _updateAvailable;
+        _updateMutex.unlock();
+        if (updateTag.length > 0)
+            items ~= ContextMenuItem.command(
+                "Update available: " ~ updateTag ~ " — install & restart",
+                delegate() { startUpdate(); });
+
         showContextMenuBelow(_settingsMenu, items);
+    }
+
+    /// Background version check (release builds only; silently no-ops in dev).
+    private void startUpdateCheck()
+    {
+        auto worker = new Thread(delegate() {
+            const tag = newerReleaseTag();
+            _updateMutex.lock();
+            _updateAvailable = tag;
+            _updateChecked = true;
+            _updateMutex.unlock();
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    /// Downloads the latest release, spawns the updater, and exits so the new
+    /// version can replace this exe and relaunch.
+    private void startUpdate()
+    {
+        _localStatus = "Downloading update…";
+        _localStatusError = false;
+        const staged = stageLatestUpdate();
+        if (staged.length == 0)
+        {
+            _localStatus = "Could not download the update. Try again later.";
+            _localStatusError = true;
+            return;
+        }
+        if (launchUpdater(staged))
+        {
+            _localStatus = "Restarting to install the update…";
+            _localStatusError = false;
+            _window.close();
+        }
+        else
+        {
+            _localStatus = "Could not start the updater.";
+            _localStatusError = true;
+        }
     }
 
     private void setStreamingServersVisible(bool visible)
