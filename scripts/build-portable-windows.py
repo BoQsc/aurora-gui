@@ -111,6 +111,38 @@ def build_game_capture_hook(repo_root: Path, compiler: str) -> None:
         raise SystemExit(1)
 
 
+def verify_stream_ffmpeg_inventory(ffmpeg: Path) -> None:
+    """Refuse a release payload that lacks Aurora Stream's capture filters.
+
+    ddagrab is an FFmpeg source filter, not an input device. A former minimal
+    build enabled it under --enable-indev, which configured successfully but
+    silently shipped an executable without Desktop Duplication support.
+    """
+    checks = [
+        ([str(ffmpeg), "-hide_banner", "-filters"], ("ddagrab", "hwdownload")),
+        ([str(ffmpeg), "-hide_banner", "-devices"], ("gdigrab", "dshow", "lavfi")),
+    ]
+    for command, required in checks:
+        result = subprocess.run(
+            command,
+            cwd=ffmpeg.parent,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        missing = [name for name in required if name not in output]
+        if result.returncode != 0 or missing:
+            details = ", ".join(missing) if missing else f"exit {result.returncode}"
+            print(
+                f"::error::{ffmpeg} is not release-ready; missing FFmpeg "
+                f"capabilities: {details}",
+                flush=True,
+            )
+            raise SystemExit(1)
+    print(f"Aurora Stream FFmpeg capture inventory passed: {ffmpeg}", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build Aurora's statically linked portable Windows executables."
@@ -170,6 +202,7 @@ def main() -> int:
                 print(f"::error::missing icon {ico}", flush=True)
                 raise SystemExit(1)
             if name == "aurora-stream":
+                verify_stream_ffmpeg_inventory(embedded / "ffmpeg.exe")
                 build_game_capture_hook(repo_root, args.compiler)
         command = [
             "dub",

@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream VLC still black/white in 0.66.0
+
+- [x] User screenshot confirmed the VLC safeguard was incomplete: PrintWindow
+      was disabled, but normal capture and the live canvas still read VLC's HWND
+      GDI surface, which cannot contain its independently composed D3D11 video.
+- [x] VLC now uses a clipped visible client rectangle from the composed desktop:
+      DDA region when available, cropped `gdigrab desktop` otherwise. Preview and
+      broadcast share the same geometry; preview preserves aspect ratio.
+- [x] Partly off-screen geometry is clipped before capture. Verified the observed
+      1532×710 visible region through the shipped GDI fallback: exact 4,350,880
+      BGRA bytes and 31.8% non-black pixels, without a fullscreen test.
+- [x] Fixed minimal FFmpeg: `ddagrab` moved from `--enable-indev` to
+      `--enable-filter`. Actions and portable packaging now fail if the expected
+      DDA/GDI/audio capture inventory is missing.
+- [x] Desktop Duplication selection now rejects successful all-black BGRA probes.
+- [ ] New minimal-FFmpeg CI, portable single-exe CI, and 0.66.1 release pending.
+
 ## 2026-08-14 — Development-process complaint: tests disturbed desktop use
 - [x] User complaint: a fullscreen quality diagnostic interfered with normal
       computer use and was closed. From now on, do not run fullscreen or

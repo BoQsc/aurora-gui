@@ -209,15 +209,17 @@ saved in `aurora-stream-settings.json` (schema 9).
 
 The selected window has three mutually exclusive capture paths:
 
-- **Visible window capture** uses FFmpeg `gdigrab hwnd=`. It is the broadest
-  compatibility path, but captures the window as it appears on screen and
-  therefore requires it to remain visible and restored.
+- **Visible window capture** normally uses FFmpeg `gdigrab hwnd=`. VLC is a
+  special case: its HWND GDI surface does not contain the Direct3D video, so
+  Aurora crops VLC's actual client rectangle from the composed desktop instead.
+  Desktop Duplication is preferred and cropped `gdigrab desktop` is the fallback.
+  This path requires VLC to remain visible, restored, and unobscured.
 - **PrintWindow** asks the application to paint its client content into an
   off-screen DIB. Covered/background software-rendered apps remain private and
   capturable. Slow captures repeat the last good frame at an exact 60 FPS output
   cadence, so video timestamps cannot drift away from desktop audio. VLC is
-  automatically kept on visible-window capture because its hardware video
-  surface is not composed reliably by PrintWindow.
+  automatically kept on composed visible-pixel capture because its hardware
+  video surface is not available through PrintWindow or its HWND GDI surface.
 - **Game capture: D3D11 render hook** injects Aurora's D-only x64 hook into the
   selected process and captures its `IDXGISwapChain::Present` back buffer. The
   game may be covered, out of focus, or minimized as long as it continues to

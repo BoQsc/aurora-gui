@@ -1,3 +1,19 @@
+Aurora Suite 0.66.1
+Aurora Stream VLC window-capture correction
+-------------------------------------------
+
+- Fixed VLC window capture still using the HWND GDI surface, which contains
+  window chrome but omits VLC's independently composed Direct3D video surface.
+- VLC now captures its exact visible client rectangle from the composed desktop
+  through Desktop Duplication, with a cropped GDI desktop compatibility path.
+- Partly off-screen VLC rectangles are clipped to the virtual desktop, and the
+  live source canvas uses the same visible pixels with aspect-preserving bars.
+- Fixed the minimal FFmpeg build to enable `ddagrab` as a filter (its actual
+  FFmpeg type), and made CI plus portable packaging reject an inventory without
+  `ddagrab`, `hwdownload`, `gdigrab`, `dshow`, or `lavfi`.
+- Desktop Duplication selection now inspects a real BGRA probe frame and rejects
+  remote/virtual sessions that initialize successfully but return black pixels.
+
 Aurora Suite 0.66.0
 Aurora Stream game/window capture release
 -----------------------------------------

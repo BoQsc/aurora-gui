@@ -26,7 +26,7 @@ import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
 import aurorastream.trayicon : TrayIcon;
 import aurorastream.wasapi : AudioDeviceNotifications;
 import aurorastream.windowsources : CaptureSourceDropdown, windowExists,
-    windowIsMinimized;
+    windowIsMinimized, windowLabelIsProcess, windowProcessImageName;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : dur, msecs;
@@ -76,6 +76,7 @@ final class StreamRoot : VBox
     private int _previewCaptureTargetWidth = previewCaptureWidth;
     private int _previewCaptureTargetHeight = previewCaptureHeight;
     private string _previewCaptureWindowHwnd;
+    private bool _previewCaptureVisibleScreenPixels;
     private bool _previewCaptureRunning;
     private bool _previewCaptureDesired;
     private enum int previewCaptureWidth = 480;
@@ -286,7 +287,7 @@ final class StreamRoot : VBox
                     "Capture source changed to the entire desktop.");
         };
         auto captureHint = settingsContent.add(new Label(
-            "Pick a single game or app window. PrintWindow captures its content; Game capture hooks D3D11 Present for background/minimized rendering. Entire desktop captures everything."));
+            "Pick a single game or app window. VLC uses its visible composed pixels; PrintWindow captures normal app content; Game capture hooks D3D11 Present."));
         captureHint.setScale(1);
         captureHint.setColor(Color.fromHex(0x8793a0));
         captureHint.layoutHints().preferredHeight = 36;
@@ -296,9 +297,11 @@ final class StreamRoot : VBox
         _windowContentCapture.onChanged = delegate(bool checked) {
             if (checked && _gameCaptureMode !is null)
                 _gameCaptureMode.setChecked(false, false);
+            if (checked) enforceVlcScreenCapture();
+            const active = _windowContentCapture.checked();
             updateQualitySummary();
             markSettingsDirty();
-            _activityLog.info(checked ?
+            _activityLog.info(active ?
                 "Window-content capture enabled (window's own content)." :
                 "Window-content capture disabled (on-screen pixels).");
         };
@@ -315,6 +318,7 @@ final class StreamRoot : VBox
                 "Game capture enabled (D3D11 Present render hook)." :
                 "Game capture disabled.");
         };
+        enforceVlcScreenCapture();
 
         settingsContent.add(new Separator());
         auto sourceTitle = settingsContent.add(new Label("COMMON SOURCE CANVAS"));
@@ -1009,9 +1013,10 @@ final class StreamRoot : VBox
     {
         if (_captureSource is null) return false;
         const label = _captureSource.selectedLabel().strip();
-        const separator = label.indexOf(" — ");
-        return separator > 0 &&
-            icmp(label[0 .. cast(size_t) separator], "vlc.exe") == 0;
+        if (windowLabelIsProcess(label, "vlc.exe")) return true;
+        if (label.indexOf(" — ") > 0) return false;
+        return icmp(windowProcessImageName(_captureSource.selectedHwnd()),
+            "vlc.exe") == 0;
     }
 
     private void enforceVlcScreenCapture()
@@ -1347,6 +1352,8 @@ final class StreamRoot : VBox
         _previewCaptureMutex.lock();
         _previewCaptureDesired = !minimized;
         _previewCaptureWindowHwnd = _captureSource.selectedHwnd();
+        _previewCaptureVisibleScreenPixels = selectedWindowIsVlc() &&
+            (_gameCaptureMode is null || !_gameCaptureMode.checked());
         RgbaImage latest = _previewCaptureFrame;
         _previewCaptureMutex.unlock();
         // Size the capture to the preview panel so the live frame is shown at
@@ -1405,10 +1412,11 @@ final class StreamRoot : VBox
             const targetWidth = _previewCaptureTargetWidth;
             const targetHeight = _previewCaptureTargetHeight;
             const windowHwnd = _previewCaptureWindowHwnd;
+            const visibleScreenPixels = _previewCaptureVisibleScreenPixels;
             _previewCaptureMutex.unlock();
             // Match the preview to the stream source: the selected window when
             // game/window capture is active, otherwise the primary monitor.
-            _previewCapturer.setWindowTarget(windowHwnd);
+            _previewCapturer.setWindowTarget(windowHwnd, visibleScreenPixels);
             _previewCapturer.setTargetSize(targetWidth, targetHeight);
             const byteCount = cast(size_t) targetWidth * targetHeight * 4;
             if (_previewCaptureBuffer is null ||

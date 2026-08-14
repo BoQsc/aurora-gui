@@ -1,5 +1,22 @@
 # Aurora Stream changelog
 
+## 0.66.1 — 2026-08-14
+
+- **Fixed VLC's black/white partial-window capture.** The 0.66.0 safeguard
+  disabled PrintWindow for VLC but still sent both the preview and FFmpeg to the
+  VLC HWND's GDI surface. That surface contains some UI but cannot contain the
+  independently composed Direct3D video. Aurora now resolves and clips VLC's
+  client rectangle in desktop coordinates and captures those actual composed
+  screen pixels. Desktop Duplication is preferred; cropped `gdigrab desktop`
+  remains the compatibility path. The preview uses the same region and preserves
+  aspect ratio instead of stretching it.
+- Corrected minimal-FFmpeg configuration: `ddagrab` is an FFmpeg source filter,
+  not an input device. CI now verifies the capture filter/device inventory, and
+  the portable builder rejects an embedded FFmpeg that lacks it.
+- Desktop Duplication startup now inspects the returned BGRA pixels instead of
+  accepting exit code zero alone, so an all-black remote/virtual capture falls
+  back to GDI before a stream starts.
+
 ## 0.66.0 — 2026-08-14
 
 - **OBS-style per-game D3D11 capture.** Aurora can inject a D-only x64

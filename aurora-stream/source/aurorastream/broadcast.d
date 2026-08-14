@@ -5,17 +5,20 @@ import aurorastream.audiobridge : AudioBridgeSession;
 import aurorastream.browser : BrowserChoice;
 import aurorastream.gamecapture : GameCaptureSession, GameCaptureFrame,
     gameCaptureHookPath;
-import aurorastream.windowsources : windowExists, windowIsMinimized;
+import aurorastream.windowsources : windowClientScreenRect, windowExists,
+    windowIsMinimized, windowLabelIsProcess, windowProcessImageName,
+    WindowScreenRect;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, dur, msecs;
+import std.algorithm.searching : canFind;
 import std.conv : to;
 import std.file : append, write;
 import std.format : format;
 import std.path : buildPath, dirName;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.stdio : File;
-import std.string : indexOf, replace, split, splitLines, startsWith, strip;
+import std.string : icmp, indexOf, replace, split, splitLines, startsWith, strip;
 
 /// The CRT `_write` from `<io.h>`, used to push raw BGRA frames into FFmpeg's
 /// stdin from the content-capture pump thread. Druntime does not export it.
@@ -329,22 +332,49 @@ EncoderSelection detectEncoder()
     return result;
 }
 
+private bool bgraProbeHasVisiblePixels(const(char)[] frame, int width, int height)
+    @safe pure nothrow @nogc
+{
+    const pixelCount = cast(size_t) width * height;
+    const expected = pixelCount * 4;
+    if (pixelCount == 0 || frame.length < expected) return false;
+    size_t visiblePixels;
+    foreach (pixel; 0 .. pixelCount)
+    {
+        const offset = pixel * 4;
+        const blue = cast(ubyte) frame[offset];
+        const green = cast(ubyte) frame[offset + 1];
+        const red = cast(ubyte) frame[offset + 2];
+        if (red > 8 || green > 8 || blue > 8) ++visiblePixels;
+    }
+    // A remote/virtual session can initialize Desktop Duplication successfully
+    // while returning an entirely black texture. Require a small amount of
+    // actual composed desktop content before selecting it as the live backend.
+    const required = (pixelCount + 99) / 100;
+    return visiblePixels >= required;
+}
+
 private bool desktopDuplicationWorks()
 {
     version (Windows)
     {
         try
         {
-            // Probe one frame so a build that merely lists ddagrab but cannot
-            // initialize Desktop Duplication does not become the live backend.
+            // Probe actual pixels so a build/session that initializes ddagrab
+            // but returns an all-black remote-desktop texture does not become
+            // the live backend.
+            enum probeWidth = 96;
+            enum probeHeight = 54;
             const result = execute([
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
                 "-f", "lavfi", "-i",
                 "ddagrab=output_idx=0:framerate=1:draw_mouse=1:dup_frames=1," ~
-                    "hwdownload,format=bgra",
-                "-frames:v", "1", "-an", "-f", "null", "-"
+                    "hwdownload,format=bgra,scale=96:54",
+                "-frames:v", "1", "-an", "-pix_fmt", "bgra",
+                "-f", "rawvideo", "pipe:1"
             ], null, Config.suppressConsole, 4 * 1024 * 1024);
-            return result.status == 0;
+            return result.status == 0 && bgraProbeHasVisiblePixels(
+                result.output, probeWidth, probeHeight);
         }
         catch (Exception)
         {
@@ -427,6 +457,35 @@ bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
         capture.nativeHeight == qualityHeight(settings.sourceQuality);
 }
 
+unittest
+{
+    assert(!bgraProbeHasVisiblePixels("", 2, 2));
+    char[16] black;
+    black[] = '\0';
+    assert(!bgraProbeHasVisiblePixels(black[], 2, 2));
+    char[400] visible;
+    visible[] = '\0';
+    visible[2] = cast(char) 255;
+    assert(bgraProbeHasVisiblePixels(visible[], 10, 10));
+}
+
+/// VLC presents video through a hardware/compositor surface that is absent from
+/// both PrintWindow and GetDC(hwnd)/gdigrab's HWND path. Capture the selected
+/// client rectangle from the composed desktop instead. This is deliberately a
+/// visible-only path: covering or minimizing VLC cannot produce its pixels.
+bool usesVlcVisibleScreenCapture(const BroadcastSettings settings)
+{
+    if (settings.windowCaptureHwnd.strip().length == 0 ||
+        settings.windowContentCapture || settings.gameCaptureMode)
+        return false;
+    if (windowLabelIsProcess(settings.windowCaptureLabel, "vlc.exe"))
+        return true;
+    if (settings.windowCaptureLabel.strip().indexOf(" — ") > 0)
+        return false;
+    return icmp(windowProcessImageName(settings.windowCaptureHwnd),
+        "vlc.exe") == 0;
+}
+
 string videoPipelineLabel(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
@@ -435,6 +494,10 @@ string videoPipelineLabel(const BroadcastSettings settings,
             "Game capture (D3D11 render hook) → CPU processing → encoder" :
             settings.windowContentCapture ?
             "Window content capture → CPU processing → encoder" :
+            usesVlcVisibleScreenCapture(settings) ?
+            (capture.backend == DesktopCaptureBackend.desktopDuplication ?
+                "Visible VLC region (D3D11 desktop pixels) → CPU processing → encoder" :
+                "Visible VLC region (GDI desktop pixels) → CPU processing → encoder") :
             "Window capture (GDI) → CPU processing → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
         return "D3D11 direct hardware frames → NVENC";
@@ -461,6 +524,8 @@ string captureSourceLabel(const BroadcastSettings settings,
             "Game capture: " ~ settings.windowCaptureLabel :
             settings.windowContentCapture ?
             "Window content: " ~ settings.windowCaptureLabel :
+            usesVlcVisibleScreenCapture(settings) ?
+            "Visible window pixels: " ~ settings.windowCaptureLabel :
             "Window capture: " ~ settings.windowCaptureLabel;
     return "Window capture (" ~ window ~ ")";
 }
@@ -510,6 +575,12 @@ string validateBroadcastSettings(const BroadcastSettings settings,
             return settings.windowContentCapture ?
                 "The selected capture window is minimized. Restore it once so Aurora Stream can capture its first frame — after that it keeps streaming the window even if you minimize it again." :
                 "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
+        if (usesVlcVisibleScreenCapture(settings))
+        {
+            WindowScreenRect region;
+            if (!windowClientScreenRect(settings.windowCaptureHwnd, region))
+                return "Aurora Stream could not resolve VLC's visible client area. Restore VLC, keep it on a visible desktop, and select it again.";
+        }
         if (settings.gameCaptureMode && size_t.sizeof != 8)
             return "D3D11 game capture requires a 64-bit Aurora Stream build.";
     }
@@ -721,6 +792,15 @@ private string[] captureArguments(const BroadcastSettings settings,
                 "-i", "pipe:0"
             ];
         }
+        else if (usesVlcVisibleScreenCapture(settings))
+        {
+            WindowScreenRect region;
+            if (!windowClientScreenRect(windowCapture, region))
+                throw new Exception(
+                    "Could not resolve VLC's visible client area for screen-pixel capture.");
+            appendVisibleScreenRegionArguments(arguments, settings.fps,
+                region, capture);
+        }
         else
         {
             // Game/window capture: grab only the selected window via gdigrab's
@@ -786,6 +866,37 @@ private string[] captureArguments(const BroadcastSettings settings,
         audioInputs ~= PreparedAudioInput(nextInput++, AudioClock.generated);
     }
     return arguments;
+}
+
+/// Appends the fastest available visible-desktop crop for one window client
+/// rectangle. Desktop Duplication preserves VLC's composed D3D11 video surface;
+/// the GDI desktop crop is the compatibility fallback when ddagrab is absent.
+private void appendVisibleScreenRegionArguments(ref string[] arguments, int fps,
+    const WindowScreenRect region, const CaptureSelection capture)
+{
+    const fitsPrimaryOutput = capture.nativeWidth > 0 &&
+        capture.nativeHeight > 0 && region.x >= 0 && region.y >= 0 &&
+        region.x + region.width <= capture.nativeWidth &&
+        region.y + region.height <= capture.nativeHeight;
+    if (capture.backend == DesktopCaptureBackend.desktopDuplication &&
+        fitsPrimaryOutput)
+    {
+        const source = format(
+            "ddagrab=output_idx=0:framerate=%d:draw_mouse=0:dup_frames=1:" ~
+            "video_size=%dx%d:offset_x=%d:offset_y=%d,hwdownload,format=bgra",
+            fps, region.width, region.height, region.x, region.y);
+        arguments ~= ["-f", "lavfi", "-i", source];
+        return;
+    }
+
+    arguments ~= [
+        "-f", "gdigrab", "-framerate", format("%d", fps),
+        "-draw_mouse", "0",
+        "-offset_x", format("%d", region.x),
+        "-offset_y", format("%d", region.y),
+        "-video_size", format("%dx%d", region.width, region.height),
+        "-i", "desktop"
+    ];
 }
 
 private string normalizedAudioInputGraph(PreparedAudioInput input,
@@ -1341,6 +1452,50 @@ unittest
         "Window content capture → CPU processing → encoder");
     assert(captureSourceLabel(settings, capture) ==
         "Window content: notepad.exe — Notes");
+}
+
+unittest
+{
+    // VLC must never use the HWND GDI surface: that surface contains the window
+    // chrome but not the independently composed hardware video. A region on the
+    // primary output uses ddagrab; GDI desktop cropping remains the fallback.
+    BroadcastSettings settings;
+    settings.windowCaptureHwnd = "1841952";
+    settings.windowCaptureLabel = "vlc.exe — Movie";
+    assert(usesVlcVisibleScreenCapture(settings));
+    settings.windowContentCapture = true;
+    assert(!usesVlcVisibleScreenCapture(settings));
+    settings.windowContentCapture = false;
+    settings.gameCaptureMode = true;
+    assert(!usesVlcVisibleScreenCapture(settings));
+
+    WindowScreenRect region;
+    region.x = 100;
+    region.y = 80;
+    region.width = 1280;
+    region.height = 720;
+
+    CaptureSelection capture;
+    capture.backend = DesktopCaptureBackend.desktopDuplication;
+    capture.nativeWidth = 1920;
+    capture.nativeHeight = 1080;
+    string[] ddaArguments;
+    appendVisibleScreenRegionArguments(ddaArguments, 60, region, capture);
+    assert(ddaArguments.length == 4);
+    assert(ddaArguments[0] == "-f" && ddaArguments[1] == "lavfi");
+    assert(ddaArguments[3].indexOf("ddagrab=output_idx=0") >= 0);
+    assert(ddaArguments[3].indexOf("video_size=1280x720") >= 0);
+    assert(ddaArguments[3].indexOf("offset_x=100:offset_y=80") >= 0);
+    assert(ddaArguments[3].indexOf("hwdownload,format=bgra") >= 0);
+
+    capture.backend = DesktopCaptureBackend.gdiWithoutCursor;
+    string[] gdiArguments;
+    appendVisibleScreenRegionArguments(gdiArguments, 60, region, capture);
+    assert(gdiArguments[$ - 1] == "desktop");
+    assert(gdiArguments.canFind("gdigrab"));
+    assert(gdiArguments.canFind("100"));
+    assert(gdiArguments.canFind("80"));
+    assert(gdiArguments.canFind("1280x720"));
 }
 
 unittest

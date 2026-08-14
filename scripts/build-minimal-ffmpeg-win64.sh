@@ -192,7 +192,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-libx264 --enable-libmp3lame --enable-libdav1d \
       --enable-zlib --enable-nvenc --enable-amf --enable-libvpl \
       --enable-hwaccel=d3d11va,dxva2 \
-      --enable-indev=lavfi,dshow,gdigrab,ddagrab \
+      --enable-indev=lavfi,dshow,gdigrab \
       --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo,sdp \
       --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null,flv,fifo \
       --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores,wrapped_avframe,rawvideo \
@@ -206,7 +206,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=color,anullsrc,testsrc2,sine,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
-      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload \
+      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload,ddagrab \
       --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
       --extra-libs="-lstdc++ -lws2_32 -lpthread"; then

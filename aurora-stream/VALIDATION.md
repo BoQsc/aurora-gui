@@ -1,6 +1,32 @@
 # Aurora Stream validation
 
-Aurora Stream version: 0.66.0
+Aurora Stream version: 0.66.1
+
+## 0.66.1 VLC visible-window correction gate
+
+The VLC path must not contain `gdigrab -i hwnd=<VLC>` or PrintWindow. Resolve
+the client area to absolute desktop coordinates, clip it to the virtual desktop,
+and use a `ddagrab` region when Desktop Duplication returns real pixels; otherwise
+use `gdigrab desktop` with the same offset and size. The live source canvas must
+read that same composed screen rectangle and preserve its aspect ratio.
+
+The minimal FFmpeg Actions build must list `ddagrab` and `hwdownload` under
+filters and `gdigrab`, `dshow`, and `lavfi` under devices. The portable builder
+independently rejects an embedded FFmpeg missing any of them. A Desktop
+Duplication probe is accepted only when its 96×54 BGRA output contains visible
+pixels, preventing success-with-black remote/virtual sessions.
+
+Local result (2026-08-14): all 45 D unittest modules and both x64 debug
+configurations pass. The clipped GDI region probe returned exactly 4,350,880
+BGRA bytes for a 1532×710 partly-off-screen region with 31.8% non-black pixels.
+Audio transport, direct/FIFO RTP+SDP, output isolation, GUI subsystem, static-CRT
+policy, and synthetic audio passed. Loaded A/V encoded 720/720 frames in both
+phases at final 0.996x with no transport/pacing failure. Rebuilt minimized game
+hook rounds passed BGRA8, RGBA8, and RGB10A2 with zero production hook drops or
+sequence gaps.
+The locally staged 0.66.0 FFmpeg is correctly rejected because it lacks
+`ddagrab`; the new minimal-FFmpeg and portable-single-exe CI runs are required
+before tagging 0.66.1. No fullscreen or foreground acceptance test is permitted.
 
 ## 0.66.0 D3D11 game/window capture release gate
 

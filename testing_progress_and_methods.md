@@ -1,5 +1,28 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: VLC composed-window correction (2026-08-14)
+
+- User's 0.66.0 screenshot proved that the supposed VLC "screen" fallback still
+  used the HWND GDI surface: VLC chrome painted, the Direct3D video stayed black,
+  and an unpainted child/UI area stayed white.
+- VLC selection now routes preview and broadcast to its visible client rectangle
+  on the composed desktop. The rectangle is clipped to the virtual screen (the
+  observed VLC restore geometry was x=-4 and extended below 1080p), then captured
+  through a Desktop Duplication region or cropped `gdigrab desktop` fallback.
+- The headless clipped-GDI probe returned the exact 1532×710 BGRA byte count
+  (4,350,880) with 31.8% non-black pixels. D unittests exercise VLC selection,
+  DDA/GDI argument construction, black-frame probe rejection, label matching,
+  geometry failures, and the preview's visible-screen-DC branch.
+- The bundled 0.66.0 FFmpeg exposed the packaging bug: `ddagrab` was configured
+  as an input device even though FFmpeg implements it as a source filter. The
+  build flag, Actions inventory assertion, and portable payload gate are fixed.
+- `dub test --compiler=dmd --force` passes all 45 modules; forced x64 debug
+  `application` and `notitlebar` builds pass. Direct/FIFO RTP+SDP, transport,
+  output isolation, synthetic audio, GUI/static-CRT policies, and both 720-frame
+  loaded A/V phases pass. The rebuilt minimized BGRA/RGBA/RGB10 hook matrix also
+  passes with zero production drops/gaps. New minimal-FFmpeg and portable CI
+  results remain required before the 0.66.1 tag.
+
 ## Aurora Stream: D3D11 game-capture release integration (2026-08-14)
 
 - `dub test --compiler=dmd --force` passed all 45 modules. Forced x64 debug

@@ -42,6 +42,8 @@ jobs:
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -protocols
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -devices
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters | grep -E 'ddagrab|hwdownload'
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -devices | grep -E 'gdigrab|dshow|lavfi'
 
       - name: Upload minimal ffmpeg
         uses: actions/upload-artifact@v7

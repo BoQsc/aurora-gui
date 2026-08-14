@@ -3,17 +3,46 @@ module aurorastream.windowsources;
 import aurora;
 import std.algorithm : sort;
 import std.conv : to;
-import std.string : icmp, lastIndexOf, strip;
+import std.string : icmp, indexOf, lastIndexOf, strip;
 import std.utf : toUTF8;
 
 version (Windows)
 {
     import core.sys.windows.windows : BOOL, CloseHandle, DWORD, EnumWindows,
-        GA_ROOTOWNER, GetAncestor, GetCurrentProcessId, GetShellWindow,
+        ClientToScreen, GA_ROOTOWNER, GetAncestor, GetClientRect,
+        GetCurrentProcessId, GetShellWindow,
         GetWindowLongPtrW, GetWindowTextW, GetWindowTextLengthW,
         GetWindowThreadProcessId, GWL_EXSTYLE, HANDLE, HWND, IsIconic, IsWindow,
-        IsWindowVisible, LPARAM, LPDWORD, LPWSTR, MAX_PATH, OpenProcess,
-        WNDENUMPROC, WS_EX_TOOLWINDOW;
+        IsWindowVisible, LPARAM, LPDWORD, LPWSTR, MAX_PATH, OpenProcess, POINT,
+        RECT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, WNDENUMPROC, WS_EX_TOOLWINDOW, GetSystemMetrics;
+}
+
+/// A selected window's client area expressed in absolute desktop pixels. This
+/// is the region Aurora must capture from the composed desktop for applications
+/// such as VLC whose GPU video surface is not present in their GDI window DC.
+struct WindowScreenRect
+{
+    int x;
+    int y;
+    int width;
+    int height;
+
+    bool valid() const @safe pure nothrow @nogc
+    {
+        return width > 0 && height > 0;
+    }
+}
+
+/// True when a selector label starts with the requested executable name. Keep
+/// this independent of a live HWND so persisted selections and unit tests use
+/// the same decision as a freshly enumerated window.
+bool windowLabelIsProcess(string label, string processName)
+{
+    const cleaned = label.strip();
+    const separator = cleaned.indexOf(" — ");
+    return separator > 0 &&
+        icmp(cleaned[0 .. cast(size_t) separator], processName.strip()) == 0;
 }
 
 /// One capturable top-level window. Aurora Stream can stream only this window
@@ -81,6 +110,45 @@ bool windowIsMinimized(string hwndText)
     return window !is null && IsIconic(cast(HWND) window) != 0;
 }
 
+/// Resolves the selected window's client rectangle to absolute desktop
+/// coordinates. Screen-pixel capture uses this instead of GetDC(hwnd), because
+/// the latter omits independent hardware/compositor surfaces (notably VLC's
+/// Direct3D video output).
+version (Windows)
+bool windowClientScreenRect(string hwndText, out WindowScreenRect result)
+{
+    result = WindowScreenRect.init;
+    auto window = hwndFromText(hwndText);
+    if (window is null || IsWindow(window) == 0 || IsIconic(window) != 0)
+        return false;
+
+    RECT client;
+    if (GetClientRect(window, &client) == 0) return false;
+    POINT topLeft = POINT(client.left, client.top);
+    POINT bottomRight = POINT(client.right, client.bottom);
+    if (ClientToScreen(window, &topLeft) == 0 ||
+        ClientToScreen(window, &bottomRight) == 0)
+        return false;
+
+    // A normal resizable window can extend a few pixels beyond the monitor
+    // work area (VLC commonly restores at x=-4). gdigrab rejects any region
+    // outside the virtual desktop, so capture the visible intersection rather
+    // than failing or silently returning the HWND's broken GDI surface.
+    const virtualLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const virtualTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const virtualRight = virtualLeft + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const virtualBottom = virtualTop + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    const left = topLeft.x > virtualLeft ? topLeft.x : virtualLeft;
+    const top = topLeft.y > virtualTop ? topLeft.y : virtualTop;
+    const right = bottomRight.x < virtualRight ? bottomRight.x : virtualRight;
+    const bottom = bottomRight.y < virtualBottom ? bottomRight.y : virtualBottom;
+    result.x = left;
+    result.y = top;
+    result.width = right - left;
+    result.height = bottom - top;
+    return result.valid();
+}
+
 version (Windows)
 private string windowTitle(HWND hwnd)
 {
@@ -131,6 +199,18 @@ private string windowProcessName(HWND hwnd, DWORD processId)
     auto path = toUTF8(wide).idup;
     const separator = path.lastIndexOf('\\');
     return separator >= 0 ? path[separator + 1 .. $] : path;
+}
+
+/// Returns the executable image name for a persisted window handle. The cached
+/// selector label remains the fallback when process inspection is unavailable.
+version (Windows)
+string windowProcessImageName(string hwndText)
+{
+    auto window = hwndFromText(hwndText);
+    if (window is null || IsWindow(window) == 0) return "";
+    DWORD processId;
+    GetWindowThreadProcessId(window, &processId);
+    return processId == 0 ? "" : windowProcessName(window, processId);
 }
 
 version (Windows)
@@ -220,6 +300,12 @@ unittest
     assert(!windowExists("not-a-number"));
     assert(!windowIsMinimized(""));
     assert(!windowIsMinimized("not-a-number"));
+    WindowScreenRect invalidRect;
+    assert(!windowClientScreenRect("not-a-number", invalidRect));
+
+    assert(windowLabelIsProcess("vlc.exe — Movie", "VLC.EXE"));
+    assert(!windowLabelIsProcess("notvlc.exe — Movie", "vlc.exe"));
+    assert(!windowLabelIsProcess("vlc.exe", "vlc.exe"));
 
     // Enumerating windows must never throw. On an interactive desktop session
     // it must find windows with non-empty titles, unique handles, and the
@@ -266,6 +352,14 @@ else
     bool windowExists(string hwndText) { return false; }
 
     bool windowIsMinimized(string hwndText) { return false; }
+
+    bool windowClientScreenRect(string hwndText, out WindowScreenRect result)
+    {
+        result = WindowScreenRect.init;
+        return false;
+    }
+
+    string windowProcessImageName(string hwndText) { return ""; }
 
     WindowSource[] enumerateWindows() { return []; }
 

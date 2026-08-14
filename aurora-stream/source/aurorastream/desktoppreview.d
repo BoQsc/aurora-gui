@@ -1,15 +1,17 @@
 module aurorastream.desktoppreview;
 
 import aurora.image : RgbaImage;
+import core.stdc.string : memset;
 
 version (Windows)
 {
     import core.sys.windows.windows : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
         COLORONCOLOR, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
-        DIB_RGB_COLORS, GetClientRect, GetDC, GetSystemMetrics, HBITMAP, HDC,
-        HGDIOBJ, HWND, IsIconic, RECT, ReleaseDC, SelectObject, SetStretchBltMode,
-        SM_CXSCREEN, SM_CYSCREEN, SRCCOPY, StretchBlt;
-    import aurorastream.windowsources : hwndFromText;
+        DIB_RGB_COLORS, GetClientRect, GetDC, GetDesktopWindow, GetSystemMetrics,
+        HBITMAP, HDC, HGDIOBJ, HWND, IsIconic, RECT, ReleaseDC, SelectObject,
+        SetStretchBltMode, SM_CXSCREEN, SM_CYSCREEN, SRCCOPY, StretchBlt;
+    import aurorastream.windowsources : hwndFromText, hwndToText,
+        windowClientScreenRect, WindowScreenRect;
 }
 
 /// Maps one 32bpp DIB pixel word (memory bytes B,G,R,undefined alpha on
@@ -40,6 +42,7 @@ final class DesktopPreviewCapturer
     private int _screenHeight;
     private string _windowTargetText;
     private HWND _windowTarget;
+    private bool _visibleScreenPixels;
 
     this(int width, int height)
     {
@@ -66,11 +69,13 @@ final class DesktopPreviewCapturer
     /// Captures a single window (game/window capture) instead of the desktop.
     /// An empty or stale handle reverts to the primary monitor. The handle text
     /// is re-parsed only when it changes, so a 30 FPS loop stays cheap.
-    void setWindowTarget(string hwndText)
+    void setWindowTarget(string hwndText, bool visibleScreenPixels = false)
     {
-        if (hwndText == _windowTargetText) return;
+        if (hwndText == _windowTargetText &&
+            visibleScreenPixels == _visibleScreenPixels) return;
         _windowTargetText = hwndText.idup;
         _windowTarget = hwndFromText(hwndText);
+        _visibleScreenPixels = visibleScreenPixels;
         releaseDeviceObjects();
     }
 
@@ -135,6 +140,9 @@ final class DesktopPreviewCapturer
         if (_bitmap is null || _memoryDC is null || _bits is null) return false;
 
         HDC sourceDC;
+        HWND sourceOwner;
+        int sourceX;
+        int sourceY;
         int sourceWidth;
         int sourceHeight;
         if (_windowTarget !is null)
@@ -143,29 +151,59 @@ final class DesktopPreviewCapturer
             // skip the frame so the preview keeps the last good one instead of
             // showing a stale or broken capture.
             if (IsIconic(_windowTarget) != 0) return false;
-            sourceDC = GetDC(_windowTarget);
-            if (sourceDC is null) return false;
-            RECT client;
-            if (GetClientRect(_windowTarget, &client) == 0)
+            if (_visibleScreenPixels)
             {
-                ReleaseDC(_windowTarget, sourceDC);
-                return false;
+                WindowScreenRect region;
+                if (!windowClientScreenRect(_windowTargetText, region))
+                    return false;
+                sourceOwner = null;
+                sourceDC = GetDC(null);
+                sourceX = region.x;
+                sourceY = region.y;
+                sourceWidth = region.width;
+                sourceHeight = region.height;
             }
-            sourceWidth = client.right;
-            sourceHeight = client.bottom;
+            else
+            {
+                sourceOwner = _windowTarget;
+                sourceDC = GetDC(_windowTarget);
+                RECT client;
+                if (sourceDC is null || GetClientRect(_windowTarget, &client) == 0)
+                {
+                    if (sourceDC !is null) ReleaseDC(_windowTarget, sourceDC);
+                    return false;
+                }
+                sourceWidth = client.right;
+                sourceHeight = client.bottom;
+            }
         }
         else
         {
+            sourceOwner = null;
             sourceDC = GetDC(null);
             if (sourceDC is null) return false;
             sourceWidth = _screenWidth;
             sourceHeight = _screenHeight;
         }
-        scope (exit) ReleaseDC(_windowTarget, sourceDC);
+        if (sourceDC is null) return false;
+        scope (exit) ReleaseDC(sourceOwner, sourceDC);
 
         if (sourceWidth <= 0 || sourceHeight <= 0) return false;
-        if (StretchBlt(_memoryDC, 0, 0, _width, _height,
-            sourceDC, 0, 0, sourceWidth, sourceHeight,
+        int destinationWidth = _width;
+        int destinationHeight = cast(int) (
+            cast(long) _width * sourceHeight / sourceWidth);
+        if (destinationHeight > _height)
+        {
+            destinationHeight = _height;
+            destinationWidth = cast(int) (
+                cast(long) _height * sourceWidth / sourceHeight);
+        }
+        const destinationX = (_width - destinationWidth) / 2;
+        const destinationY = (_height - destinationHeight) / 2;
+        memset(_bits, 0, cast(size_t) _width * _height * 4);
+        if (StretchBlt(_memoryDC, destinationX, destinationY,
+            destinationWidth, destinationHeight,
+            sourceDC, sourceX, sourceY, sourceWidth, sourceHeight,
             SRCCOPY) == 0)
             return false;
 
@@ -215,4 +253,12 @@ unittest
         assert(frame.width() == 480);
         assert(frame.height() == 270);
     }
+
+    // Exercise the visible-screen-region branch without opening or activating
+    // any test window. The desktop HWND maps to the composed screen rectangle;
+    // this is the same source-owner/DC path used for VLC.
+    auto visible = new DesktopPreviewCapturer(64, 36);
+    visible.setWindowTarget(hwndToText(cast(ulong) GetDesktopWindow()), true);
+    auto rgba = new ubyte[64 * 36 * 4];
+    assert(visible.capture(rgba));
 }
