@@ -1,19 +1,82 @@
 module aurorastream.settings;
 
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings;
-import std.file : exists, getcwd, readText, remove, rename, write;
+import aurorastream.browser : BrowserChoice, browserChoiceFromKey,
+    browserChoiceKey;
+import std.file : exists, getcwd, mkdirRecurse, readText, remove, rename, write;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : buildPath;
+import std.path : buildPath, dirName;
+import std.process : environment;
+import std.string : endsWith;
 
-/// Portable settings file kept beside the folder Aurora Stream is launched from.
+/// Settings file name, shared by both the per-user and portable locations.
 enum settingsFileName = "aurora-stream-settings.json";
 
-enum settingsSchemaVersion = 5;
+enum settingsSchemaVersion = 6;
+
+private bool _portableConfigMode;
+
+/** Enable portable settings. By default the settings file lives in the
+ * current user's per-user application-data directory; portable mode keeps it
+ * beside the folder Aurora Stream is launched from (the historical behavior).
+ * The main() entry points turn this on for a `--portable-config` argument. */
+void setPortableConfigMode(bool enabled)
+{
+    _portableConfigMode = enabled;
+}
+
+bool portableConfigMode()
+{
+    return _portableConfigMode;
+}
+
+/// Per-user application-data directory used unless portable mode is enabled.
+private string userConfigDirectory()
+{
+    version (Windows)
+    {
+        const appData = environment.get("APPDATA", "");
+        if (appData.length > 0)
+            return buildPath(appData, "Aurora Stream");
+    }
+    else version (OSX)
+    {
+        const home = environment.get("HOME", "");
+        if (home.length > 0)
+            return buildPath(home, "Library", "Application Support",
+                "Aurora Stream");
+    }
+    else version (Posix)
+    {
+        const xdg = environment.get("XDG_CONFIG_HOME", "");
+        if (xdg.length > 0)
+            return buildPath(xdg, "Aurora Stream");
+        const home = environment.get("HOME", "");
+        if (home.length > 0)
+            return buildPath(home, ".config", "Aurora Stream");
+    }
+    return "";
+}
 
 string settingsFilePath()
 {
+    if (!_portableConfigMode)
+    {
+        const directory = userConfigDirectory();
+        if (directory.length > 0)
+            return buildPath(directory, settingsFileName);
+    }
     try return buildPath(getcwd(), settingsFileName);
     catch (Exception) return settingsFileName;
+}
+
+/// Create the settings directory on first save (per-user mode).
+private void ensureSettingsDirectory(string path)
+{
+    const directory = dirName(path);
+    if (directory.length > 0 && !exists(directory))
+        try mkdirRecurse(directory);
+        catch (Exception) {}
 }
 
 private string backupFilePath()
@@ -117,8 +180,19 @@ private BroadcastSettings settingsFromJson(string source)
     settings.microphoneDevice = jsonString(root, "microphoneDevice",
         settings.microphoneDevice);
 
+    // Window/game capture: non-empty windowCaptureHwnd means stream only that
+    // window so viewers never see the desktop. Schema 6 introduced these keys;
+    // older files simply keep the whole-desktop default.
+    settings.windowCaptureHwnd = jsonString(root, "windowCaptureHwnd",
+        settings.windowCaptureHwnd);
+    settings.windowCaptureLabel = jsonString(root, "windowCaptureLabel",
+        settings.windowCaptureLabel);
+
     settings.liveSourcePreviewEnabled = jsonBool(root,
         "liveSourcePreviewEnabled", settings.liveSourcePreviewEnabled);
+
+    settings.browserChoice = browserChoiceFromKey(jsonString(root,
+        "browserChoice", browserChoiceKey(settings.browserChoice)));
 
     const cachedNames = "deviceDisplayNameCache" in root;
     if (cachedNames !is null && cachedNames.type == JSONType.object)
@@ -201,7 +275,10 @@ private string settingsToJson(BroadcastSettings settings)
     root["desktopAudioEnabled"] = settings.desktopAudioEnabled;
     root["desktopAudioDevice"] = settings.desktopAudioDevice;
     root["microphoneDevice"] = settings.microphoneDevice;
+    root["windowCaptureHwnd"] = settings.windowCaptureHwnd;
+    root["windowCaptureLabel"] = settings.windowCaptureLabel;
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
+    root["browserChoice"] = browserChoiceKey(settings.browserChoice);
     if (settings.deviceDisplayNameCache.length > 0)
     {
         JSONValue cache = JSONValue.emptyObject;
@@ -212,12 +289,51 @@ private string settingsToJson(BroadcastSettings settings)
     return root.toPrettyString() ~ "\n";
 }
 
+/// One-time move of a settings file left in the current working directory by
+/// older portable launches into the per-user location. Only runs in default
+/// (per-user) mode and only when the per-user file does not exist yet, so it
+/// never overwrites a newer per-user file with an older portable one.
+private void migrateLegacySettings()
+{
+    if (_portableConfigMode) return;
+
+    const target = settingsFilePath();
+    if (exists(target)) return;
+
+    string legacy;
+    try legacy = buildPath(getcwd(), settingsFileName);
+    catch (Exception) return;
+    if (legacy == target) return;
+
+    string source;
+    if (exists(legacy))
+        source = legacy;
+    else
+    {
+        const legacyBackup = legacy ~ ".bak";
+        if (exists(legacyBackup)) source = legacyBackup;
+    }
+    if (source.length == 0) return;
+
+    ensureSettingsDirectory(target);
+    try
+    {
+        const temporary = temporaryFilePath();
+        if (exists(temporary)) remove(temporary);
+        write(temporary, readText(source));
+        try rename(temporary, target);
+        catch (Exception) {}
+    }
+    catch (Exception) {}
+}
+
 BroadcastSettings loadSettings(out bool loaded, out string message)
 {
     BroadcastSettings settings;
     loaded = false;
     message = "";
     recoverInterruptedSave();
+    migrateLegacySettings();
 
     const path = settingsFilePath();
     if (!exists(path))
@@ -255,6 +371,7 @@ bool saveSettings(BroadcastSettings settings, out string error)
 
     try
     {
+        ensureSettingsDirectory(path);
         if (exists(temporary)) remove(temporary);
         write(temporary, settingsToJson(settings));
 
@@ -364,7 +481,54 @@ unittest
 
 unittest
 {
-    // Device-name cache round-trips, and a missing cache loads as empty.
+    // Browser choice round-trips, defaults to the OS default handler, and an
+    // unknown/absent key falls back instead of crashing.
+    BroadcastSettings source;
+    source.browserChoice = BrowserChoice.chrome;
+    const restored = settingsFromJson(settingsToJson(source));
+    assert(restored.browserChoice == BrowserChoice.chrome);
+
+    assert(settingsFromJson(`{"schemaVersion":5}`).browserChoice ==
+        BrowserChoice.defaultBrowser);
+    assert(settingsFromJson(
+        `{"schemaVersion":5,"browserChoice":"edge"}`).browserChoice ==
+        BrowserChoice.edge);
+    assert(settingsFromJson(
+        `{"schemaVersion":5,"browserChoice":"nonsense"}`).browserChoice ==
+        BrowserChoice.defaultBrowser);
+}
+
+unittest
+{
+    // Window/game capture fields round-trip; older settings files (no schema-6
+    // keys) keep the whole-desktop default.
+    BroadcastSettings source;
+    source.windowCaptureHwnd = "1841952";
+    source.windowCaptureLabel = "notepad.exe — Notes";
+    source.desktopAudioEnabled = true;
+    source.twitchEnabled = false;
+    source.youtubeEnabled = false;
+
+    const restored = settingsFromJson(settingsToJson(source));
+    assert(restored.windowCaptureHwnd == "1841952");
+    assert(restored.windowCaptureLabel == "notepad.exe — Notes");
+
+    const legacy = settingsFromJson(`{"schemaVersion":5}`);
+    assert(legacy.windowCaptureHwnd.length == 0);
+    assert(legacy.windowCaptureLabel.length == 0);
+}
+
+unittest
+{
+    // The persisted handle survives a round-trip even when the label is empty.
+    BroadcastSettings source;
+    source.windowCaptureHwnd = "464340";
+    const restored = settingsFromJson(settingsToJson(source));
+    assert(restored.windowCaptureHwnd == "464340");
+}
+
+unittest
+{
     BroadcastSettings source;
     source.deviceDisplayNameCache["{render-id}"] = "Speakers (USB)";
     source.deviceDisplayNameCache["@device_cm_mic"] = "Microphone (USB Audio)";
@@ -384,3 +548,29 @@ unittest
     assert(badCache.deviceDisplayNameCache.length == 1);
     assert(badCache.deviceDisplayNameCache["ok"] == "Name");
 }
+
+unittest
+{
+    // Default (per-user) mode resolves into a directory, never a bare file;
+    // portable mode falls back to the launch folder. The two paths must
+    // never collide with each other's backup/temporary names.
+    const previous = portableConfigMode();
+    scope (exit) setPortableConfigMode(previous);
+
+    setPortableConfigMode(false);
+    const perUser = settingsFilePath();
+    assert(perUser.length > 0);
+    assert(perUser.endsWith(settingsFileName));
+    assert(dirName(perUser).length > 0);
+    assert(!perUser.endsWith(".json.bak"));
+
+    setPortableConfigMode(true);
+    const portable = settingsFilePath();
+    assert(portable.length > 0);
+    assert(portable.endsWith(settingsFileName));
+
+    // Portable mode must never equal the per-user location (they use the
+    // same file name, so a wrong mode would silently read the wrong file).
+    assert(portable != perUser);
+}
+

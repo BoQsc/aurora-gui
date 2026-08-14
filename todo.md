@@ -1,5 +1,154 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream: browser picker always opened the LAST browser (Firefox)
+- [x] User: "I switch third time and it keeps opening last one firefox. annoying
+      always." (the right-click browser picker on the Twitch/YouTube quick links).
+- [x] Root cause: `buildBrowserMenuItems` built each `ContextMenuItem` action as
+      `delegate() { choose(captured); }` where `captured` was `const captured =
+      choice;` inside the `foreach`. D closures capture variables by reference
+      and loop-body variables are hoisted to shared storage, so EVERY menu item
+      closed over the same variable, which held the LAST iteration's value —
+      every picker entry fired `choose(firefox)`, so whatever the user clicked,
+      Firefox opened. (Verified standalone: the pattern printed `3 3 3 3`;
+      the fixed pattern prints `0 1 2 3`.)
+- [x] Fix: each entry is now built by `browserPickerItem(choice, ...)`, where
+      `choice` is a function parameter — each call gets its own storage, so each
+      closure fires its own value. This matches the (correct) helper-function
+      pattern the concurrent window-capture dropdown already used.
+- [x] Regression test: the `buildBrowserMenuItems` unittest now invokes every
+      item's action and asserts the fired choices are exactly
+      `[defaultBrowser, chrome, firefox]` (would fail on the pre-fix code with
+      `[firefox, firefox, firefox]`).
+- [x] Verified: `dub test` 40 modules pass; `application` + `notitlebar` build.
+
+## 2026-08-14 — Aurora Stream: right-click the Twitch/YouTube quick links to pick the browser
+- [x] User: "add ability to right click context on either 'open twitch settings' or
+      'open youtube live' so it can be set to launch either default browser or
+      detected google chrome or edge or firefox."
+- [x] `browser.d`: added `BrowserChoice` (`defaultBrowser`/`chrome`/`edge`/`firefox`),
+      `browserChoiceLabel`/`browserChoiceKey`/`browserChoiceFromKey`,
+      `browserExecutablePath` (probes `%ProgramFiles%`/`%ProgramFiles(x86)%`/
+      `%LOCALAPPDATA%` well-known install paths), `isBrowserDetected`,
+      `availableBrowserChoices()` (display order, concrete choices filtered to
+      what is installed), and `openUrlInBrowser(url, choice, error)` which spawns
+      the detected exe with the URL, falling back to the OS default handler
+      (`explorer.exe`/`open`/`xdg-open`) for `defaultBrowser`.
+- [x] Persistence: `BroadcastSettings.browserChoice` + settings schema field
+      `"browserChoice"` (`settings.d` round-trip + invalid-key fallback tests);
+      `root.d` loads it at startup and saves it via `collectSettings`.
+- [x] UI (`root.d`): new `BrowserQuickLinkButton` (right-click shows a context
+      menu of detected browsers with the current choice checked; left-click keeps
+      opening in the default handler). Both quick links now use it and
+      `chooseBrowser()` persists the pick while `openBrowserIn()` opens the URL in
+      the chosen browser and reports it in the status line. Menu building is the
+      testable `buildBrowserMenuItems()` (labels + checked state unit-tested for
+      full and partial installed lists).
+- [x] Verified: `dub test` 40 modules pass (was 38 + the concurrent window-capture
+      module + the new root.d unittest); `application` + `notitlebar` build. On the
+      test machine Chrome + Firefox are detected (Edge absent → omitted from the
+      menu). Functional check: the menu opened on right-click and a selection
+      persisted to `aurora-stream-settings.json` (`"browserChoice": "firefox"`),
+      then reset to `default`.
+
+## 2026-08-14 — Aurora Stream: settings file in per-user app-data by default, `--portable-config` opt-in
+- [x] User: settings file should be placed "in installed way" — by default in
+      the user's app-data directory, not the current working directory.
+- [x] `settings.d`: `setPortableConfigMode`/`portableConfigMode`,
+      `userConfigDirectory()` (Windows `%APPDATA%\Aurora Stream`, macOS
+      `~/Library/Application Support/Aurora Stream`, Linux
+      `$XDG_CONFIG_HOME/Aurora Stream`), `settingsFilePath()` resolves there by
+      default and to `getcwd()` under `--portable-config`; `ensureSettingsDirectory`
+      creates the per-user folder on first save.
+- [x] `app.d` + `app_titlebar.d`: both entry points parse `--portable-config`.
+- [x] One-time migration `migrateLegacySettings()`: an existing CWD-relative
+      settings file (or its `.bak`) is copied into the per-user location on the
+      first default-mode launch, so stream keys are never silently lost.
+- [x] Verified: `dub test` 40 modules pass; application + notitlebar configs
+      build; default launch saves to `%APPDATA%\Aurora Stream\`, `--portable-config`
+      saves beside the launch folder, and the old CWD file migrated with keys
+      intact.
+- [x] Fixed pre-existing uncommitted compile errors in `windowsources.d`
+      (missing `lastIndexOf` import, const-cast `IsWindow`, `FALSE`→`0`,
+      `QueryFullProcessImageNameW` casing/import) that blocked any rebuild.
+
+## 2026-08-14 — Aurora Stream: "would be nice a setting for only game capture so they can't see desktop xd"
+- [x] User requested a setting to stream **only the game window** so viewers
+      never see the desktop.
+- [x] Implemented **CAPTURE SOURCE** (top of the settings panel): a
+      `CaptureSourceDropdown` that lists **Entire desktop** plus every visible
+      titled top-level window (`process.exe — Window Title`), re-enumerated each
+      time the menu opens with a **Refresh window list** item
+      (`windowsources.d`: Win32 `EnumWindows` + `GetWindowTextW` +
+      `QueryFullProcessImageNameW`; filters shell/tool/owned/title-less windows
+      and Aurora Stream's own window).
+- [x] Selected window is streamed through FFmpeg `gdigrab hwnd=<handle>` at the
+      same 60 FPS into the existing source-canvas/destination pipeline
+      (`broadcast.d` `captureArguments`). Persisted as `windowCaptureHwnd` +
+      `windowCaptureLabel` (settings schema 6). A stale handle (closed window or
+      an earlier Windows session) is rejected at Start with a clear message
+      (`validateBroadcastSettings` + `windowExists`) instead of silently
+      capturing the desktop.
+- [x] Window capture always uses the CPU path: `usesD3D11ZeroCopyVideo` returns
+      false for it and `videoPipelineLabel` shows `Window capture (GDI) → CPU
+      processing → encoder`; the D3D11 direct handoff still applies to full
+      desktop Duplication.
+- [x] The **LIVE SOURCE CANVAS** preview follows the selection:
+      `DesktopPreviewCapturer` gained `setWindowTarget` and captures the
+      window's client area instead of the primary monitor, so the preview
+      matches what is streamed.
+- [x] BUGFIX (user reported "Shows 'no capturable windows'"): the
+      `EnumWindows` callback in `windowsources.d` was a plain D function, so
+      DMD's default calling convention made every `HWND` arrive as **null**
+      (a Win32 callback must be `extern (Windows)`). Every window was filtered
+      out → empty list. Fixed the declaration; the dropdown now lists the
+      user's windows/games. Verified with a diagnostic that `enumerateWindows()`
+      returned 0 before the fix and 70 real windows (7-Zip, Notepad++, Paint,
+      Media Player, Steam, games, browsers) after. Added a regression assertion:
+      enumeration must find non-empty-titled windows with unique handles and a
+      freshly enumerated handle must pass `windowExists`.
+- [x] Verified: `dub test` → 40 modules pass; `dub build` (application/titlebar)
+      and `dub build --config=notitlebar --force` link; end-to-end ffmpeg window
+      capture (gdigrab `hwnd=` → source scale → 1080p60 H.264 FLV) produced 300
+      frames / 5 s at 60 FPS with non-black content (YAVG≈193). The fixed app is
+      rebuilt and relaunched.
+- [x] NOTE: another agent session was concurrently editing this repo during
+      implementation (browser.d/root.d quick-link refactor + the portable-config
+      settings-location feature above). Re-verified all builds/tests after its
+      edits; the features coexist (`dub test` 40 modules pass, both build
+      configs link).
+
+## 2026-08-14 — Aurora Stream: minimized captured window shows a frozen frame
+- [x] User: "if window is minimized it will show last frozen frame instead of
+      minimized captured window. Seems like a bug. can we be sure we support
+      minimized windows?"
+- [x] Diagnosed: a minimized window's client area is 0×0, so FFmpeg `gdigrab`
+      fails to open it at Start (`I/O error`, verified) and, when minimized
+      mid-stream, stops producing fresh frames while encoder timestamps keep
+      advancing — so the stream freezes on the last frame and even the frame
+      counter can keep advancing (no watchdog fires). Minimized windows
+      genuinely cannot be captured (GDI/Graphics-Capture limitation), so
+      "support" = explicit detection + clear action instead of a silent freeze.
+- [x] `windowsources.d`: added `windowIsMinimized` (IsIconic). The dropdown
+      marks minimized windows as `(minimized — not capturable)` and the caption
+      shows `Window (minimized): …` (danger styling).
+- [x] `broadcast.d`:
+  - `validateBroadcastSettings` rejects a minimized selection at Start with
+    "The selected capture window is minimized. Restore it before starting…".
+  - `monitorProcess` now receives `windowCaptureHwnd` and stops the stream
+    within ~0.1 s the moment the captured window is minimized or closed:
+    status "Window capture stopped — the captured window was minimized/closed",
+    a clear diagnostic, and a startup-log entry (instead of freezing). The final
+    `_captureFailureStatus` is preserved (was overwritten by the generic
+    "Desktop capture failed" message).
+- [x] `desktoppreview.d`: `capture()` returns false for an iconic window so the
+      LIVE SOURCE CANVAS preview keeps its last good frame.
+- [x] Verified: `dub test` → 40 modules pass; both build configs link. With a
+      real minimized Notepad: `windowIsMinimized` true, enumeration flagged 43
+      of 65 windows as minimized, and `validateBroadcastSettings` returned the
+      minimized message. Also empirically confirmed `gdigrab hwnd=` fails on a
+      minimized window (0×0 → I/O error) and stalls when the window is
+      minimized mid-capture.
+
 ## 2026-08-13 — Aurora Stream: "something went wrong immediately stopped streaming"
 - [x] User reported streaming stopped immediately. Log showed FFmpeg failing at
       launch: `[udp @ ...] bind failed: Error number -10048 occurred` then

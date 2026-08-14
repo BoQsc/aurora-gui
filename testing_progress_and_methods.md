@@ -1,5 +1,137 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: settings file location — per-user by default, `--portable-config` opt-in (2026-08-14)
+
+The settings file (`aurora-stream-settings.json`) previously lived in the
+current working directory (`getcwd()`), i.e. "beside the folder the app is
+launched from". That is wrong for an installed app: settings could land
+anywhere (Start-menu shortcuts, other working directories) and the install
+directory may not be writable.
+
+New behavior:
+- Default (installed): `%APPDATA%\Aurora Stream\aurora-stream-settings.json`
+  on Windows; `~/Library/Application Support/Aurora Stream/` on macOS;
+  `$XDG_CONFIG_HOME/Aurora Stream/` (else `~/.config/...`) on Linux. The
+  directory is created on first save (`mkdirRecurse`).
+- `--portable-config` argument: keeps the old behavior (file beside the launch
+  folder). Parsed in both entry points (`app.d`, `app_titlebar.d`).
+- One-time migration: `loadSettings` moves an existing CWD-relative settings
+  file (or its `.bak`) into the per-user location when that file does not yet
+  exist, in default mode only. Never overwrites a newer per-user file.
+
+Key code:
+- `aurora-stream/source/aurorastream/settings.d`:
+  `setPortableConfigMode`, `portableConfigMode`, `userConfigDirectory`,
+  `settingsFilePath`, `ensureSettingsDirectory`, `migrateLegacySettings`.
+- `aurora-stream/source/app.d` + `app_titlebar.d`: `--portable-config` loop.
+
+How to verify:
+- `dub test` in `aurora-stream` → 38 modules pass (a new unittest toggles
+  portable mode and asserts per-user != portable path).
+- Build both configs: `dub build --config=application` (needs the running
+  `aurora-stream.exe` stopped first — the exe locks its own file) and
+  `dub build --config=notitlebar`.
+- Launch the rebuilt exe: the status row shows the settings path; it must be
+  under `%APPDATA%\Aurora Stream\`. Launch with `--portable-config` to confirm
+  the path reverts to the launch folder.
+- Existing CWD settings file migrates once on first default-mode launch.
+
+## Aurora Stream: game/window capture (CAPTURE SOURCE) — stream only a window (2026-08-14)
+
+User: "would be nice a setting for only game capture so they can't see desktop
+xd". Aurora Stream now streams **only the selected window** when a window is
+chosen in the new **CAPTURE SOURCE** dropdown (top of the settings panel), so
+viewers never see the rest of the desktop.
+
+Key code:
+- `aurora-stream/source/aurorastream/windowsources.d` — `WindowSource`
+  (`hwnd`/`title`/`processName`), `enumerateWindows()` (Win32 `EnumWindows` +
+  `GetWindowTextW` + `QueryFullProcessImageNameW`; filters the shell window,
+  tool windows, owned dialogs, title-less windows, and Aurora Stream's own
+  process), `windowExists()`, `hwndFromText()`, and the `CaptureSourceDropdown`
+  widget (lists "Entire desktop" + windows, re-enumerates on open, has a
+  "Refresh window list" item).
+- `aurora-stream/source/aurorastream/broadcast.d` — `captureArguments` emits
+  `-f gdigrab -framerate 60 -draw_mouse 0 -i hwnd=<handle>` for window capture;
+  `usesD3D11ZeroCopyVideo` is false for it (CPU path); `videoPipelineLabel`
+  shows `Window capture (GDI) → CPU processing → encoder`;
+  `validateBroadcastSettings` rejects a stale/closed window handle with a clear
+  message instead of silently streaming the desktop.
+- `aurora-stream/source/aurorastream/settings.d` — schema 6 keys
+  `windowCaptureHwnd` (decimal handle) + `windowCaptureLabel` (cached
+  `process — title`), persisted and round-tripped.
+- `aurora-stream/source/aurorastream/root.d` — CAPTURE SOURCE section, live
+  video-path label, and the preview window target.
+- `aurora-stream/source/aurorastream/desktoppreview.d` — `setWindowTarget` lets
+  the LIVE SOURCE CANVAS preview capture the selected window's client area
+  instead of the primary monitor.
+
+How to verify (automated):
+1. `dub test` in `aurora-stream` → 40 modules pass (includes new
+   `windowsources.d` tests and broadcast/settings round-trip + gdigrab-hwnd
+   argument tests). The windowsources unittest requires, on an interactive
+   desktop, that enumeration finds non-empty-titled windows with unique handles
+   and that a freshly enumerated handle passes `windowExists` — this catches the
+   callback-convention regression that emptied the list (see below).
+2. `dub build` (application/titlebar) and `dub build --config=notitlebar --force`
+   link.
+3. End-to-end FFmpeg window capture (mirrors `broadcastArguments` for one
+   destination, video-only, local FLV):
+   ```
+   ffmpeg -f gdigrab -framerate 60 -draw_mouse 0 -i hwnd=<HWND> \
+     -filter_complex "[0:v]fps=fps=60:start_time=0:round=near,settb=AVTB,setpts=N/(60*TB),scale=1920:1080:force_original_aspect_ratio=decrease:flags=bicubic,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[vsource];[vsource]format=yuv420p[vtwitch]" \
+     -map "[vtwitch]" -r:v 60 -fps_mode:v cfr -c:v libx264 -preset veryfast \
+     -b:v 6000k -maxrate 6000k -bufsize 12000k -profile:v high -level:v 4.2 \
+     -g 120 -keyint_min 120 -bf 2 -sc_threshold 0 -max_interleave_delta 0 \
+     -flush_packets 1 -flvflags no_duration_filesize -f flv -t 5 out.flv
+   ```
+   Expect ~300 frames at 60/1 and non-black frames (e.g.
+   `ffmpeg -ss 3 -i out.flv -frames:v 1 -vf signalstats,metadata=print:file=- -f null -`
+   → `YAVG` well above ~16).
+   Get an HWND: `powershell "Get-Process | ? { $_.MainWindowTitle } | select Id,MainWindowHandle,MainWindowTitle"`.
+
+Gotcha that WILL bite you (2026-08-14, fixed):
+- Win32 callbacks passed to functions like `EnumWindows` must be declared
+  `extern (Windows)`. A plain D `BOOL cb(HWND, LPARAM)` function casts fine but
+  DMD's default convention reads the arguments from the wrong place, so every
+  `HWND` arrives as **null** and every window is filtered out (the dropdown
+  showed "No capturable windows"). Use
+  `private extern (Windows) BOOL cb(HWND hwnd, LPARAM lParam)`.
+
+Minimized windows cannot be captured (2026-08-14):
+- A minimized window's client area is 0×0; `gdigrab` fails to open it (start)
+  or stops producing fresh frames while encoder timestamps keep advancing
+  (mid-stream) → the stream sits on a frozen last frame forever, and the frame
+  counter can keep advancing so no watchdog fires. Handle it explicitly:
+  - `windowsources.windowIsMinimized` (IsIconic); the dropdown labels such
+    windows `(minimized — not capturable)` and the caption shows
+    `Window (minimized): …`.
+  - `validateBroadcastSettings` rejects a minimized selection at Start.
+  - The broadcast monitor (`monitorProcess`) is passed `windowCaptureHwnd` and
+    stops the stream within ~0.1 s the moment the captured window is minimized
+    or closed, with a clear status/diagnostic, instead of freezing.
+  - `DesktopPreviewCapturer.capture()` returns false for an iconic window so the
+    preview keeps its last good frame.
+- How to verify (automated): minimize a window
+  (`[ShowWindow](hwnd, 6)` from PowerShell), then `windowIsMinimized(hwnd)`
+  must be true, `validateBroadcastSettings` with that hwnd must return the
+  minimized message, and `captureDesktopPreview`/`DesktopPreviewCapturer.capture`
+  must return false for it.
+
+Manual (GUI):
+- Launch Aurora Stream → CAPTURE SOURCE dropdown lists visible windows
+  (`process.exe — Window Title`) plus Entire desktop; open a game/app after
+  startup and the dropdown shows it after **Refresh window list** (or on the
+  next open).
+- Pick a window, start streaming: status row shows `Capture: Window capture:
+  <label> • Window capture (GDI) → CPU processing → encoder`. The LIVE SOURCE
+  CANVAS preview shows the window, not the desktop.
+- Close the selected window, restart the app, Start → rejected with "The
+  selected capture window is no longer open ...".
+- Switch back to Entire desktop → desktop capture (ddagrab/NVENC) returns
+  (`Desktop Duplication (cursor-safe)` label / `D3D11` path when hardware
+  supports it).
+
 ## TitleBar: cursor no longer changes to "move" while dragging the window (2026-08-14)
 
 User: dragging the window by the custom titlebar should not change the cursor.

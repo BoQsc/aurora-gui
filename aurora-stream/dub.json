@@ -63,7 +63,8 @@
         "gdi32",
         "shell32",
         "ole32",
-        "avrt"
+        "avrt",
+        "kernel32"
       ],
       "lflags-windows": [
         "/SUBSYSTEM:WINDOWS",
@@ -95,7 +96,8 @@
         "gdi32",
         "shell32",
         "ole32",
-        "avrt"
+        "avrt",
+        "kernel32"
       ],
       "lflags-windows": [
         "/SUBSYSTEM:WINDOWS",

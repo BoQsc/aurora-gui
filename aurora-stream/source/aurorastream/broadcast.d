@@ -1,6 +1,8 @@
 module aurorastream.broadcast;
 
 import aurorastream.audiobridge : AudioBridgeSession;
+import aurorastream.browser : BrowserChoice;
+import aurorastream.windowsources : windowExists, windowIsMinimized;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, dur, msecs;
@@ -87,11 +89,26 @@ struct BroadcastSettings
     // CPU/energy; it never changes what is streamed.
     bool liveSourcePreviewEnabled = true;
 
+    // UI preference: which browser the Twitch/YouTube quick links use.
+    // `default` hands the URL to the operating system's default handler;
+    // the concrete choices require a detected installation.
+    BrowserChoice browserChoice = BrowserChoice.defaultBrowser;
+
     // Cache of stable audio device identifier → friendly name. Kept so a
     // temporarily disconnected device still shows its real name in the
     // selectors instead of a raw backend ID. Updated from every successful
     // device scan and persisted with the settings.
     string[string] deviceDisplayNameCache;
+
+    // Game/window capture: when windowCaptureHwnd is non-empty (a decimal
+    // Windows window handle), only that window is streamed, so viewers never
+    // see the rest of the desktop. Empty = capture the whole desktop. The
+    // handle is only valid in the session it was picked, so a stale value is
+    // reported at stream start instead of silently capturing the desktop.
+    string windowCaptureHwnd;
+    // Cached friendly "process — title" label for the selected window, kept so
+    // the UI still shows a meaningful name while the window is not enumerated.
+    string windowCaptureLabel;
 }
 
 struct BroadcastSnapshot
@@ -351,6 +368,9 @@ CaptureSelection detectCaptureBackend()
 bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
+    // Window capture is a GDI path (no Desktop Duplication surface), so the
+    // direct D3D11 handoff never applies to it.
+    if (settings.windowCaptureHwnd.strip().length > 0) return false;
     const oneDestination = settings.twitchEnabled != settings.youtubeEnabled;
     if (!oneDestination ||
         capture.backend != DesktopCaptureBackend.desktopDuplication ||
@@ -369,6 +389,8 @@ bool usesD3D11ZeroCopyVideo(const BroadcastSettings settings,
 string videoPipelineLabel(const BroadcastSettings settings,
     const EncoderSelection encoder, const CaptureSelection capture)
 {
+    if (settings.windowCaptureHwnd.strip().length > 0)
+        return "Window capture (GDI) → CPU processing → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
         return "D3D11 direct hardware frames → NVENC";
     if (capture.backend == DesktopCaptureBackend.desktopDuplication)
@@ -380,6 +402,18 @@ string videoPipelineLabel(const BroadcastSettings settings,
         return "D3D11 capture → CPU readback/scaling → encoder";
     }
     return "GDI capture → CPU processing → encoder";
+}
+
+/// Human label for the actual video source: the captured window when game/window
+/// capture is enabled, otherwise the desktop-capture backend.
+string captureSourceLabel(const BroadcastSettings settings,
+    const CaptureSelection capture)
+{
+    const window = settings.windowCaptureHwnd.strip();
+    if (window.length == 0) return capture.label;
+    if (settings.windowCaptureLabel.strip().length > 0)
+        return "Window capture: " ~ settings.windowCaptureLabel;
+    return "Window capture (" ~ window ~ ")";
 }
 
 private bool containsUnsafeSeparator(string value)
@@ -419,6 +453,13 @@ string validateBroadcastSettings(const BroadcastSettings settings,
         return "Enable Twitch, YouTube, or both.";
     if (settings.fps != 60)
         return "Aurora Stream currently uses 60 FPS output.";
+    if (settings.windowCaptureHwnd.strip().length > 0)
+    {
+        if (!windowExists(settings.windowCaptureHwnd))
+            return "The selected capture window is no longer open (it closed, or the saved selection is from an earlier Windows session). Reopen the window or switch the capture source back to the entire desktop.";
+        if (windowIsMinimized(settings.windowCaptureHwnd))
+            return "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
+    }
     if (!validQuality(settings.sourceQuality))
         return "Select a valid common source resolution.";
     if (settings.twitchQuality != BroadcastQuality.fullHD)
@@ -606,7 +647,19 @@ private string[] captureArguments(const BroadcastSettings settings,
         "-nostdin"
     ];
 
-    if (capture.backend == DesktopCaptureBackend.desktopDuplication)
+    const windowCapture = settings.windowCaptureHwnd.strip();
+    if (windowCapture.length > 0)
+    {
+        // Game/window capture: grab only the selected window via gdigrab's
+        // window-handle form so viewers never see the rest of the desktop. As
+        // with the desktop GDI fallback, keep the cursor path off to avoid
+        // disturbing the real Windows pointer.
+        arguments ~= [
+            "-f", "gdigrab", "-framerate", format("%d", settings.fps),
+            "-draw_mouse", "0", "-i", "hwnd=" ~ windowCapture
+        ];
+    }
+    else if (capture.backend == DesktopCaptureBackend.desktopDuplication)
     {
         auto source = format(
             "ddagrab=output_idx=0:framerate=%d:draw_mouse=1:dup_frames=1",
@@ -1122,6 +1175,71 @@ unittest
     assert(fifoOutputs == 2);
 }
 
+unittest
+{
+    // Window capture must use gdigrab's window-handle form, must never take the
+    // D3D11 zero-copy path, and must surface the window in the pipeline label.
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "test-key";
+    settings.youtubeEnabled = false;
+    settings.windowCaptureHwnd = "1841952";
+    settings.windowCaptureLabel = "notepad.exe — Notes";
+
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "h264_nvenc";
+    encoder.d3d11DirectProbeAttempted = true;
+    encoder.d3d11DirectSupported = true;
+
+    CaptureSelection capture;
+    capture.backend = DesktopCaptureBackend.desktopDuplication;
+    capture.nativeWidth = 1920;
+    capture.nativeHeight = 1080;
+
+    assert(!usesD3D11ZeroCopyVideo(settings, encoder, capture));
+    assert(videoPipelineLabel(settings, encoder, capture) ==
+        "Window capture (GDI) → CPU processing → encoder");
+    assert(captureSourceLabel(settings, capture) ==
+        "Window capture: notepad.exe — Notes");
+
+    const arguments = broadcastArguments(settings, encoder, capture);
+    bool foundWindowHwnd;
+    bool foundGdigrab;
+    bool foundDesktopDup;
+    foreach (index, argument; arguments)
+    {
+        if (argument == "hwnd=1841952") foundWindowHwnd = true;
+        if (argument == "gdigrab") foundGdigrab = true;
+        if (argument.indexOf("ddagrab") >= 0) foundDesktopDup = true;
+    }
+    assert(foundWindowHwnd);
+    assert(foundGdigrab);
+    assert(!foundDesktopDup);
+}
+
+unittest
+{
+    // A stale window handle is rejected at start instead of silently capturing
+    // the desktop; an empty handle (desktop mode) remains valid.
+    BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "test-key";
+    settings.youtubeEnabled = false;
+
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+
+    CaptureSelection capture;
+    const valid = validateBroadcastSettings(settings, encoder);
+    assert(valid.length == 0);
+
+    settings.windowCaptureHwnd = "0";
+    const invalid = validateBroadcastSettings(settings, encoder);
+    assert(invalid.indexOf("capture window") >= 0);
+}
+
 private string sanitize(string text, const(string)[] secrets)
 {
     auto result = text;
@@ -1156,6 +1274,7 @@ final class BroadcastWorker
     private double _progressSpeed;
     private bool _videoCaptureFailed;
     private string _videoCaptureFailureReason;
+    private string _captureFailureStatus;
     private string _startupLogPath;
     private string _status = "Ready";
     private string _diagnostics;
@@ -1215,6 +1334,7 @@ final class BroadcastWorker
         _progressSpeed = 0.0;
         _videoCaptureFailed = false;
         _videoCaptureFailureReason = "";
+        _captureFailureStatus = "";
         _status = "Starting FFmpeg…";
         _diagnostics = "";
         _frame = "";
@@ -1325,7 +1445,8 @@ final class BroadcastWorker
             format("Desktop audio enabled: %s\r\n",
                 settings.desktopAudioDevice.strip().length > 0) ~
             format("Encoder: %s (%s)\r\n", encoder.label, encoder.name) ~
-            format("Video source: %s\r\n", capture.label) ~
+            format("Video source: %s\r\n",
+                captureSourceLabel(settings, capture)) ~
             format("Video path: %s\r\n",
                 videoPipelineLabel(settings, encoder, capture)) ~
             "Output wrapper: bounded non-dropping FIFO isolation per destination\r\n" ~
@@ -1394,7 +1515,8 @@ final class BroadcastWorker
         }
     }
 
-    private void monitorProcess(Pid process, AudioBridgeSession bridge)
+    private void monitorProcess(Pid process, AudioBridgeSession bridge,
+        string windowCaptureHwnd)
     {
         enum startupDeadlineTicks = 120; // 12 seconds at 100 ms per tick.
         enum liveProgressDeadlineTicks = 120;
@@ -1578,6 +1700,33 @@ final class BroadcastWorker
                     terminate = true;
                 }
             }
+
+            // Window capture: the moment the captured window is minimized or
+            // closed, gdigrab cannot produce fresh frames (its client area
+            // becomes 0×0) while all encoder/timestamps keep advancing, so the
+            // stream would sit on a frozen last frame indefinitely without any
+            // other watchdog firing. Stop immediately with a clear message.
+            if (!_videoCaptureFailed && windowCaptureHwnd.strip().length > 0)
+            {
+                const gone = !windowExists(windowCaptureHwnd);
+                const minimized = !gone && windowIsMinimized(windowCaptureHwnd);
+                if (gone || minimized)
+                {
+                    failureReason = gone ?
+                        "The captured window was closed, so the stream stopped instead of freezing on its last frame. Reopen the window and start streaming again." :
+                        "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again (a minimized window cannot be captured).";
+                    videoCaptureTermination = true;
+                    _videoCaptureFailed = true;
+                    _videoCaptureFailureReason = failureReason;
+                    _captureFailureStatus =
+                        "Window capture stopped — the captured window was " ~
+                        (gone ? "closed" : "minimized");
+                    _failed = true;
+                    _requestedRunning = false;
+                    appendDiagnostic(failureReason);
+                    terminate = true;
+                }
+            }
             _mutex.unlock();
 
             if (terminate)
@@ -1742,7 +1891,8 @@ final class BroadcastWorker
             }
 
             _mutex.lock();
-            appendDiagnostic("Desktop capture: " ~ capture.label);
+            appendDiagnostic("Capture source: " ~
+                captureSourceLabel(settings, capture));
             if (encoder.name == "h264_nvenc" &&
                 encoder.d3d11DirectProbeAttempted)
             {
@@ -1826,7 +1976,8 @@ final class BroadcastWorker
                 {
                     launched = true;
                     auto monitor = new Thread({
-                        monitorProcess(pipes.pid, desktopBridge);
+                        monitorProcess(pipes.pid, desktopBridge,
+                            settings.windowCaptureHwnd);
                     });
                     monitor.isDaemon = true;
                     monitor.start();
@@ -1901,6 +2052,7 @@ final class BroadcastWorker
         const liveOutputFailureReason = _liveOutputFailureReason;
         const videoCaptureFailed = _videoCaptureFailed;
         const videoCaptureFailureReason = _videoCaptureFailureReason;
+        const captureFailureStatus = _captureFailureStatus;
         _process = null;
         _processRunning = false;
         _requestedRunning = false;
@@ -1921,7 +2073,8 @@ final class BroadcastWorker
         else if (videoCaptureFailed)
         {
             _failed = true;
-            _status = "Desktop capture failed — see aurora-stream-startup.log";
+            _status = captureFailureStatus.length > 0 ? captureFailureStatus :
+                "Desktop capture failed — see aurora-stream-startup.log";
             if (videoCaptureFailureReason.length > 0)
                 appendDiagnostic(videoCaptureFailureReason);
         }

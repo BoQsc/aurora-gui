@@ -6,8 +6,9 @@ import aurorastream.audiobridge : AudioBridgeSession, runAudioBridgeHelper;
 import aurorastream.bundledicon : bundledIconPath;
 import aurorastream.ffmpegbundle : enableBundledFfmpeg;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
-import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
 import aurorastream.root : StreamRoot;
+import aurorastream.settings : setPortableConfigMode;
+import aurorastream.wasapi : enumerateWasapiRenderEndpoints;
 import core.thread : Thread;
 import core.time : msecs;
 import std.file : append, exists, thisExePath;
@@ -177,6 +178,11 @@ int main(string[] arguments)
     // run) and put them first on PATH so every "ffmpeg"/"ffprobe" invocation
     // in this process uses the bundled copies.
     enableBundledFfmpeg();
+
+    // Per-user app-data settings by default; `--portable-config` keeps the
+    // settings file beside the folder the app is launched from instead.
+    foreach (argument; arguments)
+        if (argument == "--portable-config") setPortableConfigMode(true);
 
     // The app links as the Windows GUI subsystem (no console), so a diagnostic
     // command must allocate one for its stdout output.

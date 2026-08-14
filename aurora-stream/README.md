@@ -195,6 +195,42 @@ If the installed FFmpeg build or current Windows session cannot initialize Deskt
 
 Aurora Stream also disables Aurora's synchronized drag-pointer hiding because this broadcaster does not need a frame-synchronized custom drag cursor.
 
+## Window / game capture
+
+Settings → **CAPTURE SOURCE** lets you stream **only one game or app window** so
+viewers never see the rest of your desktop. Choose **Entire desktop** to capture
+everything (the default, unchanged behavior) or pick any visible titled window;
+the list is re-enumerated every time the dropdown opens and includes a
+**Refresh window list** item so games launched after startup appear immediately.
+Each window is shown as `process.exe — Window Title`, and the selection is
+saved in `aurora-stream-settings.json` (schema 6).
+
+A captured window is streamed through FFmpeg's `gdigrab hwnd=` path at the same
+60 FPS, scaled into the selected source canvas and each destination exactly like
+the desktop capture, so all existing quality/bitrate/audio behavior is
+unchanged. The status panel shows `Window capture (GDI) → CPU processing →
+encoder` because window capture is a GDI path (the D3D11 zero-copy handoff
+applies only to full-desktop Desktop Duplication). The **LIVE SOURCE CANVAS**
+preview also switches to the selected window so what you see matches what
+viewers see.
+
+Notes:
+
+- A window is captured as it appears on screen, so keep it visible and **not
+  minimized**. A minimized window has a 0×0 client area that FFmpeg's `gdigrab`
+  cannot capture: minimized windows are marked `(minimized — not capturable)`
+  in the CAPTURE SOURCE list, Start refuses a minimized selection with a clear
+  message, and if the captured window is minimized (or closed) **during** a
+  stream, Aurora Stream stops it immediately ("Window capture stopped — the
+  captured window was minimized/closed") instead of leaving viewers on a frozen
+  last frame. The LIVE SOURCE CANVAS preview likewise keeps its last good frame
+  while the selected window is minimized.
+- The window handle is only valid in the Windows session it was chosen. A saved
+  selection that is closed, or carried from an earlier session, is detected at
+  Start and reported clearly instead of silently streaming the desktop.
+- Borderless-windowed games work well. Exclusive-fullscreen games already cover
+  the whole desktop, so window capture is not needed for them.
+
 ## Simplified server controls and native-style text menus
 
 The editable Twitch and YouTube server URL fields are hidden on startup because the normal defaults rarely need to be changed. The top toolbar contains a compact **Settings** dropdown immediately before the source/output summary. Its checked **Unhide streaming servers** item reveals both server labels and fields; selecting it again conceals them without changing their saved values. Revealing the fields explicitly relays out the settings viewport and brings the Twitch server control into view.
@@ -305,7 +341,19 @@ The 0.2.9 diagnostic first showed that nominal 60 FPS could conceal repeated sou
 
 ## Saved settings
 
-Every field and toggle is automatically restored from:
+Every field and toggle is automatically restored from the settings file. By
+default Aurora Stream keeps it in the current user's per-user application-data
+folder, so an installed copy does not need write access next to the executable:
+
+```text
+Windows: %APPDATA%\Aurora Stream\aurora-stream-settings.json
+macOS:   ~/Library/Application Support/Aurora Stream/aurora-stream-settings.json
+Linux:   $XDG_CONFIG_HOME/Aurora Stream/aurora-stream-settings.json
+```
+
+Running with the `--portable-config` argument instead keeps the settings file
+beside the folder Aurora Stream is launched from (the historical portable
+behavior):
 
 ```text
 aurora-stream-settings.json

@@ -5,12 +5,13 @@ import aurorastream.appversion : appDisplayName;
 import aurorastream.audioendpoint : AudioEndpoint;
 import aurorastream.audiodevices : AudioDeviceScanner;
 import aurorastream.bitratedropdown : BitrateDropdown;
-import aurorastream.browser : openExternalUrl, openPacingDiagnostic;
+import aurorastream.browser : BrowserChoice, availableBrowserChoices,
+    browserChoiceLabel, openPacingDiagnostic, openUrlInBrowser;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     BroadcastSnapshot, BroadcastWorker, CaptureSelection, EncoderSelection,
-    detectCaptureBackend, detectEncoder, effectiveYoutubeBitrateKbps,
-    videoPipelineLabel, defaultAudioBitrateKbps, qualityHeight,
-    qualityShortLabel, qualityWidth, twitchVideoBitrateKbps,
+    captureSourceLabel, detectCaptureBackend, detectEncoder,
+    effectiveYoutubeBitrateKbps, videoPipelineLabel, defaultAudioBitrateKbps,
+    qualityHeight, qualityShortLabel, qualityWidth, twitchVideoBitrateKbps,
     youtubeVideoBitrateKbps;
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
@@ -19,6 +20,7 @@ import aurorastream.programcanvas : LiveSourceCanvasPreview;
 import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
 import aurorastream.wasapi : AudioDeviceNotifications;
+import aurorastream.windowsources : CaptureSourceDropdown;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : dur, msecs;
@@ -44,6 +46,7 @@ final class StreamRoot : VBox
     private SourceQualityDropdown _sourceQuality;
     private LiveSourceCanvasPreview _canvasPreview;
     private Button _settingsMenu;
+    private CaptureSourceDropdown _captureSource;
     private bool _streamingServersVisible;
     private bool _liveSourcePreviewEnabled;
     private ScrollView _settingsScroll;
@@ -59,6 +62,7 @@ final class StreamRoot : VBox
     private ulong _previewCaptureLastShownRevision;
     private int _previewCaptureTargetWidth = previewCaptureWidth;
     private int _previewCaptureTargetHeight = previewCaptureHeight;
+    private string _previewCaptureWindowHwnd;
     private bool _previewCaptureRunning;
     private bool _previewCaptureDesired;
     private enum int previewCaptureWidth = 480;
@@ -99,6 +103,7 @@ final class StreamRoot : VBox
     private string _settingsMessage;
     private bool _settingsMessageError;
     private bool _settingsLoadFailed;
+    private BrowserChoice _browserChoice;
 
     this(GuiWindow window, string executablePath)
     {
@@ -123,6 +128,7 @@ final class StreamRoot : VBox
         _settingsLoadFailed = !settingsLoaded &&
             settingsLoadMessage.startsWith("Could not load");
         _settingsMessageError = _settingsLoadFailed;
+        _browserChoice = saved.browserChoice;
 
         auto header = add(new HBox(8));
         header.layoutHints().preferredHeight = 44;
@@ -149,6 +155,22 @@ final class StreamRoot : VBox
         settingsContent.setBorder(Color.fromHex(0x3d4651), 6);
         settingsContent.layoutHints().preferredWidth = 540;
 
+        auto captureTitle = settingsContent.add(new Label("CAPTURE SOURCE"));
+        captureTitle.setScale(1);
+        captureTitle.setColor(Color.fromHex(0xc8d0da));
+        _captureSource = settingsContent.add(new CaptureSourceDropdown(
+            saved.windowCaptureHwnd, saved.windowCaptureLabel));
+        _captureSource.onChanged = delegate(string value) {
+            updateQualitySummary();
+            markSettingsDirty();
+        };
+        auto captureHint = settingsContent.add(new Label(
+            "Pick a single game or app window to stream only that window — viewers never see the rest of your desktop. Entire desktop captures everything."));
+        captureHint.setScale(1);
+        captureHint.setColor(Color.fromHex(0x8793a0));
+        captureHint.layoutHints().preferredHeight = 36;
+
+        settingsContent.add(new Separator());
         auto sourceTitle = settingsContent.add(new Label("COMMON SOURCE CANVAS"));
         sourceTitle.setScale(1);
         sourceTitle.setColor(Color.fromHex(0xc8d0da));
@@ -170,11 +192,17 @@ final class StreamRoot : VBox
         twitchTitle.setScale(1);
         twitchTitle.setColor(Color.fromHex(0xc8d0da));
         twitchTitle.layoutHints().flex = 1.0;
-        auto twitchQuickLink = twitchHeader.add(new Button("Open Twitch settings"));
+        auto twitchQuickLink = twitchHeader.add(new BrowserQuickLinkButton(
+            "Open Twitch settings",
+            delegate() { return _browserChoice; }));
         twitchQuickLink.setFlat(true);
         twitchQuickLink.layoutHints().preferredHeight = 30;
         twitchQuickLink.onClick = delegate() {
             openBrowserShortcut("Twitch stream settings", twitchSettingsUrl);
+        };
+        twitchQuickLink.onChooseBrowser = delegate(BrowserChoice choice) {
+            chooseBrowser(choice);
+            openBrowserIn("Twitch stream settings", twitchSettingsUrl, choice);
         };
 
         const twitchHasSavedKey = saved.twitchKey.strip().length > 0;
@@ -209,11 +237,17 @@ final class StreamRoot : VBox
         youtubeTitle.setScale(1);
         youtubeTitle.setColor(Color.fromHex(0xc8d0da));
         youtubeTitle.layoutHints().flex = 1.0;
-        auto youtubeQuickLink = youtubeHeader.add(new Button("Open YouTube Live"));
+        auto youtubeQuickLink = youtubeHeader.add(new BrowserQuickLinkButton(
+            "Open YouTube Live",
+            delegate() { return _browserChoice; }));
         youtubeQuickLink.setFlat(true);
         youtubeQuickLink.layoutHints().preferredHeight = 30;
         youtubeQuickLink.onClick = delegate() {
             openBrowserShortcut("YouTube Live Control Room", youtubeLiveControlUrl);
+        };
+        youtubeQuickLink.onChooseBrowser = delegate(BrowserChoice choice) {
+            chooseBrowser(choice);
+            openBrowserIn("YouTube Live Control Room", youtubeLiveControlUrl, choice);
         };
 
         const youtubeHasSavedKey = saved.youtubeKey.strip().length > 0;
@@ -333,7 +367,7 @@ final class StreamRoot : VBox
         _statusPanel.setBorder(Color.fromHex(0x3d4651), 6);
         _statusPanel.layoutHints().preferredHeight = 180;
         _videoPath = _statusPanel.add(new Label(_encoder.ffmpegAvailable
-            ? "Capture: " ~ _capture.label ~ " • " ~
+            ? "Capture: " ~ captureSourceLabel(saved, _capture) ~ " • " ~
                 videoPipelineLabel(saved, _encoder, _capture) ~
                 " • Encoder: " ~ _encoder.label
             : "Encoder: FFmpeg not found"));
@@ -386,10 +420,16 @@ final class StreamRoot : VBox
 
     private void openBrowserShortcut(string pageName, string url)
     {
+        openBrowserIn(pageName, url, _browserChoice);
+    }
+
+    private void openBrowserIn(string pageName, string url, BrowserChoice choice)
+    {
         string error;
-        if (openExternalUrl(url, error))
+        if (openUrlInBrowser(url, choice, error))
         {
-            _localStatus = pageName ~ " opened in the default browser.";
+            _localStatus = pageName ~ " opened in " ~
+                browserChoiceLabel(choice) ~ ".";
             _localStatusError = false;
             _status.setText(_localStatus);
             _status.setColor(Color.fromHex(0x9fd4af));
@@ -400,6 +440,13 @@ final class StreamRoot : VBox
         _localStatusError = true;
         _status.setText(_localStatus);
         _status.setColor(Color.fromHex(0xe19a9a));
+    }
+
+    private void chooseBrowser(BrowserChoice choice)
+    {
+        if (choice == _browserChoice) return;
+        _browserChoice = choice;
+        markSettingsDirty();
     }
 
     private VBox addFieldGroup(VBox panel, string title, string value,
@@ -663,9 +710,11 @@ final class StreamRoot : VBox
             pathSettings.twitchQuality = BroadcastQuality.fullHD;
             pathSettings.youtubeQuality = youtubeQuality;
             pathSettings.youtubeBitrateKbps = selectedYoutubeBitrateKbps();
+            pathSettings.windowCaptureHwnd = _captureSource.selectedHwnd();
+            pathSettings.windowCaptureLabel = _captureSource.selectedLabel();
             _videoPath.setText(format(
                 "%s • %s • Encoder: %s",
-                "Capture: " ~ _capture.label,
+                "Capture: " ~ captureSourceLabel(pathSettings, _capture),
                 videoPipelineLabel(pathSettings, _encoder, _capture),
                 _encoder.label));
         }
@@ -731,7 +780,10 @@ final class StreamRoot : VBox
         settings.desktopAudioEnabled = _selectDefaultDesktopAudio ||
             settings.desktopAudioDevice.length > 0;
         settings.microphoneDevice = _microphone.selectedDevice().strip();
+        settings.windowCaptureHwnd = _captureSource.selectedHwnd();
+        settings.windowCaptureLabel = _captureSource.selectedLabel();
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
+        settings.browserChoice = _browserChoice;
         settings.deviceDisplayNameCache.clear();
         foreach (deviceId, name; _deviceNameCache)
             settings.deviceDisplayNameCache[deviceId] = name;
@@ -790,6 +842,7 @@ final class StreamRoot : VBox
         const minimized = _window !is null && _window.isMinimized();
         _previewCaptureMutex.lock();
         _previewCaptureDesired = !minimized;
+        _previewCaptureWindowHwnd = _captureSource.selectedHwnd();
         RgbaImage latest = _previewCaptureFrame;
         _previewCaptureMutex.unlock();
         // Size the capture to the preview panel so the live frame is shown at
@@ -847,7 +900,11 @@ final class StreamRoot : VBox
             _previewCaptureMutex.lock();
             const targetWidth = _previewCaptureTargetWidth;
             const targetHeight = _previewCaptureTargetHeight;
+            const windowHwnd = _previewCaptureWindowHwnd;
             _previewCaptureMutex.unlock();
+            // Match the preview to the stream source: the selected window when
+            // game/window capture is active, otherwise the primary monitor.
+            _previewCapturer.setWindowTarget(windowHwnd);
             _previewCapturer.setTargetSize(targetWidth, targetHeight);
             const byteCount = cast(size_t) targetWidth * targetHeight * 4;
             if (_previewCaptureBuffer is null ||
@@ -1031,6 +1088,7 @@ final class StreamRoot : VBox
         _youtubeBitrate.setEnabled(!active);
         _desktopAudio.setEnabled(!active);
         _microphone.setEnabled(!active);
+        _captureSource.setEnabled(!active);
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);
         _refreshAudioDevices.setText(audioScan.running ?
             "Refreshing audio devices…" : "Refresh audio devices");
@@ -1055,4 +1113,96 @@ final class StreamRoot : VBox
         _audioScanner.shutdown();
         _worker.shutdown();
     }
+}
+
+/// Quick link that opens the OS default browser on left-click and shows a
+/// right-click context menu to pick a specific installed browser. The chosen
+/// browser is handed to `onChooseBrowser` so the owning root can persist it.
+private final class BrowserQuickLinkButton : Button
+{
+    private BrowserChoice delegate() _currentChoice;
+    void delegate(BrowserChoice choice) onChooseBrowser;
+
+    this(string label, BrowserChoice delegate() currentChoice)
+    {
+        super(label);
+        _currentChoice = currentChoice;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right && enabled())
+        {
+            showBrowserMenu(event.globalPosition);
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+
+    private void showBrowserMenu(Point globalPosition)
+    {
+        ContextMenuItem[] items = buildBrowserMenuItems(availableBrowserChoices(),
+            _currentChoice(), delegate(BrowserChoice choice) {
+                if (onChooseBrowser !is null)
+                    onChooseBrowser(choice);
+            });
+        if (items.length == 0) return;
+        showContextMenu(this, globalPosition, items);
+    }
+}
+
+/// Builds the quick-link browser picker entries in display order, marking the
+/// current choice. Extracted so the menu content is testable without a window.
+private static ContextMenuItem[] buildBrowserMenuItems(
+    const BrowserChoice[] available, BrowserChoice current,
+    void delegate(BrowserChoice choice) choose)
+{
+    ContextMenuItem[] items;
+    foreach (choice; available)
+        items ~= browserPickerItem(choice, current, choose);
+    return items;
+}
+
+/// One picker entry. The choice is a function parameter so each closure captures
+/// its own copy — a delegate built directly over a foreach loop variable would
+/// capture the shared loop storage and every item would fire the last choice.
+private static ContextMenuItem browserPickerItem(BrowserChoice choice,
+    BrowserChoice current, void delegate(BrowserChoice choice) choose)
+{
+    return ContextMenuItem.check(browserChoiceLabel(choice),
+        current == choice, delegate() { choose(choice); });
+}
+
+unittest
+{
+    // Each entry must fire ITS OWN choice. A closure built over the foreach
+    // loop variable captures the shared loop storage, so every item would fire
+    // the last choice (regression: picking any browser opened the last one).
+    BrowserChoice[] fired;
+    const items = buildBrowserMenuItems(
+        [BrowserChoice.defaultBrowser, BrowserChoice.chrome,
+            BrowserChoice.firefox], BrowserChoice.chrome,
+        delegate(BrowserChoice choice) { fired ~= choice; });
+    assert(items.length == 3);
+    assert(items[0].label == "Default browser");
+    assert(!items[0].checked);
+    assert(items[1].label == "Google Chrome");
+    assert(items[1].checked);
+    assert(items[2].label == "Firefox");
+    assert(!items[2].checked);
+
+    foreach (item; items)
+        item.action();
+    assert(fired.length == 3);
+    assert(fired[0] == BrowserChoice.defaultBrowser);
+    assert(fired[1] == BrowserChoice.chrome);
+    assert(fired[2] == BrowserChoice.firefox);
+
+    const all = buildBrowserMenuItems(
+        [BrowserChoice.defaultBrowser, BrowserChoice.chrome,
+            BrowserChoice.edge, BrowserChoice.firefox],
+        BrowserChoice.defaultBrowser, delegate(BrowserChoice) {});
+    assert(all.length == 4);
+    assert(all[2].label == "Microsoft Edge");
+    assert(all[0].checked && !all[1].checked && !all[3].checked);
 }

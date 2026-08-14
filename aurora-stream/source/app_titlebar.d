@@ -8,6 +8,7 @@ import aurorastream.entry : applicationIconPath, printAudioEndpointsJson,
 import aurorastream.ffmpegbundle : enableBundledFfmpeg;
 import aurorastream.pacingdiagnostic : runStreamPacingDiagnostic;
 import aurorastream.root : StreamRoot;
+import aurorastream.settings : setPortableConfigMode;
 import std.stdio : writeln;
 
 /**
@@ -228,6 +229,11 @@ int main(string[] arguments)
     // run) and put them first on PATH so every "ffmpeg"/"ffprobe" invocation
     // in this process uses the bundled copies.
     enableBundledFfmpeg();
+
+    // Per-user app-data settings by default; `--portable-config` keeps the
+    // settings file beside the folder the app is launched from instead.
+    foreach (argument; arguments)
+        if (argument == "--portable-config") setPortableConfigMode(true);
 
     // The titlebar build is GUI-subsystem (no console), so a diagnostic
     // command must create one for its stdout output.

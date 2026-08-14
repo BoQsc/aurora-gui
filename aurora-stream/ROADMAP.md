@@ -36,7 +36,9 @@ Do not change the live path again until `RUN-QUALITY-DIAGNOSTIC.bat` identifies 
 
 ## Next — reliable capture and audio
 
-- Windows Graphics Capture for selecting individual monitor/window/game sources
+- Game/window capture of a single window (Settings → CAPTURE SOURCE) is done via
+  FFmpeg `gdigrab hwnd=`; still open: monitor capture and Graphics-Capture-based
+  game capture, plus selection of individual monitor sources
 - Extend direct D3D11 handoff to scaled and multi-destination composition without CPU readback
 - Native microphone capture owned by D instead of FFmpeg DirectShow
 - Bounded video/audio queues

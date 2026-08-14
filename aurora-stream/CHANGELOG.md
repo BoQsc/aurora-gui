@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Window/game capture now handles **minimized windows** explicitly. A minimized
+  window has a 0×0 client area, so FFmpeg's `gdigrab` fails on it and the stream
+  would otherwise sit on a frozen last frame while all encoder timers kept
+  advancing (no watchdog could catch it). Now: the CAPTURE SOURCE list marks
+  minimized windows as `(minimized — not capturable)`, the selector caption
+  shows `Window (minimized): …`, Start rejects a minimized selection with a
+  clear message, and the live worker stops the moment the captured window is
+  minimized or closed ("Window capture stopped — the captured window was
+  minimized/closed") instead of freezing. The LIVE SOURCE CANVAS preview also
+  keeps its last good frame for a minimized window.
+- Added a **game/window capture source** (Settings → **CAPTURE SOURCE**): pick a
+  single game or app window from the dropdown and Aurora Stream streams **only
+  that window** through FFmpeg's `gdigrab hwnd=` path, so viewers never see the
+  rest of the desktop. The selection is persisted in the settings file (schema
+  6); a saved window that is closed or belongs to an earlier Windows session is
+  reported at Start instead of silently streaming the desktop. The **LIVE SOURCE
+  CANVAS** preview follows the selection and shows the captured window too.
+  Window capture always uses the CPU path (`Window capture (GDI) → CPU
+  processing → encoder`); the D3D11 zero-copy handoff only applies to full
+  desktop Duplication. The window list is re-enumerated every time the dropdown
+  opens, and a **Refresh window list** item is included.
 - The live stream now **retries the FFmpeg launch** (up to 4 attempts) when
   FFmpeg exits immediately with the transient Windows UDP bind race
   (`-10048`, `bind failed`) on the audio RTP port. The handoff already proved

@@ -6,9 +6,10 @@ version (Windows)
 {
     import core.sys.windows.windows : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
         COLORONCOLOR, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
-        DIB_RGB_COLORS, GetDC, GetSystemMetrics, HBITMAP, HDC, HGDIOBJ, ReleaseDC,
-        SelectObject, SetStretchBltMode, SM_CXSCREEN, SM_CYSCREEN, SRCCOPY,
-        StretchBlt;
+        DIB_RGB_COLORS, GetClientRect, GetDC, GetSystemMetrics, HBITMAP, HDC,
+        HGDIOBJ, HWND, IsIconic, RECT, ReleaseDC, SelectObject, SetStretchBltMode,
+        SM_CXSCREEN, SM_CYSCREEN, SRCCOPY, StretchBlt;
+    import aurorastream.windowsources : hwndFromText;
 }
 
 /// Maps one 32bpp DIB pixel word (memory bytes B,G,R,undefined alpha on
@@ -37,6 +38,8 @@ final class DesktopPreviewCapturer
     private void* _bits;
     private int _screenWidth;
     private int _screenHeight;
+    private string _windowTargetText;
+    private HWND _windowTarget;
 
     this(int width, int height)
     {
@@ -57,6 +60,17 @@ final class DesktopPreviewCapturer
         if (width == _width && height == _height) return;
         _width = width;
         _height = height;
+        releaseDeviceObjects();
+    }
+
+    /// Captures a single window (game/window capture) instead of the desktop.
+    /// An empty or stale handle reverts to the primary monitor. The handle text
+    /// is re-parsed only when it changes, so a 30 FPS loop stays cheap.
+    void setWindowTarget(string hwndText)
+    {
+        if (hwndText == _windowTargetText) return;
+        _windowTargetText = hwndText.idup;
+        _windowTarget = hwndFromText(hwndText);
         releaseDeviceObjects();
     }
 
@@ -110,21 +124,49 @@ final class DesktopPreviewCapturer
         SetStretchBltMode(_memoryDC, COLORONCOLOR);
     }
 
-    /// Copies the current primary-monitor frame (scaled to the configured
-    /// preview size) into `rgba` as RGBA8 bytes. Returns false when the screen
-    /// cannot be captured or the buffer is too small.
+    /// Copies the current frame (the selected window, or the primary monitor
+    /// when no window is selected) scaled to the configured preview size into
+    /// `rgba` as RGBA8 bytes. Returns false when the source cannot be captured
+    /// or the buffer is too small.
     bool capture(ubyte[] rgba)
     {
         if (rgba.length < cast(size_t) _width * _height * 4) return false;
         ensureScreen();
         if (_bitmap is null || _memoryDC is null || _bits is null) return false;
 
-        HDC screenDC = GetDC(null);
-        if (screenDC is null) return false;
-        scope (exit) ReleaseDC(null, screenDC);
+        HDC sourceDC;
+        int sourceWidth;
+        int sourceHeight;
+        if (_windowTarget !is null)
+        {
+            // A minimized window cannot be captured (its client area is 0×0);
+            // skip the frame so the preview keeps the last good one instead of
+            // showing a stale or broken capture.
+            if (IsIconic(_windowTarget) != 0) return false;
+            sourceDC = GetDC(_windowTarget);
+            if (sourceDC is null) return false;
+            RECT client;
+            if (GetClientRect(_windowTarget, &client) == 0)
+            {
+                ReleaseDC(_windowTarget, sourceDC);
+                return false;
+            }
+            sourceWidth = client.right;
+            sourceHeight = client.bottom;
+        }
+        else
+        {
+            sourceDC = GetDC(null);
+            if (sourceDC is null) return false;
+            sourceWidth = _screenWidth;
+            sourceHeight = _screenHeight;
+        }
+        scope (exit) ReleaseDC(_windowTarget, sourceDC);
 
+        if (sourceWidth <= 0 || sourceHeight <= 0) return false;
         if (StretchBlt(_memoryDC, 0, 0, _width, _height,
-            screenDC, 0, 0, _screenWidth, _screenHeight, SRCCOPY) == 0)
+            sourceDC, 0, 0, sourceWidth, sourceHeight,
+            SRCCOPY) == 0)
             return false;
 
         const pixelCount = _width * _height;
