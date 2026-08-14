@@ -7,6 +7,7 @@ import aurorastream.audiodevices : AudioDeviceScanner;
 import aurorastream.bitratedropdown : BitrateDropdown;
 import aurorastream.browser : BrowserChoice, availableBrowserChoices,
     browserChoiceLabel, openPacingDiagnostic, openUrlInBrowser;
+import aurorastream.activitylog : ActivityLog;
 import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     BroadcastSnapshot, BroadcastWorker, CaptureSelection, EncoderSelection,
     captureSourceLabel, detectCaptureBackend, detectEncoder,
@@ -33,6 +34,9 @@ private enum youtubeLiveControlUrl = "https://studio.youtube.com/channel/UC/live
 final class StreamRoot : VBox
 {
     private GuiWindow _window;
+    private ActivityLog _activityLog;
+    private bool _lastMinimized;
+    private bool _lastStreamActive;
     private EncoderSelection _encoder;
     private CaptureSelection _capture;
     private BroadcastWorker _worker;
@@ -109,6 +113,9 @@ final class StreamRoot : VBox
     {
         super(8, Insets(10));
         _window = window;
+        _activityLog = new ActivityLog(executablePath);
+        _activityLog.start();
+        _lastMinimized = _window.isMinimized();
         _worker = new BroadcastWorker(executablePath);
         _audioScanner = new AudioDeviceScanner();
         _audioNotifications = new AudioDeviceNotifications();
@@ -933,8 +940,37 @@ final class StreamRoot : VBox
         }
     }
 
+    /// Logs focus changes (alt-tab, window activation) so an unexpected stop
+    /// can be correlated with a focus/minimize transition.
+    protected override void onHostFocusChanged(bool focused)
+    {
+        _activityLog.note(focused ? "Window focus gained." : "Window focus lost (possible alt-tab).");
+    }
+
     protected override void onTick(double deltaSeconds)
     {
+        _activityLog.heartbeat();
+        const minimized = _window.isMinimized();
+        if (minimized != _lastMinimized)
+        {
+            _lastMinimized = minimized;
+            _activityLog.note(minimized ? "Window minimized." : "Window restored.");
+        }
+        const streamSnapshot = _worker.snapshot();
+        const streamActive = streamSnapshot.requestedRunning ||
+            streamSnapshot.processRunning;
+        if (streamActive != _lastStreamActive)
+        {
+            _lastStreamActive = streamActive;
+            _activityLog.note(streamActive ? "Stream started." : "Stream stopped.");
+        }
+        _activityLog.setSnapshot(format(
+            "stream=%s status=%s metrics=[%s]", streamActive ? "on" : "off",
+            streamSnapshot.status,
+            format("FPS %s Speed %s dup %s drop %s time %s",
+                streamSnapshot.fps, streamSnapshot.speed,
+                streamSnapshot.duplicatedFrames, streamSnapshot.droppedFrames,
+                streamSnapshot.outputTime)));
         updateLiveSourcePreview(deltaSeconds);
         auto audioScan = _audioScanner.snapshot();
 
@@ -1112,6 +1148,7 @@ final class StreamRoot : VBox
         saveSettingsNow();
         _audioScanner.shutdown();
         _worker.shutdown();
+        if (_activityLog !is null) _activityLog.shutdown();
     }
 }
 

@@ -1,5 +1,45 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Aurora Stream: "stops when I alt-tab" + one-time freeze (logging + alt-tab recovery)
+- [x] User: "some user of aurora stream reported 'it stops when i alt tab' and
+      it happened to freeze 1 time" — plan agreed: "we will start logging to
+      understand freeze and will look into alt tab problem".
+- [x] **Freeze logging** (new `source/aurorastream/activitylog.d`): a persistent
+      `aurora-stream-activity.log` beside the exe records timestamped UI
+      heartbeats, window events (focus gained/lost, minimized/restored), stream
+      start/stop, and UI stalls. A watchdog thread runs off the UI thread, so
+      even a fully frozen UI still logs the stall start, the last known stream
+      state, and — once ticks resume — the total stall duration (threshold 3 s,
+      checks every 0.5 s, log truncated after 4 MiB).
+  - `StreamRoot` (`root.d`) drives it: `heartbeat()` each onTick,
+    `onHostFocusChanged` logs alt-tab focus loss, minimize/restore transitions
+    logged, stream state + metrics published as the stall-context snapshot,
+    `shutdown()` stops the watchdog.
+  - Verified with a standalone probe: a stopped heartbeat produced
+    `UI STALL DETECTED ... no UI tick for 3.1 s` then `UI STALL RESOLVED after
+    4.6 s`; the real app launched and wrote focus gained/lost + start/stop lines.
+- [x] **Alt-tab stream stop** (root cause): when you alt-tab to/from a
+      fullscreen-exclusive app, a resolution change, the lock screen, or a UAC
+      prompt, Desktop Duplication loses its output. FFmpeg prints
+      `AcquireNextFrame failed` and the capture input dies. The old code treated
+      that first line as a permanent `VIDEO CAPTURE FAILURE` and killed the
+      stream instantly.
+  - Fix in `broadcast.d`: an `AcquireNextFrame failed` line is now flagged
+    `_captureLossRecoverable` (not a fatal `_videoCaptureFailed`), the monitor
+    returns on that flag, and the launch loop relaunches FFmpeg up to 3 times
+    (300 ms apart) so the stream survives the alt-tab; the FIFO muxer reconnects
+    the destination. Only when the relaunch budget is exhausted is it reported
+    as a permanent capture failure. A user Stop during the recovery window is
+    respected (no relaunch). Startup log records
+    `DESKTOP CAPTURE OUTPUT LOST` + `RELAUNCH ... (recovery N of 3)`.
+  - Regression unittest: `parseLine` on `AcquireNextFrame failed` sets
+    recoverable (not fatal), a second line doesn't re-diagnose, clearing works,
+    and the monitor exit condition triggers on capture loss as well as user stop.
+- [x] Verified: `dub test` → 41 modules pass (was 40); `application` +
+      `notitlebar` configs build; `verify-audio-transport.py`,
+      `verify-rtp-sdp.py`, `verify-network-output-isolation.py` still pass; the
+      default titlebar app launches and writes the activity log.
+
 ## 2026-08-14 — Aurora Stream: browser picker always opened the LAST browser (Firefox)
 - [x] User: "I switch third time and it keeps opening last one firefox. annoying
       always." (the right-click browser picker on the Twitch/YouTube quick links).

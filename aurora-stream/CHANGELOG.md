@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Added a persistent **activity log** (`aurora-stream-activity.log` beside the
+  executable) plus a UI-thread **stall detector**. The log records UI
+  heartbeats, window focus/minimize/restore events, stream start/stop, and any
+  UI stall: a watchdog thread writes "UI STALL DETECTED … State: …" the moment
+  the UI stops ticking for over 3 seconds and "UI STALL RESOLVED after … s" when
+  it resumes, so a one-time freeze is now diagnosable from one file.
+- **Alt-tab no longer kills the stream on Desktop Duplication loss.** Alt-tab
+  to/from a fullscreen-exclusive application, a resolution change, the lock
+  screen, or a UAC prompt makes Desktop Duplication lose its output
+  (`AcquireNextFrame failed`). The stream previously stopped instantly on the
+  first such line; it is now treated as recoverable and FFmpeg is relaunched up
+  to 3 times (300 ms apart) so the stream survives the transition — the FIFO
+  muxer reconnects the destination. Only after the relaunch budget is exhausted
+  is it reported as a permanent capture failure, and a user Stop during the
+  recovery window is respected. The startup log records `DESKTOP CAPTURE
+  OUTPUT LOST` and `RELAUNCH … (recovery N of 3)`.
 - Window/game capture now handles **minimized windows** explicitly. A minimized
   window has a 0×0 client area, so FFmpeg's `gdigrab` fails on it and the stream
   would otherwise sit on a frozen last frame while all encoder timers kept

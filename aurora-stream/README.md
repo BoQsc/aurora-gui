@@ -170,7 +170,9 @@ YouTube defaults to normal 1080p60 at 12 Mbps so a default broadcast uses roughl
 
 Aurora Stream probes FFmpeg's **Desktop Duplication** source when the program starts. Desktop Duplication returns D3D11 hardware frames and captures the hardware cursor without using FFmpeg's older GDI cursor handling.
 
-When FFmpeg cannot use a hardware H.264 encoder and falls back to CPU `libx264`, Aurora Stream uses the GDI compatibility capture path by default. That avoids the fragile Desktop Duplication readback path on CPU-only machines, where FFmpeg can report `AcquireNextFrame failed` and then continue sending audio while the video frame counter is frozen. Live streaming now stops immediately on that error, and a watchdog also stops any run where encoded video frames stop advancing while output time continues.
+When FFmpeg cannot use a hardware H.264 encoder and falls back to CPU `libx264`, Aurora Stream uses the GDI compatibility capture path by default. That avoids the fragile Desktop Duplication readback path on CPU-only machines, where FFmpeg can report `AcquireNextFrame failed` and then continue sending audio while the video frame counter is frozen.
+
+Desktop Duplication also loses its output when the display changes around you — **alt-tab to/from a fullscreen-exclusive application**, a resolution change, the lock screen, or a UAC prompt. Aurora Stream treats that loss as recoverable and automatically relaunches FFmpeg up to 3 times (the FIFO output muxer reconnects), so an alt-tab away and back no longer kills the stream. Only when the capture does not recover after those relaunches is the stream stopped with a clear "Desktop capture failed (did not recover after 3 relaunches)" message, and a manually pressed Stop during the recovery window is always respected. A watchdog also stops any run where encoded video frames stop advancing while output time continues.
 
 For one matching NVENC destination, Aurora Stream keeps those frames on the GPU:
 

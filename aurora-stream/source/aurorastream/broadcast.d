@@ -1240,6 +1240,66 @@ unittest
     assert(invalid.indexOf("capture window") >= 0);
 }
 
+unittest
+{
+    // A Desktop Duplication output loss must be flagged RECOVERABLE (not a
+    // permanent capture failure) so the launch loop can relaunch FFmpeg after
+    // an alt-tab / fullscreen transition, and it must clear once relaunched.
+    auto worker = new BroadcastWorker(".");
+    string[] secrets = [];
+    worker._mutex.lock();
+    worker._requestedRunning = true;
+    worker._captureLossRecoverable = false;
+    worker._captureLossRecoverableDiagnosed = false;
+    worker._videoCaptureFailed = false;
+    worker._mutex.unlock();
+
+    worker.parseLine(
+        "[ddagrab @ 000001] AcquireNextFrame failed: error",
+        secrets, null);
+
+    worker._mutex.lock();
+    assert(worker._captureLossRecoverable);
+    assert(!worker._videoCaptureFailed); // recoverable, not fatal yet
+    assert(worker._captureLossRecoverableDiagnosed);
+    assert(worker._status == "Desktop capture lost — reconnecting…");
+    worker._mutex.unlock();
+
+    // A second loss line must not re-diagnose (still flagged recoverable).
+    worker.parseLine(
+        "[ddagrab @ 000002] AcquireNextFrame failed: again",
+        secrets, null);
+    worker._mutex.lock();
+    assert(worker._captureLossRecoverable);
+    worker._mutex.unlock();
+
+    // The relaunch path clears the flags so the next attempt is a fresh start.
+    worker._mutex.lock();
+    worker._captureLossRecoverable = false;
+    worker._captureLossRecoverableDiagnosed = false;
+    worker._videoCaptureFailed = false;
+    worker._mutex.unlock();
+    assert(!worker._captureLossRecoverable);
+    assert(!worker._captureLossRecoverableDiagnosed);
+
+    // The monitor's exit condition mirrors `monitorProcess`: it returns when
+    // the process is gone, the user stopped, the app is shutting down, OR the
+    // capture loss is flagged. A flagged loss must force an exit even when the
+    // process and requestedRunning look healthy (so run() can relaunch), and a
+    // user stop must exit even when the process is still marked running.
+    worker._mutex.lock();
+    worker._requestedRunning = true;
+    worker._processRunning = true;
+    worker._captureLossRecoverable = true;
+    const lossForcesExit = worker._captureLossRecoverable;
+    worker._captureLossRecoverable = false;
+    worker._requestedRunning = false;
+    const userStopForcesExit = !worker._requestedRunning;
+    worker._mutex.unlock();
+    assert(lossForcesExit);
+    assert(userStopForcesExit);
+}
+
 private string sanitize(string text, const(string)[] secrets)
 {
     auto result = text;
@@ -1275,6 +1335,8 @@ final class BroadcastWorker
     private bool _videoCaptureFailed;
     private string _videoCaptureFailureReason;
     private string _captureFailureStatus;
+    private bool _captureLossRecoverable;
+    private bool _captureLossRecoverableDiagnosed;
     private string _startupLogPath;
     private string _status = "Ready";
     private string _diagnostics;
@@ -1335,6 +1397,8 @@ final class BroadcastWorker
         _videoCaptureFailed = false;
         _videoCaptureFailureReason = "";
         _captureFailureStatus = "";
+        _captureLossRecoverable = false;
+        _captureLossRecoverableDiagnosed = false;
         _status = "Starting FFmpeg…";
         _diagnostics = "";
         _frame = "";
@@ -1579,7 +1643,8 @@ final class BroadcastWorker
             _mutex.lock();
             const sameProcess = _process is process && _processRunning;
             const shouldContinue = _requestedRunning && !_shutdown;
-            if (!sameProcess || !shouldContinue)
+            const captureLoss = _captureLossRecoverable;
+            if (!sameProcess || !shouldContinue || captureLoss)
             {
                 _mutex.unlock();
                 return;
@@ -1754,32 +1819,39 @@ final class BroadcastWorker
         appendPersistentLog("FFmpeg: " ~ line);
         if (isDesktopDuplicationFailureLine(line))
         {
+            // Desktop Duplication loses its output when the display mode
+            // changes — alt-tab to/from a fullscreen-exclusive application,
+            // a resolution change, a lock screen, or a UAC prompt. The capture
+            // input dies with it, so FFmpeg cannot recover by itself. Mark the
+            // loss as RECOVERABLE and relaunch FFmpeg (bounded) so an alt-tab
+            // away and back does not kill the stream; only after the relaunch
+            // budget is exhausted is this reported as a permanent capture
+            // failure.
             const reason =
-                "Desktop Duplication capture failed: " ~ line ~
-                ". FFmpeg cannot continue sending valid video after this, " ~
-                "so the stream was stopped instead of leaving Twitch on a " ~
-                "frozen or black buffering frame.";
+                "Desktop Duplication output lost: " ~ line ~
+                ". This usually happens on alt-tab to/from a fullscreen-exclusive " ~
+                "application or a display-mode change. Aurora Stream is " ~
+                "relaunching the capture automatically; if it does not recover, " ~
+                "the stream will stop.";
             Pid process;
             _mutex.lock();
-            if (!_videoCaptureFailed)
+            _captureLossRecoverable = true; // monitor exits on this flag so run() can relaunch
+            if (!_captureLossRecoverableDiagnosed)
             {
-                _videoCaptureFailed = true;
-                _videoCaptureFailureReason = reason;
-                _failed = true;
-                _requestedRunning = false;
-                _status = "Desktop capture failed";
+                _captureLossRecoverableDiagnosed = true;
+                _status = "Desktop capture lost — reconnecting…";
                 appendDiagnostic(reason);
-                process = _process;
             }
+            process = _process;
             _mutex.unlock();
-            appendPersistentLog("VIDEO CAPTURE FAILURE: " ~ reason);
+            appendPersistentLog("DESKTOP CAPTURE OUTPUT LOST: " ~ reason);
             if (process !is null)
             {
                 try kill(process);
                 catch (Exception error)
                 {
                     appendPersistentLog(
-                        "Could not terminate FFmpeg after video capture failure: " ~
+                        "Could not terminate FFmpeg after Desktop Duplication loss: " ~
                         error.msg);
                 }
             }
@@ -1919,7 +1991,9 @@ final class BroadcastWorker
             // fresh port pairs; the live path retries the FFmpeg launch, which
             // uses the same proven-free ports).
             enum int maxLaunchAttempts = 4;
+            enum int maxCaptureRelaunches = 3;
             enum double launchHealthSeconds = 2.5;
+            int captureRelaunches;
             for (int attempt = 1; attempt <= maxLaunchAttempts && !launched;
                 ++attempt)
             {
@@ -1991,6 +2065,62 @@ final class BroadcastWorker
                     exitCode = wait(pipes.pid);
                     appendPersistentLog(
                         format("FFmpeg exited with code %s.", exitCode));
+
+                    // Recoverable Desktop Duplication loss (alt-tab to/from a
+                    // fullscreen-exclusive app, resolution change, lock screen):
+                    // the capture output is gone but returns when the desktop
+                    // is visible again. Relaunch FFmpeg (bounded) so the stream
+                    // survives the transition instead of stopping.
+                    bool relaunchCapture;
+                    _mutex.lock();
+                    if (_captureLossRecoverable)
+                    {
+                        // Only relaunch while the user still wants the stream
+                        // and the app is not shutting down; a Stop pressed
+                        // during the recovery window must not resurrect it.
+                        if (_requestedRunning && !_shutdown &&
+                            captureRelaunches < maxCaptureRelaunches)
+                        {
+                            ++captureRelaunches;
+                            _captureLossRecoverable = false;
+                            _captureLossRecoverableDiagnosed = false;
+                            _videoCaptureFailed = false;
+                            _videoCaptureFailureReason = "";
+                            _captureFailureStatus = "";
+                            _failed = false;
+                            _process = null;
+                            _processRunning = false;
+                            _startupComplete = false;
+                            _startupFailed = false;
+                            _status = "Reconnecting desktop capture…";
+                            relaunchCapture = true;
+                        }
+                        else
+                        {
+                            // Relaunch budget exhausted: report a real failure
+                            // instead of falling through to the generic
+                            // user-stopped branch.
+                            _videoCaptureFailed = true;
+                            _videoCaptureFailureReason =
+                                "Desktop Duplication output kept being lost. The stream was stopped after " ~
+                                maxCaptureRelaunches.to!string ~
+                                " automatic recovery relaunches.";
+                            _captureFailureStatus =
+                                "Desktop capture failed (did not recover after " ~
+                                maxCaptureRelaunches.to!string ~ " relaunches)";
+                            _failed = true;
+                        }
+                    }
+                    _mutex.unlock();
+                    if (relaunchCapture)
+                    {
+                        appendPersistentLog(format(
+                            "RELAUNCH: Desktop Duplication loss was transient; relaunching FFmpeg (recovery %s of %s).",
+                            captureRelaunches, maxCaptureRelaunches));
+                        Thread.sleep(300.msecs);
+                        launched = false;
+                        continue;
+                    }
                 }
                 else
                 {

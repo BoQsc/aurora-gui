@@ -1,5 +1,92 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: "stops when I alt-tab" + one-time freeze — activity log + alt-tab capture recovery (2026-08-14)
+
+Two user reports: the stream stops when alt-tabbing, and the app froze once.
+Plan agreed with the user: "we will start logging to understand freeze and will
+look into alt tab problem". Two changes:
+
+### 1. Freeze logging — `aurora-stream-activity.log` + UI-thread stall detector
+
+New `aurora-stream/source/aurorastream/activitylog.d` (class `ActivityLog`):
+- Persistent, timestamped, thread-safe log written beside the executable
+  (same folder as `aurora-stream-startup.log`): `aurora-stream-activity.log`.
+- Records UI heartbeats, window events (focus gained/lost, minimized/restored),
+  stream start/stop, and UI stalls. Rotated/truncated after 4 MiB.
+- Stall detection runs on a dedicated watchdog thread (not the UI thread), so a
+  fully frozen UI can still write the stall record. Threshold: no UI tick for
+  > 3 s; checks every 0.5 s; records the stall start (at the LAST heartbeat, so
+  the reported duration is the true freeze length), the last published stream
+  state (status + metrics), and the resolution once ticks resume.
+
+Wiring in `root.d` (`StreamRoot`):
+- `_activityLog` created + `start()` in the constructor; `heartbeat()` at the
+  top of every `onTick`; `onHostFocusChanged` logs "Window focus lost (possible
+  alt-tab)" / gained; minimize/restore transitions logged; stream
+  started/stopped transitions logged; the live snapshot (stream on/off, status,
+  FPS/Speed/dup/drop/time) published via `setSnapshot` for stall context;
+  `shutdown()` stops the watchdog and writes a final line.
+
+How to verify the stall detector without the GUI:
+```
+dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source build\activitylog_probe.d -of=build\activitylog-probe.exe user32.lib gdi32.lib shell32.lib winmm.lib ole32.lib avrt.lib -L/SUBSYSTEM:CONSOLE
+```
+(probe: heartbeat ~1 s, stop, wait ~4.5 s, resume, shutdown) → the log shows
+`UI STALL DETECTED ... 3.1 s` then `UI STALL RESOLVED after 4.6 s`, and prints
+`ACTIVITYLOG PROBE PASSED`. Note: `Thread.join()` in this DMD has no `Duration`
+overload — use a plain `join()` (the watchdog sleeps at most 0.5 s between
+checks, so it returns promptly once `_shutdown` is set).
+
+### 2. Alt-tab stream stop — recoverable Desktop Duplication loss
+
+Root cause: alt-tab to/from a fullscreen-exclusive app, a resolution change,
+the lock screen, or a UAC prompt makes Desktop Duplication lose its output.
+FFmpeg's `ddagrab` prints `AcquireNextFrame failed` and the capture input dies.
+Before this change `parseLine` treated that first line as a permanent
+`VIDEO CAPTURE FAILURE` and killed FFmpeg instantly.
+
+Change in `aurora-stream/source/aurorastream/broadcast.d`:
+- `parseLine`: an `AcquireNextFrame failed` line sets `_captureLossRecoverable`
+  (recoverable) instead of `_videoCaptureFailed` (fatal). Kills FFmpeg (the
+  input is already dead), status becomes "Desktop capture lost — reconnecting…",
+  startup log gets `DESKTOP CAPTURE OUTPUT LOST` + the exact line.
+- `monitorProcess`: returns early when `_captureLossRecoverable` is set (same as
+  process-gone / user-stop / shutdown), so the launch loop can act promptly.
+- `run()` launch loop: after the process exits, if the loss is recoverable AND
+  the user still wants the stream (`_requestedRunning`, not `_shutdown`) AND the
+  relaunch budget (`maxCaptureRelaunches = 3`, 300 ms apart) remains, it resets
+  the per-run flags and relaunches FFmpeg (`RELAUNCH ... recovery N of 3`). The
+  bounded FIFO muxer reconnects the Twitch/YouTube destination. Only when the
+  budget is exhausted is it reported as a permanent capture failure (status
+  "Desktop capture failed (did not recover after 3 relaunches)"). A user Stop
+  during the recovery window is respected — no relaunch.
+
+How to verify (automated):
+- `dub test` → 41 modules pass. A new broadcast unittest drives `parseLine`
+  with `AcquireNextFrame failed` and asserts: recoverable flag set, NOT
+  `_videoCaptureFailed` (not fatal yet), status "Desktop capture lost —
+  reconnecting…", a second loss line doesn't re-diagnose, clearing the flag
+  works, and the monitor exit condition triggers on capture loss AND on user
+  stop (`_requestedRunning` false).
+- `python tests/verify-audio-transport.py`, `verify-rtp-sdp.py`,
+  `verify-network-output-isolation.py` still pass.
+- `dub build` (application/titlebar) + `dub build --config=notitlebar` link.
+- Manual: launch the app, start a stream, alt-tab to/from a
+  fullscreen-exclusive app. Expected: `aurora-stream-startup.log` shows
+  `DESKTOP CAPTURE OUTPUT LOST` + `RELAUNCH ... recovery 1 of 3`, the status
+  briefly reads "Desktop capture lost — reconnecting…", then live metrics
+  resume. If the desktop stays unavailable for > 3 relaunches, the stream stops
+  with the "did not recover after 3 relaunches" message. `aurora-stream-activity.log`
+  shows the matching focus-loss line and stream-stop transition.
+
+### Known limitation
+- The relaunch gap is a few seconds (FFmpeg restart + FIFO reconnect); viewers
+  see a brief interruption, not a dead stream. This is the intended trade-off
+  for surviving alt-tab.
+- `gdigrab` fallback capture has no `AcquireNextFrame` line, so a permanent
+  gdigrab failure is still a normal capture failure (no relaunch). Only the
+  Desktop Duplication backend is auto-recovered.
+
 ## Aurora Stream: settings file location — per-user by default, `--portable-config` opt-in (2026-08-14)
 
 The settings file (`aurora-stream-settings.json`) previously lived in the
