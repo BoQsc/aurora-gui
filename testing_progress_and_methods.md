@@ -23,7 +23,11 @@
 - The portable staging helper passed. A verified minimal-FFmpeg Actions artifact
   (SHA-256 matched GitHub's artifact digest) allowed the complete local
   `--single-exe` workflow to reach the final link. This DMD installation lacks
-  `libcmt.lib`, so official Windows CI remains the packaging authority.
+  `libcmt.lib`. Official Windows Actions run #37 (`31830461788`, commit
+  `081ece8`) supplied the release toolchain, built the optimized D-only hook and
+  all single-exe applications, passed every PE static-runtime check, and
+  produced the 27.4 MB `aurora-windows-portable` artifact (SHA-256
+  `b2c53367506888071127fa1ef89aaea0bf0eb00add4f0bf5f55b2b827abd2730`).
 - No authenticated YouTube stream or fullscreen foreground test was run.
 
 ## Standard-flow verification and non-interference rule (2026-08-14)

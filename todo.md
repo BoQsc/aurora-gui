@@ -131,11 +131,11 @@
       block injection (same operational limitation as OBS).
 - [ ] Not tested: a real authenticated network stream using the new mode; no
       autonomous test has stream keys.
-- [ ] Official portable single-exe CI result. A verified minimal-FFmpeg Actions
-      artifact was staged and the local full build passed policy, hook build,
-      and embedding, then stopped at the final link because this DMD install has
-      no `libcmt.lib`. Do not weaken static-CRT packaging; Windows CI supplies
-      the release toolchain and is the authority before tagging.
+- [x] Official portable single-exe CI result: Windows Actions run #37
+      (`31830461788`, commit `081ece8`) built the optimized D-only hook and all
+      single-exe applications, passed the PE static-runtime checks, and produced
+      the 27.4 MB `aurora-windows-portable` artifact with SHA-256
+      `b2c53367506888071127fa1ef89aaea0bf0eb00add4f0bf5f55b2b827abd2730`.
 
 ## 2026-08-14 — Aurora Stream: minimize to tray (auto-hide on start + close-to-tray + tray icon controls)
 - [x] User: "let's consider if we could do 'minimize to tray' for aurora stream.

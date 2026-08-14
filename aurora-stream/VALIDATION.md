@@ -35,8 +35,13 @@ The final shared-memory game-capture runs passed at 236–237 manual frames and
 238–239 production-received frames per four seconds, with ordered/color-correct
 output. The last production round for each format reported zero sequence gaps
 and zero hook drops. The full single-exe build reached the final link and was
-blocked locally only by the absent `libcmt.lib`; authenticated YouTube ingest
-and fullscreen-exclusive/anti-cheat behavior remain manual post-release tests.
+blocked locally only by the absent `libcmt.lib`. Official Windows Actions run
+[#37](https://github.com/BoQsc/aurora-gui/actions/runs/31830461788) then built
+the optimized D-only hook and all single-exe applications, passed every PE
+static-runtime check, and published the `aurora-windows-portable` artifact
+(SHA-256 `b2c53367506888071127fa1ef89aaea0bf0eb00add4f0bf5f55b2b827abd2730`).
+Authenticated YouTube ingest and fullscreen-exclusive/anti-cheat behavior
+remain manual post-release tests.
 
 ## Unreleased loaded-audio regression
 
