@@ -1,5 +1,27 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-14 — Development-process complaint: tests disturbed desktop use
+- [x] User complaint: a fullscreen quality diagnostic interfered with normal
+      computer use and was closed. From now on, do not run fullscreen or
+      foreground interactive diagnostics autonomously. Prefer headless tests;
+      launch unavoidable GUI tests minimized/backgrounded, track their process,
+      and terminate them cleanly. Do not repeat a fullscreen harness without an
+      explicit user request. Headless transport/RTP/network/loaded-audio tests
+      were repeated afterward and passed.
+
+## 2026-08-14 — Aurora Stream standard-flow verification
+- [x] Headless checks passed: `verify-audio-transport.py`, `verify-rtp-sdp.py`
+      (direct + FIFO FLV), `verify-network-output-isolation.py`,
+      `--audio-bridge-session-test --synthetic`, endpoint JSON parsing, and
+      `dub test` (44 modules).
+- [x] Loaded-audio diagnostic passed both phases: 720 encoded frames each,
+      final speed 1.020x/0.996x, no RTP loss/overrun, no pacing skips, no send
+      failures, and no queue warnings.
+- [ ] Full visual quality harness was intentionally stopped because it opens a
+      fullscreen interactive test card and disturbed normal desktop use. It is
+      not marked passed; redesign it as a headless/offscreen visual source
+      before using it for autonomous acceptance.
+
 ## 2026-08-14 — Aurora Stream: improved always-on activity logging — DONE
 - [x] User: "improve logging so that final release of aurora stream would show
       exactly what errors and what problems happen and what actions are taken,
@@ -264,6 +286,28 @@
       every missed slot, keeping the delivered rate at ~fps frames per real
       second (picture may repeat when capture is slow, but no longer drifts
       ahead of audio). `dub test` → 43 modules pass.
+- [x] **BUGFIX (user supplied VLC screenshot: partial UI + large blank side
+      region)**: window-content capture was allocating the DIB from the outer
+      `GetWindowRect`, while VLC/PrintWindow rendered its DPI-virtualized
+      client content at a different logical size. The capturer now sizes from
+      `GetClientRect`, requests `PW_CLIENTONLY | PW_RENDERFULLCONTENT`, and
+      clears the source DIB before each print so untouched regions are black,
+      not stale/white pixels. `dub test` → 44 modules pass; live VLC release
+      verification remains the next acceptance check.
+- [x] **VLC compatibility fallback**: VLC's hardware video child surface is
+      not a reliable PrintWindow composition. Selecting VLC now automatically
+      disables window-content mode and uses visible screen capture, preserving
+      the complete VLC video and UI. The activity log records the fallback.
+      Render-hook capture remains the proper future path for background or
+      minimized VLC.
+- [x] **Actual VLC validation** (not synthetic): captured the existing VLC HWND
+      playing a real video through the exact normalized gdigrab chain. Result:
+      no timestamp warnings, 1920×1080 output, 60/1, 300 frames, exactly 5.000
+      seconds. The raw unnormalized probe exposed repeated DTS warnings; the
+      production normalization chain removed them.
+- [x] **Headless diagnostic stdout**: GUI-subsystem builds now preserve an
+      inherited stdout pipe for Python diagnostics instead of replacing it with
+      a new console. Endpoint JSON parsing and loaded-audio diagnostics pass.
 - [x] NOTE: the user's real VLC capture left `aurora-stream-activity.log`
       containing an invalid UTF-8 sequence, which made the `activitylog`
       unittest fail on `readText` (it appended to the existing real log). Made

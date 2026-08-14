@@ -239,9 +239,19 @@ private void attachDiagnosticConsole()
 {
     version (Windows)
     {
-        import core.sys.windows.windows : AllocConsole;
-        import core.stdc.stdio : fflush, freopen, stderr, stdin, stdout;
+        import core.sys.windows.windows : AllocConsole, FILE_TYPE_UNKNOWN,
+            GetFileType, GetStdHandle, INVALID_HANDLE_VALUE, STD_OUTPUT_HANDLE;
+        import core.stdc.stdio : stderr, stdin, stdout;
+
+        // A subprocess diagnostic inherits a pipe, not a console. Do not call
+        // AllocConsole in that case or Python receives an empty stdout stream.
+        const output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (output !is null && output != INVALID_HANDLE_VALUE &&
+            GetFileType(cast(void*) output) != FILE_TYPE_UNKNOWN)
+            return;
+
         if (!AllocConsole()) return;
+        import core.stdc.stdio : freopen;
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
         freopen("CONIN$", "r", stdin);

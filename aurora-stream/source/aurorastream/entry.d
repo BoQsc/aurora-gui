@@ -12,7 +12,9 @@ import std.stdio : writeln;
 
 version (Windows)
 {
-    import core.sys.windows.windows : MB_ICONERROR, MB_OK, MessageBoxW;
+    import core.sys.windows.windows : DWORD, FILE_TYPE_UNKNOWN, GetFileType,
+        GetStdHandle, INVALID_HANDLE_VALUE, MB_ICONERROR, MB_OK, MessageBoxW,
+        STD_OUTPUT_HANDLE, WriteFile;
     import std.utf : toUTF16z;
 }
 
@@ -121,6 +123,25 @@ int printAudioEndpointsJson()
     JSONValue root = JSONValue.emptyObject;
     root["error"] = error;
     root["endpoints"] = encoded;
-    writeln(root.toString());
+    writeDiagnosticText(root.toString() ~ "\n");
     return endpoints.length > 0 ? 0 : 2;
+}
+
+/// GUI-subsystem diagnostics must write to an inherited pipe when launched by
+/// Python; allocating a new console replaces that pipe and produces empty
+/// stdout. Falls back to normal stdout for console launches/platforms.
+private void writeDiagnosticText(string text)
+{
+    version (Windows)
+    {
+        auto handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (handle !is null && handle != INVALID_HANDLE_VALUE &&
+            GetFileType(handle) != FILE_TYPE_UNKNOWN)
+        {
+            DWORD written;
+            WriteFile(handle, text.ptr, cast(DWORD) text.length, &written, null);
+            return;
+        }
+    }
+    writeln(text);
 }

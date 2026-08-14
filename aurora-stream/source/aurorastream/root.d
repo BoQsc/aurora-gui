@@ -31,7 +31,7 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : dur, msecs;
 import std.format : format;
-import std.string : startsWith, strip;
+import std.string : icmp, indexOf, startsWith, strip;
 
 private enum twitchSettingsUrl = "https://dashboard.twitch.tv/settings/stream";
 private enum youtubeLiveControlUrl = "https://studio.youtube.com/channel/UC/livestreaming";
@@ -270,6 +270,7 @@ final class StreamRoot : VBox
         _captureSource = settingsContent.add(new CaptureSourceDropdown(
             initialCaptureHwnd, initialCaptureLabel));
         _captureSource.onChanged = delegate(string value) {
+            enforceVlcScreenCapture();
             updateQualitySummary();
             markSettingsDirty();
             const label = _captureSource.selectedLabel();
@@ -981,6 +982,36 @@ final class StreamRoot : VBox
         return _youtubeBitrate.selectedKbps();
     }
 
+    /// VLC's hardware video output is commonly a separate child/compositor
+    /// surface. PrintWindow can return a malformed partial composition for it
+    /// (the video and UI do not share one paint surface), so visible VLC must
+    /// use the screen-pixel path instead. Render-hook capture will be the
+    /// background/minimized path once integrated.
+    private bool selectedWindowIsVlc() const
+    {
+        if (_captureSource is null) return false;
+        const label = _captureSource.selectedLabel().strip();
+        const separator = label.indexOf(" — ");
+        return separator > 0 &&
+            icmp(label[0 .. cast(size_t) separator], "vlc.exe") == 0;
+    }
+
+    private void enforceVlcScreenCapture()
+    {
+        if (_windowContentCapture is null || !selectedWindowIsVlc() ||
+            !_windowContentCapture.checked()) return;
+        _windowContentCapture.setChecked(false, false);
+        _localStatus =
+            "VLC uses a hardware video surface; using visible screen capture " ~
+            "to keep the complete video and UI. Background VLC capture will " ~
+            "use the render hook when enabled.";
+        _localStatusError = false;
+        _activityLog.warning(
+            "VLC window-content capture was disabled; using screen capture " ~
+            "because PrintWindow cannot reliably compose VLC's child video surface.");
+        markSettingsDirty();
+    }
+
     private void updateQualitySummary()
     {
         if (_output is null || _presetSummary is null ||
@@ -1077,7 +1108,7 @@ final class StreamRoot : VBox
         settings.windowCaptureHwnd = _captureSource.selectedHwnd();
         settings.windowCaptureLabel = _captureSource.selectedLabel();
         settings.windowContentCapture = _windowContentCapture !is null &&
-            _windowContentCapture.checked();
+            _windowContentCapture.checked() && !selectedWindowIsVlc();
         settings.liveSourcePreviewEnabled = _liveSourcePreviewEnabled;
         settings.browserChoice = _browserChoice;
         settings.minimizeToTrayOnStart = _minimizeToTrayOnStart;
@@ -1591,7 +1622,9 @@ final class StreamRoot : VBox
         if (_windowContentCapture !is null)
         {
             const hasWindow = _captureSource.selectedHwnd().strip().length > 0;
-            _windowContentCapture.setEnabled(!active && hasWindow);
+            enforceVlcScreenCapture();
+            _windowContentCapture.setEnabled(!active && hasWindow &&
+                !selectedWindowIsVlc());
         }
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);
         _refreshAudioDevices.setText(audioScan.running ?

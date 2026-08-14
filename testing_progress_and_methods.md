@@ -1,5 +1,25 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Standard-flow verification and non-interference rule (2026-08-14)
+
+- Headless checks passed: `verify-audio-transport.py`, `verify-rtp-sdp.py`
+  (direct + FIFO FLV), `verify-network-output-isolation.py`,
+  `--audio-bridge-session-test --synthetic`, endpoint JSON parsing, and
+  `dub test` (44 modules).
+- `run-quality-diagnostic.py --loaded-audio` passed both phases: 720 frames
+  each, final speeds 1.020x and 0.996x, no queue/RTP/pacing/send failures.
+- Actual VLC validation was performed without fullscreen: the existing VLC
+  HWND playing a real video was captured through the normalized gdigrab chain;
+  1920×1080, 60/1, 300 frames, exactly 5.000 seconds, and no timestamp
+  warnings. The raw unnormalized probe produced repeated DTS warnings; the
+  production `fps/settb/setpts/scale/pad` chain removed them.
+- GUI diagnostic stdout was fixed to preserve inherited subprocess pipes;
+  endpoint JSON now parses and the loaded-audio diagnostic completes normally.
+- The full visual harness was stopped because it opens a fullscreen test card
+  and interferes with normal desktop use. It is not accepted as passed. Future
+  autonomous validation must be headless or explicitly backgrounded/minimized;
+  no fullscreen interactive test may be launched without user approval.
+
 ## Aurora Stream: improved always-on activity logging (2026-08-14)
 
 User request: "can we improve logging so that final release of aurora stream
@@ -305,6 +325,22 @@ defaults to ON**; an explicitly saved value is respected.
   posted to the notification center.
 
 ## Aurora Stream: capture source red/stuck + window-content capture for covered/minimized windows (2026-08-14)
+
+### Follow-up: VLC partial render / A/V mismatch
+- Diagnosis: PrintWindow was using the outer `GetWindowRect` dimensions while
+  VLC's DPI-virtualized client content was rendered at a different logical
+  size. The result was a correctly rendered left portion plus an oversized
+  untouched/white region. The slow PrintWindow cadence also previously
+  compressed rawvideo timestamps and made video run ahead of audio.
+- Fix: `windowcontent.d` now uses `GetClientRect`, requests
+  `PW_CLIENTONLY | PW_RENDERFULLCONTENT`, clears the source DIB before each
+  print, and `runWindowContentPump` duplicates held frames into missed cadence
+  slots. `dub test` passes 44 modules.
+- Required live acceptance: capture a visible VLC window again with
+  window-content mode enabled, inspect the full client area for correct
+  geometry, and compare audio/video timing. Use the default gdigrab mode for
+  hardware-accelerated VLC if its video surface remains incomplete through
+  PrintWindow.
 
 User: "capture source feature seems to have trouble with selecting windows and
 also keeps entire option highlighted as red all the time", then "We want to

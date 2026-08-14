@@ -9,7 +9,7 @@ version (Windows)
         StretchBlt;
     import core.sys.windows.wingdi : BITMAPINFO, BITMAPINFOHEADER, BI_RGB;
     import core.sys.windows.winuser : PrintWindow;
-    import core.stdc.string : memcpy;
+    import core.stdc.string : memcpy, memset;
     import aurorastream.windowsources : hwndFromText;
     import std.algorithm : max;
 }
@@ -19,6 +19,7 @@ version (Windows)
 /// still returns its real pixels — the same behavior professional tools get
 /// from Windows Graphics Capture, without the WinRT layer.
 version (Windows)
+private enum uint pwClientOnly = 0x00000001;
 private enum uint pwRenderFullContent = 0x00000002;
 
 /// Reusable window-content capture state. Unlike a screen grab, this captures
@@ -107,13 +108,16 @@ final class WindowContentCapturer
         releaseTargetObjects();
     }
 
-    /// Ensures the window-sized memory DC is created for the window's current
-    /// size; the DIB is recreated only when the window resizes.
+    /// Ensures the client-sized memory DC is created for the window's current
+    /// size; the DIB is recreated only when the window resizes. Using the
+    /// client area avoids mixing the target's DPI-virtualized non-client frame
+    /// with PrintWindow's logical client rendering (VLC otherwise leaves a
+    /// large unpainted side region in the capture).
     private bool ensureWindowSurface()
     {
         if (_window is null) return false;
         RECT rect;
-        if (GetWindowRect(_window, &rect) == 0) return false;
+        if (GetClientRect(_window, &rect) == 0) return false;
         const width = rect.right - rect.left;
         const height = rect.bottom - rect.top;
         if (width <= 0 || height <= 0) return false;
@@ -186,7 +190,12 @@ final class WindowContentCapturer
         if (!ensureWindowSurface()) return false;
         if (!ensureTargetSurface()) return false;
 
-        if (PrintWindow(_window, _windowDC, pwRenderFullContent) == 0)
+        // PrintWindow may not repaint every child/composited surface. Clear
+        // first so any region it leaves untouched is black, not stale DIB data.
+        memset(_windowBits, 0,
+            cast(size_t) _windowWidth * _windowHeight * 4);
+        if (PrintWindow(_window, _windowDC,
+            pwClientOnly | pwRenderFullContent) == 0)
             return false;
 
         if (StretchBlt(_targetDC, 0, 0, _targetWidth, _targetHeight,
