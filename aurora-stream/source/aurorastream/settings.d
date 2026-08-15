@@ -202,6 +202,8 @@ private BroadcastSettings settingsFromJson(string source)
     settings.minimizeToTrayOnStart = jsonBool(root, "minimizeToTrayOnStart",
         settings.minimizeToTrayOnStart);
     settings.closeToTray = jsonBool(root, "closeToTray", settings.closeToTray);
+    settings.minimizeToTray = jsonBool(root, "minimizeToTray",
+        settings.minimizeToTray);
 
     settings.browserChoice = browserChoiceFromKey(jsonString(root,
         "browserChoice", browserChoiceKey(settings.browserChoice)));
@@ -294,6 +296,7 @@ private string settingsToJson(BroadcastSettings settings)
     root["liveSourcePreviewEnabled"] = settings.liveSourcePreviewEnabled;
     root["minimizeToTrayOnStart"] = settings.minimizeToTrayOnStart;
     root["closeToTray"] = settings.closeToTray;
+    root["minimizeToTray"] = settings.minimizeToTray;
     root["browserChoice"] = browserChoiceKey(settings.browserChoice);
     if (settings.deviceDisplayNameCache.length > 0)
     {
@@ -574,29 +577,36 @@ unittest
     // Schema 8 tray preferences round-trip. Minimize-to-tray is OFF by default
     // for fresh installs / files that never saved the key (auto-hiding while
     // streaming is confusing in practice), while close-to-tray is ON by
-    // default; an explicitly saved value is respected.
+    // default; an explicitly saved value is respected. The minimize button
+    // hides to tray only when explicitly enabled (plain taskbar minimize is
+    // the default).
     BroadcastSettings source;
     source.minimizeToTrayOnStart = true;
     source.closeToTray = true;
+    source.minimizeToTray = true;
     const restored = settingsFromJson(settingsToJson(source));
     assert(restored.minimizeToTrayOnStart);
     assert(restored.closeToTray);
+    assert(restored.minimizeToTray);
 
     const defaults = settingsFromJson(`{"schemaVersion":7}`);
     assert(!defaults.minimizeToTrayOnStart);
     assert(defaults.closeToTray);
+    assert(!defaults.minimizeToTray);
 
     const explicitOn = settingsFromJson(
-        `{"schemaVersion":8,"minimizeToTrayOnStart":true}`);
+        `{"schemaVersion":8,"minimizeToTrayOnStart":true,"minimizeToTray":true}`);
     assert(explicitOn.minimizeToTrayOnStart);
+    assert(explicitOn.minimizeToTray);
     // closeToTray was not specified, so it keeps the enabled default.
     assert(explicitOn.closeToTray);
 
     // A user who explicitly disabled the option keeps it disabled.
     const explicitOff = settingsFromJson(
-        `{"schemaVersion":8,"closeToTray":false,"minimizeToTrayOnStart":false}`);
+        `{"schemaVersion":8,"closeToTray":false,"minimizeToTrayOnStart":false,"minimizeToTray":false}`);
     assert(!explicitOff.minimizeToTrayOnStart);
     assert(!explicitOff.closeToTray);
+    assert(!explicitOff.minimizeToTray);
 }
 
 unittest

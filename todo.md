@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-15 — Close button ignored the close-to-tray setting (user complaint)
+
+- [x] User: after setting the setting, pressing the Close button still went to
+      the tray. Root cause: `StreamRoot.closeRequested()` had a hard
+      "once the tray icon exists, X never exits" override that ran BEFORE the
+      `closeToTray` check, so even with close-to-tray disabled the Close button
+      hid to the tray. Removed the override; `closeToTray` now fully decides
+      (enabled default → tray; disabled → real exit, tray removed on shutdown).
+- [x] Verified: aurora-stream application links; `dub test` = 46 modules pass.
+
+## 2026-08-15 — Minimize-to-tray no longer default (user complaint)
+
+- [x] User: minimize kept the app in the tray instead of minimizing to the
+      taskbar, which was annoying. Minimize-to-tray is now opt-in: a new
+      `minimizeToTray` setting (off by default, persisted in the settings JSON
+      schema 8) gates the titlebar/system-menu minimize AND the onTick
+      auto-conversion of any native minimize into a tray-hide. Plain minimize
+      to the taskbar is the default again. Exposed as a checkbox in the
+      settings menu ("Minimize button hides to tray instead of minimizing to
+      taskbar") and reported in the startup settings line.
+- [x] Verified: aurora-stream application + notitlebar link; `dub test` = 46
+      modules pass, including the extended schema-8 settings round-trip tests
+      (minimizeToTray round-trips, defaults off, explicit on/off respected).
+
 ## 2026-08-15 — Distorted single frame while resizing (user report)
 
 - [x] Diagnosed: NOT a regression from the titlebar/snap work — that commit

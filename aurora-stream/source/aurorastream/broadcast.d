@@ -121,6 +121,11 @@ struct BroadcastSettings
     // respected.
     bool closeToTray = true;
 
+    // UI preference: pressing the window Minimize button hides to the tray
+    // instead of minimizing to the taskbar. Off by default (plain minimize is
+    // the expected behavior); an explicitly saved "true" is respected.
+    bool minimizeToTray = false;
+
     // UI preference: which browser the Twitch/YouTube quick links use.
     // `default` hands the URL to the operating system's default handler;
     // the concrete choices require a detected installation.

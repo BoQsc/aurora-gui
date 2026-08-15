@@ -1679,6 +1679,37 @@ window border — content should track the size (interpolated, not one frozen
 blocky stretch). `AURORA_RESIZE_PROFILE=1` prints per-frame scene/render times
 in the window title for tuning.
 
+### Minimize-to-tray is no longer the default (2026-08-15, user complaint)
+
+Pressing the titlebar minimize button used to hide the app into the system tray
+once the tray icon existed. It now performs a plain taskbar minimize by default;
+hiding to the tray on minimize is opt-in:
+
+- New `minimizeToTray` broadcast setting, **off by default**, persisted in the
+  settings JSON (schema 8) and covered by the settings round-trip unittests
+  (`settings.d`): default off, explicit on/off respected, JSON key
+  `minimizeToTray`.
+- `StreamRoot.requestMinimize()` (titlebar button + system menu) and the
+  `onTick` auto-conversion of any native minimize (taskbar click, Alt+Space)
+  into a tray-hide are both gated on `minimizeToTray` (`root.d`).
+- Checkbox in the settings menu: "Minimize button hides to tray instead of
+  minimizing to taskbar". Startup settings line reports it
+  (`environment.d`).
+
+Verify: run the app, press the titlebar minimize — the window should minimize
+to the taskbar. Enable the checkbox and press minimize — it hides to the tray
+(tray icon appears). Close-to-tray behavior is unchanged.
+
+### Close button honors the close-to-tray setting (2026-08-15, user complaint)
+
+The Close button (X / Alt+F4 / system menu) went to the tray even after
+disabling "Close button hides to tray". Root cause: `StreamRoot.closeRequested()`
+had a hard `if (_tray !is null)` override that ran before the `closeToTray`
+check, so once the tray icon existed X always hid to the tray. The override is
+removed; `closeToTray` alone decides (enabled → tray, disabled → real exit; the
+tray is removed in `shutdown()`). Verify: uncheck close-to-tray, press X — the
+app exits; recheck it — X hides to the tray.
+
 ## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
 
 The top-right "Copy" pill on every message bubble was redundant with "Copy

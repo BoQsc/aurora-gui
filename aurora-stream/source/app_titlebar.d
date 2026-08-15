@@ -65,7 +65,9 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setCloseHoverColor(Color.fromHex(0xe5484d));
         _titleBar.setClosePressedColor(Color.fromHex(0xbf3438));
         _titleBar.onMinimize = delegate() {
-            // With a tray icon present, minimize keeps the app in the tray.
+            // Minimize hides to the tray only when the user enabled
+            // "Minimize button hides to tray" (off by default); otherwise it is
+            // a plain taskbar minimize.
             if (!_stream.requestMinimize()) _window.minimize();
         };
         _titleBar.onMaximizeToggle = &toggleMaximize;

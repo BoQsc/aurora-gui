@@ -132,6 +132,7 @@ final class StreamRoot : VBox
     private bool _forceExit;
     private bool _minimizeToTrayOnStart;
     private bool _closeToTray;
+    private bool _minimizeToTray;
 
     this(GuiWindow window, string executablePath)
     {
@@ -203,6 +204,7 @@ final class StreamRoot : VBox
         _browserChoice = saved.browserChoice;
         _minimizeToTrayOnStart = saved.minimizeToTrayOnStart;
         _closeToTray = saved.closeToTray;
+        _minimizeToTray = saved.minimizeToTray;
 
         // A saved window-capture selection that can no longer be streamed (the
         // window is closed, belongs to an earlier Windows session, or is
@@ -723,6 +725,13 @@ final class StreamRoot : VBox
                     _activityLog.info("Close-to-tray " ~
                         (_closeToTray ? "enabled." : "disabled."));
                 }),
+            ContextMenuItem.check("Minimize button hides to tray instead of minimizing to taskbar",
+                _minimizeToTray, delegate() {
+                    _minimizeToTray = !_minimizeToTray;
+                    markSettingsDirty();
+                    _activityLog.info("Minimize-to-tray " ~
+                        (_minimizeToTray ? "enabled." : "disabled."));
+                }),
             ContextMenuItem.separatorItem(),
             ContextMenuItem.command("Run A/V pacing diagnostic", delegate() {
                 const snapshot = _worker.snapshot();
@@ -1175,6 +1184,7 @@ final class StreamRoot : VBox
         settings.browserChoice = _browserChoice;
         settings.minimizeToTrayOnStart = _minimizeToTrayOnStart;
         settings.closeToTray = _closeToTray;
+        settings.minimizeToTray = _minimizeToTray;
         settings.deviceDisplayNameCache.clear();
         foreach (deviceId, name; _deviceNameCache)
             settings.deviceDisplayNameCache[deviceId] = name;
@@ -1332,13 +1342,14 @@ final class StreamRoot : VBox
         if (_window !is null) _window.close();
     }
 
-    /// The minimize button / system-menu minimize. Once the tray icon exists,
-    /// minimize keeps the app in the tray (no taskbar button) instead of
-    /// minimizing to the taskbar. Returns true when the request was consumed
-    /// as a tray-hide so the caller skips a plain minimize.
+    /// The minimize button / system-menu minimize. Hides to the tray only
+    /// when the user enabled "Minimize button hides to tray" (off by default);
+    /// otherwise the caller performs a plain taskbar minimize. Returns true
+    /// when the request was consumed as a tray-hide so the caller skips a
+    /// plain minimize.
     bool requestMinimize()
     {
-        if (_tray !is null)
+        if (_minimizeToTray && _tray !is null)
         {
             hideToTray();
             return true;
@@ -1348,16 +1359,13 @@ final class StreamRoot : VBox
 
     /// Called by the entry point when the window close (X, Alt+F4, system
     /// menu) is requested. Returns true when the app should actually shut
-    /// down; false keeps it running (hidden into the tray).
+    /// down; false keeps it running (hidden into the tray). The
+    /// "Close button hides to tray" setting decides: with close-to-tray
+    /// enabled (the default) X hides to the tray; disabled X exits the app
+    /// (the tray icon is removed on shutdown).
     bool closeRequested()
     {
         if (_forceExit) return true;
-        // Once the tray icon exists, X never exits — it stays in the tray.
-        if (_tray !is null)
-        {
-            hideToTray();
-            return false;
-        }
         if (_closeToTray)
         {
             hideToTray();
@@ -1582,10 +1590,11 @@ final class StreamRoot : VBox
             _lastMinimized = minimized;
             _activityLog.note(minimized ? "Window minimized." : "Window restored.");
         }
-        // Once the tray icon exists, a minimize from any path (taskbar click,
-        // Alt+Space system menu) converts into a tray-hide so the app stays in
-        // the tray instead of leaving a taskbar button.
-        if (_tray !is null && !_trayHidden && _window.isMinimized())
+        // Only when "Minimize button hides to tray" is enabled does a minimize
+        // from any path (taskbar click, Alt+Space system menu) convert into a
+        // tray-hide; otherwise it stays a normal taskbar minimize.
+        if (_minimizeToTray && _tray !is null && !_trayHidden &&
+            _window.isMinimized())
             hideToTray();
         const streamSnapshot = _worker.snapshot();
         const streamActive = streamSnapshot.requestedRunning ||

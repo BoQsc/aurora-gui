@@ -90,8 +90,9 @@ string[] settingsReport(const BroadcastSettings settings,
             settings.deviceDisplayNameCache) ~ ".";
     lines ~= "Settings: live source preview " ~
         (settings.liveSourcePreviewEnabled ? "on" : "off") ~ ".";
-    lines ~= "Settings: minimize-to-tray " ~
+    lines ~= "Settings: minimize-to-tray-on-start " ~
         (settings.minimizeToTrayOnStart ? "on" : "off") ~
+        "; minimize-to-tray " ~ (settings.minimizeToTray ? "on" : "off") ~
         "; close-to-tray " ~ (settings.closeToTray ? "on" : "off") ~ ".";
     lines ~= "Settings: browser " ~ browserChoiceLabel(settings.browserChoice) ~
         "; config mode " ~ (portableConfigMode() ? "portable" : "per-user") ~ ".";
