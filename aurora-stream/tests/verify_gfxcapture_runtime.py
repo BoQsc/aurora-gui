@@ -68,6 +68,29 @@ class PAINTSTRUCT(ctypes.Structure):
     ]
 
 
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("data1", wintypes.DWORD),
+        ("data2", wintypes.WORD),
+        ("data3", wintypes.WORD),
+        ("data4", ctypes.c_ubyte * 8),
+    ]
+
+
+IID_ID3D11_VIDEO_DEVICE = GUID(
+    0x10EC4D5B,
+    0x975A,
+    0x4689,
+    (ctypes.c_ubyte * 8)(0xB9, 0xE4, 0xD0, 0xAA, 0xC3, 0x0F, 0xE3, 0x33),
+)
+IID_ID3D11_VIDEO_CONTEXT = GUID(
+    0x61F21C45,
+    0x3C0E,
+    0x4A74,
+    (ctypes.c_ubyte * 8)(0x9C, 0xEA, 0x67, 0x10, 0x0D, 0x9A, 0xD5, 0xE4),
+)
+
+
 class TestWindow:
     def __init__(self) -> None:
         self.hwnd = 0
@@ -209,7 +232,7 @@ class TestWindow:
 
 
 def d3d11_hardware_status() -> tuple[bool, int]:
-    """Match FFmpeg's default D3D11VA hardware-device prerequisite."""
+    """Match FFmpeg's complete default D3D11VA-device prerequisite."""
     d3d11 = ctypes.WinDLL("d3d11")
     create_device = d3d11.D3D11CreateDevice
     create_device.argtypes = [
@@ -242,19 +265,60 @@ def d3d11_hardware_status() -> tuple[bool, int]:
         )
     )
 
-    def release(pointer: ctypes.c_void_p) -> None:
-        if not pointer.value:
-            return
+    def interface_method(
+        pointer: ctypes.c_void_p, index: int, signature: object
+    ) -> object:
         vtable = ctypes.cast(
             pointer,
             ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
         ).contents
-        release_fn = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+        return signature(vtable[index])
+
+    def release(pointer: ctypes.c_void_p) -> None:
+        if not pointer.value:
+            return
+        release_fn = interface_method(
+            pointer,
+            2,
+            ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p),
+        )
         release_fn(pointer)
 
+    def query_interface(pointer: ctypes.c_void_p, iid: GUID) -> tuple[int, ctypes.c_void_p]:
+        output = ctypes.c_void_p()
+        query = interface_method(
+            pointer,
+            0,
+            ctypes.WINFUNCTYPE(
+                ctypes.c_long,
+                ctypes.c_void_p,
+                ctypes.POINTER(GUID),
+                ctypes.POINTER(ctypes.c_void_p),
+            ),
+        )
+        query_result = int(query(pointer, ctypes.byref(iid), ctypes.byref(output)))
+        return query_result, output
+
+    available = result >= 0
+    status_result = result
+    video_device = ctypes.c_void_p()
+    video_context = ctypes.c_void_p()
+    if available:
+        status_result, video_device = query_interface(
+            device, IID_ID3D11_VIDEO_DEVICE
+        )
+        available = status_result >= 0 and bool(video_device.value)
+    if available:
+        status_result, video_context = query_interface(
+            context, IID_ID3D11_VIDEO_CONTEXT
+        )
+        available = status_result >= 0 and bool(video_context.value)
+
+    release(video_context)
+    release(video_device)
     release(context)
     release(device)
-    return result >= 0, result & 0xFFFF_FFFF
+    return available, status_result & 0xFFFF_FFFF
 
 
 def ppm_pixels(path: Path) -> tuple[int, int, bytes]:

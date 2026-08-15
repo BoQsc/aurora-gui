@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/build-minimal-ffmpeg-win64.sh
       - .github/workflows/minimal-ffmpeg.yml
+      - aurora-stream/tests/verify_gfxcapture_runtime.py
 
 permissions:
   contents: read
