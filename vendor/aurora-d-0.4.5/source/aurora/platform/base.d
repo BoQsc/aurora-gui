@@ -140,6 +140,26 @@ abstract class NativeWindow
         return false;
     }
 
+    /**
+     * Move and resize the top-level window to the given logical outer bounds
+     * (used by aero-style drag snapping). Unsupported backends return false.
+     */
+    bool setWindowBounds(Rect logicalBounds)
+    {
+        return false;
+    }
+
+    /**
+     * Work area (monitor bounds minus taskbar and docked bars) of the monitor
+     * under a screen point, in logical units. Used to compute drag-snap targets.
+     * Unsupported backends return false.
+     */
+    bool queryWorkArea(Point screenPoint, out Rect workArea)
+    {
+        workArea = Rect.init;
+        return false;
+    }
+
     /** Force an immediate synchronous full repaint of the window surface. */
     bool redrawWindow()
     {

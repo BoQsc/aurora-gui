@@ -26,7 +26,9 @@ final class TitleBarStreamRoot : Widget
     private GuiWindow _window;
     private TitleBar _titleBar;
     private StreamRoot _stream;
+    private TitleBarSnapPreview _snapPreview;
     private bool _maximized;
+    private Rect _restoredBounds;
     private PointF _dragStartWindowOrigin;
     private PointF _dragStartScreenPointer;
     private bool _anchorReady;
@@ -72,8 +74,42 @@ final class TitleBarStreamRoot : Widget
         _titleBar.onRestoreRequested = &restoreFromDrag;
         _titleBar.onDragStarted = &beginDrag;
         _titleBar.onDragMoved = &moveDrag;
+        _titleBar.onSnapChanged = &updateSnapPreview;
+        _titleBar.onSnapApplied = &applySnap;
 
         _stream = add(new StreamRoot(window, executablePath));
+
+        // Snap-preview overlay: added last so it paints above all content. The
+        // overlay is created disabled, so it never intercepts pointer input.
+        _snapPreview = add(new TitleBarSnapPreview());
+    }
+
+    /// Show/hide the translucent preview while a drag crosses a snap zone.
+    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
+    {
+        if (target == TitleBarSnapTarget.none)
+        {
+            _snapPreview.hide();
+            return;
+        }
+        Rect origin;
+        _window.windowBounds(origin);
+        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
+            bounds.width, bounds.height));
+    }
+
+    /// Apply a drag-snap target to the real window on release.
+    private void applySnap(TitleBarSnapTarget target, Rect bounds)
+    {
+        _snapPreview.hide();
+        _maximized = target == TitleBarSnapTarget.top;
+        _titleBar.setMaximized(_maximized);
+        if (_maximized)
+        {
+            Rect current;
+            if (_window.windowBounds(current)) _restoredBounds = current;
+        }
+        _window.setWindowBounds(bounds);
     }
 
     void shutdown()
@@ -92,29 +128,45 @@ final class TitleBarStreamRoot : Widget
     {
         _maximized = !_maximized;
         _titleBar.setMaximized(_maximized);
-        _window.toggleFullscreen();
+        if (_maximized)
+        {
+            Rect bounds;
+            if (_window.windowBounds(bounds)) _restoredBounds = bounds;
+            _window.toggleFullscreen();
+        }
+        else
+        {
+            _window.toggleFullscreen();
+        }
     }
 
     private void restoreFromDrag(PointF pointer, PointF pressPointer)
     {
         if (!_maximized) return;
-        Rect fullscreen;
-        const hadFullscreen = _window.windowBounds(fullscreen);
+        Rect maximized;
+        _window.windowBounds(maximized);
+        const wasFullscreen = _window.fullscreen();
         PointF screen;
         const hasScreen = _window.queryPointerScreenPosition(screen);
         _maximized = false;
         _titleBar.setMaximized(false);
-        _window.toggleFullscreen();
+        // Restore to the pre-maximize bounds regardless of how the window was
+        // maximized (caption fullscreen, double-click, or drag-snap to the top
+        // edge, which only fills the work area and never enters fullscreen).
+        if (wasFullscreen)
+            _window.toggleFullscreen();
+        else if (!_restoredBounds.empty)
+            _window.setWindowBounds(_restoredBounds);
         Rect restored;
         _window.windowBounds(restored);
-        // Map the grab point from the fullscreen titlebar into the restored
+        // Map the grab point from the maximized titlebar into the restored
         // titlebar by preserving its fractional position (the maximized window
         // is wider than the restored one). The titlebar height is unchanged, so
         // only X is scaled; both are clamped to the restored size.
         double grabX = pressPointer.x;
         double grabY = pressPointer.y;
-        if (hadFullscreen && fullscreen.width > 0 && restored.width > 0)
-            grabX = pressPointer.x * restored.width / fullscreen.width;
+        if (maximized.width > 0 && restored.width > 0)
+            grabX = pressPointer.x * restored.width / maximized.width;
         grabX = clampDouble(grabX, 0.0, cast(double) maxInt(0, restored.width - 1));
         grabY = clampDouble(grabY, 0.0, cast(double) maxInt(0, restored.height - 1));
         // Capture the cursor ONCE and reuse it as the drag anchor so the
@@ -194,6 +246,7 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setBounds(Rect(0, 0, bounds().width, barHeight));
         _stream.setBounds(Rect(0, barHeight, bounds().width,
             maxInt(0, bounds().height - barHeight)));
+        _snapPreview.setBounds(Rect(0, 0, bounds().width, bounds().height));
     }
 }
 

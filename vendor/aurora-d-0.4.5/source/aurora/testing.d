@@ -195,6 +195,38 @@ final class UiTestDriver
         return _window.onNativePaint();
     }
 
+    version (AuroraHeadless)
+    {
+        import aurora.platform.select : PlatformWindow;
+        import aurora.types : Rect;
+
+        private PlatformWindow nativePlatformWindow()
+        {
+            return cast(PlatformWindow) _window.nativeWindow();
+        }
+
+        /** Inject a monitor work area for the headless platform window. */
+        void setTestWorkArea(Rect value)
+        {
+            auto native = nativePlatformWindow();
+            if (native !is null) native.setTestWorkArea(value);
+        }
+
+        /** Inject the screen-space pointer sample used by drag-snap detection. */
+        void setTestScreenPointerPosition(PointF value)
+        {
+            auto native = nativePlatformWindow();
+            if (native !is null) native.setTestScreenPointerPosition(value);
+        }
+
+        /** The most recent bounds the window was asked to snap to, if any. */
+        bool lastWindowBounds(out Rect bounds)
+        {
+            auto native = nativePlatformWindow();
+            return native !is null && native.lastWindowBounds(bounds);
+        }
+    }
+
     private Event pointerEvent(EventType type, MouseButton button)
     {
         Event event;

@@ -194,6 +194,18 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         return _native !is null && _native.queryPointerScreenPosition(position);
     }
+
+    /** Work area of the monitor under a screen point, in logical units. */
+    bool queryWorkArea(Point screenPoint, out Rect workArea)
+    {
+        return _native !is null && _native.queryWorkArea(screenPoint, workArea);
+    }
+
+    /** Move and resize the top-level window to the given logical outer bounds. */
+    bool setWindowBounds(Rect logicalBounds)
+    {
+        return _native !is null && _native.setWindowBounds(logicalBounds);
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     bool rendererSupportsLiveResizeScaling() const

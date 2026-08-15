@@ -176,6 +176,54 @@ int main()
     bar.setMaximized(false);
     maximized = false;
 
+    // --- Restore-on-drag must not snap straight back to maximized. ---
+    // Regression: a maximized window dragged down a little and released while
+    // the pointer is still inside the top-edge snap zone used to fire
+    // onSnapApplied(top), re-maximizing the window the user just restored.
+    // Snap is suppressed until the pointer leaves the restore zone, then it
+    // re-engages normally.
+    driver.setTestWorkArea(Rect(0, 0, 1920, 1080));
+    restoredRequested = false;
+    bool snapBackApplied;
+    TitleBarSnapTarget snapBackTarget;
+    bar.onRestoreRequested = delegate(PointF pointer, PointF pressPointer)
+    {
+        restoredRequested = true;
+        maximized = false;
+        bar.setMaximized(false);
+    };
+    bar.onSnapApplied = delegate(TitleBarSnapTarget target, Rect bounds)
+    {
+        snapBackApplied = true;
+        snapBackTarget = target;
+    };
+    resetClickState(driver);
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setMaximized(true);
+    maximized = true;
+    driver.moveTo(Point(300, 40));
+    driver.mouseDown(MouseButton.left);
+    driver.setTestScreenPointerPosition(PointF(960, 4)); // inside the top zone
+    driver.moveTo(Point(300, 45)); // crosses the drag threshold: restore fires
+    assert(restoredRequested,
+        "Restore-on-drag did not fire for the snap-back regression");
+    assert(!bar.maximized(), "Bar did not leave maximize during restore");
+    driver.moveTo(Point(300, 48)); // still inside the top zone
+    assert(bar.snapTarget() == TitleBarSnapTarget.none,
+        "Snap engaged in the zone the window just restored from");
+    // Drag out to the left edge: suppression lifts and snap re-engages.
+    driver.setTestScreenPointerPosition(PointF(3, 540));
+    driver.moveTo(Point(300, 80));
+    assert(bar.snapTarget() == TitleBarSnapTarget.left,
+        "Snap did not re-engage after leaving the restore zone");
+    driver.mouseUp(MouseButton.left);
+    assert(snapBackApplied && snapBackTarget == TitleBarSnapTarget.left,
+        "Snap to left did not apply after restore");
+    bar.onRestoreRequested = null;
+    bar.onSnapApplied = null;
+    driver.setTestWorkArea(Rect.init);
+    driver.setTestScreenPointerPosition(PointF(0, 0));
+
     // --- Hover visuals freeze while dragging (no cursor flicker). ---
     bar.setBounds(Rect(20, 20, 760, 40));
     resetClickState(driver);
@@ -290,6 +338,158 @@ int main()
     assert(!searchField.focused(),
         "Clicking the window background did not release field focus");
     bar.clearContent();
+
+    // --- Drag-to-snap: headless work area + screen pointer drive the engine. ---
+    driver.setTestWorkArea(Rect(0, 0, 1920, 1080));
+    // Snap drags below must be plain self-moves; the owner-drag delegate above
+    // would otherwise relocate the bar through its own fixed math.
+    bar.onDragMoved = null;
+
+    bool snapChanged;
+    TitleBarSnapTarget changedTarget;
+    Rect changedBounds;
+    bool snapApplied;
+    TitleBarSnapTarget appliedTarget;
+    Rect appliedBounds;
+    bar.onSnapChanged = delegate(TitleBarSnapTarget target, Rect bounds)
+    {
+        snapChanged = true;
+        changedTarget = target;
+        changedBounds = bounds;
+    };
+    bar.onSnapApplied = delegate(TitleBarSnapTarget target, Rect bounds)
+    {
+        snapApplied = true;
+        appliedTarget = target;
+        appliedBounds = bounds;
+    };
+
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setMaximized(false);
+    resetClickState(driver);
+
+    // Drag toward the LEFT screen edge.
+    driver.moveTo(Point(300, 40));
+    driver.mouseDown(MouseButton.left);
+    driver.setTestScreenPointerPosition(PointF(500, 540));
+    driver.moveTo(Point(300, 60));
+    assert(bar.dragging(), "Drag did not start for snap test");
+    assert(bar.snapTarget() == TitleBarSnapTarget.none,
+        "Snap target engaged before reaching an edge");
+    driver.setTestScreenPointerPosition(PointF(3, 540));
+    driver.moveTo(Point(300, 90));
+    assert(snapChanged && changedTarget == TitleBarSnapTarget.left,
+        "Left-edge snap target not detected");
+    assert(bar.snapTarget() == TitleBarSnapTarget.left,
+        "Bar snapTarget did not report left");
+    assert(changedBounds == Rect(0, 0, 960, 1080),
+        "Left snap preview bounds wrong");
+    assert(bar.snapBounds() == changedBounds,
+        "snapBounds did not match the preview bounds");
+    driver.mouseUp(MouseButton.left);
+    assert(snapApplied && appliedTarget == TitleBarSnapTarget.left,
+        "Left snap not applied on release");
+    assert(appliedBounds == Rect(0, 0, 960, 1080),
+        "Left snap applied bounds wrong");
+    assert(bar.snapTarget() == TitleBarSnapTarget.none,
+        "Snap target not cleared after release");
+    assert(!bar.dragging(), "Drag did not end after snap release");
+
+    // Top edge maximizes; moving off the edge clears the preview and the
+    // release no longer applies a snap.
+    snapChanged = false;
+    snapApplied = false;
+    bar.setBounds(Rect(20, 20, 760, 40));
+    resetClickState(driver);
+    driver.moveTo(Point(300, 40));
+    driver.mouseDown(MouseButton.left);
+    driver.setTestScreenPointerPosition(PointF(960, 3));
+    driver.moveTo(Point(300, 60)); // crosses the drag threshold
+    assert(bar.dragging(), "Drag did not start for top snap test");
+    driver.setTestScreenPointerPosition(PointF(960, 3));
+    driver.moveTo(Point(300, 90));
+    assert(snapChanged && changedTarget == TitleBarSnapTarget.top,
+        "Top snap target not detected");
+    assert(changedBounds == Rect(0, 0, 1920, 1080),
+        "Maximize snap preview bounds wrong");
+    driver.setTestScreenPointerPosition(PointF(960, 540));
+    driver.moveTo(Point(300, 120));
+    assert(snapChanged && changedTarget == TitleBarSnapTarget.none,
+        "Moving off the edge did not clear the snap preview");
+    assert(bar.snapTarget() == TitleBarSnapTarget.none,
+        "Bar still reported a snap target after leaving the edge");
+    driver.mouseUp(MouseButton.left);
+    assert(!snapApplied, "Snap applied while not over a snap zone");
+
+    // Disabled snap never engages, even at a corner.
+    bar.setSnapEnabled(false);
+    snapChanged = false;
+    snapApplied = false;
+    bar.setBounds(Rect(20, 20, 760, 40));
+    resetClickState(driver);
+    driver.moveTo(Point(300, 40));
+    driver.mouseDown(MouseButton.left);
+    driver.setTestScreenPointerPosition(PointF(3, 3));
+    driver.moveTo(Point(300, 60));
+    driver.setTestScreenPointerPosition(PointF(1917, 3));
+    driver.moveTo(Point(300, 90));
+    assert(!snapChanged, "Snap engaged while disabled");
+    driver.mouseUp(MouseButton.left);
+    assert(!snapApplied, "Snap applied while disabled");
+    bar.setSnapEnabled(true);
+
+    // --- The full-size snap-preview overlay must NOT block titlebar input. ---
+    // Regression: the preview is added as the last, full-window child; if it
+    // stayed hit-testable it would swallow every click and the caption buttons
+    // and drag would stop working on the live window.
+    auto snapPreview = new TitleBarSnapPreview();
+    root.add(snapPreview);
+    snapPreview.setBounds(Rect(0, 0, options.width, options.height));
+    assert(!snapPreview.enabled(),
+        "Snap preview must be created disabled (input-transparent)");
+
+    // Anchor the bar back on-window and restore all caption buttons: the
+    // customization section above hid minimize/maximize, and the disabled-snap
+    // drag relocated the bar.
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setShowMinimize(true);
+    bar.setShowMaximize(true);
+    bar.setShowClose(true);
+    bar.setMaximized(false);
+    resetClickState(driver);
+    minimized = false;
+    maximized = false;
+    closed = false;
+    driver.click(captionCenter(bar, TitleBarControl.close));
+    assert(closed, "Close button did not fire with the preview overlay present");
+    driver.click(captionCenter(bar, TitleBarControl.minimize));
+    assert(minimized, "Minimize button did not fire with the preview overlay");
+    driver.click(captionCenter(bar, TitleBarControl.maximize));
+    assert(maximized, "Maximize button did not fire with the preview overlay");
+
+    // Dragging the titlebar still works with the overlay present.
+    bar.setBounds(Rect(20, 20, 760, 40));
+    bar.setMaximized(false);
+    resetClickState(driver);
+    const dragStart = bar.bounds();
+    driver.drag(Point(120, 40), Point(220, 90));
+    assert(bar.bounds() == Rect(dragStart.x + 100, dragStart.y + 50,
+        dragStart.width, dragStart.height),
+        "Titlebar drag did not work with the preview overlay present");
+
+    // The overlay paints on top without disturbing state.
+    snapPreview.show(Rect(40, 50, 360, 1080));
+    assert(snapPreview.active(), "Snap preview did not activate");
+    assert(driver.paint(), "Snap preview paint failed");
+    snapPreview.hide();
+    assert(!snapPreview.active(), "Snap preview did not hide");
+    assert(driver.paint(), "Paint after hiding the snap preview failed");
+    root.remove(snapPreview);
+
+    bar.onSnapChanged = null;
+    bar.onSnapApplied = null;
+    driver.setTestWorkArea(Rect.init);
+    driver.setTestScreenPointerPosition(PointF(0, 0));
 
     // --- Reset to the default layout and capture a visual. ---
     bar.setTitle("My Custom Window");

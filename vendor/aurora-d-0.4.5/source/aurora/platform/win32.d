@@ -1472,6 +1472,38 @@ else version (Windows)
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
         }
 
+        override bool setWindowBounds(Rect logicalBounds)
+        {
+            if (_hwnd is null || _fullscreen) return false;
+            const physical = _displayScale.logicalToPhysical(logicalBounds);
+            return SetWindowPos(_hwnd, null, physical.x, physical.y,
+                maxIntLocal(1, physical.width), maxIntLocal(1, physical.height),
+                SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+        }
+
+        override bool queryWorkArea(Point screenPoint, out Rect workArea)
+        {
+            workArea = Rect.init;
+            if (_hwnd is null) return false;
+            const physical = _displayScale.logicalToPhysical(screenPoint);
+            POINT point;
+            point.x = physical.x;
+            point.y = physical.y;
+            HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+            if (monitor is null) return false;
+            MONITORINFO info;
+            info.cbSize = MONITORINFO.sizeof;
+            if (!GetMonitorInfoW(monitor, &info)) return false;
+            const topLeft = _displayScale.physicalToLogical(
+                Point(info.rcWork.left, info.rcWork.top));
+            const bottomRight = _displayScale.physicalToLogical(
+                Point(info.rcWork.right, info.rcWork.bottom));
+            workArea = Rect(topLeft.x, topLeft.y,
+                maxIntLocal(1, bottomRight.x - topLeft.x),
+                maxIntLocal(1, bottomRight.y - topLeft.y));
+            return true;
+        }
+
         override bool redrawWindow()
         {
             if (_hwnd is null || _closed) return false;

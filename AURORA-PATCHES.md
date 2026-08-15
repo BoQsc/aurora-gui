@@ -108,6 +108,54 @@ window on click-focus.
   `RUN-AURORA-D-TITLEBAR.cmd`.
 - Headless coverage: `tests/titlebar_smoke.d` in the aurora-gui app.
 
+## Aurora TitleBar drag-to-snap
+
+- `aurora.widgets.titlebar.TitleBar` now provides aero-style drag snapping.
+  While a titlebar drag is active the widget samples the real screen pointer
+  (`queryPointerScreenPosition`) against the monitor work area
+  (`queryWorkArea`, `MonitorFromPoint` + `GetMonitorInfoW` `rcWork`), and maps
+  it to a `TitleBarSnapTarget`: top = maximize, left/right = half-screen,
+  corners = quadrants, bottom edge alone never snaps (platform standard). A
+  `snapThreshold` (default 8 logical px) sets the edge-engagement distance and
+  `setSnapEnabled(false)` disables the whole engine.
+- New delegates `onSnapChanged(target, bounds)` (fires on every target change
+  including back to `none`, for showing/hiding a preview) and
+  `onSnapApplied(target, bounds)` (fires on release over a live zone; the owner
+  applies `bounds` and updates its maximize/restore state). Releasing over a
+  zone skips the final drag-move so the window never lands on the last pointer
+  position first.
+- New reusable `TitleBarSnapPreview` overlay widget (translucent rounded
+  preview) exported from `aurora.package`. IMPORTANT: it is created
+  **disabled** (`setEnabled(false)`) so it paints on top but is transparent to
+  hit testing (`Widget.hitTest` skips disabled widgets). A full-size, enabled
+  overlay added as the last child of the root would swallow every click meant
+  for the titlebar/content beneath it — this exact regression is covered by
+  `tests/titlebar_smoke.d` (caption buttons and drag must still work with the
+  preview present).
+- New platform plumbing for snap: `NativeWindow.queryWorkArea(Point, out Rect)`
+  + `setWindowBounds(Rect)` (Win32 `SetWindowPos` size+move, headless
+  records), `GuiWindow.queryWorkArea`/`setWindowBounds`, and
+  `WidgetHost.queryPointerScreenPosition`/`queryWorkArea` (with `Widget`
+  helpers) so the widget can sample the cursor and monitor without an owner
+  lookup. System-move drags (`systemMoveOnDrag`) intentionally leave snapping
+  to the OS move loop.
+- Wired into `demos/titlebar.d` and the Aurora Stream custom-titlebar app
+  (`aurora-stream/source/app_titlebar.d`).
+- Restore-on-drag (drag a maximized window down to unmaximize) is hardened:
+  after `onRestoreRequested` the widget sets `_snapSuppressed` +
+  `_snapSuppressedZone` so releasing inside the zone the window just restored
+  from cannot snap it straight back to maximized (snapping resumes as soon as
+  the pointer leaves that zone). Both apps save the pre-maximize bounds and
+  restore to them whether the window was maximized via caption/double-click
+  fullscreen or drag-snap-to-top (work-area only, never fullscreen), instead of
+  blindly calling `toggleFullscreen()`.
+- Headless coverage: `tests/titlebar_smoke.d` exercises left-edge, top-edge
+  (maximize), preview-clear, disabled, the input-transparency regression, the
+  no-snap-back-after-restore regression, and `TitleBarSnapPreview` paint
+  through `UiTestDriver.setTestWorkArea` / `setTestScreenPointerPosition`; the
+  widget module unittest covers the pure target/bounds mapping including
+  corners and non-zero work-area origins.
+
 ## Aurora Cut 0.13.3 title-layer opacity
 
 - Title opacity is now represented explicitly as final layer opacity.

@@ -44,6 +44,10 @@ interface WidgetHost
     void closeHostWindow();
     /** Start the platform's native top-level window move loop, if supported. */
     bool beginSystemMove();
+    /** Absolute screen position of the native pointer in logical units. */
+    bool queryPointerScreenPosition(out PointF position);
+    /** Work area of the monitor under a screen point, in logical units. */
+    bool queryWorkArea(Point screenPoint, out Rect workArea);
     /** Synchronize the active retained scrollbar with the native window host. */
     void synchronizeVerticalScrollInfo(Widget source, int position, int maximum,
         int pageSize);
@@ -416,6 +420,24 @@ abstract class Widget
     bool beginSystemMove()
     {
         return _host is null ? false : _host.beginSystemMove();
+    }
+
+    /**
+     * Absolute screen position of the native pointer in logical units.
+     * Returns false when the host cannot sample the pointer directly.
+     */
+    bool queryPointerScreenPosition(out PointF position)
+    {
+        return _host is null ? false : _host.queryPointerScreenPosition(position);
+    }
+
+    /**
+     * Work area of the monitor under `screenPoint`, in logical units. Returns
+     * false when the host cannot resolve a monitor work area.
+     */
+    bool queryWorkArea(Point screenPoint, out Rect workArea)
+    {
+        return _host is null ? false : _host.queryWorkArea(screenPoint, workArea);
     }
 
     /**

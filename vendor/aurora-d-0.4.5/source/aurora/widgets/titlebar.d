@@ -21,6 +21,26 @@ enum TitleBarControl : ubyte
     close
 }
 
+/**
+ * Drag-snap target derived from the pointer's position against the monitor
+ * work area while the title bar is being dragged.
+ */
+enum TitleBarSnapTarget : ubyte
+{
+    /** No snap zone is active. */
+    none,
+    /** Pointer near the top edge: maximize to the full work area. */
+    top,
+    /** Pointer near the left edge: left half of the work area. */
+    left,
+    /** Pointer near the right edge: right half of the work area. */
+    right,
+    topLeft,
+    topRight,
+    bottomLeft,
+    bottomRight
+}
+
 private struct OptionalColor
 {
     Color value;
@@ -82,6 +102,12 @@ class TitleBar : Widget
     private bool _armDrag;
     private PointF _dragStartPointer;
     private PointF _dragStartPosition;
+    private bool _snapEnabled = true;
+    private int _snapThreshold = 8;
+    private TitleBarSnapTarget _snapTarget;
+    private Rect _snapBounds;
+    private bool _snapSuppressed;
+    private TitleBarSnapTarget _snapSuppressedZone;
 
     void delegate() onMinimize;
     void delegate() onMaximizeToggle;
@@ -102,6 +128,19 @@ class TitleBar : Widget
     /** Owner-driven window move; return whether the position changed. */
     bool delegate(PointF pointer, bool requestFrame) onDragMoved;
     void delegate() onDragEnded;
+    /**
+     * Drag-snap target change while dragging. Fired whenever the target
+     * changes, including a transition back to `TitleBarSnapTarget.none`
+     * (`bounds` is then `Rect.init`). The owner should show/hide its snap
+     * preview from the `bounds` (screen coordinates).
+     */
+    void delegate(TitleBarSnapTarget target, Rect bounds) onSnapChanged;
+    /**
+     * Drag released over an active snap zone. `bounds` is the target window
+     * bounds in screen coordinates; the owner should apply it (typically
+     * `GuiWindow.setWindowBounds`) and update its maximized/restored state.
+     */
+    void delegate(TitleBarSnapTarget target, Rect bounds) onSnapApplied;
 
     this()
     {
@@ -127,6 +166,14 @@ class TitleBar : Widget
         return _pressedControl;
     }
     bool dragging() const @safe pure nothrow @nogc { return _dragging; }
+    bool snapEnabled() const @safe pure nothrow @nogc { return _snapEnabled; }
+    int snapThreshold() const @safe pure nothrow @nogc { return _snapThreshold; }
+    TitleBarSnapTarget snapTarget() const @safe pure nothrow @nogc
+    {
+        return _snapTarget;
+    }
+    /** Current snap preview bounds in screen coordinates; empty when inactive. */
+    Rect snapBounds() const @safe pure nothrow @nogc { return _snapBounds; }
 
     void setTitle(string value)
     {
@@ -221,6 +268,8 @@ class TitleBar : Widget
         {
             _dragging = false;
             _armDrag = false;
+            _snapSuppressed = false;
+            clearSnap();
             releaseMouse();
             setCursor(CursorKind.arrow);
         }
@@ -248,6 +297,22 @@ class TitleBar : Widget
     void setSystemMoveOnDrag(bool value)
     {
         _systemMoveOnDrag = value;
+    }
+
+    /** Enable/disable drag-snap zone detection (on by default). */
+    void setSnapEnabled(bool value)
+    {
+        if (_snapEnabled == value) return;
+        _snapEnabled = value;
+        if (!value) clearSnap();
+    }
+
+    /** Pointer-to-edge distance (logical pixels) that engages a snap zone. */
+    void setSnapThreshold(int value)
+    {
+        value = maxInt(0, value);
+        if (_snapThreshold == value) return;
+        _snapThreshold = value;
     }
 
     void setTitleAlign(HorizontalAlign value)
@@ -627,6 +692,7 @@ class TitleBar : Widget
             if (_maximized)
             {
                 _armDrag = true;
+                _snapSuppressed = false;
                 _dragStartPointer = pointerPosition(event);
                 _dragStartPosition = precisePosition();
                 invalidate();
@@ -640,6 +706,7 @@ class TitleBar : Widget
         if (_draggable)
         {
             _armDrag = true;
+            _snapSuppressed = false;
             _dragStartPointer = pointerPosition(event);
             _dragStartPosition = precisePosition();
             captureMouse();
@@ -656,6 +723,7 @@ class TitleBar : Widget
             // synthesized mouse-moves arrive as the window moves under the
             // pointer, and re-running the hot control would flicker the cursor.
             const pointer = pointerPosition(event);
+            updateSnapFromScreen();
             return updateDrag(pointer, true);
         }
         const control = controlAt(event.position);
@@ -681,8 +749,12 @@ class TitleBar : Widget
                     // window drops back to its restored size and follows the
                     // pointer. Re-anchor the drag to the current pointer and
                     // position because the owner's restore may have moved or
-                    // resized the window.
+                    // resized the window. Snap is suppressed until the pointer
+                    // leaves the zone it just restored from, so a quick release
+                    // cannot snap the window straight back to maximized.
                     _maximized = false;
+                    _snapSuppressed = true;
+                    _snapSuppressedZone = currentSnapZone();
                     invalidate();
                     if (onRestoreRequested !is null)
                         onRestoreRequested(pointer, _dragStartPointer);
@@ -711,7 +783,9 @@ class TitleBar : Widget
 
     override bool onPointerLatch(PointF globalPosition)
     {
-        return _dragging && updateDrag(globalPosition, false);
+        if (!_dragging) return false;
+        updateSnapFromScreen();
+        return updateDrag(globalPosition, false);
     }
 
     override bool wantsContinuousPointerFrames() const @safe pure nothrow @nogc
@@ -724,10 +798,28 @@ class TitleBar : Widget
         if (event.button != MouseButton.left) return false;
         if (_dragging)
         {
-            const pointer = pointerPosition(event);
-            updateDrag(pointer, true);
+            // Final drag move is skipped when releasing over an active snap
+            // zone: the owner applies the snap bounds instead, so the window
+            // never lands on the last pointer position first.
+            if (_snapTarget == TitleBarSnapTarget.none)
+            {
+                const pointer = pointerPosition(event);
+                updateDrag(pointer, true);
+            }
+            else
+            {
+                const applied = _snapTarget;
+                const appliedBounds = _snapBounds;
+                _snapTarget = TitleBarSnapTarget.none;
+                _snapBounds = Rect.init;
+                if (onSnapChanged !is null)
+                    onSnapChanged(TitleBarSnapTarget.none, Rect.init);
+                if (onSnapApplied !is null)
+                    onSnapApplied(applied, appliedBounds);
+            }
             _dragging = false;
             _armDrag = false;
+            _snapSuppressed = false;
             setCursor(CursorKind.arrow);
             releaseMouse();
             if (onDragEnded !is null) onDragEnded();
@@ -737,6 +829,7 @@ class TitleBar : Widget
         if (_armDrag)
         {
             _armDrag = false;
+            _snapSuppressed = false;
             releaseMouse();
             invalidate();
             return true;
@@ -788,11 +881,198 @@ class TitleBar : Widget
             requestFrame);
     }
 
+    /** Re-evaluate the drag-snap zone from the live screen pointer position. */
+    private void updateSnapFromScreen()
+    {
+        if (!_snapEnabled || !_dragging)
+        {
+            clearSnap();
+            return;
+        }
+        PointF screen;
+        if (!queryPointerScreenPosition(screen))
+        {
+            clearSnap();
+            return;
+        }
+        Rect workArea;
+        if (!queryWorkArea(screen.rounded(), workArea))
+        {
+            clearSnap();
+            return;
+        }
+        const target = snapTargetFor(screen, workArea, _snapThreshold);
+        if (_snapSuppressed)
+        {
+            // Restore-on-drag just left a maximized window, so the pointer is
+            // still inside the zone it restored from (usually the top edge).
+            // Releasing there must NOT snap the window straight back to
+            // maximized. Stay suppressed only while the pointer remains in that
+            // same zone; leaving it (into another zone or the center) resumes
+            // normal snapping immediately.
+            if (target == _snapSuppressedZone)
+            {
+                clearSnap();
+                return;
+            }
+            _snapSuppressed = false;
+        }
+        if (target == _snapTarget)
+        {
+            if (target != TitleBarSnapTarget.none)
+                _snapBounds = snapBoundsFor(target, workArea);
+            return;
+        }
+        _snapTarget = target;
+        _snapBounds = target == TitleBarSnapTarget.none ? Rect.init :
+            snapBoundsFor(target, workArea);
+        if (onSnapChanged !is null)
+            onSnapChanged(target, _snapBounds);
+    }
+
+    private void clearSnap()
+    {
+        if (_snapTarget == TitleBarSnapTarget.none) return;
+        _snapTarget = TitleBarSnapTarget.none;
+        _snapBounds = Rect.init;
+        if (onSnapChanged !is null)
+            onSnapChanged(TitleBarSnapTarget.none, Rect.init);
+    }
+
+    /** The snap zone the pointer currently sits in, if any (screen-based). */
+    private TitleBarSnapTarget currentSnapZone()
+    {
+        PointF screen;
+        if (!queryPointerScreenPosition(screen)) return TitleBarSnapTarget.none;
+        Rect workArea;
+        if (!queryWorkArea(screen.rounded(), workArea)) return TitleBarSnapTarget.none;
+        return snapTargetFor(screen, workArea, _snapThreshold);
+    }
+
+    /**
+     * Map a screen pointer to the snap zone it engages. A corner wins over its
+     * adjacent edges; the top edge alone maximizes; the left/right edges give
+     * half-screen targets; the bottom edge alone never snaps (matching the
+     * platform standard).
+     */
+    private static TitleBarSnapTarget snapTargetFor(PointF pointer, Rect workArea,
+        int threshold) @safe pure nothrow @nogc
+    {
+        if (workArea.empty) return TitleBarSnapTarget.none;
+        const t = maxInt(0, threshold);
+        const nearLeft = pointer.x <= cast(double) workArea.x + t;
+        const nearRight = pointer.x >= cast(double) workArea.right() - t;
+        const nearTop = pointer.y <= cast(double) workArea.y + t;
+        const nearBottom = pointer.y >= cast(double) workArea.bottom() - t;
+        if (!nearLeft && !nearRight && !nearTop) return TitleBarSnapTarget.none;
+        if (nearLeft && nearTop) return TitleBarSnapTarget.topLeft;
+        if (nearRight && nearTop) return TitleBarSnapTarget.topRight;
+        if (nearLeft && nearBottom) return TitleBarSnapTarget.bottomLeft;
+        if (nearRight && nearBottom) return TitleBarSnapTarget.bottomRight;
+        if (nearTop) return TitleBarSnapTarget.top;
+        if (nearLeft) return TitleBarSnapTarget.left;
+        if (nearRight) return TitleBarSnapTarget.right;
+        return TitleBarSnapTarget.none;
+    }
+
+    /** Target window bounds (screen coordinates) for a snap target. */
+    private static Rect snapBoundsFor(TitleBarSnapTarget target, Rect workArea)
+        @safe pure nothrow @nogc
+    {
+        const halfW = workArea.width / 2;
+        const halfH = workArea.height / 2;
+        switch (target)
+        {
+            case TitleBarSnapTarget.top:
+                return workArea;
+            case TitleBarSnapTarget.left:
+                return Rect(workArea.x, workArea.y, halfW, workArea.height);
+            case TitleBarSnapTarget.right:
+                return Rect(workArea.x + halfW, workArea.y,
+                    workArea.width - halfW, workArea.height);
+            case TitleBarSnapTarget.topLeft:
+                return Rect(workArea.x, workArea.y, halfW, halfH);
+            case TitleBarSnapTarget.topRight:
+                return Rect(workArea.x + halfW, workArea.y,
+                    workArea.width - halfW, halfH);
+            case TitleBarSnapTarget.bottomLeft:
+                return Rect(workArea.x, workArea.y + halfH, halfW,
+                    workArea.height - halfH);
+            case TitleBarSnapTarget.bottomRight:
+                return Rect(workArea.x + halfW, workArea.y + halfH,
+                    workArea.width - halfW, workArea.height - halfH);
+            default:
+                return Rect.init;
+        }
+    }
+
     private static PointF pointerPosition(ref Event event)
         @safe pure nothrow @nogc
     {
         return event.hasPrecisePosition ? event.preciseGlobalPosition :
             PointF(event.globalPosition);
+    }
+}
+
+/**
+ * Reusable translucent drag-snap preview overlay.
+ *
+ * Add it as the last child of a frameless window root so it paints above all
+ * content, then drive it from the `TitleBar`'s `onSnapChanged`: map the snap
+ * bounds from screen coordinates to window-local coordinates with the window
+ * origin, call `show`, and `hide` on `TitleBarSnapTarget.none`.
+ *
+ * The overlay is created disabled (`setEnabled(false)`), which keeps it
+ * painting on top while making it completely transparent to hit testing: the
+ * host's `Widget.hitTest` skips disabled widgets, so a full-size preview never
+ * swallows clicks meant for the titlebar or the content beneath it.
+ */
+class TitleBarSnapPreview : Widget
+{
+    private Rect _preview;
+    private Color _fillColor = Color.rgba(90, 142, 240, 70);
+    private Color _borderColor = Color.rgba(140, 180, 255, 170);
+
+    this()
+    {
+        // Paint-only overlay: never intercepts pointer input (see class docs).
+        setEnabled(false);
+    }
+
+    bool active() const @safe pure nothrow @nogc { return !_preview.empty; }
+
+    void setFillColor(Color value)
+    {
+        _fillColor = value;
+        invalidate();
+    }
+
+    void setBorderColor(Color value)
+    {
+        _borderColor = value;
+        invalidate();
+    }
+
+    /** Show the preview at `localBounds` (window-local coordinates). */
+    void show(Rect localBounds)
+    {
+        if (_preview == localBounds) return;
+        _preview = localBounds;
+        invalidate();
+    }
+
+    void hide()
+    {
+        if (_preview.empty) return;
+        _preview = Rect.init;
+        invalidate();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (_preview.empty || _preview.width <= 0 || _preview.height <= 0) return;
+        canvas.fillRoundedRect(_preview, 5, _fillColor);
+        canvas.strokeRect(_preview, _borderColor, 1);
     }
 }
 
@@ -844,4 +1124,70 @@ unittest
         close.y + close.height / 2)) == TitleBarControl.close);
     bar.setShowClose(false);
     assert(bar.captionRect(TitleBarControl.close).empty);
+
+    // --- Drag-snap target mapping. ---
+    const work = Rect(0, 0, 1920, 1080);
+    assert(TitleBar.snapTargetFor(PointF(5, 5), work, 8) ==
+        TitleBarSnapTarget.topLeft);
+    assert(TitleBar.snapTargetFor(PointF(1915, 5), work, 8) ==
+        TitleBarSnapTarget.topRight);
+    assert(TitleBar.snapTargetFor(PointF(5, 1075), work, 8) ==
+        TitleBarSnapTarget.bottomLeft);
+    assert(TitleBar.snapTargetFor(PointF(1915, 1075), work, 8) ==
+        TitleBarSnapTarget.bottomRight);
+    assert(TitleBar.snapTargetFor(PointF(960, 5), work, 8) ==
+        TitleBarSnapTarget.top);
+    assert(TitleBar.snapTargetFor(PointF(5, 540), work, 8) ==
+        TitleBarSnapTarget.left);
+    assert(TitleBar.snapTargetFor(PointF(1915, 540), work, 8) ==
+        TitleBarSnapTarget.right);
+    // Inside the zone the pointer engages nothing.
+    assert(TitleBar.snapTargetFor(PointF(400, 400), work, 8) ==
+        TitleBarSnapTarget.none);
+    // The bottom edge alone never snaps.
+    assert(TitleBar.snapTargetFor(PointF(960, 1075), work, 8) ==
+        TitleBarSnapTarget.none);
+    // An empty work area never snaps.
+    assert(TitleBar.snapTargetFor(PointF(5, 5), Rect.init, 8) ==
+        TitleBarSnapTarget.none);
+
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.top, work) == work);
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.left, work) ==
+        Rect(0, 0, 960, 1080));
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.right, work) ==
+        Rect(960, 0, 960, 1080));
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.topLeft, work) ==
+        Rect(0, 0, 960, 540));
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.bottomRight, work) ==
+        Rect(960, 540, 960, 540));
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.none, work).empty);
+
+    // A non-zero work-area origin is preserved in every target.
+    const offsetWork = Rect(100, 50, 1600, 900);
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.right, offsetWork) ==
+        Rect(900, 50, 800, 900));
+    assert(TitleBar.snapBoundsFor(TitleBarSnapTarget.bottomLeft, offsetWork) ==
+        Rect(100, 500, 800, 450));
+
+    // Snap state accessors and toggling.
+    assert(bar.snapEnabled());
+    assert(bar.snapTarget() == TitleBarSnapTarget.none);
+    assert(bar.snapBounds().empty);
+    bar.setSnapThreshold(16);
+    assert(bar.snapThreshold() == 16);
+    bar.setSnapEnabled(false);
+    assert(!bar.snapEnabled());
+    bar.setSnapEnabled(true);
+    assert(bar.snapEnabled());
+
+    // The reusable preview overlay shows and hides a local rect and, being
+    // disabled, can never become a hit-test target.
+    auto preview = new TitleBarSnapPreview();
+    assert(!preview.active());
+    preview.show(Rect(10, 20, 500, 300));
+    assert(preview.active());
+    preview.hide();
+    assert(!preview.active());
+    assert(!preview.enabled(),
+        "Snap preview must be disabled so it never intercepts input");
 }

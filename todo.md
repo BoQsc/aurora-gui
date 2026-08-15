@@ -1,5 +1,60 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-15 — TitleBar drag-to-snap (new standard Notepad foundation)
+
+- [x] Built aero-style drag snapping into `aurora.widgets.titlebar.TitleBar` as
+      the foundation the new standard Notepad will be built on. While a
+      titlebar drag is active, the widget samples the real screen pointer
+      against the monitor work area and reports a `TitleBarSnapTarget`: top =
+      maximize, left/right = half-screen, corners = quadrants, bottom alone
+      never snaps; `snapThreshold` (8 logical px) sets edge engagement.
+- [x] New `onSnapChanged(target, bounds)` (fires on every target change incl.
+      back to `none`, for preview show/hide) and `onSnapApplied(target,
+      bounds)` (fires on release over a live zone; owner applies bounds via
+      `GuiWindow.setWindowBounds`). Release over a zone skips the final
+      drag-move so the window never lands on the last pointer position first.
+- [x] New reusable `TitleBarSnapPreview` translucent overlay widget. **Fixed
+      regression:** it is created disabled (`setEnabled(false)`), so it paints
+      on top but is transparent to hit testing (`Widget.hitTest` skips disabled
+      widgets). The first version was an enabled full-size last child that
+      swallowed every mouse-down, which made the live titlebar (buttons + drag)
+      completely unresponsive — reverted by the user, then re-done with this
+      fix. Covered by a headless regression: caption buttons + drag must still
+      work with the full-size preview present.
+- [x] Platform plumbing: `NativeWindow.queryWorkArea` (Win32 MonitorFromPoint +
+      GetMonitorInfoW rcWork), `NativeWindow.setWindowBounds` (SetWindowPos),
+      `WidgetHost`/`Widget` `queryPointerScreenPosition` + `queryWorkArea`,
+      `GuiWindow` passthroughs. Headless PlatformWindow + `UiTestDriver` gained
+      `setTestWorkArea`/`setTestScreenPointerPosition`/`lastWindowBounds`.
+- [x] Wired into `demos/titlebar.d` and the Aurora Stream custom-titlebar app
+      (`app_titlebar.d`).
+- [x] Fixed drag-to-unmaximize (user complaint: "the states of drag titlebar to
+      unmaximize are not perfect... it didn't happen multiple times"). Two root
+      causes: (1) releasing a just-restored window while the pointer was still
+      inside the top-edge snap zone snapped it straight back to maximized —
+      the widget now suppresses snap until the pointer leaves the zone it
+      restored from, then snapping resumes (regression test covers restore →
+      no snap-back → snap re-engages on the left edge); (2) the apps' restore
+      used `toggleFullscreen()`, which entered fullscreen when the window was
+      maximized by drag-snap-to-top (work-area bounds, never fullscreen) — the
+      apps now save the pre-maximize bounds and restore to them regardless of
+      how the window was maximized.
+- [x] Verified: titlebar smoke test (left-edge, top-edge/maximize, preview
+      clear, disabled, input-transparency regression, snap-back regression,
+      preview paint) passes; widget module unittests cover the pure target/
+      bounds mapping incl. corners and non-zero work-area origins; vendored
+      aurora-d `dub test` = 32 modules pass; `dub build` links for aurora-stream
+      (application + notitlebar — the earlier application link was only blocked
+      while `aurora-stream.exe` was running and locking the file), aurora-cut,
+      aurora-opencode, aurora-opencode-pro, aurora-image-viewer, and every
+      vendor demo config.
+- [ ] Not yet interactively dragged in the real GUI on this host; live-click
+      automation is unreliable here because a fullscreen window (e.g. maximized
+      Edge) covers the demo and intercepts clicks. Verify manually: Alt+Tab to
+      the demo first, then drag to top/sides/corners and use the buttons.
+      Deferred TitleBar polish (caption-button tooltips, icon left-click /
+      right-click-caption system menu) stays open.
+
 ## 2026-08-15 — Aurora Stream VLC/window capture v0.66.1 rejection and replacement
 
 - [x] Marked v0.66.1 window capture failed after the release screenshot showed

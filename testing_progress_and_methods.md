@@ -1537,6 +1537,121 @@ Module unittests: `dmd -main -unittest -i -version=AuroraHeadless
 - PPM `savePpm` output is plain RGB; beware off-by-header-byte bugs when
   sampling screenshots (the header is `P6\n<w> <h>\n<max>\n`).
 
+## Aurora TitleBar drag-to-snap (2026-08-15)
+
+Aero-style drag snapping is now built into `aurora.widgets.titlebar.TitleBar`
+as the foundation for the new standard Notepad. While a titlebar drag is
+active, the widget samples the real screen pointer against the monitor work
+area and reports a `TitleBarSnapTarget` + target bounds.
+
+Behavior (platform standard): top edge = maximize to the work area, left/right
+edges = half-screen, corners = quadrants, bottom edge alone never snaps, and
+`snapThreshold` (default 8 logical px) sets the edge-engagement distance.
+`onSnapChanged(target, bounds)` fires on every target change (including back to
+`none`) so the owner can show/hide a preview; `onSnapApplied(target, bounds)`
+fires on release over a live zone and the owner applies `bounds`
+(`GuiWindow.setWindowBounds`). Releasing over a zone skips the final drag-move.
+
+The reusable `TitleBarSnapPreview` overlay (translucent rounded rect) must be
+added as the LAST child of a frameless window root so it paints above content;
+drive it from `onSnapChanged`, mapping screen bounds to local coordinates with
+the window origin.
+
+### CRITICAL gotcha — the preview must be input-transparent
+
+`TitleBarSnapPreview` is created **disabled** (`setEnabled(false)`). This is
+what keeps it a pure paint layer: `Widget.hitTest` (widget.d) walks children
+from last to first and returns the topmost **enabled** widget at the point, so
+a full-size enabled overlay added as the last child would receive every
+mouse-down and bubble to its ancestors only — the titlebar (a sibling, earlier
+in paint order) would NEVER get clicks, breaking dragging and every caption
+button on the live window. This exact regression broke the live demo originally
+and is covered headlessly by `tests/titlebar_smoke.d`: with the full-size
+preview present, the close/minimize/maximize buttons must still fire and the
+bar must still drag.
+
+### Platform plumbing added
+
+- `NativeWindow.queryWorkArea(Point screenPoint, out Rect)` — Win32
+  `MonitorFromPoint` + `GetMonitorInfoW` `rcWork` converted to logical units.
+- `NativeWindow.setWindowBounds(Rect)` — Win32 `SetWindowPos` move+resize.
+- `WidgetHost.queryPointerScreenPosition` + `queryWorkArea` (with `Widget`
+  helpers) so the titlebar can sample the cursor/monitor without an owner.
+- Headless `PlatformWindow.setTestWorkArea(Rect)` /
+  `setTestScreenPointerPosition(PointF)` / `lastWindowBounds`; exposed through
+  `UiTestDriver.setTestWorkArea` / `setTestScreenPointerPosition` /
+  `lastWindowBounds` so headless tests can inject the monitor + cursor.
+
+### How to build / test
+
+```
+# Headless smoke test (same command as the existing titlebar smoke):
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\titlebar_smoke.d -of=build\headless-smoke\titlebar-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+set AURORA_RENDERER=software&& set SDL_AUDIODRIVER=dummy&& build\headless-smoke\titlebar-smoke.exe
+
+# Widget module unittests (covers pure target/bounds mapping incl. corners):
+dmd -i -version=AuroraHeadless -unittest -main -Isource -Ivendor\aurora-d-0.4.5\source vendor\aurora-d-0.4.5\source\aurora\widgets\titlebar.d -of=build\headless-smoke\titlebar-module.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+
+# Real apps (exercise the Win32 work-area path):
+aurora-stream\dub build --compiler=dmd          # custom titlebar app
+vendor\aurora-d-0.4.5\dub build --config=titlebar --compiler=dmd
+```
+
+The smoke test injects a 1920x1080 work area at the origin and a screen
+pointer, then drags the titlebar to the left edge (expects `left` + bounds
+`0,0,960,1080`), to the top edge (expects `top` + full work area), verifies a
+mid-drag move off the edge clears the preview and the release applies nothing,
+verifies `setSnapEnabled(false)` never engages, and verifies the caption
+buttons + drag still work with the full-size preview overlay present. Manual
+verification: run the titlebar demo or Aurora Stream, drag the window to the
+top / sides / corners and release — the window must maximize / half-screen /
+quadrant with a translucent preview shown while dragging.
+
+### Gotchas
+
+- `event.globalPosition`/`preciseGlobalPosition` on Win32 are WINDOW-RELATIVE
+  (`fillMouseEvent` copies `position`), so snap must query `GetCursorPos`
+  (`queryPointerScreenPosition`) instead of trusting the event.
+- Snap is evaluated on the move AFTER the drag threshold is crossed: the first
+  move after a press arms the drag; only the `_dragging` branch re-samples the
+  snap zone.
+- `systemMoveOnDrag` intentionally has no Aurora snap: the OS move loop owns the
+  drag and already provides native aero-snap.
+- Headless `queryPointerScreenPosition` returns false until a test pointer is
+  injected, so existing headless tests can never spuriously snap.
+- Live-click automation on this host is unreliable: a fullscreen window
+  (e.g. maximized Edge) covers the demo and intercepts `WindowFromPoint` /
+  clicks. Verify interactively (Alt+Tab to the demo first) rather than by
+  synthetic screen clicks.
+
+### Drag-to-unmaximize fixes (2026-08-15, user complaint)
+
+Dragging a maximized window's titlebar down sometimes "didn't unmaximize."
+Two root causes were fixed:
+
+1. **Snap-back after restore.** The snap engine re-engaged the top-edge zone
+   right after restore-on-drag, so releasing while the pointer was still near
+   the top snapped the window straight back to maximized. `TitleBar` now sets
+   `_snapSuppressed` (plus `_snapSuppressedZone` = the zone at restore time)
+   and holds snapping only while the pointer stays in that same zone; leaving
+   it (into another zone or the center) resumes snapping immediately.
+   Regression in `tests/titlebar_smoke.d`: restore from maximized with the
+   pointer still in the top zone must not fire `onSnapApplied(top)`, and a
+   following drag to the left edge must snap normally.
+2. **App restore used `toggleFullscreen()` unconditionally.** Drag-snap-to-top
+   only fills the work area and never enters fullscreen, so the old
+   `restoreFromDrag` toggled fullscreen ON instead of restoring. Both
+   `demos/titlebar.d` and `aurora-stream/source/app_titlebar.d` now save the
+   pre-maximize bounds in `_restoredBounds` (on caption/double-click maximize
+   and on snap-to-top) and restore to them: if `_window.fullscreen()` is set
+   they toggle fullscreen off, otherwise they `setWindowBounds(_restoredBounds)`
+   — then the existing grab-point re-anchor keeps the drag under the cursor.
+
+Manual check: maximize (button, double-click, or drag to the top edge and
+release), then drag the titlebar down a little and release quickly — the window
+must stay restored (no snap-back). Drag down and out to a side edge — it must
+snap to the half-screen target.
+
 ## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
 
 The top-right "Copy" pill on every message bubble was redundant with "Copy

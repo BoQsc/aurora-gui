@@ -1,7 +1,7 @@
 module aurora.platform.headless;
 
 import aurora.platform.base : NativeWindow, NativeWindowSink, WindowOptions;
-import aurora.types : CursorKind, DisplayScale, PointF, Size;
+import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
 
 final class PlatformWindow : NativeWindow
 {
@@ -11,12 +11,39 @@ final class PlatformWindow : NativeWindow
     private bool _fullscreen;
     private bool _pointerVisible = true;
     private PointF _pointerPosition;
+    private PointF _screenPointerPosition;
+    private bool _screenPointerSet;
+    private Rect _workArea;
+    private bool _workAreaSet;
+    private Rect _lastWindowBounds;
+    private bool _boundsSet;
 
     this(WindowOptions options, NativeWindowSink sink)
     {
         super(options, sink);
         _size = Size(options.width, options.height);
         _fullscreen = options.startFullscreen;
+    }
+
+    /** Inject a screen-space pointer sample for `queryPointerScreenPosition`. */
+    void setTestScreenPointerPosition(PointF value)
+    {
+        _screenPointerPosition = value;
+        _screenPointerSet = true;
+    }
+
+    /** Inject a work area returned by `queryWorkArea`. */
+    void setTestWorkArea(Rect value)
+    {
+        _workArea = value;
+        _workAreaSet = true;
+    }
+
+    /** The most recent bounds passed to `setWindowBounds`, if any. */
+    bool lastWindowBounds(out Rect bounds)
+    {
+        bounds = _lastWindowBounds;
+        return _boundsSet;
     }
 
     override void show()
@@ -63,6 +90,25 @@ final class PlatformWindow : NativeWindow
     {
         position = _pointerPosition;
         return true;
+    }
+
+    override bool queryPointerScreenPosition(out PointF position)
+    {
+        position = _screenPointerPosition;
+        return _screenPointerSet;
+    }
+
+    override bool setWindowBounds(Rect logicalBounds)
+    {
+        _lastWindowBounds = logicalBounds;
+        _boundsSet = true;
+        return true;
+    }
+
+    override bool queryWorkArea(Point screenPoint, out Rect workArea)
+    {
+        workArea = _workAreaSet ? _workArea : Rect.init;
+        return _workAreaSet;
     }
 
     void setTestPointerPosition(PointF value)
