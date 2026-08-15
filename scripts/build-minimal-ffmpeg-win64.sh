@@ -58,6 +58,20 @@ fetch() { # fetch <dir> <url> [<rev>]
 
 # ---- cross tools -------------------------------------------------------------
 cross=x86_64-w64-mingw32
+cross_cc="$cross-gcc"
+cross_cxx="$cross-g++"
+# FFmpeg's gfxcapture implementation uses std::thread, std::mutex, and
+# std::condition_variable around its WinRT dispatcher. Prefer MinGW's POSIX
+# compiler variant so those primitives use the mature winpthreads backend. The
+# Ubuntu default `gcc-win32` variant can build the filter but its WGC worker
+# misses the one-second initialization handshake on real Windows.
+if command -v "$cross-gcc-posix" >/dev/null 2>&1 &&
+   command -v "$cross-g++-posix" >/dev/null 2>&1; then
+  cross_cc="$cross-gcc-posix"
+  cross_cxx="$cross-g++-posix"
+fi
+echo "Cross C compiler: $cross_cc"
+echo "Cross C++ compiler: $cross_cxx"
 
 # ---- current Windows SDK-compatible MinGW headers ---------------------------
 # Ubuntu 24.04 currently ships MinGW-w64 11 headers. They predate the WinRT
@@ -92,7 +106,7 @@ echo "::group::zlib"
 if [ ! -f "$deps/zlib/lib/libz.a" ]; then
   fetch "$src/zlib" https://github.com/madler/zlib.git v1.3.1
   ( cd "$src/zlib"
-    CC="$cross-gcc" AR="$cross-ar" RANLIB="$cross-ranlib" \
+    CC="$cross_cc" AR="$cross-ar" RANLIB="$cross-ranlib" \
       ./configure --static --prefix="$deps/zlib"
     make -j"$jobs"
     make install )
@@ -104,7 +118,7 @@ echo "::group::libx264"
 if [ ! -f "$deps/x264/lib/libx264.a" ]; then
   fetch "$src/x264" https://code.videolan.org/videolan/x264.git stable
   ( cd "$src/x264"
-    ./configure --host="$cross" --cross-prefix="$cross-" \
+    CC="$cross_cc" ./configure --host="$cross" --cross-prefix="$cross-" \
       --enable-static --disable-cli --disable-opencl --prefix="$deps/x264"
     make -j"$jobs"
     make install )
@@ -122,7 +136,7 @@ if [ ! -f "$deps/lame/lib/libmp3lame.a" ]; then
     mv "$src/lame-3.100" "$src/lame"
   fi
   ( cd "$src/lame"
-    ./configure --host="$cross" --prefix="$deps/lame" \
+    CC="$cross_cc" ./configure --host="$cross" --prefix="$deps/lame" \
       --disable-shared --enable-static --disable-frontend \
       --disable-gtktest --disable-oggtest --disable-cpml --disable-rpath
     make -j"$jobs"
@@ -136,8 +150,8 @@ if [ ! -f "$deps/dav1d/lib/libdav1d.a" ]; then
   fetch "$src/dav1d" https://github.com/videolan/dav1d.git
   cat > "$work/dav1d-cross.txt" <<EOF
 [binaries]
-c = '$cross-gcc'
-cpp = '$cross-g++'
+c = '$cross_cc'
+cpp = '$cross_cxx'
 ar = '$cross-ar'
 strip = '$cross-strip'
 windres = '$cross-windres'
@@ -183,7 +197,7 @@ if [ ! -f "$deps/libvpl/include/vpl/mfx.h" ]; then
   ( cd "$src/libvpl"
     cmake -S . -B "$work/libvpl-build" \
       -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-      -DCMAKE_C_COMPILER="$cross-gcc" -DCMAKE_CXX_COMPILER="$cross-g++" \
+      -DCMAKE_C_COMPILER="$cross_cc" -DCMAKE_CXX_COMPILER="$cross_cxx" \
       -DCMAKE_RC_COMPILER="$cross-windres" \
       -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF \
@@ -220,10 +234,12 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --prefix="$dist" \
       --target-os=mingw32 --arch=x86_64 \
       --cross-prefix="$cross-" --enable-cross-compile \
+      --cc="$cross_cc" --cxx="$cross_cxx" \
       --disable-doc --disable-debug \
       --disable-everything \
       --enable-gpl \
       --enable-static --disable-shared --enable-small \
+      --disable-w32threads --enable-pthreads \
       --enable-avcodec --enable-avformat --enable-avfilter \
       --enable-avdevice --enable-swscale --enable-swresample \
       --enable-schannel \
