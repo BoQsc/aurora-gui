@@ -77,7 +77,7 @@ jobs:
           }
 
       - name: Verify Windows Graphics Capture runtime
-        run: python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --ffmpeg aurora-stream/embedded/ffmpeg.exe
+        run: python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --allow-no-d3d11 --ffmpeg aurora-stream/embedded/ffmpeg.exe
 
       - name: Build and verify portable executables
         run: python -X utf8 scripts/build-portable-windows.py --compiler dmd --single-exe

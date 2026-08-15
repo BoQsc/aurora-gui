@@ -130,6 +130,36 @@ def capture_window(ffmpeg: Path, hwnd: int, output: Path, env: dict[str, str]) -
         )
 
 
+def ppm_dimensions(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()
+    position = 0
+
+    def token() -> bytes:
+        nonlocal position
+        while position < len(data):
+            if data[position : position + 1] == b"#":
+                newline = data.find(b"\n", position)
+                if newline < 0:
+                    raise RuntimeError("Captured PPM comment is unterminated")
+                position = newline + 1
+            elif data[position : position + 1].isspace():
+                position += 1
+            else:
+                break
+        start = position
+        while position < len(data) and not data[position : position + 1].isspace():
+            position += 1
+        return data[start:position]
+
+    if token() != b"P6":
+        raise RuntimeError("Captured Aurora frame is not a binary PPM")
+    width = int(token())
+    height = int(token())
+    if width <= 0 or height <= 0 or int(token()) != 255:
+        raise RuntimeError("Captured Aurora frame has invalid PPM geometry")
+    return width, height
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--aurora", required=True, type=Path)
@@ -147,6 +177,14 @@ def main() -> int:
         help="Verify the explicit timeout/blank-canvas behavior for a minimized VLC window",
     )
     parser.add_argument("--settle-seconds", type=float, default=12.0)
+    parser.add_argument(
+        "--app-uses-bundled-ffmpeg",
+        action="store_true",
+        help=(
+            "Keep the external FFmpeg directory out of Aurora's PATH so a "
+            "single-exe build must extract and use its embedded tools"
+        ),
+    )
     args = parser.parse_args()
 
     if sys.platform != "win32":
@@ -207,16 +245,28 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["PATH"] = str(args.ffmpeg_bin.resolve()) + os.pathsep + env.get("PATH", "")
+    capture_env = os.environ.copy()
+    capture_env["PATH"] = (
+        str(args.ffmpeg_bin.resolve())
+        + os.pathsep
+        + capture_env.get("PATH", "")
+    )
+    app_env = os.environ.copy()
+    if args.app_uses_bundled_ffmpeg:
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        app_env["PATH"] = os.pathsep.join(
+            [str(system_root / "System32"), str(system_root)]
+        )
+    else:
+        app_env["PATH"] = capture_env["PATH"]
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = SW_SHOWMINNOACTIVE
     foreground_before = int(ctypes.windll.user32.GetForegroundWindow())
     process = subprocess.Popen(
-        [str(isolated_aurora), "--portable-config"],
+        [str(isolated_aurora), "--portable-config", "--background-test"],
         cwd=work_dir,
-        env=env,
+        env=app_env,
         startupinfo=startup,
         creationflags=CREATE_NO_WINDOW,
         stdout=subprocess.DEVNULL,
@@ -265,8 +315,8 @@ def main() -> int:
         if saved.get("windowCaptureHwnd") != str(vlc["hwnd"]):
             raise RuntimeError("Aurora unexpectedly changed the selected VLC HWND")
 
-        screenshot = work_dir / "aurora-vlc-live-preview.png"
-        capture_window(ffmpeg, hwnd, screenshot, env)
+        screenshot = work_dir / "aurora-vlc-live-preview.ppm"
+        capture_window(ffmpeg, hwnd, screenshot, capture_env)
         preview_mae: float | None = None
         if args.expect_minimized:
             activity = (work_dir / "aurora-stream-activity.log").read_text(
@@ -279,8 +329,8 @@ def main() -> int:
         elif args.compare_preview:
             from PIL import Image, ImageChops, ImageStat
 
-            direct = work_dir / "vlc-direct.png"
-            capture_window(ffmpeg, int(vlc["hwnd"]), direct, env)
+            direct = work_dir / "vlc-direct.ppm"
+            capture_window(ffmpeg, int(vlc["hwnd"]), direct, capture_env)
             app_image = Image.open(screenshot).convert("RGB")
             direct_image = Image.open(direct).convert("RGB")
             app_width, app_height = app_image.size
@@ -322,7 +372,7 @@ def main() -> int:
                 "json",
                 str(screenshot),
             ],
-            env=env,
+            env=capture_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -330,6 +380,10 @@ def main() -> int:
             check=True,
         )
         metadata = json.loads(probe.stdout)["streams"][0]
+        width, height = ppm_dimensions(screenshot)
+        metadata["width"] = width
+        metadata["height"] = height
+        metadata["pix_fmt"] = "rgb24"
         sample_foreground()
         foreground_after = int(user32.GetForegroundWindow())
         print(

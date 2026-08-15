@@ -36,6 +36,9 @@ struct WindowOptions
     bool decorated = true;
     bool alwaysOnTop;
     bool startMaximized;
+    /** Show the initial Win32 window without activating it. Intended for
+        background integration tests and passive utility windows. */
+    bool startNoActivate;
     /** Request a dark native titlebar where the host OS supports it. */
     bool darkTitleBar;
     /** Start in native monitor fullscreen. Takes precedence over maximized. */

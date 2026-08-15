@@ -197,7 +197,7 @@ final class TitleBarStreamRoot : Widget
     }
 }
 
-private int runTitleBarApplication(string executablePath)
+private int runTitleBarApplication(string executablePath, bool backgroundTest)
 {
     WindowOptions options;
     options.title = appDisplayName ~ " — Twitch + YouTube Broadcaster";
@@ -210,6 +210,7 @@ private int runTitleBarApplication(string executablePath)
     options.decorated = false;
     options.vsync = true;
     options.renderer = RendererPreference.automatic;
+    options.startNoActivate = backgroundTest;
 
     auto theme = Theme.dark();
     theme.windowBackground = Color.fromHex(0x121519);
@@ -249,8 +250,12 @@ int main(string[] arguments)
 
     // Per-user app-data settings by default; `--portable-config` keeps the
     // settings file beside the folder the app is launched from instead.
+    bool backgroundTest;
     foreach (argument; arguments)
+    {
         if (argument == "--portable-config") setPortableConfigMode(true);
+        if (argument == "--background-test") backgroundTest = true;
+    }
 
     // The titlebar build is GUI-subsystem (no console), so a diagnostic
     // command must create one for its stdout output.
@@ -274,7 +279,7 @@ int main(string[] arguments)
     if (arguments.length > 1 && arguments[1] == "--apply-update")
         return runApplyUpdateMode(arguments);
 
-    try return runTitleBarApplication(arguments[0]);
+    try return runTitleBarApplication(arguments[0], backgroundTest);
     catch (Throwable error)
     {
         string details;

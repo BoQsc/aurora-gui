@@ -133,7 +133,7 @@ private int printAudioEndpointsJson()
     return endpoints.length > 0 ? 0 : 2;
 }
 
-private int runApplication(string executablePath)
+private int runApplication(string executablePath, bool backgroundTest)
 {
     WindowOptions options;
     options.title = appDisplayName ~ " — Twitch + YouTube Broadcaster";
@@ -147,6 +147,7 @@ private int runApplication(string executablePath)
     options.synchronizedDragPointer = false;
     options.vsync = true;
     options.renderer = RendererPreference.automatic;
+    options.startNoActivate = backgroundTest;
 
     auto theme = Theme.dark();
     theme.windowBackground = Color.fromHex(0x121519);
@@ -186,8 +187,12 @@ int main(string[] arguments)
 
     // Per-user app-data settings by default; `--portable-config` keeps the
     // settings file beside the folder the app is launched from instead.
+    bool backgroundTest;
     foreach (argument; arguments)
+    {
         if (argument == "--portable-config") setPortableConfigMode(true);
+        if (argument == "--background-test") backgroundTest = true;
+    }
 
     // The app links as the Windows GUI subsystem (no console), so a diagnostic
     // command must allocate one for its stdout output.
@@ -211,7 +216,7 @@ int main(string[] arguments)
     if (arguments.length > 1 && arguments[1] == "--apply-update")
         return runApplyUpdateMode(arguments);
 
-    try return runApplication(arguments[0]);
+    try return runApplication(arguments[0], backgroundTest);
     catch (Throwable error)
     {
         string details;

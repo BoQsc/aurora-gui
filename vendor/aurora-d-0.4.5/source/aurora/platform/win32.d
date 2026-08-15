@@ -1049,8 +1049,9 @@ else version (Windows)
             // application theme color instead of the system's white default.
             seedStartupBackground();
             _shown = true;
-            const command = _fullscreen ? SW_SHOWNORMAL :
-                (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
+            const command = options.startNoActivate ? SW_SHOWNOACTIVATE :
+                (_fullscreen ? SW_SHOWNORMAL :
+                    (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL));
             ShowWindow(_hwnd, command);
             UpdateWindow(_hwnd);
             // Re-publish the icons after the window becomes visible so the

@@ -31,6 +31,9 @@ WM_DESTROY = 0x0002
 WM_ERASEBKGND = 0x0014
 WM_PAINT = 0x000F
 WS_OVERLAPPEDWINDOW = 0x00CF0000
+D3D_DRIVER_TYPE_HARDWARE = 1
+D3D11_CREATE_DEVICE_VIDEO_SUPPORT = 0x00000800
+D3D11_SDK_VERSION = 7
 
 
 LRESULT = ctypes.c_ssize_t
@@ -205,6 +208,55 @@ class TestWindow:
                 user32.UnregisterClassW(class_name, instance)
 
 
+def d3d11_hardware_status() -> tuple[bool, int]:
+    """Match FFmpeg's default D3D11VA hardware-device prerequisite."""
+    d3d11 = ctypes.WinDLL("d3d11")
+    create_device = d3d11.D3D11CreateDevice
+    create_device.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        wintypes.HMODULE,
+        wintypes.UINT,
+        ctypes.c_void_p,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    create_device.restype = ctypes.c_long
+    device = ctypes.c_void_p()
+    context = ctypes.c_void_p()
+    result = int(
+        create_device(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            None,
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            None,
+            0,
+            D3D11_SDK_VERSION,
+            ctypes.byref(device),
+            None,
+            ctypes.byref(context),
+        )
+    )
+
+    def release(pointer: ctypes.c_void_p) -> None:
+        if not pointer.value:
+            return
+        vtable = ctypes.cast(
+            pointer,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
+        ).contents
+        release_fn = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+        release_fn(pointer)
+
+    release(context)
+    release(device)
+    return result >= 0, result & 0xFFFF_FFFF
+
+
 def ppm_pixels(path: Path) -> tuple[int, int, bytes]:
     data = path.read_bytes()
     position = 0
@@ -244,6 +296,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ffmpeg", required=True, type=Path)
     parser.add_argument("--work-dir", type=Path)
+    parser.add_argument(
+        "--allow-no-d3d11",
+        action="store_true",
+        help=(
+            "Report an explicit skip when the host itself cannot create the "
+            "hardware D3D11 video device required by gfxcapture"
+        ),
+    )
     args = parser.parse_args()
     if not args.ffmpeg.is_file():
         raise RuntimeError(f"FFmpeg executable is missing: {args.ffmpeg}")
@@ -256,6 +316,7 @@ def main() -> int:
         work_dir = args.work_dir.resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
     output = work_dir / "gfxcapture-runtime.ppm"
+    d3d11_available, d3d11_hresult = d3d11_hardware_status()
 
     test_window = TestWindow()
     foreground_before = int(ctypes.windll.user32.GetForegroundWindow())
@@ -292,6 +353,31 @@ def main() -> int:
             timeout=20,
         )
         if result.returncode != 0 or not output.is_file():
+            foreground_after = int(ctypes.windll.user32.GetForegroundWindow())
+            if foreground_before == hwnd or foreground_after == hwnd:
+                raise RuntimeError("the no-activation WGC test window became foreground")
+            if (
+                args.allow_no_d3d11
+                and not d3d11_available
+                and "Failed to create D3D11VA device." in result.stderr
+            ):
+                print(
+                    json.dumps(
+                        {
+                            "status": "skipped",
+                            "reason": (
+                                "host cannot create FFmpeg's required hardware "
+                                "D3D11 video device"
+                            ),
+                            "d3d11_hresult": f"0x{d3d11_hresult:08X}",
+                            "foreground_before": foreground_before,
+                            "foreground_after": foreground_after,
+                            "test_window_activated": False,
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
             raise RuntimeError(
                 f"gfxcapture runtime failed with exit {result.returncode}: "
                 + result.stderr.strip()
