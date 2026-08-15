@@ -1,5 +1,249 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-15 — Aurora Notepad visual screenshot review
+
+- [x] Launched the release build and captured/inspected `build/visual-review.png`.
+- [x] No rendering problems found: titlebar icon, menu bar, editor, status bar, and 1 px border align correctly without clipping or overlap.
+- [x] Opened the File dropdown through the headless interaction path and inspected its screenshot: all five commands, shortcuts, icons, hover treatment, and menu bounds are correct.
+- [x] Live shadow verification remains separate from client screenshots: the DPI-aware probe confirmed the DWM gradient on all sides, with the expected weaker left/top shadow.
+
+## 2026-08-15 — Aurora Notepad title icon prefilter
+
+- [x] Diagnosed the source/render difference: the original 814x820 PNG is detailed artwork with transparent black RGB; direct linear reduction to the 16 px title icon produced hard gray/blue blocks at the rings and right shadow.
+- [x] Replaced the intermediate derivative with a purpose-built clean 64x64 flat notebook title icon: blue header, four rings, page rules, no external side/bottom shadow. The original PNG remains the source/native asset; the native ICO is unchanged.
+- [x] Verified `build/icon-flat-crop.png` has no left-side artifact; headless smoke still passes.
+- [x] Documented the source-vs-renderer diagnosis in `aurora-notepad/ICON-RENDERING-IMPROVEMENT.txt`.
+- [ ] Manual: inspect the final flat title icon in the live window.
+
+## 2026-08-15 — Aurora Notepad drag-down restore keeps the maximized size (user complaint)
+
+- [x] User: the new Aurora Notepad does not return to its initial window size
+      after being dragged out of maximization. Root cause: `NotepadTitleBar`
+      used the vendored widget's `maximized()` as its source of truth, but the
+      vendored `TitleBar` clears its OWN maximized flag BEFORE firing
+      `onRestoreRequested` — so `restoreFromDrag` bailed on `if (!maximized())
+      return;` and never restored (the window stayed at the work-area extent).
+      The stream app avoided this by tracking its own state.
+- [x] Fix in `aurora-notepad/source/auroranotepad/titlebar.d`: the notepad now
+      tracks its own `_maximized` (kept in sync via `setMaximized`) and uses it
+      in `toggleMaximize` / `restoreFromDrag` / `applySnap` /
+      `showSystemMenu` / `maximizedState`. `restoreFromDrag` also always forces
+      `setWindowBounds(_restoredBounds)` after leaving fullscreen (same fix as
+      the stream app).
+- [x] Headless `PlatformWindow` now reports `windowBounds` (init = requested
+      size, updated by `setWindowBounds`), so headless tests can verify
+      restore/maximize bookkeeping the way the live platform behaves.
+- [x] Regression test in `aurora-notepad/tests/headless_smoke.d`: maximize to
+      the work area, drag the titlebar down, and assert the window returns to
+      its initial size and the maximized state clears. (Test-order gotcha: the
+      drag-restore press reused the snap test's titlebar point, which read as a
+      double-click; a `resetClickState` between the two fixed it.)
+- [x] Verified: notepad headless smoke passes, notepad `dub test` = 32 modules,
+      notepad app links, aurora-gui titlebar smoke passes, vendored aurora-d
+      `dub test` = 32 modules. Manifest regenerated.
+- [ ] Manual: maximize the Notepad (button/double-click/drag-to-top), then drag
+      down repeatedly — it must return to its initial size every time.
+
+## 2026-08-15 — Drag-down restore sometimes keeps the maximized size (user complaint)
+
+- [x] User: not every drag-down out of maximization returns the window to its
+      initial size; sometimes it stays at the maximized extent. Root cause: the
+      app's restore relied on the OS fullscreen placement OR `_restoredBounds`,
+      and `_restoredBounds` could be stale/desynced when maximize state was
+      mixed (snap-to-top sets the work-area size without entering fullscreen,
+      then caption-maximize toggled the wrong flag). Fix in both
+      `app_titlebar.d` and `demos/titlebar.d`: `_restoredBounds` is captured
+      only when the window is genuinely restored, `toggleMaximize` is
+      state-based (`_maximized || fullscreen` → restore, else maximize), and
+      restore (drag and button) ALWAYS forces `setWindowBounds(_restoredBounds)`
+      after leaving fullscreen — so the window reliably returns to its initial
+      size.
+- [x] Verified: aurora-stream application + notitlebar link; `dub test` = 46
+      modules pass; vendor titlebar demo links; titlebar smoke test passes.
+      Manifest regenerated.
+- [ ] Manual: maximize (button, double-click, drag-to-top), then repeatedly
+      drag down — the window must return to its pre-maximize size every time.
+
+## 2026-08-15 — New Aurora Notepad project + custom downstream titlebar
+
+- [x] Scaffolded a new downstream app `aurora-notepad/` on the vendored
+      Aurora-D, mirroring the aurora-image-viewer pattern: DUB recipe with
+      `portable-release` + GUI-subsystem policy, `RUN-WINDOWS.bat` /
+      `RUN-WINDOWS-SOFTWARE.bat` launchers, `source/app.d` with a
+      `--screenshot` headless mode. Registered in `scripts/version.py`,
+      `scripts/build-portable-windows.py`, and
+      `.github/workflows/portable-windows.yml` so CI builds/ships it.
+- [x] `NotepadTitleBar` (`aurora-notepad/source/auroranotepad/titlebar.d`):
+      the custom downstream titlebar. Subclasses the vendored `TitleBar` and
+      owns ALL window chrome as one reusable widget: Notepad light styling,
+      owner-driven drag (`onDragStarted`/`onDragMoved` through
+      `setWindowPosition`, not the OS caption loop), restore-on-drag that
+      re-anchors the grabbed spot under the pointer, work-area
+      maximize/restore via `GuiWindow.setWindowBounds` (never native
+      fullscreen, so the taskbar stays visible), the right-click system menu,
+      and aero-style drag snapping that broadcasts preview bounds through
+      `onSnapPreview` and applies the target on release.
+- [x] `NotepadRoot` (`auroranotepad/appui.d`) hosts the titlebar over a
+      minimal editor + status strip, plus the input-transparent
+      `TitleBarSnapPreview` overlay (created disabled, so it paints on top
+      without swallowing clicks — the same fix as the vendor titlebar).
+- [x] Headless smoke (`aurora-notepad/tests/headless_smoke.d`) drives the real
+      `UiTestDriver` dispatch path: caption callbacks, work-area maximize
+      (test work area → `lastWindowBounds`), double-click maximize toggle,
+      left-edge drag-snap applying 960x1040, preview show/hide + input
+      transparency, document-title dirty/clean updates, and a saved screenshot.
+- [x] Verified: debug + release builds link; headless smoke passes; the live
+      `--screenshot` mode of the real exe works; a pixel check confirms the
+      custom titlebar renders (background `0xf7f9fc`, dark title text, red
+      close glyph); `verify-windows-gui-subsystem.py` and
+      `verify-windows-portability.py` both pass for the new recipe.
+- [ ] Manual (live): run `aurora-notepad\RUN-WINDOWS.bat`, drag the titlebar
+      to top/sides/corners, use the caption buttons and the right-click system
+      menu, double-click to maximize, and drag down from maximized. Next
+      milestones: real File/Edit menus, a tab strip in the titlebar content
+      slot, open/save dialogs, and the editor polish.
+
+## 2026-08-15 — Aurora Notepad: smaller icons (titlebar + buttons)
+
+- [x] Upstream: added `TitleBar.setIconSize(int)` and `Button.setIconSize(int)`;
+      Button's default icon size lowered 22 → 18. Button width is text-measured
+      (`horizontalChrome` independent of `_iconSize`), so icons shrink without
+      resizing the buttons.
+- [x] Notepad titlebar icon is now 16 px (`setIconSize(16)`), Win10-style.
+- [x] Verified: headless smoke passes; screenshot shows the titlebar icon bbox
+      at exactly 16×16 logical; a headless probe confirms a text+icon Button
+      still measures 94×38 (unchanged) while its icon row spans exactly 18 px.
+      Vendor `MANIFEST.sha256` regenerated.
+
+## 2026-08-15 — Aurora Notepad: real 1 px border + DWM frame/shadow
+
+- [x] Diagnosed with a DPI-aware screen probe (the earlier pixel reads were
+      wrong: the probe was DPI-unaware so `GetWindowRect` returned logical
+      coords while `ImageGrab` read physical pixels): the window had NO 1 px
+      border (every edge went shadow→content) and DWM's shadow was present but
+      asymmetric (strong right/bottom, subtle left/top — authentic Win10).
+- [x] Added a theme `WindowBorder` overlay (input-transparent, painted last) so
+      every frameless notepad window draws a 1 px `theme.border` border on all
+      four sides regardless of DWM.
+- [x] Upstream (`aurora.platform.win32`): frameless windows now call
+      `DwmExtendFrameIntoClientArea(hwnd, {1,1,1,1})` for the full DWM frame +
+      drop shadow; `applyDarkTitleBar` became `applyFrameStyle(hwnd, dark)`
+      (light/dark border colors; the DWMWA color attributes are Win11-only and
+      silently fail on Win10); added `GuiWindow.setFrameDark(bool)` so the
+      notepad re-colors the frame on theme toggle. Notepad now starts
+      `darkTitleBar=false` (light frame) and calls `setFrameDark(_dark)`.
+- [x] Verified: headless smoke passes; the headless screenshot shows the
+      `0xd6d6d6` border at x=0/w-1/y=0/h-1; a clean DPI-aware live probe shows
+      the border (214,214,214) on all four edges plus the DWM shadow
+      (right/bottom strong, left/top subtle).
+- [ ] Manual (live): the window should now read like a real Win10 window — a
+      1 px light-gray border on all sides and a drop shadow. The left shadow
+      is intentionally subtle (DWM's standard Win10 asymmetry; real Win10
+      windows are identical). If you still want a stronger left shadow, that
+      needs a transparent-margin/Aurora-drawn approach (bigger change).
+
+## 2026-08-15 — Aurora Notepad: real Win10 Notepad menu bar + window shadow
+
+- [x] Replaced the button toolbar with the authentic Windows-10-Notepad menu
+      bar: `File  Edit  Format  View  Help` flat text items on the window
+      background with a 1 px bottom hairline (`aurora-notepad/…/menubar.d`).
+      Each opens a dropdown `ContextMenu` below itself
+      (`showContextMenuBelow`).
+- [x] Wired menus: File = New/Open/Save/Save As/Exit; Edit = Undo/Redo/Cut/
+      Copy/Paste/Delete/Select All/Time-Date (F5 inserts a Win10-style
+      timestamp); Format = Word Wrap (check); View = Status Bar (check) +
+      Dark Theme (check); Help = About.
+- [x] Added public editor menu commands to the vendored `texteditor.d`
+      (`cutToClipboard`, `copyToClipboard`, `pasteFromClipboard`,
+      `deleteSelectionCommand`, `insertTextAtCursor`).
+- [x] Window shadow: frameless windows got `CS_DROPSHADOW` in
+      `aurora.platform.win32` (DWM now draws the transparent drop shadow), and
+      frameless windows without an explicit position are centered on the
+      monitor's work area instead of `CW_USEDEFAULT` → (0,0), which had been
+      clipping the left/top shadow at the screen corner.
+- [x] Verified: debug + release build; headless smoke passes (5 menu items,
+      File dropdown opens, hover highlight); pixel checks confirm the menu bar
+      text row (File/Edit/Format/View/Help groups) and the File dropdown
+      (New/Open/Save/Save As/Exit with accent icons + hover); the vendor
+      `MANIFEST.sha256` was regenerated.
+- [ ] Manual (live): click each menu and try the items (New/Open/Save, wrap,
+      theme, time/date, status bar toggle), drag the titlebar, and confirm the
+      window now shows the drop shadow on all sides when centered.
+
+## 2026-08-15 — Aurora Notepad: full Windows-10 look
+
+- [x] Entire app re-skinned as Windows 10:
+      - Titlebar: white (light) / `0x202020` (dark), Win10 red close
+        `0xe81123`, neutral hover grays, 28 px.
+      - Command band: light gray `0xf0f0f0` (dark `0x2b2b2b`) with compact
+        flat text-only buttons.
+      - Editor: borderless white / `0x1e1e1e`, Consolas 11 pt size via
+        `setPixelSizeOverride(14)`.
+      - Status bar: gray `0xf0f0f0` band (Panel) with a 1 px `0xd6d6d6` top
+        hairline (`Separator` painted over the band edge) and left-padded text.
+      - Theme: Win10 palette (accent `0x0078d4`, danger `0xe81123`, neutral
+        hover grays, corner radius 3, control height 32, `fontScale =
+        TextScale.caption` = 13 px UI text).
+- [x] Verified: builds link; headless smoke passes; live screenshot pixel check
+      confirms white titlebar → `0xf0f0f0` command band → white editor →
+      `0xf0f0f0` status band with the `0xd6d6d6` hairline and status text.
+- [ ] Manual (live): check the whole window reads like Windows 10 Notepad in
+      both light and dark (F6 / the Dark button), hover the caption and
+      toolbar buttons, and confirm the status hairline.
+
+## 2026-08-15 — Aurora Notepad: true Windows-10 toolbar (band + flat compact buttons)
+
+- [x] Toolbar now looks like Windows 10: a visible gray command band
+      (`0xf0f0f0` light / `0x20262e` dark) holding compact flat text-only
+      buttons. The band's own padding (`HBox(4, Insets(6, 4))`) keeps buttons
+      ~30 px tall and vertically centered instead of ballooning to full
+      control height.
+- [x] Removed the big icons from the toolbar buttons; all buttons are flat
+      (`setFlat(true)`) with a neutral Win10 hover highlight — the light theme
+      hover is `0xe5e5e5` / pressed `0xd4d4d4` and the dark theme
+      `0x3a3a3a` / `0x2e2e2e` (no blue tint), corner radius 4.
+- [x] `toggleTheme` re-paints the toolbar band and re-styles the titlebar.
+- [x] Verified: builds link; headless smoke passes; live pixel check shows the
+      28 px titlebar, the `0xf0f0f0` toolbar band with text-only buttons, and
+      a `0xe5e5e5` hover highlight on the first button while the editor stays
+      borderless white.
+- [ ] Manual (live): hover the flat buttons for the subtle gray highlight and
+      confirm the band + compact buttons read like Windows 10.
+
+## 2026-08-15 — Aurora Notepad: Windows-10-style flat toolbar + taller titlebar
+
+- [x] Titlebar raised 22 → 28 logical px (`setBarHeight(28)`).
+- [x] Toolbar buttons converted to Windows-10 casual flat style: every button
+      uses `setFlat(true)` (transparent background, no border, only a subtle
+      rounded hover/pressed highlight). The Save accent was removed so the
+      toolbar reads as one flat Win10 command bar.
+- [x] Verified: builds link, headless smoke passes (bar height assertion, drag
+      at the middle row y=14), live screenshot pixel check confirms the
+      titlebar is 28 px with its `0xc8d2dd` bottom border and the toolbar row
+      shows only text/icons (accent glyphs + text on the transparent window
+      background) — no button chrome until hover.
+- [ ] Manual (live): hover the flat toolbar buttons to see the subtle Win10
+      highlight, and confirm the taller bar drags comfortably.
+
+## 2026-08-15 — Aurora Notepad: slim titlebar, toolbar, borderless editor
+
+- [x] Titlebar height halved 44 → 22 logical px (`setBarHeight(22)`); the
+      Notepad toolbar takes over the action buttons.
+- [x] Added a 38 px toolbar (`HBox`) between the titlebar and the editor with
+      New / Open / Save (accent) / Wrap / Dark buttons, wired to real
+      open/save dialogs, wrap toggle, light/dark theme toggle (also re-styles
+      the titlebar via the new `NotepadTitleBar.setDarkMode(bool)`), and
+      Ctrl+N/O/S shortcuts. Dark theme added (`darkNotepadTheme()`).
+- [x] Editor is borderless: `setShowBorder(false)` + `setFocusDecoration(false)`
+      so the text area never paints the accent field focus ring.
+- [x] Smoke updated for the 22 px bar (drag press at the middle row), toolbar
+      assertions, editor focus/refocus, and a focused-editor screenshot. Pixel
+      checks: titlebar row is `0xf7f9fc` with the `0xc8d2dd` bottom border,
+      toolbar shows buttons (17 distinct colors), editor top edge is pure
+      white with zero accent-blue pixels while focused.
+- [ ] Manual (live): confirm the slim bar still drags comfortably and the
+      toolbar Open/Save dialogs work on the real window.
+
 ## 2026-08-15 — Close button ignored the close-to-tray setting (user complaint)
 
 - [x] User: after setting the setting, pressing the Close button still went to

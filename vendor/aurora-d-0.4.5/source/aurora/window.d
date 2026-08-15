@@ -206,6 +206,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         return _native !is null && _native.setWindowBounds(logicalBounds);
     }
+
+    /** Re-apply the native frame colors after a light/dark theme toggle. */
+    void setFrameDark(bool dark)
+    {
+        if (_native !is null) _native.setFrameDark(dark);
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     bool rendererSupportsLiveResizeScaling() const

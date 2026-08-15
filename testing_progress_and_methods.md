@@ -1,5 +1,94 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Notepad visual review (2026-08-15)
+
+- Launched the current release build and captured `aurora-notepad/build/visual-review.ppm` (converted to PNG for inspection).
+- Visual review passed: small titlebar icon, aligned File/Edit/Format/View/Help menu bar, 1 px edge border, white borderless editor, and gray status bar with no clipping or overlap.
+- Opened File through the headless interaction path and inspected `notepad-smoke-filemenu.png`: New/Open/Save/Save As/Exit rows, shortcuts, icons, hover treatment, and dropdown bounds render correctly.
+- The original 814x820 icon rendered with hard gray/blue edge blocks at 16 px. Fully transparent source pixels contain black RGB, and Aurora's straight-alpha linear sampling exposed that during the extreme reduction.
+- Added `aurora-notepad-title.png`, a 64x64 Lanczos-prefiltered derivative generated from `aurora-notepad.png`; the titlebar now uses it while preserving the original source asset. The enlarged crop shows smoother rings and a clean right edge.
+- The remaining gray strip was confirmed in the source artwork and the 64px derivative. The title derivative is now a purpose-built flat notebook variant with that external outline/shadow removed; `build/icon-flat-crop.png` shows the clean result. Details are recorded in `aurora-notepad/ICON-RENDERING-IMPROVEMENT.txt`.
+- Shadow cannot appear in the client-area screenshot; the DPI-aware live probe separately confirmed the 1 px border plus DWM shadow gradient on all four sides. Left/top are intentionally subtler than right/bottom, matching Windows 10 DWM behavior.
+
+## Aurora Notepad — custom downstream titlebar (2026-08-15)
+
+New downstream app `aurora-notepad/`. Frameless window whose top strip is the
+custom `NotepadTitleBar` (`source/auroranotepad/titlebar.d`), a subclass of the
+vendored `TitleBar` that owns all window chrome: styling, owner-driven
+drag/restore-on-drag, work-area maximize via `setWindowBounds`, the system
+menu, and aero drag-snap (preview via `onSnapPreview`, applied on release).
+
+Layout: slim 28 px titlebar → 30 px classic Win10 **menu bar**
+(`File Edit Format View Help`, flat text items, dropdowns via
+`showContextMenuBelow`, 1 px bottom hairline) → borderless editor
+(`setShowBorder(false)` + `setFocusDecoration(false)`,
+`setPixelSizeOverride(14)` for Consolas 11 pt) → 28 px status band (Panel,
+`0xf0f0f0` light / `0x2b2b2b` dark) with a 1 px `0xd6d6d6` top hairline
+(Separator added after the band so it paints over the top edge) and 8 px
+left-padded text.
+
+Themes: full Win10 palette — accent `0x0078d4`, danger `0xe81123` (close
+hover), neutral hover grays, `cornerRadius = 3`, `controlHeight = 32`,
+`fontScale = TextScale.caption` (13 px UI text). Titlebar colors live in
+`NotepadTitleBar.setDarkMode(bool)`: white / `0x202020`, Win10 red close,
+neutral caption-button hover.
+
+- Build: `cd aurora-notepad && dub build --build=release`.
+- Headless smoke:
+  `dmd -version=AuroraHeadless -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-smoke.exe`
+  then run `build\headless-smoke.exe`. It drives the real UiTestDriver path:
+  caption callbacks, work-area maximize (set `setTestWorkArea` then click
+  maximize → `lastWindowBounds` == work area), double-click maximize toggle,
+  left-edge drag-snap (set `setTestScreenPointerPosition` then drag; release
+  applies 960x1040), preview show/hide + input transparency (disabled overlay
+  must never block a caption click), document-title dirty/clean updates, the
+  22 px bar, toolbar presence, and editor focus. The snap only evaluates on
+  the move AFTER the drag threshold (a second moveTo after crossing), so a
+  snap test needs two moves post-mouseDown. Drag presses must target the
+  middle row of the slim bar (e.g. y=14 for the 28 px bar), not its bottom
+  edge.
+- No-focus-border pixel check: the smoke saves `notepad-smoke-focused.ppm`
+  while the editor is focused; the editor top edge (logical y=66 now, 28 px
+  bar + 38 px toolbar) must be pure white `(255,255,255)` with zero
+  accent-blue `(36,107,253)` pixels.
+- Win10 toolbar checks: `notepad-smoke-toolbar-hover.ppm` is saved while the
+  pointer hovers the first menu item — the menu bar is white with a `0xd6d6d6`
+  hairline and the hovered item shows the `0xe5e5e5` highlight.
+  `notepad-smoke-filemenu.ppm` is saved while the File dropdown is open — the
+  white menu panel shows dark labels (New/Open/Save/Save As/Exit) with accent
+  `0x0078d4` icons and a `0xe5e5e5` hover.
+- Window shadow (upstream, `aurora.platform.win32`): the class carries
+  `CS_DROPSHADOW` (DWM SysShadow appears), frameless windows without an
+  explicit position are centered on the monitor work area (fixes
+  `CW_USEDEFAULT`→(0,0) clipping the left/top shadow), and
+  `DwmExtendFrameIntoClientArea({1,1,1,1})` gives the full DWM frame + drop
+  shadow. `GuiWindow.setFrameDark(bool)` re-applies light/dark frame colors on
+  theme toggle (the DWMWA border/caption/text attributes are Win11-only and
+  fail silently on Win10, so the system theme decides there).
+- Window border: the notepad draws its own 1 px `theme.border` (`WindowBorder`
+  overlay, disabled/input-transparent, painted last). Headless pixel check:
+  the saved `notepad-smoke.ppm` must have `0xd6d6d6` (214,214,214) at
+  (0,midY), (w-1,midY), (midX,0), (midX,h-1).
+- DPI-aware live probe (how to verify the real window): the probe process must
+  call `SetProcessDpiAwarenessContext(-4)` FIRST, otherwise `GetWindowRect`
+  returns virtualized logical pixels while `ImageGrab` reads physical pixels
+  and every edge read is garbage. Minimize unrelated windows (restore after),
+  `SetForegroundWindow` the notepad, then sample a strip crossing each edge:
+  expect shadow gradient → `(214,214,214)` border → white content.
+- Live screenshot: `aurora-notepad.exe --screenshot build\notepad-live.ppm`
+  (PPM; convert to PNG with PIL to view; the real window is physical DPI, so
+  at 125% a 1080x680 logical window screenshots as 1350x850).
+- Launch: `RUN-WINDOWS.bat` (automatic renderer) / `RUN-WINDOWS-SOFTWARE.bat`.
+- Registration: `scripts/version.py`, `scripts/build-portable-windows.py`,
+  `.github/workflows/portable-windows.yml` now build/ship `aurora-notepad.exe`.
+
+- Icon sizes: upstream `TitleBar.setIconSize(int)` (notepad uses 16) and
+  `Button.setIconSize(int)` (default lowered 22 → 18). Button size is
+  text-measured and never follows the icon size. To pixel-verify a button
+  icon, render a `Button("Open", IconKind.open)` and check the icon row
+  spans exactly the configured size; the button's preferred width stays
+  `max(controlHeight, text + horizontalChrome)`.
+
 ## Aurora Stream: real composed-window capture replacement (2026-08-15)
 
 - **v0.66.1 is rejected for VLC/window capture.** The user's release screenshot
@@ -1699,6 +1788,58 @@ hiding to the tray on minimize is opt-in:
 Verify: run the app, press the titlebar minimize — the window should minimize
 to the taskbar. Enable the checkbox and press minimize — it hides to the tray
 (tray icon appears). Close-to-tray behavior is unchanged.
+
+### Aurora Notepad drag-down restore kept the maximized size (2026-08-15, user complaint)
+
+The new Notepad (`aurora-notepad/`) did not return to its initial window size
+after dragging the titlebar down out of maximization. Root cause:
+`NotepadTitleBar.restoreFromDrag` guarded on the vendored widget's
+`maximized()`, but the vendored `TitleBar` clears its own `_maximized` flag
+BEFORE firing `onRestoreRequested` — so the guard always bailed and the restore
+never ran. The stream app tracks its own state, which is why it wasn't hit.
+
+Fix (`aurora-notepad/source/auroranotepad/titlebar.d`):
+- The notepad now tracks its own `_maximized`, kept in sync with the widget via
+  `setMaximized`, and uses it everywhere (`toggleMaximize`, `restoreFromDrag`,
+  `applySnap`, `showSystemMenu`, `maximizedState`).
+- `restoreFromDrag` always forces `setWindowBounds(_restoredBounds)` after
+  leaving fullscreen (same fix as the stream app).
+
+Also: headless `PlatformWindow` (`vendor/aurora-d-0.4.5/.../platform/headless.d`)
+now reports `windowBounds` (initial = requested size, updated by
+`setWindowBounds`), so headless tests verify restore/maximize bookkeeping
+exactly like the live platform. Regression in `aurora-notepad/tests/headless_smoke.d`:
+maximize → drag down → assert the window returns to its initial size and the
+maximized state clears.
+
+Test-order gotcha: the drag-restore press reused the snap test's titlebar point,
+which made the snap test's press read as a double-click (clickCount 2 →
+`toggleMaximize` instead of dragging). A `resetClickState` between the two
+fixes it.
+
+### Stream app drag-down restore kept the maximized size (2026-08-15, user complaint)
+
+Not every drag-down out of maximization returned the aurora-stream window to
+its initial size; sometimes it stayed at the maximized extent. Root cause: the
+app's restore relied on the OS fullscreen placement or `_restoredBounds`, and
+`_restoredBounds` could be stale/desynced when maximize states were mixed
+(snap-to-top fills the work area without entering fullscreen; a subsequent
+caption-maximize then toggled the wrong flag).
+
+Fix (in both `aurora-stream/source/app_titlebar.d` and
+`vendor/aurora-d-0.4.5/demos/titlebar.d`):
+- `_restoredBounds` is captured only when the window is genuinely restored
+  (`applySnap` guards on `!_window.fullscreen()`, `toggleMaximize` captures it
+  only in the maximize branch).
+- `toggleMaximize` is state-based: `_maximized || _window.fullscreen()` →
+  restore (leave fullscreen if set, then force `setWindowBounds(_restoredBounds)`);
+  otherwise maximize (capture bounds, set `_maximized`, enter fullscreen).
+- `restoreFromDrag` always forces `setWindowBounds(_restoredBounds)` after
+  leaving fullscreen (was `else if`, which skipped the resize whenever the
+  window was fullscreen — the OS placement could then leave the maximized size).
+
+Manual check: maximize via button, double-click, and drag-to-top, then drag
+down repeatedly — the window must return to its pre-maximize size every time.
 
 ### Close button honors the close-to-tray setting (2026-08-15, user complaint)
 

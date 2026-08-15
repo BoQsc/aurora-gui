@@ -55,6 +55,12 @@ PROGRAMS = {
         None,
         "Aurora Image Viewer",
     ),
+    "aurora-notepad": (
+        "aurora-notepad/dub.json",
+        None,
+        None,
+        "Aurora Notepad",
+    ),
 }
 
 

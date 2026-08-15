@@ -39,6 +39,8 @@ else version (Windows)
 
     private alias HDROP = HANDLE;
     private alias HGESTUREINFO = HANDLE;
+    // core.sys.windows.windows does not export the CS_DROPSHADOW class style.
+    private enum csDropShadow = 0x00020000;
     private struct AuroraGestureInfo
     {
         UINT size;
@@ -142,6 +144,15 @@ else version (Windows)
         LPRECT rect, DWORD style, BOOL menu, DWORD exStyle, UINT dpi) nothrow;
     private alias DwmSetWindowAttributeFn = extern(Windows) HRESULT function(
         HWND hwnd, DWORD attribute, const(void)* value, DWORD size) nothrow;
+    private struct MARGINS
+    {
+        int cxLeftWidth;
+        int cxRightWidth;
+        int cyTopHeight;
+        int cyBottomHeight;
+    }
+    private alias DwmExtendFrameIntoClientAreaFn = extern(Windows) HRESULT function(
+        HWND hwnd, const(MARGINS)* margins) nothrow;
 
     // Process-wide Win32 entry points and state. __gshared is intentional: a
     // DPI context belongs to the process rather than to D's thread-local data.
@@ -152,6 +163,7 @@ else version (Windows)
     private __gshared GetDpiForWindowFn getDpiForWindow;
     private __gshared AdjustWindowRectExForDpiFn adjustWindowRectExForDpi;
     private __gshared DwmSetWindowAttributeFn dwmSetWindowAttribute;
+    private __gshared DwmExtendFrameIntoClientAreaFn dwmExtendFrameIntoClientArea;
     private __gshared bool dpiFunctionsLoaded;
     private __gshared bool dwmFunctionsLoaded;
     private __gshared bool dpiAwarenessInitialized;
@@ -170,6 +182,9 @@ else version (Windows)
     private enum DWORD darkBorderColor = 0x00141414;
     private enum DWORD darkCaptionColor = 0x0020242a;
     private enum DWORD darkCaptionTextColor = 0x00ffffff;
+    private enum DWORD lightBorderColor = 0x00d6d6d6;
+    private enum DWORD lightCaptionColor = 0x00ffffff;
+    private enum DWORD lightCaptionTextColor = 0x001a1a1a;
 
     // Run before main so applications using Aurora do not create an HWND while
     // the process is still DPI-unaware. The call is harmless when a host
@@ -231,31 +246,53 @@ else version (Windows)
         HMODULE dwmapi = GetModuleHandleW(dwmapiLibraryName.ptr);
         if (dwmapi is null) dwmapi = LoadLibraryW(dwmapiLibraryName.ptr);
         if (dwmapi !is null)
+        {
             dwmSetWindowAttribute = cast(DwmSetWindowAttributeFn)
                 GetProcAddress(dwmapi, "DwmSetWindowAttribute".ptr);
+            dwmExtendFrameIntoClientArea = cast(DwmExtendFrameIntoClientAreaFn)
+                GetProcAddress(dwmapi, "DwmExtendFrameIntoClientArea".ptr);
+        }
     }
 
-    private void applyDarkTitleBar(HWND hwnd) nothrow
+    /// Apply the immersive dark-mode and border/caption colors for a frame.
+    private void applyFrameStyle(HWND hwnd, bool dark) nothrow
     {
         if (hwnd is null) return;
         loadDwmFunctions();
         if (dwmSetWindowAttribute is null) return;
 
-        BOOL enabled = TRUE;
+        BOOL enabled = dark ? TRUE : FALSE;
         if (dwmSetWindowAttribute(hwnd, dwmwaUseImmersiveDarkMode,
                 &enabled, cast(DWORD) enabled.sizeof) < 0)
             dwmSetWindowAttribute(hwnd, dwmwaUseImmersiveDarkModeBefore20H1,
                 &enabled, cast(DWORD) enabled.sizeof);
 
-        DWORD border = darkBorderColor;
-        DWORD caption = darkCaptionColor;
-        DWORD text = darkCaptionTextColor;
+        const DWORD border = dark ? darkBorderColor : lightBorderColor;
+        const DWORD caption = dark ? darkCaptionColor : lightCaptionColor;
+        const DWORD text = dark ? darkCaptionTextColor : lightCaptionTextColor;
         dwmSetWindowAttribute(hwnd, dwmwaBorderColor, &border,
             cast(DWORD) border.sizeof);
         dwmSetWindowAttribute(hwnd, dwmwaCaptionColor, &caption,
             cast(DWORD) caption.sizeof);
         dwmSetWindowAttribute(hwnd, dwmwaTextColor, &text,
             cast(DWORD) text.sizeof);
+    }
+
+    /// Extend the DWM frame 1 px into the client area so DWM renders the
+    /// standard 1 px border and the full drop shadow around a frameless window
+    /// (CS_DROPSHADOW alone produces a one-sided/clipped shadow on modern
+    /// Windows).
+    private void applyFramelessFrame(HWND hwnd) nothrow
+    {
+        if (hwnd is null) return;
+        loadDwmFunctions();
+        if (dwmExtendFrameIntoClientArea is null) return;
+        MARGINS margins;
+        margins.cxLeftWidth = 1;
+        margins.cxRightWidth = 1;
+        margins.cyTopHeight = 1;
+        margins.cyBottomHeight = 1;
+        dwmExtendFrameIntoClientArea(hwnd, &margins);
     }
 
     private uint querySystemDpi() nothrow
@@ -367,7 +404,12 @@ else version (Windows)
         // detect double-clicks (respecting the user's system double-click
         // time/area settings) and deliver WM_*BUTTONDBLCLK instead of relying
         // on the application's own fixed 500 ms / 6 px counting.
-        wc.style = CS_DBLCLKS;
+        // CS_DROPSHADOW makes DWM draw the standard transparent drop shadow
+        // around every top-level Aurora window. Frameless WS_POPUP windows
+        // (custom titlebars) would otherwise have no shadow at all; decorated
+        // windows keep their normal non-client shadow (DWM does not stack a
+        // second one).
+        wc.style = CS_DBLCLKS | csDropShadow;
         wc.lpfnWndProc = &auroraWindowProc;
         wc.hInstance = GetModuleHandleW(null);
         wc.hCursor = LoadCursorW(null, cast(LPCWSTR) cursorArrow);
@@ -976,10 +1018,46 @@ else version (Windows)
                 adjustOuterRectForDpi(outer, style, exStyle, _dpi);
             const width = outer.right - outer.left;
             const height = outer.bottom - outer.top;
-            const x = options.x == int.min ? CW_USEDEFAULT :
-                _displayScale.logicalToPhysicalX(options.x);
-            const y = options.y == int.min ? CW_USEDEFAULT :
-                _displayScale.logicalToPhysicalY(options.y);
+            int x;
+            int y;
+            if (options.x != int.min && options.y != int.min)
+            {
+                x = _displayScale.logicalToPhysicalX(options.x);
+                y = _displayScale.logicalToPhysicalY(options.y);
+            }
+            else if (!options.decorated)
+            {
+                // CreateWindowExW treats CW_USEDEFAULT for a WS_POPUP window as
+                // (0,0), flush with the top-left screen corner, where DWM clips
+                // the left and top drop shadows. Center the frameless window on
+                // the work area of the monitor under the pointer instead so the
+                // shadow is visible on every side.
+                POINT cursorPoint;
+                GetCursorPos(&cursorPoint);
+                HMONITOR monitor = MonitorFromPoint(cursorPoint,
+                    MONITOR_DEFAULTTONEAREST);
+                MONITORINFO info;
+                info.cbSize = MONITORINFO.sizeof;
+                if (monitor !is null && GetMonitorInfoW(monitor, &info))
+                {
+                    const workWidth = info.rcWork.right - info.rcWork.left;
+                    const workHeight = info.rcWork.bottom - info.rcWork.top;
+                    x = info.rcWork.left + maxIntLocal(0,
+                        (workWidth - width) / 2);
+                    y = info.rcWork.top + maxIntLocal(0,
+                        (workHeight - height) / 2);
+                }
+                else
+                {
+                    x = CW_USEDEFAULT;
+                    y = CW_USEDEFAULT;
+                }
+            }
+            else
+            {
+                x = CW_USEDEFAULT;
+                y = CW_USEDEFAULT;
+            }
 
             _hwnd = CreateWindowExW(
                 exStyle,
@@ -1000,11 +1078,12 @@ else version (Windows)
                 initializeExtendedScrollInput();
             // Frameless resizable windows carry WS_THICKFRAME so DWM would
             // otherwise draw the system-light 1px frame (white on light
-            // themes) around them. Apply the same dark frame styling as a
-            // decorated dark title bar so the border is stable and matches the
+            // themes) around them. Apply a stable frame color that matches the
             // Aurora surface instead of flashing on activation changes.
             if (options.darkTitleBar || !options.decorated)
-                applyDarkTitleBar(_hwnd);
+                applyFrameStyle(_hwnd, options.darkTitleBar);
+            if (!options.decorated)
+                applyFramelessFrame(_hwnd);
 
             const creationDpi = _dpi;
             _dpi = queryWindowDpi(_hwnd, creationDpi);
@@ -1250,6 +1329,13 @@ else version (Windows)
         {
             if (_hwnd !is null)
                 SetWindowTextW(_hwnd, toUTF16z(title));
+        }
+
+        /// Re-apply the DWM frame (border/caption) colors when the app theme
+        /// switches between light and dark at runtime.
+        override void setFrameDark(bool dark)
+        {
+            applyFrameStyle(_hwnd, dark);
         }
 
         private void setWindowIcon(string path)

@@ -528,6 +528,43 @@ class TextEditor : Widget
         notifyCursor();
     }
 
+    /** Cut the selection to the clipboard (menu-driven Edit command). */
+    void cutToClipboard()
+    {
+        if (_readOnly || !hasSelection()) return;
+        writeClipboardText(_buffer[selectionStart() .. selectionEnd()]);
+        deleteSelection();
+    }
+
+    /** Copy the selection to the clipboard (menu-driven Edit command). */
+    void copyToClipboard()
+    {
+        if (hasSelection())
+            writeClipboardText(_buffer[selectionStart() .. selectionEnd()]);
+    }
+
+    /** Paste clipboard text at the caret, replacing any selection. */
+    void pasteFromClipboard()
+    {
+        if (_readOnly) return;
+        auto text = readClipboardText();
+        if (text.length > 0) pasteText(text);
+    }
+
+    /** Delete the current selection (no-op without one). */
+    void deleteSelectionCommand()
+    {
+        if (_readOnly || !hasSelection()) return;
+        deleteSelection();
+    }
+
+    /** Insert text at the caret, replacing any selection. */
+    void insertTextAtCursor(const(dchar)[] value)
+    {
+        if (_readOnly) return;
+        insertText(value);
+    }
+
     void undo()
     {
         if (_readOnly || _undo.length == 0) return;

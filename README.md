@@ -147,6 +147,26 @@ Both clients depend on the same core package via a path dependency, and both
 keep the vendored Aurora-D source on their own `sourcePaths` exactly like the
 other applications in this repository.
 
+## Aurora Notepad
+
+A new standard Notepad built as a downstream application on the vendored
+Aurora-D library (`aurora-notepad/`). It is frameless and starts with the
+custom downstream titlebar: `NotepadTitleBar`
+(`aurora-notepad/source/auroranotepad/titlebar.d`) owns every piece of window
+chrome — Notepad styling, owner-driven drag with restore-on-drag, work-area
+maximize/restore, the system menu, and aero-style drag snapping with a
+translucent preview. The whole window is a Windows-10 Notepad clone: a slim
+white titlebar, the classic `File Edit Format View Help` menu bar with real
+dropdown menus, a borderless Consolas editor, and a gray status bar with a
+hairline — in light and dark themes. Frameless Aurora windows carry
+`CS_DROPSHADOW`, extend the DWM frame for the full drop shadow, open centered,
+and draw a 1 px theme border on every edge so they look like real Windows 10
+windows.
+Launch with `aurora-notepad\RUN-WINDOWS.bat`; the software-renderer variant is
+`RUN-WINDOWS-SOFTWARE.bat`. A headless smoke (`tests/headless_smoke.d`) drives
+caption buttons, maximize, drag-snap, preview transparency, and title updates
+through the real `UiTestDriver` dispatch path.
+
 ## Timeline-first workflow
 
 - Import MP4 and MP3 using `Ctrl+I`, the Project Media right-click menu, or Windows File Explorer drag-and-drop.

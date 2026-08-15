@@ -19,6 +19,7 @@ on:
       - aurora-stream/source/**
       - '!aurora-stream/source/**/appversion.d'
       - aurora-stream/tests/verify_gfxcapture_runtime.py
+      - aurora-notepad/source/**
 
 permissions:
   contents: write
@@ -89,6 +90,7 @@ jobs:
           path: |
             aurora-cut.exe
             aurora-image-viewer/aurora-image-viewer.exe
+            aurora-notepad/aurora-notepad.exe
             aurora-opencode/aurora-opencode.exe
             aurora-opencode-pro/aurora-opencode-pro.exe
             aurora-stream/aurora-stream.exe
@@ -104,6 +106,7 @@ jobs:
           Copy-Item aurora-cut.exe "aurora-cut-v$v.exe" -Force
           Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$streamVersion.exe" -Force
           Copy-Item aurora-image-viewer/aurora-image-viewer.exe "aurora-image-viewer-v$v.exe" -Force
+          Copy-Item aurora-notepad/aurora-notepad.exe "aurora-notepad-v$v.exe" -Force
           Copy-Item aurora-opencode/aurora-opencode.exe "aurora-opencode-v$v.exe" -Force
           Copy-Item aurora-opencode-pro/aurora-opencode-pro.exe "aurora-opencode-pro-v$v.exe" -Force
 
@@ -116,6 +119,7 @@ jobs:
             aurora-cut-v*.exe
             aurora-stream-v*.exe
             aurora-image-viewer-v*.exe
+            aurora-notepad-v*.exe
             aurora-opencode-v*.exe
             aurora-opencode-pro-v*.exe
           fail_on_unmatched_files: true

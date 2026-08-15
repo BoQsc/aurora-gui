@@ -16,6 +16,10 @@ APPLICATIONS = {
         Path("aurora-image-viewer"),
         Path("aurora-image-viewer/aurora-image-viewer.exe"),
     ),
+    "aurora-notepad": (
+        Path("aurora-notepad"),
+        Path("aurora-notepad/aurora-notepad.exe"),
+    ),
     "aurora-opencode": (
         Path("aurora-opencode"),
         Path("aurora-opencode/aurora-opencode.exe"),

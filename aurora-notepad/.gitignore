@@ -1,0 +1,8 @@
+/.dub/
+/aurora-notepad.exe
+/build/
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log

@@ -1,0 +1,46 @@
+Aurora Notepad Title Icon Rendering
+===================================
+
+Source asset
+------------
+
+The supplied `aurora-notepad.png` is 814x820 RGBA artwork. It contains fine
+notebook rings, page lines, a gray outline, and a blue-gray side/bottom shadow.
+At the 16 logical-pixel titlebar size, those details are close to the sampling
+limit.
+
+Diagnosis
+---------
+
+The original direct 814x820 -> 16px reduction produced hard gray/blue blocks,
+especially around the top rings and right edge. The PNG also contains fully
+transparent pixels with black RGB values. Straight-alpha linear sampling can
+expose those RGB values during reduction.
+
+Improvement
+-----------
+
+The first improvement used `aurora-notepad-title.png` as a 64x64
+Lanczos-prefiltered derivative generated from the supplied source. That fixed
+the hard reduction blocks, but the source's outline/shadow still collapsed
+into a slight left strip at 16 px.
+
+The title derivative is now a purpose-built 64x64 flat variant that preserves
+the same notebook identity: clean page, blue header, four rings, and page
+rules, with no external side/bottom shadow. The original `aurora-notepad.png`
+and native `aurora-notepad.ico` remain unchanged. Transparent edge RGB is
+sanitized before Aurora renders the derivative.
+
+Remaining left detail
+---------------------
+
+The left-side artifact was removed from the titlebar variant. The original
+large artwork still retains its own outline/shadow for the native icon.
+
+Verification
+------------
+
+- `build/icon-left-inspect.png`: direct visual inspection before the derivative.
+- `build/icon-prefiltered-crop.png`: intermediate prefiltered variant.
+- `build/icon-flat-crop.png`: final clean titlebar variant.
+- `tests/headless_smoke.d`: passes after the icon change.

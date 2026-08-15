@@ -233,3 +233,32 @@ file. The live Composition Preview title and Aurora export rasterizer load that
 same file, avoiding family-name fallback where multiple choices could otherwise
 render through one default face. Per-user Windows fonts and explicit `.ttf`,
 `.otf`, or `.ttc` paths are checked first.
+
+## Aurora window drop shadow and frameless centering (`aurora.platform.win32`)
+
+- Frameless `WS_POPUP` windows registered with the Aurora window class now also
+  carry `CS_DROPSHADOW` (0x20000, not exported by D's win32 bindings, defined
+  as `csDropShadow` in `win32.d`), so DWM renders the standard transparent drop
+  shadow around every top-level Aurora window — including custom-titlebar apps
+  that would otherwise have none.
+- `CW_USEDEFAULT` places a `WS_POPUP` window at (0,0), flush with the top-left
+  screen corner, where DWM clips the left and top shadows. Frameless windows
+  without an explicit `x`/`y` are now centered on the work area of the monitor
+  under the pointer instead, so the shadow is visible on every side.
+- Frameless windows now call `DwmExtendFrameIntoClientArea(hwnd, {1,1,1,1})`
+  (loaded dynamically from dwmapi), which makes DWM render the full frame and
+  drop shadow around the window. `applyDarkTitleBar` was generalized to
+  `applyFrameStyle(hwnd, dark)` with light/dark border/caption/text colors
+  (the DWMWA_* color attributes are Win11-only and fail silently on Win10,
+  where the system theme decides the frame color), and a new
+  `NativeWindow.setFrameDark(bool)` / `GuiWindow.setFrameDark(bool)` lets apps
+  re-apply the frame colors when toggling light/dark at runtime.
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` regenerated after these edits.
+
+## Editor menu commands (`aurora.widgets.texteditor`)
+
+- Added public, menu-driven editing commands so applications can wire real
+  Edit menus: `cutToClipboard()`, `copyToClipboard()`,
+  `pasteFromClipboard()`, `deleteSelectionCommand()`, and
+  `insertTextAtCursor()` (the clipboard/insert/delete primitives were private).
+- Used by `aurora-notepad`'s File/Edit menu bar.

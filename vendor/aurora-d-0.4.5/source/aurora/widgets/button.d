@@ -18,7 +18,9 @@ class Button : Widget
     private bool _flat;
     private bool _accent;
     private bool _danger;
-    private int _iconSize = 22;
+    // Smaller default icon so button icons read as compact Win10-style glyphs;
+    // button size is text-measured and never follows the icon size.
+    private int _iconSize = 18;
 
     void delegate() onClick;
 
@@ -48,6 +50,15 @@ class Button : Widget
         if (_icon == value) return;
         _icon = value;
         updatePreferredSize();
+        invalidate();
+    }
+
+    /** Icon glyph size in logical pixels; button size is unaffected. */
+    void setIconSize(int value)
+    {
+        value = maxInt(8, value);
+        if (_iconSize == value) return;
+        _iconSize = value;
         invalidate();
     }
 

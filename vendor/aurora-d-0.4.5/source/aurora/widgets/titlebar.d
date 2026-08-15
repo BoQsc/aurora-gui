@@ -69,8 +69,7 @@ class TitleBar : Widget
     private Widget _content;
     private int _barHeight = 40;
     private int _captionButtonWidth = 46;
-    private int _iconSize = 24;
-    private int _spacing = 8;
+    private int _iconSize = 24;    private int _spacing = 8;
     private bool _showIcon = true;
     private bool _showMinimize = true;
     private bool _showMaximize = true;
@@ -224,6 +223,16 @@ class TitleBar : Widget
         value = maxInt(1, value);
         if (_barHeight == value) return;
         _barHeight = value;
+        onLayout();
+        invalidate();
+    }
+
+    /** Icon glyph size drawn in the bar (default 24). */
+    void setIconSize(int value)
+    {
+        value = maxInt(8, value);
+        if (_iconSize == value) return;
+        _iconSize = value;
         onLayout();
         invalidate();
     }

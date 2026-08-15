@@ -100,7 +100,7 @@ final class TitleBarDemoRoot : Widget
         _snapPreview.hide();
         _maximized = target == TitleBarSnapTarget.top;
         _titleBar.setMaximized(_maximized);
-        if (_maximized)
+        if (_maximized && !_window.fullscreen())
         {
             Rect current;
             if (_window.windowBounds(current)) _restoredBounds = current;
@@ -111,10 +111,11 @@ final class TitleBarDemoRoot : Widget
 
     /**
      * Restore-on-drag: the user pressed the titlebar while maximized and
-     * dragged. Restore to the pre-maximize bounds regardless of how the window
-     * was maximized (caption fullscreen, double-click, or drag-snap to the top
-     * edge), then re-anchor the window so the grabbed spot of the titlebar
-     * stays under the pointer before the drag continues.
+     * dragged. Leave fullscreen when the window was maximized to fullscreen,
+     * then ALWAYS force the tracked pre-maximize size so the window reliably
+     * returns to its initial size instead of keeping the maximized extent.
+     * Finally re-anchor the window so the grabbed spot of the titlebar stays
+     * under the pointer before the drag continues.
      */
     private void restoreFromDrag(PointF pointer, PointF pressPointer)
     {
@@ -128,7 +129,7 @@ final class TitleBarDemoRoot : Widget
         _titleBar.setMaximized(false);
         if (wasFullscreen)
             _window.toggleFullscreen();
-        else if (!_restoredBounds.empty)
+        if (!_restoredBounds.empty)
             _window.setWindowBounds(_restoredBounds);
         Rect restored;
         _window.windowBounds(restored);
@@ -239,16 +240,21 @@ final class TitleBarDemoRoot : Widget
 
     private void toggleMaximize()
     {
-        _maximized = !_maximized;
-        _titleBar.setMaximized(_maximized);
-        if (_maximized)
+        if (_maximized || _window.fullscreen())
         {
-            Rect bounds;
-            if (_window.windowBounds(bounds)) _restoredBounds = bounds;
-            _window.toggleFullscreen();
+            // Leaving maximize: force the tracked pre-maximize size so the
+            // window never stays at the maximized extent.
+            _maximized = false;
+            _titleBar.setMaximized(false);
+            if (_window.fullscreen()) _window.toggleFullscreen();
+            if (!_restoredBounds.empty) _window.setWindowBounds(_restoredBounds);
         }
         else
         {
+            Rect bounds;
+            if (_window.windowBounds(bounds)) _restoredBounds = bounds;
+            _maximized = true;
+            _titleBar.setMaximized(true);
             _window.toggleFullscreen();
         }
         announce(_maximized ? "Maximized" : "Restored");

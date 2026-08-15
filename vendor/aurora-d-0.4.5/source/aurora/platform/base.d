@@ -110,6 +110,10 @@ abstract class NativeWindow
         return false;
     }
     abstract void setTitle(string title);
+    /** Re-apply the native frame colors when the app theme toggles dark/light. */
+    void setFrameDark(bool dark)
+    {
+    }
     abstract void setCursor(CursorKind cursor);
     /** Hide/show the host cursor; false means the backend cannot guarantee it. */
     bool setPointerVisible(bool visible)

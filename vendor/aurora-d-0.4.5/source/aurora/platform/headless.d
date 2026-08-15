@@ -23,6 +23,10 @@ final class PlatformWindow : NativeWindow
         super(options, sink);
         _size = Size(options.width, options.height);
         _fullscreen = options.startFullscreen;
+        // Model a real window's outer bounds so tests that read windowBounds
+        // (restore-on-drag, maximize bookkeeping) behave like the live platform.
+        _lastWindowBounds = Rect(0, 0, options.width, options.height);
+        _boundsSet = true;
     }
 
     /** Inject a screen-space pointer sample for `queryPointerScreenPosition`. */
@@ -103,6 +107,12 @@ final class PlatformWindow : NativeWindow
         _lastWindowBounds = logicalBounds;
         _boundsSet = true;
         return true;
+    }
+
+    override bool windowBounds(out Rect bounds)
+    {
+        bounds = _lastWindowBounds;
+        return _boundsSet;
     }
 
     override bool queryWorkArea(Point screenPoint, out Rect workArea)
