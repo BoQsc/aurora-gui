@@ -18,6 +18,7 @@ on:
       - '!source/**/appversion.d'
       - aurora-stream/source/**
       - '!aurora-stream/source/**/appversion.d'
+      - aurora-stream/tests/verify_gfxcapture_runtime.py
 
 permissions:
   contents: write
@@ -74,6 +75,9 @@ jobs:
             Copy-Item $ffprobeExe.FullName (Join-Path $embedded "ffprobe.exe") -Force
             Get-ChildItem $embedded | Select-Object FullName, Length | Format-Table -AutoSize
           }
+
+      - name: Verify Windows Graphics Capture runtime
+        run: python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --ffmpeg aurora-stream/embedded/ffmpeg.exe
 
       - name: Build and verify portable executables
         run: python -X utf8 scripts/build-portable-windows.py --compiler dmd --single-exe
