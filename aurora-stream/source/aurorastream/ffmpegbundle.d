@@ -1,6 +1,7 @@
 module aurorastream.ffmpegbundle;
 
-import std.file : exists, getSize, mkdirRecurse, tempDir, write;
+import std.conv : to;
+import std.file : exists, mkdirRecurse, read, tempDir, write;
 import std.path : buildPath;
 import std.process : environment;
 
@@ -12,25 +13,52 @@ version (BundledFfmpeg)
 
 private string bundleDirectory()
 {
-    return buildPath(tempDir(), "Aurora-Stream-ffmpeg");
+    version (BundledFfmpeg)
+    {
+        // Content-address the pair so a new release never reuses or overwrites
+        // an older executable that happens to have the same byte length. This
+        // also permits upgrades while a previous FFmpeg process still holds
+        // its extracted image open.
+        return buildPath(tempDir(), "Aurora-Stream-ffmpeg-" ~
+            bundleHash(_ffmpegBytes).to!string ~ "-" ~
+            bundleHash(_ffprobeBytes).to!string);
+    }
+    else
+    {
+        return buildPath(tempDir(), "Aurora-Stream-ffmpeg");
+    }
 }
 
-private void writeIfDifferent(string path, const(ubyte)[] bytes)
+private ulong bundleHash(const(ubyte)[] bytes)
+{
+    ulong hash = 1_469_598_103_934_665_603UL;
+    foreach (value; bytes)
+    {
+        hash ^= value;
+        hash *= 1_099_511_628_211UL;
+    }
+    return hash;
+}
+
+private bool writeAndVerify(string path, const(ubyte)[] bytes)
 {
     try
     {
-        if (exists(path) && getSize(path) == bytes.length)
-            return;
+        if (exists(path))
+        {
+            const existing = cast(ubyte[]) read(path);
+            if (existing == bytes) return true;
+        }
         write(path, bytes);
+        const written = cast(ubyte[]) read(path);
+        return written == bytes;
     }
-    catch (Exception)
-    {
-    }
+    catch (Exception) { return false; }
 }
 
 /**
  * Extracts the embedded ffmpeg.exe/ffprobe.exe into a per-user cache directory
- * (idempotent; size-cached so it runs only once) and returns that directory.
+ * (idempotent and content-addressed) and returns that directory.
  * Returns "" when this executable was built without an embedded copy, or when
  * extraction failed.
  */
@@ -42,9 +70,11 @@ string extractBundledFfmpeg()
         try
         {
             if (!exists(dir)) mkdirRecurse(dir);
-            writeIfDifferent(buildPath(dir, "ffmpeg.exe"), _ffmpegBytes);
-            writeIfDifferent(buildPath(dir, "ffprobe.exe"), _ffprobeBytes);
-            return dir;
+            const ffmpegOk = writeAndVerify(
+                buildPath(dir, "ffmpeg.exe"), _ffmpegBytes);
+            const ffprobeOk = writeAndVerify(
+                buildPath(dir, "ffprobe.exe"), _ffprobeBytes);
+            return ffmpegOk && ffprobeOk ? dir : "";
         }
         catch (Exception)
         {
