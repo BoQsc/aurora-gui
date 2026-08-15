@@ -118,7 +118,8 @@ void main(string[] args)
     auto swapchain = cast(IDXGISwapChainObj*) swapchainRaw;
     mark("device+swapchain ok fl=" ~ featureLevel.to!string);
 
-    // Verify GetImmediateContext (slot 38) writes the context.
+    // Verify GetImmediateContext (slot 40) writes the context. Slots 38 and
+    // 39 are the two exception-mode methods inherited ahead of it.
     void* ctxFromDevice = cast(void*) 0x1234;
     device.lpVtbl.GetImmediateContext(device, &ctxFromDevice);
     mark("GetImmediateContext ctx=" ~ (cast(ulong) ctxFromDevice).to!string ~
@@ -126,7 +127,7 @@ void main(string[] args)
         " match=" ~ (ctxFromDevice == context).to!string);
     mark("device vtable addr=" ~ (cast(ulong) device.lpVtbl).to!string);
     mark("slot0=" ~ (cast(ulong) (&device.lpVtbl.QueryInterface)[0]).to!string);
-    mark("slot38=" ~ (cast(ulong) (&device.lpVtbl.QueryInterface)[38]).to!string);
+    mark("slot40=" ~ (cast(ulong) (&device.lpVtbl.QueryInterface)[40]).to!string);
 
     // Back buffer + RTV.
     void* backBuffer;

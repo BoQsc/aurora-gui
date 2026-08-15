@@ -15,9 +15,9 @@ version (Windows)
 }
 
 /// `PrintWindow` with this flag asks the Desktop Window Manager to render the
-/// window's own full content (not the on-screen pixels), so a covered window
-/// still returns its real pixels — the same behavior professional tools get
-/// from Windows Graphics Capture, without the WinRT layer.
+/// window's own GDI-painted content (not the on-screen pixels), so a covered
+/// conventional window can still render. It is only a compatibility path;
+/// Windows Graphics Capture is required for GPU/compositor surfaces.
 version (Windows)
 private enum uint pwClientOnly = 0x00000001;
 private enum uint pwRenderFullContent = 0x00000002;

@@ -4,6 +4,7 @@
 /release/
 /releases/
 /build-validation/
+**/build-validation/
 **/__pycache__/
 /aurora-cut
 /aurora-cut.exe

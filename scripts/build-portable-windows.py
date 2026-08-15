@@ -119,7 +119,14 @@ def verify_stream_ffmpeg_inventory(ffmpeg: Path) -> None:
     silently shipped an executable without Desktop Duplication support.
     """
     checks = [
-        ([str(ffmpeg), "-hide_banner", "-filters"], ("ddagrab", "hwdownload")),
+        (
+            [str(ffmpeg), "-hide_banner", "-filters"],
+            ("ddagrab", "gfxcapture", "hwdownload"),
+        ),
+        (
+            [str(ffmpeg), "-hide_banner", "-h", "filter=gfxcapture"],
+            ("pre-existing HWND handle", "display yellow border"),
+        ),
         ([str(ffmpeg), "-hide_banner", "-devices"], ("gdigrab", "dshow", "lavfi")),
     ]
     for command, required in checks:

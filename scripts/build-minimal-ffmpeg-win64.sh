@@ -6,7 +6,7 @@
 # Covers TWO surfaces from the same binary:
 # - aurora-cut: import/playback/composite/export (mp4+mp3), lavfi color/
 #   anullsrc/testsrc2, d3d11va/dxva2 decode, nvenc/qsv/amf + libx264 encode.
-# - aurora-stream: ddagrab/gdigrab/dshow capture, rawvideo+pipe:0 canvas,
+# - aurora-stream: gfxcapture/ddagrab/gdigrab/dshow capture, rawvideo+pipe:0 canvas,
 #   sdp+udp/rtp audio input, flv+fifo muxing to rtmp/rtmps (schannel TLS),
 #   settb/asetpts/hwdownload filters.
 #
@@ -15,16 +15,17 @@
 #
 # GPU encoders are Aurora Cut's primary encoders (media.d probes nvenc -> qsv ->
 # amf before libx264), so all three are kept: h264_nvenc, h264_qsv, h264_amf.
-# - nv-codec-headers is pinned to n12.2.72.0: ffmpeg n8.1's nvenc.c uses the old
-#   NV_ENC_CLOCK_TIMESTAMP_SET.countingType field, renamed to countingTypeLSB
-#   in n13.1.
+# - FFmpeg is pinned to the first verified post-8.1 revision used for Aurora's
+#   Windows Graphics Capture HWND path. This keeps the build reproducible while
+#   providing the `gfxcapture` source that correctly captures VLC's composed
+#   Direct3D video surface.
 # - AMF is header-only (AMF/core/Version.h), runtime loads amfrt64.dll.
 # - libvpl (oneVPL) is cross-built with CMake for h264_qsv. It is C++, so the
 #   ffmpeg link adds -lstdc++ and -static (embeds libstdc++/libgcc/winpthread so
 #   ffmpeg.exe stays a single self-contained file).
 set -euo pipefail
 
-ffmpeg_tag="${FFMPEG_TAG:-n8.1}"
+ffmpeg_tag="${FFMPEG_TAG:-c48230eb86ff02246f6a14fa1475a0d9398363b4}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$root/build/ffmpeg-minimal"
 deps="$work/builddeps"
@@ -39,7 +40,16 @@ fetch() { # fetch <dir> <url> [<rev>]
   local dir="$1" url="$2" rev="${3:-}"
   if [ -d "$dir" ]; then return 0; fi
   if [ -n "$rev" ]; then
-    git clone --depth 1 --branch "$rev" "$url" "$dir"
+    # `git clone --branch` accepts only advertised branch/tag names, not the
+    # immutable commit SHA used for FFmpeg. A one-commit fetch handles branches,
+    # tags, and exact revisions while keeping the checkout reproducible.
+    local temporary="${dir}.fetch"
+    rm -rf "$temporary"
+    git init "$temporary"
+    git -C "$temporary" remote add origin "$url"
+    git -C "$temporary" fetch --depth 1 origin "$rev"
+    git -C "$temporary" checkout --detach FETCH_HEAD
+    mv "$temporary" "$dir"
   else
     git clone --depth 1 "$url" "$dir"
   fi
@@ -206,7 +216,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=color,anullsrc,testsrc2,sine,format,scale,pad,crop,overlay,setpts \
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
-      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload,ddagrab \
+      --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload,ddagrab,gfxcapture \
       --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
       --extra-libs="-lstdc++ -lws2_32 -lpthread"; then

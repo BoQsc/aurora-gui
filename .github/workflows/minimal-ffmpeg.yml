@@ -3,7 +3,6 @@ name: Build minimal ffmpeg (Windows x64)
 on:
   workflow_dispatch:
   push:
-    branches: [main]
     paths:
       - scripts/build-minimal-ffmpeg-win64.sh
       - .github/workflows/minimal-ffmpeg.yml
@@ -42,7 +41,8 @@ jobs:
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -protocols
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -devices
-          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters | grep -E 'ddagrab|hwdownload'
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -filters | grep -E 'ddagrab|gfxcapture|hwdownload'
+          "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -h filter=gfxcapture | grep -E 'pre-existing HWND handle|display yellow border'
           "$WINE" build/ffmpeg-minimal/dist/bin/ffmpeg.exe -hide_banner -devices | grep -E 'gdigrab|dshow|lavfi'
 
       - name: Upload minimal ffmpeg

@@ -17,6 +17,8 @@ import aurorastream.broadcast : BroadcastQuality, BroadcastSettings,
     youtubeVideoBitrateKbps;
 import aurorastream.clipboardfield : ClipboardTextField;
 import aurorastream.desktoppreview : DesktopPreviewCapturer;
+import aurorastream.graphicscapturepreview : GraphicsCapturePreview,
+    bgraToRgbaInPlace;
 import aurorastream.devicedropdown : AudioDeviceDropdown;
 import aurorastream.entry : applicationIconPath;
 import aurorastream.environment : settingsReport, systemEnvironmentReport;
@@ -25,6 +27,7 @@ import aurorastream.qualitydropdown : SourceQualityDropdown;
 import aurorastream.settings : loadSettings, saveSettings, settingsFilePath;
 import aurorastream.trayicon : TrayIcon;
 import aurorastream.wasapi : AudioDeviceNotifications;
+import aurorastream.windowcontent : WindowContentCapturer;
 import aurorastream.windowsources : CaptureSourceDropdown, windowExists,
     windowIsMinimized, windowLabelIsProcess, windowProcessImageName;
 import core.sync.mutex : Mutex;
@@ -76,7 +79,10 @@ final class StreamRoot : VBox
     private int _previewCaptureTargetWidth = previewCaptureWidth;
     private int _previewCaptureTargetHeight = previewCaptureHeight;
     private string _previewCaptureWindowHwnd;
-    private bool _previewCaptureVisibleScreenPixels;
+    private bool _previewCaptureUseGraphicsCapture;
+    private bool _previewCaptureUseWindowContent;
+    private string _previewCaptureFailure;
+    private string _lastPreviewCaptureFailure;
     private bool _previewCaptureRunning;
     private bool _previewCaptureDesired;
     private enum int previewCaptureWidth = 480;
@@ -160,6 +166,10 @@ final class StreamRoot : VBox
                 "FFmpeg was not found on PATH; streaming is unavailable.");
         }
         _activityLog.info("Capture backend: " ~ _capture.label ~ ".");
+        _activityLog.info(_capture.windowsGraphicsCaptureSupported ?
+            "Window capture backend: Windows Graphics Capture available." :
+            "Window capture backend: Windows Graphics Capture unavailable; " ~
+                "ordinary windows use the GDI compatibility path and VLC is blocked.");
         _activityLog.info("Settings file: " ~ settingsFilePath());
         foreach (reportLine; systemEnvironmentReport())
             _activityLog.info(reportLine);
@@ -287,7 +297,7 @@ final class StreamRoot : VBox
                     "Capture source changed to the entire desktop.");
         };
         auto captureHint = settingsContent.add(new Label(
-            "Pick a single game or app window. VLC uses its visible composed pixels; PrintWindow captures normal app content; Game capture hooks D3D11 Present."));
+            "Pick a single game or app window. Standard capture uses the Windows compositor; PrintWindow is a compatibility mode; Game capture hooks D3D11 Present."));
         captureHint.setScale(1);
         captureHint.setColor(Color.fromHex(0x8793a0));
         captureHint.layoutHints().preferredHeight = 36;
@@ -312,9 +322,11 @@ final class StreamRoot : VBox
         _gameCaptureMode.onChanged = delegate(bool checked) {
             if (checked && _windowContentCapture !is null)
                 _windowContentCapture.setChecked(false, false);
+            if (checked) enforceVlcScreenCapture();
+            const active = _gameCaptureMode.checked();
             updateQualitySummary();
             markSettingsDirty();
-            _activityLog.info(checked ?
+            _activityLog.info(active ?
                 "Game capture enabled (D3D11 Present render hook)." :
                 "Game capture disabled.");
         };
@@ -583,6 +595,17 @@ final class StreamRoot : VBox
             previewCaptureHeight);
         _previewCaptureRunning = true;
         _previewCaptureDesired = _liveSourcePreviewEnabled;
+        // Seed the exact selected source before the thread starts. Otherwise
+        // its first iteration can briefly publish a desktop frame that stays
+        // visible if the selected window is minimized or unavailable.
+        _previewCaptureWindowHwnd = _captureSource.selectedHwnd();
+        _previewCaptureUseWindowContent =
+            _previewCaptureWindowHwnd.strip().length > 0 &&
+            _windowContentCapture !is null && _windowContentCapture.checked();
+        _previewCaptureUseGraphicsCapture =
+            _previewCaptureWindowHwnd.strip().length > 0 &&
+            !_previewCaptureUseWindowContent &&
+            _capture.windowsGraphicsCaptureSupported;
         _previewCaptureThread = new Thread({ previewCaptureLoop(); });
         _previewCaptureThread.isDaemon = true;
         _previewCaptureThread.start();
@@ -1004,11 +1027,10 @@ final class StreamRoot : VBox
         return _youtubeBitrate.selectedKbps();
     }
 
-    /// VLC's hardware video output is commonly a separate child/compositor
-    /// surface. PrintWindow can return a malformed partial composition for it
-    /// (the video and UI do not share one paint surface), so visible VLC must
-    /// use the screen-pixel path instead. Render-hook capture will be the
-    /// background/minimized path once integrated.
+    /// VLC's hardware video output is a separate Direct3D child surface.
+    /// PrintWindow/GetDC return only the malformed Qt paint surface, while the
+    /// current D3D11 hook receives no Present frames from VLC 3.x. VLC therefore
+    /// always uses the compositor-owned Windows Graphics Capture path.
     private bool selectedWindowIsVlc() const
     {
         if (_captureSource is null) return false;
@@ -1021,17 +1043,27 @@ final class StreamRoot : VBox
 
     private void enforceVlcScreenCapture()
     {
-        if (_windowContentCapture is null || !selectedWindowIsVlc() ||
-            !_windowContentCapture.checked()) return;
-        _windowContentCapture.setChecked(false, false);
+        if (!selectedWindowIsVlc()) return;
+        bool changed;
+        if (_windowContentCapture !is null && _windowContentCapture.checked())
+        {
+            _windowContentCapture.setChecked(false, false);
+            changed = true;
+        }
+        if (_gameCaptureMode !is null && _gameCaptureMode.checked())
+        {
+            _gameCaptureMode.setChecked(false, false);
+            changed = true;
+        }
+        if (!changed) return;
         _localStatus =
-            "VLC uses a hardware video surface; using visible screen capture " ~
-            "to keep the complete video and UI. Background VLC capture will " ~
-            "use the render hook when enabled.";
+            "VLC uses Windows Graphics Capture so its Direct3D video, menus, " ~
+            "and controls come from one compositor-owned window frame.";
         _localStatusError = false;
         _activityLog.warning(
-            "VLC window-content capture was disabled; using screen capture " ~
-            "because PrintWindow cannot reliably compose VLC's child video surface.");
+            "VLC PrintWindow/game-hook mode was disabled; using Windows " ~
+            "Graphics Capture because VLC's Qt GDI surface is incomplete and " ~
+            "its D3D11 output does not deliver frames to the render hook.");
         markSettingsDirty();
     }
 
@@ -1350,12 +1382,62 @@ final class StreamRoot : VBox
         const minimized = _window !is null &&
             (_trayHidden || _window.isMinimized());
         _previewCaptureMutex.lock();
-        _previewCaptureDesired = !minimized;
-        _previewCaptureWindowHwnd = _captureSource.selectedHwnd();
-        _previewCaptureVisibleScreenPixels = selectedWindowIsVlc() &&
-            (_gameCaptureMode is null || !_gameCaptureMode.checked());
+        const requestedWindow = _captureSource.selectedHwnd();
+        const unsupportedVlc = requestedWindow.strip().length > 0 &&
+            selectedWindowIsVlc() &&
+            !_capture.windowsGraphicsCaptureSupported;
+        _previewCaptureDesired = !minimized && !unsupportedVlc;
+        const requestedWindowContent =
+            requestedWindow.strip().length > 0 &&
+            _windowContentCapture !is null &&
+            _windowContentCapture.checked();
+        const requestedGraphicsCapture =
+            requestedWindow.strip().length > 0 &&
+            !requestedWindowContent &&
+            _capture.windowsGraphicsCaptureSupported;
+        const sourceChanged = requestedWindow != _previewCaptureWindowHwnd ||
+            requestedWindowContent != _previewCaptureUseWindowContent ||
+            requestedGraphicsCapture != _previewCaptureUseGraphicsCapture;
+        _previewCaptureWindowHwnd = requestedWindow;
+        _previewCaptureUseWindowContent = requestedWindowContent;
+        _previewCaptureUseGraphicsCapture = requestedGraphicsCapture;
+        if (sourceChanged)
+        {
+            _previewCaptureFrame = null;
+            _previewCaptureFailure = "";
+        }
+        if (unsupportedVlc)
+        {
+            _previewCaptureFrame = null;
+            _previewCaptureFailure =
+                "This FFmpeg build lacks Windows Graphics Capture, so VLC " ~
+                "preview and streaming are unavailable. Use the packaged release.";
+        }
         RgbaImage latest = _previewCaptureFrame;
+        const previewFailure = _previewCaptureFailure;
         _previewCaptureMutex.unlock();
+        if (sourceChanged)
+        {
+            _previewCaptureLastShownRevision = 0;
+            _canvasPreview.clearLiveFrame();
+        }
+        if (previewFailure != _lastPreviewCaptureFailure)
+        {
+            if (previewFailure.length > 0)
+            {
+                _canvasPreview.clearLiveFrame();
+                _localStatus = previewFailure;
+                _localStatusError = true;
+                _activityLog.warning(previewFailure);
+            }
+            else if (_lastPreviewCaptureFailure.length > 0)
+            {
+                _localStatus = "Live source preview recovered.";
+                _localStatusError = false;
+                _activityLog.info("Live source preview recovered.");
+            }
+            _lastPreviewCaptureFailure = previewFailure;
+        }
         // Size the capture to the preview panel so the live frame is shown at
         // (near) native resolution instead of upscaled from a small buffer.
         const previewBounds = _canvasPreview.bounds();
@@ -1390,6 +1472,10 @@ final class StreamRoot : VBox
     /// the preview is disabled or the app is shutting down.
     private void previewCaptureLoop()
     {
+        auto graphicsPreview = new GraphicsCapturePreview();
+        auto contentPreview = new WindowContentCapturer(previewCaptureWidth,
+            previewCaptureHeight);
+        scope (exit) graphicsPreview.shutdown();
         while (true)
         {
             _previewCaptureMutex.lock();
@@ -1399,6 +1485,7 @@ final class StreamRoot : VBox
             if (!running) return;
             if (!desired)
             {
+                graphicsPreview.shutdown();
                 try Thread.sleep(
                     dur!"msecs"(cast(long) (previewCaptureIdleIntervalSeconds * 1000)));
                 catch (Exception) {}
@@ -1412,18 +1499,40 @@ final class StreamRoot : VBox
             const targetWidth = _previewCaptureTargetWidth;
             const targetHeight = _previewCaptureTargetHeight;
             const windowHwnd = _previewCaptureWindowHwnd;
-            const visibleScreenPixels = _previewCaptureVisibleScreenPixels;
+            const useGraphicsCapture = _previewCaptureUseGraphicsCapture;
+            const useWindowContent = _previewCaptureUseWindowContent;
             _previewCaptureMutex.unlock();
-            // Match the preview to the stream source: the selected window when
-            // game/window capture is active, otherwise the primary monitor.
-            _previewCapturer.setWindowTarget(windowHwnd, visibleScreenPixels);
-            _previewCapturer.setTargetSize(targetWidth, targetHeight);
             const byteCount = cast(size_t) targetWidth * targetHeight * 4;
             if (_previewCaptureBuffer is null ||
                 _previewCaptureBuffer.length < byteCount)
                 _previewCaptureBuffer.length = byteCount;
             auto bytes = _previewCaptureBuffer[0 .. byteCount];
-            if (_previewCapturer.capture(bytes))
+            bool captured;
+            if (useGraphicsCapture)
+            {
+                captured = graphicsPreview.capture(windowHwnd, targetWidth,
+                    targetHeight, previewCaptureFps, bytes);
+            }
+            else
+            {
+                graphicsPreview.shutdown();
+                if (useWindowContent)
+                {
+                    contentPreview.setWindowTarget(windowHwnd);
+                    contentPreview.setTargetSize(targetWidth, targetHeight);
+                    captured = contentPreview.capture(bytes);
+                    if (captured) bgraToRgbaInPlace(bytes);
+                }
+                else
+                {
+                    // Desktop and old-FFmpeg compatibility capture continue to
+                    // use the persistent GDI preview state.
+                    _previewCapturer.setWindowTarget(windowHwnd, false);
+                    _previewCapturer.setTargetSize(targetWidth, targetHeight);
+                    captured = _previewCapturer.capture(bytes);
+                }
+            }
+            if (captured)
             {
                 if (_previewCaptureImage is null ||
                     _previewCaptureImage.width() != targetWidth ||
@@ -1438,9 +1547,21 @@ final class StreamRoot : VBox
                 }
                 _previewCaptureMutex.lock();
                 _previewCaptureFrame = _previewCaptureImage;
+                _previewCaptureFailure = "";
                 _previewCaptureMutex.unlock();
             }
-            try Thread.sleep(dur!"msecs"(1000 / previewCaptureFps));
+            else if (useGraphicsCapture)
+            {
+                _previewCaptureMutex.lock();
+                _previewCaptureFrame = null;
+                _previewCaptureFailure = graphicsPreview.failure;
+                _previewCaptureMutex.unlock();
+            }
+            // gfxcapture blocks until the next frame. GDI/PrintWindow need an
+            // explicit cadence; failed gfxcapture starts get a bounded retry.
+            if (!useGraphicsCapture || !captured)
+                try Thread.sleep(dur!"msecs"(captured ?
+                    1000 / previewCaptureFps : 250));
             catch (Exception) {}
         }
     }
@@ -1601,8 +1722,12 @@ final class StreamRoot : VBox
             _localStatus = "";
             _localStatusError = false;
         }
-        const status = !active && _localStatus.length > 0 ?
-            _localStatus : snapshot.status;
+        _previewCaptureMutex.lock();
+        const livePreviewFailure = _previewCaptureFailure;
+        _previewCaptureMutex.unlock();
+        const status = !active && livePreviewFailure.length > 0 ?
+            livePreviewFailure :
+            (!active && _localStatus.length > 0 ? _localStatus : snapshot.status);
         const metrics = format(
             "FPS %s  •  Speed %s  •  Duplicated %s  •  Dropped %s  •  Time %s",
             snapshot.fps.length > 0 ? snapshot.fps : "—",
@@ -1620,7 +1745,8 @@ final class StreamRoot : VBox
         {
             _lastStatus = status;
             _status.setText(status);
-            if (snapshot.failed || (!active && _localStatusError))
+            if (snapshot.failed || (!active &&
+                (_localStatusError || livePreviewFailure.length > 0)))
                 _status.setColor(Color.fromHex(0xe19a9a));
             else if (snapshot.processRunning)
                 _status.setColor(Color.fromHex(0x9fd4af));
@@ -1661,7 +1787,8 @@ final class StreamRoot : VBox
         }
         if (_gameCaptureMode !is null)
             _gameCaptureMode.setEnabled(!active &&
-                _captureSource.selectedHwnd().strip().length > 0);
+                _captureSource.selectedHwnd().strip().length > 0 &&
+                !selectedWindowIsVlc());
         _refreshAudioDevices.setEnabled(!active && !audioScan.running);
         _refreshAudioDevices.setText(audioScan.running ?
             "Refreshing audio devices…" : "Refresh audio devices");

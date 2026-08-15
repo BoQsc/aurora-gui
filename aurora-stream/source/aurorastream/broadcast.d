@@ -5,9 +5,8 @@ import aurorastream.audiobridge : AudioBridgeSession;
 import aurorastream.browser : BrowserChoice;
 import aurorastream.gamecapture : GameCaptureSession, GameCaptureFrame,
     gameCaptureHookPath;
-import aurorastream.windowsources : windowClientScreenRect, windowExists,
-    windowIsMinimized, windowLabelIsProcess, windowProcessImageName,
-    WindowScreenRect;
+import aurorastream.windowsources : windowExists, windowIsMinimized,
+    windowLabelIsProcess, windowProcessImageName;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, dur, msecs;
@@ -66,6 +65,7 @@ struct CaptureSelection
     bool capturesCursor;
     int nativeWidth;
     int nativeHeight;
+    bool windowsGraphicsCaptureSupported;
 }
 
 struct BroadcastSettings
@@ -141,8 +141,8 @@ struct BroadcastSettings
     // Cached friendly "process — title" label for the selected window, kept so
     // the UI still shows a meaningful name while the window is not enumerated.
     string windowCaptureLabel;
-    // When true, window capture uses PrintWindow(PW_RENDERFULLCONTENT) to grab
-    // the window's OWN content instead of gdigrab's on-screen pixels. The
+    // When true, window capture uses PrintWindow(PW_RENDERFULLCONTENT) as a
+    // compatibility path instead of standard Windows Graphics Capture. The
     // stream then keeps showing the window even when it is covered by other
     // windows, off the visible desktop, or running in the background — and it
     // keeps streaming the last good frame while the window is minimized,
@@ -387,6 +387,30 @@ private bool desktopDuplicationWorks()
     }
 }
 
+private bool windowsGraphicsCaptureWorks()
+{
+    version (Windows)
+    {
+        try
+        {
+            const result = execute([
+                "ffmpeg", "-hide_banner", "-h", "filter=gfxcapture"
+            ], null, Config.suppressConsole, 2 * 1024 * 1024);
+            return result.status == 0 &&
+                result.output.indexOf("Filter gfxcapture") >= 0 &&
+                result.output.indexOf("pre-existing HWND handle") >= 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
+}
+
 private void readDesktopDuplicationSize(out int width, out int height)
 {
     width = 0;
@@ -418,6 +442,7 @@ private void readDesktopDuplicationSize(out int width, out int height)
 CaptureSelection detectCaptureBackend(const EncoderSelection encoder)
 {
     CaptureSelection result;
+    result.windowsGraphicsCaptureSupported = windowsGraphicsCaptureWorks();
     if (!encoder.hardware) return result;
     if (desktopDuplicationWorks())
     {
@@ -469,15 +494,9 @@ unittest
     assert(bgraProbeHasVisiblePixels(visible[], 10, 10));
 }
 
-/// VLC presents video through a hardware/compositor surface that is absent from
-/// both PrintWindow and GetDC(hwnd)/gdigrab's HWND path. Capture the selected
-/// client rectangle from the composed desktop instead. This is deliberately a
-/// visible-only path: covering or minimizing VLC cannot produce its pixels.
-bool usesVlcVisibleScreenCapture(const BroadcastSettings settings)
+bool windowCaptureIsVlc(const BroadcastSettings settings)
 {
-    if (settings.windowCaptureHwnd.strip().length == 0 ||
-        settings.windowContentCapture || settings.gameCaptureMode)
-        return false;
+    if (settings.windowCaptureHwnd.strip().length == 0) return false;
     if (windowLabelIsProcess(settings.windowCaptureLabel, "vlc.exe"))
         return true;
     if (settings.windowCaptureLabel.strip().indexOf(" — ") > 0)
@@ -494,10 +513,8 @@ string videoPipelineLabel(const BroadcastSettings settings,
             "Game capture (D3D11 render hook) → CPU processing → encoder" :
             settings.windowContentCapture ?
             "Window content capture → CPU processing → encoder" :
-            usesVlcVisibleScreenCapture(settings) ?
-            (capture.backend == DesktopCaptureBackend.desktopDuplication ?
-                "Visible VLC region (D3D11 desktop pixels) → CPU processing → encoder" :
-                "Visible VLC region (GDI desktop pixels) → CPU processing → encoder") :
+            capture.windowsGraphicsCaptureSupported ?
+            "Windows Graphics Capture (GPU-composited window) → CPU processing → encoder" :
             "Window capture (GDI) → CPU processing → encoder";
     if (usesD3D11ZeroCopyVideo(settings, encoder, capture))
         return "D3D11 direct hardware frames → NVENC";
@@ -524,8 +541,8 @@ string captureSourceLabel(const BroadcastSettings settings,
             "Game capture: " ~ settings.windowCaptureLabel :
             settings.windowContentCapture ?
             "Window content: " ~ settings.windowCaptureLabel :
-            usesVlcVisibleScreenCapture(settings) ?
-            "Visible window pixels: " ~ settings.windowCaptureLabel :
+            capture.windowsGraphicsCaptureSupported ?
+            "Windows Graphics Capture: " ~ settings.windowCaptureLabel :
             "Window capture: " ~ settings.windowCaptureLabel;
     return "Window capture (" ~ window ~ ")";
 }
@@ -549,8 +566,19 @@ private bool validQuality(BroadcastQuality quality)
         quality == BroadcastQuality.fourK;
 }
 
+private string validateWindowCaptureCapability(const BroadcastSettings settings,
+    const CaptureSelection capture)
+{
+    if (!settings.gameCaptureMode && !settings.windowContentCapture &&
+        windowCaptureIsVlc(settings) &&
+        !capture.windowsGraphicsCaptureSupported)
+        return "This FFmpeg build lacks Windows Graphics Capture (gfxcapture), which VLC requires. Install the packaged Aurora Stream build instead of using an older FFmpeg from PATH.";
+    return "";
+}
+
 string validateBroadcastSettings(const BroadcastSettings settings,
-    const EncoderSelection encoder)
+    const EncoderSelection encoder, const CaptureSelection capture =
+        CaptureSelection.init)
 {
     version (Windows)
     {
@@ -573,14 +601,11 @@ string validateBroadcastSettings(const BroadcastSettings settings,
             return "The selected capture window is no longer open (it closed, or the saved selection is from an earlier Windows session). Reopen the window or switch the capture source back to the entire desktop.";
         if (!settings.gameCaptureMode && windowIsMinimized(settings.windowCaptureHwnd))
             return settings.windowContentCapture ?
-                "The selected capture window is minimized. Restore it once so Aurora Stream can capture its first frame — after that it keeps streaming the window even if you minimize it again." :
-                "The selected capture window is minimized. Restore it before starting the stream — a minimized window cannot be captured (FFmpeg would fail on its 0×0 client area).";
-        if (usesVlcVisibleScreenCapture(settings))
-        {
-            WindowScreenRect region;
-            if (!windowClientScreenRect(settings.windowCaptureHwnd, region))
-                return "Aurora Stream could not resolve VLC's visible client area. Restore VLC, keep it on a visible desktop, and select it again.";
-        }
+                "The selected capture window is minimized. Restore it once so Aurora Stream can capture its first frame; after that PrintWindow can keep streaming it." :
+                "The selected capture window is minimized. Restore it before starting the stream; Windows Graphics Capture does not receive composed frames while a window is minimized.";
+        const capabilityError = validateWindowCaptureCapability(settings,
+            capture);
+        if (capabilityError.length > 0) return capabilityError;
         if (settings.gameCaptureMode && size_t.sizeof != 8)
             return "D3D11 game capture requires a 64-bit Aurora Stream build.";
     }
@@ -792,14 +817,19 @@ private string[] captureArguments(const BroadcastSettings settings,
                 "-i", "pipe:0"
             ];
         }
-        else if (usesVlcVisibleScreenCapture(settings))
+        else if (capture.windowsGraphicsCaptureSupported)
         {
-            WindowScreenRect region;
-            if (!windowClientScreenRect(windowCapture, region))
-                throw new Exception(
-                    "Could not resolve VLC's visible client area for screen-pixel capture.");
-            appendVisibleScreenRegionArguments(arguments, settings.fps,
-                region, capture);
+            // Windows Graphics Capture is the standard composed-window path:
+            // it includes Direct3D video surfaces (VLC/games), remains correct
+            // when another window covers the target, and never exposes the
+            // surrounding desktop. Download to BGRA once for the common
+            // scale/pad/encode graph.
+            const source = format(
+                "gfxcapture=hwnd=%s:capture_cursor=0:capture_border=0:" ~
+                "display_border=0:max_framerate=%d:output_fmt=bgra," ~
+                "hwdownload,format=bgra",
+                windowCapture, settings.fps);
+            arguments ~= ["-f", "lavfi", "-i", source];
         }
         else
         {
@@ -866,37 +896,6 @@ private string[] captureArguments(const BroadcastSettings settings,
         audioInputs ~= PreparedAudioInput(nextInput++, AudioClock.generated);
     }
     return arguments;
-}
-
-/// Appends the fastest available visible-desktop crop for one window client
-/// rectangle. Desktop Duplication preserves VLC's composed D3D11 video surface;
-/// the GDI desktop crop is the compatibility fallback when ddagrab is absent.
-private void appendVisibleScreenRegionArguments(ref string[] arguments, int fps,
-    const WindowScreenRect region, const CaptureSelection capture)
-{
-    const fitsPrimaryOutput = capture.nativeWidth > 0 &&
-        capture.nativeHeight > 0 && region.x >= 0 && region.y >= 0 &&
-        region.x + region.width <= capture.nativeWidth &&
-        region.y + region.height <= capture.nativeHeight;
-    if (capture.backend == DesktopCaptureBackend.desktopDuplication &&
-        fitsPrimaryOutput)
-    {
-        const source = format(
-            "ddagrab=output_idx=0:framerate=%d:draw_mouse=0:dup_frames=1:" ~
-            "video_size=%dx%d:offset_x=%d:offset_y=%d,hwdownload,format=bgra",
-            fps, region.width, region.height, region.x, region.y);
-        arguments ~= ["-f", "lavfi", "-i", source];
-        return;
-    }
-
-    arguments ~= [
-        "-f", "gdigrab", "-framerate", format("%d", fps),
-        "-draw_mouse", "0",
-        "-offset_x", format("%d", region.x),
-        "-offset_y", format("%d", region.y),
-        "-video_size", format("%dx%d", region.width, region.height),
-        "-i", "desktop"
-    ];
 }
 
 private string normalizedAudioInputGraph(PreparedAudioInput input,
@@ -1362,8 +1361,9 @@ unittest
 
 unittest
 {
-    // Window capture must use gdigrab's window-handle form, must never take the
-    // D3D11 zero-copy path, and must surface the window in the pipeline label.
+    // Standard window capture uses Windows Graphics Capture so composed GPU
+    // surfaces remain present even when the target is covered. It must never
+    // take the desktop D3D11 zero-copy path.
     BroadcastSettings settings;
     settings.twitchEnabled = true;
     settings.twitchKey = "test-key";
@@ -1381,26 +1381,37 @@ unittest
     capture.backend = DesktopCaptureBackend.desktopDuplication;
     capture.nativeWidth = 1920;
     capture.nativeHeight = 1080;
+    capture.windowsGraphicsCaptureSupported = true;
 
     assert(!usesD3D11ZeroCopyVideo(settings, encoder, capture));
     assert(videoPipelineLabel(settings, encoder, capture) ==
-        "Window capture (GDI) → CPU processing → encoder");
+        "Windows Graphics Capture (GPU-composited window) → CPU processing → encoder");
     assert(captureSourceLabel(settings, capture) ==
-        "Window capture: notepad.exe — Notes");
+        "Windows Graphics Capture: notepad.exe — Notes");
 
     const arguments = broadcastArguments(settings, encoder, capture);
     bool foundWindowHwnd;
     bool foundGdigrab;
+    bool foundGraphicsCapture;
     bool foundDesktopDup;
     foreach (index, argument; arguments)
     {
-        if (argument == "hwnd=1841952") foundWindowHwnd = true;
+        if (argument.indexOf("hwnd=1841952") >= 0) foundWindowHwnd = true;
         if (argument == "gdigrab") foundGdigrab = true;
+        if (argument.indexOf("gfxcapture=") >= 0)
+            foundGraphicsCapture = true;
         if (argument.indexOf("ddagrab") >= 0) foundDesktopDup = true;
     }
     assert(foundWindowHwnd);
-    assert(foundGdigrab);
+    assert(foundGraphicsCapture);
+    assert(!foundGdigrab);
     assert(!foundDesktopDup);
+
+    // An older developer FFmpeg may still fall back to GDI for ordinary apps;
+    // release packaging requires gfxcapture and VLC is rejected without it.
+    capture.windowsGraphicsCaptureSupported = false;
+    const fallback = broadcastArguments(settings, encoder, capture);
+    assert(fallback.canFind("gdigrab"));
 }
 
 unittest
@@ -1456,46 +1467,42 @@ unittest
 
 unittest
 {
-    // VLC must never use the HWND GDI surface: that surface contains the window
-    // chrome but not the independently composed hardware video. A region on the
-    // primary output uses ddagrab; GDI desktop cropping remains the fallback.
+    // VLC must never use its GDI surface, PrintWindow, or the D3D11 game hook.
+    // The real application path is the compositor-owned HWND capture source.
     BroadcastSettings settings;
+    settings.twitchEnabled = true;
+    settings.twitchKey = "test-key";
+    settings.youtubeEnabled = false;
     settings.windowCaptureHwnd = "1841952";
     settings.windowCaptureLabel = "vlc.exe — Movie";
-    assert(usesVlcVisibleScreenCapture(settings));
-    settings.windowContentCapture = true;
-    assert(!usesVlcVisibleScreenCapture(settings));
-    settings.windowContentCapture = false;
-    settings.gameCaptureMode = true;
-    assert(!usesVlcVisibleScreenCapture(settings));
-
-    WindowScreenRect region;
-    region.x = 100;
-    region.y = 80;
-    region.width = 1280;
-    region.height = 720;
+    assert(windowCaptureIsVlc(settings));
 
     CaptureSelection capture;
-    capture.backend = DesktopCaptureBackend.desktopDuplication;
-    capture.nativeWidth = 1920;
-    capture.nativeHeight = 1080;
-    string[] ddaArguments;
-    appendVisibleScreenRegionArguments(ddaArguments, 60, region, capture);
-    assert(ddaArguments.length == 4);
-    assert(ddaArguments[0] == "-f" && ddaArguments[1] == "lavfi");
-    assert(ddaArguments[3].indexOf("ddagrab=output_idx=0") >= 0);
-    assert(ddaArguments[3].indexOf("video_size=1280x720") >= 0);
-    assert(ddaArguments[3].indexOf("offset_x=100:offset_y=80") >= 0);
-    assert(ddaArguments[3].indexOf("hwdownload,format=bgra") >= 0);
-
-    capture.backend = DesktopCaptureBackend.gdiWithoutCursor;
-    string[] gdiArguments;
-    appendVisibleScreenRegionArguments(gdiArguments, 60, region, capture);
-    assert(gdiArguments[$ - 1] == "desktop");
-    assert(gdiArguments.canFind("gdigrab"));
-    assert(gdiArguments.canFind("100"));
-    assert(gdiArguments.canFind("80"));
-    assert(gdiArguments.canFind("1280x720"));
+    capture.windowsGraphicsCaptureSupported = true;
+    EncoderSelection encoder;
+    encoder.ffmpegAvailable = true;
+    encoder.name = "libx264";
+    const arguments = broadcastArguments(settings, encoder, capture);
+    bool gfxcapture;
+    bool gdigrab;
+    bool rawvideo;
+    foreach (argument; arguments)
+    {
+        if (argument.indexOf("gfxcapture=hwnd=1841952") >= 0 &&
+            argument.indexOf("capture_cursor=0") >= 0 &&
+            argument.indexOf("display_border=0") >= 0 &&
+            argument.indexOf("hwdownload,format=bgra") >= 0)
+            gfxcapture = true;
+        if (argument == "gdigrab") gdigrab = true;
+        if (argument == "rawvideo") rawvideo = true;
+    }
+    assert(gfxcapture);
+    assert(!gdigrab);
+    assert(!rawvideo);
+    assert(validateWindowCaptureCapability(settings, capture).length == 0);
+    capture.windowsGraphicsCaptureSupported = false;
+    assert(validateWindowCaptureCapability(settings, capture).indexOf(
+        "lacks Windows Graphics Capture") >= 0);
 }
 
 unittest
@@ -1675,7 +1682,7 @@ final class BroadcastWorker
     bool start(const BroadcastSettings settings, const EncoderSelection encoder,
         const CaptureSelection capture, out string error)
     {
-        error = validateBroadcastSettings(settings, encoder);
+        error = validateBroadcastSettings(settings, encoder, capture);
         if (error.length > 0)
         {
             activityError("Stream start rejected: " ~ error);
@@ -2129,11 +2136,10 @@ final class BroadcastWorker
                 }
             }
 
-            // Window capture: the moment the captured window is minimized or
-            // closed, gdigrab cannot produce fresh frames (its client area
-            // becomes 0×0) while all encoder/timestamps keep advancing, so the
-            // stream would sit on a frozen last frame indefinitely without any
-            // other watchdog firing. Stop immediately with a clear message.
+            // Standard Windows Graphics Capture and the GDI compatibility path
+            // both stop producing fresh composed frames after the selected
+            // window is minimized. Encoder timestamps may keep advancing on a
+            // frozen last frame, so stop immediately with a clear message.
             //
             // Content capture is different: the pump keeps sending the last
             // good frame while the window is minimized (a minimized window has
@@ -2160,7 +2166,7 @@ final class BroadcastWorker
                 else if (!holdsLastFrame &&
                     windowIsMinimized(windowCaptureHwnd))
                 {
-                    failureReason = "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again (a minimized window cannot be captured).";
+                    failureReason = "The captured window was minimized, so the stream stopped instead of freezing on its last frame. Restore the window and start streaming again; Windows Graphics Capture does not receive composed frames while a window is minimized.";
                     videoCaptureTermination = true;
                     _videoCaptureFailed = true;
                     _videoCaptureFailureReason = failureReason;
