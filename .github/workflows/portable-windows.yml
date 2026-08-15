@@ -100,8 +100,9 @@ jobs:
         shell: pwsh
         run: |
           $v = (Get-Content VERSION.txt | Select-Object -First 1).Trim()
+          $streamVersion = (Get-Content aurora-stream/VERSION.txt | Select-Object -First 1).Trim()
           Copy-Item aurora-cut.exe "aurora-cut-v$v.exe" -Force
-          Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$v.exe" -Force
+          Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$streamVersion.exe" -Force
           Copy-Item aurora-image-viewer/aurora-image-viewer.exe "aurora-image-viewer-v$v.exe" -Force
           Copy-Item aurora-opencode/aurora-opencode.exe "aurora-opencode-v$v.exe" -Force
           Copy-Item aurora-opencode-pro/aurora-opencode-pro.exe "aurora-opencode-pro-v$v.exe" -Force
