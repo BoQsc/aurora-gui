@@ -86,6 +86,22 @@
   `1e0576eafc95fa0dc0371df9cdc72fe96a9944380187fb2c6f761672b89981e3`).
   Its `0.66.2` single EXE passed synthetic audio transport and bundled VLC
   preview with 2.063 mean RGB error, foreground unchanged, and no activation.
+- Release tag workflows also passed: portable/publish run `31871848599` and
+  clean minimal-FFmpeg run `31871848613`. The public release is
+  `v0.66.2`; asset `aurora-stream-v0.66.2.exe` is 30,425,004 bytes with
+  SHA-256 `d573bda61176166a1cd448aba805d3c6b3f8d64027bb16929e75c0dac4d5f152`.
+  A stale repository-wide version initially gave this already-correct 0.66.2
+  binary a 0.66.1 filename. The correctly named, digest-identical asset was
+  uploaded and verified before the misleading entry was removed; the workflow
+  now reads `aurora-stream/VERSION.txt`, and follow-up main run `31871987081`
+  passed.
+- The binary was downloaded again through its final public URL. It reported
+  `Aurora Stream 0.66.2`, passed the static-CRT check, synthetic RTP transport,
+  real endpoint JSON, and byte-identical bundled FFmpeg extraction. Its live
+  VLC comparison measured 2.386 mean RGB error while foreground ownership stayed
+  unchanged and Aurora was never activated. A separate public-binary minimized
+  test passed the explicit blank/timeout contract under the same foreground
+  invariants. Authenticated YouTube streaming remains the user's manual gate.
 - The production pacing diagnostic passed three complete repetitions, each with
   three 15-second phases. Every phase encoded 900 H.264 frames at 1920x1080 and
   60/1, with zero duplicated/dropped progress frames, no timestamp interval above

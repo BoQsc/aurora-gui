@@ -55,9 +55,16 @@
       portable run `31871356484` passed. Their downloaded artifacts repeated
       the real WGC, exact 300-frame production encode, single-exe VLC preview,
       and synthetic transport checks without foreground activation.
-- [ ] Tag/publish 0.66.2, retest the published asset, then let the user perform
-      the first authenticated YouTube test. No autonomous task has stream
-      credentials.
+- [x] Tagged and published v0.66.2. Tag portable run `31871848599`, tag
+      minimal-FFmpeg run `31871848613`, and the corrected asset-label workflow
+      run `31871987081` passed. The final public `aurora-stream-v0.66.2.exe`
+      (SHA-256
+      `d573bda61176166a1cd448aba805d3c6b3f8d64027bb16929e75c0dac4d5f152`)
+      repeated version, static-CRT, bundled extraction, synthetic transport,
+      endpoint JSON, normal VLC preview, and minimized VLC tests without
+      foreground activation.
+- [ ] User performs the first authenticated YouTube test. No autonomous task
+      has stream credentials.
 
 ## 2026-08-14 — Aurora Stream VLC still black/white in 0.66.0
 
