@@ -77,31 +77,30 @@ echo "Cross C++ compiler: $cross_cxx"
 # Ubuntu 24.04 currently ships MinGW-w64 11 headers. They predate the WinRT
 # interop declarations required by FFmpeg's gfxcapture filter, so configure
 # silently disables that filter even when it is explicitly requested. Overlay
-# only the four missing WinRT headers from a pinned newer SDK while retaining
-# the distribution compiler's matching CRT and pthread headers/libraries.
+# the pinned repository's Windows SDK `include/` directory, but never its
+# separate `crt/` directory. This keeps the WinRT/D3D declarations internally
+# consistent while retaining the compiler's matching CRT and pthread headers.
 echo "::group::mingw-w64 headers"
-mingw_headers_full="$deps/mingw-w64-full/include"
-mingw_headers="$deps/wgc-headers/include"
-if [ ! -f "$mingw_headers_full/windows.graphics.capture.interop.h" ]; then
-  fetch "$src/mingw-w64" https://github.com/mingw-w64/mingw-w64.git "$mingw_headers_tag"
-  ( cd "$src/mingw-w64/mingw-w64-headers"
-    ./configure --host="$cross" --prefix="$deps/mingw-w64-full"
-    make -j"$jobs"
-    make install )
-fi
+fetch "$src/mingw-w64" https://github.com/mingw-w64/mingw-w64.git "$mingw_headers_tag"
+mingw_sdk_headers="$src/mingw-w64/mingw-w64-headers/include"
+mingw_headers="$deps/mingw-sdk/include"
 mkdir -p "$mingw_headers"
+cp -r "$mingw_sdk_headers/." "$mingw_headers/"
 for required_header in \
   dispatcherqueue.h \
   windows.graphics.capture.h \
   windows.graphics.capture.interop.h \
   windows.graphics.directx.direct3d11.h; do
-  if [ ! -f "$mingw_headers_full/$required_header" ]; then
-    echo "::error::MinGW-w64 $mingw_headers_tag did not install $required_header"
+  if [ ! -f "$mingw_headers/$required_header" ]; then
+    echo "::error::MinGW-w64 $mingw_headers_tag did not provide $required_header"
     exit 1
   fi
-  cp "$mingw_headers_full/$required_header" "$mingw_headers/$required_header"
 done
-echo "Using selective MinGW-w64 $mingw_headers_tag WGC header overlay: $mingw_headers"
+if [ -f "$mingw_headers/time.h" ] || [ -f "$mingw_headers/stdlib.h" ]; then
+  echo "::error::The MinGW SDK overlay unexpectedly contains CRT headers"
+  exit 1
+fi
+echo "Using MinGW-w64 $mingw_headers_tag SDK-only overlay: $mingw_headers"
 echo "::endgroup::"
 
 # ---- zlib (png/webp decode) -------------------------------------------------
@@ -275,7 +274,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
     fi
     if ! grep -q '^CONFIG_GFXCAPTURE_FILTER=yes$' ffbuild/config.mak; then
       echo "::error::FFmpeg configure omitted gfxcapture; verify the WinRT/MinGW header overlay"
-      grep -n -E 'gfxcapture|IGraphicsCapture|Windows.Graphics.Capture' ffbuild/config.log | tail -80 || true
+      grep -n -A16 -B6 -E 'gfxcapture|IGraphicsCapture|Windows.Graphics.Capture' ffbuild/config.log | tail -180 || true
       exit 1
     fi
     make -j"$jobs"
