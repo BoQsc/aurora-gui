@@ -247,6 +247,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload,ddagrab,gfxcapture \
       --extra-cflags="-I$mingw_headers -I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
+      --extra-cxxflags="-I$mingw_headers -I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
       --extra-libs="-lstdc++ -lws2_32 -lpthread"; then
       echo "=== ffmpeg configure failed; ffbuild/config.log tail ==="
