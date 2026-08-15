@@ -1,5 +1,60 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-15 — Aurora Stream VLC/window capture v0.66.1 rejection and replacement
+
+- [x] Marked v0.66.1 window capture failed after the release screenshot showed
+      the same black/white VLC GDI surface.
+- [x] Proved the current game hook is not a VLC fallback: it connects/injects
+      into VLC 3.0.20 but receives zero Present frames from the top-level and
+      Direct3D child HWNDs.
+- [x] Replaced standard window capture with Windows Graphics Capture through the
+      selected HWND (`gfxcapture`); disabled cursor, yellow border, and capture
+      border; retained the existing 60 FPS scale/pad/timestamp normalization.
+- [x] Replaced the live canvas HWND-GDI path with persistent compositor preview.
+      VLC disables PrintWindow and Game capture, and the UI persists the corrected
+      modes. A minimized target clears the canvas, reports/logs a bounded timeout,
+      and no longer deadlocks application shutdown.
+- [x] Added a background-only integration check that launches Aurora without
+      activation, uses isolated portable settings, captures Aurora itself through
+      WGC, and optionally compares its canvas against a direct static VLC frame.
+      Repeated comparison MAE: 1.916-2.136 RGB levels. A stricter rerun sampled
+      the foreground owner throughout and proved Aurora was never activated.
+- [x] Made the GUI integration launch itself non-activating at the native Aurora
+      window layer. The final test kept foreground ownership unchanged while
+      validating a complete 1600x975 Aurora canvas; packaged-app tests can also
+      remove external FFmpeg from the app's PATH so embedded-tool extraction is
+      exercised rather than masked.
+- [x] Tested the exact POSIX-thread Actions FFmpeg artifact on real Windows:
+      colored HWND probe passed, VLC delivered 60/60 compositor frames, and a
+      five-second H.264/AAC recording contained exactly 300 video frames at
+      60/1 with both streams exactly 5.000 seconds. The decoded frame was 86.4%
+      non-black with full RGB extrema.
+- [x] Hardened single-exe extraction: FFmpeg/FFprobe use a content-addressed,
+      byte-verified cache, so a stale same-size binary cannot be mistaken for
+      the new bundled payload and locked old tools do not block an upgrade.
+- [x] Three complete local production A/V repetitions passed. Every 15-second
+      phase produced 900/900 1080p60 frames, zero progress drops/duplicates and
+      queue warnings, and 705 contiguous AAC packets. The real WASAPI phases
+      captured 1,542-1,604 packets with no transport failures or discontinuities.
+- [x] D3D11 hook regressions passed independently for BGRA8, RGBA8, and RGB10A2;
+      tests stayed minimized/background-only.
+- [x] Minimal pinned-FFmpeg CI run `31870550684` exposed `gfxcapture` and its
+      HWND/border options and uploaded artifact `9243361794` (ZIP SHA-256
+      `95344aa73403d09608221a030efec7452e88b47c9427b6fb902184dbc341feb6`).
+      Its exact executables passed the real local WGC/VLC and 300-frame A/V
+      recording checks.
+- [x] Portable Windows CI run `31870945690` embedded that FFmpeg payload,
+      rebuilt the D-only hook, passed PE/static-runtime checks, and produced
+      artifact `9243407740` (ZIP SHA-256
+      `af5d29f252f9e38c3ea9b5e3c9cadb4d11bbfc62a821ad3913e7805f85732c29`).
+      The downloaded single EXE passed bundled extraction, VLC preview,
+      minimized-window, synthetic audio transport, and endpoint diagnostics.
+- [x] Bumped Aurora Stream to 0.66.2 only after the local and feature-branch
+      portable gates passed.
+- [ ] Merge/tag/publish 0.66.2 only after the final main-branch workflows pass,
+      then let the user perform the first authenticated YouTube test. No
+      autonomous task has stream credentials.
+
 ## 2026-08-14 — Aurora Stream VLC still black/white in 0.66.0
 
 - [x] User screenshot confirmed the VLC safeguard was incomplete: PrintWindow

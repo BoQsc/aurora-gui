@@ -1,6 +1,105 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Stream: real composed-window capture replacement (2026-08-15)
+
+- **v0.66.1 is rejected for VLC/window capture.** The user's release screenshot
+  still showed VLC's malformed Qt/GDI paint surface (black video plus a white
+  unpainted region). The previous visible-desktop crop was not a dependable
+  per-window capture implementation and must not be treated as a passed release.
+- Root cause in the live canvas: selecting Game capture did not create a
+  `GameCaptureSession`; preview still called `GetDC(hwnd)`. The current D3D11
+  hook also connects to VLC 3.0.20 but receives no Present frames from any of
+  its top-level/Direct3D child HWNDs. VLC can therefore use neither PrintWindow,
+  HWND GDI, nor Aurora's game hook.
+- Standard window capture now uses FFmpeg's `gfxcapture` source with the selected
+  HWND, cursor/border disabled, and an explicit D3D11-to-BGRA download. This is
+  Windows Graphics Capture, so VLC's Direct3D video plane, menu, progress bar,
+  and controls arrive as one compositor-owned frame even while the target is
+  covered. VLC selection forcibly disables PrintWindow and Game capture.
+- The live canvas uses the same HWND source in a persistent low-resolution
+  preview process. A 2.5-second pipe timeout prevents shutdown deadlocks when a
+  target is minimized; a failed source clears the canvas instead of retaining a
+  stale desktop/window frame, logs the reason, and keeps the failure visible in
+  the status panel.
+- Exact background-only VLC proof: direct compositor capture returned 60/60
+  complete 1920x876 frames. The isolated Aurora UI test then selected a separate
+  non-activating VLC process and deliberately loaded `gameCaptureMode=true`.
+  Aurora persisted both incompatible modes as false, kept the same HWND, and
+  displayed the complete SMPTE/VLC frame. Repeated simultaneous direct-frame
+  comparisons differed by only 1.916-2.136 mean RGB levels (0-255). A stricter
+  rerun sampled the OS foreground owner throughout and proved Aurora was never
+  activated. A separate minimized-VLC run showed a blank canvas plus the explicit
+  timeout instead of stale pixels and shut down cleanly.
+- The final POSIX-thread FFmpeg artifact from Actions run `31870550684`
+  (artifact `9243361794`, ZIP SHA-256
+  `95344aa73403d09608221a030efec7452e88b47c9427b6fb902184dbc341feb6`)
+  passed the real local Windows HWND probe: 780x401 with 104,260 red, green,
+  and blue pixels each, foreground unchanged. It also captured the separate
+  VLC test window at 60/60 frames and encoded a five-second MP4 containing
+  exactly 300 H.264 frames at 60/1 plus 48 kHz stereo AAC; both streams and the
+  container reported exactly 5.000 seconds. The decoded recording frame was
+  86.4% non-black and covered the full 0-255 range on all RGB channels. The
+  final 300-frame run used Aurora's exact `hwdownload,format=bgra`, FPS,
+  timestamp, scale, pad, and YUV420 conversion graph rather than a simplified
+  raw-source test.
+- The final isolated Aurora/VLC comparisons using that artifact measured
+  2.076-2.170 mean RGB error. Aurora remained at the bottom of the Z order and
+  never owned the foreground window. The user's existing VLC was left minimized
+  and untouched; its isolated run showed the explicit timeout/blank canvas,
+  never malformed or stale window pixels.
+- GitHub's hosted Windows VM cannot create FFmpeg's required hardware D3D11
+  video device. The runtime gate now distinguishes that host prerequisite from
+  a broken artifact: it may explicitly report `skipped` only when an independent
+  D3D11 hardware probe fails and FFmpeg reports device creation failure. On a
+  machine with D3D11, any capture/thread/pixel failure remains fatal. The local
+  hardware-backed run is therefore still required and passed.
+- Single-exe extraction no longer trusts file size as cache identity. Embedded
+  FFmpeg/FFprobe now extract into a content-addressed directory and every cached
+  file is byte-verified before use, matching the already content-addressed game
+  hook. A same-size older executable therefore cannot mask a new release build;
+  extraction/verification failure leaves bundled FFmpeg disabled instead of
+  silently adding a bad cache directory to PATH.
+- Feature-branch portable Actions run `31870945690` passed the complete DMD,
+  D-only hook, GUI-subsystem, static-runtime, WGC runtime-gate, and single-exe
+  build workflow. Artifact `9243407740` was downloaded with its exact GitHub
+  ZIP SHA-256
+  `af5d29f252f9e38c3ea9b5e3c9cadb4d11bbfc62a821ad3913e7805f85732c29`.
+  Its packaged `aurora-stream.exe` passed version output, synthetic RTP audio
+  transport, real audio-endpoint JSON, and the isolated VLC UI test while no
+  external FFmpeg was present in the app PATH. The previously absent
+  content-addressed cache was created, and both extracted tools were byte-for-byte
+  identical to the validated minimal-FFmpeg artifact (`ffmpeg.exe` SHA-256
+  `bf856221eae66d8abb106dcfb64e07c406e0154ecd69cfc9f1f282984f88f15c`,
+  `ffprobe.exe` SHA-256
+  `a6f15432ea983d680566754b879d3d71478ba9cdb3776dd0f8c0458ea332db6e`).
+  The packaged preview measured 2.121 mean RGB error with foreground ownership
+  unchanged; its separate minimized-window test also passed the blank/timeout
+  contract without activation.
+- The production pacing diagnostic passed three complete repetitions, each with
+  three 15-second phases. Every phase encoded 900 H.264 frames at 1920x1080 and
+  60/1, with zero duplicated/dropped progress frames, no timestamp interval above
+  17 ms, no queue warnings, and 705 contiguous AAC packets covering 15.039
+  seconds. The real WASAPI phases captured 1,542-1,604 packets and
+  740,160-769,920 frames, with zero discontinuities, overflows, stale frames,
+  pacing skips, or send failures. The final repetition inserted one 10 ms silent
+  startup block before real endpoint samples arrived; the earlier valid run
+  inserted none.
+- D-only game capture remains separate and passed the minimized background
+  BGRA8, RGBA8, and RGB10A2 hook/session matrix after the window-capture change.
+  The harness still performs two unload/reinject rounds plus the production
+  `GameCaptureSession`; all accepted frames were non-black, changing, and
+  color-correct with zero sequence gaps.
+- The packaged FFmpeg is pinned to commit
+  `c48230eb86ff02246f6a14fa1475a0d9398363b4`, the verified revision containing
+  the HWND `gfxcapture` source. The feature-branch portable payload gate passed;
+  the versioned main/tag workflows and published-asset retest remain mandatory
+  release gates. No authenticated YouTube stream or foreground/fullscreen test
+  has been run.
+
 ## Aurora Stream: VLC composed-window correction (2026-08-14)
+
+> Historical failed approach: this section records the visible-desktop crop
+> shipped in v0.66.1. The 2026-08-15 release screenshot invalidated it.
 
 - User's 0.66.0 screenshot proved that the supposed VLC "screen" fallback still
   used the HWND GDI surface: VLC chrome painted, the Direct3D video stayed black,
@@ -1190,7 +1289,9 @@ How to build (CI only):
 
 How to reproduce locally (Linux or WSL with mingw-w64 + nasm + meson/ninja +
 cmake): `scripts/build-minimal-ffmpeg-win64.sh` — set `WINE=wine` to also run
-the smoke test. FFMPEG_TAG env overrides the release (default n8.1).
+the smoke test. `FFMPEG_TAG` overrides the pinned revision; the current default
+is `c48230eb86ff02246f6a14fa1475a0d9398363b4`, verified for the Windows
+Graphics Capture HWND source.
 
 The build enables ONLY what the two apps use (audited call-site by call-site;
 all names cross-checked against ffmpeg's `-encoders/-decoders/-filters/
@@ -1200,7 +1301,8 @@ all names cross-checked against ffmpeg's `-encoders/-decoders/-filters/
   libmp3lame+ppm+rawvideo+pcm_s16le encoders, ~35 decoders incl. images +
   wrapped_avframe/rawvideo (lavfi + raw pipe), the compositor filter graph,
   d3d11va/dxva2 decode hwaccels, file/pipe protocols.
-- aurora-stream surface: ddagrab/gdigrab/dshow + lavfi input devices,
+- aurora-stream surface: gfxcapture/ddagrab filters plus gdigrab/dshow/lavfi
+  input devices,
   rawvideo + sdp demuxers (rawvideo pipe:0 canvas, sdp+udp/rtp audio),
   flv + fifo muxers, udp/rtp/rtmp/rtmps protocols (schannel TLS for rtmps),
   settb/asetpts/hwdownload filters, h264_nvenc/libx264/aac encoders.
@@ -1212,7 +1314,8 @@ CI verification:
 - smoke test under wine: the verify-export.sh lavfi commands (color+sine ->
   libx264+aac base-av.mp4, overlay.mp4, libmp3lame extra.mp3) + ffprobe.
 - inventory step prints -version/-encoders/-decoders/-filters/-protocols/
-  -devices so the run shows ddagrab/dshow/gdigrab/udp/rtmp/rtmps are present.
+  -devices and asserts the `gfxcapture` HWND/border options plus
+  ddagrab/dshow/gdigrab/udp/rtmp/rtmps.
 - configure failures dump ffbuild/config.log.
 
 How to verify on the real machine (definitive — wine has no GPU/capture):

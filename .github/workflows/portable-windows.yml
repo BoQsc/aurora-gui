@@ -4,7 +4,7 @@ run-name: Build & publish portable executables (${{ github.ref_name }})
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/fix-vlc-window-capture]
+    branches: [main]
     tags: ['v*']
     paths:
       - .github/workflows/portable-windows.yml
