@@ -26,6 +26,7 @@
 set -euo pipefail
 
 ffmpeg_tag="${FFMPEG_TAG:-c48230eb86ff02246f6a14fa1475a0d9398363b4}"
+mingw_headers_tag="${MINGW_HEADERS_TAG:-v14.0.0}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$root/build/ffmpeg-minimal"
 deps="$work/builddeps"
@@ -57,6 +58,34 @@ fetch() { # fetch <dir> <url> [<rev>]
 
 # ---- cross tools -------------------------------------------------------------
 cross=x86_64-w64-mingw32
+
+# ---- current Windows SDK-compatible MinGW headers ---------------------------
+# Ubuntu 24.04 currently ships MinGW-w64 11 headers. They predate the WinRT
+# interop declarations required by FFmpeg's gfxcapture filter, so configure
+# silently disables that filter even when it is explicitly requested. Overlay
+# a pinned, newer header set while retaining the distribution's compiler,
+# libraries, and CRT.
+echo "::group::mingw-w64 headers"
+mingw_headers="$deps/mingw-w64/include"
+if [ ! -f "$mingw_headers/windows.graphics.capture.interop.h" ]; then
+  fetch "$src/mingw-w64" https://github.com/mingw-w64/mingw-w64.git "$mingw_headers_tag"
+  ( cd "$src/mingw-w64/mingw-w64-headers"
+    ./configure --host="$cross" --prefix="$deps/mingw-w64"
+    make -j"$jobs"
+    make install )
+fi
+for required_header in \
+  dispatcherqueue.h \
+  windows.graphics.capture.h \
+  windows.graphics.capture.interop.h \
+  windows.graphics.directx.direct3d11.h; do
+  if [ ! -f "$mingw_headers/$required_header" ]; then
+    echo "::error::MinGW-w64 $mingw_headers_tag did not install $required_header"
+    exit 1
+  fi
+done
+echo "Using MinGW-w64 $mingw_headers_tag header overlay: $mingw_headers"
+echo "::endgroup::"
 
 # ---- zlib (png/webp decode) -------------------------------------------------
 echo "::group::zlib"
@@ -217,11 +246,16 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-filter=fps,trim,reverse,setsar,geq,drawbox,rotate,colorchannelmixer \
       --enable-filter=fade,gblur,split,aresample,aformat,volume,afade,adelay \
       --enable-filter=amix,atrim,alimiter,atempo,areverse,showwavespic,settb,asetpts,hwdownload,ddagrab,gfxcapture \
-      --extra-cflags="-I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
+      --extra-cflags="-I$mingw_headers -I$deps/zlib/include -I$deps/x264/include -I$deps/lame/include -I$deps/dav1d/include -I$deps/nv/include -I$deps/amf/include -I$deps/libvpl/include" \
       --extra-ldflags="-L$deps/zlib/lib -L$deps/x264/lib -L$deps/lame/lib -L$deps/dav1d/lib -L$deps/libvpl/lib -static" \
       --extra-libs="-lstdc++ -lws2_32 -lpthread"; then
       echo "=== ffmpeg configure failed; ffbuild/config.log tail ==="
       tail -120 ffbuild/config.log 2>/dev/null || true
+      exit 1
+    fi
+    if ! grep -q '^CONFIG_GFXCAPTURE_FILTER=yes$' ffbuild/config.mak; then
+      echo "::error::FFmpeg configure omitted gfxcapture; verify the WinRT/MinGW header overlay"
+      grep -n -E 'gfxcapture|IGraphicsCapture|Windows.Graphics.Capture' ffbuild/config.log | tail -80 || true
       exit 1
     fi
     make -j"$jobs"

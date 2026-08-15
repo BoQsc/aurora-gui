@@ -88,6 +88,12 @@ def wait_for_window(pid: int, timeout: float = 30.0) -> dict[str, object]:
     raise RuntimeError(f"Aurora process {pid} did not create a visible window")
 
 
+def window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
 def capture_window(ffmpeg: Path, hwnd: int, output: Path, env: dict[str, str]) -> None:
     source = (
         f"gfxcapture=hwnd={hwnd}:capture_cursor=0:capture_border=0:"
@@ -218,10 +224,24 @@ def main() -> int:
     )
 
     app_window: dict[str, object] | None = None
+    foreground_samples: list[dict[str, int]] = []
     try:
         app_window = wait_for_window(process.pid)
         hwnd = int(app_window["hwnd"])
         user32 = ctypes.windll.user32
+
+        def sample_foreground() -> None:
+            foreground = int(user32.GetForegroundWindow())
+            owner_pid = window_pid(foreground)
+            sample = {"hwnd": foreground, "pid": owner_pid}
+            if not foreground_samples or foreground_samples[-1] != sample:
+                foreground_samples.append(sample)
+            if owner_pid == process.pid:
+                raise RuntimeError(
+                    "Background preview check activated the Aurora test window"
+                )
+
+        sample_foreground()
         user32.ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE)
         user32.SetWindowPos(
             hwnd,
@@ -232,7 +252,10 @@ def main() -> int:
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         )
-        time.sleep(args.settle_seconds)
+        settle_deadline = time.monotonic() + args.settle_seconds
+        while time.monotonic() < settle_deadline:
+            time.sleep(min(0.25, settle_deadline - time.monotonic()))
+            sample_foreground()
 
         saved = json.loads(settings_path.read_text(encoding="utf-8-sig"))
         if saved.get("gameCaptureMode") is not False:
@@ -307,6 +330,7 @@ def main() -> int:
             check=True,
         )
         metadata = json.loads(probe.stdout)["streams"][0]
+        sample_foreground()
         foreground_after = int(user32.GetForegroundWindow())
         print(
             json.dumps(
@@ -323,6 +347,8 @@ def main() -> int:
                     "foreground_before": foreground_before,
                     "foreground_after": foreground_after,
                     "foreground_unchanged": foreground_before == foreground_after,
+                    "foreground_samples": foreground_samples,
+                    "aurora_activated": False,
                 },
                 ensure_ascii=False,
                 indent=2,
