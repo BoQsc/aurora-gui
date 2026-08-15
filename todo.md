@@ -51,9 +51,13 @@
       minimized-window, synthetic audio transport, and endpoint diagnostics.
 - [x] Bumped Aurora Stream to 0.66.2 only after the local and feature-branch
       portable gates passed.
-- [ ] Merge/tag/publish 0.66.2 only after the final main-branch workflows pass,
-      then let the user perform the first authenticated YouTube test. No
-      autonomous task has stream credentials.
+- [x] Fast-forwarded `main`; final main minimal-FFmpeg run `31871356491` and
+      portable run `31871356484` passed. Their downloaded artifacts repeated
+      the real WGC, exact 300-frame production encode, single-exe VLC preview,
+      and synthetic transport checks without foreground activation.
+- [ ] Tag/publish 0.66.2, retest the published asset, then let the user perform
+      the first authenticated YouTube test. No autonomous task has stream
+      credentials.
 
 ## 2026-08-14 — Aurora Stream VLC still black/white in 0.66.0
 

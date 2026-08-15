@@ -75,6 +75,17 @@
   The packaged preview measured 2.121 mean RGB error with foreground ownership
   unchanged; its separate minimized-window test also passed the blank/timeout
   contract without activation.
+- The final main-branch gates passed before tagging. Minimal-FFmpeg run
+  `31871356491` produced artifact `9243597409` (ZIP SHA-256
+  `56ca305a168977504019ead5898b2c79b6a403f1df7225c2def43b3e8e1ef21b`).
+  Its freshly rebuilt binaries passed the real 780x401 D3D11/WGC color probe,
+  then captured VLC through Aurora's exact production graph into 300/300 H.264
+  frames at 60/1 plus 48 kHz stereo AAC, with both streams and the container at
+  exactly 5.000 seconds. Main portable run `31871356484` produced artifact
+  `9243518191` (ZIP SHA-256
+  `1e0576eafc95fa0dc0371df9cdc72fe96a9944380187fb2c6f761672b89981e3`).
+  Its `0.66.2` single EXE passed synthetic audio transport and bundled VLC
+  preview with 2.063 mean RGB error, foreground unchanged, and no activation.
 - The production pacing diagnostic passed three complete repetitions, each with
   three 15-second phases. Every phase encoded 900 H.264 frames at 1920x1080 and
   60/1, with zero duplicated/dropped progress frames, no timestamp interval above
