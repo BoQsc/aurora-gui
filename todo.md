@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-15 — Distorted single frame while resizing (user report)
+
+- [x] Diagnosed: NOT a regression from the titlebar/snap work — that commit
+      never touches the resize path. The distortion is the pre-existing
+      software live-resize proxy (`presentScaledResizeFrame` →
+      `StretchDIBits`), used whenever `liveResizeScalingSupported()` is false
+      (Software renderer, or Vulkan without swapchain present-scaling). The
+      proxy presented ONE frozen pre-resize snapshot stretched with
+      nearest-neighbor for the whole drag. User runs aurora-stream via
+      `aurora-stream\RUN-WINDOWS.bat` (`RendererPreference.automatic`).
+- [x] Improved the fallback: `StretchDIBits` now uses `HALFTONE` (interpolated)
+      with a `SetBrushOrgEx` reset; `onNativeTick`/`scheduleLiveResizeExactFrame`
+      no longer gate exact frames on `liveResizeScalingSupported()`, so the
+      window re-renders real content during resize at the same bounded 1/60 s
+      cadence and re-arms the proxy snapshot from each exact frame. Vulkan with
+      WSI scaling is untouched.
+- [x] Verified: titlebar smoke test + widget module unittests (17) pass; vendor
+      `dub test` = 32 modules pass; aurora-stream application + notitlebar,
+      aurora-cut, and the vendor titlebar demo all link. Manifest regenerated.
+- [ ] Manual: drag a border of aurora-stream and confirm content tracks the
+      size smoothly instead of one frozen blocky stretch. `AURORA_RESIZE_PROFILE=1`
+      prints scene/render times in the window title for tuning.
+
 ## 2026-08-15 — TitleBar drag-to-snap (new standard Notepad foundation)
 
 - [x] Built aero-style drag snapping into `aurora.widgets.titlebar.TitleBar` as

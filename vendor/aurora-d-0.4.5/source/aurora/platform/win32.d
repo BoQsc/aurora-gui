@@ -129,6 +129,7 @@ else version (Windows)
     private enum uint defaultDpi = 96;
     private enum int processPerMonitorDpiAware = 2;
     private enum int auroraColorOnColor = 3;
+    private enum int auroraHalftone = 4;
     private enum DWORD auroraSrcCopy = 0x00CC0020;
 
     private alias SetProcessDpiAwarenessContextFn =
@@ -1224,7 +1225,10 @@ else version (Windows)
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = BI_RGB;
 
-            SetStretchBltMode(dc, auroraColorOnColor);
+            SetStretchBltMode(dc, auroraHalftone);
+            // HALFTONE stretch mode uses the brush origin for alignment; reset
+            // it so the interpolated live-resize frame has no shearing artifacts.
+            SetBrushOrgEx(dc, 0, 0, null);
             const result = StretchDIBits(
                 dc,
                 0,

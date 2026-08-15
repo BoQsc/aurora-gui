@@ -156,6 +156,25 @@ window on click-focus.
   widget module unittest covers the pure target/bounds mapping including
   corners and non-zero work-area origins.
 
+## Aurora live-resize proxy improvements (distorted frame while resizing)
+
+The stretched/distorted frame shown while dragging a border on the Software (or
+Vulkan-without-present-scaling) renderer path was pre-existing: the live-resize
+proxy presented one frozen snapshot stretched with `StretchDIBits` (nearest-
+neighbor) for the whole drag. Two improvements to that fallback:
+
+- `aurora.platform.win32` `presentScaledResizeFrame` now uses `HALFTONE` stretch
+  mode with a `SetBrushOrgEx` origin reset, so the stretched preview is
+  interpolated rather than blocky.
+- `aurora.window` schedules exact frames during resize on the non-scaling path
+  too: `onNativeTick` / `scheduleLiveResizeExactFrame` no longer gate on
+  `liveResizeScalingSupported()`, keeping the same 1/60 s cadence; after each
+  exact frame the proxy snapshot is re-armed from that frame so proxy frames
+  show current content instead of the pre-resize frame.
+
+The Vulkan path with native WSI surface scaling is unchanged (the driver
+stretches the last image itself and no proxy frame is presented).
+
 ## Aurora Cut 0.13.3 title-layer opacity
 
 - Title opacity is now represented explicitly as final layer opacity.

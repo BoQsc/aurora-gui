@@ -1652,6 +1652,33 @@ release), then drag the titlebar down a little and release quickly — the windo
 must stay restored (no snap-back). Drag down and out to a side edge — it must
 snap to the half-screen target.
 
+### Distorted frame while resizing (2026-08-15, user report)
+
+NOT a regression from the titlebar/snap work — the resize code is untouched by
+that commit. The distorted/stretched frame is the **software live-resize proxy**:
+during a native resize, `window.presentNativeResizeProxyFrame` →
+`win32.presentScaledResizeFrame` → `StretchDIBits` stretches a cached snapshot
+of the last frame to the current window size. It only runs when
+`liveResizeScalingSupported()` is false, i.e. the Software renderer or a Vulkan
+renderer without swapchain present-scaling (`RendererPreference.automatic`
+falls back from Vulkan to Software on failure). On the Vulkan-with-scaling path
+WSI stretches the last image itself and no proxy frame ever shows.
+
+Improvements made to the fallback experience:
+- `win32.d` uses `HALFTONE` stretch mode (+ `SetBrushOrgEx` reset) instead of
+  `COLORONCOLOR`, so the stretched preview is interpolated instead of blocky.
+- `window.d` now schedules **exact** frames during resize on the non-scaling
+  path too (`onNativeTick` / `scheduleLiveResizeExactFrame` no longer gate on
+  `liveResizeScalingSupported()`), bounded by the same 1/60 s accumulator. After
+  each exact frame it re-arms the stretched snapshot from that frame
+  (`refreshResizeProxyFromScene`), so the window shows current content at the
+  new size between proxy frames instead of freezing on the pre-resize frame.
+
+Verify: run `aurora-stream\RUN-WINDOWS.bat` (automatic renderer) and drag a
+window border — content should track the size (interpolated, not one frozen
+blocky stretch). `AURORA_RESIZE_PROFILE=1` prints per-frame scene/render times
+in the window title for tuning.
+
 ## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
 
 The top-right "Copy" pill on every message bubble was redundant with "Copy

@@ -641,6 +641,14 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             if (_nativeResizeActive) ++_liveResizeExactFrames;
             _resizeRenderExactNow = false;
             _resizeProxyActive = false;
+            // On the non-scaling path, re-arm the stretched snapshot from the
+            // frame that just rendered so proxy frames between exact frames show
+            // current content instead of the pre-resize frame.
+            if (_nativeResizeActive && !liveResizeScalingSupported())
+            {
+                _resizeExactAccumulator = 0.0;
+                refreshResizeProxyFromScene();
+            }
         }
         if (!completed && _resizeProxyActive)
         {
@@ -685,8 +693,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _resizeFinalizePending = false;
             requestFrame();
         }
-        if (_nativeResizeActive && liveResizeScalingSupported() &&
-            _resizeExactDirty && !_resizeRenderExactNow)
+        if (_nativeResizeActive && _resizeExactDirty &&
+            !_resizeRenderExactNow)
         {
             _resizeExactAccumulator += deltaSeconds;
             if (_resizeExactAccumulator >= liveResizeExactFrameIntervalSeconds)
@@ -912,7 +920,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void scheduleLiveResizeExactFrame()
     {
-        if (!_nativeResizeActive || !liveResizeScalingSupported()) return;
+        // Hardware renderers with WSI surface scaling reflow on the native
+        // timer. Software and non-scaling Vulkan renderers get the same bounded
+        // cadence so the window shows real content at the current size between
+        // stretched proxy frames instead of freezing on the pre-resize frame.
+        if (!_nativeResizeActive) return;
         if (_root !is null)
             _root.setBounds(Rect(0, 0, _clientSize.width, _clientSize.height));
         _baseDirty = true;
