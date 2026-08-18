@@ -768,6 +768,9 @@ final class EditorRoot : VBox
     private MediaAsset _playbackAsset;
     private double _playbackStart = 0.0;
     private double _playbackEnd = 0.0;
+    // The sequence range passed to startPlayback before loop clamping, kept so
+    // toggling loop on mid-playback can re-derive the confined bounds.
+    private double _playbackFullEnd = 0.0;
     private double _playbackPosition = 0.0;
     private bool _playbackRunning;
     // Loop repeats sequence playback across the work-area In/Out markers, or
@@ -4565,6 +4568,7 @@ final class EditorRoot : VBox
         _workIn = value < 0.0 ? 0.0 : value;
         if (_hasWorkOut && _workOut < _workIn) _workOut = _workIn;
         syncTimelineWorkArea();
+        applyLoopPlaybackBounds();
         markProjectDirty();
         setStatus("Export range in set to " ~ formatTimecode(_workIn) ~ ".");
     }
@@ -4581,6 +4585,7 @@ final class EditorRoot : VBox
         _workOut = value < 0.0 ? 0.0 : value;
         if (_workOut < _workIn) _workIn = _workOut;
         syncTimelineWorkArea();
+        applyLoopPlaybackBounds();
         markProjectDirty();
         if (addedImplicitIn)
             setStatus("Export range set from timeline start to " ~
@@ -4596,6 +4601,7 @@ final class EditorRoot : VBox
         _workIn = 0.0;
         _workOut = 0.0;
         syncTimelineWorkArea();
+        applyLoopPlaybackBounds();
         markProjectDirty();
         setStatus("Export range cleared.");
     }
@@ -5642,9 +5648,41 @@ final class EditorRoot : VBox
     {
         _loopEnabled = !_loopEnabled;
         updateLoopButton();
+        applyLoopPlaybackBounds();
         setStatus(_loopEnabled ?
             "Loop playback enabled; the sequence repeats between the export range markers." :
             "Loop playback disabled.");
+    }
+
+    /** Clamp the transport's [start, end] to the work-area In/Out markers when
+     * loop is active, falling back to the full sequence range. Uses the
+     * already-confined `_playbackEnd` as the fallback boundary. */
+    private void applyLoopRangeToBounds()
+    {
+        const loopStart = _hasWorkIn ? _workIn : 0.0;
+        const loopEnd = _hasWorkOut ? _workOut : _playbackEnd;
+        const nextStart = clampValue(loopStart, 0.0, _playbackEnd);
+        const nextEnd = clampValue(loopEnd, nextStart, _playbackEnd);
+        if (nextEnd > nextStart + 0.001)
+        {
+            _playbackStart = nextStart;
+            _playbackEnd = nextEnd;
+        }
+    }
+
+    /** Re-derive the loop bounds mid-playback so the order of operations does
+     * not matter: enabling loop, or setting/clearing the marks, while sequence
+     * playback is running immediately confines the transport to the markers.
+     * Disabling loop leaves the current bounds untouched. */
+    private void applyLoopPlaybackBounds()
+    {
+        if (_playbackKind != PlaybackKind.sequence || !_playbackRunning) return;
+        if (!_loopEnabled) return;
+        _playbackStart = 0.0;
+        _playbackEnd = _playbackFullEnd;
+        applyLoopRangeToBounds();
+        if (_playbackPosition > _playbackEnd) _playbackPosition = _playbackStart;
+        else if (_playbackPosition < _playbackStart) _playbackPosition = _playbackStart;
     }
 
     private void updateLoopButton()
@@ -5738,20 +5776,10 @@ final class EditorRoot : VBox
             _playbackStart = 0.0;
             _playbackEnd = clampValue(end, 0.0, maximumPosition);
             if (_playbackEnd <= 0.001) _playbackEnd = maximumPosition;
-            if (_loopEnabled)
-            {
-                // Loop across the export range, falling back to the complete
-                // sequence when no markers (or only a degenerate range) exist.
-                const loopStart = _hasWorkIn ? _workIn : 0.0;
-                const loopEnd = _hasWorkOut ? _workOut : _playbackEnd;
-                const nextStart = clampValue(loopStart, 0.0, _playbackEnd);
-                const nextEnd = clampValue(loopEnd, nextStart, _playbackEnd);
-                if (nextEnd > nextStart + 0.001)
-                {
-                    _playbackStart = nextStart;
-                    _playbackEnd = nextEnd;
-                }
-            }
+            _playbackFullEnd = _playbackEnd;
+            // Loop across the export range, falling back to the complete
+            // sequence when no markers (or only a degenerate range) exist.
+            if (_loopEnabled) applyLoopRangeToBounds();
             _playbackPosition = clampValue(start, _playbackStart, _playbackEnd);
         }
         else
@@ -7214,6 +7242,7 @@ final class EditorRoot : VBox
         _playbackRunning = false;
         _playbackStart = 0.0;
         _playbackEnd = 0.0;
+        _playbackFullEnd = 0.0;
         _playbackPosition = 0.0;
         _playbackMediaOffset = 0.0;
         _sequencePlaybackDirect = false;

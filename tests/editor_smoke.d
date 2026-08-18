@@ -1699,6 +1699,50 @@ int main(string[] arguments)
             "Loop test playback did not stop cleanly");
     }
 
+    // The order of operations must not matter: enabling loop, or setting the
+    // work-area markers, WHILE sequence playback is running immediately
+    // confines the transport to the In/Out markers instead of looping the
+    // whole sequence.
+    {
+        auto loopButton = requireWidget!Button(editor, "loop-preview");
+        assert(!editor.loopEnabledForTesting(),
+            "Loop playback was already enabled before the mid-playback test");
+        editor.clearWorkRangeForTesting();
+        editor.setWorkInForTesting(0.5);
+        editor.setWorkOutForTesting(0.9);
+        timeline.setPlayhead(0.2, false);
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Playback did not start for the mid-playback loop test");
+        assert(fabs(editor.playbackStartForTesting()) < 0.001 &&
+            editor.playbackEndForTesting() > 0.9 + 0.001,
+            "Loop-off playback must span the full sequence, not the markers");
+        driver.click(globalCenter(loopButton));
+        assert(editor.loopEnabledForTesting(),
+            "Loop button did not enable loop playback mid-playback");
+        assert(fabs(editor.playbackStartForTesting() - 0.5) < 0.001 &&
+            fabs(editor.playbackEndForTesting() - 0.9) < 0.001,
+            "Enabling loop mid-playback did not confine the transport to the markers");
+        assert(waitForLoopWrap(editor, 0.85, 0.75),
+            "Loop enabled mid-flight did not wrap at the Out marker");
+        assert(editor.sequencePlaybackForTesting(),
+            "Loop playback stopped instead of wrapping");
+        // Moving the Out marker while looping re-bounds the wrap point live.
+        editor.setWorkOutForTesting(0.7);
+        assert(fabs(editor.playbackEndForTesting() - 0.7) < 0.001,
+            "Changing the Out marker during loop playback did not re-bounds the range");
+        assert(waitForLoopWrap(editor, 0.65, 0.55),
+            "Loop playback did not wrap at the moved Out marker");
+        driver.click(globalCenter(loopButton));
+        assert(!editor.loopEnabledForTesting(),
+            "Loop button did not disable loop playback");
+        editor.clearWorkRangeForTesting();
+        driver.pressKey(Key.escape);
+        assert(!editor.playbackRunningForTesting(),
+            "Mid-playback loop test playback did not stop cleanly");
+    }
+
     // Text placement is one-shot, existing clips remain selectable while the
     // Text tool is armed, and both timeline/Preview double-clicks open editing.
     auto model = editor.modelForTesting();

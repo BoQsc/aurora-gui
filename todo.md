@@ -2705,3 +2705,36 @@
       On a 4-CPU host this will be choppy. Consider letting the playback
       composite request substitute `playbackAssetForPreview` (proxy) when
       `enablePlaybackDecode` is set, mirroring the direct path.
+
+## 2026-08-18 (4th pass) — Loop playback with work-area In/Out marks
+
+Request: "if loop is active and in and out marks exist, loop between the marks."
+
+- [x] Verified this already worked at Play time: `startPlayback` clamps the
+      transport to `[_workIn, _workOut]` when `_loopEnabled` (falls back to the
+      whole sequence without markers), `loopPlaybackRestart` rewinds to
+      `_playbackStart`, and the onTick end-check wraps. The editor-smoke loop
+      test covers marks-set-then-loop-then-play.
+- [x] **Gap:** the order of operations mattered. Toggling loop ON mid-playback
+      (or setting/clearing the marks mid-playback) never re-derived the bounds,
+      so it kept looping the whole sequence. Fixed:
+  - New `_playbackFullEnd` keeps the un-clamped sequence range from
+    `startPlayback` (reset in `stopPlayback`).
+  - `applyLoopRangeToBounds()` centralizes the mark-clamp logic (was inline in
+    `startPlayback`).
+  - `applyLoopPlaybackBounds()` re-derives bounds mid-playback: on loop-ON
+    (or marks change while loop is on and sequence playback is running) it
+    re-clamps to the markers and pulls the playhead inside (wraps to In when
+    past Out). Loop-OFF leaves the current bounds untouched.
+  - Wired into `toggleLoop`, `setWorkIn`, `setWorkOut`, `clearWorkRange`.
+- [x] **Test:** new editor-smoke block starts playback with loop OFF (asserts
+      full-sequence bounds), clicks the loop button mid-flight (asserts bounds
+      instantly become [0.5, 0.9] and it wraps at the Out marker), then moves
+      the Out marker to 0.7 while looping (asserts the wrap point re-bounds
+      live). Passes.
+- [x] **Verified:** `dub test` 33 modules, editor-smoke, synced-preroll-smoke,
+      static-sequence-smoke all pass; app source links clean.
+- [ ] **Blocked build:** `dub build` cannot overwrite `aurora-cut.exe` because
+      the previous build is still running (PID 12104, Access is denied). Close
+      the app so I can rebuild, then Play with a loop + I/O marks to confirm
+      the wrap between the markers.

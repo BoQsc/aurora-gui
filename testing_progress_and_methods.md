@@ -2822,3 +2822,33 @@ was wrong. Definitively reproduced and fixed:
    AV1 webm on the CPU instead of the 540x720 H.264 playback proxy. Consider
    proxy substitution in the playback composite request (`enablePlaybackDecode`),
    mirroring `playbackAssetForPreview` in the direct path.
+
+### Loop playback with work-area In/Out marks (2026-08-18, 4th pass)
+
+Requirement: with loop active and In/Out markers set, the transport must loop
+between the markers.
+
+1. **Already worked at Play time:** `startPlayback` clamps `_playbackStart`/
+   `_playbackEnd` to `[_workIn, _workOut]` when `_loopEnabled`, falls back to
+   the full sequence without markers, `loopPlaybackRestart` rewinds to
+   `_playbackStart`, and the onTick end-check wraps. editor-smoke has a
+   loop test (marks → enable loop → play → wrap at Out → return to In).
+2. **Gap = order of operations.** Toggling loop ON mid-playback, or changing
+   the marks mid-playback, did not re-derive the bounds (it kept looping the
+   whole sequence). Fixed with:
+   - `_playbackFullEnd`: the un-clamped sequence range recorded in
+     `startPlayback` (reset in `stopPlayback`).
+   - `applyLoopRangeToBounds()`: the mark-clamp math, extracted from the inline
+     block in `startPlayback`.
+   - `applyLoopPlaybackBounds()`: called from `toggleLoop` (loop-ON), and from
+     `setWorkIn`/`setWorkOut`/`clearWorkRange`; only acts while sequence
+     playback is running and loop is on — re-derives bounds from the current
+     marks, pulls the playhead inside the range (wraps to In if past Out).
+     Loop-OFF leaves the current bounds untouched (matches prior behavior).
+3. **Test:** editor-smoke block: start playback loop-OFF (assert full-sequence
+   bounds), toggle loop on mid-flight (bounds instantly [0.5, 0.9], wraps at
+   Out), move Out to 0.7 while looping (wrap point re-bounds live). All pass.
+4. **How to test live in the GUI:** set I/O marks (Shift+I / Shift+O at the
+   playhead), enable Loop, press Play → playback confines to the markers and
+   wraps. Toggling Loop or moving the markers during playback re-bounds it
+   immediately.
