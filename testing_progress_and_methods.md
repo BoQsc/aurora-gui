@@ -1,5 +1,57 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Undo/Redo history popout (2026-08-18)
+
+- New toolbar `History ▾` button (`id="history"`) opens a `PopupOverlay`
+  (`history-popup`, 440x400) beside Undo/Redo. The `ListView` (`history-list`)
+  is a standard flat numbered list: an `Initial state` row, then each timeline
+  action oldest-first (`1. …`, `2. …`, `…`). The current state's row is
+  highlighted ("You are here"); past rows read "Click to undo N steps" and
+  future rows "Click to redo N steps", with direction icons (refresh = undo,
+  clock = current, chevron = redo).
+- The list is FROZEN for the popup session: `jumpToHistory` loops
+  `undo()`/`redo()` the required steps but only moves the highlighted row and
+  re-styles icons/step text — the row order and positions never change. The
+  list is rebuilt only by `commitHistory`/`clearHistory` (a new edit appends a
+  row, discarding undone future rows, standard behavior). Toolbar/keyboard
+  Undo/Redo call `moveHistoryHighlight(∓1)` instead of rebuilding, so rows never
+  jump around. `updateHistoryButtons` no longer rebuilds the list; the rebuild
+  is explicit in commit/clear, and highlight moves are explicit in undo/redo.
+- Listing reworks: v1 flat+ambiguous → v2 section headers (rebuilt on every
+  click, reordering rows) → v3 standard flat numbered list frozen for the
+  session. The user reported v1/v2 as confusing, overlapping, and reordering on
+  click.
+- How it is verified (headless, `tests/editor_smoke.d`, after the global
+  Undo/Redo block): open the popup, assert the Initial state row, numbered
+  oldest-first actions, highlighted current row, and exact step counts; snapshot
+  the row texts, click a past row to undo to the empty timeline, assert the row
+  texts are IDENTICAL (no reordering) and the future row now reads "Click to
+  redo 1 step"; click it to redo back, assert row texts are again identical, and
+  press Esc to confirm dismissal (`findById(editor, "history-list") is null`).
+  Row lookups use `rowIndexForText` / `rowIndexContaining` helpers.
+- Gotchas discovered (both fixed in
+  `vendor/aurora-d-0.4.5/source/aurora/widgets/listview.d`):
+  (1) `_scrollOffset` could stay above `maxScroll()` after a resize, scrolling
+  every row out of view (blank popup); `synchronizeScrollbar()` now re-clamps.
+  Symptom in a test: `scrollOffset=136` while `maxScroll=0` and
+  `contentHeight=136`, making `mediaRowPoint` click 136 px too high.
+  (2) two-line rows painted the secondary line 8 px past a 34 px row, overlapping
+  the next row; the paint now splits the row height between the two lines.
+  Use a row height of at least 44 for two-line rows so both lines are readable.
+- Compile: `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+  tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
+  -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+  -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
+- Run: `set AURORA_RENDERER=software&& set SDL_AUDIODRIVER=dummy&&
+  build\headless-smoke\editor-smoke.exe build\headless-smoke\media\base-av.mp4
+  build\headless-smoke\media\overlay.mp4 build\headless-smoke\media\audio.mp3`
+- Note: when a live `aurora-cut.exe` is running, `dub build` cannot overwrite it
+  ("Access is denied"); verify the app links via a temp output instead, e.g.
+  `dmd -i -Isource -Ivendor\aurora-d-0.4.5\source source\app.d
+  -of=%TEMP%\aurora-cut-check.exe -L/SUBSYSTEM:WINDOWS -L/ENTRY:mainCRTStartup
+  -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+  -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`.
+
 ## Aurora Notepad visual review (2026-08-15)
 
 - Launched the current release build and captured `aurora-notepad/build/visual-review.ppm` (converted to PNG for inspection).
@@ -2848,7 +2900,69 @@ between the markers.
 3. **Test:** editor-smoke block: start playback loop-OFF (assert full-sequence
    bounds), toggle loop on mid-flight (bounds instantly [0.5, 0.9], wraps at
    Out), move Out to 0.7 while looping (wrap point re-bounds live). All pass.
-4. **How to test live in the GUI:** set I/O marks (Shift+I / Shift+O at the
+4. **Follow-up bug (user report): resume path skipped the loop bounds.**
+   Sequence: play once WITHOUT loop → pause → enable loop + set marks → Play
+   again. The resumed transport kept the stale `[0, full-sequence]` bounds and
+   `loopPlaybackRestart` rewound to the sequence start instead of the In
+   marker. Two causes: `resumePlayback` never called `applyLoopPlaybackBounds`,
+   and that helper early-returned while `!_playbackRunning`. Fixed: the helper
+   now guards on `_playbackAsset is null` (works while paused/idle too), and
+   `resumePlayback` calls it after pending-seek handling. editor-smoke
+   regression: play loop-off → pause → enable loop+marks → resume → bounds
+   become [0.5, 0.9] and wrap at Out. Passes.
+5. **How to test live in the GUI:** set I/O marks (Shift+I / Shift+O at the
    playhead), enable Loop, press Play → playback confines to the markers and
    wraps. Toggling Loop or moving the markers during playback re-bounds it
-   immediately.
+   immediately. To exercise the resume path: play without loop, pause, enable
+   loop + set marks, press Play again.
+
+### Undo/redo for In/Out marks + free playhead drag (2026-08-18, 5th pass)
+
+Two user requirements: (1) Undo/Redo must track removal/restoration of the
+timeline In/Out marks; (2) the timeline playhead must be draggable outside the
+bounds of playback.
+
+1. **Undo/redo of marks.** `TimelineSnapshot` now stores the work-area state
+   (`hasWorkIn/workIn/hasWorkOut/workOut`). `captureTimelineSnapshot` reads it,
+   `applyTimelineSnapshot` restores it (re-syncing `_timeline.setWorkArea` and
+   re-deriving loop bounds via `applyLoopPlaybackBounds`). `setWorkIn`,
+   `setWorkOut`, and `clearWorkRange` capture a snapshot BEFORE mutating and
+   call `commitHistory`, so every mark change becomes one undo step. Note this
+   makes marks part of the regular undo stack — any test that assumed the
+   stack was empty after a single undo of a clip edit must be updated.
+2. **Free playhead drag.** The playhead is a free cursor limited only by the
+   full sequence:
+   - `seekPlayback`: clamp is now `[0, _playbackFullEnd]` (full sequence),
+     never `[_playbackStart, _playbackEnd]`.
+   - `commitPendingSeek`: a target outside the active playback range (e.g.
+     dragged past the loop Out marker) parks the transport there — stops
+     playback and shows a still — instead of clamping/wrapping it into the
+     range.
+   - onTick end-of-playback check: guarded with `!_seekPending` so a mid-drag
+     position past the Out marker never wraps the playhead mid-gesture.
+   - Pressing Play from a parked outside position re-enters the loop range via
+     `applyLoopPlaybackBounds` (position wraps to the In marker).
+3. **Test method (editor-smoke):** mark undo/redo is exercised with
+   `setWorkInForTesting`/`setWorkOutForTesting`/`clearWorkRangeForTesting` then
+   clicking the real Undo/Redo buttons and asserting `hasWorkInForTesting`/
+   `workInForTesting`/`workOutForTesting`. Free-playhead is exercised with
+   `seekForTesting` + `tickTree` to let the pending seek auto-commit, then
+   asserting the parked position is kept outside the loop range.
+4. **Verified:** `dub test` 33 modules, editor-smoke, synced-preroll-smoke,
+   static-sequence-smoke all pass; `aurora-cut.exe` rebuilt at the repo root.
+
+### Snap toggle button blue accent (2026-08-18, 6th pass)
+
+The sequence header's snap toggle now shows its active state with the blue
+accent background, matching the Loop transport button.
+
+1. `_snapButton` (id `timeline-snap`) is stored as a field; `updateSnapButton()`
+   applies `setAccent(snappingEnabled)` on every toggle and once after the
+   timeline is built (snapping starts enabled, so it is blue from launch).
+2. **Pixel-level test method:** the button accent is verified by sampling a
+   background pixel just above the vertically-centered text against the dark
+   theme accent `0x4f8cff`. Gotcha: after `driver.click`, the pointer stays
+   over the button so it paints `accentHover` — call `driver.moveTo(Point(0,0))`
+   before sampling to get the plain accent.
+3. Test asserts: blue while on → not blue after toggle-off → blue again after
+   re-enable, plus `snappingEnabledForTesting()` and the On/Off label.

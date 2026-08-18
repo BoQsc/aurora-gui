@@ -141,6 +141,10 @@ private struct TimelineSnapshot
     TrackAddress selectedTrack;
     int selectedIndex;
     double playhead = 0.0;
+    bool hasWorkIn;
+    double workIn;
+    bool hasWorkOut;
+    double workOut;
     string label;
 }
 
@@ -644,6 +648,7 @@ final class EditorRoot : VBox
     private Button _sourcePlayButton;
     private Button _sequencePreviewButton;
     private Button _loopButton;
+    private Button _snapButton;
     private ExportButton _exportButton;
     private Button _revealExportButton;
     private Button _saveProjectButton;
@@ -653,6 +658,7 @@ final class EditorRoot : VBox
     private Button _ytDlpQualityButton;
     private Button _undoButton;
     private Button _redoButton;
+    private Button _historyButton;
     private Button _qualityButton;
     private Button _resolutionButton;
     private Button _compressOutputButton;
@@ -756,6 +762,7 @@ final class EditorRoot : VBox
     private PopupOverlay _resolutionPopup;
     private PopupOverlay _compressOutputPopup;
     private PopupOverlay _moveToTrackPopup;
+    private PopupOverlay _historyPopup;
     private bool _openYtDlpDialogAfterInstall;
     private int _ytDlpMaxHeight = 1080;
 
@@ -910,6 +917,12 @@ final class EditorRoot : VBox
 
     private TimelineSnapshot[] _undo;
     private TimelineSnapshot[] _redo;
+    private ListView _historyList;
+    private Label _historyHint;
+    private bool _syncingHistoryList;
+    private bool _historyJumping;
+    private string[] _historyActionLabels;
+    private int _historyPosition;
 
     private JobPurpose _jobPurpose;
     private bool _jobCompletionHandled = true;
@@ -972,6 +985,7 @@ final class EditorRoot : VBox
         if (_resolutionPopup !is null) _resolutionPopup.dismiss();
         if (_compressOutputPopup !is null) _compressOutputPopup.dismiss();
         if (_moveToTrackPopup !is null) _moveToTrackPopup.dismiss();
+        if (_historyPopup !is null) _historyPopup.dismiss();
         stopPlayback(false);
         _downloadService.shutdown();
         _ytDlpInstallService.shutdown();
@@ -1030,6 +1044,10 @@ final class EditorRoot : VBox
     string projectPathForTesting() const { return _projectPath; }
     bool hasWorkInForTesting() const { return _hasWorkIn; }
     bool hasWorkOutForTesting() const { return _hasWorkOut; }
+    bool snappingEnabledForTesting() const
+    {
+        return _timeline !is null && _timeline.snappingEnabled();
+    }
     double workInForTesting() const { return _workIn; }
     double workOutForTesting() const { return _workOut; }
     void setWorkOutForTesting(double value) { setWorkOut(value); }
@@ -1137,6 +1155,11 @@ final class EditorRoot : VBox
         _redoButton.setId("redo");
         _redoButton.layoutHints().preferredHeight = 26;
         _redoButton.onClick = delegate() { redo(); };
+
+        _historyButton = toolbar.add(new Button("History ▾", IconKind.clock));
+        _historyButton.setId("history");
+        _historyButton.layoutHints().preferredHeight = 26;
+        _historyButton.onClick = delegate() { openHistoryPopup(); };
         updateHistoryButtons();
 
         toolbar.add(new Spacer());
@@ -2180,16 +2203,19 @@ final class EditorRoot : VBox
         title.setScale(1);
         title.setColor(Color.fromHex(0xb8c1cc));
         header.add(new Spacer());
-        auto snap = header.add(new Button("Snap On"));
-        snap.layoutHints().minWidth = 84;
-        snap.layoutHints().preferredWidth = 84;
-        snap.onClick = delegate() {
+        _snapButton = header.add(new Button("Snap On"));
+        _snapButton.setId("timeline-snap");
+        _snapButton.layoutHints().minWidth = 84;
+        _snapButton.layoutHints().preferredWidth = 84;
+        _snapButton.onClick = delegate() {
             const enabled = !_timeline.snappingEnabled();
             _timeline.setSnappingEnabled(enabled);
-            snap.setText(enabled ? "Snap On" : "Snap Off");
+            _snapButton.setText(enabled ? "Snap On" : "Snap Off");
+            updateSnapButton();
             setStatus(enabled ? "Timeline snapping enabled." :
                 "Timeline snapping disabled.");
         };
+        updateSnapButton();
         auto clearIn = header.add(new Button("In×"));
         clearIn.layoutHints().minWidth = 44;
         clearIn.layoutHints().preferredWidth = 44;
@@ -2220,6 +2246,9 @@ final class EditorRoot : VBox
         _timeline = area.add(new TimelineWidget(_model));
         _timeline.setId("sequence-timeline");
         _timeline.layoutHints().flex = 1.0;
+        // The header's snap button is created before the timeline, so its
+        // initial accent reflects the default (snapping starts enabled).
+        updateSnapButton();
         // In the editor layout the timeline must flex down to the compact
         // sequence-panel minimum. Keeping the widget's standalone preferred
         // height here lets VBox place it past the panel and into the status bar.
@@ -3344,6 +3373,10 @@ final class EditorRoot : VBox
         snapshot.selectedTrack = _timeline.selectedTrack();
         snapshot.selectedIndex = _timeline.selectedIndex();
         snapshot.playhead = _timeline.playhead();
+        snapshot.hasWorkIn = _hasWorkIn;
+        snapshot.workIn = _workIn;
+        snapshot.hasWorkOut = _hasWorkOut;
+        snapshot.workOut = _workOut;
         snapshot.label = label;
         return snapshot;
     }
@@ -3354,6 +3387,7 @@ final class EditorRoot : VBox
         _undo ~= snapshot;
         _redo.length = 0;
         updateHistoryButtons();
+        refreshHistoryList();
     }
 
     private void clearHistory()
@@ -3361,12 +3395,196 @@ final class EditorRoot : VBox
         _undo.length = 0;
         _redo.length = 0;
         updateHistoryButtons();
+        refreshHistoryList();
     }
 
     private void updateHistoryButtons()
     {
         if (_undoButton !is null) _undoButton.setEnabled(_undo.length > 0);
         if (_redoButton !is null) _redoButton.setEnabled(_redo.length > 0);
+    }
+
+    private void openHistoryPopup()
+    {
+        closeHistoryPopup();
+
+        auto content = new VBox(8, Insets(14));
+        content.setId("history-popup");
+        content.setBackground(Color.fromHex(0x242a32));
+        content.setBorder(Color.fromHex(0x4a5562), 8);
+
+        auto header = content.add(new HBox(8));
+        header.layoutHints().preferredHeight = 36;
+        auto title = header.add(new Label("History"));
+        title.setScale(2);
+        title.layoutHints().flex = 1.0;
+        auto closeButton = header.add(new IconButton(IconKind.close));
+        closeButton.setFlat(true);
+        closeButton.onClick = delegate() { closeHistoryPopup(); };
+
+        auto hint = content.add(new Label(
+            "Click an entry to undo or redo to that state."));
+        hint.setId("history-hint");
+        hint.setScale(1);
+        hint.setColor(Color.fromHex(0x87919c));
+        hint.layoutHints().preferredHeight = 24;
+        _historyHint = hint;
+
+        auto list = content.add(new ListView());
+        list.setId("history-list");
+        list.setRowHeight(44);
+        list.layoutHints().flex = 1.0;
+        list.onSelectionChanged = delegate(int index) {
+            if (_syncingHistoryList) return;
+            jumpToHistory(index);
+        };
+        list.onActivated = delegate(int index) {
+            if (_syncingHistoryList) return;
+            jumpToHistory(index);
+        };
+        _historyList = list;
+        refreshHistoryList();
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 40;
+        footer.add(new Spacer());
+        auto closeFooterButton = footer.add(new Button("Close"));
+        closeFooterButton.setId("history-close");
+        closeFooterButton.onClick = delegate() { closeHistoryPopup(); };
+
+        auto owner = _historyButton is null ? cast(Widget) this :
+            cast(Widget) _historyButton;
+        const origin = owner.localToGlobal(Point(0, 0));
+        _historyPopup = showPopup(owner,
+            Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
+            content, PopupPlacement.below, Size(440, 400));
+        if (_historyPopup !is null)
+        {
+            _historyPopup.onDismissed = delegate() {
+                _historyPopup = null;
+                _historyList = null;
+                _historyHint = null;
+            };
+            list.requestFocus();
+        }
+    }
+
+    private void closeHistoryPopup()
+    {
+        if (_historyPopup !is null) _historyPopup.dismiss();
+        _historyPopup = null;
+        _historyList = null;
+        _historyHint = null;
+    }
+
+    /// Rebuild the frozen chronological action list from the current undo/redo
+    /// stacks. Called when the popup opens and whenever the history changes in a
+    /// structural way (a new edit commits, or history is cleared). Jumping
+    /// backward or forward never rebuilds; it only moves the highlighted row.
+    private void refreshHistoryList()
+    {
+        if (_historyList is null) return;
+        string[] actionLabels;
+        actionLabels.reserve(_undo.length + _redo.length);
+        foreach (snapshot; _undo)
+            actionLabels ~= snapshot.label;
+        for (size_t index = 0; index < _redo.length; ++index)
+            actionLabels ~= _redo[_redo.length - 1 - index].label;
+        _historyActionLabels = actionLabels;
+        _historyPosition = cast(int) _undo.length;
+        applyHistoryView();
+    }
+
+    private void applyHistoryView()
+    {
+        if (_historyList is null) return;
+        _syncingHistoryList = true;
+        ListItem[] rows;
+        rows.reserve(_historyActionLabels.length + 1);
+        if (_historyPosition == 0)
+            rows ~= ListItem("Initial state", IconKind.clock, "You are here");
+        else
+            rows ~= ListItem("Initial state", IconKind.refresh,
+                format("Click to undo %d step%s", _historyPosition,
+                    _historyPosition == 1 ? "" : "s"));
+        foreach (index, label; _historyActionLabels)
+        {
+            const number = cast(int) index + 1;
+            IconKind icon;
+            string secondary;
+            if (number < _historyPosition)
+            {
+                icon = IconKind.refresh;
+                secondary = format("Click to undo %d step%s",
+                    _historyPosition - number,
+                    _historyPosition - number == 1 ? "" : "s");
+            }
+            else if (number == _historyPosition)
+            {
+                icon = IconKind.clock;
+                secondary = "You are here";
+            }
+            else
+            {
+                icon = IconKind.chevronRight;
+                secondary = format("Click to redo %d step%s",
+                    number - _historyPosition,
+                    number - _historyPosition == 1 ? "" : "s");
+            }
+            rows ~= ListItem(format("%d. %s", number, label), icon, secondary);
+        }
+        _historyList.setItems(rows);
+        _historyList.setSelectedIndex(_historyPosition, false);
+        if (_historyHint !is null)
+        {
+            _historyHint.setText(format(
+                "Click an entry to undo or redo to that state. " ~
+                "Undo: %d available • Redo: %d available.",
+                _undo.length, _redo.length));
+        }
+        _syncingHistoryList = false;
+    }
+
+    /// Move the highlighted history row after a plain Undo/Redo (toolbar or
+    /// keyboard) without rebuilding the list, so rows never jump around.
+    private void moveHistoryHighlight(int delta)
+    {
+        if (_historyList is null) return;
+        const next = _historyPosition + delta;
+        if (next < 0 || next > cast(int) _historyActionLabels.length)
+        {
+            refreshHistoryList();
+            return;
+        }
+        _historyPosition = next;
+        if (!_historyJumping) applyHistoryView();
+    }
+
+    /// Jump straight to the state a row represents. Only the highlighted row
+    /// changes; the listed items keep their positions for the whole session.
+    private void jumpToHistory(int row)
+    {
+        if (row < 0 || row > cast(int) _historyActionLabels.length) return;
+        if (row == _historyPosition) return;
+        _historyJumping = true;
+        if (row < _historyPosition)
+        {
+            const times = _historyPosition - row;
+            foreach (_; 0 .. times) undo();
+            const label = row == 0 ? "Initial state" :
+                _historyActionLabels[cast(size_t) row - 1];
+            setStatus(format("History: undid %d step(s) to \"%s\".", times, label));
+        }
+        else
+        {
+            const times = row - _historyPosition;
+            foreach (_; 0 .. times) redo();
+            const label = _historyActionLabels[cast(size_t) row - 1];
+            setStatus(format("History: redid %d step(s) to \"%s\".", times, label));
+        }
+        _historyJumping = false;
+        _historyPosition = row;
+        applyHistoryView();
     }
 
     private void undo()
@@ -3382,6 +3600,7 @@ final class EditorRoot : VBox
         _redo ~= captureTimelineSnapshot(snapshot.label);
         applyTimelineSnapshot(snapshot, "Undo: " ~ snapshot.label ~ ".");
         updateHistoryButtons();
+        moveHistoryHighlight(-1);
     }
 
     private void redo()
@@ -3398,6 +3617,7 @@ final class EditorRoot : VBox
         _undo ~= captureTimelineSnapshot(snapshot.label);
         applyTimelineSnapshot(snapshot, "Redo: " ~ snapshot.label ~ ".");
         updateHistoryButtons();
+        moveHistoryHighlight(+1);
     }
 
     private void applyTimelineSnapshot(TimelineSnapshot snapshot, string statusText)
@@ -3407,6 +3627,12 @@ final class EditorRoot : VBox
         _timeline.modelChanged();
         _timeline.setSelection(snapshot.selectedTrack, snapshot.selectedIndex, false);
         _timeline.setPlayhead(snapshot.playhead, false);
+        _hasWorkIn = snapshot.hasWorkIn;
+        _workIn = snapshot.workIn;
+        _hasWorkOut = snapshot.hasWorkOut;
+        _workOut = snapshot.workOut;
+        syncTimelineWorkArea();
+        applyLoopPlaybackBounds();
         _lastSelectionIsMedia = false;
         syncMediaList();
         syncTimelineRange();
@@ -4564,17 +4790,20 @@ final class EditorRoot : VBox
 
     private void setWorkIn(double value)
     {
+        auto before = captureTimelineSnapshot("Set export range in");
         _hasWorkIn = true;
         _workIn = value < 0.0 ? 0.0 : value;
         if (_hasWorkOut && _workOut < _workIn) _workOut = _workIn;
         syncTimelineWorkArea();
         applyLoopPlaybackBounds();
         markProjectDirty();
+        commitHistory(before);
         setStatus("Export range in set to " ~ formatTimecode(_workIn) ~ ".");
     }
 
     private void setWorkOut(double value)
     {
+        auto before = captureTimelineSnapshot("Set export range out");
         const addedImplicitIn = !_hasWorkIn;
         if (addedImplicitIn)
         {
@@ -4587,6 +4816,7 @@ final class EditorRoot : VBox
         syncTimelineWorkArea();
         applyLoopPlaybackBounds();
         markProjectDirty();
+        commitHistory(before);
         if (addedImplicitIn)
             setStatus("Export range set from timeline start to " ~
                 formatTimecode(_workOut) ~ ".");
@@ -4596,6 +4826,7 @@ final class EditorRoot : VBox
 
     private void clearWorkRange()
     {
+        auto before = captureTimelineSnapshot("Clear export range");
         _hasWorkIn = false;
         _hasWorkOut = false;
         _workIn = 0.0;
@@ -4603,6 +4834,7 @@ final class EditorRoot : VBox
         syncTimelineWorkArea();
         applyLoopPlaybackBounds();
         markProjectDirty();
+        commitHistory(before);
         setStatus("Export range cleared.");
     }
 
@@ -5670,13 +5902,13 @@ final class EditorRoot : VBox
         }
     }
 
-    /** Re-derive the loop bounds mid-playback so the order of operations does
-     * not matter: enabling loop, or setting/clearing the marks, while sequence
-     * playback is running immediately confines the transport to the markers.
-     * Disabling loop leaves the current bounds untouched. */
+    /** Re-derive the loop bounds so the order of operations does not matter:
+     * enabling loop, or setting/clearing the marks, while sequence playback is
+     * running or about to resume immediately confines the transport to the
+     * markers. Disabling loop leaves the current bounds untouched. */
     private void applyLoopPlaybackBounds()
     {
-        if (_playbackKind != PlaybackKind.sequence || !_playbackRunning) return;
+        if (_playbackKind != PlaybackKind.sequence || _playbackAsset is null) return;
         if (!_loopEnabled) return;
         _playbackStart = 0.0;
         _playbackEnd = _playbackFullEnd;
@@ -5688,6 +5920,12 @@ final class EditorRoot : VBox
     private void updateLoopButton()
     {
         if (_loopButton !is null) _loopButton.setAccent(_loopEnabled);
+    }
+
+    private void updateSnapButton()
+    {
+        if (_snapButton is null) return;
+        _snapButton.setAccent(_timeline !is null && _timeline.snappingEnabled());
     }
 
     private void playCurrentContext()
@@ -6983,6 +7221,7 @@ final class EditorRoot : VBox
             _playbackPosition = _seekTarget;
             clearPendingSeekState();
         }
+        applyLoopPlaybackBounds();
         if (_playbackPosition >= _playbackEnd - 0.001)
             _playbackPosition = _playbackStart;
         if (_playbackKind == PlaybackKind.sequence)
@@ -7005,7 +7244,11 @@ final class EditorRoot : VBox
     private void seekPlayback(double requested)
     {
         if (_playbackKind == PlaybackKind.none || _playbackAsset is null) return;
-        const next = clampValue(requested, _playbackStart, _playbackEnd);
+        // The playhead is a free timeline cursor: it may be dragged anywhere in
+        // the full sequence, including outside the active playback bounds (e.g.
+        // past the loop In/Out markers). Only the sequence extent limits it.
+        const fullEnd = _playbackFullEnd > 0.0 ? _playbackFullEnd : _playbackEnd;
+        const next = clampValue(requested, 0.0, fullEnd);
         if (!_seekPending && fabs(next - _playbackPosition) < 0.000_5) return;
 
         // If the pointer moved after an idle scrub still started, cancel that
@@ -7107,14 +7350,30 @@ final class EditorRoot : VBox
     {
         if (!_seekPending || _playbackKind == PlaybackKind.none ||
             _playbackAsset is null) return;
-        _playbackPosition = clampValue(_seekTarget, _playbackStart, _playbackEnd);
+        const fullEnd = _playbackFullEnd > 0.0 ? _playbackFullEnd : _playbackEnd;
+        _playbackPosition = clampValue(_seekTarget, 0.0, fullEnd);
         clearPendingSeekState();
         // A drag may have queued a low-resolution still frame while the
         // pointer was moving. It is obsolete as soon as the seek is committed;
         // leave no competing FFmpeg compositor alive while playback restarts.
         _previewService.cancel();
 
-        if (_playbackPosition >= _playbackEnd - 0.001)
+        if (_playbackPosition < _playbackStart - 0.001 ||
+            _playbackPosition > _playbackEnd + 0.001)
+        {
+            // The playhead was parked outside the active playback range (for
+            // example dragged past the loop Out marker to inspect the rest of
+            // the timeline). Never wrap or rewind the transport here: leave the
+            // playhead where the user put it and show the still.
+            _playbackRunning = false;
+            _seekResumePlayback = false;
+            _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
+            _preview.setPlaying(false);
+            requestPlaybackStill();
+            _playbackPrewarmPrompt = true;
+        }
+        else if (_playbackPosition >= _playbackEnd - 0.001)
         {
             if (_loopEnabled && _playbackKind == PlaybackKind.sequence)
                 loopPlaybackRestart();
@@ -9114,6 +9373,7 @@ final class EditorRoot : VBox
             }
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
+                !_seekPending &&
                 _playbackPosition >= _playbackEnd - 0.001)
             {
                 if (_loopEnabled && _playbackKind == PlaybackKind.sequence)

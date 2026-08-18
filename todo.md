@@ -1,5 +1,55 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-18 — Undo/Redo history popout window (new feature)
+
+- [x] User: add a new popout window + toolbar button to Aurora Cut listing the
+      undo/redo history; clicking an item undoes or redoes straight to that state.
+- [x] Added a `History ▾` toolbar button (`id="history"`) directly after Redo in
+      `source/auroracut/editor.d` (`buildToolbar`). It opens a centered-below
+      `PopupOverlay` (`history-popup`, 440x400) with a `ListView`
+      (`history-list`) showing a standard flat, numbered history: an `Initial
+      state` row followed by each timeline action oldest-first
+      (`1. …`, `2. …`, `…`), with the current state's row highlighted. Every row
+      states the exact direction and step count ("Click to undo 2 steps",
+      "Click to redo 1 step", "You are here") and carries a direction icon
+      (refresh = undo, clock = current, chevron = redo).
+- [x] Single click (or double-click / Enter) on a row jumps the timeline to that
+      state via `jumpToHistory` (loops `undo()`/`redo()` the required steps). The
+      list is FROZEN for the whole popup session: jumping only moves the
+      highlighted row and re-styles each row's icon/step text; the item order and
+      positions never change. The list is rebuilt only when history changes
+      structurally (new edit commits or history is cleared via
+      `commitHistory`/`clearHistory`). Toolbar/keyboard Undo/Redo move the
+      highlight by one row via `moveHistoryHighlight` instead of rebuilding, so
+      rows never jump around. The hint (`history-hint`) reports the live
+      "Undo: N available • Redo: M available" counts.
+- [x] Listing reworks (user: "the listing is confusing", then "make it standard
+      items listing, it's confusing, overlapping items, items change positions
+      if you click"): v1 was a flat ambiguous list; v2 added section headers and
+      rebuilt on every click (reordering rows); v3 is a standard flat numbered
+      list frozen for the session (no reordering) with no section headers.
+- [x] Fixed two pre-existing vendored `ListView` bugs the popup exposed:
+      (1) `_scrollOffset` could stay larger than `maxScroll()` after a resize,
+      silently scrolling every row out of view (blank popup);
+      `synchronizeScrollbar()` now re-clamps the offset. (2) two-line rows painted
+      the secondary line 8 px past the 34 px row height, overlapping the next
+      row; the paint now splits the row height between the two lines so text
+      never crosses the row boundary. Both in
+      `vendor/aurora-d-0.4.5/source/aurora/widgets/listview.d`.
+- [x] Regression block in `tests/editor_smoke.d` (after the global Undo/Redo
+      test): opens the popup, verifies the Initial state row, the numbered
+      oldest-first actions, the highlighted current row, and the exact step
+      counts; clicks a past row to undo to the empty timeline and a future row to
+      redo back, proving the row order is IDENTICAL before and after each click
+      (the "no reordering" guarantee), and verifies Esc closes it.
+- [x] Verified: `dub test` (33 modules), editor-smoke (multiple runs),
+      model-smoke, layout-smoke, and the full app compile/link (via a temp
+      output, since the running `aurora-cut.exe` locks the normal target) all
+      pass.
+- [ ] Manual: restart Aurora Cut (the running instance predates this rework),
+      open the History popup, and confirm the flat listing reads clearly, rows
+      never move when clicked, and jumps land correctly in both directions.
+
 ## 2026-08-15 — Aurora Notepad visual screenshot review
 
 - [x] Launched the release build and captured/inspected `build/visual-review.png`.
@@ -2734,7 +2784,71 @@ Request: "if loop is active and in and out marks exist, loop between the marks."
       live). Passes.
 - [x] **Verified:** `dub test` 33 modules, editor-smoke, synced-preroll-smoke,
       static-sequence-smoke all pass; app source links clean.
-- [ ] **Blocked build:** `dub build` cannot overwrite `aurora-cut.exe` because
-      the previous build is still running (PID 12104, Access is denied). Close
-      the app so I can rebuild, then Play with a loop + I/O marks to confirm
-      the wrap between the markers.
+- [x] `aurora-cut.exe` rebuilt at the repo root with both loop fixes. Play with
+      loop + I/O marks to confirm the wrap between the markers.
+- [x] **Follow-up breakage (user report):** after a session that first played
+      WITHOUT loop, then paused, then enabled loop + set marks, pressing Play
+      again looped from the SEQUENCE START instead of the In marker.
+      - Root cause: `resumePlayback` never re-applied the loop bounds, and
+        `applyLoopPlaybackBounds` early-returned while `_playbackRunning` was
+        false — so a resume kept the stale `[0, full-sequence]` bounds and
+        `loopPlaybackRestart` rewound to 0.
+      - Fix: `applyLoopPlaybackBounds` now guards on `_playbackAsset is null`
+        (not `_playbackRunning`), and `resumePlayback` calls it after the
+        pending-seek handling so a resumed transport is re-confined to the
+        markers. This also makes toggling loop on while PAUSED re-bound the
+        idle transport.
+      - Test: new editor-smoke block — play loop-off → pause → enable loop +
+        marks → resume, asserting bounds become [0.5, 0.9] and it wraps at the
+        Out marker. Passes.
+
+## 2026-08-18 (5th pass) — Undo/redo for In/Out marks + free playhead drag
+
+User request: (1) Undo/Redo must track removal/restoration of the timeline
+In/Out marks; (2) the timeline playhead must be draggable outside the bounds of
+playback.
+
+- [x] **Undo/redo for marks:** `TimelineSnapshot` now carries the work-area
+      state (`hasWorkIn/workIn/hasWorkOut/workOut`), captured in
+      `captureTimelineSnapshot` and restored in `applyTimelineSnapshot`
+      (re-syncing the timeline work area and re-deriving loop bounds).
+      `setWorkIn`/`setWorkOut`/`clearWorkRange` now capture history before
+      mutating, so every mark change is undoable/redoable.
+- [x] **Free playhead drag:** the playhead is a free timeline cursor.
+      - `seekPlayback` clamps to `[0, _playbackFullEnd]` (full sequence) instead
+        of `[_playbackStart, _playbackEnd]` (the loop marks).
+      - `commitPendingSeek` parks a target OUTSIDE the active playback range
+        (playhead dragged past the loop markers) instead of clamping/wrapping
+        it, stopping playback and showing the still there.
+      - the onTick end-of-playback check is guarded with `!_seekPending` so a
+        mid-drag position past the Out marker never triggers a wrap.
+      - Pressing Play from a parked outside position re-enters the loop range
+        via `applyLoopPlaybackBounds` (wraps to the In marker).
+- [x] **Tests** (editor-smoke): mark undo/redo sequence (set In, set Out, clear,
+      undo x3 restores In-only → no-marks → both, redo x2 restores forward);
+      free-playhead block (drag to 1.2 past Out parks there, drag to 0.2 before
+      In parks there, Play re-enters [0.5, 0.9]).
+- [x] Adjusted one pre-existing assertion: the early clip-add undo test asserted
+      the undo stack was empty after one undo; mark history now legitimately
+      leaves prior entries, so it asserts redo-enables only.
+- [x] **Verified:** `dub test` 33 modules, editor-smoke, synced-preroll-smoke,
+      static-sequence-smoke all pass; `aurora-cut.exe` rebuilt at the repo root.
+
+## 2026-08-18 (6th pass) — Snap toggle button shows active state in blue
+
+User request: when timeline snapping is activated the corresponding button
+must be blue (pressed/active accent), like the Loop transport button.
+
+- [x] Stored the snap header button as `_snapButton` (id `timeline-snap`) and
+      added `updateSnapButton()` which applies `setAccent(snappingEnabled)`,
+      mirroring the Loop button's `setAccent(_loopEnabled)` pattern. Called on
+      click and once after `_timeline` is constructed (snapping defaults ON, so
+      the button starts blue).
+- [x] Added `snappingEnabledForTesting()` hook.
+- [x] **Test** (editor-smoke): samples a background pixel of the button (dark
+      theme accent `0x4f8cff`) — asserts it is blue while snapping is on, not
+      blue after toggling off, and blue again after re-enabling. Note: the
+      pointer is moved off the button before sampling because a clicked button
+      stays hovered and paints `accentHover`.
+- [x] **Verified:** `dub test` 33 modules and editor-smoke pass;
+      `aurora-cut.exe` rebuilt at the repo root.

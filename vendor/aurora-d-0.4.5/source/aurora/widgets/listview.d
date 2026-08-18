@@ -213,6 +213,11 @@ class ListView : Widget
     {
         if (_verticalScrollbar is null) return;
         const maximum = maxScroll();
+        // A resize can shrink the content viewport below a previously applied
+        // scroll offset (for example a popup panel grown after its initial
+        // layout). Re-clamp so the field and scrollbar cannot disagree and
+        // silently scroll every row out of view.
+        if (_scrollOffset > maximum) applyScrollOffset(maximum);
         _verticalScrollbar.setBounds(Rect(
             maxInt(0, bounds().width - _scrollbarWidth - 3), 4,
             _scrollbarWidth, maxInt(1, bounds().height - 8)));
@@ -275,12 +280,20 @@ class ListView : Widget
             }
             else
             {
-                content.drawTextInRect(Rect(textLeft, y + 2,
-                    maxInt(0, contentWidth - textLeft - 12), 22),
+                // Split the row height in two so the secondary line can never
+                // paint past the row boundary and overlap the next item. A tall
+                // row keeps both lines readable; a short row still confines them.
+                const mainHeight = maxInt(12, (maxInt(2, _rowHeight) - 4) / 2);
+                const mainTop = y + 2;
+                const secondaryTop = y + 2 + mainHeight;
+                const secondaryHeight = maxInt(2,
+                    maxInt(1, _rowHeight) - (secondaryTop - y));
+                content.drawTextInRect(Rect(textLeft, mainTop,
+                    maxInt(0, contentWidth - textLeft - 12), mainHeight),
                     item.text, foreground, palette.fontScale,
                     HorizontalAlign.left, VerticalAlign.top, true);
-                content.drawTextInRect(Rect(textLeft, y + 24,
-                    maxInt(0, contentWidth - textLeft - 12), 18),
+                content.drawTextInRect(Rect(textLeft, secondaryTop,
+                    maxInt(0, contentWidth - textLeft - 12), secondaryHeight),
                     item.secondary, foreground.withAlpha(180), 1,
                     HorizontalAlign.left, VerticalAlign.top, true);
             }

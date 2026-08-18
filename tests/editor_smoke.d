@@ -124,6 +124,22 @@ private Point mediaRowPoint(ListView list, int index)
         origin.y + index * list.rowHeight() - list.scrollOffset() + list.rowHeight() / 2);
 }
 
+private int rowIndexForText(ListView list, dstring text)
+{
+    const items = list.items();
+    foreach (index, item; items)
+        if (item.text == text) return cast(int) index;
+    return -1;
+}
+
+private int rowIndexContaining(ListView list, dstring fragment)
+{
+    const items = list.items();
+    foreach (index, item; items)
+        if (item.text.canFind(fragment)) return cast(int) index;
+    return -1;
+}
+
 private Point clipCenter(TimelineWidget timeline, TrackAddress address, int index)
 {
     const rect = timeline.clipRectForTesting(address, index);
@@ -1015,13 +1031,87 @@ int main(string[] arguments)
     driver.click(globalCenter(undoButton));
     assert(editor.modelForTesting().trackValue(v1).clips.length == 0,
         "Global Undo button did not revert the added sequence item");
-    assert(!undoButton.enabled() && redoButton.enabled(),
+    assert(redoButton.enabled(),
         "Global Redo button did not enable after undo");
     driver.click(globalCenter(redoButton));
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1,
         "Global Redo button did not restore the sequence item");
     assert(undoButton.enabled() && !redoButton.enabled(),
         "Global Undo/Redo button state was wrong after redo");
+
+// Undo/Redo history popup: the toolbar History button opens a standard flat,
+    // numbered list of the timeline actions with the current state highlighted.
+    // Clicking an entry jumps straight to that state WITHOUT reordering rows.
+    auto historyButton = requireWidget!Button(editor, "history");
+    assert(historyButton.text() == "History ▾"d &&
+        historyButton.bounds().x >= redoButton.bounds().right(),
+        "History button is not directly to the right of Redo");
+    driver.click(globalCenter(historyButton));
+    assert(driver.paint(), "History popup did not paint");
+    auto historyList = requireWidget!ListView(editor, "history-list");
+    auto historyHint = requireWidget!Label(editor, "history-hint");
+    // The list is a flat chronological history: an Initial state row, then the
+    // numbered actions oldest-first, with the current (last, no redo) row
+    // highlighted as "You are here".
+    assert(rowIndexForText(historyList, "Initial state"d) == 0,
+        "History popup did not begin with the Initial state row");
+    const setRangeRow = rowIndexContaining(historyList, "Set export range out"d);
+    const clearRangeRow = rowIndexContaining(historyList, "Clear export range"d);
+    const placeClipRow = rowIndexContaining(historyList, "Place clip"d);
+    assert(setRangeRow == 1 && clearRangeRow == 2 && placeClipRow == 3,
+        "History popup did not list the actions oldest-first with numbers");
+    const currentRow = historyList.selectedIndex();
+    assert(currentRow == placeClipRow &&
+        currentRow == cast(int) historyList.items().length - 1 &&
+        historyList.items()[cast(size_t) currentRow].secondary == "You are here"d,
+        "History popup did not highlight the current state");
+    assert(historyList.items()[cast(size_t) setRangeRow].secondary ==
+        "Click to undo 2 steps"d &&
+        historyList.items()[cast(size_t) clearRangeRow].secondary ==
+            "Click to undo 1 step"d &&
+        historyList.items()[0].secondary == "Click to undo 3 steps"d,
+        "History popup did not describe the exact undo step counts");
+    assert(historyHint.text().canFind("Undo: "d) &&
+        historyHint.text().canFind("Redo: 0 available"d),
+        "History popup hint did not report the available undo/redo counts");
+    // Snapshot the row order so we can prove clicks never reorder the list.
+    dstring[] rowsBefore;
+    foreach (item; historyList.items()) rowsBefore ~= item.text;
+    // Clicking a past entry undoes straight back to the empty timeline.
+    driver.click(mediaRowPoint(historyList, clearRangeRow));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 0,
+        "Clicking a past history entry did not undo to that state");
+    assert(historyList.selectedIndex() == clearRangeRow &&
+        historyList.items()[cast(size_t) clearRangeRow].secondary == "You are here"d,
+        "History popup did not highlight the jumped-to state");
+    assert(historyList.items()[cast(size_t) placeClipRow].secondary ==
+        "Click to redo 1 step"d,
+        "History popup did not restyle the future entry as a redo target");
+    dstring[] rowsAfterUndo;
+    foreach (item; historyList.items()) rowsAfterUndo ~= item.text;
+    assert(rowsAfterUndo == rowsBefore,
+        "Clicking a history entry reordered the list");
+    assert(redoButton.enabled(),
+        "History jump did not move the clip state into the redo stack");
+    assert(historyHint.text().canFind("Redo: 1 available"d),
+        "History popup hint did not update after the undo jump");
+    // Clicking the future entry redoes straight back to the placed clip.
+    driver.click(mediaRowPoint(historyList, placeClipRow));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1,
+        "Clicking a future history entry did not redo to that state");
+    assert(historyList.selectedIndex() == placeClipRow &&
+        historyList.items()[cast(size_t) placeClipRow].secondary == "You are here"d,
+        "History popup did not highlight the restored current state");
+    dstring[] rowsAfterRedo;
+    foreach (item; historyList.items()) rowsAfterRedo ~= item.text;
+    assert(rowsAfterRedo == rowsBefore,
+        "Clicking a future history entry reordered the list");
+    assert(undoButton.enabled() && !redoButton.enabled(),
+        "History jump did not restore the clip state to the undo stack");
+    driver.pressKey(Key.escape);
+    assert(findById(editor, "history-list") is null,
+        "Esc did not dismiss the History popup");
+
     // Regression: the first clip must keep the timeline viewport anchored at
     // sequence zero. Previously transport auto-follow silently scrolled the
     // ruler to ~00:00:16, making the clipped V1 body look as though it began
@@ -1741,6 +1831,183 @@ int main(string[] arguments)
         driver.pressKey(Key.escape);
         assert(!editor.playbackRunningForTesting(),
             "Mid-playback loop test playback did not stop cleanly");
+    }
+
+    // Regression: a session that first played WITHOUT loop, then paused,
+    // then enabled loop and set the markers, must confine the transport to
+    // the markers when Play is pressed again. Previously resumePlayback kept
+    // the stale full-sequence bounds and the transport wrapped to the
+    // sequence start instead of the In marker.
+    {
+        auto loopButton = requireWidget!Button(editor, "loop-preview");
+        assert(!editor.loopEnabledForTesting(),
+            "Loop playback was already enabled before the resume-loop test");
+        editor.clearWorkRangeForTesting();
+        timeline.setPlayhead(0.2, false);
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Playback did not start for the resume-loop test");
+        assert(fabs(editor.playbackStartForTesting()) < 0.001,
+            "Initial loop-off playback did not start at sequence zero");
+        driver.click(globalCenter(playSource));
+        assert(!editor.playbackRunningForTesting(),
+            "Pause did not stop playback for the resume-loop test");
+        editor.setWorkInForTesting(0.5);
+        editor.setWorkOutForTesting(0.9);
+        driver.click(globalCenter(loopButton));
+        assert(editor.loopEnabledForTesting(),
+            "Loop button did not enable loop playback while paused");
+        assert(fabs(editor.playbackStartForTesting() - 0.5) < 0.001 &&
+            fabs(editor.playbackEndForTesting() - 0.9) < 0.001,
+            "Enabling loop while paused did not confine the idle transport to the markers");
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Resume after enabling loop did not start sequence playback");
+        assert(fabs(editor.playbackStartForTesting() - 0.5) < 0.001 &&
+            fabs(editor.playbackEndForTesting() - 0.9) < 0.001,
+            "Resume playback lost the loop-confined bounds and reverted to the full sequence");
+        assert(waitForLoopWrap(editor, 0.85, 0.75),
+            "Resumed loop playback did not wrap at the Out marker");
+        assert(editor.sequencePlaybackForTesting(),
+            "Resumed loop playback stopped instead of wrapping");
+        driver.click(globalCenter(loopButton));
+        assert(!editor.loopEnabledForTesting(),
+            "Loop button did not disable loop playback");
+        editor.clearWorkRangeForTesting();
+        driver.pressKey(Key.escape);
+        assert(!editor.playbackRunningForTesting(),
+            "Resume-loop test playback did not stop cleanly");
+    }
+
+    // Setting, clearing, and restoring the export-range In/Out marks must be
+    // tracked by global Undo/Redo like any other timeline edit.
+    {
+        assert(!editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting(),
+            "Work-area marks existed before the undo/redo test");
+        editor.setWorkInForTesting(0.5);
+        editor.setWorkOutForTesting(0.9);
+        assert(editor.hasWorkInForTesting() && editor.hasWorkOutForTesting() &&
+            fabs(editor.workInForTesting() - 0.5) < 0.001 &&
+            fabs(editor.workOutForTesting() - 0.9) < 0.001,
+            "Setting the In/Out marks did not stick before the undo test");
+        editor.clearWorkRangeForTesting();
+        assert(!editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting(),
+            "clearWorkRange did not clear the export marks");
+        driver.click(globalCenter(undoButton));
+        assert(editor.hasWorkInForTesting() && editor.hasWorkOutForTesting() &&
+            fabs(editor.workInForTesting() - 0.5) < 0.001 &&
+            fabs(editor.workOutForTesting() - 0.9) < 0.001,
+            "Undo did not restore the cleared export marks");
+        driver.click(globalCenter(undoButton));
+        assert(editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting() &&
+            fabs(editor.workInForTesting() - 0.5) < 0.001,
+            "Undo did not restore the In-only mark state");
+        driver.click(globalCenter(undoButton));
+        assert(!editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting(),
+            "Undo did not reach the no-marks state");
+        driver.click(globalCenter(redoButton));
+        assert(editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting() &&
+            fabs(editor.workInForTesting() - 0.5) < 0.001,
+            "Redo did not restore the In-only mark state");
+        driver.click(globalCenter(redoButton));
+        assert(editor.hasWorkInForTesting() && editor.hasWorkOutForTesting() &&
+            fabs(editor.workInForTesting() - 0.5) < 0.001 &&
+            fabs(editor.workOutForTesting() - 0.9) < 0.001,
+            "Redo did not restore both export marks");
+        editor.clearWorkRangeForTesting();
+    }
+
+    // The timeline playhead is a free cursor: it must be draggable outside the
+    // active playback bounds (the loop In/Out markers) to inspect the rest of
+    // the sequence, and must stay parked there until Play is pressed again.
+    {
+        auto loopButton = requireWidget!Button(editor, "loop-preview");
+        assert(!editor.loopEnabledForTesting(),
+            "Loop playback was already enabled before the free-playhead test");
+        editor.setWorkInForTesting(0.5);
+        editor.setWorkOutForTesting(0.9);
+        timeline.setPlayhead(0.5, false);
+        driver.click(globalCenter(loopButton));
+        assert(editor.loopEnabledForTesting(),
+            "Loop button did not enable loop playback for the free-playhead test");
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Playback did not start for the free-playhead test");
+        assert(fabs(editor.playbackStartForTesting() - 0.5) < 0.001 &&
+            fabs(editor.playbackEndForTesting() - 0.9) < 0.001,
+            "Loop playback did not confine to the marks for the free-playhead test");
+        // Drag the playhead past the loop Out marker: it must park there.
+        editor.seekForTesting(1.2);
+        foreach (_; 0 .. 10) editor.tickTree(0.02);
+        assert(fabs(editor.playbackPositionForTesting() - 1.2) < 0.01,
+            "Playhead dragged outside the loop range was clamped or wrapped back into it");
+        assert(!editor.playbackRunningForTesting(),
+            "Parking the playhead outside the loop range did not stop playback");
+        // Dragging before the In marker parks there too.
+        editor.seekForTesting(0.2);
+        foreach (_; 0 .. 10) editor.tickTree(0.02);
+        assert(fabs(editor.playbackPositionForTesting() - 0.2) < 0.01,
+            "Playhead dragged before the loop In marker was clamped back into the range");
+        // Pressing Play re-enters the loop range and starts from the In marker.
+        driver.click(globalCenter(playSource));
+        assert(editor.playbackRunningForTesting() &&
+            editor.sequencePlaybackForTesting(),
+            "Play after parking outside the loop range did not resume");
+        const resumed = editor.playbackPositionForTesting();
+        assert(resumed >= 0.5 - 0.02 && resumed <= 0.9 + 0.02,
+            "Resumed playback did not re-enter the loop range after parking outside");
+        driver.click(globalCenter(loopButton));
+        assert(!editor.loopEnabledForTesting(),
+            "Loop button did not disable loop playback");
+        editor.clearWorkRangeForTesting();
+        driver.pressKey(Key.escape);
+        assert(!editor.playbackRunningForTesting(),
+            "Free-playhead test playback did not stop cleanly");
+    }
+
+    // The timeline snap toggle must show its active state with the blue accent
+    // background, matching the Loop transport button, and clear it when off.
+    {
+        auto snapButton = requireWidget!Button(editor, "timeline-snap");
+        assert(snapButton !is null, "Snap button is missing from the sequence header");
+        const accentArgb = Color.fromHex(0x4f8cff).argb();
+        // Snap a background pixel just above the vertically-centered text.
+        auto snapPixel = delegate() {
+            // Move the pointer off the button so it paints the plain accent
+            // (a clicked button stays hovered and would render accentHover).
+            driver.moveTo(Point(0, 0));
+            assert(driver.paint(), "Snap button accent repaint failed");
+            auto surface = window.surface();
+            const pitch = surface.width();
+            const center = globalCenter(snapButton);
+            const origin = snapButton.localToGlobal(Point(0, 0));
+            const point = window.displayScale().logicalToPhysical(
+                Point(center.x, origin.y + 3));
+            return surface.pixels()[cast(size_t) point.y * pitch + point.x];
+        };
+        assert(editor.snappingEnabledForTesting(),
+            "Timeline snapping did not start enabled");
+        assert(snapButton.text() == "Snap On"d,
+            "Snap button did not start with the On label");
+        assert(snapPixel() == accentArgb,
+            "Snap button was not accented (blue) while snapping is active");
+        driver.click(globalCenter(snapButton));
+        assert(!editor.snappingEnabledForTesting(),
+            "Clicking the snap button did not disable snapping");
+        assert(snapButton.text() == "Snap Off"d,
+            "Snap button did not switch to the Off label");
+        assert(snapPixel() != accentArgb,
+            "Snap button stayed accented (blue) after snapping was disabled");
+        driver.click(globalCenter(snapButton));
+        assert(editor.snappingEnabledForTesting(),
+            "Clicking the snap button again did not re-enable snapping");
+        assert(snapButton.text() == "Snap On"d,
+            "Snap button did not switch back to the On label");
+        assert(snapPixel() == accentArgb,
+            "Snap button did not regain the blue accent after re-enabling");
     }
 
     // Text placement is one-shot, existing clips remain selectable while the
