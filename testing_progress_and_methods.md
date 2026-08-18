@@ -2660,3 +2660,165 @@ Phase 5 - non-blocking audit (`playback.d`):
   -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib tests\<name>.d
   -of=build\<name>.exe` then run with `AURORA_RENDERER=software` and
   `SDL_AUDIODRIVER=dummy`.
+
+## Timeline playback: never stop, never desync, prewarm/cache (2026-08-18)
+
+User: playback feels burdened/unpredictable and stops for performance reasons;
+want prewarming+caching so playback, playhead moves, and the wait after a move
+never stop or desync, at efficient perfect playhead playback with no latency.
+
+### What changed and why (verified against `editor.d` onTick + `playback.d`)
+
+1. **Hard "Buffering video…" stop removed (`editor.d`).** The old transport
+   entered `waitForVideoBuffer()` whenever the displayed frame lagged the audio
+   clock by > `playbackVideoLagToleranceSeconds` (0.075), which PAUSED audio
+   and the transport, then re-prerolled. That pause is the "randomly stopping"
+   experience. The whole `_playbackVideoWaiting` state machine was deleted
+   (fields, `waitForVideoBuffer`/`resumeAfterVideoBuffer`/
+   `advancingVideoWaitClock`, the waiting branch in onTick, the EOF-while-
+   waiting block, `playbackReady()`'s `!_playbackVideoWaiting`, the
+   `simulateVideoBufferWaitForTesting` hook). The transport now keeps the audio
+   clock running and the display catches up by fast-forwarding stale frames via
+   the ordinary `takeReadyAtOrBefore(clock + lead)` pull, so it never pauses
+   for video performance.
+2. **Deeper video frame queue (`playback.d`).** `videoFrameSlotCount` 16 → 24
+   (≈0.8 s at 30 fps), absorbing ordinary decode jitter. The prewarm keep-alive
+   forward window widened `32/fps` → `48/fps` (two slot-queues) in
+   `startPlaybackPrewarm`.
+3. **Adaptive decode height (`editor.d`).** ~~During steady playback, if the
+   frame queue stays empty ≥ 0.30 s the decode/composite height steps down one
+   ladder rung (1080→720→540→480→360→240) and the video stream restarts at the
+   current audio position, stepping back up after 12 s stable.~~ **REVERTED**
+   — this mid-playback stream restart was the cause of the black screen on Play
+   in the real GUI (see the follow-up section below). Playback now never
+   restarts a stream mid-flight; a slow decoder simply holds the last frame and
+   catches up by dropping stale frames.
+4. **Prewarm immediacy (`editor.d`).** `playbackPrewarmDelaySeconds` 0.10 →
+   0.06; a committed paused seek sets `_playbackPrewarmPrompt` so
+   `updatePlaybackPrewarm` starts the warm decoder on the next tick instead of
+   waiting out the settle debounce again. All prewarm/prepare/still paths use
+   `liveDecodeHeight()`, so prewarm always matches what Play would start.
+5. **Concurrent paused audio (`editor.d`).** `startPlaybackStreams` calls
+   `startPlaybackAudio(true)` at the same time the video decoder spawns, so
+   time-to-sound overlaps the video spawn. The first-frame handler still gates
+   presentation on the prerolled frame and resumes the paused audio.
+6. **Live compositor efficiency + aspect parity (`editor.d`).** Live playback
+   previously built `ExportPreset.previewForHeight(renderHeight)` (fixed 16:9)
+   and let `compositeStreamArguments` force-scale to the decode size — wasted
+   pixels AND stretched portrait/square sequences. New
+   `previewPlaybackPreset(Size decode)` builds the preset directly from the
+   decode size, so the `[vout]scale=` tail is elided (no double render) and the
+   aspect matches. `requestPlaybackStill`/`dispatchPendingPreview` follow the
+   same decode height, so pause/scrub and play agree.
+
+### How to verify (headless, deterministic)
+
+- `tests/editor_smoke.d` EOF regression: after the decoder finishes, playback
+  must continue and complete at `_playbackEnd` with no "Video decoder
+  ended before the next frame was ready" status. Direct-playback audio
+  assertions now expect a PAUSED audio request at Play (concurrent spawn) with
+  presentation still gated on the first prerolled frame.
+- `tests/synced_playback_preroll_smoke.d`: same concurrent-paused-audio
+  assertion update.
+- Gate on this host: `dub test` (33 modules), editor-smoke (3x), synced-
+  preroll-smoke, static-sequence-smoke, seek-resilience-smoke (with
+  base-av.mp4), playback-stress, audio-clock-smoke, playback-proxy-smoke, and
+  `dub build`. Build/run on Windows with dmd as documented above.
+- Pre-existing (also fails on the base commit, unrelated to this change):
+  `playback_seek_resilience_smoke.d` line 115 fails when its video arg is
+  `stress.mp4` (2.0 s real file declared 3.0 s); it passes with `base-av.mp4`.
+  Worth a follow-up on the media/duration mismatch.
+- Manual GUI pass still worthwhile on this 4-CPU host: play a multi-clip live
+  timeline under load (status must never show "Buffering video…", playback must
+  not stop), and scrub then press Play quickly to confirm the warm stream is
+  adopted.
+
+### Follow-up: black screen on Play in the real GUI (2026-08-18, reverted)
+
+User reported that after the rework, pressing Play in the real app showed only
+a black screen. Evidence-based diagnosis and resolution:
+
+1. **The user's real session log** (`aurora-cut.log`, 20:05:58, Vulkan,
+   `raiserfredposts.auroracut` = portrait 720x960 shorts project, webm VP9
+   source + text overlays) showed "Adaptive playback decode switched to
+   320x420" / "320x360" firing THREE times in ~40 s. Every downgrade ran
+   `restartPlaybackVideoAtPlaybackClock()` — a mid-playback stream teardown +
+   FFmpeg respawn while the audio clock kept running. On this slow machine the
+   respawned lower-resolution composite could not catch the already-running
+   audio clock, so the transport held the last frame while re-prerolling; the
+   preview stayed frozen/black while audio played on.
+2. **Headless reproduction proves the frames are correct**: new
+   `tests/live_portrait_playback_repro.d` drives a real `EditorRoot` with the
+   user's actual proxy mp4 AND the actual VP9 webm, a portrait 720x960
+   composition, a V1 transform and a text overlay (forcing the live composition
+   path), then samples an 8x8 grid of preview pixels every 250 ms. Average
+   brightness stays ~40-80 across a 10 s run at a 320x390 decode — NON-BLACK.
+   Command (Windows):
+   `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+   tests\live_portrait_playback_repro.d -of=build\repro.exe -Luser32.lib
+   -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib` then run with
+   `AURORA_RENDERER=software SDL_AUDIODRIVER=dummy build\repro.exe <media>`.
+3. **Resolution**: removed the entire adaptive-decode mechanism (fields,
+   ladder constants, `downgradePlaybackDecode`/`upgradePlaybackDecode`/
+   `restartPlaybackVideoAtPlaybackClock`, the `_playbackRestartPending`
+   first-frame branch, the onTick queue-empty detector, test hooks, and the
+   editor-smoke adaptive regression). All decode-height call sites restored to
+   `liveDecodeHeight()`. Playback never restarts a stream mid-flight now; a
+   slow decoder only holds the last frame and catches up by dropping stale
+   frames (original "never stop, never desync" behavior) with no resolution
+   churn. Kept the safe fixes: 24-slot queue, prewarm prompt + 60 ms debounce,
+   48/fps prewarm window, concurrent paused audio, no hard "Buffering video…"
+   stop, aspect-correct `previewPlaybackPreset`.
+4. **Verified** after the revert: `dub test` 33 modules, `dub build`,
+   editor-smoke, synced-preroll-smoke, static-sequence-smoke, seek-resilience
+   -smoke (with base-av), playback-stress, audio-clock-smoke, playback-proxy
+   -smoke all pass; the portrait live-composition repro plays non-black with
+   the user's exact webm.
+5. If the black screen persists in the real GUI after this build, the remaining
+   suspects are GUI-only and need a screenshot/debug session, not headless
+   assertions: the Vulkan renderer's `drawRgbImage`, the real waveOut clock
+   interacting with concurrent-paused audio, or the hardware-decode path.
+
+### REAL root cause of the black screen: H.264-probed hardware decode forced onto AV1 (2026-08-18, 3rd pass)
+
+The black screen persisted after the adaptive revert, so the previous diagnosis
+was wrong. Definitively reproduced and fixed:
+
+1. **Reproduction.** Added `openProjectForTesting` to `EditorRoot` and
+   `tests/playback_black_screen_repro.d` which opens the user's real project
+   (`raiserfredposts.auroracut`), scrubs, presses Play, and samples both the
+   raw preview frame (`preview.pixelForTesting`) and the rendered window
+   surface (`window.surface().pixels()`), saving BMP snapshots. With the user's
+   project headless:
+   - Scrub still: RAW brightness 91 (visible).
+   - After Play: RAW avgRGB **0,0,0** the whole run — the composite stream
+     emitted pure black frames. Window surface ~46% near-black.
+   - ffmpeg stderr: `Decode error rate 1 exceeds maximum 0.666667` (AV1).
+2. **Root cause.** The user's source is an **AV1 .webm** (720x960) whose stored
+   `videoCodec` is **empty** (stale project file; ffprobe does report `av1`).
+   Hardware decode (`-hwaccel d3d11va/dxva2/cuda`) is probed at startup
+   `decoderWorks()` against an **H.264 sample only** (`writeDecodeProbeSample`
+   encodes `testsrc2` with `libx264`). But `appendInputArguments` (exporter.d)
+   and `playbackDecodeInputOptions` (editor.d) applied those options to ANY
+   input whose stored codec wasn't exactly `"av1"`. Forcing the H.264-validated
+   accelerator onto AV1 fails the AV1 decode → the compositor graph outputs its
+   `color=c=black` canvas → pure black playback. Scrub looked fine only because
+   the PreviewService returned a cached still.
+3. **Fix.** In `appendInputArguments` (exporter.d): the probed decode options are
+   zeroed unless the input codec is a known `h264`/`hevc`/`h265`; detected
+   `av1` (and huge empty-codec downloads) still get `-c:v libdav1d`; any other
+   or unknown codec decodes on the CPU where FFmpeg auto-selects the right
+   decoder. Same rule applied in `playbackDecodeInputOptions` (editor.d).
+4. **Verification.** `playback_black_screen_repro.d` on the user's project now
+   shows RAW brightness ~130-140 during Play (real video), no AV1 errors.
+   `dub test` 33 modules, `dub build`, and the full playback battery pass.
+5. **How to re-run the reproduction** (headless, software renderer):
+   `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+   tests\playback_black_screen_repro.d -of=build\blackscreen.exe -Luser32.lib
+   -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib`, then
+   `AURORA_RENDERER=software SDL_AUDIODRIVER=dummy build\blackscreen.exe
+   <project.auroracut> software`. BMPs land in `%TEMP%\black-screen-*.bmp`.
+6. Follow-up (perf, not black): live-composition playback decodes the ORIGINAL
+   AV1 webm on the CPU instead of the 540x720 H.264 playback proxy. Consider
+   proxy substitution in the playback composite request (`enablePlaybackDecode`),
+   mirroring `playbackAssetForPreview` in the direct path.

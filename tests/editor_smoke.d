@@ -1127,9 +1127,16 @@ int main(string[] arguments)
         "Plain V1 playback unexpectedly started a composition render");
     assert(editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
         "Direct V1 playback bypassed first-frame preroll");
-    assert(editor.audioStatsForTesting().requests ==
+    // Audio is now started PAUSED concurrently with the video decoder so the
+    // press-Play-to-sound latency overlaps the video spawn instead of
+    // serializing behind it. The transport must still gate presentation on the
+    // first prerolled frame: the audio request may already exist (paused), but
+    // playback must not be presenting before that frame.
+    assert(editor.audioStatsForTesting().requests >
         audioStatsBeforeDirectPlayback.requests,
-        "Direct Composition Preview started audio before a matching video frame");
+        "Direct Composition Preview did not start audio concurrently (paused) with the video decoder");
+    assert(editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
+        "Direct V1 playback presented before the first prerolled frame");
     assert(waitForFrame(editor, preview, 0.0, 600),
         "Direct V1 playback did not produce an embedded frame");
     assert(waitForPlaybackReady(editor, preview),
@@ -1141,12 +1148,12 @@ int main(string[] arguments)
         audioStatsBeforeDirectPlayback.requests,
         "Direct Composition Preview did not request preview audio");
 
-    // Regression: a video decoder that reaches the end of its range while the
-    // transport is buffering must resume and complete, never halt with "Video
-    // decoder ended before the next frame was ready". First let the direct
-    // stream decode its whole range normally (no halt occurs while not
-    // waiting), then force the buffering state so the finished decoder is
-    // observed while the transport waits. It must resume, never halt.
+    // Regression: a video decoder that reaches the end of its range must never
+    // halt playback with "Video decoder ended before the next frame was ready".
+    // The transport no longer pauses to buffer when the decoder lags — it keeps
+    // the transport clock running, drains the queued tail frames, and completes
+    // at the sequence end. Let the direct stream decode its whole range, then
+    // confirm the finished decoder leaves the transport running to the end.
     bool decoderEnded;
     foreach (_; 0 .. 2_000)
     {
@@ -1163,18 +1170,20 @@ int main(string[] arguments)
         "Direct video decoder never reached the end of its range");
     assert(editor.playbackRunningForTesting(),
         "Playback finished before the completed decoder could be observed");
-    editor.simulateVideoBufferWaitForTesting();
-    assert(editor.playbackVideoWaitingForTesting(),
-        "Simulated video buffer wait was not entered");
-    editor.tickTree(0.02);
-    foreach (_; 0 .. 400)
+    bool completed;
+    foreach (_; 0 .. 800)
     {
-        if (!editor.playbackRunningForTesting()) break;
         editor.tickTree(0.02);
+        if (editor.playbackPositionForTesting() >=
+            editor.playbackEndForTesting() - 0.03)
+        {
+            completed = true;
+            break;
+        }
+        if (!editor.playbackRunningForTesting()) break;
         Thread.sleep(5.msecs);
     }
-    assert(editor.playbackPositionForTesting() >=
-        editor.playbackEndForTesting() - 0.03,
+    assert(completed,
         "Playback halted before the sequence end after the video stream ended");
     assert(!editor.statusTextForTesting().canFind(
         "Video decoder ended before the next frame was ready"),

@@ -786,9 +786,6 @@ final class EditorRoot : VBox
     private bool _playbackAudioStarted;
     private bool _playbackAudioRequired;
     private bool _playbackAwaitingAudioClock;
-    private bool _playbackVideoWaiting;
-    private double _playbackVideoWaitClock;
-    private MonoTime _playbackVideoWaitClockStarted;
     private double _playbackAudioClockWait;
     private double _playbackAudioClockLostWait;
     private ulong _playbackModelRevision;
@@ -845,7 +842,7 @@ final class EditorRoot : VBox
     // playhead settles. Once active, the prewarm is kept alive (quiescent)
     // while the playhead stays inside its buffered window; it is only torn
     // down by an edit, a playhead exit, or a Play that does not adopt it.
-    private enum double playbackPrewarmDelaySeconds = 0.10;
+    private enum double playbackPrewarmDelaySeconds = 0.06;
     // Readiness gates: how long to wait for the audio device clock before
     // falling back to the monotonic transport clock (video plays muted), and
     // how long to wait for the first decoded frame before reporting a failure
@@ -863,6 +860,9 @@ final class EditorRoot : VBox
     private bool _playbackAwaitingFirstFrame;
     private double _playbackFirstFrameWait;
     private double _playbackPrewarmForwardWindow = 0.5;
+    // Set when a paused seek commits, so the background prewarm starts on the
+    // next tick instead of waiting out the settle debounce again.
+    private bool _playbackPrewarmPrompt;
     private bool _seekPending;
     private bool _seekGesture;
     private bool _seekResumePlayback;
@@ -1032,6 +1032,7 @@ final class EditorRoot : VBox
     void setWorkOutForTesting(double value) { setWorkOut(value); }
     void setWorkInForTesting(double value) { setWorkIn(value); }
     void clearWorkRangeForTesting() { clearWorkRange(); }
+    void openProjectForTesting(string path) { openProject(path); }
     bool loopEnabledForTesting() const { return _loopEnabled; }
     double playbackEndForTesting() const { return _playbackEnd; }
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
@@ -1039,7 +1040,6 @@ final class EditorRoot : VBox
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
     bool videoStreamFinishedForTesting() { return _videoStream.finished(); }
     bool videoStreamHasReadyFramesForTesting() { return _videoStream.hasReadyFrames(); }
-    bool playbackVideoWaitingForTesting() const { return _playbackVideoWaiting; }
     bool playbackReadyForTesting() const { return playbackReady(); }
     double playbackPrewarmForwardWindowForTesting() const
     {
@@ -1049,7 +1049,6 @@ final class EditorRoot : VBox
     /** Force the transport into the "buffering video" state exactly as a
      * lagging display would, so tests can exercise the finished-while-waiting
      * path deterministically without depending on decode speed. */
-    void simulateVideoBufferWaitForTesting() { waitForVideoBuffer(); }
     bool seekPendingForTesting() const { return _seekPending; }
     bool deferredSequenceRefreshForTesting() const { return _sequenceRefreshDeferred; }
     ulong playbackRevisionForTesting() const { return _playbackModelRevision; }
@@ -5768,7 +5767,6 @@ final class EditorRoot : VBox
         _playbackRunning = true;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
-        _playbackVideoWaiting = false;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _lastTimeLabelPlaybackPosition = -1.0;
@@ -5887,7 +5885,7 @@ final class EditorRoot : VBox
         if (_sequencePlaybackLive)
         {
             const renderHeight = liveDecodeHeight();
-            auto preset = ExportPreset.previewForHeight(renderHeight);
+            auto preset = previewPlaybackPreset(decode);
             auto request = buildExportRequest(ExportKind.mp4, "", preset,
                 false, true);
             request.renderTitles = false;
@@ -5936,6 +5934,7 @@ final class EditorRoot : VBox
         _playbackPrewarmActive = false;
         _playbackPrewarmDelay = 0.0;
         _playbackPrewarmIdle = 0.0;
+        _playbackPrewarmPrompt = false;
         _playbackPrewarmVideoSignature = "";
         _playbackPrewarmAudioSignature = "";
         _playbackPrewarmHasVideoStream = false;
@@ -6004,7 +6003,7 @@ final class EditorRoot : VBox
                 else if (_sequencePlaybackLive)
                 {
                     const renderHeight = liveDecodeHeight();
-                    auto preset = ExportPreset.previewForHeight(renderHeight);
+                    auto preset = previewPlaybackPreset(decode);
                     auto request = buildExportRequest(ExportKind.mp4, "", preset,
                         false, true);
                     request.renderTitles = false;
@@ -6144,7 +6143,7 @@ final class EditorRoot : VBox
                 else
                 {
                     const renderHeight = liveDecodeHeight();
-                    auto preset = ExportPreset.previewForHeight(renderHeight);
+                    auto preset = previewPlaybackPreset(decode);
                     auto request = buildExportRequest(ExportKind.mp4, "", preset,
                         false, true);
                     request.renderTitles = false;
@@ -6173,7 +6172,7 @@ final class EditorRoot : VBox
             // not tear the warm streams down.
             _playbackPrewarmForwardWindow =
                 _playbackPrewarmHasVideoStream ?
-                cast(double) 32 / cast(double) max(1, fps) : 0.6;
+                cast(double) 48 / cast(double) max(1, fps) : 0.6;
             _playbackPrewarmActive = true;
             _playbackPrewarmRevision = _modelRevision;
             appLog(format("Prewarmed %s playback at %.3f",
@@ -6230,6 +6229,14 @@ final class EditorRoot : VBox
             return;
         }
         _playbackPrewarmDelay += deltaSeconds;
+        if (_playbackPrewarmPrompt)
+        {
+            // A paused seek just committed and the playhead settled by
+            // definition; start the warm decoder on the next tick instead of
+            // waiting out the settle debounce again.
+            _playbackPrewarmPrompt = false;
+            _playbackPrewarmDelay = playbackPrewarmDelaySeconds;
+        }
         if (_playbackPrewarmDelay < playbackPrewarmDelaySeconds) return;
         _playbackPrewarmDelay = 0.0;
         startPlaybackPrewarm();
@@ -6280,7 +6287,7 @@ final class EditorRoot : VBox
         else if (liveSequence)
         {
             const renderHeight = liveDecodeHeight();
-            auto preset = ExportPreset.previewForHeight(renderHeight);
+            auto preset = previewPlaybackPreset(decode);
             auto request = buildExportRequest(ExportKind.mp4, "", preset,
                 false, true);
             request.renderTitles = false;
@@ -6329,7 +6336,6 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _seekResumePlayback = false;
@@ -6356,7 +6362,6 @@ final class EditorRoot : VBox
         _audioPlayer.stop();
         _playbackAudioStarted = false;
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackClockValid = false;
@@ -6374,7 +6379,7 @@ final class EditorRoot : VBox
     private bool playbackReady() const
     {
         return !_playbackAwaitingFirstFrame && !_playbackAwaitingAudioClock &&
-            !_playbackVideoWaiting && _playbackClockValid;
+            _playbackClockValid;
     }
 
     /** Bound a stuck playback start: stop the streams and report the failure
@@ -6386,7 +6391,6 @@ final class EditorRoot : VBox
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAudioClockWait = 0.0;
@@ -6420,12 +6424,20 @@ final class EditorRoot : VBox
         if (asset !is null && asset.hasVideo)
         {
             const codec = asset.videoCodec.toLower();
-            // Existing project files may not contain codec metadata. Their
-            // large-frame dimensions still identify the downloaded AV1 media
-            // that must not receive the startup H.264-only D3D11VA probe.
-            if (codec == "av1" || (codec.length == 0 && asset.width >= 2560 &&
-                asset.height >= 1440))
+            // Hardware decode was probed against an H.264 sample at startup.
+            // Existing project files may not contain codec metadata, so an
+            // empty name cannot prove the accelerator is safe — handing it
+            // AV1/VP9 makes the decode fail and the preview go black. AV1
+            // (including large-frame empty-codec downloads) uses the
+            // deterministic CPU dav1d path; only known H.264/HEVC keep the
+            // probed accelerator; unknown codecs decode on the CPU.
+            if (codec == "av1")
                 return ["-c:v", "libdav1d"];
+            if (codec.length == 0 && asset.width >= 2560 &&
+                asset.height >= 1440)
+                return ["-c:v", "libdav1d"];
+            if (codec != "h264" && codec != "hevc" && codec != "h265")
+                return [];
         }
         return _tools.videoDecodeInputOptions.dup;
     }
@@ -6465,47 +6477,6 @@ final class EditorRoot : VBox
             return "Playing the rendered timeline composition.";
         }
         return "Playing source frames inside Aurora Preview.";
-    }
-
-    private void waitForVideoBuffer()
-    {
-        if (_playbackVideoWaiting || _playbackKind == PlaybackKind.none)
-            return;
-        _playbackVideoWaitClock = clockPlaybackPosition();
-        // The buffering reference must keep advancing in wall-clock time even
-        // while the audio device clock is frozen under pause (waveOutPause /
-        // the headless paused clock). Otherwise a decoder that finished ahead
-        // of the paused clock leaves queued tail frames undrained forever.
-        _playbackVideoWaitClockStarted = MonoTime.currTime;
-        _playbackPosition = clampValue(displayedPlaybackFrameTime(),
-            _playbackStart, _playbackEnd);
-        _playbackVideoWaiting = true;
-        _playbackClockValid = false;
-        if (_playbackAudioRequired) _audioPlayer.pause();
-        _preview.setPlaying(false);
-        updatePlaybackButtons();
-        setStatus("Buffering video before continuing playback…");
-    }
-
-    private void resumeAfterVideoBuffer()
-    {
-        if (!_playbackVideoWaiting) return;
-        _playbackVideoWaiting = false;
-        if (_playbackAudioRequired) _audioPlayer.resume();
-        resetPlaybackClock();
-        _preview.setPlaying(true);
-        updatePlaybackButtons();
-        setStatus(playbackRunningStatus());
-    }
-
-    /** The transport position implied by the buffering wait: the anchor
-     * captured at entry advanced by real elapsed time, independent of any
-     * paused audio device clock. */
-    private double advancingVideoWaitClock() const
-    {
-        const elapsed = MonoTime.currTime - _playbackVideoWaitClockStarted;
-        return _playbackVideoWaitClock +
-            cast(double) elapsed.total!"hnsecs" / 10_000_000.0;
     }
 
     private int liveDecodeHeight() const
@@ -6557,6 +6528,19 @@ final class EditorRoot : VBox
     {
         return _sequencePlaybackLive ? livePlaybackPrerollSeconds :
             directPlaybackPrerollSeconds;
+    }
+
+    /** Live-playback composition preset built directly from the decode size, so
+     * the compositor canvas matches the sequence aspect at the requested height
+     * and `compositeStreamArguments` elides its final scale (no double render,
+     * no 16:9 stretch for portrait/square sequences). */
+    private ExportPreset previewPlaybackPreset(Size decode) const
+    {
+        auto preset = ExportPreset.custom(decode.width, decode.height);
+        preset.crf = 23;
+        preset.videoPreset = "ultrafast";
+        preset.previewOptimized = true;
+        return preset;
     }
 
     /** Earliest future sequence position containing audible media.  The mixed
@@ -6776,7 +6760,6 @@ final class EditorRoot : VBox
             _playbackPrewarmAudioSignature = "";
         }
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackClockValid = false;
@@ -6825,7 +6808,7 @@ final class EditorRoot : VBox
         else if (_sequencePlaybackLive)
         {
             const renderHeight = liveDecodeHeight();
-            auto preset = ExportPreset.previewForHeight(renderHeight);
+            auto preset = previewPlaybackPreset(decode);
             auto request = buildExportRequest(ExportKind.mp4, "", preset,
                 false, true);
             request.renderTitles = false;
@@ -6874,6 +6857,13 @@ final class EditorRoot : VBox
                     playbackDecodeInputOptions(_playbackAsset));
         }
 
+        // Start the audio transport paused while the video decoder buffers its
+        // preroll, so press-Play-to-sound overlaps the video spawn instead of
+        // serializing behind it. The first-frame handler resumes it once the
+        // prerolled frame is presented.
+        if (videoStarted && _playbackAudioRequired && !_playbackAudioStarted)
+            startPlaybackAudio(true);
+
         if ((_sequencePlaybackLive || _playbackAsset.hasVideo) && !videoStarted)
         {
             _playbackRunning = false;
@@ -6912,7 +6902,6 @@ final class EditorRoot : VBox
         clearPendingSeekState();
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
-        _playbackVideoWaiting = false;
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
@@ -7008,7 +6997,6 @@ final class EditorRoot : VBox
             _playbackAudioStarted = false;
             _playbackAudioRequired = false;
             _playbackAwaitingAudioClock = false;
-            _playbackVideoWaiting = false;
             _playbackAudioClockWait = 0.0;
             _playbackAudioClockLostWait = 0.0;
             _previewService.cancel();
@@ -7069,7 +7057,7 @@ final class EditorRoot : VBox
                 (maximumHeight < liveDecodeHeight() ? maximumHeight : liveDecodeHeight()) :
                 liveDecodeHeight();
             auto request = buildFrameRequest(_playbackPosition,
-                ExportPreset.previewForHeight(renderHeight));
+                previewCompositionPreset(renderHeight));
             scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
             _previewService.requestComposition(request, _playbackPosition,
                 decode.width, decode.height);
@@ -7123,6 +7111,10 @@ final class EditorRoot : VBox
             _playbackAwaitingFirstFrame = false;
             _preview.setPlaying(false);
             requestPlaybackStill();
+            // The playhead just settled on a new position. Start the warm
+            // decoder on the next tick instead of waiting out the settle
+            // debounce again, so Play pressed shortly after a scrub is instant.
+            _playbackPrewarmPrompt = true;
         }
 
         _seekResumePlayback = false;
@@ -7232,7 +7224,6 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _playbackModelRevision = 0;
@@ -7263,7 +7254,6 @@ final class EditorRoot : VBox
         _playbackRunning = true;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _liveAudioEnd = -1.0;
@@ -7293,7 +7283,6 @@ final class EditorRoot : VBox
         _playbackAudioStarted = false;
         _playbackAudioRequired = false;
         _playbackAwaitingAudioClock = false;
-        _playbackVideoWaiting = false;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _seekResumePlayback = false;
@@ -8939,7 +8928,7 @@ final class EditorRoot : VBox
             }
 
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
+                !_playbackAwaitingFirstFrame)
             {
                 if (_playbackAudioStarted && _playbackAudioRequired)
                 {
@@ -8969,7 +8958,7 @@ final class EditorRoot : VBox
             }
 
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
+                !_playbackAwaitingFirstFrame)
             {
                 _playbackPosition = clampValue(clockPlaybackPosition(),
                     _playbackStart, _playbackEnd);
@@ -9008,9 +8997,9 @@ final class EditorRoot : VBox
                         _audioPlayer.clockPosition(audioPosition);
                     if (audioRequired && !audioStarted)
                     {
-                        // Audio genuinely cannot start (no device, no ffmpeg, or
-                        // a decode error). Play the buffered video muted on the
-                        // monotonic clock instead of retrying forever in a
+                        // Audio genuinely cannot start (no device, no ffmpeg,
+                        // or a decode error). Play the buffered video muted on
+                        // the monotonic clock instead of retrying forever in a
                         // "preparing" state.
                         _playbackAudioRequired = false;
                         _playbackAudioStarted = false;
@@ -9067,29 +9056,7 @@ final class EditorRoot : VBox
                 }
             }
             else if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && _playbackVideoWaiting)
-            {
-                const bufferedClock = _playbackAudioRequired ?
-                    advancingVideoWaitClock() : _playbackVideoWaitClock;
-                const maximumFrameTime = playbackSourceClockTime(bufferedClock) +
-                    playbackVideoLeadSeconds;
-                if (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame) &&
-                    frame.valid())
-                {
-                    const framePlaybackTime = playbackTimeForFrame(frame);
-                    _preview.setFrame(frame);
-                    _playbackPosition = framePlaybackTime;
-                    if (bufferedClock - framePlaybackTime <=
-                        playbackVideoLeadSeconds)
-                    {
-                        _playbackPosition = clampValue(bufferedClock,
-                            _playbackStart, _playbackEnd);
-                        resumeAfterVideoBuffer();
-                    }
-                }
-            }
-            else if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting)
+                !_playbackAwaitingFirstFrame)
             {
                 const maximumFrameTime = playbackSourceClockTime(_playbackPosition) +
                     playbackVideoLeadSeconds;
@@ -9100,30 +9067,7 @@ final class EditorRoot : VBox
                     _preview.setPlaying(true);
                 }
             }
-            if (_playbackRunning && _playbackVideoWaiting &&
-                _videoStream.finished())
-            {
-                const error = _videoStream.error();
-                if (error.length > 0)
-                    setStatus("Embedded decoder ended: " ~ outputTail(error, 600));
-                // The decoder reached the end of the playback range while the
-                // transport was waiting for it to catch up. Reaching the last
-                // frame is the normal completion of a range, not a failure, so
-                // waiting must never turn it into a playback error. When no
-                // frames remain there is nothing left to display, so resume so
-                // the transport completes at the range end; otherwise the
-                // waiting branch below continues draining the queued tail.
-                if (!_videoStream.hasReadyFrames())
-                {
-                    double audioPosition;
-                    if (_playbackAudioRequired &&
-                        _audioPlayer.clockPosition(audioPosition))
-                        _playbackPosition = clampValue(audioPosition,
-                            _playbackStart, _playbackEnd);
-                    resumeAfterVideoBuffer();
-                }
-            }
-            else if (_playbackRunning && _videoStream.finished() &&
+            if (_playbackRunning && _videoStream.finished() &&
                 _playbackAsset.hasVideo)
             {
                 const error = _videoStream.error();
@@ -9139,12 +9083,6 @@ final class EditorRoot : VBox
                     updateTimeLabel();
                 }
             }
-
-            if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                !_playbackAwaitingFirstFrame && !_playbackVideoWaiting &&
-                _playbackAsset.hasVideo && _preview.hasFrame() &&
-                displayedVideoBehindPlaybackClock())
-                waitForVideoBuffer();
 
             if (_playbackRunning && !_playbackAwaitingFirstFrame &&
                 _playbackPosition >= _playbackEnd - 0.001)

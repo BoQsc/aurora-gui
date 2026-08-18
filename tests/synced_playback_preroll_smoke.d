@@ -128,8 +128,13 @@ int main(string[] arguments)
         "Plain video/audio timeline did not use direct playback");
     assert(editor.playbackAwaitingFirstFrameForTesting(),
         "Video/audio playback skipped first-frame preroll");
-    assert(editor.audioStatsForTesting().requests == audioRequestsBefore,
-        "Audio was requested before the first matching video frame");
+    // Audio is started PAUSED concurrently with the video decoder so the
+    // press-Play-to-sound latency overlaps the video spawn. The transport must
+    // still gate presentation on the first prerolled frame.
+    assert(editor.audioStatsForTesting().requests >= audioRequestsBefore,
+        "Direct Composition Preview audio request counters regressed");
+    assert(editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
+        "Video/audio playback presented before the first prerolled frame");
 
     assert(waitForPlaybackReady(editor, preview),
         "Video/audio playback did not leave preroll once synchronized");

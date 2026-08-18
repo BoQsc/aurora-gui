@@ -1294,11 +1294,19 @@ private void appendInputArguments(ref string[] arguments, const InputClip[] inpu
         {
             string[] decodeOptions = input.decodeInputOptions.dup;
             const codec = input.clip.videoCodec.toLower();
-            // D3D11VA was probed with H.264 at startup, but can hang forever
-            // when handed AV1 on systems without AV1-capable video hardware.
-            // dav1d keeps high-resolution AV1 preview decoding deterministic;
-            // the stream worker can still fall back to FFmpeg's default
-            // decoder if this optional decoder is unavailable.
+            // Hardware decode (D3D11VA/DXVA2/CUDA) was probed against an H.264
+            // sample at startup. Applying it to a stream whose stored codec is
+            // different or unknown makes that decode fail and the compositor
+            // output pure black frames — an AV1 .webm with an empty stored
+            // codec name reproduced exactly that. Only known H.264/HEVC keep
+            // the probed accelerator; everything else decodes on the CPU where
+            // FFmpeg automatically selects the correct decoder.
+            if (codec != "h264" && codec != "hevc" && codec != "h265")
+                decodeOptions.length = 0;
+            // AV1 preview decoding must stay deterministic and CPU-based:
+            // dav1d keeps high-resolution AV1 preview decoding stable, and the
+            // stream worker can still fall back to FFmpeg's default decoder if
+            // this optional decoder is unavailable.
             if (codec == "av1" || (codec.length == 0 &&
                 input.clip.sourceWidth >= 2560 && input.clip.sourceHeight >= 1440))
                 decodeOptions = ["-c:v", "libdav1d"];

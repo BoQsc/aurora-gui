@@ -863,7 +863,7 @@ private struct ReadyVideoFrame
     long frameNumber;
 }
 
-private enum size_t videoFrameSlotCount = 16;
+private enum size_t videoFrameSlotCount = 24;
 
 private bool isHardwareDecodeCandidatePath(string path)
 {
