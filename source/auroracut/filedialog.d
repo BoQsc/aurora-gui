@@ -1,8 +1,8 @@
 module auroracut.filedialog;
 
 import aurora;
-import auroracut.util : ensureExtension, isSupportedMediaPath,
-    projectAutosaveDirectory;
+import auroracut.util : absoluteNormalized, ensureExtension,
+    isSupportedMediaPath, projectAutosaveDirectory;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir;
 import std.path : baseName, buildNormalizedPath, dirName, extension, isAbsolute;
@@ -54,16 +54,16 @@ final class FileDialogController
     {
         show(FileDialogMode.open, "", "", accepted, ".auroracut",
             "Open Aurora Cut project", "Open",
-            projectAutosaveDirectory(), "Temp autosaves");
+            projectAutosaveDirectory(), "AppData autosaves");
     }
 
     void showSave(string requiredExtension, string suggestedName,
-        void delegate(string path) accepted)
+        void delegate(string path) accepted, string startPath = "")
     {
         const project = requiredExtension.toLower() == ".auroracut";
         show(FileDialogMode.save, requiredExtension, suggestedName, accepted, "",
             project ? "Save Aurora Cut project" : "Export file",
-            project ? "Save" : "Export");
+            project ? "Save" : "Export", "", "", startPath);
     }
 
     bool visible()
@@ -79,7 +79,8 @@ final class FileDialogController
     private void show(FileDialogMode mode, string requiredExtension,
         string suggestedName, void delegate(string path) accepted,
         string openExtension, string dialogTitle, string acceptLabel,
-        string shortcutPath = "", string shortcutLabel = "")
+        string shortcutPath = "", string shortcutLabel = "",
+        string startPath = "")
     {
         dismiss();
         _mode = mode;
@@ -89,6 +90,8 @@ final class FileDialogController
         _acceptLabel = acceptLabel;
         _accepted = accepted;
         _currentPath = getcwd();
+        if (startPath.length > 0 && exists(startPath) && isDir(startPath))
+            _currentPath = absoluteNormalized(startPath);
 
         auto content = new VBox(8, Insets(14));
         content.setBackground(Color.fromHex(0x242a32));
@@ -111,7 +114,7 @@ final class FileDialogController
         {
             auto shortcutButton = pathRow.add(new Button(shortcutLabel.length > 0 ?
                 shortcutLabel : "Shortcut", IconKind.folder));
-            shortcutButton.setId("open-project-temp-autosaves");
+            shortcutButton.setId("open-project-autosaves");
             shortcutButton.onClick = delegate() { navigate(shortcutPath); };
         }
         _pathField = pathRow.add(new TextField(_currentPath));

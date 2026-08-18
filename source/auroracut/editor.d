@@ -11,8 +11,8 @@ import auroracut.media : MediaImportResult, MediaImportService,
     MediaProxyResult, MediaProxyService, ToolStatus, inspectToolStatus,
     mediaSecondaryText, playbackProxyReady;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation,
-    MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
-    TrackKind, textAlignmentLabel;
+    MediaAsset, TextAlignment, TimelineClip, TimelineSnapshot, TimelineTrack,
+    TrackAddress, TrackKind, textAlignmentLabel;
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
@@ -25,8 +25,9 @@ import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import auroracut.titlelayer : TitleVisual;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
-import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory, clampValue,
-    formatTimecode, isSupportedMediaPath, outputTail, unnamedProjectAutosavePath;
+import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory,
+    applicationExportDirectory, clampValue, formatTimecode, isSupportedMediaPath,
+    outputTail, unnamedProjectAutosavePath;
 import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
     YtDlpDownloadResult, YtDlpDownloadService, YtDlpInstallResult,
     YtDlpInstallService, normalizeYtDlpMaxHeight, ytDlpImportDirectory,
@@ -132,20 +133,6 @@ private string formatArgb(uint value)
 {
     if ((value >> 24) == 0xff) return format("#%06X", value & 0x00ffffff);
     return format("#%08X", value);
-}
-
-private struct TimelineSnapshot
-{
-    TimelineTrack[] video;
-    TimelineTrack[] audio;
-    TrackAddress selectedTrack;
-    int selectedIndex;
-    double playhead = 0.0;
-    bool hasWorkIn;
-    double workIn;
-    bool hasWorkOut;
-    double workOut;
-    string label;
 }
 
 private struct PendingTimelineDrop
@@ -1093,6 +1080,8 @@ final class EditorRoot : VBox
     double scrubMaximumForTesting() const { return _scrub.maximum(); }
     double scrubValueForTesting() const { return _scrub.value(); }
     void saveProjectForTesting(string path) { writeProject(path); }
+    size_t undoCountForTesting() const { return _undo.length; }
+    size_t redoCountForTesting() const { return _redo.length; }
     string lastExportPathForTesting() const { return _lastExportPath; }
     void setLastExportPathForTesting(string path)
     {
@@ -2359,7 +2348,7 @@ final class EditorRoot : VBox
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
-                _compositionWidth, _compositionHeight);
+                _compositionWidth, _compositionHeight, _undo, _redo);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2383,7 +2372,7 @@ final class EditorRoot : VBox
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
-                _compositionWidth, _compositionHeight);
+                _compositionWidth, _compositionHeight, _undo, _redo);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2446,6 +2435,10 @@ final class EditorRoot : VBox
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
+            _undo = data.undo;
+            _redo = data.redo;
+            updateHistoryButtons();
+            refreshHistoryList();
             ++_modelRevision;
             if (_modelRevision == 0) _modelRevision = 1;
             syncMediaList();
@@ -7899,7 +7892,7 @@ final class EditorRoot : VBox
             if (kind == ExportKind.mp4) applyMp4OutputCompression(preset);
             auto request = buildExportRequest(kind, path, preset);
             startJob(request, JobPurpose.exportFile);
-        });
+        }, applicationExportDirectory());
     }
 
     private static ExportPreset exportPresetForHeight(int height)

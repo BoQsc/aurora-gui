@@ -1,5 +1,107 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## App-state output/export + undo/redo history in the project file (2026-08-18)
+
+- `auroracut.util`:
+  - `applicationExportDirectory()` → `%LOCALAPPDATA%\Aurora Cut\Exports`
+    (Windows; per-OS analogues for OSX/Linux), created on demand, with a
+    `setApplicationExportDirectoryForTesting` override. This is the default
+    folder for the Export MP4/MP3 dialog.
+  - `projectAutosaveDirectory()` moved from `%TEMP%\Aurora Cut\Autosaves` to
+    `%LOCALAPPDATA%\Aurora Cut\Autosaves` (temp is volatile), with a
+    `setProjectAutosaveDirectoryForTesting` override.
+- `FileDialogController.showSave(ext, suggested, accepted, startPath = "")`
+  opens at `startPath` (validated directory; falls back to CWD). `showOpenProject`
+  shortcut button is now `open-project-autosaves` ("AppData autosaves").
+- **Undo/redo history lives in the project file** (user: "maybe the undo redo
+  history should be part of project file?"). This replaced the earlier
+  app-state `History/` file approach (`historystore.d` was deleted):
+  - `project.d`: `ProjectData` gained `undo`/`redo`; `saveProjectFile(..., undo,
+    redo)` (trailing optional params) writes `"history": { "undo": [...],
+    "redo": [...] }`; `loadProjectFile` parses it and drops snapshots whose
+    media clips reference assets outside the loaded asset array
+    (`validHistorySnapshots`). Old v2 files without history load empty stacks.
+    `TimelineSnapshot` lives in `model.d`; `snapshotToJson`/`snapshotFromJson`
+    live in `project.d`.
+  - `editor.d`: `writeProject` and `autoSaveProjectOnExit` pass the live
+    `_undo`/`_redo`; `openProject` restores them from `ProjectData` after the
+    project loads. History durability == project save frequency (autosave on
+    exit covers clean closes).
+  - Because the unnamed autosave is a real `.auroracut` file in
+    `%LOCALAPPDATA%\Aurora Cut\Autosaves`, the unnamed project's history is
+    stored in appdata too — satisfying the original "history in appdata"
+    request for unnamed work while named projects keep history beside their own
+    data.
+- How it is verified (headless `tests/editor_smoke.d`):
+  - After a clip exists, click `export-mp4` and assert `file-dialog-path`
+    equals `applicationExportDirectory()`; Esc dismisses it.
+  - At the end: `saveProjectForTesting(recentOpenB)`, then
+    `loadProjectFile(recentOpenB)` and assert `undo.length ==
+    editor.undoCountForTesting()` and same for redo; then
+    `openProjectForTesting(recentOpenB)` and assert both counts were restored
+    and the Undo button is enabled.
+  - Test setup redirects recent projects, autosaves, and exports to temp dirs
+    (each created with `mkdirRecurse` so dialog `navigate` finds them) and
+    cleans them up.
+- `project.d` unittest covers: history round-trip through a real file
+  (selection/playhead/work-range preserved), out-of-range snapshot dropping,
+  and legacy files without history.
+- Test gotchas:
+  - The autosave/export test dirs must EXIST before the dialog navigates;
+    `navigate` rejects a missing directory and leaves the path field at the CWD.
+  - `tempDir()` returns the 8.3 short path (`C:\Users\WINDOW~2\...`), so paths
+    compared against dialog-normalized values must be normalized the same way
+    (`absoluteNormalized`); the dialog's `buildNormalizedPath` does not expand
+    short names either, so they match.
+  - `member()` in project.d returns `const(JSONValue)*`; pass `*ptr` when
+    feeding it back into `member()`.
+  - editor-smoke has playback-timing assertions that are flaky when the 4-core
+    host is loaded (a concurrent build/agent). If it fails on
+    "Direct video decoder never reached the end of its range", re-run; it is
+    not related to history persistence.
+- Pre-existing test fixes bundled here (both were failing on the untouched
+  baseline after commit `ea3a12d`, which restricts hardware decode to known
+  H.264/HEVC): `tests/export_smoke.d` and `tests/gpu_decode_args_smoke.d` now
+  declare `videoCodec = "h264"` on the accelerated-preview clips;
+  `tests/recompress_smoke.d` builds an absolute output path (the job reports an
+  absolute path, the test compared a relative one).
+
+## Clicked-button focus ring (2026-08-18)
+
+- User: "unclicked buttons turn half blue... due to being focused after
+  unclicking button like snap on button." Root cause: `Button.onMouseDown` calls
+  `requestFocus()`, and `onPaint` drew a blue accent ring for any focused
+  widget. Clicking the gray "Snap Off" toggle left it focused with a blue
+  outline. Same pattern existed on `ListView` (which requests focus on row
+  click).
+- Fix (standard Windows convention) in
+  `vendor/aurora-d-0.4.5/source/aurora/widgets/button.d` and `listview.d`: a
+  `_focusedByPointer` flag is set in `onMouseDown` and cleared in
+  `onFocusChanged(false)`; the focus ring is drawn only when
+  `focused() && !_focusedByPointer`. So mouse clicks never show the ring,
+  keyboard/Tab focus (`cycleFocus` in window.d) still does, and the widget keeps
+  focus after the click.
+- Regression (in `tests/editor_smoke.d`, after the snap accent block): click the
+  Snap button off (gray + pointer-focused), sample the pixel on the ring line
+  (button local y+2) and the plain fill below it (y+4), assert the two are
+  identical and that the ring-line pixel is not blue (`(pixel & 0xff) >
+  ((pixel >> 16) & 0xff) + 40`), then assert the button still `focused()`, then
+  click it back on. Pixel helper: move pointer to (0,0), paint, sample
+  `surface.pixels()[y * width + x]` at `displayScale().logicalToPhysical(...)`.
+- Unrelated: an in-progress external refactor (persistent undo/redo store
+  `source/auroracut/historystore.d`, `TimelineSnapshot` moved from editor.d to
+  `model.d`) had broken the build and the unittest suite. Fixed: add
+  `TimelineSnapshot` to editor.d's `auroracut.model` import; add `mkdirRecurse`
+  to historystore.d's `std.file` import; replace historystore.d's self-referential
+  unittest dir initializer (`&directory` inside its own declaration) with a
+  static counter; give `workIn`/`workOut` explicit `0.0` defaults in `model.d`
+  `TimelineSnapshot` (they defaulted to `double.init` = NaN, and `std.json`
+  throws "Cannot encode NaN" in `saveHistoryStacks` — visible in `aurora-cut.log`
+  since the catch calls `appLog`). `dub test` now passes 34 modules.
+- Commands: same editor-smoke build/run as the History popout section above;
+  `dub test --compiler=dmd --force`; app link check via temp output
+  (`aurora-cut-check.exe`) because a running `aurora-cut.exe` locks the target.
+
 ## Undo/Redo history popout (2026-08-18)
 
 - New toolbar `History ▾` button (`id="history"`) opens a `PopupOverlay`

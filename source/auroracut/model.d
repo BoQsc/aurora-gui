@@ -289,6 +289,24 @@ struct TimelineTrack
     }
 }
 
+/** A captured editor state used for undo/redo and persisted history. The
+ * timeline track arrays are copy-on-write snapshots; media clips reference the
+ * owning model's asset array by index, which stays stable because removing an
+ * asset clears the history. */
+struct TimelineSnapshot
+{
+    TimelineTrack[] video;
+    TimelineTrack[] audio;
+    TrackAddress selectedTrack;
+    int selectedIndex;
+    double playhead = 0.0;
+    bool hasWorkIn;
+    double workIn = 0.0;
+    bool hasWorkOut;
+    double workOut = 0.0;
+    string label;
+}
+
 final class EditorModel
 {
     MediaAsset[] assets;

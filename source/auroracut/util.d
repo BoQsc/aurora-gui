@@ -189,10 +189,38 @@ string applicationStateDirectory()
     return root;
 }
 
-/** Folder used for unnamed project autosaves that must be easy to recover. */
+/** Default folder for rendered export files and compressed output copies. */
+string applicationExportDirectory()
+{
+    if (_applicationExportDirectoryOverride.length > 0)
+        return _applicationExportDirectoryOverride;
+    const root = absoluteNormalized(buildPath(applicationStateDirectory(), "Exports"));
+    if (!exists(root)) mkdirRecurse(root);
+    return root;
+}
+
+private string _applicationExportDirectoryOverride;
+
+void setApplicationExportDirectoryForTesting(string path)
+{
+    _applicationExportDirectoryOverride = path;
+}
+
+private string _projectAutosaveDirectoryOverride;
+
+void setProjectAutosaveDirectoryForTesting(string path)
+{
+    _projectAutosaveDirectoryOverride = path;
+}
+
+/** Folder used for unnamed project autosaves that must be easy to recover.
+ * Lives in the app-state folder (per-user, non-volatile) instead of the
+ * system temp directory, which Windows can wipe at any time. */
 string projectAutosaveDirectory()
 {
-    const root = absoluteNormalized(buildPath(tempDir(), "Aurora Cut", "Autosaves"));
+    if (_projectAutosaveDirectoryOverride.length > 0)
+        return absoluteNormalized(_projectAutosaveDirectoryOverride);
+    const root = absoluteNormalized(buildPath(applicationStateDirectory(), "Autosaves"));
     if (!exists(root)) mkdirRecurse(root);
     return root;
 }

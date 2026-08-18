@@ -24,6 +24,7 @@ int main()
     base.hasVideo = true;
     base.sourceWidth = 1920;
     base.sourceHeight = 1080;
+    base.videoCodec = "h264";
 
     ExportClip overlay;
     overlay.path = "overlay.mkv";
@@ -35,6 +36,7 @@ int main()
     overlay.sourceHeight = 720;
     overlay.scale = 0.5;
     overlay.trackIndex = 1;
+    overlay.videoCodec = "h264";
 
     ExportClip still;
     still.path = "still.png";

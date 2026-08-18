@@ -1,5 +1,74 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-18 — Output/export defaults to app-state folder + undo/redo history lives in the project file
+
+- [x] User: "make aurora cut output/export folder by default to a subfolder on
+      appdata", "make sure the redo and undo history is being saved in the
+      appdata folder too", "do you think maybe projects should be saved there
+      too?", then "maybe the undo redo history should be part of project file?"
+- [x] **Exports**: the Export MP4/MP3 dialog now defaults its folder to
+      `%LOCALAPPDATA%\Aurora Cut\Exports`
+      (`auroracut.util.applicationExportDirectory`, created on demand).
+      `FileDialogController.showSave` gained a `startPath` argument so any save
+      dialog can open at a directory instead of the CWD; `openExportDialog`
+      passes the Exports folder. Compressed output copies still land beside the
+      last export (now inside Exports).
+- [x] **Projects recommendation (my answer to the user's question)**: user-saved
+      projects stay user-facing (Documents, wherever the user picks) — they are
+      documents. But the *unnamed autosave* was living in
+      `%TEMP%\Aurora Cut\Autosaves`, which Windows can wipe at any time; it now
+      lives in `%LOCALAPPDATA%\Aurora Cut\Autosaves`
+      (`projectAutosaveDirectory`). The Open-Project dialog's shortcut button
+      (renamed `open-project-autosaves`, label "AppData autosaves") follows it.
+      Because the autosave is a real project file, the unnamed project's undo/
+      redo history rides inside it — so it IS stored in appdata for unnamed
+      projects, and in the user-chosen folder for named projects.
+- [x] **Undo/redo history — in the PROJECT FILE (per the user's follow-up)**: the
+      `_undo`/`_redo` stacks are serialized into the `.auroracut` file itself
+      (`"history": { "undo": [...], "redo": [...] }`), written atomically with
+      the assets they reference. This replaces the earlier
+      `%LOCALAPPDATA%\Aurora Cut\History` file approach (module `historystore.d`
+      was deleted): history now travels with the project, cannot go stale
+      against the asset array (saved together), and leaves no orphaned
+      path-hash files when a project moves/renames. Tradeoff accepted: history
+      is as durable as the project save itself (same crash window as edits).
+  - `project.d`: `ProjectData` gains `undo`/`redo`; `saveProjectFile` gained
+    trailing `undo`/`redo` params (default empty, so existing callers/tests
+    still compile); `loadProjectFile` parses the optional `"history"` object
+    and drops any snapshot whose media clips reference assets outside the
+    loaded asset array (corrupt/hand-edited files). Old v2 files without
+    history load with empty stacks. `TimelineSnapshot` stays in `model.d`;
+    `snapshotToJson`/`snapshotFromJson` live in `project.d`.
+  - `editor.d`: `writeProject` and `autoSaveProjectOnExit` pass the live
+    `_undo`/`_redo`; `openProject` restores them from `ProjectData` right after
+    loading (the `clearHistory` inside open still runs first). The appdata
+    history-flush debounce, key tracking, and shutdown flush were removed.
+  - The autosave-on-exit path saves the named project (with its history) to
+    `_projectPath`, or the unnamed project to the appdata Autosaves file, so a
+    clean close followed by reopen always restores undo/redo.
+- [x] Verified: `dub test` → 34 modules pass (new project.d unittest covers
+      history round-trip through the file, out-of-range-snapshot dropping, and
+      legacy files without history); editor-smoke (2 runs) now asserts the
+      saved project file's undo/redo stacks match the live editor and that
+      reopening the project restores them; model-smoke, export-smoke,
+      gpu-decode-args, recompress, layout, static-sequence pass; the app links
+      (temp output, since the running exe locks the target). Obsolete
+      `%LOCALAPPDATA%\Aurora Cut\History` data from the earlier approach was
+      removed.
+- [x] Also fixed two pre-existing stale tests the history work surfaced:
+      `export_smoke` and `gpu_decode_args_smoke` asserted hardware-decode args
+      on clips with no codec, but commit `ea3a12d` now only applies hardware
+      decode to known H.264/HEVC sources — the accelerated-preview clips now
+      declare `videoCodec = "h264"`. `recompress_smoke` compared the job's
+      absolute output path against a relative one — it now builds an absolute
+      path. (The hardware-decode failures were reproduced on the untouched
+      baseline first.)
+- [ ] Manual: export a project and confirm the dialog opens in
+      `%LOCALAPPDATA%\Aurora Cut\Exports`; edit a project, quit, reopen, and
+      confirm Undo/Redo still work; check a saved `.auroracut` file contains a
+      `"history"` block; confirm the unnamed autosave is recoverable from
+      `%LOCALAPPDATA%\Aurora Cut\Autosaves`.
+
 ## 2026-08-18 — Undo/Redo history popout window (new feature)
 
 - [x] User: add a new popout window + toolbar button to Aurora Cut listing the
@@ -49,6 +118,36 @@
 - [ ] Manual: restart Aurora Cut (the running instance predates this rework),
       open the History popup, and confirm the flat listing reads clearly, rows
       never move when clicked, and jumps land correctly in both directions.
+- [x] Clicked buttons no longer keep a blue focus ring after the press is
+      released (user: "unclicked buttons turn half blue... due to being focused
+      after unclicking button like snap on button"). Root cause: buttons and
+      lists call `requestFocus()` in `onMouseDown`, and their paint drew a blue
+      accent ring for ANY focused widget, so e.g. clicking "Snap On" (turning it
+      off / gray) left a persistent blue outline. Fix (Windows convention):
+      `Button` and `ListView` in
+      `vendor/aurora-d-0.4.5/source/aurora/widgets/{button,listview}.d` now track
+      `_focusedByPointer` (set in `onMouseDown`, cleared in `onFocusChanged(false)`)
+      and suppress the focus ring for pointer-acquired focus. Keyboard/Tab focus
+      still shows the ring, and the widget still retains focus after a click.
+- [x] Regression test in `tests/editor_smoke.d`: after clicking the Snap button
+      off (plain gray + pointer-focused), a pixel sampled on the ring line
+      (local y+2) must equal the plain fill below it (y+4) and carry no blue
+      tint; also asserts the button retains focus. Keyboard focus ring behavior
+      is covered by the existing logic (Tab/`cycleFocus` never sets the flag).
+- [x] Fixed unrelated build breakage from an in-progress external refactor
+      (persistent undo/redo history store `source/auroracut/historystore.d` +
+      `TimelineSnapshot` moved to `auroracut.model`): added `TimelineSnapshot` to
+      editor.d's `auroracut.model` import, added the missing `mkdirRecurse` import
+      in historystore.d, fixed historystore.d's self-referential unittest dir
+      initializer (`&directory` in its own declaration), and gave `workIn`/
+      `workOut` explicit `0.0` defaults in `model.d`'s `TimelineSnapshot` (they
+      defaulted to `double.init` = NaN, which `std.json` refuses to encode, so
+      `saveHistoryStacks` always failed). Also changed `const restoredHistory` to
+      `auto` at the `loadHistoryStacks` call site in editor.d (a `const` struct
+      variable makes `restoredHistory.undo` `const(TimelineSnapshot[])`, which
+      cannot assign into the mutable `_undo`/`_redo` fields). Verified via
+      `dub test` (34 modules), editor-smoke, model-smoke, layout-smoke, and the
+      app link check — all pass.
 
 ## 2026-08-15 — Aurora Notepad visual screenshot review
 

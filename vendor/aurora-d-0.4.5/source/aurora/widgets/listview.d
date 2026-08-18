@@ -35,6 +35,10 @@ class ListView : Widget
     private bool _showBorder = true;
     private int _scrollbarWidth = 12;
     private Scrollbar _verticalScrollbar;
+    // Focus reached by a mouse click, not keyboard Tab navigation. The focus
+    // ring is suppressed for pointer focus so a clicked list does not keep a
+    // blue outline after the click.
+    private bool _focusedByPointer;
 
     void delegate(int index) onSelectionChanged;
     void delegate(int index) onActivated;
@@ -204,6 +208,11 @@ class ListView : Widget
         setCursor(CursorKind.arrow);
     }
 
+    protected override void onFocusChanged(bool value)
+    {
+        if (!value) _focusedByPointer = false;
+    }
+
     private bool showScrollbar() const @safe pure nothrow @nogc
     {
         return contentHeight() > bounds().height;
@@ -299,7 +308,7 @@ class ListView : Widget
             }
         }
 
-        if (focused())
+        if (focused() && !_focusedByPointer)
             canvas.strokeRect(full.inset(2), palette.accent.withAlpha(180), 1);
     }
 
@@ -318,6 +327,7 @@ class ListView : Widget
     override bool onMouseDown(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
+        _focusedByPointer = true;
         requestFocus();
         const row = rowAt(event.position);
         if (row >= 0 && !_items[cast(size_t) row].disabled)

@@ -18,6 +18,10 @@ class Button : Widget
     private bool _flat;
     private bool _accent;
     private bool _danger;
+    // Focus reached by a mouse click, not keyboard Tab navigation. The focus
+    // ring is suppressed for pointer focus so a clicked button does not keep a
+    // blue outline after the press is released.
+    private bool _focusedByPointer;
     // Smaller default icon so button icons read as compact Win10-style glyphs;
     // button size is text-measured and never follows the icon size.
     private int _iconSize = 18;
@@ -155,7 +159,7 @@ class Button : Widget
                 canvas.fillRoundedRect(rect, palette.cornerRadius, background);
         }
 
-        if (focused())
+        if (focused() && !_focusedByPointer)
             canvas.drawRoundedRect(rect.inset(2), maxInt(1, palette.cornerRadius - 2),
                 Color.rgba(0, 0, 0, 0), palette.accent.withAlpha(180), 1);
 
@@ -181,6 +185,7 @@ class Button : Widget
     {
         if (!enabled() || event.button != MouseButton.left) return false;
         _pressed = true;
+        _focusedByPointer = true;
         requestFocus();
         captureMouse();
         invalidate();
@@ -224,9 +229,10 @@ class Button : Widget
 
     protected override void onFocusChanged(bool value)
     {
-        if (!value && _pressed)
+        if (!value)
         {
             _pressed = false;
+            _focusedByPointer = false;
             releaseMouse();
         }
     }

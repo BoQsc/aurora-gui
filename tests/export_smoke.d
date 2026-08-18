@@ -236,6 +236,10 @@ int main(string[] arguments)
 
     auto acceleratedPreview = composed;
     acceleratedPreview.videoDecodeInputOptions = ["-hwaccel", "d3d11va"];
+    // Hardware decode is only applied to known H.264/HEVC sources; declare the
+    // codec so the accelerated arg placement is exercised.
+    acceleratedPreview.video[0].videoCodec = "h264";
+    acceleratedPreview.video[1].videoCodec = "h264";
     const acceleratedPreviewCommand =
         compositeFrameArguments(acceleratedPreview, 0.35).join("\n");
     assert(acceleratedPreviewCommand.count("-hwaccel") == 2 &&

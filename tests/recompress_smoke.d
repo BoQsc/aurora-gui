@@ -1,6 +1,7 @@
 module tests.recompress_smoke;
 
 import auroracut.exporter : ExportJob;
+import auroracut.util : absoluteNormalized;
 import core.thread : Thread;
 import core.time : msecs;
 import std.file : exists, remove;
@@ -12,7 +13,7 @@ int main(string[] arguments)
     assert(arguments.length == 3,
         "Usage: recompress-smoke <source.mp4> <output-directory>");
 
-    const outputPath = buildPath(arguments[2], "compressed-crf30.mp4");
+    const outputPath = absoluteNormalized(buildPath(arguments[2], "compressed-crf30.mp4"));
     if (exists(outputPath)) remove(outputPath);
 
     auto job = new ExportJob();

@@ -7,10 +7,12 @@ import auroracut.editor : EditorRoot, InspectorValueField;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
     TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
+import auroracut.project : loadProjectFile;
 import auroracut.recentprojects : clearRecentProjects, loadRecentProjects,
     rememberRecentProject, setRecentProjectsFilePathForTesting;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
-import auroracut.util : projectAutosaveDirectory;
+import auroracut.util : applicationExportDirectory, projectAutosaveDirectory,
+    setApplicationExportDirectoryForTesting, setProjectAutosaveDirectoryForTesting;
 import core.thread : Thread;
 import core.time : msecs;
 import std.algorithm.searching : canFind;
@@ -311,6 +313,10 @@ int main(string[] arguments)
         "aurora-cut-editor-smoke-clipboard.bmp");
     const fakeOutputPath = buildPath(tempDir(),
         "aurora-cut-editor-smoke-output.mp4");
+    const autosavePath = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-autosaves");
+    const exportPath = buildPath(tempDir(),
+        "aurora-cut-editor-smoke-exports");
     if (exists(recentPath)) remove(recentPath);
     if (exists(savedProject)) remove(savedProject);
     if (exists(recentOpenA)) remove(recentOpenA);
@@ -320,6 +326,8 @@ int main(string[] arguments)
     if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
     if (exists(screenshotPath)) remove(screenshotPath);
     if (exists(fakeOutputPath)) remove(fakeOutputPath);
+    if (exists(autosavePath)) rmdirRecurse(autosavePath);
+    if (exists(exportPath)) rmdirRecurse(exportPath);
     bool fakeClipboardHasImage;
     ulong fakeClipboardSequence = 1;
     setClipboardImageProviderForTesting(
@@ -330,6 +338,8 @@ int main(string[] arguments)
     {
         setClipboardImageProviderForTesting(null, null, null);
         setRecentProjectsFilePathForTesting("");
+        setProjectAutosaveDirectoryForTesting("");
+        setApplicationExportDirectoryForTesting("");
         if (exists(recentPath)) remove(recentPath);
         if (exists(savedProject)) remove(savedProject);
         if (exists(recentOpenA)) remove(recentOpenA);
@@ -339,8 +349,14 @@ int main(string[] arguments)
         if (exists(recentOverflowRoot)) rmdirRecurse(recentOverflowRoot);
         if (exists(screenshotPath)) remove(screenshotPath);
         if (exists(fakeOutputPath)) remove(fakeOutputPath);
+        if (exists(autosavePath)) rmdirRecurse(autosavePath);
+        if (exists(exportPath)) rmdirRecurse(exportPath);
     }
     setRecentProjectsFilePathForTesting(recentPath);
+    setProjectAutosaveDirectoryForTesting(autosavePath);
+    setApplicationExportDirectoryForTesting(exportPath);
+    mkdirRecurse(autosavePath);
+    mkdirRecurse(exportPath);
     clearRecentProjects();
     auto editor = new EditorRoot(window);
     window.setRoot(editor);
@@ -429,12 +445,12 @@ int main(string[] arguments)
     driver.click(globalCenter(openProject));
     assert(driver.paint(), "Open Project dialog did not paint");
     auto tempAutosaves = requireWidget!Button(editor,
-        "open-project-temp-autosaves");
+        "open-project-autosaves");
     auto dialogPath = requireWidget!TextField(editor, "file-dialog-path");
     driver.click(globalCenter(tempAutosaves));
-    assert(driver.paint(), "Open Project temp shortcut did not repaint");
+    assert(driver.paint(), "Open Project autosaves shortcut did not repaint");
     assert(dialogPath.textUtf8() == projectAutosaveDirectory(),
-        "Open Project dialog shortcut did not navigate to temp autosaves");
+        "Open Project dialog shortcut did not navigate to the app-state autosaves");
     driver.pressKey(Key.escape);
     assert(!revealExport.enabled() && !editor.revealExportEnabledForTesting(),
         "Export output button must stay disabled until an export completes");
@@ -1111,6 +1127,17 @@ int main(string[] arguments)
     driver.pressKey(Key.escape);
     assert(findById(editor, "history-list") is null,
         "Esc did not dismiss the History popup");
+
+    // The Export dialog defaults its folder to the app-state Exports folder
+    // so rendered output lands in a stable per-user location.
+    driver.click(globalCenter(requireWidget!Button(editor, "export-mp4")));
+    assert(driver.paint(), "Export dialog did not paint");
+    auto exportDialogPath = requireWidget!TextField(editor, "file-dialog-path");
+    assert(exportDialogPath.textUtf8() == applicationExportDirectory(),
+        "Export dialog did not default to the app-state Exports folder");
+    driver.pressKey(Key.escape);
+    assert(findById(editor, "file-dialog-path") is null,
+        "Esc did not dismiss the Export dialog");
 
     // Regression: the first clip must keep the timeline viewport anchored at
     // sequence zero. Previously transport auto-follow silently scrolled the
@@ -2010,6 +2037,43 @@ int main(string[] arguments)
             "Snap button did not regain the blue accent after re-enabling");
     }
 
+    // A clicked (pointer-focused) button must not keep a blue focus ring after
+    // the press is released; only keyboard/Tab focus draws the ring.
+    {
+        auto snapButton = requireWidget!Button(editor, "timeline-snap");
+        auto samplePixel = delegate(int localY) {
+            driver.moveTo(Point(0, 0));
+            assert(driver.paint(), "Focus ring repaint failed");
+            auto surface = window.surface();
+            const pitch = surface.width();
+            const center = globalCenter(snapButton);
+            const origin = snapButton.localToGlobal(Point(0, 0));
+            const point = window.displayScale().logicalToPhysical(
+                Point(center.x, origin.y + localY));
+            return surface.pixels()[cast(size_t) point.y * pitch + point.x];
+        };
+        // Snap is ON (accent/blue) from the previous block. Click to turn it
+        // OFF so the button is a plain gray control that would show the ring.
+        driver.click(globalCenter(snapButton));
+        assert(!editor.snappingEnabledForTesting(),
+            "Snap button did not turn off for the focus-ring test");
+        assert(snapButton.focused(),
+            "Clicked button did not retain focus");
+        // The focus ring paints a 1 px blue line inset 2 px from the button
+        // edge (local y+2). For a pointer-focused button it must be identical
+        // to the plain fill below it (y+4) and carry no blue tint.
+        const ringLine = samplePixel(2);
+        const fill = samplePixel(4);
+        assert(ringLine == fill,
+            "Clicked (pointer-focused) button painted a focus ring over its fill");
+        assert(!((ringLine & 0xff) > ((ringLine >> 16) & 0xff) + 40),
+            "Clicked button focus ring pixel was blue");
+        // Restore snapping to ON so later tests are unaffected.
+        driver.click(globalCenter(snapButton));
+        assert(editor.snappingEnabledForTesting(),
+            "Snap button did not turn back on after the focus-ring test");
+    }
+
     // Text placement is one-shot, existing clips remain selectable while the
     // Text tool is armed, and both timeline/Preview double-clicks open editing.
     auto model = editor.modelForTesting();
@@ -2324,6 +2388,29 @@ int main(string[] arguments)
     }
 
     writeln("[editor-smoke] text selection, canvas transform, and timeline-only preview");
+
+    // Persisted undo/redo history: the stacks are stored INSIDE the project
+    // file, so they travel with the project and survive application restarts.
+    {
+        editor.saveProjectForTesting(recentOpenB);
+        const savedData = loadProjectFile(recentOpenB);
+        assert(savedData.undo.length == editor.undoCountForTesting(),
+            "Project file undo stack did not match the live editor history");
+        assert(savedData.redo.length == editor.redoCountForTesting(),
+            "Project file redo stack did not match the live editor history");
+        assert(savedData.undo.length > 0,
+            "Project file should contain the committed timeline actions");
+
+        // Reopening the project restores the stacks on a fresh load.
+        editor.openProjectForTesting(recentOpenB);
+        assert(editor.undoCountForTesting() == savedData.undo.length &&
+            editor.redoCountForTesting() == savedData.redo.length,
+            "Opening a project did not restore its saved undo/redo history");
+        assert(editor.undoCountForTesting() > 0,
+            "Restored history lost the committed timeline actions");
+        assert(requireWidget!Button(editor, "undo").enabled(),
+            "Restored history did not enable the Undo button");
+    }
 
     // Virtualized painting must not scale with the full clip count.
     auto largeVideo = model.cloneTracks(TrackKind.video);

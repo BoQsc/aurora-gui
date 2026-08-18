@@ -2,9 +2,10 @@ module auroracut.project;
 
 import auroracut.model : ClipKind, EditorModel, EffectKeyframe, EffectProperty,
     KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
-    TimelineTrack, TrackKind, textAlignmentFromName, textAlignmentName;
+    TimelineSnapshot, TimelineTrack, TrackAddress, TrackKind,
+    textAlignmentFromName, textAlignmentName;
 import auroracut.util : appLog, clampValue;
-import std.file : readText, write;
+import std.file : readText, tempDir, write;
 import std.format : format;
 import std.json : JSONException, JSONType, JSONValue, parseJSON;
 
@@ -13,7 +14,10 @@ enum int defaultCompositionWidth = 1920;
 enum int defaultCompositionHeight = 1080;
 
 /** Serializable editor state. Media metadata is stored so opening a project
- * does not block the UI on a fresh FFprobe pass. */
+ * does not block the UI on a fresh FFprobe pass. The undo/redo history rides
+ * in the same file, so it travels with the project and is always consistent
+ * with the project's asset array (asset removal clears the history, so clip
+ * asset indexes stay valid). */
 struct ProjectData
 {
     MediaAsset[] assets;
@@ -27,6 +31,8 @@ struct ProjectData
     int previewQualityHeight = defaultPreviewQualityHeight;
     int compositionWidth = defaultCompositionWidth;
     int compositionHeight = defaultCompositionHeight;
+    TimelineSnapshot[] undo;
+    TimelineSnapshot[] redo;
 }
 
 private bool finiteNumber(double value) @safe pure nothrow @nogc
@@ -121,7 +127,8 @@ private JSONValue clipJson(const TimelineClip value)
     ]);
 }
 
-private JSONValue trackJson(const TimelineTrack value)
+/** Serializable track JSON. Used by project files and persisted history. */
+JSONValue trackToJson(const TimelineTrack value)
 {
     JSONValue[] clips;
     foreach (clip; value.clips) clips ~= clipJson(clip);
@@ -133,6 +140,54 @@ private JSONValue trackJson(const TimelineTrack value)
         "height": JSONValue(cast(long) value.height),
         "clips": JSONValue(clips)
     ]);
+}
+
+/** Serializable undo/redo snapshot. Each snapshot is a full timeline state. */
+JSONValue snapshotToJson(const TimelineSnapshot snapshot)
+{
+    JSONValue[] video;
+    JSONValue[] audio;
+    foreach (track; snapshot.video) video ~= trackToJson(track);
+    foreach (track; snapshot.audio) audio ~= trackToJson(track);
+    return JSONValue([
+        "label": JSONValue(snapshot.label),
+        "selectedTrackKind": JSONValue(cast(long) snapshot.selectedTrack.kind),
+        "selectedLane": JSONValue(cast(ulong) snapshot.selectedTrack.lane),
+        "selectedIndex": JSONValue(cast(long) snapshot.selectedIndex),
+        "playhead": jsonNumber(snapshot.playhead, 0.0, "history.playhead"),
+        "hasWorkIn": JSONValue(snapshot.hasWorkIn),
+        "workIn": jsonNumber(snapshot.workIn, 0.0, "history.workIn"),
+        "hasWorkOut": JSONValue(snapshot.hasWorkOut),
+        "workOut": jsonNumber(snapshot.workOut, 0.0, "history.workOut"),
+        "video": JSONValue(video),
+        "audio": JSONValue(audio)
+    ]);
+}
+
+/** Parse a snapshot written by snapshotToJson. */
+TimelineSnapshot snapshotFromJson(const JSONValue value)
+{
+    TimelineSnapshot snapshot;
+    snapshot.label = stringValue(value, "label");
+    snapshot.selectedTrack.kind = cast(TrackKind) integerValue(value,
+        "selectedTrackKind");
+    snapshot.selectedTrack.lane = cast(size_t) unsignedValue(value, "selectedLane");
+    snapshot.selectedIndex = cast(int) integerValue(value, "selectedIndex");
+    snapshot.playhead = numberValue(value, "playhead");
+    snapshot.hasWorkIn = boolValue(value, "hasWorkIn");
+    snapshot.workIn = numberValue(value, "workIn");
+    snapshot.hasWorkOut = boolValue(value, "hasWorkOut");
+    snapshot.workOut = numberValue(value, "workOut");
+
+    auto video = member(value, "video");
+    if (video !is null && video.type == JSONType.array)
+        foreach (entry; video.array)
+            snapshot.video ~= trackFromJson(entry, TrackKind.video);
+    auto audio = member(value, "audio");
+    if (audio !is null && audio.type == JSONType.array)
+        foreach (entry; audio.array)
+            snapshot.audio ~= trackFromJson(entry, TrackKind.audio);
+    return snapshot;
 }
 
 private JSONValue assetJson(const MediaAsset value, size_t index)
@@ -161,14 +216,21 @@ private JSONValue assetJson(const MediaAsset value, size_t index)
 void saveProjectFile(string path, EditorModel model, double playhead,
     bool hasWorkIn, double workIn, bool hasWorkOut, double workOut,
     int previewQualityHeight, int compositionWidth = defaultCompositionWidth,
-    int compositionHeight = defaultCompositionHeight)
+    int compositionHeight = defaultCompositionHeight,
+    const(TimelineSnapshot)[] undo = null,
+    const(TimelineSnapshot)[] redo = null)
 {
     JSONValue[] assets;
     foreach (index, asset; model.assets) assets ~= assetJson(asset, index);
     JSONValue[] video;
-    foreach (track; model.videoTracks) video ~= trackJson(track);
+    foreach (track; model.videoTracks) video ~= trackToJson(track);
     JSONValue[] audio;
-    foreach (track; model.audioTracks) audio ~= trackJson(track);
+    foreach (track; model.audioTracks) audio ~= trackToJson(track);
+
+    JSONValue[] undoJson;
+    foreach (snapshot; undo) undoJson ~= snapshotToJson(snapshot);
+    JSONValue[] redoJson;
+    foreach (snapshot; redo) redoJson ~= snapshotToJson(snapshot);
 
     JSONValue root = JSONValue([
         "format": JSONValue("aurora-cut-project"),
@@ -183,7 +245,11 @@ void saveProjectFile(string path, EditorModel model, double playhead,
         "compositionHeight": JSONValue(cast(long) compositionHeight),
         "assets": JSONValue(assets),
         "videoTracks": JSONValue(video),
-        "audioTracks": JSONValue(audio)
+        "audioTracks": JSONValue(audio),
+        "history": JSONValue([
+            "undo": JSONValue(undoJson),
+            "redo": JSONValue(redoJson)
+        ])
     ]);
     write(path, root.toPrettyString());
 }
@@ -344,7 +410,7 @@ private TimelineClip parseClip(const JSONValue value)
     return clip;
 }
 
-private TimelineTrack parseTrack(const JSONValue value, TrackKind fallbackKind)
+TimelineTrack trackFromJson(const JSONValue value, TrackKind fallbackKind)
 {
     TimelineTrack track;
     track.id = unsignedValue(value, "id");
@@ -410,10 +476,135 @@ ProjectData loadProjectFile(string path)
     auto video = member(root, "videoTracks");
     if (video !is null && video.type == JSONType.array)
         foreach (entry; video.array)
-            result.videoTracks ~= parseTrack(entry, TrackKind.video);
+            result.videoTracks ~= trackFromJson(entry, TrackKind.video);
     auto audio = member(root, "audioTracks");
     if (audio !is null && audio.type == JSONType.array)
         foreach (entry; audio.array)
-            result.audioTracks ~= parseTrack(entry, TrackKind.audio);
+            result.audioTracks ~= trackFromJson(entry, TrackKind.audio);
+
+    // The undo/redo history is written atomically with the assets it
+    // references, so indexes are consistent by construction. A corrupted or
+    // hand-edited file is still sanitized: snapshots whose media clips point
+    // outside the loaded asset array are dropped. Text clips carry no media
+    // reference and stay valid.
+    const assetCount = result.assets.length;
+    auto history = member(root, "history");
+    if (history !is null && history.type == JSONType.object)
+    {
+        auto undo = member(*history, "undo");
+        if (undo !is null && undo.type == JSONType.array)
+            foreach (entry; undo.array)
+                result.undo ~= snapshotFromJson(entry);
+        auto redo = member(*history, "redo");
+        if (redo !is null && redo.type == JSONType.array)
+            foreach (entry; redo.array)
+                result.redo ~= snapshotFromJson(entry);
+        result.undo = validHistorySnapshots(result.undo, assetCount);
+        result.redo = validHistorySnapshots(result.redo, assetCount);
+    }
     return result;
+}
+
+/** Drop snapshots whose media clips reference assets outside the project's
+ * asset array. Text clips carry no media reference and stay valid. */
+private TimelineSnapshot[] validHistorySnapshots(TimelineSnapshot[] snapshots,
+    size_t assetCount)
+{
+    TimelineSnapshot[] result;
+    foreach (snapshot; snapshots)
+    {
+        bool valid = true;
+        foreach (track; snapshot.video)
+            foreach (clip; track.clips)
+                if (clip.usesMedia() && clip.assetIndex >= assetCount)
+                {
+                    valid = false;
+                    break;
+                }
+        if (!valid) continue;
+        foreach (track; snapshot.audio)
+            foreach (clip; track.clips)
+                if (clip.usesMedia() && clip.assetIndex >= assetCount)
+                {
+                    valid = false;
+                    break;
+                }
+        if (valid) result ~= snapshot;
+    }
+    return result;
+}
+
+/// The undo/redo history round-trips inside the project file and stale
+/// snapshots that reference removed assets are dropped on load.
+unittest
+{
+    import std.file : exists, remove;
+    import std.path : buildPath;
+
+    const projectPath = buildPath(tempDir(),
+        "aurora-cut-project-history-unittest.auroracut");
+    if (exists(projectPath)) remove(projectPath);
+    scope (exit)
+    {
+        if (exists(projectPath)) remove(projectPath);
+    }
+
+    auto model = new EditorModel();
+    auto asset = new MediaAsset("C:\\media\\clip.mp4");
+    asset.duration = 4.0;
+    asset.hasVideo = true;
+    asset.hasAudio = true;
+    model.assets ~= asset;
+    const clipIndex = model.appendClip(0, TrackAddress(TrackKind.video, 0));
+    assert(clipIndex == 0);
+
+    TimelineSnapshot undoSnapshot;
+    undoSnapshot.label = "Add clip";
+    undoSnapshot.video = model.snapshotTracks(TrackKind.video);
+    undoSnapshot.audio = model.snapshotTracks(TrackKind.audio);
+    undoSnapshot.playhead = 1.5;
+    undoSnapshot.selectedTrack = TrackAddress(TrackKind.video, 0);
+    undoSnapshot.selectedIndex = 0;
+    undoSnapshot.hasWorkOut = true;
+    undoSnapshot.workOut = 3.0;
+
+    TimelineSnapshot redoSnapshot;
+    redoSnapshot.label = "Move clip";
+
+    saveProjectFile(projectPath, model, 2.0, false, 0.0, true, 3.0, 720,
+        defaultCompositionWidth, defaultCompositionHeight,
+        [undoSnapshot], [redoSnapshot]);
+
+    const loaded = loadProjectFile(projectPath);
+    assert(loaded.undo.length == 1 && loaded.redo.length == 1,
+        "Project history did not round-trip through the project file");
+    assert(loaded.undo[0].label == "Add clip");
+    assert(loaded.undo[0].playhead == 1.5);
+    assert(loaded.undo[0].selectedTrack.kind == TrackKind.video);
+    assert(loaded.undo[0].selectedIndex == 0);
+    assert(loaded.undo[0].hasWorkOut && loaded.undo[0].workOut == 3.0);
+    assert(loaded.undo[0].video.length == 1 &&
+        loaded.undo[0].video[0].clips.length == 1 &&
+        loaded.undo[0].video[0].clips[0].assetIndex == 0,
+        "History snapshot did not preserve the timeline clip");
+    assert(loaded.redo[0].label == "Move clip");
+
+    // A snapshot referencing a removed asset must be dropped, not restored.
+    TimelineSnapshot stale = undoSnapshot;
+    foreach (ref track; stale.video)
+        foreach (ref clip; track.clips)
+            clip.assetIndex = 7; // out of range
+    saveProjectFile(projectPath, model, 2.0, false, 0.0, true, 3.0, 720,
+        defaultCompositionWidth, defaultCompositionHeight,
+        [stale], []);
+    const reloaded = loadProjectFile(projectPath);
+    assert(reloaded.undo.length == 0,
+        "History snapshot referencing a missing asset was not dropped");
+    assert(reloaded.redo.length == 0);
+
+    // Old project files without a history field load with empty history.
+    saveProjectFile(projectPath, model, 2.0, false, 0.0, true, 3.0, 720);
+    const legacy = loadProjectFile(projectPath);
+    assert(legacy.undo.length == 0 && legacy.redo.length == 0,
+        "Legacy project file gained phantom history");
 }
