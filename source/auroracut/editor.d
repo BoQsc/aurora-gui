@@ -638,6 +638,7 @@ final class EditorRoot : VBox
     private Button _snapButton;
     private ExportButton _exportButton;
     private Button _revealExportButton;
+    private Button _newProjectButton;
     private Button _saveProjectButton;
     private Button _openProjectButton;
     private Button _recentProjectsButton;
@@ -1041,6 +1042,8 @@ final class EditorRoot : VBox
     void setWorkInForTesting(double value) { setWorkIn(value); }
     void clearWorkRangeForTesting() { clearWorkRange(); }
     void openProjectForTesting(string path) { openProject(path); }
+    void newProjectForTesting() { newProject(); }
+    bool projectDirtyForTesting() const { return _projectDirty; }
     bool loopEnabledForTesting() const { return _loopEnabled; }
     double playbackEndForTesting() const { return _playbackEnd; }
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
@@ -1118,6 +1121,11 @@ final class EditorRoot : VBox
         auto toolbar = add(new HBox(4, Insets(6, 3)));
         toolbar.setBackground(Color.fromHex(0x20242a));
         toolbar.layoutHints().preferredHeight = 32;
+
+        _newProjectButton = toolbar.add(new Button("New", IconKind.newDocument));
+        _newProjectButton.setId("new-project");
+        _newProjectButton.layoutHints().preferredHeight = 26;
+        _newProjectButton.onClick = delegate() { newProject(); };
 
         _saveProjectButton = toolbar.add(new Button("Save", IconKind.save));
         _saveProjectButton.setId("save-project");
@@ -2457,6 +2465,79 @@ final class EditorRoot : VBox
             appLog(format("Project open failed for '%s': %s", path, error.toString()));
             setStatus("Could not open project: " ~ outputTail(error.msg, 900));
         }
+    }
+
+    /** Discard the current project and start a blank one.
+     *
+     * The active project is autosaved first (to its own file, or the app-state
+     * unnamed autosave when it was never saved) so closing, switching, or
+     * creating another project later never loses the work already on screen.
+     * The fresh project keeps one empty V1 and A1 track, default composition
+     * and preview quality, a cleared export range, and empty undo/redo history.
+     */
+    private void newProject()
+    {
+        endInlineTextEditing();
+        // Preserve the current session before wiping the model, matching the
+        // autosave-on-exit contract for both named and unnamed projects.
+        try
+        {
+            const path = _projectPath.length > 0 ? _projectPath :
+                unnamedProjectAutosavePath();
+            const normalizedPath = absoluteNormalized(path);
+            saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
+                _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
+                _compositionWidth, _compositionHeight, _undo, _redo);
+            rememberRecentProject(normalizedPath);
+            appLog("Project autosaved before creating a new project: " ~
+                normalizedPath);
+        }
+        catch (Exception error)
+        {
+            appLog(format("Project autosave before new project failed: %s",
+                error.toString()));
+        }
+        stopPlayback(false);
+        _pendingProxyAssetIndices.length = 0;
+        _proxyIdleDelay = 0.0;
+        if (_proxyService !is null) _proxyService.cancel();
+        _model.assets.length = 0;
+        _model.restoreTimeline([], []);
+        _hasWorkIn = false;
+        _hasWorkOut = false;
+        _workIn = 0.0;
+        _workOut = 0.0;
+        _previewQualityHeight = defaultPreviewQualityHeight;
+        _compositionWidth = defaultCompositionWidth;
+        _compositionHeight = defaultCompositionHeight;
+        _projectPath = "";
+        _projectDirty = false;
+        clearHistory();
+        _clipboardHasClip = false;
+        _clipboardSystemSequence = clipboardSequenceNumber();
+        _pendingPreviewKind = PendingPreviewKind.none;
+        _pendingTimelineDrops.length = 0;
+        _queuedImportPaths.length = 0;
+        _importQueuedCount = 0;
+        _importImportedCount = 0;
+        _importDuplicateCount = 0;
+        _importIgnoredCount = 0;
+        _importFailedCount = 0;
+        _timeline.modelChanged();
+        _timeline.setSelection(TrackAddress(TrackKind.video, 0), -1, false);
+        _timeline.setPlayhead(0.0, false);
+        ++_modelRevision;
+        if (_modelRevision == 0) _modelRevision = 1;
+        syncMediaList();
+        syncTimelineRange();
+        syncTimelineWorkArea();
+        syncInspector();
+        updateCompositionResolutionUi();
+        updateQualityUi();
+        updatePlaybackButtons();
+        updateProjectTitle();
+        scheduleTimelineFrame();
+        setStatus("New project created. Import MP4 or MP3 media to begin.");
     }
 
     private static bool duplicateRecentProjectName(const string[] paths, string path)
@@ -9551,6 +9632,11 @@ final class EditorRoot : VBox
     override bool onKeyDown(ref Event event)
     {
         const command = event.control() || event.meta();
+        if (command && event.key == Key.n)
+        {
+            newProject();
+            return true;
+        }
         if (command && event.key == Key.s)
         {
             saveProject(event.shift());
