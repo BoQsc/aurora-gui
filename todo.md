@@ -219,6 +219,34 @@ suspension semantics, CSS grid `fr` edge cases, `@media` screen types.
       + `auroraweb:links`; JS for-of, coercion edge cases, instanceof/bind,
       more Array/String/Object methods; CSS `background-image`/`background-size`
       + `<img>` intrinsic sizing. headless_smoke now 29 checks, all PASS.
+- [x] Milestone 6 (user: "the web browser is nonsense the rendering makes no
+      sense"): diagnosed and fixed THREE rendering defects — (1) layout
+      measured text at `length*8` px instead of real shaping; (2) HTML parser
+      auto-closed every block ancestor so `<div><p>` split into siblings;
+      (3) paint passed a pixel size into `Canvas.layoutText` which treats it
+      as a typographic SCALE -> every text run shaped at 102px and drawn
+      ~36px below its box. Fixes: paint shapes via
+      `textEngine.layout(text, options)` with `options.pixelSize` (same call
+      layout uses); html auto-close only self-closing tags; layout skips
+      whitespace-only text and measures real wrapped heights. Verified with a
+      diagnostic page + a new smoke regression (red h1 in top 40 rows). All
+      green: 39 modules, engine smoke, browser smoke (29 checks).
+- [x] Milestone 7 (user: "why i see overlapping text"): `layoutDirectText`
+      had dropped the horizontal cursor, so every direct text node in a block
+      was placed at the same x and inline elements (`<b>`, `<i>`) got 0x0
+      boxes. Fixed: `layoutDirectText` lays out direct text + inline children
+      on one shared line with a real cursor and real measurement; `layoutChildren`
+      skips direct inline children. Verified `<p>Hello <b>bold</b> world
+      <i>italic</i> tail</p>` has strictly increasing x per run and no overlap;
+      added a smoke regression. All green (39 modules, both smokes).
+- [x] Milestone 8 (user: "it's clearly overlapping and impossible to read"):
+      root cause was the FIRST-FRAME viewport. `WebPageView` is created before
+      the widget has bounds, so the page laid out at 1px wide (every char wraps
+      to its own line -> all text piles up unreadably). `onPaint` re-laid-out
+      but never resized the page to the real widget size. Fix: `onPaint`
+      resizes the page to the actual `size()` before every layout. Verified on
+      interactive/Vulkan (1080x680) AND software (1350x850): clean separated
+      bands, no overlap; 39 modules + both smokes green.
 - [ ] Remaining (recorded honestly): grid `fr` units in `grid-template-rows`,
       sandboxing/TLS policy hardening for remote content, true event-loop
       integration (timers driven by a real loop rather than explicit

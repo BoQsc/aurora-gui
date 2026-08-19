@@ -1,5 +1,151 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-web milestone 9: internally-wrapping text runs overlapped following inline content (2026-08-19)
+
+User (still seeing overlap after milestone 8): "it feels as if you are not even
+touching the problem". This time I built a minimal repro instead of only
+screenshotting the happy path.
+
+Minimal repro (narrow 300px container):
+`<p>This first run is deliberately long and will wrap to a second line inside
+itself, then <b>this bold</b> and trailing text.</p>`
+
+Before the fix, the layout was:
+```
+text 'This first run is deliber' at (0,0) w=284 line=0
+text 'this bold'                at (284,0) w=15 line=0   <-- OVERLAP
+text ' and trailing text.'      at (299,0) w=9  line=1
+```
+The long first run wrapped INTERNALLY to 2 lines, but `layoutDirectText`
+advanced `cursorX` by the run's FULL `layout.width` (284px) instead of
+advancing `cursorY` to the next line. So `<b>this bold</b>` started at x=284 on
+line 0, directly over the first run's wrapped second line. Same bug in the
+inline-element branch.
+
+Fix (`aurora-web/source/auroraweb/layout.d` `layoutDirectText`):
+- For a text run whose shaped layout has N>1 lines: place the run, then
+  `cursorY += (N-1)*lineH`, `lineIndex += N-1`, `cursorX = leftEdge` so the
+  next run starts on a fresh line.
+- Same for an inline element (`<b>`/`<i>`) whose content wraps internally.
+
+After the fix:
+```
+text 'This first run is deliber' at (0,0)  w=284 line=0
+text 'this bold'                at (0,24) w=60  line=1
+text ' and trailing text.'      at (60,24) w=115 line=2
+```
+No overlap. Added a smoke regression (wrapping first run must push following
+text to a later line). Engine smoke, browser smoke (29 checks), 39 modules all
+green.
+
+**Lesson:** screenshot-only verification of a short page missed this. The bug
+only appears when a run's width exceeds the container (internal wrap) AND more
+inline content follows. Reproduce with the exact failing geometry, not the
+happy path.
+
+## aurora-web milestone 8: first-frame 1x1 layout caused unreadable overlap (2026-08-19)
+
+User: "the rendering is overlapping why i have to say you this... it's clearly
+overlapping and impossible to tell because overlapping does not allow me to
+read what is going on."
+
+The symptom ("so overlapping I can't read anything") pointed at a first-frame
+viewport bug, not subtle spacing. Root cause found in the browser shell
+(`aurora-browser/appui.d` `WebPageView`):
+
+- The page view is created in `newTab` BEFORE it is placed in the widget
+  layout, so `size()` returns 0x0. `setPage`/`loadIntoPage` therefore laid the
+  page out at `maxInt(1, size().width)` = **1px wide**.
+- `onPaint` called `_page.layout()` every frame but NEVER re-sized the page to
+  the widget's actual bounds (only `onBoundsChanged` did, and only when the
+  size *changed* from the stored 1x1 — which could be missed).
+- At 1px width, EVERY character wraps to its own line; all text stacks
+  vertically and overlaps into an unreadable mess. Exactly what the user saw.
+
+Fix: `onPaint` now checks the widget's actual `size()` against the page's
+viewport and calls `_page.resize(realWidth, realHeight)` before every layout,
+so the first painted frame is always laid out at the real width.
+
+Verification: after the fix, the interactive (Vulkan/default renderer)
+1080x680 window and the software 1350x850 screenshot both show clean,
+well-separated text bands (toolbar, h1, p1, wrapped p2 lines, status) with no
+overlap. headless_smoke (29 checks) and engine smoke still pass.
+
+**Lesson:** when a user says a UI is unreadably overlapping, suspect the
+FIRST-FRAME viewport/size, not glyph spacing. My earlier tests always gave the
+page a correct size before painting, so they never exercised the real
+create-then-layout-then-paint order of the interactive app. I should have
+reproduced the interactive window configuration from the start.
+
+## aurora-web milestone 7: overlapping inline text fixed (2026-08-19)
+
+User: "why i see overlapping text".
+
+Diagnosis via a layout dump of `<p>Hello <b>bold</b> world <i>italic</i>
+tail</p>`: every direct text node was placed at the SAME x (all `layoutX=0`,
+`layoutY=72`) and inline elements (`<b>`, `<i>`) got `box=(0,0 0x0)`. The
+milestone-6 rewrite of `layoutDirectText` kept real shaping but DROPPED the
+horizontal cursor that advances per inline run.
+
+Fix:
+- `layoutDirectText` now lays out the block's DIRECT text nodes AND direct
+  inline child elements on ONE shared inline line with a real horizontal
+  cursor (`cursorX`), wrapping at the content width, using real shaped
+  measurement. Inline elements get a real box (x = cursor, width = measured
+  text) and their own text is laid out from the element's left edge.
+- `layoutChildren` now SKIPS direct inline element children (they are handled
+  by `layoutDirectText`); before, they were laid out as 0x0 blocks.
+
+Verified: the same `<p>` now lays out `Hello `@x=0, `<b>bold</b>`@x=40..71,
+` world `@x=71..119, `<i>italic</i>`@x=119..151, ` tail`@x=151..176 — strictly
+increasing x, no overlap. Painted output confirms dark text spans the row, and
+the browser's rendered hello page shows distinct text bands with correct
+spacing. New smoke regression asserts inline runs have strictly increasing x.
+
+Full suite green: 39 modules, engine smoke ALL PASSED, browser smoke ALL
+PASSED (29 checks).
+
+## aurora-web milestone 6: rendering made correct — the real root cause (2026-08-19)
+
+User: "the web browser is nonsense the rendering makes no sense."
+
+A real diagnosis found THREE compounding defects:
+
+1. **Layout measured text as `length * 8` px** (layout.d). Long paragraphs
+   were laid out at ~8px/char, so a 100-char line "fit" one 18px-tall line and
+   overflowed its box; block heights and text positions didn't match paint.
+2. **HTML parser auto-closed every block ancestor** (html.d): when a `<p>`
+   opened inside a `<div>`, the block-push loop popped the `<div>` too, so
+   `<div><p>…</p></div>` became two siblings.
+3. **THE big one — `Canvas.layoutText(text, scale, …)` treats its 4th arg as a
+   typographic SCALE, not a pixel size** (`fontPixelSize(2)=17`,
+   `fontPixelSize(16)=102`). paint.d's `drawTextRun` passed `pixelSize=16`
+   into `layoutText`, so every text run was shaped at **102px**, drawn ~36px
+   below its box, overflowing everywhere. The smoke test only checked "some
+   red pixels exist", so it never caught the 102px text.
+
+Fixes:
+- paint.d `drawTextRun`: shape with `FontSystem.sharedInstance().textEngine
+  .layout(text, options)` using `options.pixelSize` directly (the SAME call
+  layout uses), then `drawLayout`. Layout and paint now agree exactly.
+- html.d: replaced "pop every block ancestor" with a proper auto-close rule
+  (`li/dt/dd/tr/td/th/option` self-close; `<p>` closes an open `<p>`/`<li>`),
+  so `<div>` keeps its children.
+- layout.d: skip whitespace-only text nodes between block elements; measure
+  text with the real shaped `TextLayout` so wrapping and block heights are
+  correct.
+
+**Verification that rendering is now actually correct:** a diagnostic page
+(long paragraph wraps to 2 lines, nested `<p>` inside its `<div>`, no
+overlaps) and a new smoke regression (red h1 must render in the TOP 40 rows).
+Full suite green: 39 modules, engine smoke ALL PASSED, browser smoke ALL
+PASSED (29 checks).
+
+**Root-cause lesson:** a passing "some pixels exist" test masked a 102px-text
+bug. Assert positions, not just presence. And never assume a library's
+parameter means what a similar library's does (`layoutText` scale vs
+`textEngine.layout` pixelSize).
+
 ## Aurora Designer — how to build/verify a new Aurora-D UI designer app (2026-08-19)
 
 New `aurora-designer/` (visual UI designer for Aurora-D GUIs). The test
