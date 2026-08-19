@@ -21,6 +21,8 @@ import auroraweb.dom : Element;
 
 import std.algorithm : startsWith;
 import std.conv : to;
+import std.file : exists, getcwd, readText, write;
+import std.path : baseName, buildPath;
 import std.range : empty;
 import std.string : indexOf, lastIndexOf, strip, toLower;
 import std.utf : toUTF32;
@@ -28,6 +30,56 @@ import std.utf : toUTF32;
 // ---------------------------------------------------------------------------
 // Offline page source
 // ---------------------------------------------------------------------------
+
+/// Default home page URL (overridable through the home.txt settings file).
+immutable string defaultHomeUrl = "auroraweb:hello";
+
+/// Small settings file that persists the home page across launches.
+immutable string homeSettingsFile = "home.txt";
+
+/// Path of the settings file, rooted at the browser working directory (the
+/// repo's `aurora-browser/` when run through dub / the bat file).
+private string homeSettingsPath()
+{
+    try
+    {
+        return buildPath(getcwd(), baseName(homeSettingsFile));
+    }
+    catch (Exception)
+    {
+        return homeSettingsFile;
+    }
+}
+
+/// Read the persisted home URL, falling back to `defaultHomeUrl`.
+private string loadHomeUrl()
+{
+    try
+    {
+        if (exists(homeSettingsPath()))
+        {
+            auto text = readText(homeSettingsPath()).strip();
+            if (text.length > 0) return text;
+        }
+    }
+    catch (Exception)
+    {
+    }
+    return defaultHomeUrl;
+}
+
+/// Persist the home URL (writes the settings file).
+private void saveHomeUrl(string url)
+{
+    try
+    {
+        write(homeSettingsPath(), url ~ "\n");
+    }
+    catch (Exception)
+    {
+        // Settings persistence is best-effort; never fail navigation for it.
+    }
+}
 
 /// Resolve an `auroraweb:` URL to HTML. Anything else (plain words and other
 /// schemes) is treated as a search term. HTTP/HTTPS never reaches this helper;
@@ -53,7 +105,7 @@ private string builtInPage(string path)
         return cssPageHtml();
     if (p == "js")
         return jsPageHtml();
-    if (p == "search")
+    if (p.startsWith("search") || p == "search")
         return searchPageHtml();
     if (p == "links")
         return linksPageHtml();
@@ -63,9 +115,13 @@ private string builtInPage(string path)
         return asyncPageHtml();
     if (p == "complex")
         return complexPageHtml();
-    return errorPageHtml("Unknown page '" ~ p ~ "'. Try auroraweb:hello, " ~
-        "auroraweb:css, auroraweb:js, auroraweb:links, auroraweb:async or " ~
-        "auroraweb:complex.");
+    if (p == "remote")
+        return remotePageHtml();
+    if (p == "error404")
+        return error404PageHtml();
+    return errorPageHtml(p, "Unknown page '" ~ p ~ "'. Try auroraweb:hello, " ~
+        "auroraweb:css, auroraweb:js, auroraweb:links, auroraweb:async, " ~
+        "auroraweb:remote or auroraweb:complex.");
 }
 
 /// Tall page to exercise vertical scrolling.
@@ -236,12 +292,72 @@ private string searchPageHtml()
 </html>`;
 }
 
-/// Error page for unknown `auroraweb:` paths.
-private string errorPageHtml(string message)
+/// A fake "remote" page (title + paragraphs) so the offline shell can exercise
+/// remote-page bookkeeping (title extraction, tab strip labels) with no network.
+private string remotePageHtml()
 {
-    return "<!DOCTYPE html><html><head><title>Aurora Error</title></head>" ~
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <title>Remote</title>
+</head>
+<body style="background:#f6f8fa;color:#1b1f23;padding:32px">
+  <h1>Remote Page</h1>
+  <p>This page mimics a document fetched from the network. It has a
+  <b>&lt;title&gt;</b> of "Remote" so tab title extraction can be tested.</p>
+  <p><a id="retry" style="display:inline-block" href="auroraweb:hello">Home</a></p>
+</body>
+</html>`;
+}
+
+/// A page that mimics a failed (404-style) remote response. Navigation here
+/// must NOT grow the tab's history — the error is treated as a failed load.
+private string error404PageHtml()
+{
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <title>404 Not Found</title>
+</head>
+<body style="background:#fff0f0;color:#7f1d1d;padding:32px">
+  <h1>404 Not Found</h1>
+  <p>The requested page could not be found. This mimics an HTTP 404 from a
+  remote server; the previous history entry must be preserved.</p>
+  <p><a id="retry" style="display:inline-block" href="auroraweb:hello">Go home</a></p>
+</body>
+</html>`;
+}
+
+/// Error page for failed / unsupported navigations. Shows the failing URL, a
+/// short reason and a Retry link (display:inline-block so it fills a box for
+/// hit-testing) that re-navigates to the failed URL on click.
+private string errorPageHtml(string url, string message)
+{
+    return "<!DOCTYPE html><html><head><title>Navigation error</title></head>" ~
         "<body style=\"background:#fff0f0;color:#7f1d1d;padding:32px\">" ~
-        "<h1>Page not found</h1><p>" ~ message ~ "</p></body></html>";
+        "<h1>Navigation error</h1>" ~
+        "<p><b>" ~ escapeHtml(url) ~ "</b></p>" ~
+        "<p>" ~ escapeHtml(message) ~ "</p>" ~
+        "<p><a id=\"retry\" style=\"display:inline-block;background:#e0b3b3;" ~
+        "padding:8px 16px;margin-top:8px\" href=\"" ~ escapeHtml(url) ~
+        "\">Retry</a></p></body></html>";
+}
+
+/// Escape &, < and > for HTML text/attribute context.
+private string escapeHtml(string s)
+{
+    string result;
+    foreach (ch; s)
+    {
+        switch (ch)
+        {
+            case '&': result ~= "&amp;"; break;
+            case '<': result ~= "&lt;"; break;
+            case '>': result ~= "&gt;"; break;
+            default:  result ~= ch; break;
+        }
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +380,8 @@ final class WebPageView : Widget
     private string _url;
     private int _scrollY;
     private int _contentHeight;
+    private string _lastError;   /// reason of the last failed load ("" if ok)
+    private string _failedUrl;   /// URL that failed; "" if the last load succeeded
 
     this(WebPage page)
     {
@@ -332,6 +450,8 @@ final class WebPageView : Widget
     {
         if (_page is null) return;
         const lower = url.toLower();
+        _lastError = "";
+        _failedUrl = "";
         if (lower.startsWith("auroraweb:"))
         {
             _page.setHtml(fetchHtml(url));
@@ -340,11 +460,20 @@ final class WebPageView : Widget
         else if (lower.startsWith("http://") || lower.startsWith("https://"))
         {
             _page.navigate(url);
+            // The engine's HTTP layer reports failures inside the document
+            // (navigation failed / non-2xx status). Detect them so the shell
+            // does not commit a broken entry to history.
+            _lastError = remoteLoadError();
+            if (_lastError.length > 0)
+                _failedUrl = url;
         }
         else
         {
-            _page.setHtml(errorPageHtml("Unsupported scheme in '" ~ url ~ "'."));
+            _page.setHtml(errorPageHtml(url,
+                "Unsupported scheme in '" ~ url ~ "'."));
             _page.executeScripts();
+            _failedUrl = url;
+            _lastError = "Unsupported scheme '" ~ url ~ "'.";
         }
         // Lay out at the real viewport size; if the widget has no bounds yet
         // (first frame before layout), use a sane default so the first paint
@@ -369,6 +498,78 @@ final class WebPageView : Widget
         return _url.length > 0 &&
             (_url.toLower().startsWith("http://") ||
              _url.toLower().startsWith("https://"));
+    }
+
+    /// Test-only: reason string of the last failed load ("" if the last load
+    /// succeeded). This is how a 404-ish remote fetch is surfaced.
+    public string errorReasonForTesting() const
+    {
+        return _lastError;
+    }
+
+    /// Test-only: URL of the last failed load ("" if none).
+    public string failedUrlForTesting() const
+    {
+        return _failedUrl;
+    }
+
+    /// The layout engine paints error/404 pages with a pink background. Detect
+    /// them so the shell can keep history clean (no broken entries).
+    public bool showsErrorPage()
+    {
+        if (_page is null) return false;
+        try
+        {
+            auto root = _page.root();
+            if (root is null) return false;
+            bool found;
+            void walk(Element e)
+            {
+                if (found) return;
+                auto bg = e.style.background.toLower();
+                if (bg == "#fff0f0" || bg == "rgb(255, 240, 240)")
+                {
+                    found = true;
+                    return;
+                }
+                foreach (c; e.elements)
+                    walk(c);
+            }
+            walk(root);
+            return found;
+        }
+        catch (Exception)
+        {
+        }
+        return false;
+    }
+
+    /// After a remote fetch, ask the engine whether the document is an error
+    /// page ("Navigation failed" / "HTTP 404"). Returns a reason, or "" if the
+    /// page loaded fine.
+    private string remoteLoadError()
+    {
+        try
+        {
+            if (_page is null) return "no page";
+            auto root = _page.root();
+            if (root is null) return "no document";
+            string text = root.textContent();
+            auto lower = text.toLower();
+            if (lower.indexOf("navigation failed") >= 0)
+                return "Navigation failed";
+            if (lower.indexOf("http error") >= 0)
+                return "HTTP error";
+            if (lower.indexOf("http 404") >= 0)
+                return "HTTP 404 Not Found";
+            if (lower.indexOf("404 not found") >= 0)
+                return "HTTP 404 Not Found";
+        }
+        catch (Exception)
+        {
+            return "error reading document";
+        }
+        return "";
     }
 
     /**
@@ -598,6 +799,7 @@ final class BrowserRoot : VBox
     private Button _backButton;
     private Button _forwardButton;
     private Button _reloadButton;
+    private Button _homeButton;
     private AddressField _address;
     private Button _goButton;
     private Button _newTabButton;
@@ -608,16 +810,37 @@ final class BrowserRoot : VBox
     private VBox _content;
     private HBox _bookmarksBar;
     private string[] _bookmarks;   /// bookmarked URLs (order preserved)
+    private string _homeUrl;       /// configured home page (persisted)
+    private bool _loading;         /// page currently loading (status/button state)
 
     this(GuiWindow window)
     {
         super(0);
         _window = window;
+        _homeUrl = loadHomeUrl();
         buildChrome();
-        newTab("auroraweb:hello");
+        newTab(_homeUrl);
         updateStatus("Aurora Browser ready — offline pages only "
             ~ "(auroraweb:hello, auroraweb:css, auroraweb:js, "
             ~ "auroraweb:links).");
+        updateChrome();
+    }
+
+    /// Configure the home page (also persists it to home.txt).
+    private void setHomeUrl(string url)
+    {
+        _homeUrl = url;
+        saveHomeUrl(url);
+    }
+
+    /// Open `url` in the first tab on startup (used by the `--url` CLI arg).
+    /// Called after the constructor created the initial tab.
+    public void openUrlAtStartup(string url)
+    {
+        if (_tabs.length == 0) return;
+        _active = 0;
+        switchTab(0);
+        navigateTo(url);
         updateChrome();
     }
 
@@ -645,6 +868,12 @@ final class BrowserRoot : VBox
         _reloadButton.setIconSize(16);
         _reloadButton.layoutHints().preferredWidth = 36;
         _reloadButton.onClick = delegate() { reloadPage(); };
+
+        _homeButton = toolbar.add(new Button("", IconKind.home));
+        _homeButton.setId("br-home");
+        _homeButton.setIconSize(16);
+        _homeButton.layoutHints().preferredWidth = 36;
+        _homeButton.onClick = delegate() { goHome(); };
 
         _address = toolbar.add(new AddressField(""));
         _address.setId("br-address");
@@ -725,29 +954,72 @@ final class BrowserRoot : VBox
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return;
         auto tab = &_tabs[_active];
+        const prevPosition = tab.position;
+
+        // Load first. On a successful load the URL is committed to history;
+        // on failure the previous entry is preserved and the error page shown.
+        const success = loadUrl(url);
+        if (!success)
+        {
+            tab.position = prevPosition;
+            _tabs[_active] = *tab;
+            updateChrome();
+            updateStatus("Failed to load " ~ url);
+            return;
+        }
 
         // Truncate the forward history when a new entry is navigated.
         tab.history.length = cast(size_t) tab.position + 1;
         tab.history ~= url;
         tab.position = cast(int) tab.history.length - 1;
-
-        loadUrl(url);
+        tab.title = pageTitle(tab.view);
+        _tabs[_active] = *tab;
         updateChrome();
+        updateStatus("Loaded " ~ url);
     }
 
-    private void loadUrl(string url)
+    /// Load the URL into the active view, showing the "Loading..." busy state
+    /// around the (synchronous) fetch. Returns true on success; false when the
+    /// load failed and an error page is now displayed.
+    private bool loadUrl(string url)
     {
-        if (_active < 0 || _active >= cast(int) _tabs.length) return;
+        if (_active < 0 || _active >= cast(int) _tabs.length) return false;
         auto tab = &_tabs[_active];
+
+        _loading = true;
+        _reloadButton.setIcon(IconKind.close);
+        updateStatus("Loading " ~ url ~ "...");
+        invalidate();
+
         tab.view.setCurrentUrl(url);
         tab.view.setUrl(url);
         tab.title = pageTitle(tab.view);
+
+        const failed = tab.view.errorReasonForTesting().length > 0 ||
+            tab.view.showsErrorPage();
+        const success = !failed;
+
+        _loading = false;
+        _reloadButton.setIcon(IconKind.refresh);
         _address.setText(url, false);
         _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
             "Aurora Browser");
         _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
-        updateStatus("Loaded " ~ url);
         _tabs[_active] = *tab;
+        return success;
+    }
+
+    /// Update the chrome after a back/forward navigation to a history entry.
+    private void loadHistoryEntry(int index, string statusPrefix)
+    {
+        if (_active < 0 || _active >= cast(int) _tabs.length) return;
+        auto tab = &_tabs[_active];
+        const url = tab.history[cast(size_t) index];
+        loadUrl(url);
+        tab.title = pageTitle(tab.view);
+        updateStatus(statusPrefix ~ " " ~ url);
+        _tabs[_active] = *tab;
+        updateChrome();
     }
 
     private void navigateBack()
@@ -756,16 +1028,7 @@ final class BrowserRoot : VBox
         auto tab = &_tabs[_active];
         if (tab.position <= 0) return;
         --tab.position;
-        const url = tab.history[cast(size_t) tab.position];
-        tab.view.setCurrentUrl(url);
-        tab.view.setUrl(url);
-        tab.title = pageTitle(tab.view);
-        _address.setText(url, false);
-        _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
-            "Aurora Browser");
-        updateStatus("Back to " ~ url);
-        _tabs[_active] = *tab;
-        updateChrome();
+        loadHistoryEntry(tab.position, "Back to");
     }
 
     private void navigateForward()
@@ -774,28 +1037,24 @@ final class BrowserRoot : VBox
         auto tab = &_tabs[_active];
         if (tab.position + 1 >= cast(int) tab.history.length) return;
         ++tab.position;
-        const url = tab.history[cast(size_t) tab.position];
-        tab.view.setCurrentUrl(url);
-        tab.view.setUrl(url);
-        tab.title = pageTitle(tab.view);
-        _address.setText(url, false);
-        _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
-            "Aurora Browser");
-        updateStatus("Forward to " ~ url);
-        _tabs[_active] = *tab;
-        updateChrome();
+        loadHistoryEntry(tab.position, "Forward to");
     }
 
     private void reloadPage()
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return;
         auto tab = &_tabs[_active];
-        tab.view.reload();
+        loadUrl(tab.view.currentUrl());
         tab.title = pageTitle(tab.view);
         _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
             "Aurora Browser");
         updateStatus("Reloaded " ~ tab.view.currentUrl());
         _tabs[_active] = *tab;
+    }
+
+    private void goHome()
+    {
+        navigateTo(_homeUrl);
     }
 
     private void newTab(string url)
@@ -816,6 +1075,16 @@ final class BrowserRoot : VBox
         _tabs ~= tab;
         _active = cast(int) _tabs.length - 1;
         switchTab(_active);
+        // Commit the initial URL to history only when it loads successfully;
+        // otherwise the history entry is dropped and an error page shown.
+        if (!loadUrl(url))
+        {
+            tab.history.length = 0;
+            tab.position = 0;
+            tab.title = pageTitle(view);
+            _tabs[_active] = tab;
+            updateChrome();
+        }
     }
 
     private void switchTab(int index)
@@ -969,7 +1238,12 @@ final class BrowserRoot : VBox
         const shortcut = event.control() || event.meta();
         if (shortcut && event.key == Key.t)
         {
-            newTab("auroraweb:hello");
+            newTab(_homeUrl);
+            return true;
+        }
+        if (shortcut && event.key == Key.h)
+        {
+            goHome();
             return true;
         }
         if (shortcut && event.key == Key.w && _tabs.length > 1)
@@ -1002,7 +1276,7 @@ final class BrowserRoot : VBox
         _tabs = _tabs[0 .. _active] ~ _tabs[_active + 1 .. $];
         if (_tabs.length == 0)
         {
-            newTab("auroraweb:hello");
+            newTab(_homeUrl);
             return;
         }
         if (_active >= cast(int) _tabs.length)
@@ -1084,5 +1358,35 @@ final class BrowserRoot : VBox
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return null;
         return _tabs[cast(size_t) _active].view;
+    }
+
+    /// Test-only: is a page currently loading (busy state)?
+    public bool isLoadingForTesting() const
+    {
+        return _loading;
+    }
+
+    /// Test-only: the configured home page URL.
+    public string homeUrlForTesting() const
+    {
+        return _homeUrl;
+    }
+
+    /// Test-only: current status bar text.
+    public string statusTextForTesting() const
+    {
+        return to!string(_status.text());
+    }
+
+    /// Test-only: the tab strip label text.
+    public string tabStripLabelForTesting() const
+    {
+        return to!string(_tabsLabel.text());
+    }
+
+    /// Test-only: set the home page (also persists it to home.txt).
+    public void setHomeForTesting(string url)
+    {
+        setHomeUrl(url);
     }
 }

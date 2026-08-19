@@ -20,7 +20,7 @@ module auroraweb.layout;
  * - Percentage lengths, min/max-width, min/max-height.
  */
 
-import auroraweb.css : Rule, cascadeFor, applyMediaRules;
+import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
 import aurora.image : RgbaImage;
 import aurora.font : FontRole;
@@ -146,6 +146,11 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
     applyDeclaration(style, "grid-template-rows", cascade.get("grid-template-rows", ""));
     applyDeclaration(style, "column-gap", cascade.get("column-gap", ""));
     applyDeclaration(style, "row-gap", cascade.get("row-gap", ""));
+    applyDeclaration(style, "border-radius", cascade.get("border-radius", ""));
+    applyDeclaration(style, "box-shadow", cascade.get("box-shadow", ""));
+    applyDeclaration(style, "text-decoration", cascade.get("text-decoration", ""));
+    applyDeclaration(style, "opacity", cascade.get("opacity", ""));
+    applyDeclaration(style, "z-index", cascade.get("z-index", ""));
 
     // Inline style attribute overrides everything.
     auto inlineStyle = "style" in element.attrs;
@@ -193,7 +198,8 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
     {
         case "display":
             if (value == "block" || value == "inline" || value == "inline-block" ||
-                value == "flex" || value == "none" || value == "list-item" ||
+                value == "flex" || value == "inline-flex" || value == "none" ||
+                value == "list-item" ||
                 value == "grid" || value == "table" || value == "table-row" ||
                 value == "table-cell")
                 style.display = value;
@@ -284,6 +290,63 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "line-height": style.lineHeight = value; break;
         case "box-sizing":
             if (value == "border-box" || value == "content-box") style.boxSizing = value;
+            break;
+        case "border-radius": style.borderRadius = value; break;
+        case "box-shadow":
+            // box-shadow: none | H V blur color
+            {
+                auto parts = value.strip().split();
+                if (parts.length == 0) break;
+                if (parts[0] == "none")
+                {
+                    style.boxShadowH = "0px";
+                    style.boxShadowV = "0px";
+                    style.boxShadowBlur = "0px";
+                    style.boxShadowColor = "none";
+                }
+                else if (parts.length >= 3)
+                {
+                    style.boxShadowH = parts[0];
+                    style.boxShadowV = parts[1];
+                    style.boxShadowBlur = parts[2];
+                    // Everything after the third token is the color.
+                    auto rest = value.strip();
+                    auto off = parts[0].length + parts[1].length + parts[2].length;
+                    while (off < rest.length && rest[off] == ' ') off++;
+                    auto color = off < rest.length ? rest[off .. $].strip() : "";
+                    if (color.length)
+                        style.boxShadowColor = color;
+                    else
+                        style.boxShadowColor = "rgba(0, 0, 0, 0.3)";
+                }
+                else
+                {
+                    style.boxShadowH = "0px";
+                    style.boxShadowV = "0px";
+                    style.boxShadowBlur = "0px";
+                    style.boxShadowColor = "none";
+                }
+            }
+            break;
+        case "text-decoration":
+            if (value == "underline" || value == "line-through" ||
+                value == "overline" || value == "none")
+                style.textDecoration = value;
+            break;
+        case "opacity":
+            {
+                import auroraweb.dom : cssDouble;
+                auto o = cssDouble(value.strip());
+                if (o < 0.0) o = 0.0;
+                if (o > 1.0) o = 1.0;
+                style.opacity = o;
+            }
+            break;
+        case "z-index":
+            {
+                import auroraweb.dom : cssInt;
+                style.zIndex = cssInt(value.strip());
+            }
             break;
         case "grid-template-columns": style.gridTemplateColumns = value; break;
         case "grid-template-rows": style.gridTemplateRows = value; break;
@@ -401,6 +464,7 @@ private int resolveSide(string value, int containingWidth, int sideIndex)
     {
         import auroraweb.dom : cssInt;
         if (s == "0") return 0;
+        if (s == "auto") return 0; // margins: auto resolves to 0 in normal flow
         if (s.length >= 3 && s[$ - 2 .. $] == "px") return cssInt(s[0 .. $ - 2]);
         if (s.length >= 2 && s[$ - 1] == '%') return (containingWidth * cssInt(s[0 .. $ - 1])) / 100;
         return -1;
@@ -417,6 +481,29 @@ private int resolveSide(string value, int containingWidth, int sideIndex)
 private int sideValue(string value, int containingWidth, int sideIndex)
 {
     return resolveSide(value, containingWidth, sideIndex);
+}
+
+/// Collapse two adjacent vertical margins per CSS:
+/// two positive margins take the max; two negative margins take the most
+/// negative; one positive and one negative sum to their (possibly negative)
+/// result.
+private int collapseVerticalMargins(int a, int b)
+{
+    if (a >= 0 && b >= 0) return max(a, b);
+    if (a <= 0 && b <= 0) return min(a, b);
+    return a + b;
+}
+
+/// Resolve `line-height` into a px line box height. An explicit px value wins;
+/// a percentage resolves against THIS element's font size (not the containing
+/// block); otherwise the fallback is font-size + 8px breathing room.
+private int resolveLineHeight(Element element, int pixelSize)
+{
+    const explicitLineH = element.style.pxLength(element.style.lineHeight);
+    if (explicitLineH > 0) return explicitLineH;
+    const percent = element.style.percentValue(element.style.lineHeight);
+    if (percent >= 0) return max(1, (pixelSize * percent) / 100);
+    return pixelSize + 8;
 }
 
 /// Layout a block-level element and its children in normal flow.
@@ -472,15 +559,15 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         return;
     }
 
-    // Margin collapsing with the previous sibling's bottom margin.
-    if (flow.prevBottomMargin > 0)
+    // Margin collapsing with the previous sibling's bottom margin. A negative
+    // margin-top pulls the box up (possibly overlapping the previous box); a
+    // negative margin-bottom pulls following content up by the same amount.
+    element.box.y = flow.y + element.box.marginTop;
+    if (flow.hasPrevBlock)
     {
-        const collapsed = max(flow.prevBottomMargin, element.box.marginTop);
+        const collapsed = collapseVerticalMargins(flow.prevBottomMargin,
+            element.box.marginTop);
         element.box.y = flow.y + (collapsed - flow.prevBottomMargin);
-    }
-    else
-    {
-        element.box.y = flow.y + element.box.marginTop;
     }
 
     element.box.x = flow.x + element.box.marginLeft;
@@ -510,9 +597,12 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     finalHeight = clampMinMaxHeight(element, finalHeight);
     element.box.height = finalHeight;
 
-    // Advance the flow past this box (including bottom margin).
+    // Advance the flow past this box (including bottom margin). A negative
+    // margin-bottom pulls following content up by the same amount (may overlap).
     flow.prevBottomMargin = element.box.marginBottom;
-    flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
+    flow.hasPrevBlock = true;
+    const bottom = element.box.y + element.box.height + element.box.marginBottom;
+    if (bottom > flow.y) flow.y = bottom;
 }
 
 /// Lay out the DIRECT text-node and inline-element children of a block on a
@@ -523,10 +613,10 @@ private void layoutDirectText(Element element, ref FlowContext flow)
 {
     const px = element.style.pxLength(element.style.fontSize);
     const pixelSize = px >= 0 ? px : 16;
-    // line-height: an explicit px value sizes the line boxes (advance + box
-    // height); otherwise fall back to font-size + 8px breathing room.
-    const explicitLineH = element.style.pxLength(element.style.lineHeight);
-    const lineH = explicitLineH > 0 ? explicitLineH : pixelSize + 8;
+    // line-height: an explicit px value sizes the line boxes; a percentage
+    // resolves against THIS element's font-size; otherwise fall back to
+    // font-size + 8px breathing room.
+    const lineH = resolveLineHeight(element, pixelSize);
     int cursorX = flow.x;
     int cursorY = flow.y;
     int lineIndex = flow.lineCount;
@@ -666,6 +756,23 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             ce.box.y = cursorY;
             ce.box.width = cw;
             ce.box.height = ceLines * lineH;
+            // An inline-block with an explicit height uses that height (like a
+            // real box); otherwise it is a content-sized line box.
+            if (ce.style.display == "inline-block")
+            {
+                ce.style.containingHeight = flow.height;
+                const ih = resolveHeight(ce);
+                if (ih >= 0) ce.box.height = ih;
+            }
+            // Inline-block baseline alignment: the element has no explicit
+            // vertical-align, so its BOTTOM aligns with the line's text
+            // baseline (baseline = cursorY + ascent, ascent ~= font-size).
+            // Raise the box so its bottom edge lands exactly on the baseline.
+            if (ce.style.display == "inline-block")
+            {
+                const int baseline = cursorY + pixelSize;
+                ce.box.y = baseline - ce.box.height;
+            }
             noteLine(lineIndex, cursorX, cursorX + cw);
             placedElements ~= ce;
             placedElementLines ~= lineIndex;
@@ -958,7 +1065,7 @@ private void layoutChildren(Element element, ref FlowContext flow, Element posit
             if ((childStyle.display == "inline" || childStyle.display == "inline-block") &&
                 childStyle.position != "absolute" && childStyle.position != "fixed")
                 continue;
-            if (childStyle.display == "flex")
+            if (childStyle.display == "flex" || childStyle.display == "inline-flex")
                 layoutFlex(childElement, flow, positionedAncestor);
             else if (childStyle.display == "grid")
                 layoutGrid(childElement, flow, positionedAncestor);
@@ -1082,11 +1189,16 @@ private void layoutInlineBlock(Element element, ref FlowContext flow, Element po
 
 private void layoutFlex(Element element, ref FlowContext flow, Element positionedAncestor)
 {
+    const bool inline = element.style.display == "inline-flex";
     resolveBoxMetrics(element, flow.width);
     element.box.x = flow.x + element.box.marginLeft;
     element.box.y = flow.y + element.box.marginTop;
 
     int width = resolveWidth(element, flow.width);
+    // An inline-flex container with no explicit width sizes to its content
+    // (like an inline-block), never filling the containing block.
+    if (inline && element.style.resolveLength(element.style.width, flow.width) < 0)
+        width = 0;
     element.box.width = width;
 
     // Content box.
@@ -1119,7 +1231,6 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     const int fixedTotal = sumWidths(itemWidths);
     const int gapTotal = gapPx * cast(int)max(0, items.length - 1);
     const int remaining = innerW - fixedTotal - gapTotal;
-    int remainingSplit = remaining;
     if (totalFlex > 0)
     {
         // Distribute remaining proportionally to flex-grow.
@@ -1132,14 +1243,23 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             {
                 const int share = (remaining * grow) / totalFlex;
                 itemWidths[i] = itemWidths[i] + share;
-                remainingSplit -= share;
             }
         }
     }
 
+    // Clamp each flex item's resolved width to its own min/max-width. The
+    // container clamp in resolveWidth is not enough — per-item max-width must
+    // cap the grown width (e.g. flex-grow:1 + max-width:50px in a wide row).
+    foreach (i, ce; items)
+    {
+        ce.style.containingWidth = innerW;
+        ce.style.containingHeight = element.style.containingHeight;
+        itemWidths[i] = clampMinMaxWidth(ce, max(0, itemWidths[i]));
+    }
+
     // justify-content.
     int cursor = innerX;
-    const int used = fixedTotal + (totalFlex > 0 ? (remaining - remainingSplit) : 0);
+    const int used = sumWidths(itemWidths) + gapTotal;
     if (style.justifyContent == "center")
         cursor = innerX + (innerW - used) / 2;
     else if (style.justifyContent == "flex-end")
@@ -1149,7 +1269,6 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
 
     int maxChildHeight = 0;
     int[] xs;
-    int[] ys;
     foreach (i, ce; items)
     {
         ce.box.x = cursor;
@@ -1157,10 +1276,61 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         ce.box.width = itemWidths[i];
         ce.box.height = resolveHeight(ce) >= 0 ? resolveHeight(ce) : 0;
         xs ~= cursor;
-        ys ~= innerY;
         cursor += itemWidths[i] + gapPx;
         layoutChildren(ce, flow, ce);
         maxChildHeight = max(maxChildHeight, ce.box.height);
+    }
+
+    // margin-left:auto / margin-right:auto / margin:auto on an item absorbs
+    // ALL leftover space like justify-content would: a left-auto margin pushes
+    // the item (and everything after it) to the far side; a right-auto margin
+    // pulls the following items toward the right edge; both auto margins
+    // center the item. The margins already resolved to 0 in normal flow, so
+    // detect the `auto` keyword in the style strings directly.
+    int[] autoLeft;
+    int[] autoRight;
+    foreach (i, ce; items)
+    {
+        const ml = ce.style.marginLeft.strip().toLower();
+        const mr = ce.style.marginRight.strip().toLower();
+        const shorthand = ce.style.margin.strip().toLower();
+        if (ml == "auto" || (ml.length == 0 && shorthand.indexOf("auto") >= 0))
+            autoLeft ~= cast(int) i;
+        if (mr == "auto" || (mr.length == 0 && shorthand.indexOf("auto") >= 0))
+            autoRight ~= cast(int) i;
+    }
+    if (autoLeft.length || autoRight.length)
+    {
+        const itemsW = sumWidths(itemWidths);
+        const gapPaid = gapPx * cast(int)max(0, items.length - 1);
+        int leftover = innerW - itemsW - gapPaid;
+        if (leftover < 0) leftover = 0;
+        foreach (idx; autoLeft)
+        {
+            const int i = idx;
+            bool alsoRight = false;
+            foreach (r; autoRight)
+                if (r == i) { alsoRight = true; break; }
+            const int amount = alsoRight ? leftover / 2 : leftover;
+            if (amount <= 0) continue;
+            // The item's natural position (xs[i] recorded at layout time) is
+            // pushed right by `amount`, carrying all following items.
+            for (int j = i; j < cast(int) items.length; j++)
+                items[j].box.x += amount;
+        }
+        foreach (idx; autoRight)
+        {
+            const int i = idx;
+            bool alsoLeft = false;
+            foreach (l; autoLeft)
+                if (l == i) { alsoLeft = true; break; }
+            if (alsoLeft) continue; // handled (and centered) above
+            if (leftover <= 0) continue;
+            // All leftover space goes AFTER item i: pull every following item
+            // toward the right edge.
+            for (int j = i + 1; j < cast(int) items.length; j++)
+                items[j].box.x += leftover;
+        }
     }
 
     // align-items: center.
@@ -1168,6 +1338,17 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     {
         foreach (i, ce; items)
             ce.box.y = innerY + (maxChildHeight - ce.box.height) / 2;
+    }
+
+    // An inline-flex container with no explicit width sizes to its content:
+    // the sum of its items' widths (+ gaps + padding + border).
+    if (inline && element.style.resolveLength(element.style.width, flow.width) < 0)
+    {
+        const itemsW = sumWidths(itemWidths) + gapPx * cast(int)max(0, items.length - 1);
+        const totalW = itemsW + element.box.paddingLeft + element.box.paddingRight +
+            element.box.borderLeft + element.box.borderRight;
+        width = clampMinMaxWidth(element, max(0, totalW));
+        element.box.width = width;
     }
 
     // Container height = tallest child (+ padding/border).
@@ -1454,6 +1635,7 @@ private struct FlowContext
     int floatLeft;        /// Rightmost float left edge.
     FloatRect[] floats;   /// Active float rects for line shaping.
     int prevBottomMargin; /// Previous block's bottom margin (for collapsing).
+    bool hasPrevBlock;    /// Whether any block has been laid out in this flow.
     int lineCount;        /// Number of lines laid out so far.
 
     /// The usable left edge of the current line, after any left floats.
@@ -1994,3 +2176,252 @@ unittest
             "explicit display:list-item is preserved");
     }
 }
+
+unittest
+{
+    import std.conv : to;
+
+    // --- inline-flex sizing ---
+    // An inline-flex container with no explicit width sizes to its content:
+    // three 50px items + two 4px gaps = 158px total (no margin/padding/border).
+    {
+        auto flex = new Element("div");
+        flex.style.display = "inline-flex";
+        flex.style.gap = "4px";
+        Element[] kids;
+        foreach (i; 0 .. 3)
+        {
+            auto k = new Element("div");
+            k.style.display = "block";
+            k.style.width = "50px";
+            k.style.height = "10px";
+            k.parent = flex;
+            flex.children ~= k; flex.elements ~= k;
+            kids ~= k;
+        }
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 600; flow.height = 100;
+        layoutFlex(flex, flow, null);
+        assert(flex.box.width == 158,
+            "inline-flex width should shrink to content (158), got " ~ flex.box.width.to!string);
+        assert(kids[0].box.x == 0, "inline-flex child0 x=0, got " ~ kids[0].box.x.to!string);
+        assert(kids[1].box.x == 54, "inline-flex child1 x=54, got " ~ kids[1].box.x.to!string);
+        assert(kids[2].box.x == 108, "inline-flex child2 x=108, got " ~ kids[2].box.x.to!string);
+    }
+
+    // --- z-index parse ---
+    {
+        auto el = new Element("div");
+        el.style = computedStyle(el, []);
+        assert(el.style.zIndex == 0, "default z-index is 0");
+        auto cssRules = parseStylesheet(`#z2 { z-index: 2; }`);
+        auto el2 = new Element("div");
+        el2.attrs["id"] = "z2";
+        el2.style = computedStyle(el2, cssRules);
+        assert(el2.style.zIndex == 2,
+            "z-index:2 should parse to 2, got " ~ el2.style.zIndex.to!string);
+    }
+
+    // --- opacity parse + clamp ---
+    {
+        auto el = new Element("div");
+        el.style = computedStyle(el, []);
+        assert(el.style.opacity == 1.0, "default opacity is 1");
+        auto cssRules = parseStylesheet(`.o { opacity: 0.5; }`);
+        auto el2 = new Element("div");
+        el2.attrs["class"] = "o";
+        el2.style = computedStyle(el2, cssRules);
+        assert(el2.style.opacity == 0.5,
+            "opacity:0.5 should parse to 0.5, got " ~ el2.style.opacity.to!string);
+    }
+}
+
+unittest
+{
+    import auroraweb.dom : Element;
+    import std.conv : to;
+
+    // --- Negative margins collapse ---
+    // Sibling A has margin-bottom:-20px, sibling B has margin-top:-30px.
+    // One positive + one negative margin sum; both are negative here, so the
+    // most negative (-30px) wins and B overlaps A's bottom by 30px.
+    {
+        auto a = new Element("div"); a.style.display = "block";
+        a.style.height = "40px"; a.style.marginBottom = "-20px";
+        auto b = new Element("div"); b.style.display = "block";
+        b.style.height = "20px"; b.style.marginTop = "-30px";
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 100; flow.height = 400;
+        layoutBlock(a, flow, 100, null);
+        layoutBlock(b, flow, 100, null);
+        // a: y=0..40, margin-bottom -20 -> next flow y = 20.
+        // b: margin-top -30 collapses with -20 to -30 (most negative):
+        //    border-box gap = -30, so b's top = a's bottom (40) - 30 = 10.
+        assert(a.box.y == 0, "a.y should be 0, got " ~ a.box.y.to!string);
+        assert(a.box.height == 40, "a.height should be 40, got " ~ a.box.height.to!string);
+        assert(b.box.y == 10,
+            "b.y should be 10 (a bottom 40 - collapsed -30 margin), got " ~ b.box.y.to!string);
+        // The two boxes overlap by exactly 30px (a's bottom 30px of vertical
+        // extent is covered by b's top).
+        const overlap = (a.box.y + a.box.height) - b.box.y;
+        assert(overlap == 30,
+            "b should overlap a by 30px, got " ~ overlap.to!string);
+    }
+
+    // --- Mixed-sign margin collapsing: negative + positive sums ---
+    // A's bottom margin +20 and B's top margin -10 sum to +10 (per CSS:
+    // one positive + one negative -> sum).
+    {
+        auto a = new Element("div"); a.style.display = "block";
+        a.style.height = "10px"; a.style.marginBottom = "20px";
+        auto b = new Element("div"); b.style.display = "block";
+        b.style.height = "10px"; b.style.marginTop = "-10px";
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 100; flow.height = 400;
+        layoutBlock(a, flow, 100, null);
+        layoutBlock(b, flow, 100, null);
+        assert(b.box.y == 20,
+            "20 + (-10) = 10 collapsed -> b.y should be 10 + 10 (height) = 20, got " ~ b.box.y.to!string);
+        assert(b.box.y - (a.box.y + a.box.height) == 10,
+            "gap should be 10, got " ~ (b.box.y - (a.box.y + a.box.height)).to!string);
+    }
+
+    // --- Flex item min/max-width clamp ---
+    // A single flex-grow:1 item in a 300px container with max-width:50px must
+    // stay at 50px (the container would otherwise give it the full 300px).
+    {
+        auto flex = new Element("div");
+        flex.style.display = "flex";
+        flex.style.width = "300px";
+        auto kid = new Element("div");
+        kid.style.display = "block";
+        kid.style.flexGrow = "1";
+        kid.style.maxWidth = "50px";
+        kid.style.height = "10px";
+        kid.parent = flex;
+        flex.children ~= kid; flex.elements ~= kid;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 100;
+        layoutFlex(flex, flow, null);
+        assert(kid.box.width == 50,
+            "flex item with flex-grow:1 and max-width:50px must stay 50px, got " ~
+            kid.box.width.to!string);
+        // And it should hug the left edge (flex-start).
+        assert(kid.box.x == 0, "flex item x=0, got " ~ kid.box.x.to!string);
+    }
+
+    // --- Flex min-width clamp ---
+    // A flex-grow:0 item with an explicit 10px width but min-width:80px must
+    // resolve to 80px.
+    {
+        auto flex = new Element("div");
+        flex.style.display = "flex";
+        flex.style.width = "300px";
+        auto kid = new Element("div");
+        kid.style.display = "block";
+        kid.style.width = "10px";
+        kid.style.minWidth = "80px";
+        kid.parent = flex;
+        flex.children ~= kid; flex.elements ~= kid;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 100;
+        layoutFlex(flex, flow, null);
+        assert(kid.box.width == 80,
+            "flex item min-width:80px should clamp to 80, got " ~ kid.box.width.to!string);
+    }
+
+    // --- Flex margin-left:auto pushes the item to the far side ---
+    // Two items in a 300px container; the second has margin-left:auto so it
+    // ends flush at the right edge (x = 300 - width).
+    {
+        auto flex = new Element("div");
+        flex.style.display = "flex";
+        flex.style.width = "300px";
+        auto k1 = new Element("div");
+        k1.style.display = "block"; k1.style.width = "40px"; k1.style.height = "10px";
+        auto k2 = new Element("div");
+        k2.style.display = "block"; k2.style.width = "60px"; k2.style.height = "10px";
+        k2.style.marginLeft = "auto";
+        k1.parent = flex; k2.parent = flex;
+        flex.children ~= k1; flex.children ~= k2;
+        flex.elements ~= k1; flex.elements ~= k2;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 100;
+        layoutFlex(flex, flow, null);
+        assert(k1.box.x == 0, "first item x=0, got " ~ k1.box.x.to!string);
+        assert(k2.box.x == 240,
+            "margin-left:auto item should sit at the far side (x=240), got " ~
+            k2.box.x.to!string);
+        assert(k2.box.x + k2.box.width == 300,
+            "auto-margin item must end at the container's right edge, got " ~
+            (k2.box.x + k2.box.width).to!string);
+    }
+
+    // --- Percentage line-height resolves against font-size ---
+    // line-height:200% with a 16px font gives 32px line boxes.
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.fontSize = "16px";
+        container.style.lineHeight = "200%";
+        auto textNode = new TextNode(container, "Double spaced");
+        container.children ~= textNode;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 300;
+        flow.lineEnd = 300;
+        layoutDirectText(container, flow);
+        assert(flow.contentBottom == 32,
+            "line-height:200% of 16px font should give 32px line boxes, got " ~
+            flow.contentBottom.to!string);
+    }
+
+    // --- Percentage line-height uses the element's font-size, not the
+    // containing block's (the container font is 40px, the child line-height
+    // resolves against ITS OWN 16px font) ---
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.fontSize = "40px";
+        container.style.lineHeight = "200%";
+        auto textNode = new TextNode(container, "Child sized");
+        container.children ~= textNode;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 300;
+        flow.lineEnd = 300;
+        layoutDirectText(container, flow);
+        assert(flow.contentBottom == 80,
+            "200% of 40px font should be 80px line boxes, got " ~
+            flow.contentBottom.to!string);
+    }
+
+    // --- Inline-block baseline alignment ---
+    // A text run then an inline-block: the inline-block's bottom must align
+    // with the text baseline (baseline = cursorY + ascent, ascent ~ font-size).
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.fontSize = "16px";
+        auto tn = new TextNode(container, "ab");
+        auto ib = new Element("span");
+        ib.style.display = "inline-block";
+        ib.style.width = "20px";
+        ib.style.height = "40px";
+        tn.parent = container; ib.parent = container;
+        container.children ~= tn; container.children ~= ib;
+        container.elements ~= ib;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 300;
+        flow.lineEnd = 300;
+        layoutDirectText(container, flow);
+        // Text sits on the first line at y=0; baseline = 0 + 16 = 16.
+        // The inline-block's bottom must be on that baseline: y = 16 - 40.
+        assert(ib.box.y == 16 - 40,
+            "inline-block bottom should align with the baseline (y=" ~ (16 - 40).to!string ~
+            "), got " ~ ib.box.y.to!string);
+        assert(ib.box.y + ib.box.height == 16,
+            "inline-block bottom must be exactly on the baseline, got " ~
+            (ib.box.y + ib.box.height).to!string);
+    }
+}
+
+

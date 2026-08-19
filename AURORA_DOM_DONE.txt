@@ -1,0 +1,72 @@
+AURORA WEB DOM FEATURES - IMPLEMENTED & VERIFIED
+=================================================
+
+Implemented in:
+  - aurora-web/source/auroraweb/dombind.d
+  - aurora-web/source/auroraweb/dom.d
+
+Features added (dombind.d):
+  1. Element traversal/query:
+     - element.closest("selector")
+     - element.matches("selector")
+     - element.contains(other)
+     - element.getElementsByTagName("tag")
+     - element.getElementsByClassName(".x")
+     - document.getElementsByTagName("tag")
+     - document.getElementsByClassName(".x")
+     - plus sibling/traversal getters: previousSibling, nextSibling,
+       firstElementChild, lastElementChild (via __get_* routing).
+  2. dataset: element.dataset.foo reads data-foo, element.dataset.foo="x"
+     writes data-foo. Cached per-element object with __setHandler write-through,
+     camelCase <-> kebab-case conversion, refreshed on each access.
+  3. Mutation methods:
+     - insertAdjacentHTML(beforebegin|afterbegin|beforeend|afterend, html)
+     - replaceWith(...nodes), remove(), before(...), after(...),
+       prepend(...), append(...) — handles both elements and text strings
+       (bare text preserved via parseFragmentNodes fallback).
+  4. cloneNode(deep) — deep (default) or shallow clone; deep copies children
+     recursively.
+  5. scrollIntoView() — no-op that sets scrollIntoViewCalled attribute.
+  6. Events enhancement:
+     - event.stopPropagation() sets propagationStopped=true;
+       fireEventChain halts bubbling when set.
+     - currentTarget updated per ancestor during bubbling.
+     - global Event constructor (new Event("type")) with preventDefault/
+       stopPropagation; arbitrary props (key, etc.) settable by scripts.
+     - dispatchEvent accepts an Event object OR a string name.
+     - makeEventObject now also exposes stopPropagation/propagationStopped.
+
+New unittest at end of dombind.d covers: closest/matches/contains,
+getElementsByTagName/ClassName (element + document), dataset read+write,
+insertAdjacentHTML all 4 positions, remove/after/before/append/prepend/
+replaceWith, cloneNode deep+shallow, scrollIntoView, stopPropagation stops
+bubbling, new Event + dispatchEvent with arbitrary key prop.
+
+dom.d: unchanged (no edits needed; all changes in dombind.d).
+
+VERIFICATION OUTPUTS (exact)
+----------------------------
+
+Verification 1:
+> cd C:\Users\Windows10_new\Documents\github_repositories\aurora-gui\aurora-web && dub test --compiler=dmd
+Output (relevant line):
+  40 modules passed unittests
+
+Verification 2:
+> cd C:\Users\Windows10_new\Documents\github_repositories\aurora-gui
+> dmd -i -version=AuroraHeadless -Isource -Iaurora-web\source -Ivendor\aurora-d-0.4.5\source tests\auroraweb_render_smoke.d -of=build\auroraweb-smoke.exe
+> build\auroraweb-smoke.exe
+Output:
+  JS result: 35
+  JS OK
+  auroraweb render smoke: ALL PASSED
+
+Verification 3:
+> cd C:\Users\Windows10_new\Documents\github_repositories\aurora-gui\aurora-browser && dub build --compiler=dmd --force
+Output:
+  Starting Performing "debug" build using dmd for x86_64.
+  Building aurora-browser 0.66.3: building configuration [application]
+  Linking aurora-browser
+(Succeeds; aurora-browser.exe produced.)
+
+ALL THREE VERIFICATIONS PASSED.

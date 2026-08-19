@@ -29,11 +29,21 @@ private int runScreenshot(string path)
     return 0;
 }
 
-int main(string[] args)
+/// Extract `--url <target>` from the command line ("" when absent).
+private string urlArg(string[] args)
 {
-    if (args.length >= 3 && args[1] == "--screenshot")
-        return runScreenshot(args[2]);
+    for (int i = 1; i < args.length - 1; ++i)
+    {
+        if (args[i] == "--url" && args[i + 1].length > 0)
+            return args[i + 1];
+    }
+    return "";
+}
 
+/// Open a browser window. When `startUrl` is non-empty it is opened in the
+/// first tab instead of the home page.
+private int runBrowser(string startUrl)
+{
     WindowOptions options;
     options.title = "Aurora Browser";
     options.width = 1080;
@@ -43,5 +53,14 @@ int main(string[] args)
     auto window = new GuiWindow(options, Theme.light());
     auto root = new BrowserRoot(window);
     window.setRoot(root);
+    if (startUrl.length > 0)
+        root.openUrlAtStartup(startUrl);
     return window.run();
+}
+
+int main(string[] args)
+{
+    if (args.length >= 3 && args[1] == "--screenshot")
+        return runScreenshot(args[2]);
+    return runBrowser(urlArg(args));
 }

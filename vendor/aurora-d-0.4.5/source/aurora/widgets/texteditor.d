@@ -1165,7 +1165,9 @@ class TextEditor : Widget
             const x = originX + cast(int) floor(caret.x + 0.5);
             const y = originY + cast(int) floor(caret.y + 1.0);
             const height = maxInt(2, cast(int) ceil(caret.height) - 2);
-            content.fillRect(Rect(x, y, 2, height),
+            // Thin 1 px caret, like native Windows text fields. A 2 px caret
+            // reads as a bold bar, especially at high-DPI scales.
+            content.fillRect(Rect(x, y, 1, height),
                 _customTextColor ? _textColor : palette.text);
         }
     }

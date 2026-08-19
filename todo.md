@@ -247,6 +247,12 @@ suspension semantics, CSS grid `fr` edge cases, `@media` screen types.
       resizes the page to the actual `size()` before every layout. Verified on
       interactive/Vulkan (1080x680) AND software (1350x850): clean separated
       bands, no overlap; 39 modules + both smokes green.
+- [x] Milestone 10 (parallel subagents, 3/3 with marker files): network
+      gzip/deflate + cookies + statusText/ok + NO_UI; layout position:fixed,
+      real text-align center/right, line-height, list-item bullets; forms
+      (value/checked/type/name, form.elements, form.submit -> __lastSubmit,
+      document.write, getComputedStyle, focus/blur). 40 modules + both smokes
+      green.
 - [ ] Remaining (recorded honestly): grid `fr` units in `grid-template-rows`,
       sandboxing/TLS policy hardening for remote content, true event-loop
       integration (timers driven by a real loop rather than explicit

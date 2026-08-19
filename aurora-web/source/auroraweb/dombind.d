@@ -33,6 +33,7 @@ JsValue bindDocument(Element root, JsRuntime rt, ref JsScope jsScope,
 private final class DocumentBinder
 {
     JsObject[Element] wrappers;
+    JsObject[Element] datasets;
     JsRuntime rt;
 
     this(JsRuntime rt)
@@ -76,6 +77,43 @@ private final class DocumentBinder
             foreach (child; descendants(root))
             {
                 if (selectorMatches(parsed, child))
+                {
+                    arr.obj.set(to!string(index), wrap(child));
+                    index++;
+                }
+            }
+            arr.obj.arrayLength = index;
+            return arr;
+        }));
+
+        docObj.set("getElementsByTagName", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto arr = rt2.makeArray();
+            if (args.length == 0) return arr;
+            auto tag = rt2.toJsString(args[0]).toLower();
+            size_t index = 0;
+            foreach (child; descendants(root))
+            {
+                if (child.tag == tag)
+                {
+                    arr.obj.set(to!string(index), wrap(child));
+                    index++;
+                }
+            }
+            arr.obj.arrayLength = index;
+            return arr;
+        }));
+
+        docObj.set("getElementsByClassName", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto arr = rt2.makeArray();
+            if (args.length == 0) return arr;
+            auto cls = rt2.toJsString(args[0]);
+            // Accept ".foo" or "foo".
+            if (cls.length > 1 && cls[0] == '.') cls = cls[1 .. $];
+            if (cls.length == 0) return arr;
+            size_t index = 0;
+            foreach (child; descendants(root))
+            {
+                if (child.hasClass(cls))
                 {
                     arr.obj.set(to!string(index), wrap(child));
                     index++;
@@ -152,6 +190,28 @@ private final class DocumentBinder
         }));
         windowObj.set("document", docVal);
         jsScope.declare("window", JsValue(JsKind.object, windowObj));
+
+        // Global Event constructor: new Event("click") returns a dispatchable
+        // event object (type + preventDefault/stopPropagation stubs). Arbitrary
+        // props (key, bubbles, ...) can be assigned afterwards by scripts.
+        jsScope.declare("Event", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto evt = rt2.makeObject();
+            evt.obj.set("type", args.length ? rt2.makeString(rt2.toJsString(args[0])) : rt2.makeString(""));
+            evt.obj.set("defaultPrevented", rt2.makeBoolean(false));
+            evt.obj.set("propagationStopped", rt2.makeBoolean(false));
+            evt.obj.set("cancelable", rt2.makeBoolean(false));
+            evt.obj.set("preventDefault", rt2.makeNativeFunc((eoThis, eoArgs, eoRt) {
+                if (eoThis.obj !is null)
+                    eoThis.obj.set("defaultPrevented", eoRt.makeBoolean(true));
+                return eoRt.makeUndefined();
+            }));
+            evt.obj.set("stopPropagation", rt2.makeNativeFunc((eoThis, eoArgs, eoRt) {
+                if (eoThis.obj !is null)
+                    eoThis.obj.set("propagationStopped", eoRt.makeBoolean(true));
+                return eoRt.makeUndefined();
+            }));
+            return evt;
+        }));
 
         // fetch: route page fetches through the page's resource loader and
         // expose a minimal Fetch-like response with a synchronous .then() shim.
@@ -379,8 +439,25 @@ private final class DocumentBinder
         }));
 
         obj.set("dispatchEvent", rt.makeNativeFunc((thisValue, args, rt2) {
-            auto evtName = args.length ? rt2.toJsString(args[0]) : "";
-            auto evt = makeEventObject(rt2, evtName, thisValue);
+            if (args.length == 0) return rt2.makeBoolean(false);
+            auto evtArg = args[0];
+            string evtName = "";
+            JsValue evt;
+            if (evtArg.kind == JsKind.object && evtArg.obj !is null)
+            {
+                // A constructed Event object: read its .type property.
+                auto typeVal = evtArg.obj.get("type");
+                if (typeVal.kind == JsKind.string) evtName = typeVal.strValue;
+                evt = evtArg;
+                evt.obj.set("target", thisValue);
+            }
+            else
+            {
+                // A string event name.
+                evtName = rt2.toJsString(evtArg);
+                evt = makeEventObject(rt2, evtName, thisValue);
+            }
+            if (evtName.length == 0) return rt2.makeBoolean(false);
             fireEventChain(thisValue, rt2, evtName, evt);
             // A click on a submit control (button / input[type=submit]) submits
             // the closest ancestor form.
@@ -456,6 +533,56 @@ private final class DocumentBinder
             auto el2 = unwrap(thisValue);
             if (el2 is null || el2.parent is null) return rt2.makeNull();
             return wrap(el2.parent);
+        }));
+
+        obj.set("__get_previousSibling", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null || el2.parent is null) return rt2.makeNull();
+            foreach (i, child; el2.parent.children)
+            {
+                auto ce = cast(Element) child;
+                if (ce is el2)
+                {
+                    if (i == 0) return rt2.makeNull();
+                    auto prev = cast(Element) el2.parent.children[i - 1];
+                    if (prev !is null) return wrap(prev);
+                    auto prevText = cast(TextNode) el2.parent.children[i - 1];
+                    if (prevText !is null) return wrapTextNode(prevText);
+                    return rt2.makeNull();
+                }
+            }
+            return rt2.makeNull();
+        }));
+
+        obj.set("__get_nextSibling", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null || el2.parent is null) return rt2.makeNull();
+            foreach (i, child; el2.parent.children)
+            {
+                auto ce = cast(Element) child;
+                if (ce is el2)
+                {
+                    if (i + 1 >= el2.parent.children.length) return rt2.makeNull();
+                    auto next = cast(Element) el2.parent.children[i + 1];
+                    if (next !is null) return wrap(next);
+                    auto nextText = cast(TextNode) el2.parent.children[i + 1];
+                    if (nextText !is null) return wrapTextNode(nextText);
+                    return rt2.makeNull();
+                }
+            }
+            return rt2.makeNull();
+        }));
+
+        obj.set("__get_firstElementChild", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null || el2.elements.length == 0) return rt2.makeNull();
+            return wrap(el2.elements[0]);
+        }));
+
+        obj.set("__get_lastElementChild", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null || el2.elements.length == 0) return rt2.makeNull();
+            return wrap(el2.elements[$ - 1]);
         }));
 
         obj.set("__get_firstChild", rt.makeNativeFunc((thisValue, args, rt2) {
@@ -609,8 +736,442 @@ private final class DocumentBinder
             return arr;
         }));
 
+        // element.matches(selector): does this element match the selector?
+        obj.set("matches", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeBoolean(false);
+            auto sel = rt2.toJsString(args[0]);
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeBoolean(false);
+            return rt2.makeBoolean(selectorMatches(parseCssSelector(sel), el2));
+        }));
+
+        // element.closest(selector): nearest ancestor (incl. self) matching.
+        obj.set("closest", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeNull();
+            auto sel = rt2.toJsString(args[0]);
+            auto parsed = parseCssSelector(sel);
+            auto el2 = unwrap(thisValue);
+            while (el2 !is null)
+            {
+                if (selectorMatches(parsed, el2)) return wrap(el2);
+                el2 = el2.parent;
+            }
+            return rt2.makeNull();
+        }));
+
+        // element.contains(other): is other this element or a descendant?
+        obj.set("contains", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeBoolean(false);
+            auto other = unwrap(args[0]);
+            if (other is null) return rt2.makeBoolean(false);
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeBoolean(false);
+            auto cur = other;
+            while (cur !is null)
+            {
+                if (cur is el2) return rt2.makeBoolean(true);
+                cur = cur.parent;
+            }
+            return rt2.makeBoolean(false);
+        }));
+
+        // element.getElementsByTagName("p"): array of wrapped descendants.
+        obj.set("getElementsByTagName", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto arr = rt2.makeArray();
+            if (args.length == 0) return arr;
+            auto tag = rt2.toJsString(args[0]).toLower();
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return arr;
+            size_t index = 0;
+            foreach (child; descendants(el2))
+            {
+                if (child.tag == tag)
+                {
+                    arr.obj.set(to!string(index), wrap(child));
+                    index++;
+                }
+            }
+            arr.obj.arrayLength = index;
+            return arr;
+        }));
+
+        // element.getElementsByClassName(".x" or "x"): array of wrapped descendants.
+        obj.set("getElementsByClassName", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto arr = rt2.makeArray();
+            if (args.length == 0) return arr;
+            auto cls = rt2.toJsString(args[0]);
+            if (cls.length > 1 && cls[0] == '.') cls = cls[1 .. $];
+            if (cls.length == 0) return arr;
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return arr;
+            size_t index = 0;
+            foreach (child; descendants(el2))
+            {
+                if (child.hasClass(cls))
+                {
+                    arr.obj.set(to!string(index), wrap(child));
+                    index++;
+                }
+            }
+            arr.obj.arrayLength = index;
+            return arr;
+        }));
+
+        // dataset: data-* attributes via camelCase property names. The object
+        // is cached on the element wrapper and kept in sync: reads refresh the
+        // props from the element's data-* attributes, writes update the
+        // backing attribute (via the object's __setHandler).
+        obj.set("__get_dataset", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeNull();
+            auto ds = makeDatasetObject(el2, rt2);
+            syncDataset(el2, ds, rt2);
+            return ds;
+        }));
+
+        // insertAdjacentHTML(position, html).
+        obj.set("insertAdjacentHTML", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            auto pos = rt2.toJsString(args[0]).strip().toLower();
+            auto html = rt2.toJsString(args[1]);
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            insertAdjacentHtml(el2, pos, html);
+            return rt2.makeUndefined();
+        }));
+
+        // remove(): detach this element from its parent.
+        obj.set("remove", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 !is null) detachElement(el2);
+            return rt2.makeUndefined();
+        }));
+
+        // replaceWith(...nodes): replace this element with nodes/text.
+        obj.set("replaceWith", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            if (el2.parent !is null)
+            {
+                insertNodesAt(el2.parent, childrenIndexOf(el2), args, rt2);
+                detachElement(el2);
+            }
+            return rt2.makeUndefined();
+        }));
+
+        // before(...nodes) / after(...nodes) / prepend(...nodes) / append(...nodes).
+        obj.set("before", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            if (el2.parent !is null)
+                insertNodesAt(el2.parent, childrenIndexOf(el2), args, rt2);
+            return rt2.makeUndefined();
+        }));
+
+        obj.set("after", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            if (el2.parent !is null)
+                insertNodesAt(el2.parent, childrenIndexOf(el2) + 1, args, rt2);
+            return rt2.makeUndefined();
+        }));
+
+        obj.set("prepend", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            insertNodesAt(el2, 0, args, rt2);
+            return rt2.makeUndefined();
+        }));
+
+        obj.set("append", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            insertNodesAt(el2, el2.children.length, args, rt2);
+            return rt2.makeUndefined();
+        }));
+
+        // cloneNode(deep): deep (default) or shallow copy.
+        obj.set("cloneNode", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeNull();
+            bool deep = true;
+            if (args.length && args[0].kind == JsKind.boolean)
+                deep = args[0].boolValue;
+            return wrap(cloneElement(el2, deep));
+        }));
+
+        // scrollIntoView(): no-op (the shell has no scroll); records the call.
+        obj.set("scrollIntoView", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 !is null) el2.attrs["scrollIntoViewCalled"] = "true";
+            return rt2.makeUndefined();
+        }));
+
         wrappers[el] = obj;
         return JsValue(JsKind.object, obj);
+    }
+
+    /// A dataset object translating camelCase property names to data-* attrs.
+    private JsValue makeDatasetObject(Element el, JsRuntime rt2)
+    {
+        // Cache one dataset object per element.
+        if (auto cached = el in datasets)
+            return JsValue(JsKind.object, *cached);
+        auto obj = new JsObject();
+        obj.kind = "Object";
+        obj.set("__setHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            auto prop = rt2.toJsString(args[0]);
+            auto value = rt2.toJsString(args[1]);
+            el.attrs["data-" ~ camelToKebab(prop)] = value;
+            if (thisValue.obj !is null)
+                thisValue.obj.set(prop, args[1]);
+            return rt2.makeUndefined();
+        }));
+        datasets[el] = obj;
+        syncDataset(el, JsValue(JsKind.object, obj), rt2);
+        return JsValue(JsKind.object, obj);
+    }
+
+    /// Refresh the dataset object's properties from the element's data-* attrs.
+    private void syncDataset(Element el, JsValue dataset, JsRuntime rt2)
+    {
+        auto obj = dataset.obj;
+        if (obj is null) return;
+        foreach (k, v; el.attrs)
+        {
+            if (k.length > 5 && k[0 .. 5] == "data-")
+            {
+                auto prop = kebabToCamel(k[5 .. $]);
+                if (prop.length) obj.set(prop, rt2.makeString(v));
+            }
+        }
+    }
+
+    /// Parse a fragment and insert nodes into `parent` at index `at`.
+    /// Accepts Element wrappers, text strings, and text-node objects.
+    private void insertNodesAt(Element parent, size_t at, JsValue[] args, JsRuntime rt2)
+    {
+        foreach (arg; args)
+        {
+            if (arg.kind == JsKind.string)
+            {
+                foreach (node; parseFragmentNodes(arg.strValue))
+                {
+                    auto ce = cast(Element) node;
+                    if (ce !is null) ce.parent = parent;
+                    else { auto ct = cast(TextNode) node; if (ct !is null) ct.parent = parent; }
+                    insertChild(parent, node, at);
+                    at++;
+                }
+            }
+            else if (arg.kind == JsKind.object)
+            {
+                auto childEl = unwrap(arg);
+                if (childEl !is null)
+                {
+                    detachElement(childEl);
+                    childEl.parent = parent;
+                    insertChild(parent, childEl, at);
+                    at++;
+                }
+                else if (arg.obj !is null &&
+                    arg.obj.get("__text").kind == JsKind.string)
+                {
+                    auto textNode = new TextNode(parent,
+                        arg.obj.get("__text").strValue);
+                    insertChild(parent, textNode, at);
+                    at++;
+                }
+            }
+        }
+    }
+
+    /// Insert a child node (Element or TextNode) into `children` at index `at`,
+    /// keeping the elements/textNodes arrays consistent.
+    private void insertChild(Element parent, Object node, size_t at)
+    {
+        if (at > parent.children.length) at = parent.children.length;
+        parent.children = parent.children[0 .. at] ~ node ~ parent.children[at .. $];
+        auto ce = cast(Element) node;
+        if (ce !is null)
+        {
+            size_t ea = 0;
+            foreach (idx, child; parent.children[0 .. at])
+            {
+                if (cast(Element) child !is null) ea++;
+            }
+            if (ea > parent.elements.length) ea = parent.elements.length;
+            parent.elements = parent.elements[0 .. ea] ~ ce ~ parent.elements[ea .. $];
+        }
+        else
+        {
+            auto ct = cast(TextNode) node;
+            if (ct !is null)
+            {
+                size_t ta = 0;
+                foreach (idx, child; parent.children[0 .. at])
+                {
+                    if (cast(TextNode) child !is null) ta++;
+                }
+                if (ta > parent.textNodes.length) ta = parent.textNodes.length;
+                parent.textNodes = parent.textNodes[0 .. ta] ~ ct ~ parent.textNodes[ta .. $];
+            }
+        }
+    }
+
+    /// Index of `el` in its parent's interleaved `children` array; -1 if absent.
+    private long childrenIndexOf(Element el)
+    {
+        if (el.parent is null) return -1;
+        foreach (idx, child; el.parent.children)
+        {
+            auto ce = cast(Element) child;
+            if (ce is el) return cast(long) idx;
+        }
+        return -1;
+    }
+
+    /// Detach an element from its parent (children/elements lists).
+    private void detachElement(Element el)
+    {
+        auto parent = el.parent;
+        if (parent is null) return;
+        parent.children = removeFrom(parent.children, cast(Object) el);
+        parent.elements = removeFrom(parent.elements, el);
+        el.parent = null;
+    }
+
+    /// Remove the first occurrence of `item` from a polymorphic node list.
+    private Object[] removeFrom(Object[] list, Object item)
+    {
+        foreach (i, existing; list)
+        {
+            if (existing is item)
+                return list[0 .. i] ~ list[i + 1 .. $];
+        }
+        return list;
+    }
+
+    /// Remove the first occurrence of `item` from an element list.
+    private Element[] removeFrom(Element[] list, Element item)
+    {
+        foreach (i, existing; list)
+        {
+            if (existing is item)
+                return list[0 .. i] ~ list[i + 1 .. $];
+        }
+        return list;
+    }
+
+    /// Deep or shallow clone of an element (with attrs, children, text).
+    private Element cloneElement(Element el, bool deep)
+    {
+        auto copy = new Element(el.tag);
+        foreach (k, v; el.attrs) copy.attrs[k] = v;
+        if (deep)
+        {
+            foreach (child; el.children)
+            {
+                auto ce = cast(Element) child;
+                if (ce !is null)
+                {
+                    auto childCopy = cloneElement(ce, true);
+                    childCopy.parent = copy;
+                    copy.children ~= childCopy;
+                    copy.elements ~= childCopy;
+                }
+                else
+                {
+                    auto ct = cast(TextNode) child;
+                    if (ct !is null)
+                    {
+                        auto textCopy = new TextNode(copy, ct.data);
+                        copy.children ~= textCopy;
+                        copy.textNodes ~= textCopy;
+                    }
+                }
+            }
+        }
+        return copy;
+    }
+
+    /// Insert HTML parsed from a fragment at the given position.
+    private void insertAdjacentHtml(Element el, string position, string html)
+    {
+        auto nodes = parseFragmentNodes(html);
+        switch (position)
+        {
+            case "beforebegin":
+                if (el.parent !is null)
+                {
+                    auto at = childrenIndexOf(el);
+                    if (at < 0) return;
+                    foreach (node; nodes)
+                    {
+                        auto ce = cast(Element) node;
+                        if (ce !is null) ce.parent = el.parent;
+                        else { auto ct = cast(TextNode) node; if (ct !is null) ct.parent = el.parent; }
+                        insertChild(el.parent, node, cast(size_t) at);
+                        at++;
+                    }
+                }
+                break;
+            case "afterbegin":
+                foreach (node; nodes)
+                {
+                    auto ce = cast(Element) node;
+                    if (ce !is null) ce.parent = el;
+                    else { auto ct = cast(TextNode) node; if (ct !is null) ct.parent = el; }
+                    insertChild(el, node, 0);
+                }
+                break;
+            case "beforeend":
+                foreach (node; nodes)
+                {
+                    auto ce = cast(Element) node;
+                    if (ce !is null) ce.parent = el;
+                    else { auto ct = cast(TextNode) node; if (ct !is null) ct.parent = el; }
+                    insertChild(el, node, el.children.length);
+                }
+                break;
+            case "afterend":
+                if (el.parent !is null)
+                {
+                    auto at = childrenIndexOf(el) + 1;
+                    if (at < 0) return;
+                    foreach (node; nodes)
+                    {
+                        auto ce = cast(Element) node;
+                        if (ce !is null) ce.parent = el.parent;
+                        else { auto ct = cast(TextNode) node; if (ct !is null) ct.parent = el.parent; }
+                        insertChild(el.parent, node, cast(size_t) at);
+                        at++;
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    /// Parse a fragment into element AND text children. `parseFragment` only
+    /// returns elements, dropping bare text; pure-text input yields a single
+    /// TextNode instead.
+    private Object[] parseFragmentNodes(string html)
+    {
+        import auroraweb.html : parseFragment;
+        Object[] result;
+        auto elements = parseFragment(html);
+        if (elements.length == 0)
+        {
+            // Pure text fragment: parseFragment drops bare text.
+            if (html.strip().length)
+                result ~= new TextNode(null, html);
+            return result;
+        }
+        foreach (element; elements) result ~= element;
+        return result;
     }
 
     JsValue wrapTextNode(TextNode node)
@@ -862,11 +1423,18 @@ private final class DocumentBinder
         evt.obj.set("target", target);
         evt.obj.set("currentTarget", target);
         evt.obj.set("defaultPrevented", rt2.makeBoolean(false));
+        evt.obj.set("propagationStopped", rt2.makeBoolean(false));
         evt.obj.set("cancelable", rt2.makeBoolean(evtName == "submit" || evtName == "click"));
         evt.obj.set("preventDefault", rt2.makeNativeFunc((thisValue, args, rt3) {
             auto eo = thisValue.obj;
             if (eo !is null)
                 eo.set("defaultPrevented", rt3.makeBoolean(true));
+            return rt3.makeUndefined();
+        }));
+        evt.obj.set("stopPropagation", rt2.makeNativeFunc((thisValue, args, rt3) {
+            auto eo = thisValue.obj;
+            if (eo !is null)
+                eo.set("propagationStopped", rt3.makeBoolean(true));
             return rt3.makeUndefined();
         }));
         return evt;
@@ -880,11 +1448,19 @@ private final class DocumentBinder
         auto curEl = unwrap(cur);
         while (cur.kind == JsKind.object)
         {
+            if (evt.kind == JsKind.object && evt.obj !is null)
+                evt.obj.set("currentTarget", cur);
             auto handler = cur.obj.get("__event_" ~ evtName);
             if (handler.kind == JsKind.func)
             {
                 JsValue[] callArgs; callArgs ~= evt;
                 rt2.callFunction(handler, cur, callArgs);
+            }
+            // stopPropagation() halts the bubble to ancestors.
+            if (evt.kind == JsKind.object && evt.obj !is null)
+            {
+                auto stopped = evt.obj.get("propagationStopped");
+                if (stopped.kind == JsKind.boolean && stopped.boolValue) break;
             }
             // Move to parent.
             if (curEl is null || curEl.parent is null) break;
@@ -1129,6 +1705,27 @@ private final class DocumentBinder
                 result ~= cast(char)(ch - 'A' + 'a');
             }
             else result ~= ch;
+        }
+        return result;
+    }
+
+    private string kebabToCamel(string s)
+    {
+        string result;
+        bool upperNext;
+        foreach (ch; s)
+        {
+            if (ch == '-') { upperNext = true; continue; }
+            if (upperNext && ch >= 'a' && ch <= 'z')
+            {
+                result ~= cast(char)(ch - 'a' + 'A');
+                upperNext = false;
+            }
+            else
+            {
+                result ~= ch;
+                upperNext = false;
+            }
         }
         return result;
     }
@@ -1532,4 +2129,299 @@ unittest
     auto expected = "auroraweb:search?q=x&agree=on&notes=new%20notes&kind=b&btn=Send";
     assert(lastSubmit.strValue == expected,
         "form.submit() should produce the encoded query, got '" ~ lastSubmit.strValue ~ "' want '" ~ expected ~ "'");
+}
+
+unittest
+{
+    // Element traversal/query (closest/matches/contains/getElementsBy*),
+    // dataset, mutation (insertAdjacentHTML/remove/after/before/append/
+    // prepend/replaceWith), cloneNode, scrollIntoView no-op, stopPropagation,
+    // and the global Event constructor + dispatchEvent.
+    import auroraweb.html : parseHtml;
+    import auroraweb.js : parseScript;
+
+    auto root = parseHtml(`
+        <html><body>
+            <main id="main">
+                <section id="sec" class="card" data-user-id="42" data-theme-mode="dark">
+                    <p class="note">first</p>
+                    <p class="note">second</p>
+                    <span class="tail">tail</span>
+                </section>
+            </main>
+        </body></html>
+    `);
+    auto rt = parseScript(`
+        var main = document.getElementById("main");
+        var sec = document.getElementById("sec");
+        var note = main.getElementsByClassName(".note")[0];
+        var allNotes = main.getElementsByClassName(".note");
+        var span = main.getElementsByTagName("span")[0];
+        var paras = sec.getElementsByTagName("p");
+        var docParas = document.getElementsByTagName("p");
+        var docCards = document.getElementsByClassName(".card");
+
+        // closest / matches / contains.
+        var closestCard = note.closest(".card");
+        var closestSelf = note.closest("p.note");
+        var closestNone = note.closest("table");
+        var noteMatches = note.matches(".note");
+        var noteNotMatches = note.matches("span");
+        var mainContainsSpan = main.contains(span);
+        var spanContainsMain = span.contains(main);
+
+        // dataset read + write.
+        var userId = sec.dataset.userId;
+        var themeMode = sec.dataset.themeMode;
+        sec.dataset.role = "dialog";
+        var roleAttr = sec.getAttribute("data-role");
+
+        // insertAdjacentHTML: beforebegin / afterend.
+        var markerBefore = document.createElement("em");
+        markerBefore.textContent = "BEFORE";
+        sec.insertAdjacentHTML("beforebegin", "<em>ins-before</em>");
+        var markerAfter = document.createElement("em");
+        markerAfter.textContent = "AFTER";
+        sec.insertAdjacentHTML("afterend", "<em>ins-after</em>");
+        var prevSibling = sec.previousSibling;
+        var nextSibling = sec.nextSibling;
+
+        // insertAdjacentHTML inside the section.
+        sec.insertAdjacentHTML("afterbegin", "<em>first-child</em>");
+        sec.insertAdjacentHTML("beforeend", "<em>last-child</em>");
+        var firstChildTag = sec.firstElementChild ? sec.firstElementChild.tagName : "none";
+        var lastChildTag = sec.lastElementChild ? sec.lastElementChild.tagName : "none";
+        var childrenAfterIns = sec.children.length;
+
+        // remove().
+        var doomed = document.createElement("div");
+        doomed.id = "doomed";
+        sec.appendChild(doomed);
+        var beforeRemove = sec.children.length;
+        doomed.remove();
+        var afterRemove = sec.children.length;
+        var doomedGone = document.getElementById("doomed") === null;
+
+        // after() / before() with a text string and an element.
+        span.after(" tail-text");
+        var afterSpan = span.nextSibling;
+        var fresh = document.createElement("b");
+        fresh.textContent = "B";
+        span.before(fresh);
+        var beforeSpan = span.previousSibling;
+
+        // append() / prepend().
+        var outer = document.createElement("div");
+        outer.id = "outer";
+        var c1 = document.createElement("i");
+        c1.textContent = "i1";
+        var c2 = document.createElement("i");
+        c2.textContent = "i2";
+        document.body.appendChild(outer);
+        outer.append(c1, c2, "appended-text");
+        var outerCount = outer.children.length;
+        var outerTextTail = outer.lastChild;
+        var c3 = document.createElement("i");
+        c3.textContent = "p0";
+        outer.prepend(c3);
+        var outerFirstTag = outer.firstElementChild ? outer.firstElementChild.tagName : "none";
+
+        // cloneNode(deep): children copied, independent.
+        var cloned = sec.cloneNode(true);
+        var cloneTag = cloned.tagName;
+        var cloneParas = cloned.getElementsByTagName("p").length;
+        var cloneChildCount = cloned.children.length;
+        var cloneNotSame = cloned !== sec;
+        cloned.getElementsByTagName("p")[0].textContent = "changed";
+        var originalFirst = sec.getElementsByTagName("p")[0].textContent;
+
+        // cloneNode(false): no children.
+        var shallow = sec.cloneNode(false);
+        var shallowCount = shallow.children.length;
+
+        // replaceWith().
+        var victim = document.createElement("u");
+        victim.textContent = "victim";
+        sec.appendChild(victim);
+        var replacement = document.createElement("strong");
+        replacement.textContent = "replacement";
+        victim.replaceWith(replacement);
+        var replacementFound = sec.getElementsByTagName("strong").length;
+        var victimGone = sec.getElementsByTagName("u").length;
+
+        // scrollIntoView() must not throw and records the call.
+        sec.scrollIntoView();
+        var scrollCalled = sec.getAttribute("scrollIntoViewCalled");
+
+        // stopPropagation halts bubbling: use a fresh subtree so handlers do
+        // not overwrite each other (single handler slot per event name).
+        var chainAMain = document.createElement("section");
+        chainAMain.className = "chainAMain";
+        sec.appendChild(chainAMain);
+        var chainA = document.createElement("div");
+        chainA.className = "chainA";
+        chainAMain.appendChild(chainA);
+        var leaf = document.createElement("span");
+        leaf.className = "leaf";
+        chainA.appendChild(leaf);
+        var leafFired = false;
+        var chainAFired = false;
+        var chainAMainFired = false;
+        leaf.addEventListener("click", function(e) { leafFired = true; });
+        chainA.addEventListener("click", function(e) { chainAFired = true; });
+        chainAMain.addEventListener("click", function(e) { chainAMainFired = true; });
+
+        var stopTop = document.createElement("section");
+        stopTop.className = "stopTop";
+        sec.appendChild(stopTop);
+        var stopChain = document.createElement("div");
+        stopChain.className = "stopChain";
+        stopTop.appendChild(stopChain);
+        var stopLeaf = document.createElement("span");
+        stopLeaf.className = "stopleaf";
+        stopChain.appendChild(stopLeaf);
+        var stopLeafFired = false;
+        var stopChainFired = false;
+        var stopTopFired = false;
+        stopLeaf.addEventListener("click", function(e) {
+            stopLeafFired = true;
+            e.stopPropagation();
+        });
+        stopChain.addEventListener("click", function(e) { stopChainFired = true; });
+        stopTop.addEventListener("click", function(e) { stopTopFired = true; });
+
+        // dispatchEvent with a string name bubbles to all ancestors.
+        leaf.dispatchEvent("click");
+        var bubbledAll = leafFired && chainAFired && chainAMainFired;
+
+        // dispatchEvent with a constructed Event; stopPropagation prevents the
+        // bubble above the target's own handlers.
+        stopLeaf.dispatchEvent(new Event("click"));
+        var stopBubbled = stopLeafFired && !stopChainFired && !stopTopFired;
+        var stopStoppedMain = !stopTopFired;
+
+        // Global Event constructor + arbitrary props (key) reach the handler.
+        var keyEvent = new Event("keydown");
+        keyEvent.key = "Enter";
+        var gotKey = "none";
+        var keyTarget = document.createElement("input");
+        sec.appendChild(keyTarget);
+        keyTarget.addEventListener("keydown", function(e) {
+            gotKey = e.key + "/" + e.type;
+        });
+        keyTarget.dispatchEvent(keyEvent);
+        var keyHandled = gotKey;
+
+        // event.target / preventDefault / defaultPrevented on constructed Event.
+        var pd = false;
+        var targetName = "none";
+        var submitBtn = document.createElement("button");
+        submitBtn.type = "submit";
+        sec.appendChild(submitBtn);
+        submitBtn.addEventListener("submit", function(e) {
+            targetName = e.target === submitBtn ? "button" : "other";
+            e.preventDefault();
+            pd = e.defaultPrevented;
+        });
+
+        __closestCard = closestCard ? closestCard.tagName + "." + closestCard.className : "none";
+        __closestSelf = closestSelf ? closestSelf.tagName : "none";
+        __closestNone = closestNone === null;
+        __noteMatches = noteMatches;
+        __noteNotMatches = noteNotMatches;
+        __mainContainsSpan = mainContainsSpan;
+        __spanContainsMain = spanContainsMain;
+        __allNotesCount = allNotes.length;
+        __parasCount = paras.length;
+        __docParasCount = docParas.length;
+        __docCardsCount = docCards.length;
+        __userId = userId;
+        __themeMode = themeMode;
+        __roleAttr = roleAttr;
+        __prevSibling = prevSibling ? prevSibling.tagName : "none";
+        __nextSibling = nextSibling ? nextSibling.tagName : "none";
+        __firstChildTag = firstChildTag;
+        __lastChildTag = lastChildTag;
+        __childrenAfterIns = childrenAfterIns;
+        __beforeRemove = beforeRemove;
+        __afterRemove = afterRemove;
+        __doomedGone = doomedGone;
+        __afterSpanText = afterSpan ? afterSpan.data : "none";
+        __beforeSpanTag = beforeSpan ? beforeSpan.tagName : "none";
+        __outerCount = outerCount;
+        __outerTextTail = outerTextTail ? outerTextTail.data : "none";
+        __outerFirstTag = outerFirstTag;
+        __cloneTag = cloneTag;
+        __cloneParas = cloneParas;
+        __cloneChildCount = cloneChildCount;
+        __cloneNotSame = cloneNotSame;
+        __originalFirst = originalFirst;
+        __shallowCount = shallowCount;
+        __replacementFound = replacementFound;
+        __victimGone = victimGone;
+        __scrollCalled = scrollCalled;
+        __bubbledAll = bubbledAll;
+        __stopBubbled = stopBubbled;
+        __stopStoppedMain = stopStoppedMain;
+        __keyHandled = keyHandled;
+    `);
+    bindDocument(root, rt, rt.globalScope);
+    rt.runScript(rt.makeObject());
+
+    auto checkStr = (string name, string expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.string && v.strValue == expected,
+            name ~ " wrong: got '" ~ rt.toJsString(v) ~ "' want '" ~ expected ~ "'");
+    };
+    auto checkBool = (string name, bool expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.boolean && v.boolValue == expected,
+            name ~ " wrong: got " ~ rt.toJsString(v));
+    };
+    auto checkNum = (string name, double expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.number && v.numValue == expected,
+            name ~ " wrong: got " ~ rt.toJsString(v));
+    };
+
+    checkStr("__closestCard", "SECTION.card");
+    checkStr("__closestSelf", "P");
+    checkBool("__closestNone", true);
+    checkBool("__noteMatches", true);
+    checkBool("__noteNotMatches", false);
+    checkBool("__mainContainsSpan", true);
+    checkBool("__spanContainsMain", false);
+    checkNum("__allNotesCount", 2);
+    checkNum("__parasCount", 2);
+    checkNum("__docParasCount", 2);
+    checkNum("__docCardsCount", 1);
+    checkStr("__userId", "42");
+    checkStr("__themeMode", "dark");
+    checkStr("__roleAttr", "dialog");
+    checkStr("__prevSibling", "EM");
+    checkStr("__nextSibling", "EM");
+    checkStr("__firstChildTag", "EM");
+    checkStr("__lastChildTag", "EM");
+    checkNum("__childrenAfterIns", 5);
+    checkNum("__beforeRemove", 6);
+    checkNum("__afterRemove", 5);
+    checkBool("__doomedGone", true);
+    checkStr("__afterSpanText", " tail-text");
+    checkStr("__beforeSpanTag", "B");
+    checkNum("__outerCount", 2);
+    checkStr("__outerTextTail", "appended-text");
+    checkStr("__outerFirstTag", "I");
+    checkStr("__cloneTag", "SECTION");
+    checkNum("__cloneParas", 2);
+    checkNum("__cloneChildCount", 6);
+    checkBool("__cloneNotSame", true);
+    checkStr("__originalFirst", "first");
+    checkNum("__shallowCount", 0);
+    checkNum("__replacementFound", 1);
+    checkNum("__victimGone", 0);
+    checkStr("__scrollCalled", "true");
+    checkBool("__bubbledAll", true);
+    checkBool("__stopBubbled", true);
+    checkBool("__stopStoppedMain", true);
+    checkStr("__keyHandled", "Enter/keydown");
 }

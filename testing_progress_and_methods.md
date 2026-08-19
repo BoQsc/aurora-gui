@@ -1,5 +1,27 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-web milestone 10: network/cookies/gzip, layout fixed/text-align, forms (2026-08-19)
+
+Three parallel `general` subagents (marker-file protocol, 3/3 succeeded):
+- **Network** (net.d): `INTERNET_OPTION_HTTP_DECODING` + manual gzip/deflate fallback
+  via std.zlib (`decodeBody`, `looksLikeGzip`), `Accept-Encoding: gzip, deflate`,
+  a cookie jar (`Set-Cookie` parse, domain-suffix/path-prefix/Secure matching,
+  sent as `Cookie:`), `HttpResponse.statusText` + `ok()`, `INTERNET_FLAG_NO_UI`.
+- **Layout** (layout.d/css.d/dom.d/paint.d): `position:fixed` relative to the
+  viewport (ignores positioned ancestors, no sibling push); real `text-align`
+  center/right applied per line in `layoutDirectText` (shift runs + inline
+  subtrees); `line-height` drives line boxes; `display:list-item` + bullet
+  rendering in paint.
+- **Forms** (dombind.d/html.d): `document.write` (via fixed `parseFragment`),
+  form control `value`/`checked`/`type`/`name`/`placeholder` with a wrapper
+  `__setHandler`; `form.elements`, `form.submit()` -> cancellable submit event
+  -> `__lastSubmit` query; `getComputedStyle` stub; `focus()`/`blur()`.
+
+Parallel-edit caution: agents ran simultaneously on the same files; each noted
+and fixed minor cross-compile issues (net.d `DWORD decoding`, layout `cast`).
+Coordinator re-ran the FULL suite: 40 modules, engine smoke, browser force
+build + 29-check headless smoke — all green.
+
 ## aurora-web milestone 9: internally-wrapping text runs overlapped following inline content (2026-08-19)
 
 User (still seeing overlap after milestone 8): "it feels as if you are not even

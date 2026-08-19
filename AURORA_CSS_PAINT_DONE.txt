@@ -1,0 +1,30 @@
+AURORA CSS/PAINT FEATURES IMPLEMENTED
+=====================================
+border-radius, opacity, z-index paint order, display:inline-flex,
+box-shadow, text-decoration (css.d, dom.d, layout.d, paint.d)
+
+VERIFICATION OUTPUTS
+====================
+
+[1] dub test --compiler=dmd  (workdir: aurora-web)
+
+             Generating test runner configuration 'aurora-web-test-library' for 'library' (library).
+    Starting Performing "unittest" build using dmd for x86_64.
+    Building aurora-web 0.66.3: building configuration [aurora-web-test-library]
+     Linking aurora-web-test-library
+     Running aurora-web-test-library.exe
+ok
+40 modules passed unittests
+
+[2] dmd -i -version=AuroraHeadless -Isource -Iaurora-web\source -Ivendor\aurora-d-0.4.5\source tests\auroraweb_render_smoke.d -of=build\auroraweb-smoke.exe
+    then build\auroraweb-smoke.exe  (repo root)
+
+JS result: 35
+JS OK
+auroraweb render smoke: ALL PASSED
+
+[3] dub build --compiler=dmd  (workdir: aurora-browser)
+
+    Starting Performing "debug" build using dmd for x86_64.
+    Building aurora-browser 0.66.3: building configuration [application]
+     Linking aurora-browser

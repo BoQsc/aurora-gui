@@ -174,6 +174,25 @@ struct ComputedStyle
     string gridTemplateRows = "";
     string columnGap = "";
     string rowGap = "";
+    string borderRadius = "0px";
+    string boxShadowH = "0px";
+    string boxShadowV = "0px";
+    string boxShadowBlur = "0px";
+    string boxShadowColor = "none";
+    string textDecoration = "none";
+
+    /// Element opacity 0..1 (1 = fully opaque). Applied to the alpha channel
+    /// of every fill this element paints (background, border, text, shadow).
+    double opacity = 1.0;
+
+    /// Painting order for positioned elements; higher z-index paints on top.
+    int zIndex = 0;
+
+    /// Whether the element participates in stacking (`position` != static).
+    bool isPositioned() const
+    {
+        return position == "relative" || position == "absolute" || position == "fixed";
+    }
 
     /// The resolved percentage base for widths (set during layout).
     int containingWidth = 0;
