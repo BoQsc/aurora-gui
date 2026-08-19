@@ -1798,7 +1798,7 @@ final class EditorRoot : VBox
             "▶", IconKind.none, 42));
         _sourcePlayButton.setId("play-preview");
         _sourcePlayButton.onClick = delegate() { playCurrentContext(); };
-        _loopButton = transport.add(new StableButton("Loop", IconKind.none, 52));
+        _loopButton = transport.add(new StableButton("Loop", IconKind.none, 64));
         _loopButton.setId("loop-preview");
         _loopButton.onClick = delegate() { toggleLoop(); };
         _scrub = transport.add(new PlaybackScrubber(0.0, 1.0, 0.0));
