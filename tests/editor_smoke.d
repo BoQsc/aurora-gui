@@ -1277,6 +1277,29 @@ int main(string[] arguments)
     assert(fabs(timeline.playhead() - selectionPlayheadBefore) < 0.0001,
         "Selecting a timeline item moved the playhead");
 
+    // Clicking the bottom edge of a clip body must select it. trackAtY() and
+    // clipRect() previously disagreed by NewTrackDropGap (8px), leaving a dead
+    // zone at the bottom of every painted item where clicks fell through to the
+    // playhead scrub. Regression for the "gap on timeline item clickability
+    // after resize" report.
+    {
+        const bottomClip = timeline.clipRectForTesting(v1, 0);
+        const bottomOrigin = timeline.localToGlobal(Point(0, 0));
+        // Stay inside the painted clip body (bottom-4) and below the row's
+        // track-resize band (row.bottom-3) so the click must be a clip press.
+        const bottomPoint = Point(bottomOrigin.x + bottomClip.x +
+            bottomClip.width / 2,
+            bottomOrigin.y + bottomClip.bottom() - 4);
+        timeline.setSelection(v1, -1, false);
+        driver.click(bottomPoint);
+        assert(timeline.selectedTrack() == v1 && timeline.selectedIndex() == 0,
+            "Clicking the bottom edge of a timeline item did not select it");
+        const bottomEdgePlayhead = timeline.playhead();
+        driver.click(bottomPoint);
+        assert(fabs(timeline.playhead() - bottomEdgePlayhead) < 0.0001,
+            "Bottom-edge item clicks must not scrub the playhead");
+    }
+
     // Every tool must leave the ruler usable as the single timeline transport
     // surface. This guards the former inconsistency where Cut/Text could trap
     // the playhead or redirect Composition Preview away from sequence time.

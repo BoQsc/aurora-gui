@@ -1,5 +1,43 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 — Timeline item clickability gap at the bottom after resize (complaint, fixed)
+
+- [x] User: "there is a bug where if you resize window there appears a gab on
+      timeline item clickability at the bottom of item, maybe it's for entire
+      row/track I think that resizing affects the mouse pointer where we are
+      clicking instead of being accurate and correct no matter what."
+- [x] Decision (upstream vs downstream): **downstream** — the framework's
+      pointer→local conversion (`window.d` `globalToLocal` + `DisplayScale`) is
+      correct; the mismatch is entirely inside aurora-cut's own `timeline.d`.
+- [x] Root cause: two row-geometry functions disagree by the constant
+      `NewTrackDropGap` (8 px):
+  - **Paint**: `trackRect()` (`timeline.d:874`) →
+    `y = rulerHeight() + NewTrackDropGap + rowTop(row) - _verticalScroll`, so
+    rows paint starting at ruler+8 px.
+  - **Hit-test**: `trackAtY()` (`timeline.d:996`) →
+    `localY = y - rulerHeight() + _verticalScroll` — **forgets the 8 px gap**.
+  With the default 24 px track, the painted row spans y∈[32,56) but hit-testing
+  treats it as y∈[24,48). A click on the bottom ~8 px of a painted clip body
+  fails `trackAtY` → `clipAtPoint` returns -1 → the press falls through to the
+  playhead-scrub branch (dead zone). Resizing just moves the clip body so its
+  bottom edge lands in that always-present zone, which is why it "appears after
+  resize". Also note `clipAtPoint` gates on `trackRect(address).contains(point)`
+  which uses the *painted* origin — so the two paths disagreed inside the very
+  same click handler.
+- [x] Fix: `trackAtY()` now subtracts `NewTrackDropGap` too:
+  `localY = y - rulerHeight() - NewTrackDropGap + _verticalScroll`. Hit-testing
+  and painting now share the exact same row origin.
+- [x] Regression in `tests/editor_smoke.d` (after the "selecting a timeline
+      item" block): click the clip body 4 px from its painted bottom edge
+      (inside the body, clear of the ±3 px track-resize band), assert it selects
+      the clip (not deselect/scrub) and that the playhead does not move.
+      Verified it FAILS against the pre-fix build (assert "did not select it")
+      and PASSES with the fix.
+- [x] Verified: editor-smoke full run passes; `dub test --compiler=dmd --force`
+      → 35 modules pass.
+- [ ] Manual (live app): resize the Aurora Cut window and click near the bottom
+      edge of timeline items — they must select normally with no dead zone.
+
 ## 2026-08-19 — Timeline edits invisible during playback (complaint, fixed)
 
 - [x] User: "Moving timeline items while playhead is doing playback: does not

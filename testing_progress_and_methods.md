@@ -1,5 +1,60 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline item clickability gap at the bottom (2026-08-19)
+
+- User: after resizing the window there is a "gap" on timeline item
+  clickability at the bottom of the item/row — resizing seems to shift where
+  the mouse clicks land vs where the item is painted.
+- Decided **upstream vs downstream** first: traced the framework's pointer
+  pipeline (`aurora-d-0.4.5`): `window.d` `handleMouseDown` →
+  `updateHover`/`targetAt` → `hitTest` → `dispatchToBubble` sets
+  `event.position = current.globalToLocal(event.globalPosition)`; the OS
+  pointer is converted via `DisplayScale.physicalToLogical`
+  (`win32.d:1714`/`1848`/`2312`). That conversion is internally consistent
+  (`types.d` round-trips at `types.d:335-338`), so the framework is NOT the
+  culprit. The bug is downstream, in aurora-cut's `timeline.d`.
+- Root cause: two row-geometry helpers disagreed by the constant
+  `NewTrackDropGap = 8`:
+  - **Paint** `trackRect()` (`timeline.d:874`):
+    `y = rulerHeight() + NewTrackDropGap + rowTop(row) - _verticalScroll`.
+  - **Hit-test** `trackAtY()` (`timeline.d:996`):
+    `localY = y - rulerHeight() + _verticalScroll` (missing the 8 px gap).
+  With a default 24 px track: painted row y∈[32,56), hit-tested row y∈[24,48).
+  The bottom ~8 px of every painted clip body is a dead zone where
+  `trackAtY` fails → `clipAtPoint` returns -1 → the click falls through to the
+  playhead-scrub branch. `clipAtPoint` also gates on
+  `trackRect(address).contains(point)` (the *painted* origin), so the two paths
+  contradicted each other inside the same click handler. Resizing re-runs
+  clamp/zoom and lands the clip body's bottom edge into that zone, which is why
+  it looked resize-dependent. The earlier test helper `clipCenter()` clicked
+  only the middle of clips, so no test ever touched the dead zone.
+- Fix: `trackAtY()` now subtracts `NewTrackDropGap`
+  (`localY = y - rulerHeight() - NewTrackDropGap + _verticalScroll`).
+- Regression test (`tests/editor_smoke.d`, after the "selecting a timeline item
+  moved the playhead" block): build the global point from
+  `clipRectForTesting` at `bottom()-4` (inside the body, below the ±3 px
+  track-resize band at `resizeTrackAtY`), deselect first, `driver.click`, then
+  assert `selectedTrack()==v1 && selectedIndex()==0` and that a second click
+  does not move the playhead.
+- Verification workflow (proves the test catches the bug):
+  1. With the fix: compile + run editor-smoke → passes.
+  2. `copy timeline.d timeline.d.fixed`, `git checkout timeline.d` (revert fix
+     only), rebuild editor-smoke → the new assert fails ("Clicking the bottom
+     edge of a timeline item did not select it"), confirming the test detects
+     the exact regression.
+  3. `move timeline.d.fixed timeline.d` (restore fix), rebuild, re-run → passes.
+  4. Full gate: `dub test --compiler=dmd --force` → 35 modules pass.
+- Commands (same as other smokes):
+  `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+  tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
+  -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+  -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
+  then
+  `build\headless-smoke\editor-smoke.exe
+  build\headless-smoke\media\base-av.mp4
+  build\headless-smoke\media\overlay.mp4
+  build\headless-smoke\media\audio.mp3`.
+
 ## Timeline edits visible during live playback (2026-08-19)
 
 - Previously, moving/resizing a clip while the playhead was playing only set

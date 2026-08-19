@@ -993,7 +993,11 @@ final class TimelineWidget : Widget
 
     private bool trackAtY(int y, out TrackAddress address) const
     {
-        const localY = y - rulerHeight() + _verticalScroll;
+        // trackRect() paints rows at rulerHeight() + NewTrackDropGap. Hit
+        // testing must use the same origin or the bottom ~6px of every clip
+        // body falls in a dead zone where the row is painted but not
+        // clickable.
+        const localY = y - rulerHeight() - NewTrackDropGap + _verticalScroll;
         if (localY < 0) return false;
         int cursor;
         foreach (row; 0 .. totalRows())
