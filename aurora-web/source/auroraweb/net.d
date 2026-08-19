@@ -18,24 +18,26 @@ version (Windows) pragma(lib, "wininet");
 
 import core.sys.windows.windows : DWORD, PVOID, LPCWSTR, MAKELANGID,
     LANG_NEUTRAL, SUBLANG_DEFAULT, FORMAT_MESSAGE_FROM_SYSTEM,
-    FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW, GetLastError;
+    FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW, GetLastError, BOOL, TRUE;
 
 import core.sys.windows.wininet : HINTERNET, InternetOpenW, InternetConnectW,
     HttpOpenRequestW, HttpSendRequestW, InternetReadFile, InternetCloseHandle,
     InternetSetOptionW, HttpQueryInfoW, INTERNET_OPEN_TYPE_PRECONFIG,
     INTERNET_SERVICE_HTTP, INTERNET_FLAG_SECURE, INTERNET_FLAG_NO_AUTO_REDIRECT,
     INTERNET_FLAG_NO_CACHE_WRITE, INTERNET_FLAG_RELOAD, INTERNET_FLAG_KEEP_CONNECTION,
-    SECURITY_FLAG_IGNORE_UNKNOWN_CA, SECURITY_FLAG_IGNORE_CERT_CN_INVALID,
-    SECURITY_FLAG_IGNORE_CERT_DATE_INVALID, INTERNET_OPTION_SECURITY_FLAGS,
+    INTERNET_FLAG_NO_UI, SECURITY_FLAG_IGNORE_UNKNOWN_CA,
+    SECURITY_FLAG_IGNORE_CERT_CN_INVALID, SECURITY_FLAG_IGNORE_CERT_DATE_INVALID,
+    INTERNET_OPTION_SECURITY_FLAGS, INTERNET_OPTION_HTTP_DECODING,
     INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
     INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_DATA_SEND_TIMEOUT,
     INTERNET_OPTION_DATA_RECEIVE_TIMEOUT, HTTP_QUERY_STATUS_CODE,
     HTTP_QUERY_RAW_HEADERS_CRLF, HTTP_QUERY_CONTENT_TYPE,
     HTTP_QUERY_FLAG_NUMBER, INTERNET_DEFAULT_HTTP_PORT, INTERNET_DEFAULT_HTTPS_PORT;
 
-import std.array : split;
+import std.array : split, join;
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, toLower, strip;
+import std.zlib : uncompress;
 
 /// A parsed URL.
 struct Url
@@ -119,10 +121,19 @@ struct Url
 struct HttpResponse
 {
     int status;              /// HTTP status code (200 for success). 0 if failed.
+    string statusText;       /// Status text, e.g. `"404 Not Found"`.
     string[string] headers;  /// Lower-cased header name -> value.
-    ubyte[] body;            /// Raw response body bytes.
+    ubyte[] body;            /// Raw response body bytes (decompressed if the
+                             /// server sent gzip/deflate `Content-Encoding`).
     string finalUrl;         /// Final URL after redirects.
     string error;            /// Non-empty on transport failure.
+
+    /// `true` when the request reached the server and the status is in the
+    /// 2xx success range. Always `false` on transport errors (`status == 0`).
+    bool ok() const
+    {
+        return status >= 200 && status <= 299;
+    }
 }
 
 /// Synchronous HTTP client on WinINet. Fetches a URL with the given method,
@@ -188,7 +199,8 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         uint flags = INTERNET_FLAG_NO_AUTO_REDIRECT
             | INTERNET_FLAG_NO_CACHE_WRITE
             | INTERNET_FLAG_RELOAD
-            | INTERNET_FLAG_KEEP_CONNECTION;
+            | INTERNET_FLAG_KEEP_CONNECTION
+            | INTERNET_FLAG_NO_UI;
         if (u.scheme == "https") flags |= INTERNET_FLAG_SECURE;
 
         auto target = u.path;
@@ -204,6 +216,12 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         }
         scope (exit) InternetCloseHandle(hRequest);
 
+        // Ask WinINet to transparently decode gzip/deflate Content-Encoding.
+        // If the option is unsupported we fall back to manual inflate below.
+        int decoding = 1;
+        InternetSetOptionW(hRequest, INTERNET_OPTION_HTTP_DECODING, &decoding,
+            decoding.sizeof);
+
         // Ignore common self-signed/expired certificate problems for a
         // developer-oriented engine.
         if (u.scheme == "https")
@@ -217,9 +235,12 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
 
         // Build the extra header string (CRLF-terminated).
         string headers = "User-Agent: Mozilla/5.0 (Aurora Browser)\r\n"
-            ~ "Accept: text/html,application/xhtml+xml\r\n";
+            ~ "Accept: text/html,application/xhtml+xml\r\n"
+            ~ "Accept-Encoding: gzip, deflate\r\n";
         foreach (k, v; extraHeaders)
             headers ~= k ~ ": " ~ v ~ "\r\n";
+        auto cookieLine = cookieHeader(currentUrl);
+        if (cookieLine.length) headers ~= cookieLine ~ "\r\n";
 
         auto bodyPtr = body.length ? body.ptr : null;
         auto bodyLen = cast(DWORD) body.length;
@@ -247,6 +268,12 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         auto ct = queryHeader(hRequest, HTTP_QUERY_CONTENT_TYPE);
         if (ct.length) res.headers["content-type"] = toLower(ct);
 
+        // Status text, e.g. "200 OK" or "404 Not Found", from the status line.
+        res.statusText = statusTextFromRaw(rawHeaders, res.status);
+
+        // Store any Set-Cookie headers in the jar.
+        captureCookies(currentUrl, rawHeaders);
+
         // Redirect: follow the Location header, relative or absolute.
         auto location = "location" in res.headers;
         if (statusCode >= 300 && statusCode < 400 && location !is null &&
@@ -270,12 +297,235 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
 
         // Read the body.
         res.body = readAll(hRequest);
+        // If WinINet did not decode a compressed body for us, decode it now.
+        if (res.body.length)
+        {
+            auto enc = "content-encoding" in res.headers;
+            if (enc !is null && (*enc).length)
+            {
+                auto decoded = decodeBody(res.body, toLower(*enc));
+                if (decoded.length) res.body = decoded;
+            }
+        }
         res.finalUrl = currentUrl;
         return res;
     }
 
     res.error = "too many redirects (limit 10)";
     return res;
+}
+
+/// A single cookie stored in the module-level cookie jar.
+struct Cookie
+{
+    string name;
+    string value;
+    string domain;  /// Lower-cased, without a leading dot.
+    string path;    /// Defaults to "/" when the Set-Cookie omits it.
+    bool secure;    /// Only sent over HTTPS.
+}
+
+/// Module-level cookie jar shared by all `httpFetch` calls.
+Cookie[] cookieJar;
+
+/// Check whether `body` starts with the gzip magic bytes `1f 8b`.
+bool looksLikeGzip(ubyte[] body)
+{
+    return body.length >= 2 && body[0] == 0x1f && body[1] == 0x8b;
+}
+
+/// Inflate a raw DEFLATE stream (`Content-Encoding: deflate` as sent by some
+/// servers without a zlib wrapper). Returns empty on failure.
+ubyte[] inflateRawDeflate(ubyte[] data)
+{
+    if (data.length == 0) return null;
+    try
+    {
+        // A windowBits of -15 selects raw deflate (no zlib/gzip header).
+        return cast(ubyte[]) uncompress(data, 0, -15);
+    }
+    catch (Exception)
+    {
+        return null;
+    }
+}
+
+/// Decompress a body according to a `Content-Encoding` value (already
+/// lower-cased). Handles `gzip` and `deflate`; returns `data` unchanged for
+/// any other (or unknown) encoding. Never throws.
+ubyte[] decodeBody(ubyte[] data, string encoding)
+{
+    if (data.length == 0) return data;
+    auto enc = strip(encoding);
+    if (enc == "gzip")
+    {
+        // A gzip stream is a deflate stream with a wrapper; inflating it with
+        // auto-detection (windowBits + 32) handles the wrapper transparently.
+        if (!looksLikeGzip(data)) return data;
+        try
+        {
+            auto inflated = cast(ubyte[]) uncompress(data, 0, 15 + 32);
+            if (inflated.length) return inflated;
+            return data;
+        }
+        catch (Exception)
+        {
+            return data;
+        }
+    }
+    if (enc == "deflate")
+    {
+        // Some servers send a zlib-wrapped stream, others send raw deflate.
+        // Try the zlib wrapper first, then raw deflate.
+        try
+        {
+            auto inflated = cast(ubyte[]) uncompress(data, 0, 15);
+            if (inflated.length) return inflated;
+        }
+        catch (Exception)
+        {
+        }
+        auto raw = inflateRawDeflate(data);
+        if (raw.length) return raw;
+        return data;
+    }
+    return data;
+}
+
+/// Parse the `Set-Cookie` header(s) from a raw response header blob and add
+/// them to the cookie jar. `url` is the URL the response came from.
+private void captureCookies(string url, string rawHeaders)
+{
+    auto u = Url.parse(url);
+    if (!u.ok) return;
+    foreach (line; rawHeaders.split("\r\n"))
+    {
+        auto colon = indexOf(line, ":");
+        if (colon <= 0) continue;
+        auto name = toLower(line[0 .. colon]).strip();
+        if (name != "set-cookie") continue;
+        auto value = line[colon + 1 .. $].strip();
+        auto cookie = parseSetCookie(value, u.host, u.path);
+        if (cookie.name.length == 0) continue;
+        // Same-name cookies with the same domain/path replace older entries.
+        foreach (i, c; cookieJar)
+        {
+            if (c.name == cookie.name && c.domain == cookie.domain &&
+                c.path == cookie.path)
+            {
+                cookieJar[i] = cookie;
+                cookie = Cookie.init; // signal "already replaced"
+                break;
+            }
+        }
+        if (cookie.name.length) cookieJar ~= cookie;
+    }
+}
+
+/// Parse a single `Set-Cookie` header value into a `Cookie`. `defaultDomain`
+/// and `defaultPath` come from the URL that sent the cookie. No expiry/
+/// Max-Age handling: cookies are kept for the life of the process.
+Cookie parseSetCookie(string header, string defaultDomain, string defaultPath)
+{
+    Cookie c;
+    auto parts = header.split(";");
+    if (parts.length == 0) return c;
+
+    auto pair = strip(parts[0]);
+    auto eq = indexOf(pair, "=");
+    if (eq <= 0) return c;
+    c.name = strip(pair[0 .. eq]);
+    c.value = strip(pair[eq + 1 .. $]);
+
+    c.domain = toLower(strip(defaultDomain));
+    c.path = "/";
+    if (defaultPath.length && defaultPath[0] == '/')
+    {
+        // RFC 6265 default path: the directory of the request path.
+        auto slash = lastIndexOf(defaultPath, "/");
+        c.path = slash > 0 ? defaultPath[0 .. slash] : "/";
+    }
+
+    foreach (i; 1 .. parts.length)
+    {
+        auto attr = strip(parts[i]);
+        auto ae = indexOf(attr, "=");
+        auto an = ae >= 0 ? toLower(strip(attr[0 .. ae])) : toLower(strip(attr));
+        auto av = ae >= 0 ? strip(attr[ae + 1 .. $]) : "";
+        if (an == "domain")
+        {
+            auto d = toLower(strip(av));
+            if (d.length && d[0] == '.') d = d[1 .. $];
+            if (d.length) c.domain = d;
+        }
+        else if (an == "path")
+        {
+            auto p = strip(av);
+            if (p.length == 0) p = "/";
+            if (p[0] != '/') p = "/" ~ p;
+            c.path = p;
+        }
+        else if (an == "secure")
+        {
+            c.secure = true;
+        }
+        // HttpOnly, Expires, Max-Age, SameSite are intentionally ignored.
+    }
+    return c;
+}
+
+/// Build a `Cookie: name=value; name2=value2` header line for `url`, or "" if
+/// no stored cookie matches. Domain matches when the request host equals the
+/// cookie domain or is a subdomain of it; the path must be a prefix of the
+/// request path; Secure cookies are only sent over HTTPS.
+string cookieHeader(string url)
+{
+    if (cookieJar.length == 0) return "";
+    auto u = Url.parse(url);
+    if (!u.ok) return "";
+
+    string[] pieces;
+    foreach (c; cookieJar)
+    {
+        if (!cookieMatches(c, u.host, u.path, u.scheme == "https"))
+            continue;
+        pieces ~= c.name ~ "=" ~ c.value;
+    }
+    if (pieces.length == 0) return "";
+    return "Cookie: " ~ pieces.join("; ");
+}
+
+private bool cookieMatches(const Cookie c, string host, string path, bool https)
+{
+    if (https == false && c.secure) return false;
+    // Domain match: exact or subdomain (suffix match on a label boundary).
+    auto h = toLower(host);
+    if (h != c.domain)
+    {
+        if (h.length <= c.domain.length) return false;
+        auto suffix = h[h.length - c.domain.length .. $];
+        if (suffix != c.domain) return false;
+        auto dot = h[h.length - c.domain.length - 1];
+        if (dot != '.') return false;
+    }
+    // Path match: cookie path must be a prefix of the request path.
+    if (path.length < c.path.length) return false;
+    if (path[0 .. c.path.length] != c.path) return false;
+    return true;
+}
+
+/// Extract the status text (e.g. "404 Not Found") from the first HTTP status
+/// line in a raw header blob. Falls back to a numeric-only string.
+private string statusTextFromRaw(string rawHeaders, int status)
+{
+    auto line = rawHeaders.split("\r\n")[0];
+    auto sp1 = indexOf(line, " ");
+    if (sp1 < 0) return to!string(status);
+    auto sp2 = indexOf(line, " ", sp1 + 1);
+    if (sp2 < 0) return to!string(status);
+    auto text = strip(line[sp2 + 1 .. $]);
+    if (text.length == 0) return to!string(status);
+    return text;
 }
 
 /// Resolve a possibly-relative Location header against the current URL.
@@ -454,3 +704,156 @@ unittest
     auto next4 = resolveLocation("http://a.com/x/y.html", "../z.html");
     assert(next4 == "http://a.com/x/../z.html", "parent redirect: " ~ next4);
 }
+
+/// `HttpResponse.ok` / `statusText` handling.
+unittest
+{
+    HttpResponse okRes;
+    okRes.status = 200;
+    assert(okRes.ok, "200 should be ok");
+    assert(okRes.statusText.length == 0, "statusText defaults empty");
+
+    HttpResponse notFound;
+    notFound.status = 404;
+    assert(!notFound.ok, "404 should not be ok");
+
+    HttpResponse serverErr;
+    serverErr.status = 500;
+    assert(!serverErr.ok, "500 should not be ok");
+
+    HttpResponse failed;
+    failed.status = 0;
+    assert(!failed.ok, "transport failure should not be ok");
+}
+
+/// `looksLikeGzip` magic detection.
+unittest
+{
+    assert(!looksLikeGzip(null), "empty is not gzip");
+    assert(!looksLikeGzip(cast(ubyte[]) "hello"), "text is not gzip");
+    assert(!looksLikeGzip([0x1f]), "single byte is not gzip");
+    assert(looksLikeGzip([0x1f, 0x8b]), "gzip magic detected");
+    assert(looksLikeGzip([0x1f, 0x8b, 0x08, 0x00]), "gzip header detected");
+}
+
+/// gzip and deflate decompression round-trips through std.zlib.
+unittest
+{
+    import std.zlib : compress;
+    auto original = cast(ubyte[]) "The quick brown fox jumps over the lazy dog.";
+
+    // zlib-wrapped deflate (what most servers call `Content-Encoding: deflate`).
+    auto zlibWrapped = compress(original);
+    auto deflated = decodeBody(zlibWrapped, "deflate");
+    assert(deflated == original, "deflate round-trip failed");
+
+    // Raw deflate without the zlib wrapper.
+    auto rawStream = stripZlibWrapper(zlibWrapped);
+    auto rawInflated = decodeBody(rawStream, "deflate");
+    assert(rawInflated == original, "raw deflate round-trip failed");
+
+    // Gzip: wrap the deflate stream in a gzip header/trailer manually.
+    auto gz = gzipStream(rawStream, original);
+    assert(looksLikeGzip(gz), "gzipStream must start with the gzip magic");
+    auto gunzipped = decodeBody(gz, "gzip");
+    assert(gunzipped == original, "gzip round-trip failed");
+
+    // Unsupported encodings are passed through untouched.
+    auto passthrough = decodeBody(original, "identity");
+    assert(passthrough == original, "identity should pass through");
+    auto br = decodeBody(original, "br");
+    assert(br == original, "unknown encoding should pass through");
+}
+
+/// Strip the 2-byte zlib header and trailing 4-byte Adler-32 from a
+/// zlib-wrapped stream to produce a raw DEFLATE stream.
+private ubyte[] stripZlibWrapper(ubyte[] zlibStream)
+{
+    if (zlibStream.length < 7) return zlibStream;
+    return zlibStream[2 .. $ - 4];
+}
+
+/// Wrap a raw deflate stream in a minimal gzip container (RFC 1952). The
+/// CRC-32 and ISIZE trailer fields are computed from the original plaintext.
+private ubyte[] gzipStream(ubyte[] rawDeflate, ubyte[] plaintext)
+{
+    import std.zlib : crc32;
+    ubyte[] result;
+    result ~= 0x1f; result ~= 0x8b; result ~= 0x08; result ~= 0x00;   // magic, CM=8, FLG=0
+    result ~= 0x00; result ~= 0x00; result ~= 0x00; result ~= 0x00;   // MTIME = 0
+    result ~= 0x00; result ~= 0xff;                                   // XFL, OS
+    result ~= rawDeflate;
+    auto crc = crc32(0, plaintext);
+    result ~= [cast(ubyte) (crc & 0xff), cast(ubyte) ((crc >> 8) & 0xff),
+        cast(ubyte) ((crc >> 16) & 0xff), cast(ubyte) ((crc >> 24) & 0xff)];
+    auto isize = cast(uint) plaintext.length;
+    result ~= [cast(ubyte) (isize & 0xff), cast(ubyte) ((isize >> 8) & 0xff),
+        cast(ubyte) ((isize >> 16) & 0xff), cast(ubyte) ((isize >> 24) & 0xff)];
+    return result;
+}
+
+/// Set-Cookie parsing, cookie jar matching, and cookie header generation.
+unittest
+{
+    // Parsing a plain Set-Cookie.
+    auto c1 = parseSetCookie("session=abc123; Path=/; Domain=example.com",
+        "example.com", "/x/y");
+    assert(c1.name == "session", "cookie name");
+    assert(c1.value == "abc123", "cookie value");
+    assert(c1.domain == "example.com", "cookie domain");
+    assert(c1.path == "/", "cookie path");
+    assert(!c1.secure, "cookie not secure");
+
+    // Secure + HttpOnly + leading-dot domain + path defaulting.
+    auto c2 = parseSetCookie("sid=xyz; Secure; HttpOnly; Domain=.example.org",
+        "example.org", "/a/b");
+    assert(c2.secure, "Secure flag parsed");
+    assert(c2.domain == "example.org", "leading dot stripped");
+    assert(c2.path == "/a", "default path is the request directory");
+
+    // Path attribute and non-attribute garbage are handled.
+    auto c3 = parseSetCookie("k=v; Path=/shop; SameSite=Lax", "shop.example.net",
+        "/other");
+    assert(c3.path == "/shop", "explicit path parsed");
+
+    // Missing name is rejected.
+    auto bad = parseSetCookie("=novalue", "x.com", "/");
+    assert(bad.name.length == 0, "nameless cookie rejected");
+
+    // Cookie header generation and matching against the jar.
+    auto savedJar = cookieJar;
+    scope (exit) cookieJar = savedJar;
+    cookieJar.length = 0;
+
+    cookieJar ~= Cookie("session", "abc", "example.com", "/", false);
+    cookieJar ~= Cookie("sid", "xyz", "example.com", "/private", true);
+    cookieJar ~= Cookie("other", "zzz", "other.com", "/", false);
+
+    // Matching domain + path on plain HTTP: session only (sid is secure).
+    auto h1 = cookieHeader("http://www.example.com/dir/page.html");
+    assert(h1.length, "expected at least one cookie");
+    assert(indexOf(h1, "session=abc") >= 0, "session cookie included");
+    assert(indexOf(h1, "sid=xyz") < 0, "secure cookie excluded over http");
+
+    // HTTPS + matching path: both example.com cookies apply.
+    auto h2 = cookieHeader("https://www.example.com/private/file.html");
+    assert(indexOf(h2, "session=abc") >= 0, "session cookie over https");
+    assert(indexOf(h2, "sid=xyz") >= 0, "secure cookie included over https");
+
+    // Non-matching domain: no cookies.
+    auto h3 = cookieHeader("http://www.other.org/");
+    assert(h3.length == 0, "unrelated domain must not receive cookies");
+
+    // captureCookies populates the jar from a raw header blob.
+    cookieJar.length = 0;
+    captureCookies("http://example.com/", "HTTP/1.1 200 OK\r\n"
+        ~ "Set-Cookie: theme=dark; Path=/\r\n"
+        ~ "Content-Type: text/html\r\n");
+    assert(cookieJar.length == 1, "one cookie captured");
+    assert(cookieJar[0].name == "theme", "captured cookie name");
+    assert(cookieJar[0].value == "dark", "captured cookie value");
+    assert(cookieJar[0].domain == "example.com", "captured cookie domain");
+    assert(cookieHeader("http://example.com/") == "Cookie: theme=dark",
+        "captured cookie is sent back");
+}
+

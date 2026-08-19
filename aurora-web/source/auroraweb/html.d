@@ -60,7 +60,7 @@ Element[] parseFragment(string html)
     {
         foreach (child; e.elements)
         {
-            if (e.tag == "__frag")
+            if (e.attrs.get("id", "") == "__frag")
             {
                 result ~= child;
             }

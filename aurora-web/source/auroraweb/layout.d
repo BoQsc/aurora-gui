@@ -14,8 +14,9 @@ module auroraweb.layout;
  * - Floats (left/right) with a simple wrap-around region.
  * - Flexbox rows: `display:flex` lays children on one row honoring
  *   `flex-grow`, `justify-content`, `align-items` and `gap`.
- * - Positioning: static, relative, and absolute (relative to nearest
- *   positioned ancestor, else the root), with top/left/right/bottom.
+ * - Positioning: static, relative, absolute (relative to nearest
+ *   positioned ancestor, else the root), and fixed (relative to the
+ *   viewport, ignoring positioned ancestors), with top/left/right/bottom.
  * - Percentage lengths, min/max-width, min/max-height.
  */
 
@@ -161,11 +162,13 @@ private string uaDisplay(string tag)
     switch (tag)
     {
         case "html", "body", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
-             "ul", "ol", "li", "dl", "dt", "dd", "table", "tr", "form",
+             "ul", "ol", "dl", "dt", "dd", "table", "tr", "form",
              "section", "article", "aside", "header", "footer", "nav",
              "main", "blockquote", "pre", "hr", "fieldset", "figure",
              "figcaption", "address", "video", "audio", "canvas":
             return "block";
+        case "li":
+            return "list-item";
         case "td", "th":
             return "table-cell";
         case "a", "span", "b", "i", "u", "em", "strong", "small", "sub",
@@ -247,7 +250,8 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "border-right": style.borderRightWidth = value; break;
         case "border-bottom": style.borderBottomWidth = value; break;
         case "border-left": style.borderLeftWidth = value; break;
-        case "position": if (value == "static" || value == "relative" || value == "absolute")
+        case "position": if (value == "static" || value == "relative" || value == "absolute" ||
+            value == "fixed")
             style.position = value; break;
         case "top": style.top = value; break;
         case "left": style.left = value; break;
@@ -433,6 +437,14 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         return;
     }
 
+    // Fixed positioning: removed from flow, relative to the viewport (0,0).
+    // Ignores positioned ancestors entirely and never moves on scroll.
+    if (style.position == "fixed")
+    {
+        layoutFixed(element, containingWidth, style.viewportWidth, style.viewportHeight);
+        return;
+    }
+
     int width = resolveWidth(element, containingWidth);
     element.box.width = width;
 
@@ -511,11 +523,35 @@ private void layoutDirectText(Element element, ref FlowContext flow)
 {
     const px = element.style.pxLength(element.style.fontSize);
     const pixelSize = px >= 0 ? px : 16;
-    const lineH = pixelSize + 8;
+    // line-height: an explicit px value sizes the line boxes (advance + box
+    // height); otherwise fall back to font-size + 8px breathing room.
+    const explicitLineH = element.style.pxLength(element.style.lineHeight);
+    const lineH = explicitLineH > 0 ? explicitLineH : pixelSize + 8;
     int cursorX = flow.x;
     int cursorY = flow.y;
     int lineIndex = flow.lineCount;
+    const int baseLine = flow.lineCount;
     int maxBottom = 0;
+
+    // Track the horizontal extent of each line laid out here (relative to
+    // flow.lineCount, matching TextNode.lineIndex) so a later text-align pass
+    // can shift a finished line into the block's content width.
+    int[] lineStartX;
+    int[] lineEndX;
+
+    void noteLine(int lineIdx, int startX, int endX)
+    {
+        // Store relative to the entry line count so later indexing stays
+        // 0-based regardless of the absolute line this block started at.
+        const int rel = lineIdx - baseLine;
+        while (lineStartX.length <= rel)
+        {
+            lineStartX ~= int.max;
+            lineEndX ~= int.min;
+        }
+        lineStartX[rel] = min(lineStartX[rel], startX);
+        lineEndX[rel] = max(lineEndX[rel], endX);
+    }
 
     void wrapTo(int leftEdge, int rightEdge)
     {
@@ -527,6 +563,11 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             lineIndex++;
         }
     }
+
+    // Inline elements placed during this pass, with the line they started on,
+    // so the text-align shift can target each one precisely.
+    Element[] placedElements;
+    int[] placedElementLines;
 
     foreach (child; element.children)
     {
@@ -559,6 +600,14 @@ private void layoutDirectText(Element element, ref FlowContext flow)
                 const nLines = cast(int) layout.lines.length;
                 if (nLines > 1)
                 {
+                    // Record each wrapped line's own width so the text-align
+                    // shift can center/right-align every line individually.
+                    for (int li = 0; li < nLines; li++)
+                    {
+                        const int llx = (li == 0) ? cursorX : leftEdge;
+                        const int lw = cast(int) layout.lines[li].width;
+                        noteLine(lineIndex + li, llx, llx + lw);
+                    }
                     // More than one line: consume the extra lines, then place
                     // the cursor at the start of the next line (the run's last
                     // line began at the left edge).
@@ -568,6 +617,7 @@ private void layoutDirectText(Element element, ref FlowContext flow)
                 }
                 else
                 {
+                    noteLine(lineIndex, cursorX, cursorX + cast(int) layout.width);
                     cursorX += cast(int) layout.width;
                 }
                 maxBottom = max(maxBottom, cursorY + lineH);
@@ -580,6 +630,7 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             text.layoutY = cursorY;
             text.layoutWidth = textWidth;
             text.lineIndex = lineIndex;
+            noteLine(lineIndex, cursorX, cursorX + textWidth);
             cursorX += textWidth;
             maxBottom = max(maxBottom, cursorY + lineH);
             continue;
@@ -587,6 +638,11 @@ private void layoutDirectText(Element element, ref FlowContext flow)
         auto ce = cast(Element) child;
         if (ce !is null && (ce.style.display == "inline" || ce.style.display == "inline-block"))
         {
+            // Positioned inline elements are removed from flow and positioned
+            // independently (by layoutBlock via layoutChildren); never lay them
+            // out on the inline cursor.
+            if (ce.style.position == "absolute" || ce.style.position == "fixed")
+                continue;
             const int leftEdge = flow.lineLeft(cursorY, lineH);
             const int rightEdge = flow.lineRight(cursorY, lineH);
             // Measure the inline element's text content.
@@ -610,6 +666,9 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             ce.box.y = cursorY;
             ce.box.width = cw;
             ce.box.height = ceLines * lineH;
+            noteLine(lineIndex, cursorX, cursorX + cw);
+            placedElements ~= ce;
+            placedElementLines ~= lineIndex;
             // Advance the cursor past the inline element. If its content
             // wrapped internally, the next run continues on the next line.
             if (ceLines > 1)
@@ -642,6 +701,75 @@ private void layoutDirectText(Element element, ref FlowContext flow)
     {
         flow.contentBottom = max(flow.contentBottom, maxBottom - flow.y);
         flow.lineCount = max(flow.lineCount, lineIndex + 1);
+    }
+
+    // text-align: center/right — shift each finished line so it sits inside
+    // the block's content width. (justify is not implemented; left is the
+    // default and needs no shift.)
+    const textAlign = element.style.textAlign;
+    if ((textAlign == "center" || textAlign == "right") && lineStartX.length)
+    {
+        const int innerLeft = flow.x;
+        const int innerRight = flow.lineEnd;
+        const int availW = max(0, innerRight - innerLeft);
+        int[] shifts;
+        foreach (idx; 0 .. lineStartX.length)
+        {
+            int shift = 0;
+            if (lineEndX[idx] > lineStartX[idx])
+            {
+                const int lineW = lineEndX[idx] - lineStartX[idx];
+                if (textAlign == "center")
+                    shift = (availW - lineW) / 2;
+                else
+                    shift = availW - lineW;
+                if (shift < 0) shift = 0;
+            }
+            shifts ~= shift;
+        }
+        foreach (idx, shift; shifts)
+        {
+            if (shift <= 0) continue;
+            // The recorded line indices are relative to baseLine, while
+            // TextNode.lineIndex is absolute — map between them.
+            const int absLine = baseLine + cast(int) idx;
+            // Direct text runs on this line.
+            foreach (child; element.children)
+            {
+                auto text = cast(TextNode) child;
+                if (text !is null)
+                {
+                    if (text.lineIndex == absLine && text.layoutWidth > 0)
+                        text.layoutX += shift;
+                    continue;
+                }
+            }
+            // Inline elements on this line (and their nested inline text).
+            foreach (i, ce; placedElements)
+            {
+                if (placedElementLines[i] == baseLine + idx)
+                    shiftSubtree(ce, shift);
+            }
+        }
+    }
+}
+
+/// Shift an inline element and all its descendant inline text runs by `shift`
+/// px. Used by the text-align pass so a moved inline box carries its text.
+private void shiftSubtree(Element ce, int shift)
+{
+    if (shift == 0) return;
+    ce.box.x += shift;
+    foreach (child; ce.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            if (t.layoutWidth > 0) t.layoutX += shift;
+            continue;
+        }
+        auto e2 = cast(Element) child;
+        if (e2 !is null) shiftSubtree(e2, shift);
     }
 }
 
@@ -767,6 +895,54 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     layoutChildren(element, childFlow, element);
 }
 
+/// Lay out a `position:fixed` element relative to the viewport (0,0). The
+/// containing block is always the viewport: positioned ancestors are ignored
+/// and the box never moves on scroll. The element is removed from flow, so it
+/// never pushes following siblings.
+private void layoutFixed(Element element, int containingWidth, int viewportWidth, int viewportHeight)
+{
+    auto style = element.style;
+    // Fixed containing block = the viewport.
+    const cbX = 0;
+    const cbY = 0;
+    const cbW = viewportWidth;
+    const cbH = viewportHeight;
+
+    const w = resolveWidth(element, cbW);
+    const h = style.resolveLength(style.height, cbH);
+    element.box.width = w;
+    element.box.height = h >= 0 ? clampMinMaxHeight(element, max(0, h)) : 0;
+
+    const topV = style.resolveLength(style.top, cbH);
+    const leftV = style.resolveLength(style.left, cbW);
+    const rightV = style.resolveLength(style.right, cbW);
+    const bottomV = style.resolveLength(style.bottom, cbH);
+
+    if (leftV >= 0)
+        element.box.x = cbX + leftV + element.box.marginLeft;
+    else if (rightV >= 0)
+        element.box.x = cbX + cbW - w - rightV - element.box.marginRight;
+    else
+        element.box.x = cbX + element.box.marginLeft;
+
+    if (topV >= 0)
+        element.box.y = cbY + topV + element.box.marginTop;
+    else if (bottomV >= 0)
+        element.box.y = cbY + cbH - h - bottomV - element.box.marginBottom;
+    else
+        element.box.y = cbY + element.box.marginTop;
+
+    // Children of a fixed element lay out normally inside it.
+    auto childFlow = FlowContext();
+    childFlow.x = element.box.x + element.box.paddingLeft + element.box.borderLeft;
+    childFlow.y = element.box.y + element.box.paddingTop + element.box.borderTop;
+    childFlow.width = max(0, w - element.box.paddingLeft - element.box.paddingRight -
+        element.box.borderLeft - element.box.borderRight);
+    childFlow.height = cbH;
+    childFlow.lineEnd = childFlow.x + childFlow.width;
+    layoutChildren(element, childFlow, element);
+}
+
 private void layoutChildren(Element element, ref FlowContext flow, Element positionedAncestor)
 {
     foreach (child; element.children)
@@ -777,7 +953,10 @@ private void layoutChildren(Element element, ref FlowContext flow, Element posit
             auto childStyle = childElement.style;
             // Direct inline children are laid out on the block's inline line by
             // layoutDirectText; skip them here so they don't become 0x0 blocks.
-            if (childStyle.display == "inline" || childStyle.display == "inline-block")
+            // Positioned children (absolute/fixed) are never laid out inline —
+            // they are removed from flow and positioned independently.
+            if ((childStyle.display == "inline" || childStyle.display == "inline-block") &&
+                childStyle.position != "absolute" && childStyle.position != "fixed")
                 continue;
             if (childStyle.display == "flex")
                 layoutFlex(childElement, flow, positionedAncestor);
@@ -1636,5 +1815,182 @@ unittest
         layoutInlineBlock(styled, flow2, null);
         assert(styled.box.width == 200, "img with width:200px should be 200, got " ~ styled.box.width.to!string);
         assert(styled.box.height == 50, "img intrinsic height should remain 50, got " ~ styled.box.height.to!string);
+    }
+}
+
+unittest
+{
+    import auroraweb.dom : Element;
+    import std.conv : to;
+
+    // --- position: fixed ---
+    // A fixed element is positioned relative to the viewport (0,0), ignoring
+    // any positioned ancestor, and does not push siblings in normal flow.
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        parent.style.position = "relative";
+        // Give the positioned ancestor an offset so a viewport-relative result
+        // is clearly distinguishable from an ancestor-relative one.
+        parent.box.x = 100;
+        parent.box.y = 50;
+        parent.box.width = 300;
+        parent.box.height = 300;
+
+        auto fixed = new Element("div");
+        fixed.style.display = "block";
+        fixed.style.position = "fixed";
+        fixed.style.top = "10px";
+        fixed.style.left = "20px";
+        fixed.style.width = "50px";
+        fixed.style.height = "30px";
+
+        auto sib = new Element("div");
+        sib.style.display = "block";
+        sib.style.height = "10px";
+
+        fixed.parent = parent; sib.parent = parent;
+        parent.children ~= fixed; parent.children ~= sib;
+        parent.elements ~= fixed; parent.elements ~= sib;
+
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 200; flow.height = 400;
+
+        // Fixed is relative to the viewport, NOT the positioned ancestor at
+        // (100,50): box must land at (20,10), not (120,60).
+        layoutFixed(fixed, 200, 600, 400);
+        assert(fixed.box.x == 20,
+            "fixed.x should be viewport-relative 20, got " ~ fixed.box.x.to!string);
+        assert(fixed.box.y == 10,
+            "fixed.y should be viewport-relative 10, got " ~ fixed.box.y.to!string);
+
+        // The sibling following the fixed element is not pushed.
+        layoutBlock(sib, flow, 200, parent);
+        assert(sib.box.y >= 0 && sib.box.y <= 15,
+            "fixed must not push siblings, sib.y=" ~ sib.box.y.to!string);
+    }
+
+    // --- right/bottom anchors relative to the viewport ---
+    {
+        auto fixed = new Element("div");
+        fixed.style.display = "block";
+        fixed.style.position = "fixed";
+        fixed.style.right = "10px";
+        fixed.style.bottom = "5px";
+        fixed.style.width = "40px";
+        fixed.style.height = "20px";
+        layoutFixed(fixed, 200, 600, 400);
+        assert(fixed.box.x == 600 - 10 - 40,
+            "fixed right edge should sit 10px from viewport right, x=" ~ fixed.box.x.to!string);
+        assert(fixed.box.y == 400 - 5 - 20,
+            "fixed bottom edge should sit 5px from viewport bottom, y=" ~ fixed.box.y.to!string);
+    }
+
+    // --- position: fixed is removed from flow; a block after it in a parent
+    // that also contains a normal sibling stacks normally ---
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        auto fixed = new Element("div");
+        fixed.style.display = "block";
+        fixed.style.position = "fixed";
+        fixed.style.top = "0px";
+        fixed.style.left = "0px";
+        fixed.style.height = "100px";
+        auto a = new Element("div");
+        a.style.display = "block";
+        a.style.height = "10px";
+        fixed.parent = parent; a.parent = parent;
+        parent.children ~= fixed; parent.children ~= a;
+        parent.elements ~= fixed; parent.elements ~= a;
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 100; flow.height = 400;
+        layoutBlock(parent, flow, 100, null);
+        // The fixed child never consumed flow space, so the normal sibling
+        // sits at the top (y=0), not pushed down by the 100px fixed box.
+        assert(a.box.y == 0,
+            "fixed child must not push the next sibling, a.y=" ~ a.box.y.to!string);
+    }
+}
+
+unittest
+{
+    import auroraweb.dom : Element, TextNode;
+    import std.conv : to;
+
+    // --- text-align: center / right shifts laid-out lines ---
+    // A centered run with measured width W in a 200px content width must start
+    // at (200 - W)/2; a right-aligned run must end at the right edge.
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.width = "200px";
+        container.style.textAlign = "center";
+        auto textNode = new TextNode(container, "Hello Aurora");
+        container.children ~= textNode;
+
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 200; flow.height = 200;
+        flow.lineEnd = 200;
+        layoutDirectText(container, flow);
+        // The run was placed, then centered: layoutX = (200 - width)/2.
+        assert(textNode.layoutWidth > 0, "run should be measured");
+        assert(textNode.layoutX == (200 - textNode.layoutWidth) / 2,
+            "centered run x should be (200 - " ~ textNode.layoutWidth.to!string ~ ")/2 = " ~
+            ((200 - textNode.layoutWidth) / 2).to!string ~ ", got " ~ textNode.layoutX.to!string);
+        assert(textNode.layoutX + textNode.layoutWidth <= 200,
+            "centered run must stay within the content width");
+    }
+
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.width = "200px";
+        container.style.textAlign = "right";
+        auto textNode = new TextNode(container, "Right Aligned");
+        container.children ~= textNode;
+
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 200; flow.height = 200;
+        flow.lineEnd = 200;
+        layoutDirectText(container, flow);
+        assert(textNode.layoutWidth > 0, "run should be measured");
+        assert(textNode.layoutX == 200 - textNode.layoutWidth,
+            "right-aligned run should end at the right edge, x=" ~
+            textNode.layoutX.to!string ~ " width=" ~ textNode.layoutWidth.to!string);
+    }
+
+    // --- line-height: an explicit px value sizes the line boxes ---
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.lineHeight = "40px";
+        auto textNode = new TextNode(container, "Tall line");
+        container.children ~= textNode;
+
+        auto flow = FlowContext();
+        flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 300;
+        flow.lineEnd = 300;
+        layoutDirectText(container, flow);
+        // The single line occupies a 40px line box: contentBottom must be 40.
+        assert(flow.contentBottom == 40,
+            "line-height:40px should give a 40px line box, contentBottom=" ~
+            flow.contentBottom.to!string);
+        // The run's y is on that first line.
+        assert(textNode.layoutY == 0, "run y=0, got " ~ textNode.layoutY.to!string);
+    }
+
+    // --- display: list-item (uaDisplay for <li>) ---
+    {
+        auto li = new Element("li");
+        li.style = computedStyle(li, []);
+        assert(li.style.display == "list-item",
+            "li should default to display:list-item, got " ~ li.style.display);
+        // A div with display:list-item resolves the same way.
+        auto div = new Element("div");
+        div.style = computedStyle(div, []);
+        div.style.display = "list-item";
+        assert(div.style.display == "list-item",
+            "explicit display:list-item is preserved");
     }
 }

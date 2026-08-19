@@ -101,6 +101,30 @@ private final class DocumentBinder
             return JsValue(JsKind.object, obj);
         }));
 
+        // document.write(html): parse the fragment and append to the body.
+        docObj.set("write", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto bodyEl = findTag(root, "body");
+            if (bodyEl is null) bodyEl = root;
+            if (args.length)
+            {
+                import auroraweb.html : parseFragment;
+                foreach (node; parseFragment(rt2.toJsString(args[0])))
+                {
+                    node.parent = bodyEl;
+                    bodyEl.children ~= node;
+                    bodyEl.elements ~= node;
+                }
+            }
+            return rt2.makeUndefined();
+        }));
+
+        docObj.set("getComputedStyle", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeNull();
+            auto el = unwrap(args[0]);
+            if (el is null) return rt2.makeNull();
+            return makeComputedStyle(el, rt2);
+        }));
+
         // body
         auto bodyEl = findTag(root, "body");
         if (bodyEl is null) bodyEl = root;
@@ -109,6 +133,14 @@ private final class DocumentBinder
 
         auto docVal = JsValue(JsKind.object, docObj);
         jsScope.declare("document", docVal);
+
+        // Global getComputedStyle(el) — a bare global in browsers.
+        jsScope.declare("getComputedStyle", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeNull();
+            auto el = unwrap(args[0]);
+            if (el is null) return rt2.makeNull();
+            return makeComputedStyle(el, rt2);
+        }));
 
         // window: minimal global with addEventListener and onload.
         auto windowObj = new JsObject();
@@ -348,26 +380,27 @@ private final class DocumentBinder
 
         obj.set("dispatchEvent", rt.makeNativeFunc((thisValue, args, rt2) {
             auto evtName = args.length ? rt2.toJsString(args[0]) : "";
-            // Build an event object.
-            auto evt = rt2.makeObject();
-            evt.obj.set("type", rt2.makeString(evtName));
-            evt.obj.set("target", thisValue);
-            evt.obj.set("currentTarget", thisValue);
-            // Fire the leaf handler first, then bubble up ancestors.
-            auto cur = thisValue;
-            auto curEl = unwrap(cur);
-            while (cur.kind == JsKind.object)
+            auto evt = makeEventObject(rt2, evtName, thisValue);
+            fireEventChain(thisValue, rt2, evtName, evt);
+            // A click on a submit control (button / input[type=submit]) submits
+            // the closest ancestor form.
+            if (evtName == "click")
             {
-                auto handler = cur.obj.get("__event_" ~ evtName);
-                if (handler.kind == JsKind.func)
+                Element submitControl = null;
+                auto walkEl = unwrap(thisValue);
+                while (walkEl !is null)
                 {
-                    JsValue[] callArgs; callArgs ~= evt;
-                    rt2.callFunction(handler, cur, callArgs);
+                    if (isSubmitControl(walkEl)) { submitControl = walkEl; break; }
+                    walkEl = walkEl.parent;
                 }
-                // Move to parent.
-                if (curEl is null || curEl.parent is null) break;
-                curEl = curEl.parent;
-                cur = wrap(curEl);
+                if (submitControl !is null)
+                {
+                    auto formEl = submitControl.parent;
+                    while (formEl !is null && formEl.tag != "form")
+                        formEl = formEl.parent;
+                    if (formEl !is null)
+                        performSubmit(formEl, wrap(formEl), rt2);
+                }
             }
             return rt2.makeBoolean(true);
         }));
@@ -376,6 +409,48 @@ private final class DocumentBinder
         obj.set("__innerHTML", makeInnerHtmlHandler(el));
         obj.set("__classList", makeClassList(el));
         obj.set("__styleObj", makeStyleObject(el));
+        obj.set("__setHandler", makeElementSetHandler(el));
+
+        // Form controls: expose `form.elements` (array of wrapped named
+        // controls) and `form.submit()`.
+        obj.set("__get_elements", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            auto arr = rt2.makeArray();
+            if (el2 is null || el2.tag != "form") return arr;
+            size_t idx = 0;
+            foreach (child; collectControls(el2))
+            {
+                arr.obj.set(to!string(idx), wrap(child));
+                idx++;
+            }
+            arr.obj.arrayLength = idx;
+            return arr;
+        }));
+
+        obj.set("submit", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            performSubmit(el2, thisValue, rt2);
+            return rt2.makeUndefined();
+        }));
+
+        // getComputedStyle: computed layout box + declared style.
+        obj.set("__get_computedStyle", rt.makeNativeFunc((thisValue, args, rt2) {
+            return makeComputedStyle(unwrap(thisValue), rt2);
+        }));
+
+        // focus()/blur(): no-op state on the `focused` attribute.
+        obj.set("focus", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 !is null) el2.attrs["focused"] = "true";
+            return rt2.makeUndefined();
+        }));
+
+        obj.set("blur", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 !is null) el2.attrs.remove("focused");
+            return rt2.makeUndefined();
+        }));
 
         obj.set("__get_parentNode", rt.makeNativeFunc((thisValue, args, rt2) {
             auto el2 = unwrap(thisValue);
@@ -456,6 +531,48 @@ private final class DocumentBinder
         obj.set("__get_id", rt.makeNativeFunc((thisValue, args, rt2) {
             auto el2 = unwrap(thisValue);
             return rt2.makeString(el2 is null ? "" : el2.attrs.get("id", ""));
+        }));
+
+        obj.set("__get_value", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeString("");
+            switch (el2.tag)
+            {
+                case "button":
+                    return rt2.makeString(el2.textContent());
+                case "select":
+                    return rt2.makeString(selectedOptionValue(el2));
+                default:
+                    return rt2.makeString(el2.attrs.get("value", ""));
+            }
+        }));
+
+        obj.set("__get_checked", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            return rt2.makeBoolean(el2 !is null && ("checked" in el2.attrs) !is null);
+        }));
+
+        obj.set("__get_type", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeString("");
+            if (el2.tag == "input" || el2.tag == "button")
+                return rt2.makeString(el2.attrs.get("type", "text"));
+            return rt2.makeString(el2.tag);
+        }));
+
+        obj.set("__get_name", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            return rt2.makeString(el2 is null ? "" : el2.attrs.get("name", ""));
+        }));
+
+        obj.set("__get_placeholder", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            return rt2.makeString(el2 is null ? "" : el2.attrs.get("placeholder", ""));
+        }));
+
+        obj.set("__get_focused", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            return rt2.makeBoolean(el2 !is null && ("focused" in el2.attrs) !is null);
         }));
 
         obj.set("querySelector", rt.makeNativeFunc((thisValue, args, rt2) {
@@ -695,6 +812,310 @@ private final class DocumentBinder
             JsValue[] a; a ~= rt2.makeString(prop); a ~= rt2.makeString(value);
             rt2.callFunction(handler, styleValue, a);
         }
+    }
+
+    /// Element-level set handler: intercepts `value`/`checked` writes on form
+    /// controls so they update the backing attribute (and fire change/input).
+    private JsValue makeElementSetHandler(Element el)
+    {
+        return rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            auto prop = rt2.toJsString(args[0]);
+            auto value = rt2.toJsString(args[1]);
+            if (prop == "value")
+            {
+                el.attrs["value"] = value;
+                if (el.tag == "button")
+                    setTextContent(el, value);
+                fireChangeEvents(el, thisValue, rt2);
+                return rt2.makeUndefined();
+            }
+            if (prop == "checked")
+            {
+                if (args[1].isTruthy()) el.attrs["checked"] = "true";
+                else el.attrs.remove("checked");
+                return rt2.makeUndefined();
+            }
+            // Unknown props fall back to plain storage on the wrapper so
+            // assignments like el.textContent = "..." keep working.
+            thisValue.obj.set(prop, args[1]);
+            return rt2.makeUndefined();
+        });
+    }
+
+    /// Replace an element's children with a single text node.
+    private void setTextContent(Element el, string text)
+    {
+        el.children = null;
+        el.elements = null;
+        el.textNodes = null;
+        auto tn = new TextNode(el, text);
+        el.children ~= tn;
+        el.textNodes ~= tn;
+    }
+
+    /// Build a minimal Event object with preventDefault support.
+    private JsValue makeEventObject(JsRuntime rt2, string evtName, JsValue target)
+    {
+        auto evt = rt2.makeObject();
+        evt.obj.set("type", rt2.makeString(evtName));
+        evt.obj.set("target", target);
+        evt.obj.set("currentTarget", target);
+        evt.obj.set("defaultPrevented", rt2.makeBoolean(false));
+        evt.obj.set("cancelable", rt2.makeBoolean(evtName == "submit" || evtName == "click"));
+        evt.obj.set("preventDefault", rt2.makeNativeFunc((thisValue, args, rt3) {
+            auto eo = thisValue.obj;
+            if (eo !is null)
+                eo.set("defaultPrevented", rt3.makeBoolean(true));
+            return rt3.makeUndefined();
+        }));
+        return evt;
+    }
+
+    /// Fire a leaf handler, then bubble up ancestors. The submit event is
+    /// dispatched through this same bubbling path.
+    private void fireEventChain(JsValue targetValue, JsRuntime rt2, string evtName, JsValue evt)
+    {
+        auto cur = targetValue;
+        auto curEl = unwrap(cur);
+        while (cur.kind == JsKind.object)
+        {
+            auto handler = cur.obj.get("__event_" ~ evtName);
+            if (handler.kind == JsKind.func)
+            {
+                JsValue[] callArgs; callArgs ~= evt;
+                rt2.callFunction(handler, cur, callArgs);
+            }
+            // Move to parent.
+            if (curEl is null || curEl.parent is null) break;
+            curEl = curEl.parent;
+            cur = wrap(curEl);
+        }
+    }
+
+    /// Fire a change/input event on the element (leaf + bubble).
+    private void fireChangeEvents(Element el, JsValue wrapper, JsRuntime rt2)
+    {
+        foreach (evtName; ["input", "change"])
+        {
+            auto evt = makeEventObject(rt2, evtName, wrapper);
+            fireEventChain(wrapper, rt2, evtName, evt);
+        }
+    }
+
+    /// A submit control: <button> or <input type="submit"> (also text/checkbox/radio).
+    private bool isSubmitControl(Element el)
+    {
+        if (el.tag == "button") return true;
+        if (el.tag == "input")
+        {
+            auto t = el.attrs.get("type", "text");
+            if (t == "submit" || t == "text" || t == "checkbox" || t == "radio")
+                return true;
+        }
+        return false;
+    }
+
+    /// Collect form controls in document order (input/select/textarea/button).
+    private Element[] collectControls(Element form)
+    {
+        Element[] result;
+        void walk(Element el)
+        {
+            foreach (child; el.elements)
+            {
+                if (isFormControl(child)) result ~= child;
+                walk(child);
+            }
+        }
+        walk(form);
+        return result;
+    }
+
+    private bool isFormControl(Element el)
+    {
+        switch (el.tag)
+        {
+            case "input", "select", "textarea", "button":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// Perform a form submission: dispatch the submit event; if not prevented,
+    /// collect name=value pairs and expose the encoded query as `__lastSubmit`.
+    private void performSubmit(Element form, JsValue formValue, JsRuntime rt2)
+    {
+        auto evt = makeEventObject(rt2, "submit", formValue);
+        fireEventChain(formValue, rt2, "submit", evt);
+        auto cancelled = evt.obj.get("defaultPrevented");
+        if (cancelled.kind == JsKind.boolean && cancelled.boolValue) return;
+        auto pairs = formPairs(form);
+        auto query = encodePairs(pairs);
+        auto action = form.attrs.get("action", "");
+        rt2.globalScope.declare("__lastSubmit", rt2.makeString(
+            action.length ? action ~ "?" ~ query : query));
+    }
+
+    private struct NameValue
+    {
+        string name;
+        string value;
+    }
+
+    /// Collect name=value pairs from the form's controls (in document order).
+    private NameValue[] formPairs(Element form)
+    {
+        NameValue[] pairs;
+        foreach (control; collectControls(form))
+        {
+            auto name = control.attrs.get("name", "");
+            if (name.length == 0) continue;
+            string value = "";
+            switch (control.tag)
+            {
+                case "input":
+                    if (control.attrs.get("type", "text") == "checkbox" ||
+                        control.attrs.get("type", "text") == "radio")
+                    {
+                        if (("checked" in control.attrs) !is null)
+                            value = control.attrs.get("value", "on");
+                    }
+                    else value = control.attrs.get("value", "");
+                    break;
+                case "textarea":
+                {
+                    auto va = "value" in control.attrs;
+                    value = (va !is null && (*va).length) ? *va : control.textContent();
+                    break;
+                }
+                case "select":
+                    value = selectedOptionValue(control);
+                    break;
+                case "button":
+                    value = control.textContent();
+                    break;
+                default:
+                    break;
+            }
+            pairs ~= NameValue(name, value);
+        }
+        return pairs;
+    }
+
+    private string selectedOptionValue(Element select)
+    {
+        string fallback;
+        foreach (child; select.elements)
+        {
+            if (child.tag != "option") continue;
+            auto value = child.attrs.get("value", "");
+            auto text = child.textContent();
+            if (value.length == 0) value = text;
+            if (fallback.length == 0) fallback = value;
+            if (("selected" in child.attrs) !is null)
+                return value;
+        }
+        return fallback;
+    }
+
+    /// URL-encode name=value pairs joined with '&'.
+    private string encodePairs(NameValue[] pairs)
+    {
+        string[] parts;
+        foreach (pair; pairs)
+        {
+            if (pair.name.length == 0) continue;
+            parts ~= urlEncode(pair.name) ~ "=" ~ urlEncode(pair.value);
+        }
+        string result;
+        foreach (part; parts)
+        {
+            if (result.length) result ~= "&";
+            result ~= part;
+        }
+        return result;
+    }
+
+    private string urlEncode(string s)
+    {
+        import std.array : appender;
+        auto buf = appender!string;
+        foreach (ch; s)
+        {
+            bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~';
+            if (unreserved)
+                buf.put(ch);
+            else
+            {
+                buf.put('%');
+                buf.put(hexDigit((ch >> 4) & 0xF));
+                buf.put(hexDigit(ch & 0xF));
+            }
+        }
+        return buf.data;
+    }
+
+    private char hexDigit(int v)
+    {
+        return cast(char)(v < 10 ? '0' + v : 'A' + (v - 10));
+    }
+
+    /// Computed style for an element: color/fontSize/display from the computed
+    /// style (or the inline style attribute), width/height from the layout box.
+    private JsValue makeComputedStyle(Element el, JsRuntime rt2)
+    {
+        auto obj = rt2.makeObject();
+        obj.obj.kind = "Object";
+        if (el is null)
+        {
+            obj.obj.set("color", rt2.makeString(""));
+            obj.obj.set("fontSize", rt2.makeString(""));
+            obj.obj.set("display", rt2.makeString(""));
+            obj.obj.set("width", rt2.makeString(""));
+            obj.obj.set("height", rt2.makeString(""));
+            return obj;
+        }
+        string color = "black";
+        string fontSize = "16px";
+        string display = "inline";
+        if (el.style.fontSize.length)
+        {
+            color = el.style.color;
+            fontSize = el.style.fontSize;
+            display = el.style.display;
+        }
+        // Inline style attribute wins when no computed style was computed.
+        auto styleAttr = "style" in el.attrs;
+        if (styleAttr !is null)
+        {
+            import std.array : split;
+            foreach (decl; (*styleAttr).split(';'))
+            {
+                auto d = decl.strip();
+                auto colon = indexOf(d, ":");
+                if (colon < 0) continue;
+                auto prop = d[0 .. colon].strip().toLower();
+                auto value = d[colon + 1 .. $].strip();
+                switch (prop)
+                {
+                    case "color": color = value; break;
+                    case "font-size": fontSize = value; break;
+                    case "display": display = value; break;
+                    default: break;
+                }
+            }
+        }
+        string width = el.box.width > 0 ? to!string(el.box.width) ~ "px" : "auto";
+        string height = el.box.height > 0 ? to!string(el.box.height) ~ "px" : "auto";
+        obj.obj.set("color", rt2.makeString(color));
+        obj.obj.set("fontSize", rt2.makeString(fontSize));
+        obj.obj.set("display", rt2.makeString(display));
+        obj.obj.set("width", rt2.makeString(width));
+        obj.obj.set("height", rt2.makeString(height));
+        return obj;
     }
 
     private string camelToKebab(string s)
@@ -974,4 +1395,141 @@ unittest
     auto classAttr = rt.globalScope.get("__classAttr");
     assert(classAttr.kind == JsKind.string && classAttr.strValue == "two three",
         "classList ops should update class attribute, got " ~ classAttr.strValue);
+}
+
+unittest
+{
+    // Form controls: value/checked/type/name/placeholder getters & setters,
+    // form.elements, form.submit() -> __lastSubmit, and document.write.
+    import auroraweb.html : parseHtml;
+    import auroraweb.js : parseScript;
+
+    auto root = parseHtml(`
+        <html><body>
+            <form id="f" action="auroraweb:search">
+                <input type="text" name="q" value="hello" placeholder="Search...">
+                <input type="checkbox" name="agree" checked>
+                <input type="submit" value="Go">
+                <textarea name="notes">note text</textarea>
+                <select name="kind">
+                    <option value="a">A</option>
+                    <option value="b" selected>B</option>
+                </select>
+                <button type="submit" name="btn">Send</button>
+            </form>
+        </body></html>
+    `);
+    auto rt = parseScript(`
+        var form = document.getElementById("f");
+        var input = form.elements[0];
+        var checkbox = form.elements[1];
+        var submit = form.elements[2];
+        var textarea = form.elements[3];
+        var select = form.elements[4];
+        var button = form.elements[5];
+        var inputValue = input.value;
+        var inputType = input.type;
+        var inputName = input.name;
+        var inputPlaceholder = input.placeholder;
+        var checkedBefore = checkbox.checked;
+        checkbox.checked = false;
+        var checkedAfter = checkbox.checked;
+        checkbox.checked = true;
+        var checkedRestored = checkbox.checked;
+        var elementsCount = form.elements.length;
+        input.value = "x";
+        var updatedValue = input.value;
+        var updatedAttr = input.getAttribute("value");
+        textarea.value = "new notes";
+        var textareaAttr = textarea.getAttribute("value");
+        var buttonText = button.value;
+        var buttonType = button.type;
+        form.submit();
+        var lastSubmit = __lastSubmit;
+        var submitEventFired = false;
+        form.addEventListener("submit", function(e) { submitEventFired = true; e.preventDefault(); });
+        form.submit();
+        var preventedLastSubmit = __lastSubmit;
+        var selectValue = select.value;
+        var selectName = select.name;
+        var plainValue = document.body.value;
+        document.write("<p id='written'>written</p>");
+        var writtenEl = document.getElementById("written");
+        var writtenTag = writtenEl ? writtenEl.tagName : "none";
+        var writtenText = writtenEl ? writtenEl.textContent : "none";
+        input.focus();
+        var focusedAttr = input.getAttribute("focused");
+        var cs = getComputedStyle(input);
+        var csColor = cs.color;
+        __inputValue = inputValue;
+        __inputType = inputType;
+        __inputName = inputName;
+        __inputPlaceholder = inputPlaceholder;
+        __checkedBefore = checkedBefore;
+        __checkedAfter = checkedAfter;
+        __checkedRestored = checkedRestored;
+        __elementsCount = elementsCount;
+        __updatedValue = updatedValue;
+        __updatedAttr = updatedAttr;
+        __textareaAttr = textareaAttr;
+        __buttonText = buttonText;
+        __buttonType = buttonType;
+        __lastSubmit = lastSubmit;
+        __submitEventFired = submitEventFired;
+        __preventedLastSubmit = preventedLastSubmit;
+        __selectValue = selectValue;
+        __selectName = selectName;
+        __plainValue = plainValue;
+        __writtenTag = writtenTag;
+        __writtenText = writtenText;
+        __focusedAttr = focusedAttr;
+        __csColor = csColor;
+    `);
+    bindDocument(root, rt, rt.globalScope);
+    rt.runScript(rt.makeObject());
+
+    auto checkStr = (string name, string expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.string && v.strValue == expected,
+            name ~ " wrong: got '" ~ rt.toJsString(v) ~ "' want '" ~ expected ~ "'");
+    };
+    auto checkBool = (string name, bool expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.boolean && v.boolValue == expected,
+            name ~ " wrong: got " ~ rt.toJsString(v));
+    };
+    auto checkNum = (string name, double expected) {
+        auto v = rt.globalScope.get(name);
+        assert(v.kind == JsKind.number && v.numValue == expected,
+            name ~ " wrong: got " ~ rt.toJsString(v));
+    };
+
+    checkStr("__inputValue", "hello");
+    checkStr("__inputType", "text");
+    checkStr("__inputName", "q");
+    checkStr("__inputPlaceholder", "Search...");
+    checkBool("__checkedBefore", true);
+    checkBool("__checkedAfter", false);
+    checkBool("__checkedRestored", true);
+    checkNum("__elementsCount", 6);
+    checkStr("__updatedValue", "x");
+    checkStr("__updatedAttr", "x");
+    checkStr("__textareaAttr", "new notes");
+    checkStr("__buttonText", "Send");
+    checkStr("__buttonType", "submit");
+    checkStr("__selectValue", "b");
+    checkStr("__selectName", "kind");
+    checkStr("__plainValue", "");
+    checkBool("__submitEventFired", true);
+    checkStr("__preventedLastSubmit", "auroraweb:search?q=x&agree=on&notes=new%20notes&kind=b&btn=Send");
+    checkStr("__writtenTag", "P");
+    checkStr("__writtenText", "written");
+    checkStr("__focusedAttr", "true");
+    checkStr("__csColor", "black");
+
+    auto lastSubmit = rt.globalScope.get("__lastSubmit");
+    assert(lastSubmit.kind == JsKind.string, "__lastSubmit should be a string");
+    auto expected = "auroraweb:search?q=x&agree=on&notes=new%20notes&kind=b&btn=Send";
+    assert(lastSubmit.strValue == expected,
+        "form.submit() should produce the encoded query, got '" ~ lastSubmit.strValue ~ "' want '" ~ expected ~ "'");
 }

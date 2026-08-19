@@ -79,6 +79,17 @@ private void paintElement(Element element, Canvas canvas)
     const innerY = absY + element.box.paddingTop + element.box.borderTop;
     const innerWidth = max(0, element.box.width - element.box.paddingLeft - element.box.paddingRight);
 
+    // display:list-item — draw a small filled bullet at the left of the content
+    // edge (roughly the first line's box height from the top).
+    if (element.style.display == "list-item")
+    {
+        auto bulletColor = parseColorOrDefault(element.style.color, Color.rgb(0, 0, 0));
+        const int bulletR = 3;
+        const int bulletCX = innerX + bulletR + 2;
+        const int bulletCY = innerY + bulletR + 2;
+        canvas.fillCircle(Point(bulletCX, bulletCY), bulletR, bulletColor);
+    }
+
     // Text children inline — use layout-assigned positions (absolute).
     if (element.tag != "img" && element.tag != "input")
     {
@@ -475,5 +486,40 @@ unittest
         // edges are cropped.
         auto mid = surface.pixel(40, 20);
         assert(((mid >> 8) & 0xff) >= 250, "cover should fill the middle with green, got " ~ ((mid >> 8) & 0xff).to!string);
+    }
+}
+
+unittest
+{
+    import aurora.surface : Surface;
+    import std.conv : to;
+
+    // A display:list-item element paints a filled bullet inside its content
+    // edge: the bullet area must be non-white (dark) after painting.
+    {
+        auto li = new Element("li");
+        li.style.display = "list-item";
+        li.style.color = "black";
+        li.box.x = 10;
+        li.box.y = 10;
+        li.box.width = 100;
+        li.box.height = 20;
+        li.box.paddingLeft = 6;
+        li.box.paddingTop = 4;
+
+        auto surface = new Surface(60, 40);
+        surface.clear(Color.rgb(255, 255, 255));
+        auto canvas = Canvas(surface);
+        paintElement(li, canvas);
+
+        // Bullet center: innerX=16, innerY=14, radius 3 -> around (21, 19).
+        auto p = surface.pixel(21, 19);
+        auto lum = (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff);
+        assert(lum < 400,
+            "bullet area should be dark (drawn), lum=" ~ lum.to!string);
+        // Outside the bullet the surface stays white.
+        auto white = surface.pixel(5, 30);
+        assert(((white >> 16) & 0xff) >= 250 && (white & 0xff) >= 250,
+            "outside the bullet should stay white");
     }
 }
