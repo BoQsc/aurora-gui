@@ -1,5 +1,33 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## yt-dlp normalize GPU NVENC (2026-08-19)
+
+- User: "what does normalizing mean and why it takes so long?" -> normalization
+  is a full CPU re-encode (libx264) into an editor-friendly MP4. It was ~1.1x
+  realtime (117.9s for a 128s 1080p clip) while the exporter already used GPU
+  h264_nvenc.
+- **Fix**: normalization now uses `_tools.h264Encoder` from the tool scan
+  (NVENC/QSV/AMF when available, libx264 fallback). Plumbed through
+  `YtDlpDownloadRequest.videoEncoder` -> `enqueue` -> `downloadOne` ->
+  `normalizeDownloadedVideo` -> `ytDlpNormalizedVideoArguments`. Per-encoder
+  rate control: NVENC `-preset p4 -tune hq -rc vbr -cq 20 -b:v 0`; QSV
+  `-preset medium -global_quality 20`; AMF `-quality balanced -rc cqp
+  -qp_i 20 -qp_p 20`; libx264 `-preset veryfast -crf 20`. GOP keyframe flags
+  (`-g 15 -keyint_min 15 -sc_threshold 0`) kept for all encoders.
+- **Benchmark (this machine, 128s 1080p clip, ffmpeg 2026-08-19)**: NVENC
+  `h264_nvenc -preset p4 -tune hq -rc vbr -cq 20 -b:v 0` = 27.6s (~4.6x
+  realtime); libx264 `-preset veryfast -crf 20` = 117.9s (~1.1x realtime).
+  ~4.3x faster. Output verified as valid h264 via ffprobe.
+- **How to test in-app**:
+  1. Launch aurora-cut, open the yt-dlp download dialog, download a YouTube
+     video at 1080p.
+  2. Watch the status bar: after "Download 100%" the "Normalizing X%" phase
+     should now complete several times faster than before (NVENC on this GPU).
+  3. Confirm the imported media plays and scrubs smoothly in the timeline.
+  4. On a machine without a hardware encoder it falls back to libx264 (same
+     result, slower) - verify no crash on a CPU-only box.
+- Manual in-app confirmation still pending from the user.
+
 ## yt-dlp 403 throttling + retry/backoff + logging (2026-08-19)
 
 - User: "ytdlp failed to start downloading a video, can you check why if there

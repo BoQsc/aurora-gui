@@ -1,5 +1,27 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - yt-dlp normalize uses GPU NVENC when available (feature)
+
+- [x] User: "what does normalizing mean and why it takes so long?"
+- [x] Explanation: normalization is a full re-encode (not a fast copy) into an
+      editor-friendly MP4: libx264 CPU re-encode, resolution cap to the selected
+      height (default 1080), forced 30fps, keyframe every 0.5s for instant
+      timeline scrubbing, yuv420p, AAC audio, +faststart.
+- [x] Problem: the yt-dlp normalize step hardcoded CPU `libx264 -preset veryfast
+      -crf 20`, so a 2-minute 1080p video took ~2 minutes to normalize
+      (~1.1x realtime) while the exporter already used GPU h264_nvenc.
+- [x] Fix: normalization now uses `_tools.h264Encoder` (NVENC/QSV/AMF when the
+      tool scan found a working hardware encoder, falling back to libx264).
+      `YtDlpDownloadRequest` gained `videoEncoder`; `enqueue` gained the
+      param; `ytDlpNormalizedVideoArguments`/`normalizeDownloadedVideo` pass it
+      through with the correct rate-control flags per encoder (NVENC p4/hq/vbr
+      cq20, QSV medium global_quality 20, AMF balanced cqp 20).
+- [x] Verified: `dub test --compiler=dmd --force` -> 35 modules pass (new
+      unittest covers libx264 vs h264_nvenc argument construction and that GOP
+      flags survive). Live benchmark on this machine: 128s clip -> NVENC 27.6s
+      (~4.6x realtime) vs libx264 117.9s (~1.1x realtime), ~4.3x faster; output
+      is valid h264. Manual in-app download still to be confirmed by the user.
+
 ## 2026-08-19 - yt-dlp downloads stall/fail with HTTP 403 (complaint, fixed)
 
 - [x] User: "ytdlp failed to start downloading a video, can you check why if

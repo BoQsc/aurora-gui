@@ -1,3 +1,60 @@
+Aurora Suite 0.66.3
+Playback, timeline, and yt-dlp release
+--------------------------------------
+
+Aurora Cut playback:
+- Playback no longer hard-stops with a "Buffering video…" pause; the transport
+  keeps the audio clock running and catches up by dropping stale frames.
+- Fixed black preview on Play for AV1 sources: hardware decode options probed
+  against an H.264 sample are no longer forced onto AV1 inputs, which failed
+  the AV1 decode and produced an all-black composite.
+- Deeper 24-slot video frame queue and a wider prewarm window absorb ordinary
+  decode jitter without restarting the stream mid-flight.
+- Loop playback between the work-area In/Out markers now re-bounds live when
+  Loop is toggled or the markers change during playback, including the
+  pause -> enable-loop -> resume path.
+- In/Out mark changes are part of the undo stack; the timeline playhead can be
+  dragged freely across the full sequence and parked outside the loop range.
+
+Aurora Cut timeline/editor:
+- Moving or resizing clips during live playback now shows the edit immediately
+  (debounced rebuild) without stopping the transport.
+- Fixed a crash when an edit shrank the sequence below the playhead during
+  playback, and playback now extends to the edited sequence length instead of
+  stopping at the old end.
+- Fixed the bottom-edge clickability dead zone on timeline items after
+  resizing (paint and hit-test row geometry now agree on the new-track gap).
+- Delete on a focused Project Media item now removes the asset; empty
+  sequences let the playhead scrub the ruler; Set/clear export In/Out moved
+  into the timeline context menu.
+- Dropdown buttons (History, resolution, compress, yt-dlp, Open/Recent, fonts,
+  quality) close on a second click.
+- Added a New Project button and Ctrl+N (autosaves the active project first).
+- The Open button now carries the Recent-projects dropdown; project-media
+  imports and removals are part of the undo/redo history.
+- Export dialogs suggest a name from the project or first media clip (deduped),
+  and yt-dlp downloads keep their YouTube titles.
+- History popup supports step toggling; toggled buttons show a focus ring.
+
+yt-dlp:
+- Downloads that hit transient HTTP 403/429/5xx from YouTube now retry up to
+  three times with backoff, resuming leftover .part files; permanent errors
+  fail fast. Success/failure is logged to aurora-cut.log.
+- Normalizing a downloaded video now uses the detected GPU encoder
+  (NVENC/QSV/AMF, libx264 fallback) instead of a hardcoded CPU re-encode,
+  about 4.3x faster on a 128 s 1080p clip on the development machine.
+- Downloads are named `Title [id]` and the status bar shows phase-accurate
+  Download/Processing/Normalizing percentages.
+
+Aurora Notepad:
+- New member of the Aurora suite: a native custom-titlebar notepad with its own
+  icon, included in the portable release for the first time.
+
+Aurora Stream:
+- Minimize-to-tray and close-to-tray are now opt-in via settings instead of
+  defaults.
+- Custom titlebar improvements: drag-to-snap, drag-down restore, and resize.
+
 Aurora Suite 0.66.1
 Aurora Stream VLC window-capture correction
 -------------------------------------------

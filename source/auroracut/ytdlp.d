@@ -95,6 +95,7 @@ struct YtDlpDownloadRequest
     string url;
     YtDlpDownloadKind kind;
     int maxHeight = 1080;
+    string videoEncoder = "libx264";
 }
 
 struct YtDlpDownloadResult
@@ -552,17 +553,31 @@ string ytDlpVideoNormalizeFilterForHeight(int maxHeight)
 }
 
 string[] ytDlpNormalizedVideoArguments(string inputPath, string outputPath,
-    int maxHeight)
+    int maxHeight, string videoEncoder = "libx264")
 {
-    return [
+    string[] arguments = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-i", inputPath, "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", ytDlpVideoNormalizeFilterForHeight(maxHeight),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:v", videoEncoder,
         "-g", "15", "-keyint_min", "15", "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart", outputPath
     ];
+
+    // Hardware encoders expose a CRF-like knob but not the libx264 flags.
+    if (videoEncoder == "h264_nvenc")
+        arguments ~= ["-preset", "p4", "-tune", "hq", "-rc", "vbr",
+            "-cq", "20", "-b:v", "0"];
+    else if (videoEncoder == "h264_qsv")
+        arguments ~= ["-preset", "medium", "-global_quality", "20"];
+    else if (videoEncoder == "h264_amf")
+        arguments ~= ["-quality", "balanced", "-rc", "cqp",
+            "-qp_i", "20", "-qp_p", "20"];
+    else
+        arguments ~= ["-preset", "veryfast", "-crf", "20"];
+
+    return arguments;
 }
 
 private void runCaptured(string[] arguments, string description)
@@ -660,7 +675,7 @@ private void runNormalizeCaptured(string[] baseArguments, string description,
 }
 
 private string normalizeDownloadedVideo(string sourcePath, string directory,
-    string prefix, int maxHeight,
+    string prefix, int maxHeight, string videoEncoder = "libx264",
     void delegate(double fraction, string label) onProgress = null)
 {
     const target = buildPath(directory, prefix ~ ".normalized.mp4");
@@ -671,7 +686,8 @@ private string normalizeDownloadedVideo(string sourcePath, string directory,
     double durationSeconds;
     probeDurationSeconds(sourcePath, durationSeconds);
     runNormalizeCaptured(ytDlpNormalizedVideoArguments(sourcePath, temporary,
-        maxHeight), "Normalize yt-dlp video", durationSeconds, onProgress);
+        maxHeight, videoEncoder), "Normalize yt-dlp video", durationSeconds,
+        onProgress);
     if (!exists(temporary))
         throw new Exception("FFmpeg finished but did not create the normalized MP4.");
     rename(temporary, target);
@@ -706,7 +722,7 @@ final class YtDlpDownloadService
     }
 
     bool enqueue(string command, string url, YtDlpDownloadKind kind,
-        int maxHeight = 1080)
+        int maxHeight = 1080, string videoEncoder = "libx264")
     {
         if (command.length == 0 || url.length == 0) return false;
 
@@ -719,6 +735,7 @@ final class YtDlpDownloadService
         request.url = url.idup;
         request.kind = kind;
         request.maxHeight = normalizeYtDlpMaxHeight(maxHeight);
+        request.videoEncoder = videoEncoder.length > 0 ? videoEncoder.idup : "libx264";
         _queue ~= request;
         ++_stats.queued;
         _condition.notify();
@@ -1002,7 +1019,7 @@ final class YtDlpDownloadService
                 if (stem.length == 0)
                     throw new Exception("yt-dlp produced a file without a usable name.");
                 result.path = normalizeDownloadedVideo(result.path, directory,
-                    stem, request.maxHeight,
+                    stem, request.maxHeight, request.videoEncoder,
                     delegate(double fraction, string label)
                     {
                         pushProgress(label, fraction);
@@ -1110,4 +1127,22 @@ unittest
         "Private-video errors must NOT be treated as transient");
     assert(!ytDlpTransientFailure("ERROR: Unsupported URL"),
         "Unsupported-URL errors must NOT be treated as transient");
+
+    // Normalization must keep the editor-friendly flags regardless of encoder,
+    // and pass through the correct encoder-specific rate-control knob.
+    const norm = ytDlpNormalizedVideoArguments(
+        "C:\\Media\\src.mp4", "C:\\Media\\out.mp4", 720, "libx264");
+    assert(norm.canFind("h264_nvenc") == false &&
+        norm.canFind("libx264") &&
+        norm.canFind("-crf") && norm.canFind("-preset") && norm.canFind("veryfast"),
+        "libx264 normalization must use CRF 20 at veryfast preset");
+    const nvencNorm = ytDlpNormalizedVideoArguments(
+        "C:\\Media\\src.mp4", "C:\\Media\\out.mp4", 1080, "h264_nvenc");
+    assert(nvencNorm.canFind("h264_nvenc") &&
+        nvencNorm.canFind("-cq") && nvencNorm.canFind("20") &&
+        nvencNorm.canFind("-preset") && nvencNorm.canFind("p4"),
+        "h264_nvenc normalization must use NVENC CQ 20 at p4 preset");
+    assert(nvencNorm.canFind("-g") && nvencNorm.canFind("15") &&
+        nvencNorm.canFind("-keyint_min") && nvencNorm.canFind("-sc_threshold"),
+        "Hardware normalization must keep GOP/keyframe flags for smooth scrubbing");
 }

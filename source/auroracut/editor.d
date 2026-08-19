@@ -2880,7 +2880,8 @@ final class EditorRoot : VBox
 
         const kind = audioOnly ? YtDlpDownloadKind.audio : YtDlpDownloadKind.video;
         const height = normalizeYtDlpMaxHeight(maxHeight);
-        if (!_downloadService.enqueue(_tools.ytDlpCommand, url, kind, height))
+        if (!_downloadService.enqueue(_tools.ytDlpCommand, url, kind, height,
+            _tools.h264Encoder))
         {
             setStatus("Could not queue the yt-dlp download.");
             return false;
