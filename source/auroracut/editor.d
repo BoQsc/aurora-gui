@@ -3731,9 +3731,9 @@ final class EditorRoot : VBox
     }
 
     /// Right-clicking a history step toggles whether that step takes effect.
-    /// Disabling acts immediately: the timeline jumps to the nearest enabled
-    /// step before it, reverting the disabled step's effect (and any steps
-    /// after it). Re-enabling re-applies by navigating back forward.
+    /// Disabling acts immediately: the timeline reverts the step's effect (and
+    /// any steps after it) by navigating to the nearest enabled step before it.
+    /// Re-enabling restores the full enabled state by navigating forward.
     /// The initial-state row cannot be toggled.
     private void showHistoryContextMenu(int row, Point point)
     {
@@ -3744,30 +3744,33 @@ final class EditorRoot : VBox
             const actionIndex = cast(size_t) row - 1;
             const enabled = _historyActionEnabled[actionIndex];
             items ~= ContextMenuItem.check("Enabled", enabled, delegate() {
-                _historyActionEnabled[actionIndex] =
-                    !_historyActionEnabled[actionIndex];
-                // Act immediately: disabling snaps backward to the nearest
-                // enabled step before it (reverting the step's effect and any
-                // steps after it); re-enabling re-applies by navigating forward.
-                navigateTo(cast(int) actionIndex + 1);
+                const wasEnabled = _historyActionEnabled[actionIndex];
+                _historyActionEnabled[actionIndex] = !wasEnabled;
+                if (wasEnabled)
+                    navigateTo(cast(int) actionIndex + 1);
+                else
+                    navigateTo(lastEnabledPosition());
             });
             items ~= ContextMenuItem.separatorItem();
         }
         items ~= ContextMenuItem.command("Enable all steps", delegate() {
             foreach (ref enabled; _historyActionEnabled) enabled = true;
-            if (_historyPosition < cast(int) _historyActionLabels.length)
-                navigateTo(cast(int) _historyActionLabels.length);
-            else
-                applyHistoryView();
+            navigateTo(lastEnabledPosition());
         });
         items ~= ContextMenuItem.command("Disable all steps", delegate() {
             foreach (ref enabled; _historyActionEnabled) enabled = false;
-            if (_historyPosition > 0)
-                navigateTo(0);
-            else
-                applyHistoryView();
+            navigateTo(0);
         });
         showHistoryContextMenuPopup(_historyList, point, items);
+    }
+
+    /// Highest enabled step position (the furthest state all enabled steps
+    /// produce), or 0 when every step is disabled.
+    private int lastEnabledPosition() const
+    {
+        for (size_t index = _historyActionEnabled.length; index > 0; --index)
+            if (_historyActionEnabled[index - 1]) return cast(int) index;
+        return 0;
     }
 
     /// Like showContextMenu, but without dismissing every root-level transient

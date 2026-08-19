@@ -302,26 +302,34 @@
       "Disabled — right-click to enable" (the current row reads
       "You are here — disabled"), and it is never landed on. Clicks, jumps,
       AND toolbar/keyboard Undo/Redo (Ctrl+Z/Y) skip disabled steps: a press
-      steps over disabled steps to the nearest enabled state (or Initial state),
-      so toggling a step off visibly changes navigation. Undo/Redo are refactored
-      into physical `stepUndo`/`stepRedo` helpers plus a `nearestEnabledPosition`
-      that composes the landing target; `jumpToHistory` uses the same helpers and
-      updates the undo/redo buttons after a jump. Toggles are preserved across
-      popup opens and `refreshHistoryList` rebuilds (a new committed edit
-      appends enabled; the dropped redo tail drops its flags), are kept in sync
-      even while the popup is closed so Undo/Redo always know which steps to
-      skip, and reset with the history on New/Open/Clear. The flags are
-      session-only (not written into the persisted project-file history).
-      User note: the original complaint ("toggling leads to no action") was that
-      only popup jumps honored the flag; toolbar/keyboard Undo/Redo now skip too.
+      steps over disabled steps to the nearest enabled state (or Initial state).
+      Undo/Redo are refactored into physical `stepUndo`/`stepRedo` helpers plus a
+      `nearestEnabledPosition` that composes the landing target; `jumpToHistory`
+      uses the same helpers and updates the undo/redo buttons after a jump.
+      Toggles are preserved across popup opens and `refreshHistoryList` rebuilds
+      (a new committed edit appends enabled; the dropped redo tail drops its
+      flags), are kept in sync even while the popup is closed so Undo/Redo always
+      know which steps to skip, and reset with the history on New/Open/Clear.
+      The flags are session-only (not written into the persisted project-file
+      history).
+- [x] Toggling is an IMMEDIATE action (the user's key requirement — "disabling
+      or re-enabling a history item should act like the Undo/Redo buttons"):
+      disabling a step navigates the timeline right away to the nearest enabled
+      step before it, reverting that step's effect (and any steps after it);
+      re-enabling restores the full enabled state by navigating forward to the
+      furthest enabled step (`lastEnabledPosition`). `Enable all steps` /
+      `Disable all steps` act immediately too (to the last enabled step / the
+      Initial state). Implemented via a shared `navigateTo(rawTarget)` used by
+      both the popup rows and the context-menu actions.
 - [x] Regression test in `tests/editor_smoke.d` (end of the history block):
       right-click a row, assert the `Enabled` check + bulk commands, click it
-      off, assert the row is dimmed with the disabled secondary and the History
-      popup stayed open, click the disabled row and assert it snaps to the
-      nearest enabled step (clip removed), press Ctrl+Y/Ctrl+Z and assert
-      Undo/Redo skip the disabled step (clip returns/removes, selection lands on
-      Place clip / Set export range out), re-enable, assert it jumps normally,
-      then Esc closes.
+      off and assert the timeline IMMEDIATELY reverts (clip removed, highlight on
+      the nearest enabled step, row dimmed, popup still open), press
+      Ctrl+Y/Ctrl+Z and assert Undo/Redo skip the disabled step (clip
+      returns/removes), re-enable and assert the full state restores (clip back,
+      row no longer dimmed), assert jumps work normally again, then Disable all
+      (timeline returns to Initial) / Enable all (timeline restores) and Esc
+      closes.
 - [x] Note: `tests/editor_smoke.d` is intermittently flaky in the video-decode /
       playback area independent of the history feature — "Direct video decoder
       never reached the end of its range" (a simulated-clock vs real-decode

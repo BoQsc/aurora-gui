@@ -293,10 +293,15 @@
     `stepUndo`/`stepRedo` helpers plus `nearestEnabledPosition(from, direction)`;
     `undo()`/`redo()` (toolbar + Ctrl+Z/Y) compute the nearest enabled state and
     physically step to it, and `jumpToHistory` snaps the clicked row the same way
-    and calls `updateHistoryButtons()` after the jump. So a disabled step's
-    effect is reverted when undoing past it and not re-applied when redoing to
-    it — toggling a step off now visibly changes undo/redo navigation (the
-    original complaint was that only popup jumps honored the flag).
+    and calls `updateHistoryButtons()` after the jump.
+  - Toggling is an IMMEDIATE action (the user's key requirement — "should act
+    like the Undo/Redo buttons"): `showHistoryContextMenu`'s `Enabled` check
+    calls the shared `navigateTo(rawTarget)` (extracted from `jumpToHistory`).
+    Disabling a step navigates right away to the nearest enabled step before it
+    (reverting that step and any steps after it); re-enabling navigates forward
+    to `lastEnabledPosition()` (the furthest enabled step) to restore the full
+    state. `Enable all steps` navigates to `lastEnabledPosition()`;
+    `Disable all steps` navigates to Initial state (row 0).
   - `showHistoryContextMenu` builds the menu (`Enabled` check + `Enable all
     steps`/`Disable all steps`) and opens it via `showHistoryContextMenuPopup`
     — a copy of `showContextMenu` WITHOUT `dismissTransientPopups`, because that
@@ -304,14 +309,17 @@
     `TransientPopup`). This is the key gotcha for menus anchored inside popups.
 - Regression (`tests/editor_smoke.d`, end of the history block): right-click
   row 2, assert the menu (`Enabled` checked + bulk commands), click `Enabled`,
-  assert the row is dimmed with the disabled secondary and the History popup is
-  still open (`findById(editor, "history-list") !is null`), click the dimmed row
-  and assert it snaps to row 1 (clip removed, `selectedIndex == setRangeRow`),
-  press Ctrl+Y/Ctrl+Z and assert Undo/Redo skip the disabled step (clip back on
-  Place clip, then removed again on Set export range out, row 2 stays dimmed),
-  right-click again (menu now shows `Enabled` UNCHECKED — assert `!`checked),
-  click it, assert the row is no longer dimmed, click row 2 then row 3 and
-  assert it jumps normally, Esc to close.
+  and assert the toggle acts IMMEDIATELY: the clip is gone, the highlight lands
+  on row 1 (`selectedIndex == setRangeRow`), row 2 is dimmed with the disabled
+  secondary, and the History popup is still open
+  (`findById(editor, "history-list") !is null`). Then press Ctrl+Y/Ctrl+Z and
+  assert Undo/Redo skip the disabled step (clip back on Place clip, then removed
+  again on Set export range out, row 2 stays dimmed), right-click again (menu now
+  shows `Enabled` UNCHECKED — assert `!`checked), click it and assert the full
+  state restores (clip back on Place clip, row 2 no longer dimmed), assert clicks
+  on rows 2 then 3 jump normally, then `Disable all steps` (timeline returns to
+  Initial, `selectedIndex == 0`, all rows dimmed) and `Enable all steps`
+  (timeline restored, no rows dimmed), Esc to close.
 - Note: clicking a TOOLBAR undo/redo button while the popup is open dismisses
   the popup (pointer outside the panel), so the test verifies Undo/Redo skip via
   Ctrl+Z/Ctrl+Y to keep the popup open and inspect its view.

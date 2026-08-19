@@ -1126,9 +1126,10 @@ int main(string[] arguments)
     assert(undoButton.enabled() && !redoButton.enabled(),
         "History jump did not restore the clip state to the undo stack");
 
-    // Right-click a history step to toggle whether it takes effect: the row is
-    // dimmed, and clicking it skips its effect by snapping to the nearest
-    // enabled step before it. The History popup must stay open under the menu.
+    // Right-click a history step to toggle whether it takes effect. Disabling
+    // acts immediately: the timeline reverts that step (and everything after)
+    // to the nearest enabled step before it. The History popup must stay open
+    // under the menu.
     driver.rightClick(mediaRowPoint(historyList, clearRangeRow));
     assert(driver.paint());
     auto historyMenu = findOpenContextMenu(editor);
@@ -1143,48 +1144,44 @@ int main(string[] arguments)
     assert(driver.paint());
     assert(findById(editor, "history-list") !is null,
         "History context menu dismissed the History popup");
-    assert(historyList.items()[cast(size_t) clearRangeRow].dimmed &&
-        historyList.items()[cast(size_t) clearRangeRow].secondary ==
-            "Disabled — right-click to enable"d,
-        "Toggled-off history step was not shown as disabled");
-    // Clicking the disabled step skips its effect: the jump lands on the
-    // nearest enabled step before it (Set export range out) with the clip gone.
-    driver.click(mediaRowPoint(historyList, clearRangeRow));
+    // Disabling immediately reverted the step: the clip is gone and the
+    // highlight landed on the nearest enabled step before it.
     assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
         historyList.selectedIndex() == setRangeRow &&
-        historyList.items()[cast(size_t) setRangeRow].secondary == "You are here"d,
-        "Clicking a disabled history step did not snap to the previous enabled step");
-    // The toolbar Redo must also skip the disabled step: one press lands on the
-    // next enabled step (Place clip) instead of the disabled Clear export range.
-    // Use Ctrl+Y so the History popup stays open and its view can be checked.
+        historyList.items()[cast(size_t) clearRangeRow].dimmed &&
+        historyList.items()[cast(size_t) clearRangeRow].secondary ==
+            "Disabled — right-click to enable"d,
+        "Disabling a history step did not act immediately");
+    // Undo/Redo still skip the disabled step: Ctrl+Y lands on Place clip,
+    // Ctrl+Z back on Set export range out.
     driver.pressKey(Key.y, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow &&
         historyList.items()[cast(size_t) clearRangeRow].dimmed,
         "Redo did not skip the disabled history step");
-    // Ctrl+Z skips the disabled step the same way, back to Set export range out.
     driver.pressKey(Key.z, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
-        historyList.selectedIndex() == setRangeRow &&
-        historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        historyList.selectedIndex() == setRangeRow,
         "Undo did not skip the disabled history step");
-    // Redo again to restore the placed clip before re-enabling the step.
     driver.pressKey(Key.y, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow,
         "Redo did not restore the clip after the undo skip");
-    // Re-enable the step; the rows stayed put and it jumps normally again.
+    // Re-enabling restores the full enabled state: the clip stays and the step
+    // is no longer dimmed.
     driver.rightClick(mediaRowPoint(historyList, clearRangeRow));
     historyMenu = findOpenContextMenu(editor);
     assert(historyMenu !is null && !menuItemChecked(historyMenu, "Enabled"d),
         "Disabled history step did not show as unchecked in its menu");
     driver.click(menuItemPoint(historyMenu, "Enabled"d));
     assert(driver.paint());
-    assert(!historyList.items()[cast(size_t) clearRangeRow].dimmed,
-        "Re-enabled history step stayed dimmed");
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
+        historyList.selectedIndex() == placeClipRow &&
+        !historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        "Re-enabling a history step did not restore the full state");
     driver.click(mediaRowPoint(historyList, clearRangeRow));
     assert(historyList.selectedIndex() == clearRangeRow,
         "Re-enabled history step did not jump to its own state");
@@ -1192,28 +1189,29 @@ int main(string[] arguments)
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow,
         "Re-enabled history step did not jump normally");
-    // The bulk commands apply to every step and update the rows immediately.
+    // The bulk commands act immediately and update the rows.
     driver.rightClick(mediaRowPoint(historyList, setRangeRow));
     historyMenu = findOpenContextMenu(editor);
     assert(historyMenu !is null,
         "History right-click did not reopen for the bulk commands");
     driver.click(menuItemPoint(historyMenu, "Disable all steps"d));
     assert(driver.paint());
-    assert(historyList.items()[1].dimmed &&
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
+        historyList.selectedIndex() == 0 &&
+        historyList.items()[1].dimmed &&
         historyList.items()[2].dimmed && historyList.items()[3].dimmed,
-        "Disable all steps did not dim every history row");
+        "Disable all steps did not act immediately");
     driver.rightClick(mediaRowPoint(historyList, setRangeRow));
     historyMenu = findOpenContextMenu(editor);
     assert(historyMenu !is null,
         "History right-click did not reopen after Disable all");
     driver.click(menuItemPoint(historyMenu, "Enable all steps"d));
     assert(driver.paint());
-    assert(!historyList.items()[1].dimmed &&
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
+        historyList.selectedIndex() == placeClipRow &&
+        !historyList.items()[1].dimmed &&
         !historyList.items()[2].dimmed && !historyList.items()[3].dimmed,
-        "Enable all steps did not re-enable every history row");
-    assert(historyList.selectedIndex() == placeClipRow &&
-        editor.modelForTesting().trackValue(v1).clips.length == 1,
-        "Bulk toggling disturbed the current state");
+        "Enable all steps did not restore every history row");
     driver.pressKey(Key.escape);
     assert(findById(editor, "history-list") is null,
         "Esc did not dismiss the History popup");
