@@ -1,5 +1,98 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 — Suggested export names + title-based yt-dlp download names (feature)
+
+- [x] User: "how could we name exported mp4 so it does not collide... sequence
+      name + main video name... what about project name... fix ytdlp download
+      names with title names of source like youtube" → agreed on: project name
+      → main clip name → fallback, plus dedup suffix.
+- [x] **Export dialog suggestion** (`editor.d` `suggestedExportName`): saved
+      project name (stem of `_projectPath`) → first media clip's source name
+      (first V1 video clip for MP4, first A1 audio clip for MP3, falling back
+      to the other kind) → `aurora-cut-export`. The stem strips the extension
+      and a trailing `.normalized` (so downloaded `Title [id].normalized.mp4`
+      suggests `Title [id].mp4`). `uniqueExportFileName` deduplicates against
+      the default Exports folder (`-2`, `-3`, … to 999, matching the compress
+      style), so repeated exports never silently overwrite.
+- [x] **yt-dlp download names** (`ytdlp.d`): files are now named
+      `%(title)s [%(id)s]` instead of `aurora-<uuid>`. Removed
+      `--restrict-filenames` for readable titles; added `--trim-filenames 120`
+      for Windows path limits; yt-dlp reports the final post-processed path
+      through `--print-to-file after_move:filepath <marker>` and
+      `downloadedPathFromMarker` accepts only an in-folder supported-media
+      path. The normalized copy becomes `Title [id].normalized.mp4`
+      (`downloadedStem`). The `[id]` keeps same-title videos from colliding in
+      the shared Downloads folder.
+- [x] Verified: `dub test --compiler=dmd --force` → 35 modules pass (new
+      ytdlp.d unittest covers downloadArguments template/marker/trim flags for
+      video+audio, marker path validation, stem); editor-smoke full run asserts
+      the export-dialog name (named project = project stem, unnamed empty =
+      `aurora-cut-export.mp4`, unnamed with clip = `base-av.mp4`, dedup =
+      `base-av-2.mp4`); model/export/gpu-decode-args/recompress/layout/
+      static-sequence smokes exit 0. Live yt-dlp probe (YouTube 403s from this
+      network) against a local http server produced `base-av [base-av].mp4` and
+      the marker contained its exact path.
+- [ ] Manual (real app, real network): download a YouTube video and confirm the
+      media-bin name reads `Title [id].normalized.mp4`; export once (suggested
+      project name), export again (suggested name gets `-2`); export an
+      unnamed project with one clip (suggests the clip/source title).
+- Note: the other concurrent session's history-step-toggle feature and focus
+      ring are uncommitted in the same files; the working tree compiles and
+      passes as a whole right now.
+
+## 2026-08-18 — Concurrent opencode sessions edited the same files (developer issue)
+
+- [x] While the New Project feature was being built/verified (above), a SECOND
+      opencode session was simultaneously editing `source/auroracut/editor.d`,
+      `source/auroracut/ytdlp.d`, and `tests/editor_smoke.d`. Its changes
+      landed on top of this session's (both sets are now present in the tree).
+- [x] The other session's `ytdlp.d` refactor used `template` as a function
+      parameter name, which is a reserved D keyword → the whole repo failed to
+      compile (`found template when expecting )`). Fixed by renaming the
+      parameter to `titleTemplate` (`downloadArguments`). Its `editor_smoke.d`
+      export-dialog-name assertion also used `std.path.extension` without
+      importing it → added `extension` to the existing `import std.path`
+      line. Both are minimal, behavior-preserving fixes.
+- [x] Lesson for future sessions: this repo is shared across several opencode
+      windows at once. Before compiling/testing, `git diff`/`git status` to see
+      whether another session is mid-edit; after editing, re-check that no
+      external writer replaced the file. Do not assume the working tree is
+      stable while other sessions are running. Verify with a fresh compile +
+      `dub test` + editor-smoke at the END, not just after your own edits.
+- [x] Verified after the fixes: `dub test` → 35 modules pass; editor-smoke
+      full run passes; model-smoke passes; app links; New Project regression
+      block (button + Ctrl+N + autosave checks) passes inside editor-smoke.
+
+## 2026-08-18 — New Project button (feature)
+
+- [x] User: "let's add new button to the aurora cut for creating new project."
+- [x] Added a **New** toolbar button (`id="new-project"`, `IconKind.newDocument`,
+      placed before Save) and a **Ctrl+N** shortcut in
+      `source/auroracut/editor.d`.
+- [x] `EditorRoot.newProject()` discards the current project and starts a blank
+      one: stops playback, cancels proxy/import work, clears Project Media, one
+      empty V1 + A1 track (via `_model.restoreTimeline([], [])`), clears the
+      export range, resets preview quality and composition resolution to
+      defaults, clears undo/redo history and clipboard, resets the playhead and
+      Preview scrubber, and refreshes media list / timeline / inspector / title.
+      The Preview shows "Import MP4 or MP3 media to begin".
+- [x] **Safety**: the active project is autosaved FIRST (to its own file, or the
+      app-state unnamed autosave `untitled-autosave.auroracut` when never
+      saved), matching the existing autosave-on-exit contract, so creating a new
+      project never loses the on-screen work. Logged via `appLog`.
+- [x] Test hooks: `newProjectForTesting()`, `projectDirtyForTesting()`.
+- [x] Regression block in `tests/editor_smoke.d`: New button exists/labeled/left
+      of Save; a dirty project's New click resets path/dirty/media/tracks/
+      history/export-range/resolution/quality/scrubber and autosaves the
+      previous work into its project file; Ctrl+N (with an unnamed dirty
+      project) resets the same state and autosaves into the unnamed autosave.
+- [x] Verified: `dub test` → 34 modules pass; editor-smoke (full run) passes;
+      model-smoke passes; the app links (temp output, since the running exe
+      locks the target).
+- [ ] Manual: launch Aurora Cut, edit a project, click New / press Ctrl+N, and
+      confirm the blank timeline appears and the previous work is recoverable
+      (from its project file or `%LOCALAPPDATA%\Aurora Cut\Autosaves`).
+
 ## 2026-08-18 — Output/export defaults to app-state folder + undo/redo history lives in the project file
 
 - [x] User: "make aurora cut output/export folder by default to a subfolder on
@@ -115,9 +208,45 @@
       model-smoke, layout-smoke, and the full app compile/link (via a temp
       output, since the running `aurora-cut.exe` locks the normal target) all
       pass.
-- [ ] Manual: restart Aurora Cut (the running instance predates this rework),
-      open the History popup, and confirm the flat listing reads clearly, rows
-      never move when clicked, and jumps land correctly in both directions.
+- [x] Right-click a history step to toggle whether it takes effect: the
+      `ListView` gained a generic `onContextMenuRequested` (right-click → index +
+      global point) in `vendor/aurora-d-0.4.5/source/aurora/widgets/listview.d`
+      plus a `ListItem.dimmed` flag (muted but still clickable; keyboard
+      navigation skips dimmed rows). The History popup wires it to
+      `showHistoryContextMenu`: a per-step `Enabled` check (checked = active)
+      toggles `_historyActionEnabled[row-1]`, with `Enable all steps` /
+      `Disable all steps` bulk commands. The menu is shown via a popup-safe
+      helper (`showHistoryContextMenuPopup`) because `showContextMenu` would
+      dismiss the History popup itself (`dismissTransientPopups`).
+- [x] A disabled step no longer takes effect: the row is dimmed with secondary
+      "Disabled — right-click to enable" (the current row reads
+      "You are here — disabled"), and clicking it skips its effect — the jump
+      snaps to the nearest enabled step at-or-before it (or Initial state), so
+      undoing past a disabled step reverts its effect and redoing stops before
+      it. Toolbar/keyboard Undo/Redo stay physical (±1). Toggles are preserved
+      across popup opens and `refreshHistoryList` rebuilds (a new committed edit
+      appends enabled; the dropped redo tail drops its flags) and reset with the
+      history on New/Open/Clear. The flags are session-only (not written into
+      the persisted project-file history).
+- [x] Regression test in `tests/editor_smoke.d` (end of the history block):
+      right-click a row, assert the `Enabled` check + bulk commands, click it
+      off, assert the row is dimmed with the disabled secondary and the History
+      popup stayed open, click the disabled row and assert it snaps to the
+      nearest enabled step (clip removed), re-enable, assert it jumps normally,
+      then Esc closes.
+- [x] Note: `tests/editor_smoke.d` is intermittently flaky in the video-decode /
+      playback area independent of the history feature — "Direct video decoder
+      never reached the end of its range" (a simulated-clock vs real-decode
+      deadline) occasionally fails and rarely an access violation with no output
+      occurs (~2/34 runs observed while validating this feature; the history
+      block and everything else passed in every run). It is load/timing
+      dependent, not a logic regression. LocalDumps diagnostics and debug-info
+      runs did not reproduce a dump; a `-g` build passed 6/6.
+- [ ] Manual: restart Aurora Cut (the running instance predates the recent
+      rework), open the History popup, confirm the flat listing reads clearly,
+      rows never move when clicked, jumps land correctly in both directions,
+      and that right-clicking a step toggles it off (dimmed) and skips its
+      effect on the next click.
 - [x] Clicked buttons no longer keep a blue focus ring after the press is
       released (user: "unclicked buttons turn half blue... due to being focused
       after unclicking button like snap on button"). Root cause: buttons and

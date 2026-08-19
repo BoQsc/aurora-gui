@@ -12,7 +12,8 @@ import auroracut.recentprojects : clearRecentProjects, loadRecentProjects,
     rememberRecentProject, setRecentProjectsFilePathForTesting;
 import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
 import auroracut.util : applicationExportDirectory, projectAutosaveDirectory,
-    setApplicationExportDirectoryForTesting, setProjectAutosaveDirectoryForTesting;
+    setApplicationExportDirectoryForTesting, setProjectAutosaveDirectoryForTesting,
+    unnamedProjectAutosavePath;
 import core.thread : Thread;
 import core.time : msecs;
 import std.algorithm.searching : canFind;
@@ -20,7 +21,7 @@ import std.conv : to;
 import std.datetime.stopwatch : AutoStart, StopWatch;
 import std.file : exists, mkdirRecurse, remove, rmdirRecurse, tempDir, write;
 import std.math : fabs, isNaN;
-import std.path : baseName, buildPath, dirName;
+import std.path : baseName, buildPath, dirName, extension;
 import std.stdio : writeln;
 
 private Widget findById(Widget root, string requestedId)
@@ -1124,17 +1125,64 @@ int main(string[] arguments)
         "Clicking a future history entry reordered the list");
     assert(undoButton.enabled() && !redoButton.enabled(),
         "History jump did not restore the clip state to the undo stack");
+
+    // Right-click a history step to toggle whether it takes effect: the row is
+    // dimmed, and clicking it skips its effect by snapping to the nearest
+    // enabled step before it. The History popup must stay open under the menu.
+    driver.rightClick(mediaRowPoint(historyList, clearRangeRow));
+    assert(driver.paint());
+    auto historyMenu = findOpenContextMenu(editor);
+    assert(historyMenu !is null,
+        "History right-click did not open a context menu");
+    assert(menuItemChecked(historyMenu, "Enabled"d),
+        "History step did not start enabled");
+    assert(menuHasLabel(historyMenu, "Enable all steps"d) &&
+        menuHasLabel(historyMenu, "Disable all steps"d),
+        "History context menu is missing the bulk toggle commands");
+    driver.click(menuItemPoint(historyMenu, "Enabled"d));
+    assert(driver.paint());
+    assert(findById(editor, "history-list") !is null,
+        "History context menu dismissed the History popup");
+    assert(historyList.items()[cast(size_t) clearRangeRow].dimmed &&
+        historyList.items()[cast(size_t) clearRangeRow].secondary ==
+            "Disabled — right-click to enable"d,
+        "Toggled-off history step was not shown as disabled");
+    // Clicking the disabled step skips its effect: the jump lands on the
+    // nearest enabled step before it (Set export range out) with the clip gone.
+    driver.click(mediaRowPoint(historyList, clearRangeRow));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
+        historyList.selectedIndex() == setRangeRow &&
+        historyList.items()[cast(size_t) setRangeRow].secondary == "You are here"d,
+        "Clicking a disabled history step did not snap to the previous enabled step");
+    // Re-enable the step, jump forward past it, and confirm the rows stayed put.
+    driver.rightClick(mediaRowPoint(historyList, clearRangeRow));
+    historyMenu = findOpenContextMenu(editor);
+    assert(historyMenu !is null && !menuItemChecked(historyMenu, "Enabled"d),
+        "Disabled history step did not show as unchecked in its menu");
+    driver.click(menuItemPoint(historyMenu, "Enabled"d));
+    assert(driver.paint());
+    assert(!historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        "Re-enabled history step stayed dimmed");
+    driver.click(mediaRowPoint(historyList, placeClipRow));
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
+        historyList.selectedIndex() == placeClipRow,
+        "Re-enabled history step did not jump normally");
     driver.pressKey(Key.escape);
     assert(findById(editor, "history-list") is null,
         "Esc did not dismiss the History popup");
 
     // The Export dialog defaults its folder to the app-state Exports folder
-    // so rendered output lands in a stable per-user location.
+    // so rendered output lands in a stable per-user location, and suggests the
+    // saved project's name so exports are recognizable and never clobber.
     driver.click(globalCenter(requireWidget!Button(editor, "export-mp4")));
     assert(driver.paint(), "Export dialog did not paint");
     auto exportDialogPath = requireWidget!TextField(editor, "file-dialog-path");
     assert(exportDialogPath.textUtf8() == applicationExportDirectory(),
         "Export dialog did not default to the app-state Exports folder");
+    auto exportDialogName = requireWidget!TextField(editor, "file-dialog-name");
+    assert(exportDialogName.textUtf8() ==
+        baseName(recentOpenB)[0 .. $ - extension(recentOpenB).length] ~ ".mp4",
+        "Export dialog did not suggest the saved project name");
     driver.pressKey(Key.escape);
     assert(findById(editor, "file-dialog-path") is null,
         "Esc did not dismiss the Export dialog");
@@ -2410,6 +2458,102 @@ int main(string[] arguments)
             "Restored history lost the committed timeline actions");
         assert(requireWidget!Button(editor, "undo").enabled(),
             "Restored history did not enable the Undo button");
+    }
+
+    // New Project: the toolbar New button (and Ctrl+N) discard the current
+    // project into a fresh V1/A1 sequence. The active project is autosaved
+    // first, so the pre-new work survives in its project file (or the app-state
+    // unnamed autosave) even without an explicit Save.
+    {
+        auto newProjectButton = requireWidget!Button(editor, "new-project");
+        assert(newProjectButton.text() == "New"d &&
+            saveProject.bounds().x >= newProjectButton.bounds().right(),
+            "New Project button is not directly to the left of Save");
+
+        editor.setWorkOutForTesting(1.5);
+        assert(editor.projectDirtyForTesting() &&
+            editor.hasWorkOutForTesting() && editor.undoCountForTesting() > 0,
+            "New Project test could not create a dirty project state");
+        driver.click(globalCenter(newProjectButton));
+        assert(editor.projectPathForTesting().length == 0,
+            "New Project did not clear the current project path");
+        assert(!editor.projectDirtyForTesting(),
+            "New Project left the fresh project marked dirty");
+        assert(editor.modelForTesting().assets.length == 0,
+            "New Project did not clear Project Media");
+        assert(editor.modelForTesting().trackCount(TrackKind.video) == 1 &&
+            editor.modelForTesting().trackCount(TrackKind.audio) == 1 &&
+            editor.modelForTesting().trackValue(v1).clips.length == 0 &&
+            editor.modelForTesting().trackValue(a1).clips.length == 0,
+            "New Project did not reset to one empty V1 and A1 track");
+        assert(editor.undoCountForTesting() == 0 &&
+            editor.redoCountForTesting() == 0 &&
+            !requireWidget!Button(editor, "undo").enabled(),
+            "New Project did not clear undo/redo history");
+        assert(!editor.hasWorkInForTesting() && !editor.hasWorkOutForTesting(),
+            "New Project did not clear the export range");
+        assert(editor.compositionWidthForTesting() == 1920 &&
+            editor.compositionHeightForTesting() == 1080 &&
+            resolutionButton.text() == "1920×1080"d,
+            "New Project did not restore the default composition resolution");
+        assert(editor.previewQualityHeightForTesting() == 720 &&
+            qualityButton.text() == "720p"d,
+            "New Project did not restore the default preview quality");
+        assert(editor.scrubMinimumForTesting() < 0.0001 &&
+            editor.scrubMaximumForTesting() <= 0.0011 &&
+            editor.scrubValueForTesting() < 0.0001,
+            "New Project did not reset the Preview scrubber range");
+        // The pre-new dirty work was autosaved into its project file.
+        const autosavedNewProject = loadProjectFile(recentOpenB);
+        assert(autosavedNewProject.hasWorkOut &&
+            fabs(autosavedNewProject.workOut - 1.5) < 0.0001,
+            "New Project did not autosave the previous project first");
+
+        editor.setWorkOutForTesting(2.5);
+        driver.pressKey(Key.n, cast(uint) KeyModifier.control);
+        assert(editor.projectPathForTesting().length == 0 &&
+            !editor.projectDirtyForTesting() &&
+            !editor.hasWorkOutForTesting(),
+            "Ctrl+N did not create a fresh untitled project");
+        assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
+            editor.undoCountForTesting() == 0,
+            "Ctrl+N did not reset the timeline and history");
+        const ctrlNAutosave = loadProjectFile(unnamedProjectAutosavePath());
+        assert(ctrlNAutosave.hasWorkOut &&
+            fabs(ctrlNAutosave.workOut - 2.5) < 0.0001,
+            "Ctrl+N did not autosave the previous project first");
+    }
+
+    // Suggested export names for an unnamed project: a generic fallback with no
+    // media, then the first clip's source name once media lands on the
+    // timeline (the yt-dlp title path for downloads).
+    {
+        assert(editor.projectPathForTesting().length == 0 &&
+            editor.modelForTesting().trackValue(v1).clips.length == 0,
+            "Export-name fallback test did not start from an empty unnamed project");
+        assert(editor.suggestedExportNameForTesting() == "aurora-cut-export.mp4",
+            "Empty unnamed project did not fall back to the generic export name");
+        driver.dropFiles(timeline.pointForTrackTime(v1, 0.05), [arguments[1]]);
+        bool placed;
+        foreach (_; 0 .. 600)
+        {
+            editor.tickTree(0.02);
+            if (editor.modelForTesting().trackValue(v1).clips.length > 0 &&
+                !editor.importBusyForTesting())
+            {
+                placed = true;
+                break;
+            }
+            Thread.sleep(20.msecs);
+        }
+        assert(placed, "Base clip did not land on V1 for the export-name test");
+        assert(editor.suggestedExportNameForTesting() == "base-av.mp4",
+            "Unnamed project did not suggest the first clip's source name");
+        const existingExport = buildPath(applicationExportDirectory(), "base-av.mp4");
+        write(existingExport, "x");
+        scope (exit) if (exists(existingExport)) remove(existingExport);
+        assert(editor.suggestedExportNameForTesting() == "base-av-2.mp4",
+            "Repeated exports of the same clip did not deduplicate the name");
     }
 
     // Virtualized painting must not scale with the full clip count.

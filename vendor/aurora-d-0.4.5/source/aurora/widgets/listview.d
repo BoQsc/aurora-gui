@@ -16,6 +16,9 @@ struct ListItem
     dstring secondary;
     IconKind icon = IconKind.none;
     bool disabled;
+    // Visually muted but still clickable; used for entries that are inert to
+    // navigation yet remain selectable so the click can be acted on.
+    bool dimmed;
 
     this(string text, IconKind icon = IconKind.none, string secondary = "")
     {
@@ -42,6 +45,7 @@ class ListView : Widget
 
     void delegate(int index) onSelectionChanged;
     void delegate(int index) onActivated;
+    void delegate(int index, Point globalPosition) onContextMenuRequested;
 
     this()
     {
@@ -260,7 +264,8 @@ class ListView : Widget
             const y = index * _rowHeight - _scrollOffset;
             const row = Rect(1, y, maxInt(0, contentWidth - 2), _rowHeight);
             const item = _items[cast(size_t) index];
-            Color foreground = item.disabled ? palette.disabled : palette.text;
+            Color foreground = item.disabled || item.dimmed ?
+                palette.disabled : palette.text;
             if (index == _selected)
             {
                 content.fillRect(row, palette.selection);
@@ -326,6 +331,12 @@ class ListView : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        if (event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(rowAt(event.position), event.globalPosition);
+            return true;
+        }
         if (event.button != MouseButton.left) return false;
         _focusedByPointer = true;
         requestFocus();
@@ -368,7 +379,8 @@ class ListView : Widget
                 return false;
         }
         next = clampInt(next, 0, cast(int) _items.length - 1);
-        while (_items[cast(size_t) next].disabled)
+        while (_items[cast(size_t) next].disabled ||
+            _items[cast(size_t) next].dimmed)
         {
             if (next < _selected) --next; else ++next;
             if (next < 0 || next >= cast(int) _items.length) return true;

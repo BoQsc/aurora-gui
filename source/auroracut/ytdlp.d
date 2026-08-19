@@ -1,15 +1,16 @@
 module auroracut.ytdlp;
 
 import auroracut.util : absoluteNormalized, applicationStateDirectory,
-    isSupportedMediaPath, outputTail;
+    isSupportedMediaPath, outputTail, removePathQuietly;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import std.algorithm.searching : canFind;
 import std.conv : to;
-import std.file : DirEntry, SpanMode, dirEntries, exists, mkdirRecurse,
-    remove, rename, thisExePath;
+import std.file : exists, isDir, mkdirRecurse, readText, remove, rename,
+    tempDir, thisExePath, write;
 import std.format : format;
-import std.path : baseName, buildPath, dirName;
+import std.path : baseName, buildPath, dirName, extension, filenameCmp;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.stdio : File;
 import std.string : indexOf, startsWith, strip;
@@ -373,37 +374,57 @@ string ytDlpImportDirectory()
     return absoluteNormalized(root);
 }
 
-private bool startsWithText(string value, string prefix)
+/** Readable output template for downloaded media. The source id keeps
+ * same-title videos from colliding inside the shared Downloads folder. */
+string ytDlpTitleOutputTemplate()
 {
-    return value.length >= prefix.length && value[0 .. prefix.length] == prefix;
+    return "%(title)s [%(id)s]";
 }
 
-private string downloadedPathForPrefix(string directory, string prefix)
+/** Reads the destination yt-dlp reported through `--print-to-file
+ * after_move:filepath`. Only a path inside `directory` with a supported media
+ * extension is accepted, so a stale marker (canceled run, wrong folder, or a
+ * file yt-dlp removed again) can never be imported. */
+private string downloadedPathFromMarker(string markerFile, string directory)
 {
-    foreach (DirEntry entry; dirEntries(directory, SpanMode.shallow))
-    {
-        bool directoryEntry;
-        try directoryEntry = entry.isDir;
-        catch (Exception) continue;
-        if (directoryEntry) continue;
+    if (markerFile.length == 0) return "";
+    string content;
+    try content = readText(markerFile);
+    catch (Exception) return "";
+    const newline = indexOf(content, '\n');
+    const line = (newline < 0 ? content : content[0 .. cast(size_t) newline]).strip();
+    if (line.length == 0) return "";
+    const path = absoluteNormalized(line);
+    if (!exists(path) || isDir(path)) return "";
+    if (!isSupportedMediaPath(path)) return "";
+    if (filenameCmp(dirName(path), absoluteNormalized(directory)) != 0) return "";
+    return path;
+}
 
-        const name = baseName(entry.name);
-        if (!startsWithText(name, prefix ~ ".")) continue;
-        if (!isSupportedMediaPath(entry.name)) continue;
-        return absoluteNormalized(entry.name);
-    }
-    return "";
+/** The downloaded file's stem (base name without its final extension), which
+ * becomes the prefix for the normalized MP4 copy. */
+private string downloadedStem(string path)
+{
+    const ext = extension(path);
+    const name = baseName(path);
+    return ext.length > 0 ? name[0 .. $ - ext.length] : name;
 }
 
 private string[] downloadArguments(YtDlpDownloadRequest request,
-    string directory, string prefix)
+    string directory, string titleTemplate, string markerFile)
 {
-    const outputTemplate = buildPath(directory, prefix ~ ".%(ext)s");
+    const outputTemplate = buildPath(directory, titleTemplate ~ ".%(ext)s");
     string[] arguments = [
         request.command,
         "--no-playlist",
         "--newline",
-        "--restrict-filenames",
+        // Titles can exceed Windows path limits; cap the name part so the
+        // normalized copy ("<title> [<id>].normalized.mp4") stays well under
+        // MAX_PATH inside the app-state Downloads folder.
+        "--trim-filenames", "120",
+        // The rendered template is not known before yt-dlp fetches metadata,
+        // so yt-dlp reports the final post-processed path back to us.
+        "--print-to-file", "after_move:filepath", markerFile,
         "-o", outputTemplate
     ];
 
@@ -808,8 +829,11 @@ final class YtDlpDownloadService
         try
         {
             const directory = ytDlpImportDirectory();
-            const prefix = "aurora-" ~ randomUUID().toString();
-            const arguments = downloadArguments(request, directory, prefix);
+            const marker = buildPath(tempDir(),
+                "aurora-cut-ytdlp-" ~ randomUUID().toString() ~ ".txt");
+            scope (exit) removePathQuietly(marker);
+            const arguments = downloadArguments(request, directory,
+                ytDlpTitleOutputTemplate(), marker);
             auto pipes = pipeProcess(arguments,
                 Redirect.stdout | Redirect.stderrToStdout,
                 cast(const string[string]) null, Config.suppressConsole);
@@ -898,13 +922,16 @@ final class YtDlpDownloadService
                     outputTail(output, 16 * 1024)));
             if (result.error.length > 0) throw new Exception(result.error);
 
-            result.path = downloadedPathForPrefix(directory, prefix);
+            result.path = downloadedPathFromMarker(marker, directory);
             if (result.path.length == 0)
                 throw new Exception("yt-dlp finished but did not produce an Aurora-supported media file.");
             if (request.kind == YtDlpDownloadKind.video)
             {
+                const stem = downloadedStem(result.path);
+                if (stem.length == 0)
+                    throw new Exception("yt-dlp produced a file without a usable name.");
                 result.path = normalizeDownloadedVideo(result.path, directory,
-                    prefix, request.maxHeight,
+                    stem, request.maxHeight,
                     delegate(double fraction, string label)
                     {
                         YtDlpDownloadProgress progress;
@@ -925,4 +952,80 @@ final class YtDlpDownloadService
 
         return result;
     }
+}
+
+unittest
+{
+    assert(ytDlpTitleOutputTemplate() == "%(title)s [%(id)s]");
+
+    const root = tempDir();
+    const directory = buildPath(root, "aurora-ytdlp-unit");
+    if (!exists(directory)) mkdirRecurse(directory);
+    scope (exit) removePathQuietly(directory);
+    const marker = buildPath(directory, "aurora-cut-ytdlp-test.txt");
+
+    // downloadArguments renders the title template into the -o destination,
+    // asks yt-dlp to report the final post-processed path, and trims filenames
+    // so long titles stay under Windows path limits.
+    {
+        YtDlpDownloadRequest request;
+        request.command = "yt-dlp";
+        request.url = "https://example.com/video";
+        request.kind = YtDlpDownloadKind.video;
+        request.maxHeight = 480;
+        const videoArguments = downloadArguments(request, directory,
+            ytDlpTitleOutputTemplate(), marker);
+        assert(videoArguments.canFind(
+            buildPath(directory, "%(title)s [%(id)s].%(ext)s")),
+            "Video downloads must name files by title and source id");
+        assert(videoArguments.canFind("after_move:filepath") &&
+            videoArguments.canFind("--print-to-file"),
+            "Video downloads must report the final path through the marker");
+        assert(videoArguments.canFind("--trim-filenames") &&
+            videoArguments.canFind("120"),
+            "Video downloads must trim over-long filenames");
+        assert(!videoArguments.canFind("--restrict-filenames"),
+            "Video downloads must keep readable title characters");
+
+        request.kind = YtDlpDownloadKind.audio;
+        const audioArguments = downloadArguments(request, directory,
+            ytDlpTitleOutputTemplate(), marker);
+        assert(audioArguments.canFind(
+            buildPath(directory, "%(title)s [%(id)s].%(ext)s")),
+            "Audio downloads must name files by title and source id");
+        assert(audioArguments.canFind("--extract-audio") &&
+            audioArguments.canFind("--audio-format") &&
+            audioArguments.canFind("mp3"),
+            "Audio downloads must keep the MP3 extraction flags");
+    }
+
+    const target = buildPath(directory, "Some Title [abc123].mp4");
+    write(target, "x");
+    scope (exit) if (exists(target)) remove(target);
+    write(marker, target ~ "\n");
+    assert(downloadedPathFromMarker(marker, directory) ==
+        absoluteNormalized(target),
+        "A marker pointing at a supported file inside the folder must be accepted");
+
+    const elsewhere = buildPath(root, "aurora-ytdlp-elsewhere.mp4");
+    write(elsewhere, "x");
+    scope (exit) if (exists(elsewhere)) remove(elsewhere);
+    write(marker, elsewhere ~ "\n");
+    assert(downloadedPathFromMarker(marker, directory).length == 0,
+        "A marker pointing outside the download folder must be rejected");
+
+    const notes = buildPath(directory, "notes.txt");
+    write(notes, "x");
+    scope (exit) if (exists(notes)) remove(notes);
+    write(marker, notes ~ "\n");
+    assert(downloadedPathFromMarker(marker, directory).length == 0,
+        "A marker with an unsupported extension must be rejected");
+
+    remove(marker);
+    assert(downloadedPathFromMarker(marker, directory).length == 0,
+        "A missing marker must yield an empty result");
+
+    assert(downloadedStem("C:\\Media\\My Video [id].normalized.mp4") ==
+        "My Video [id].normalized",
+        "downloadedStem must strip only the final extension");
 }

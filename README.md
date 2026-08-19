@@ -181,7 +181,7 @@ through the real `UiTestDriver` dispatch path.
 - Use Selection for normal editing and Cut to split at a click. With Selection active, double-click empty sequence space, hold the second press, and drag a marquee to select every timeline item touched by the rectangle.
 - The Text tool creates nothing from a click alone. Click-drag across an empty video-track span to define the title's exact start and duration; after successful creation it returns to Selection.
 
-The visible Project Media Import and Add-selected buttons were removed. Context menus are compact 22-pixel-row menus rather than oversized panels. Drag-and-drop, `Ctrl+I`, and context commands provide the same operations without permanent toolbar clutter. The transport has one Play/Pause/Resume control; stopping remains available through `Esc` or the Preview context menu rather than a separate Stop button.
+The visible Project Media Import and Add-selected buttons were removed. Context menus are compact 22-pixel-row menus rather than oversized panels. Drag-and-drop, `Ctrl+I`, and context commands provide the same operations without permanent toolbar clutter. The global toolbar carries **New** (starts a blank project after autosaving the current one), **Save**, **Open**, **Recent**, Undo/Redo, History, compression, resolution, export, and output controls. The transport has one Play/Pause/Resume control; stopping remains available through `Esc` or the Preview context menu rather than a separate Stop button.
 
 ## Composition Preview is always the current sequence
 
@@ -270,6 +270,7 @@ Use **Export MP4** or right-click it for Export MP3 and range commands:
 
 ## Useful controls
 
+- `Ctrl+N`: new project (the current project is autosaved first)
 - `Ctrl+S`: save project
 - `Ctrl+Shift+S`: save project as
 - `Ctrl+O`: open project

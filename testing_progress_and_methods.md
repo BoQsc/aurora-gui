@@ -1,5 +1,111 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Suggested export names + title-based yt-dlp download names (2026-08-18)
+
+- The Export MP4/MP3 dialog now suggests a name instead of a hardcoded
+  `aurora-cut-export.mp4`:
+  1. **Saved project's name** (`_projectPath` base name without extension) —
+     the most recognizable handle; `fall of fallout.auroracut` → `fall of
+     fallout.mp4`.
+  2. **First media clip's source name** for unnamed projects (first video clip
+     on the first video track for MP4, first audio clip for MP3, falling back
+     to the other kind for media-only projects). A yt-dlp download therefore
+     suggests the source title.
+  3. **`aurora-cut-export`** when there is no media at all.
+  - The stem strips the extension AND a trailing `.normalized` so a downloaded
+    `Title [id].normalized.mp4` suggests `Title [id].mp4`.
+  - **Dedup**: the suggested name is checked against the default
+    `applicationExportDirectory()` and suffixed `-2`, `-3`, … up to 999 when it
+    exists (same style as `compressedOutputPath`), so repeated exports never
+    silently overwrite. `uniqueExportFileName` returns the base name only; the
+    dialog combines it with the folder.
+  - Editor hooks: private `suggestedExportName(ExportKind)`,
+    `mainClipExportStem(ExportKind)`, static `exportNameStem`,
+    `uniqueExportFileName`; public `suggestedExportNameForTesting()`.
+- yt-dlp downloads now name files by **`%(title)s [%(id)s]`** instead of
+  `aurora-<uuid>`:
+  - `--restrict-filenames` was dropped so titles stay readable
+    (`Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].mp4`).
+  - `--trim-filenames 120` keeps long titles under Windows path limits.
+  - The rendered name is unknown before yt-dlp fetches metadata, so
+    `--print-to-file after_move:filepath <marker>` has yt-dlp write the final
+    post-processed path to a per-run marker file in `tempDir()`
+    (`aurora-cut-ytdlp-<uuid>.txt`); `downloadedPathFromMarker` reads it and
+    only accepts a supported-media path inside the Downloads folder (stale
+    markers, wrong folders, or unsupported extensions are rejected).
+  - `downloadedStem` turns the downloaded name into the normalized-copy prefix:
+    `Title [id].mp4` → `Title [id].normalized.mp4`.
+  - `ytDlpTitleOutputTemplate()` is public; `downloadArguments` gained a
+    `markerFile` param (param named `titleTemplate` — `template` is a reserved
+    D keyword).
+- How it is verified:
+  - `tests/editor_smoke.d`:
+    - Export dialog (named project): open the Export MP4 dialog and assert the
+      `file-dialog-name` field equals the stem of `recentOpenB` + `.mp4`, and
+      the path field still equals `applicationExportDirectory()`.
+    - Unnamed project, no media: `suggestedExportNameForTesting()` ==
+      `aurora-cut-export.mp4` (right after Ctrl+N).
+    - Unnamed project with a clip: drop `base-av.mp4` on V1, wait for the clip,
+      assert `suggestedExportNameForTesting()` == `base-av.mp4`.
+    - Dedup: write `base-av.mp4` into the test export folder and assert the
+      suggestion becomes `base-av-2.mp4`.
+  - `ytdlp.d` unittest (runs in `dub test`): `downloadArguments` for video AND
+    audio produce the `%(title)s [%(id)s]` `-o` template, include
+    `--print-to-file`/`after_move:filepath` and `--trim-filenames 120`, and do
+    NOT include `--restrict-filenames`; `downloadedPathFromMarker` accepts an
+    in-folder supported file, rejects out-of-folder/unsupported/missing
+    markers; `downloadedStem` strips only the final extension.
+  - Live yt-dlp probe (YouTube returns HTTP 403 from this network, so it was
+    validated against a local `python -m http.server`): `yt-dlp
+    --trim-filenames 120 --print-to-file after_move:filepath <marker> -o
+    "<dir>/%(title)s [%(id)s].%(ext)s" -f b http://127.0.0.1:8123/base-av.mp4`
+    produced `base-av [base-av].mp4` and the marker contained its exact path.
+  - Full gate: `dub test --compiler=dmd --force` → 35 modules pass;
+    editor-smoke full run; model/export/gpu-decode-args/recompress/layout/
+    static-sequence smokes exit 0.
+- Gotchas:
+  - **This repo is shared across concurrent opencode sessions.** The other
+    session was editing `editor.d`/`ytdlp.d`/`editor_smoke.d` at the same time
+    (history-step toggle feature + focus ring). Their `template`-keyword fix
+    and `extension` import landed inside this session's edits. Always verify
+    with a fresh compile + `dub test` + editor-smoke at the END; check
+    `git diff` before/after editing.
+  - The standard smoke build uses **dmd** on this host
+    (`dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+    tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
+    -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+    -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`); `ldc2` is NOT installed and
+    `tail` is not a cmd.exe command (earlier `| tail` invocations silently
+    swallowed compiler output).
+
+## New Project button + Ctrl+N (2026-08-18)
+
+- `EditorRoot.newProject()` (called by the `new-project` toolbar button and
+  Ctrl+N) discards the current project into a fresh blank one. It autosaves the
+  active project FIRST (to `_projectPath`, or the unnamed autosave
+  `%LOCALAPPDATA%\Aurora Cut\Autosaves\untitled-autosave.auroracut` via
+  `unnamedProjectAutosavePath()`), then: stops playback, cancels proxy work,
+  clears `_model.assets`, restores one empty V1+A1 track
+  (`_model.restoreTimeline([], [])`), clears work range, preview quality →
+  720, composition → 1920×1080, clears `_undo`/`_redo` + clipboard, playhead →
+  0, and re-syncs media list / timeline / inspector / title / scrubber
+  (`syncTimelineRange` makes an empty scrubber max 0.001, not 0).
+- Test hooks added: `newProjectForTesting()`, `projectDirtyForTesting()`.
+- How it is verified (headless `tests/editor_smoke.d`, after the persisted
+  history block): New button exists, labeled "New", left of Save; make a dirty
+  project (`setWorkOutForTesting(1.5)`), click New, assert path==“”, not dirty,
+  no assets, exactly V1+A1 empty, undo/redo==0 (Undo disabled), no work range,
+  1920×1080 + 720p, scrubber range reset, and that `loadProjectFile(recentOpenB)`
+  (the previously open project file) contains workOut 1.5 — proving the autosave
+  preserved the work. Then setWorkOut(2.5), press Ctrl+N, assert the same reset
+  and that the UNNAMED autosave (`unnamedProjectAutosavePath()`) now holds
+  workOut 2.5.
+- Gotcha: after the first New, `_projectPath` is empty, so the second autosave
+  goes to the unnamed autosave, NOT the recent project file — verify each with
+  the correct path.
+- Commands: same editor-smoke compile/run as the History popout section below;
+  `dub test --compiler=dmd --force`; app link check via temp output.
+
 ## App-state output/export + undo/redo history in the project file (2026-08-18)
 
 - `auroracut.util`:
@@ -65,6 +171,54 @@
   declare `videoCodec = "h264"` on the accelerated-preview clips;
   `tests/recompress_smoke.d` builds an absolute output path (the job reports an
   absolute path, the test compared a relative one).
+
+## History step toggling (right-click context menu, 2026-08-18)
+
+- User: "add right click context menu for items so we could toggle history item
+  on and off... item of history could take affect or not depending on if they
+  are on or off."
+- Vendored `ListView` changes in
+  `vendor/aurora-d-0.4.5/source/aurora/widgets/listview.d`: new generic
+  `onContextMenuRequested(int index, Point globalPosition)` fired on
+  right-click in `onMouseDown`; new `ListItem.dimmed` flag that mutes the row
+  (uses `palette.disabled`) but stays clickable, and keyboard navigation skips
+  dimmed rows. (`disabled` stays non-clickable; `dimmed` is used when the click
+  must still be acted on.)
+- History popup (`source/auroracut/editor.d`):
+  - `_historyActionEnabled` parallels `_historyActionLabels`; `refreshHistoryList`
+    preserves flags by index (a committed edit appends an enabled step; the
+    discarded redo tail drops its flags). Flags are session-only, reset with
+    history on New/Open/Clear.
+  - `applyHistoryView` dims disabled rows (`row.dimmed = true`) with secondary
+    "Disabled — right-click to enable" (current row: "You are here — disabled")
+    and the hint now says "right-click a step to toggle it".
+  - `jumpToHistory` snaps the clicked row to the nearest enabled step at-or-before
+    it (or Initial state), so a disabled step's effect is reverted when undoing
+    past it and not re-applied when redoing to it; toolbar/keyboard Undo/Redo
+    stay physical ±1.
+  - `showHistoryContextMenu` builds the menu (`Enabled` check + `Enable all
+    steps`/`Disable all steps`) and opens it via `showHistoryContextMenuPopup`
+    — a copy of `showContextMenu` WITHOUT `dismissTransientPopups`, because that
+    call would dismiss the History popup itself (it is a root-level
+    `TransientPopup`). This is the key gotcha for menus anchored inside popups.
+- Regression (`tests/editor_smoke.d`, end of the history block): right-click
+  row 2, assert the menu (`Enabled` checked + bulk commands), click `Enabled`,
+  assert the row is dimmed with the disabled secondary and the History popup is
+  still open (`findById(editor, "history-list") !is null`), click the dimmed row
+  and assert it snaps to row 1 (clip removed, `selectedIndex == setRangeRow`),
+  right-click again (menu now shows `Enabled` UNCHECKED — assert `!`checked),
+  click it, assert the row is no longer dimmed, click row 3 and assert the clip
+  is restored, Esc to close.
+- Flakiness (pre-existing, unrelated to this feature): `tests/editor_smoke.d`
+  intermittently fails the real-decode playback test ("Direct video decoder
+  never reached the end of its range", a simulated-clock vs real-decode
+  deadline) and rarely crashes with an access violation and no output. Observed
+  ~2/34 runs while validating; the history block passed every run; a `-g` build
+  passed 6/6; LocalDumps/WER captured nothing. Load/timing dependent.
+- Gotcha: editing the UTF-8 test file with PowerShell `Get-Content`/`Set-Content`
+  (ANSI default) mangles every non-ASCII char (`▶` → `â–¶` mojibake). Recover
+  from git and re-apply only the intended edits; never round-trip the file
+  through PS without `-Encoding UTF8`.
 
 ## Clicked-button focus ring (2026-08-18)
 

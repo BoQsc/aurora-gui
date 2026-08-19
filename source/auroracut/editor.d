@@ -33,7 +33,7 @@ import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
     YtDlpInstallService, normalizeYtDlpMaxHeight, ytDlpImportDirectory,
     ytDlpMaxWidthForHeight;
 import core.time : MonoTime;
-import std.algorithm : max, min;
+import std.algorithm : endsWith, max, min;
 import std.array : join;
 import std.file : exists;
 import std.conv : ConvException, to;
@@ -910,6 +910,10 @@ final class EditorRoot : VBox
     private bool _syncingHistoryList;
     private bool _historyJumping;
     private string[] _historyActionLabels;
+    // Parallel to _historyActionLabels: a disabled step is skipped when jumping
+    // (the jump stops at the nearest enabled step at or before it), so toggling
+    // a step off removes its effect from history navigation.
+    private bool[] _historyActionEnabled;
     private int _historyPosition;
 
     private JobPurpose _jobPurpose;
@@ -3516,6 +3520,9 @@ final class EditorRoot : VBox
             if (_syncingHistoryList) return;
             jumpToHistory(index);
         };
+        list.onContextMenuRequested = delegate(int row, Point point) {
+            showHistoryContextMenu(row, point);
+        };
         _historyList = list;
         refreshHistoryList();
 
@@ -3565,6 +3572,19 @@ final class EditorRoot : VBox
         for (size_t index = 0; index < _redo.length; ++index)
             actionLabels ~= _redo[_redo.length - 1 - index].label;
         _historyActionLabels = actionLabels;
+        // Preserve enable/disable flags for steps that keep their position (a
+        // freshly committed edit appends at the end; the discarded redo tail
+        // drops with the labels).
+        if (_historyActionEnabled.length > actionLabels.length)
+            _historyActionEnabled =
+                _historyActionEnabled[0 .. actionLabels.length].dup;
+        else
+        {
+            const preserved = _historyActionEnabled.length;
+            _historyActionEnabled.length = actionLabels.length;
+            foreach (index; preserved .. actionLabels.length)
+                _historyActionEnabled[index] = true;
+        }
         _historyPosition = cast(int) _undo.length;
         applyHistoryView();
     }
@@ -3605,15 +3625,22 @@ final class EditorRoot : VBox
                     number - _historyPosition,
                     number - _historyPosition == 1 ? "" : "s");
             }
-            rows ~= ListItem(format("%d. %s", number, label), icon, secondary);
+            auto row = ListItem(format("%d. %s", number, label), icon, secondary);
+            if (!_historyActionEnabled[index])
+            {
+                row.dimmed = true;
+                row.secondary = number == _historyPosition ?
+                    "You are here — disabled"d : "Disabled — right-click to enable"d;
+            }
+            rows ~= row;
         }
         _historyList.setItems(rows);
         _historyList.setSelectedIndex(_historyPosition, false);
         if (_historyHint !is null)
         {
             _historyHint.setText(format(
-                "Click an entry to undo or redo to that state. " ~
-                "Undo: %d available • Redo: %d available.",
+                "Undo: %d available • Redo: %d available • " ~
+                "right-click a step to toggle it.",
                 _undo.length, _redo.length));
         }
         _syncingHistoryList = false;
@@ -3636,29 +3663,81 @@ final class EditorRoot : VBox
 
     /// Jump straight to the state a row represents. Only the highlighted row
     /// changes; the listed items keep their positions for the whole session.
+    /// A disabled step does not take effect: jumping to it (or past it) stops
+    /// at the nearest enabled step at or before it.
     private void jumpToHistory(int row)
     {
         if (row < 0 || row > cast(int) _historyActionLabels.length) return;
-        if (row == _historyPosition) return;
-        _historyJumping = true;
-        if (row < _historyPosition)
+        int target = row;
+        while (target > 0 && !_historyActionEnabled[cast(size_t) target - 1])
+            --target;
+        if (target == _historyPosition)
         {
-            const times = _historyPosition - row;
+            applyHistoryView();
+            return;
+        }
+        _historyJumping = true;
+        if (target < _historyPosition)
+        {
+            const times = _historyPosition - target;
             foreach (_; 0 .. times) undo();
-            const label = row == 0 ? "Initial state" :
-                _historyActionLabels[cast(size_t) row - 1];
+            const label = target == 0 ? "Initial state" :
+                _historyActionLabels[cast(size_t) target - 1];
             setStatus(format("History: undid %d step(s) to \"%s\".", times, label));
         }
         else
         {
-            const times = row - _historyPosition;
+            const times = target - _historyPosition;
             foreach (_; 0 .. times) redo();
-            const label = _historyActionLabels[cast(size_t) row - 1];
+            const label = _historyActionLabels[cast(size_t) target - 1];
             setStatus(format("History: redid %d step(s) to \"%s\".", times, label));
         }
         _historyJumping = false;
-        _historyPosition = row;
+        _historyPosition = target;
         applyHistoryView();
+    }
+
+    /// Right-clicking a history step toggles whether that step takes effect.
+    /// Disabled steps are skipped when jumping, letting the user carve out
+    /// steps they do not want applied. The initial-state row cannot be toggled.
+    private void showHistoryContextMenu(int row, Point point)
+    {
+        if (_historyList is null || _historyActionLabels.length == 0) return;
+        ContextMenuItem[] items;
+        if (row > 0 && row <= cast(int) _historyActionLabels.length)
+        {
+            const actionIndex = cast(size_t) row - 1;
+            const enabled = _historyActionEnabled[actionIndex];
+            items ~= ContextMenuItem.check("Enabled", enabled, delegate() {
+                _historyActionEnabled[actionIndex] =
+                    !_historyActionEnabled[actionIndex];
+                applyHistoryView();
+            });
+            items ~= ContextMenuItem.separatorItem();
+        }
+        items ~= ContextMenuItem.command("Enable all steps", delegate() {
+            foreach (ref enabled; _historyActionEnabled) enabled = true;
+            applyHistoryView();
+        });
+        items ~= ContextMenuItem.command("Disable all steps", delegate() {
+            foreach (ref enabled; _historyActionEnabled) enabled = false;
+            applyHistoryView();
+        });
+        showHistoryContextMenuPopup(_historyList, point, items);
+    }
+
+    /// Like showContextMenu, but without dismissing every root-level transient
+    /// popup, so the History popup it is anchored to stays open.
+    private void showHistoryContextMenuPopup(Widget owner, Point globalPosition,
+        ContextMenuItem[] items)
+    {
+        auto root = popupRoot(owner);
+        if (root is null) return;
+        auto popup = new ContextMenu(items, owner);
+        root.add(popup);
+        popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+        root.bringChildToFront(popup);
+        popup.openAt(root.globalToLocal(globalPosition));
     }
 
     private void undo()
@@ -7945,6 +8024,80 @@ final class EditorRoot : VBox
             PlaybackKind.sequence, 1.0, false);
     }
 
+    /** Suggested default file name for the Export dialog. Prefers the saved
+     * project's name (the most recognizable handle), then the first media
+     * clip's source name for unnamed projects, and deduplicates against the
+     * default Exports folder so repeated exports never silently overwrite. */
+    private string suggestedExportName(ExportKind kind)
+    {
+        const ext = kind == ExportKind.mp4 ? ".mp4" : ".mp3";
+        string stem;
+        if (_projectPath.length > 0)
+            stem = exportNameStem(baseName(_projectPath));
+        else
+            stem = mainClipExportStem(kind);
+        if (stem.length == 0) stem = "aurora-cut-export";
+        return uniqueExportFileName(applicationExportDirectory(), stem, ext);
+    }
+
+    /** Strips the file extension and the download-processing marker so the
+     * suggested name reads as the source title ("My Video [id]"). */
+    private static string exportNameStem(string fileName)
+    {
+        const suffix = extension(fileName);
+        auto stem = suffix.length > 0 ? fileName[0 .. $ - suffix.length] : fileName;
+        if (stem.endsWith(".normalized"))
+            stem = stem[0 .. $ - ".normalized".length];
+        return stem;
+    }
+
+    /** First media clip on the preferred track kind (video for MP4, audio for
+     * MP3), falling back to the other kind for media-only projects. */
+    private string mainClipExportStem(ExportKind kind)
+    {
+        const preferred = kind == ExportKind.mp4 ?
+            TrackKind.video : TrackKind.audio;
+        const other = preferred == TrackKind.video ?
+            TrackKind.audio : TrackKind.video;
+        foreach (trackKind; [preferred, other])
+        {
+            foreach (lane; 0 .. _model.trackCount(trackKind))
+            {
+                const track = _model.trackValue(TrackAddress(trackKind, lane));
+                foreach (clip; track.clips)
+                {
+                    if (clip.isText()) continue;
+                    const asset = _model.assetForClip(clip);
+                    if (asset is null) continue;
+                    const stem = exportNameStem(baseName(asset.path));
+                    if (stem.length > 0) return stem;
+                }
+            }
+        }
+        return "";
+    }
+
+    /** Returns an existing-file-free name in `directory` like the
+     * compress-output dedup, returning only the base name the dialog's name
+     * field needs. */
+    private static string uniqueExportFileName(string directory, string stem,
+        string ext)
+    {
+        auto candidate = buildPath(directory, stem ~ ext);
+        if (!exists(candidate)) return baseName(candidate);
+        foreach (index; 2 .. 1000)
+        {
+            candidate = buildPath(directory, format("%s-%d%s", stem, index, ext));
+            if (!exists(candidate)) return baseName(candidate);
+        }
+        return baseName(candidate);
+    }
+
+    string suggestedExportNameForTesting()
+    {
+        return suggestedExportName(ExportKind.mp4);
+    }
+
     private void openExportDialog(ExportKind kind)
     {
         endInlineTextEditing();
@@ -7965,8 +8118,7 @@ final class EditorRoot : VBox
         }
 
         const extension = kind == ExportKind.mp4 ? ".mp4" : ".mp3";
-        const suggested = kind == ExportKind.mp4 ?
-            "aurora-cut-export.mp4" : "aurora-cut-export.mp3";
+        const suggested = suggestedExportName(kind);
         _fileDialog.showSave(extension, suggested, delegate(string path) {
             auto preset = kind == ExportKind.mp4 ? compositionExportPreset() :
                 exportPresetForHeight(_compositionHeight);
