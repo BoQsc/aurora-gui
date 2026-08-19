@@ -1,3 +1,19 @@
+Aurora Suite 0.66.4
+Export fix for the bundled minimal FFmpeg
+------------------------------------------
+
+- Fixed every MP4/MP3 export failing on the portable single-exe release with
+  "Unrecognized option 'filter_complex_script'". The released build embeds a
+  minimal cross-compiled FFmpeg that removed that deprecated option, while
+  the full FFmpeg used by RUN-WINDOWS.bat still accepted it.
+- Export now passes the composition filter graph inline via `-filter_complex`
+  (the same mechanism the live playback compositor already uses), so exports
+  work identically on both the bundled minimal FFmpeg and a full local
+  FFmpeg.
+- Verified: `dub test` 35 modules, the headless editor smoke test, and the
+  export smoke test all pass; the exact export graph also renders to a valid
+  MP4 when run against the bundled minimal FFmpeg binary.
+
 Aurora Suite 0.66.3
 Playback, timeline, and yt-dlp release
 --------------------------------------
