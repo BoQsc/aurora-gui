@@ -4,6 +4,9 @@ import aurora;
 import auroranotepad.iconpath : loadNotepadTitleImage, notepadImagePath,
     notepadTitleImagePath;
 import auroranotepad.menubar : MenuBar;
+import auroranotepad.notepadsize : NotepadCaptionButtonWidth,
+    NotepadMenuBarHeight, NotepadMenuFontPixelSize, NotepadStatusBarHeight,
+    NotepadStatusFontPixelSize, NotepadTitleBarHeight;
 import auroranotepad.titlebar : NotepadTitleBar;
 import std.conv : to;
 import std.datetime : Clock;
@@ -162,6 +165,7 @@ final class NotepadRoot : Widget
         _statusBand = add(new Panel(statusBand(false)));
         _status = _statusBand.add(new Label("Ready"));
         _status.setScale(1);
+        _status.setPixelSize(NotepadStatusFontPixelSize);
         _statusBorder = add(new Separator(Orientation.horizontal));
 
         // Snap-preview overlay: added last so it paints above all content. The
@@ -439,8 +443,8 @@ final class NotepadRoot : Widget
     protected override void onLayout()
     {
         const barHeight = _titleBar.barHeight();
-        const menuBarHeight = 30;
-        const statusHeight = _statusVisible ? 28 : 0;
+        const menuBarHeight = NotepadMenuBarHeight;
+        const statusHeight = _statusVisible ? NotepadStatusBarHeight : 0;
         const statusTop = maxInt(0, bounds().height - statusHeight);
         const editorTop = barHeight + menuBarHeight;
         _titleBar.setBounds(Rect(0, 0, bounds().width, barHeight));

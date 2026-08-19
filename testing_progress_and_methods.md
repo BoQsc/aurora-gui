@@ -1,5 +1,47 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Released v0.66.6 STILL "waiting for audio": stale locked ffmpeg cache (2026-08-19)
+
+- User: "it keeps on saying it's waiting for audio before playback starts. So
+  there is absolutely no progress yet."
+- **Root cause (final)**: v0.66.6 DID embed the corrected FFmpeg
+  (`--enable-muxer=pcm_s16le`, verified by extracting the embedded ffmpeg
+  from the published exe and running `-f s16le` -> 192,000 bytes of valid
+  PCM). But the extracted-file cache in `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe`
+  was the OLD broken build (size 13,479,936, `--enable-muxer=...s16le...`,
+  timestamp 13:03). When the user launched v0.66.6 at 15:51, the app tried to
+  overwrite the cache (new embedded ffmpeg is 13,480,464 bytes, size differs
+  by 528 so `writeIfDifferent` WOULD write), but the still-running v0.66.5
+  process held `ffmpeg.exe` locked, so `write` threw and the `catch
+  (Exception) {}` silently swallowed it. v0.66.6 then put the OLD directory
+  first on PATH and used the OLD broken ffmpeg -> audio decode produced no
+  samples -> "Waiting for audio output before playback starts."
+- **Evidence**:
+  1. `tasklist` showed BOTH `aurora-cut-v0.66.5.exe` (PID 10672, started
+     14:34) and `aurora-cut-v0.66.6.exe` (PID 7156, started 15:51) running.
+  2. The cached `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe` could not be opened
+     ("being used by another process") - locked by the v0.66.5 instance.
+  3. The cached file's config still showed the old `s16le` muxer flag.
+  4. Extracted the v0.66.6 embedded ffmpeg (PE at offset 3722608, length
+     13,480,464; ffprobe at 17203072, length 13,836,224): config shows
+     `pcm_s16le` and `-f s16le` produces valid PCM.
+- **Fix** (`source/auroracut/ffmpegbundle.d`): extraction is now
+  content-keyed - each distinct bundle (by embedded ffmpeg/ffprobe sizes)
+  extracts into `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg-<ffmpegSize>-<ffprobeSize>\`
+  instead of overwriting one shared `ffmpeg.exe`. A newer release never
+  collides with an older build's files, a locked file from a concurrent
+  instance cannot block a correct extraction (the keyed dir already has the
+  right bytes), and every instance uses its own build's ffmpeg. A fallback to
+  the plain root directory remains if the keyed directory fails.
+- **How to verify**: close ALL Aurora Cut instances, delete
+  `%TEMP%\Aurora-Cut-ffmpeg`, launch the fixed release, and confirm the cache
+  gains `Aurora-Cut-ffmpeg\ffmpeg-13480464-13836224\ffmpeg.exe` (or matching
+  sizes) with a `pcm_s16le` config.
+- **Gotcha for users**: never keep an older Aurora Cut running while testing a
+  newer one - the old instance locks the shared temp cache. With the
+  content-keyed fix this no longer matters, but stale running instances also
+  run stale code.
+
 ## aurora-browser: desktop browser shell on aurora-web (2026-08-19)
 
 A new executable `aurora-browser/` wraps the `aurora-web` engine in an

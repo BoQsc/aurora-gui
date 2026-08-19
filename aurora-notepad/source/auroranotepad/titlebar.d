@@ -1,6 +1,8 @@
 module auroranotepad.titlebar;
 
 import aurora;
+import auroranotepad.notepadsize : NotepadCaptionButtonWidth,
+    NotepadStatusFontPixelSize, NotepadTitleBarHeight;
 
 /**
  * The custom downstream titlebar of the Aurora Notepad.
@@ -47,11 +49,16 @@ final class NotepadTitleBar : TitleBar
         setIcon(IconKind.notepad);
         // Slim bar (slightly taller than the first version): the Notepad
         // toolbar takes over the action buttons.
-        setBarHeight(28);
+        setBarHeight(NotepadTitleBarHeight);
         // Compact 16 px titlebar icon (Win10-style).
         setIconSize(16);
         setCornerRadius(0);
         setTitleAlign(HorizontalAlign.left);
+        // Windows 10 caption buttons are 46 px wide at 120 DPI (36 logical px
+        // at 96 DPI), matching SM_CXSIZE = 46 physical.
+        setCaptionButtonWidth(NotepadCaptionButtonWidth);
+        // Windows 10 caption title is Segoe UI 9 pt (12 px EM at 96 DPI).
+        setTitleFontSize(NotepadStatusFontPixelSize);
 
         // --- Custom downstream styling (light by default). ---
         setDarkMode(false);

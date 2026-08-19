@@ -3,8 +3,10 @@ module aurora.widgets.titlebar;
 import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, MouseButton;
+import aurora.font : FontRole;
 import aurora.icons : IconKind, drawIcon;
 import aurora.image : RgbaImage;
+import aurora.text.layout : TextLayoutOptions;
 import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Size,
     VerticalAlign, maxInt, minInt;
 import aurora.widget : Widget;
@@ -84,6 +86,7 @@ class TitleBar : Widget
     private int _titleWidth;
     private int _titleMinWidth = 0;
     private int _contentWidth;
+    private int _titleFontSize; // 0 = use the theme fontScale tier.
 
     private OptionalColor _background;
     private OptionalColor _inactiveBackground;
@@ -243,6 +246,15 @@ class TitleBar : Widget
         if (_captionButtonWidth == value) return;
         _captionButtonWidth = value;
         onLayout();
+        invalidate();
+    }
+
+    /** Override the title text pixel size (0 = use the theme fontScale tier). */
+    void setTitleFontSize(int value)
+    {
+        value = maxInt(0, value);
+        if (_titleFontSize == value) return;
+        _titleFontSize = value;
         invalidate();
     }
 
@@ -597,8 +609,31 @@ class TitleBar : Widget
         const titleArea = titleRect();
         if (!titleArea.empty && !titleEmpty())
         {
-            canvas.drawTextInRect(titleArea, _title, _active ? text : muted,
-                palette.fontScale, _titleAlign, VerticalAlign.middle, true);
+            if (_titleFontSize > 0)
+            {
+                // Custom title pixel size (native 9 pt Windows 10 caption).
+                TextLayoutOptions options;
+                options.role = FontRole.ui;
+                options.overrideFace = cast() palette.uiFont;
+                options.pixelSize = _titleFontSize;
+                options.wrap = false;
+                auto layout = fontSystem().textEngine.layoutCached(_title, options);
+                const measured = layout.measuredSize();
+                int x = titleArea.x;
+                if (_titleAlign == HorizontalAlign.center)
+                    x += maxInt(0, (titleArea.width - measured.width) / 2);
+                else if (_titleAlign == HorizontalAlign.right)
+                    x += maxInt(0, titleArea.width - measured.width);
+                const y = titleArea.y + maxInt(0,
+                    (titleArea.height - measured.height) / 2);
+                auto child = canvas.clipped(titleArea);
+                child.drawLayout(Point(x, y), layout, _active ? text : muted);
+            }
+            else
+            {
+                canvas.drawTextInRect(titleArea, _title, _active ? text : muted,
+                    palette.fontScale, _titleAlign, VerticalAlign.middle, true);
+            }
         }
 
         drawCaptionButton(canvas, TitleBarControl.minimize);

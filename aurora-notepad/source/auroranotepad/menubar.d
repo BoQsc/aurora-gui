@@ -1,6 +1,8 @@
 module auroranotepad.menubar;
 
 import aurora;
+import auroranotepad.notepadsize : NotepadMenuBarHeight,
+    NotepadMenuFontPixelSize;
 
 /**
  * A Windows-10-Notepad-style menu item: one flat text label that opens its
@@ -24,7 +26,7 @@ final class MenuBarItem : Button
 
     private void applyMenuSizing()
     {
-        layoutHints().preferredHeight = 30;
+        layoutHints().preferredHeight = NotepadMenuBarHeight;
         const dtext = text();
         if (dtext.length == 0)
         {
@@ -34,7 +36,7 @@ final class MenuBarItem : Button
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast() theme().uiFont;
-        options.pixelSize = fontPixelSize(theme().fontScale);
+        options.pixelSize = NotepadMenuFontPixelSize;
         options.wrap = false;
         const measured = fontSystem().textEngine.layout(dtext, options).measuredSize();
         layoutHints().preferredWidth = maxInt(30, cast(int) measured.width + 20);
@@ -49,7 +51,7 @@ final class MenuBarItem : Button
  */
 final class MenuBar : Widget
 {
-    private int _barHeight = 30;
+    private int _barHeight = NotepadMenuBarHeight;
 
     this()
     {

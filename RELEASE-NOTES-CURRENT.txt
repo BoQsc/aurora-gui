@@ -1,3 +1,19 @@
+Aurora Suite 0.66.7
+Robust bundled FFmpeg extraction (audio fix)
+---------------------------------------------
+
+- Audio playback still appeared to wait on the previous release because a
+  still-running older Aurora Cut instance locked the shared extracted
+  FFmpeg cache, so the newer app could not replace it and silently used the
+  old broken FFmpeg.
+- The bundled FFmpeg/FFprobe now extract into a content-keyed cache
+  directory (keyed by the embedded sizes) instead of overwriting one shared
+  temp file. A newer release always uses its own correct FFmpeg, concurrent
+  instances can no longer block each other's extraction, and the audio
+  decode path (s16le PCM) works with the corrected minimal FFmpeg.
+- If you still see "Waiting for audio output", close every Aurora Cut window
+  and delete `%TEMP%\Aurora-Cut-ffmpeg` before launching again.
+
 Aurora Suite 0.66.6
 Fix the release pipeline to ship the rebuilt minimal FFmpeg
 ------------------------------------------------------------

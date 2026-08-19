@@ -4,7 +4,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.font : FontRole, fontPixelSize;
 import aurora.text.layout : TextLayoutOptions;
-import aurora.types : HorizontalAlign, Rect, VerticalAlign;
+import aurora.types : HorizontalAlign, Point, Rect, VerticalAlign, maxInt;
 import aurora.widget : Widget;
 import std.utf : toUTF32;
 
@@ -16,6 +16,7 @@ class Label : Widget
     private HorizontalAlign _horizontal = HorizontalAlign.left;
     private VerticalAlign _vertical = VerticalAlign.middle;
     private int _scale = 2;
+    private int _pixelSizeOverride;
     private bool _ellipsis = true;
 
     this(string text = "")
@@ -43,7 +44,8 @@ class Label : Widget
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast() palette.uiFont;
-        options.pixelSize = fontPixelSize(_scale);
+        options.pixelSize = _pixelSizeOverride > 0 ? _pixelSizeOverride :
+            fontPixelSize(_scale);
         options.wrap = false;
         const measured = fontSystem().textEngine.layout(_text, options).measuredSize();
         layoutHints().preferredWidth = measured.width;
@@ -79,6 +81,15 @@ class Label : Widget
         measureAndInvalidate();
     }
 
+    /** Override the label's pixel size (0 = use the scale tier). */
+    void setPixelSize(int value)
+    {
+        value = maxInt(0, value);
+        if (_pixelSizeOverride == value) return;
+        _pixelSizeOverride = value;
+        measureAndInvalidate();
+    }
+
     void setEllipsis(bool value)
     {
         _ellipsis = value;
@@ -89,6 +100,29 @@ class Label : Widget
     {
         const palette = theme();
         const color = _customColor ? _color : (enabled() ? palette.text : palette.disabled);
+        if (_pixelSizeOverride > 0)
+        {
+            // Draw with a fixed pixel size so the label can match native
+            // control text (e.g. the 12 px status-bar text of Windows 10
+            // Notepad) regardless of the theme fontScale tier.
+            TextLayoutOptions options;
+            options.role = FontRole.ui;
+            options.overrideFace = cast() palette.uiFont;
+            options.pixelSize = _pixelSizeOverride;
+            options.wrap = false;
+            auto layout = fontSystem().textEngine.layoutCached(_text, options);
+            const measured = layout.measuredSize();
+            int x = _horizontal == HorizontalAlign.center ? maxInt(0,
+                (bounds().width - measured.width) / 2) :
+                (_horizontal == HorizontalAlign.right ? maxInt(0,
+                    bounds().width - measured.width) : 0);
+            int y = _vertical == VerticalAlign.middle ? maxInt(0,
+                (bounds().height - measured.height) / 2) :
+                (_vertical == VerticalAlign.bottom ? maxInt(0,
+                    bounds().height - measured.height) : 0);
+            canvas.drawLayout(Point(x, y), layout, color);
+            return;
+        }
         canvas.drawTextInRect(Rect(0, 0, bounds().width, bounds().height), _text, color,
             _scale, _horizontal, _vertical, _ellipsis);
     }

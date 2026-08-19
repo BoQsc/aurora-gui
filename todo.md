@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - Released v0.66.6 STILL "waiting for audio": stale locked ffmpeg cache (complaint, fixed)
+
+- [x] User: "it keeps on saying it's waiting for audio before playback starts.
+      So there is absolutely no progress yet."
+- [x] Root cause: v0.66.6 embedded the CORRECT ffmpeg (pcm_s16le), but the
+      extraction cache `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe` held the OLD
+      broken build because the still-running v0.66.5 instance locked the
+      file, so v0.66.6's overwrite threw, was silently swallowed, and the app
+      put the old (broken) directory first on PATH.
+- [x] Fix: `ffmpegbundle.d` extracts into a content-keyed directory
+      `Aurora-Cut-ffmpeg\ffmpeg-<ffmpegSize>-<ffprobeSize>\` so a newer
+      release never collides with or is blocked by an older build's files.
+- [x] Verified: the v0.66.6 embedded ffmpeg (extracted, config `pcm_s16le`)
+      produces valid `-f s16le` PCM (192,000 bytes for 1 s); the user's stale
+      cache was deleted and running instances were closed so the next launch
+      extracts fresh.
+- [ ] Re-release (0.66.7) and have the user confirm audio playback with NO
+      other Aurora Cut instance running.
+
 ## 2026-08-19 - aurora-browser: desktop web browser shell on aurora-web (feature, done)
 
 Created `aurora-browser/`, a working desktop browser shell that renders pages
