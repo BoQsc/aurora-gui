@@ -22,7 +22,7 @@ import aurora.color : Color;
 import aurora.font : FontRole;
 import aurora.image : RgbaImage;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
-import aurora.types : Point, Rect;
+import aurora.types : Point, Rect, maxInt, minInt;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
 
 import std.conv : to;
@@ -91,6 +91,21 @@ private void paintElement(Element element, Canvas canvas)
     const innerX = absX + element.box.paddingLeft + element.box.borderLeft;
     const innerY = absY + element.box.paddingTop + element.box.borderTop;
     const innerWidth = max(0, width - element.box.paddingLeft - element.box.paddingRight);
+    const innerHeight = max(0, height - element.box.paddingTop - element.box.paddingBottom);
+
+    // overflow: hidden/scroll/auto — clip the content (text, inline runs, and
+    // every descendant box) to this element's content box so children that
+    // overflow the parent are not painted outside it.
+    const overflowValue = element.style.overflow.strip().toLower();
+    const clipsChildren = overflowValue == "hidden" || overflowValue == "scroll" ||
+        overflowValue == "auto";
+    Canvas contentCanvas = canvas;
+    if (clipsChildren)
+    {
+        const contentW = max(0, innerWidth - element.box.borderLeft - element.box.borderRight);
+        const contentH = max(0, innerHeight - element.box.borderTop - element.box.borderBottom);
+        contentCanvas = canvas.clipped(Rect(innerX, innerY, contentW, contentH));
+    }
 
     // display:list-item — draw a small filled bullet at the left of the content
     // edge (roughly the first line's box height from the top).
@@ -100,7 +115,7 @@ private void paintElement(Element element, Canvas canvas)
         const int bulletR = 3;
         const int bulletCX = innerX + bulletR + 2;
         const int bulletCY = innerY + bulletR + 2;
-        canvas.fillCircle(Point(bulletCX, bulletCY), bulletR,
+        contentCanvas.fillCircle(Point(bulletCX, bulletCY), bulletR,
             withOpacity(bulletColor, element.style.opacity));
     }
 
@@ -112,7 +127,7 @@ private void paintElement(Element element, Canvas canvas)
             auto text = cast(TextNode) child;
             if (text !is null)
             {
-                drawTextRun(canvas, text.data, Point(text.layoutX, text.layoutY),
+                drawTextRun(contentCanvas, text.data, Point(text.layoutX, text.layoutY),
                     element.style, innerWidth, text);
                 continue;
             }
@@ -124,11 +139,11 @@ private void paintElement(Element element, Canvas canvas)
     {
         auto image = cast(RgbaImage) element.image;
         if (image !is null)
-            canvas.drawImage(Rect(absX, absY, element.box.width, element.box.height), image);
+            contentCanvas.drawImage(Rect(absX, absY, element.box.width, element.box.height), image);
         else
         {
             // Placeholder box while the image loads.
-            canvas.fillRect(Rect(absX, absY, element.box.width, element.box.height),
+            contentCanvas.fillRect(Rect(absX, absY, element.box.width, element.box.height),
                 Color.rgb(220, 220, 220));
         }
     }
@@ -136,7 +151,7 @@ private void paintElement(Element element, Canvas canvas)
     // hr
     if (element.tag == "hr" && element.box.height > 0)
     {
-        canvas.drawLine(Point(absX, absY + element.box.height / 2),
+        contentCanvas.drawLine(Point(absX, absY + element.box.height / 2),
             Point(absX + element.box.width, absY + element.box.height / 2),
             Color.rgb(120, 120, 120));
     }
@@ -160,15 +175,48 @@ private void paintElement(Element element, Canvas canvas)
         if (positioned.length > 1)
             positioned.sort!(q{ a.style.zIndex < b.style.zIndex })();
         foreach (child; normal)
-            paintElement(child, canvas);
+            paintElement(child, contentCanvas);
         foreach (child; positioned)
-            paintElement(child, canvas);
+            paintElement(child, contentCanvas);
     }
     else
     {
         foreach (child; element.elements)
-            paintElement(child, canvas);
+            paintElement(child, contentCanvas);
     }
+
+    // overflow: scroll/auto — draw a scrollbar indicator on the right edge
+    // when the content is taller than the box (like WebPageView does).
+    if (overflowValue == "scroll" || overflowValue == "auto")
+    {
+        const contentH = innerHeight - element.box.borderTop - element.box.borderBottom;
+        const scrollTrack = contentH;
+        if (scrollTrack > 0)
+        {
+            const int barW = 6;
+            const int barX = innerX + max(0, innerWidth - barW);
+            // Thumb height proportional to the fraction of content visible.
+            const int thumbH = maxInt(12, scrollTrack * scrollTrack /
+                maxInt(scrollTrack + 1, contentBottom(element)));
+            const int thumbY = innerY;
+            canvas.fillRect(Rect(barX, thumbY, barW, thumbH),
+                Color.rgb(160, 170, 180));
+        }
+    }
+}
+
+/// The deepest bottom edge of any content inside `element` (absolute
+/// coordinates). Used to decide whether a scroll/auto container overflows.
+private int contentBottom(Element element)
+{
+    int bottom = 0;
+    void walk(Element e)
+    {
+        bottom = maxInt(bottom, e.box.y + e.box.height);
+        foreach (child; e.elements) walk(child);
+    }
+    walk(element);
+    return bottom;
 }
 
 /// Compute the destination rect for a CSS background-image honoring
@@ -826,5 +874,131 @@ unittest
         assert(((onlyLow >> 16) & 0xff) >= 250,
             "area only under the z-index:1 element must stay red, got " ~
             onlyLow.to!string);
+    }
+}
+
+unittest
+{
+    import aurora.surface : Surface;
+    import std.conv : to;
+
+    // --- overflow:hidden clips children to the parent's content box ---
+    // The parent is 40x40 at (0,0). Its child overflows to the bottom-right
+    // (down to 100,100). With overflow:hidden the overflow area must stay
+    // white (not painted).
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        parent.style.overflow = "hidden";
+        parent.style.background = "#00ff00";
+        parent.box.x = 0; parent.box.y = 0;
+        parent.box.width = 40; parent.box.height = 40;
+        parent.box.paddingLeft = 0; parent.box.paddingTop = 0;
+
+        auto child = new Element("div");
+        child.style.display = "block";
+        child.style.background = "#ff0000";
+        child.box.x = 0; child.box.y = 0;
+        child.box.width = 100; child.box.height = 100;
+
+        child.parent = parent;
+        parent.children ~= child;
+        parent.elements ~= child;
+
+        auto surface = new Surface(120, 120);
+        surface.clear(Color.rgb(255, 255, 255));
+        auto canvas = Canvas(surface);
+        paintElement(parent, canvas);
+
+        // Inside the parent box the child (red, covering the green parent
+        // background from 0,0) paints.
+        auto childArea = surface.pixel(20, 20);
+        assert(((childArea >> 16) & 0xff) >= 250,
+            "child red must paint inside the clip, got " ~ childArea.to!string);
+        // OUTSIDE the parent's box (beyond 40,40) the child must NOT paint:
+        // the surface stays white.
+        auto outsideRight = surface.pixel(60, 20);
+        auto lumRight = (outsideRight & 0xff) + ((outsideRight >> 8) & 0xff) +
+            ((outsideRight >> 16) & 0xff);
+        assert(lumRight >= 750,
+            "child must be clipped right of the parent box, lum=" ~ lumRight.to!string);
+        auto outsideBottom = surface.pixel(20, 60);
+        auto lumBottom = (outsideBottom & 0xff) + ((outsideBottom >> 8) & 0xff) +
+            ((outsideBottom >> 16) & 0xff);
+        assert(lumBottom >= 750,
+            "child must be clipped below the parent box, lum=" ~ lumBottom.to!string);
+        auto outsideCorner = surface.pixel(80, 80);
+        auto lumCorner = (outsideCorner & 0xff) + ((outsideCorner >> 8) & 0xff) +
+            ((outsideCorner >> 16) & 0xff);
+        assert(lumCorner >= 750,
+            "child must be clipped at the parent's bottom-right corner, lum=" ~
+            lumCorner.to!string);
+    }
+
+    // --- overflow:visible lets the child paint outside the parent ---
+    // Same geometry, but no overflow property: the red child must be visible
+    // at (80,80) — outside the parent's 40x40 box.
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        parent.style.overflow = "visible";
+        parent.style.background = "#00ff00";
+        parent.box.x = 0; parent.box.y = 0;
+        parent.box.width = 40; parent.box.height = 40;
+
+        auto child = new Element("div");
+        child.style.display = "block";
+        child.style.background = "#ff0000";
+        child.box.x = 0; child.box.y = 0;
+        child.box.width = 100; child.box.height = 100;
+
+        child.parent = parent;
+        parent.children ~= child;
+        parent.elements ~= child;
+
+        auto surface = new Surface(120, 120);
+        surface.clear(Color.rgb(255, 255, 255));
+        auto canvas = Canvas(surface);
+        paintElement(parent, canvas);
+
+        auto far = surface.pixel(80, 80);
+        assert(((far >> 16) & 0xff) >= 250,
+            "with overflow:visible the child must paint outside the parent, got " ~
+            far.to!string);
+    }
+
+    // --- overflow:auto draws a scrollbar indicator when content overflows ---
+    // A 40x40 box with a 200px-tall child overflows vertically; a dark gray
+    // scrollbar thumb must appear along the right edge (inside the box).
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        parent.style.overflow = "auto";
+        parent.style.background = "#ffffff";
+        parent.box.x = 0; parent.box.y = 0;
+        parent.box.width = 40; parent.box.height = 40;
+
+        auto child = new Element("div");
+        child.style.display = "block";
+        child.style.background = "#0000ff";
+        child.box.x = 0; child.box.y = 0;
+        child.box.width = 40; child.box.height = 200;
+
+        child.parent = parent;
+        parent.children ~= child;
+        parent.elements ~= child;
+
+        auto surface = new Surface(40, 40);
+        surface.clear(Color.rgb(255, 255, 255));
+        auto canvas = Canvas(surface);
+        paintElement(parent, canvas);
+
+        // The scrollbar is at x = innerX + (innerWidth - 6) = 34, spanning
+        // 6px wide. A pixel at (36, 10) must be the gray thumb, not white.
+        auto thumb = surface.pixel(36, 10);
+        auto lum = (thumb & 0xff) + ((thumb >> 8) & 0xff) + ((thumb >> 16) & 0xff);
+        assert(lum < 700,
+            "overflow:auto must draw a scrollbar thumb on the right edge, lum=" ~
+            lum.to!string);
     }
 }

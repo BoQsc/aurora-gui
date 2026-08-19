@@ -16,6 +16,7 @@ import core.thread : Thread;
 import core.time : msecs;
 import std.stdio : writeln;
 import std.conv : to;
+import std.string : indexOf;
 import std.utf : toUTF32;
 
 private int failures;
@@ -66,6 +67,7 @@ int main(string[] args)
     // Navigate to the CSS page via the address bar: focus field, type, Enter.
     auto address = cast(TextField) findById(root, "br-address");
     check("address field present", address !is null);
+    if (address !is null) address.setText("", false);
     address.requestFocus();
     root.tickTree(0.02);
     driver.text(toUTF32("auroraweb:css"));
@@ -148,7 +150,126 @@ int main(string[] args)
     check("unbookmark removes entry",
         root.bookmarksForTesting().length == 0);
 
-    // Scrolling: a tall page should scroll with the wheel and stay clamped.
+    // --- Loading indicator / busy state ---
+    // Loads are synchronous in this engine, so the busy flag flips on and off
+    // around a load. We verify the accessor is wired up and the reload button
+    // exists in the toolbar.
+    auto reloadBtn = cast(Button) findById(root, "br-reload");
+    check("reload button present", reloadBtn !is null);
+    check("not loading after settle", !root.isLoadingForTesting());
+    root.navigateForTesting("auroraweb:hello");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("not loading after navigate", !root.isLoadingForTesting());
+    check("status mentions loaded",
+        root.statusTextForTesting().indexOf("Loaded") >= 0);
+
+    // --- Homepage setting + Home button + Ctrl+H ---
+    auto homeBtn = cast(Button) findById(root, "br-home");
+    check("home button present", homeBtn !is null);
+    check("default home is auroraweb:hello",
+        root.homeUrlForTesting() == "auroraweb:hello");
+    // Set a custom home and verify it persists in-memory.
+    root.navigateForTesting("auroraweb:links");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    root.setHomeForTesting("auroraweb:css");
+    check("home updated in memory",
+        root.homeUrlForTesting() == "auroraweb:css");
+    // Home button navigates to the configured home.
+    if (homeBtn !is null) homeBtn.onClick();
+    root.tickTree(0.02);
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("home button navigates to configured home",
+        root.currentUrlForTesting() == "auroraweb:css");
+    // Ctrl+H navigates home from a different page.
+    root.navigateForTesting("auroraweb:js");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    driver.pressKey(Key.h, cast(uint) KeyModifier.control);
+    root.tickTree(0.02);
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("Ctrl+H navigates home",
+        root.currentUrlForTesting() == "auroraweb:css");
+    // Restore the default home so later runs start at hello.
+    root.setHomeForTesting("auroraweb:hello");
+
+    // --- Better error page with Retry link ---
+    root.navigateForTesting("auroraweb:nonexistent");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    auto errView = root.activeViewForTesting();
+    check("error view present", errView !is null);
+    if (errView !is null)
+    {
+        check("error page shows pink background", errView.showsErrorPage());
+        check("error page detected as failed", errView.failedUrlForTesting().length > 0);
+        // The error page's Retry <a href> links back to the failed URL. Locate
+        // the anchor in the DOM and verify hitTestLink resolves it.
+        Element retryLink = null;
+        void findRetry(Element e)
+        {
+            if (retryLink !is null) return;
+            if (e.tag == "a" && e.hasId("retry")) { retryLink = e; return; }
+            foreach (c; e.elements) findRetry(c);
+        }
+        findRetry(errView.page().root());
+        check("retry link element found", retryLink !is null);
+        if (retryLink !is null)
+        {
+            check("retry link box has positive size",
+                retryLink.box.width > 0 && retryLink.box.height > 0);
+            auto rcx = retryLink.box.x + retryLink.box.width / 2;
+            auto rcy = retryLink.box.y + retryLink.box.height / 2;
+            check("hitTestLink finds retry anchor",
+                errView.hitTestLink(rcx, rcy).length > 0);
+        }
+    }
+
+    // --- Per-tab history: error navigation must NOT grow history ---
+    root.navigateForTesting("auroraweb:hello");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    const historyBefore = root.historyForTesting().length;
+    root.navigateForTesting("auroraweb:error404");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("error404 page shown as error", root.activeViewForTesting().showsErrorPage());
+    check("history did not grow on 404",
+        root.historyForTesting().length == historyBefore);
+    check("history still ends at previous page",
+        root.currentUrlForTesting() == "auroraweb:hello");
+
+    // --- Real remote title: auroraweb:remote mimics a fetched page ---
+    root.navigateForTesting("auroraweb:remote");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("navigated to auroraweb:remote",
+        root.currentUrlForTesting() == "auroraweb:remote");
+    check("remote page title extracted", root.tabTitleForTesting() == "Remote");
+    const tabLabel = root.tabStripLabelForTesting();
+    check("tab strip label contains remote title",
+        tabLabel.indexOf("Remote") >= 0);
+    // Retry on a real failure: navigate to a remote page that fails, then use
+    // the Retry link semantics (re-navigate to the previous URL).
+    root.navigateForTesting("auroraweb:nonexistent");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("failed URL recorded", root.activeViewForTesting().failedUrlForTesting().length > 0);
+    const historyAtError = root.historyForTesting().length;
+    // The Retry link re-navigates to the failed URL — which fails again, so
+    // history must not grow.
+    root.navigateForTesting(root.activeViewForTesting().failedUrlForTesting());
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("retry re-navigation stays on error",
+        root.activeViewForTesting().showsErrorPage());
+    check("retry re-navigation does not pollute history",
+        root.historyForTesting().length == historyAtError);
+
+    // --- Scrolling: a tall page should scroll with the wheel and stay clamped. ---
     root.navigateForTesting("auroraweb:scroll");
     driver.paint();
     Thread.sleep(50.msecs);
@@ -209,6 +330,14 @@ int main(string[] args)
                 root.currentUrlForTesting() == "auroraweb:hello");
         }
     }
+
+    // --- --url CLI arg: opening a URL in the first tab at startup ---
+    // (openUrlAtStartup is what app.d calls for `--url <target>`.)
+    root.openUrlAtStartup("auroraweb:links");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("--url opens target in first tab",
+        root.currentUrlForTesting() == "auroraweb:links");
 
     writeln("headless_smoke: ", failures == 0 ? "ALL PASSED" :
         to!string(failures) ~ " FAILURES");

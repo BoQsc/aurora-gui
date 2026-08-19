@@ -217,9 +217,10 @@ enum NodeKind
     ternary,        // test, thenNode, elseNode
     assign,         // target (identifier/member), value; op for compound
     update,         // op ("++"/"--"), target; boolValue = prefix
-    member,         // object, property (identifier name or expr)
-    call,           // callee, args[]
+    member,         // object, property (identifier name or expr); boolValue = optional
+    call,           // callee, args[]; boolValue = optional call
     newExpr,        // callee, args[]
+    spreadElement,  // value — spreads an array into the enclosing array/call
 }
 
 /// AST node. Stored as a class so the parser can mutate it by reference.
@@ -2180,9 +2181,22 @@ final class JsRuntime
             case NodeKind.arrayLit:
             {
                 auto arr = makeArray();
-                foreach (i, child; node.children)
-                    arr.obj.set(to!string(i), execNode(child, sc, thisValue));
-                arr.obj.arrayLength = node.children.length;
+                size_t idx = 0;
+                foreach (child; node.children)
+                {
+                    if (child.kind == NodeKind.spreadElement)
+                    {
+                        auto spreadVal = execNode(child.children[0], sc, thisValue);
+                        if (spreadVal.kind == JsKind.array)
+                        {
+                            for (size_t i = 0; i < spreadVal.obj.arrayLength; i++)
+                                arr.obj.set(to!string(idx++), spreadVal.obj.get(to!string(i)));
+                        }
+                        continue;
+                    }
+                    arr.obj.set(to!string(idx++), execNode(child, sc, thisValue));
+                }
+                arr.obj.arrayLength = idx;
                 return arr;
             }
             case NodeKind.objectLit:
@@ -2217,6 +2231,13 @@ final class JsRuntime
                 {
                     if (!left.isTruthy()) return left;
                     return execNode(node.children[1], sc, thisValue);
+                }
+                else if (node.op == "??")
+                {
+                    // nullish coalescing: right side only if left is null/undefined.
+                    if (left.kind == JsKind.nullValue || left.kind == JsKind.undefined)
+                        return execNode(node.children[1], sc, thisValue);
+                    return left;
                 }
                 else // ||
                 {
@@ -2258,6 +2279,10 @@ final class JsRuntime
             case NodeKind.member:
             {
                 auto objValue = execNode(node.children[0], sc, thisValue);
+                // Optional chaining: null/undefined object yields undefined.
+                if (node.boolValue &&
+                    (objValue.kind == JsKind.nullValue || objValue.kind == JsKind.undefined))
+                    return makeUndefined();
                 JsValue key;
                 if (node.children.length > 1)
                     key = execNode(node.children[1], sc, thisValue);
@@ -2268,9 +2293,23 @@ final class JsRuntime
             {
                 auto calleeNode = node.children[0];
                 auto calleeValue = execNode(calleeNode, sc, thisValue);
+                // Optional call a?.(): null/undefined callee yields undefined.
+                if (node.boolValue &&
+                    (calleeValue.kind == JsKind.nullValue || calleeValue.kind == JsKind.undefined))
+                    return makeUndefined();
                 JsValue[] args;
                 foreach (child; node.children[1 .. $])
+                {
+                    if (child.kind == NodeKind.spreadElement)
+                    {
+                        auto spreadVal = execNode(child.children[0], sc, thisValue);
+                        if (spreadVal.kind == JsKind.array)
+                            for (size_t i = 0; i < spreadVal.obj.arrayLength; i++)
+                                args ~= spreadVal.obj.get(to!string(i));
+                        continue;
+                    }
                     args ~= execNode(child, sc, thisValue);
+                }
                 // Method call: bind the receiver object as `this`.
                 if (calleeNode.kind == NodeKind.member)
                 {
@@ -2280,12 +2319,28 @@ final class JsRuntime
                 // Plain call: `this` is the global object.
                 return callFunction(calleeValue, JsValue(JsKind.object, globalObject), args);
             }
+            case NodeKind.spreadElement:
+            {
+                // Only valid inside array/call; handled there. Standalone is
+                // not meaningful, so evaluate the inner expression.
+                return execNode(node.children[0], sc, thisValue);
+            }
             case NodeKind.newExpr:
             {
                 auto calleeValue = execNode(node.children[0], sc, thisValue);
                 JsValue[] args;
                 foreach (child; node.children[1 .. $])
+                {
+                    if (child.kind == NodeKind.spreadElement)
+                    {
+                        auto spreadVal = execNode(child.children[0], sc, thisValue);
+                        if (spreadVal.kind == JsKind.array)
+                            for (size_t i = 0; i < spreadVal.obj.arrayLength; i++)
+                                args ~= spreadVal.obj.get(to!string(i));
+                        continue;
+                    }
                     args ~= execNode(child, sc, thisValue);
+                }
                 // Create a fresh object whose proto is the callee's .prototype.
                 auto newObj = makeObject();
                 if (calleeValue.kind == JsKind.func)
@@ -2345,6 +2400,18 @@ final class JsRuntime
                 fnScope = new JsScope("function", sf.closure);
             foreach (i, param; sf.params)
             {
+                if (param.length >= 3 && param[0 .. 3] == "...")
+                {
+                    // Rest parameter: collect the remaining args into an array.
+                    auto restName = param[3 .. $];
+                    auto restArr = makeArray();
+                    size_t ri = 0;
+                    for (size_t a = i; a < args.length; a++)
+                        restArr.obj.set(to!string(ri++), args[a]);
+                    restArr.obj.arrayLength = ri;
+                    fnScope.declare(restName, restArr);
+                    continue;
+                }
                 fnScope.declare(param, i < args.length ? args[i] : makeUndefined());
             }
             // Define arguments object.
@@ -2949,7 +3016,16 @@ private struct Parser
         expect("(");
         while (!at(")") && current().kind != TokKind.eof)
         {
-            if (atIdentifier()) { params ~= current().text; advance(); }
+            if (at("..."))
+            {
+                advance();
+                if (atIdentifier())
+                {
+                    params ~= "..." ~ current().text;
+                    advance();
+                }
+            }
+            else if (atIdentifier()) { params ~= current().text; advance(); }
             else break;
             if (!match(",")) break;
         }
@@ -3161,7 +3237,7 @@ private struct Parser
         auto left = parseEquality();
         while (true)
         {
-            if (match("&&") || match("||"))
+            if (match("&&") || match("||") || match("??"))
             {
                 auto op = tokens[pos - 1].text;
                 auto right = parseEquality();
@@ -3319,6 +3395,46 @@ private struct Parser
                 node.name = name;
                 expr = node;
             }
+            else if (at("?."))
+            {
+                advance();
+                // Optional chaining: return undefined if the object is null.
+                if (atIdentifier())
+                {
+                    auto name = current().text;
+                    advance();
+                    auto node = addNode(NodeKind.member);
+                    node.children ~= expr;
+                    node.name = name;
+                    node.boolValue = true;   // optional
+                    expr = node;
+                }
+                else if (at("["))
+                {
+                    advance();
+                    auto key = parseExpression();
+                    expect("]");
+                    auto node = addNode(NodeKind.member);
+                    node.children ~= expr;
+                    node.children ~= key;
+                    node.boolValue = true;   // optional
+                    expr = node;
+                }
+                else if (at("("))
+                {
+                    advance();
+                    auto node = addNode(NodeKind.call);
+                    node.children ~= expr;
+                    node.boolValue = true;   // optional call
+                    while (!at(")") && current().kind != TokKind.eof)
+                    {
+                        node.children ~= parseAssignment();
+                        if (!match(",")) break;
+                    }
+                    expect(")");
+                    expr = node;
+                }
+            }
             else if (at("["))
             {
                 advance();
@@ -3336,7 +3452,15 @@ private struct Parser
                 node.children ~= expr;
                 while (!at(")") && current().kind != TokKind.eof)
                 {
-                    node.children ~= parseAssignment();
+                    if (at("..."))
+                    {
+                        advance();
+                        auto spread = addNode(NodeKind.spreadElement);
+                        spread.children ~= parseAssignment();
+                        node.children ~= spread;
+                    }
+                    else
+                        node.children ~= parseAssignment();
                     if (!match(",")) break;
                 }
                 expect(")");
@@ -3475,7 +3599,15 @@ private struct Parser
             auto node = addNode(NodeKind.arrayLit);
             while (!at("]") && current().kind != TokKind.eof)
             {
-                node.children ~= parseAssignment();
+                if (at("..."))
+                {
+                    advance();
+                    auto spread = addNode(NodeKind.spreadElement);
+                    spread.children ~= parseAssignment();
+                    node.children ~= spread;
+                }
+                else
+                    node.children ~= parseAssignment();
                 if (!match(",")) break;
             }
             expect("]");
@@ -3868,6 +4000,10 @@ private Token[] lex(string source)
         { tokens ~= Token(TokKind.op, "&&", 0); i += 2; continue; }
         if (c == '|' && i + 1 < n && source[i + 1] == '|')
         { tokens ~= Token(TokKind.op, "||", 0); i += 2; continue; }
+        if (c == '?' && i + 1 < n && source[i + 1] == '?')
+        { tokens ~= Token(TokKind.op, "??", 0); i += 2; continue; }
+        if (c == '?' && i + 1 < n && source[i + 1] == '.')
+        { tokens ~= Token(TokKind.op, "?.", 0); i += 2; continue; }
         if (c == '+' && i + 1 < n && source[i + 1] == '+')
         { tokens ~= Token(TokKind.op, "++", 0); i += 2; continue; }
         if (c == '-' && i + 1 < n && source[i + 1] == '-')
@@ -3892,6 +4028,8 @@ private Token[] lex(string source)
         { tokens ~= Token(TokKind.op, "<<", 0); i += 2; continue; }
         if (c == '>' && i + 1 < n && source[i + 1] == '>')
         { tokens ~= Token(TokKind.op, ">>", 0); i += 2; continue; }
+        if (c == '.' && i + 1 < n && source[i + 1] == '.' && i + 2 < n && source[i + 2] == '.')
+        { tokens ~= Token(TokKind.op, "...", 0); i += 3; continue; }
         // Single-char tokens
         import std.string : indexOf;
         if (indexOf("{}()[];,:.=+-*/%!<>?&|^", to!string(c)) >= 0)
@@ -4554,4 +4692,66 @@ unittest
     checkBool("n3", true);
     checkBool("n4", false);
     checkBool("n5", false);
+}
+
+unittest
+{
+    // Nullish coalescing ?? and optional chaining ?.
+    auto rt = parseScript(
+        `var a = null ?? "default";` ~
+        `var b = 0 ?? "zero";` ~
+        `var c = undefined ?? "u";` ~
+        `var o = { x: { y: 42 } };` ~
+        `var d = o?.x?.y;` ~
+        `var e = o?.missing?.deep;` ~
+        `var g = null?.foo;` ~
+        `var h = (null ?? "d").length;`);
+    rt.runScript(rt.makeObject());
+    auto a = rt.globalScope.get("a");
+    assert(a.kind == JsKind.string && a.strValue == "default", "null ?? default");
+    auto b = rt.globalScope.get("b");
+    assert(b.kind == JsKind.number && b.numValue == 0, "0 ?? keeps 0");
+    auto c = rt.globalScope.get("c");
+    assert(c.kind == JsKind.string && c.strValue == "u", "undefined ?? u");
+    auto d = rt.globalScope.get("d");
+    assert(d.kind == JsKind.number && d.numValue == 42, "optional chain 42");
+    auto e = rt.globalScope.get("e");
+    assert(e.kind == JsKind.undefined, "missing optional chain undefined");
+    auto g = rt.globalScope.get("g");
+    assert(g.kind == JsKind.undefined, "null?.foo undefined");
+    auto h = rt.globalScope.get("h");
+    assert(h.kind == JsKind.number && h.numValue == 1, "paren nullish length 1");
+}
+
+unittest
+{
+    // Spread (array/call), rest params, optional chaining, nullish coalescing.
+    auto rt = parseScript(
+        `var a = [1, 2, 3];` ~
+        `var b = [...a, 4, 5];` ~
+        `function f(x, ...rest) { __rest = rest; return x + rest.length; }` ~
+        `var r = f(10, 20, 30);` ~        // x=10, rest=[20,30], returns 12
+        `function sum() { var s=0; for (var i=0;i<arguments.length;i++){s+=arguments[i];} return s; }` ~
+        `var t = sum(...a);` ~             // 6
+        `var m = sum(10, ...a, 20);` ~     // 36
+        `var n = null ?? "d";` ~
+        `var o = { x: { y: 5 } };` ~
+        `var oc = o?.x?.y;` ~
+        `var od = o?.zz?.y;`);
+    rt.runScript(rt.makeObject());
+    auto b = rt.globalScope.get("b");
+    assert(b.kind == JsKind.array && b.obj.arrayLength == 5, "array spread length 5");
+    assert(b.obj.get("3").numValue == 4 && b.obj.get("4").numValue == 5, "spread appended");
+    auto r = rt.globalScope.get("r");
+    assert(r.kind == JsKind.number && r.numValue == 12, "rest: x+rest.length = 12, got " ~ rt.toJsString(r));
+    auto t = rt.globalScope.get("t");
+    assert(t.kind == JsKind.number && t.numValue == 6, "call spread sum=6");
+    auto m = rt.globalScope.get("m");
+    assert(m.kind == JsKind.number && m.numValue == 36, "mixed call spread sum=36");
+    auto n = rt.globalScope.get("n");
+    assert(n.kind == JsKind.string && n.strValue == "d", "nullish default");
+    auto oc = rt.globalScope.get("oc");
+    assert(oc.kind == JsKind.number && oc.numValue == 5, "optional chain 5");
+    auto od = rt.globalScope.get("od");
+    assert(od.kind == JsKind.undefined, "optional chain missing undefined");
 }

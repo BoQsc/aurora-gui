@@ -460,20 +460,12 @@ final class WebPageView : Widget
         else if (lower.startsWith("http://") || lower.startsWith("https://"))
         {
             _page.navigate(url);
-            // The engine's HTTP layer reports failures inside the document
-            // (navigation failed / non-2xx status). Detect them so the shell
-            // does not commit a broken entry to history.
-            _lastError = remoteLoadError();
-            if (_lastError.length > 0)
-                _failedUrl = url;
         }
         else
         {
             _page.setHtml(errorPageHtml(url,
                 "Unsupported scheme in '" ~ url ~ "'."));
             _page.executeScripts();
-            _failedUrl = url;
-            _lastError = "Unsupported scheme '" ~ url ~ "'.";
         }
         // Lay out at the real viewport size; if the widget has no bounds yet
         // (first frame before layout), use a sane default so the first paint
@@ -490,6 +482,18 @@ final class WebPageView : Widget
         _page.layout();
         resetScroll();
         _contentHeight = contentHeight();
+
+        // Failure detection now that styles are computed and the DOM is laid
+        // out: error pages carry a pink background and (for network loads) the
+        // engine's "Navigation failed"/"HTTP 404" text. Record the failed URL
+        // so the shell can keep history clean.
+        if (showsErrorPage())
+        {
+            _failedUrl = url;
+            auto remoteReason = remoteLoadError();
+            _lastError = remoteReason.length > 0 ? remoteReason :
+                "error page for '" ~ url ~ "'";
+        }
     }
 
     /// Test-only: has the current document navigated the engine (real fetch)?
@@ -829,6 +833,7 @@ final class BrowserRoot : VBox
     /// Configure the home page (also persists it to home.txt).
     private void setHomeUrl(string url)
     {
+        if (url == _homeUrl) return;
         _homeUrl = url;
         saveHomeUrl(url);
     }
@@ -980,8 +985,9 @@ final class BrowserRoot : VBox
 
     /// Load the URL into the active view, showing the "Loading..." busy state
     /// around the (synchronous) fetch. Returns true on success; false when the
-    /// load failed and an error page is now displayed.
-    private bool loadUrl(string url)
+    /// load failed and an error page is now displayed. With `updateChrome`
+    /// true the address bar, window title and bookmark button follow the URL.
+    private bool loadUrl(string url, bool updateChrome = true)
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return false;
         auto tab = &_tabs[_active];
@@ -1001,10 +1007,13 @@ final class BrowserRoot : VBox
 
         _loading = false;
         _reloadButton.setIcon(IconKind.refresh);
-        _address.setText(url, false);
-        _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
-            "Aurora Browser");
-        _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
+        if (updateChrome)
+        {
+            _address.setText(url, false);
+            _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
+                "Aurora Browser");
+            _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
+        }
         _tabs[_active] = *tab;
         return success;
     }
@@ -1077,7 +1086,9 @@ final class BrowserRoot : VBox
         switchTab(_active);
         // Commit the initial URL to history only when it loads successfully;
         // otherwise the history entry is dropped and an error page shown.
-        if (!loadUrl(url))
+        // The address bar is cleared so the next typed URL replaces it.
+        _address.setText("", false);
+        if (!loadUrl(url, false))
         {
             tab.history.length = 0;
             tab.position = 0;
@@ -1316,8 +1327,10 @@ final class BrowserRoot : VBox
     public string currentUrlForTesting()
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return "";
-        return _tabs[cast(size_t) _active].history[cast(size_t)
-            _tabs[cast(size_t) _active].position];
+        auto tab = _tabs[cast(size_t) _active];
+        if (tab.history.length == 0) return "";
+        return tab.history[cast(size_t)
+            clampInt(tab.position, 0, cast(int) tab.history.length - 1)];
     }
 
     /// Test-only: tab title (last known page title).
