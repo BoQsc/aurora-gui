@@ -358,10 +358,15 @@ class ContextMenu : TransientPopup
     {
         if (_menuRect.empty()) return;
         const palette = theme();
-        const shadow = _menuRect.translated(3, 4);
-        canvas.fillRoundedRect(shadow, 5, palette.shadow.withAlpha(100));
+        // Soft, subtle drop shadow: very low alpha, small offset, like the
+        // thin translucent shadow native Windows menus cast. A bold hard
+        // shadow (large alpha + wide offset) looks out of place next to the
+        // flat Win10 chrome.
+        const shadow = _menuRect.translated(2, 3);
+        canvas.fillRoundedRect(shadow, 5, palette.shadow.withAlpha(38));
+        // Light 1 px border instead of a near-opaque one.
         canvas.drawRoundedRect(_menuRect, 4, palette.panelElevated,
-            palette.border.withAlpha(230), 1);
+            palette.border.withAlpha(110), 1);
 
         auto content = canvas.clipped(_menuRect.inset(1));
         foreach (index, item; _items)

@@ -147,6 +147,36 @@ Both clients depend on the same core package via a path dependency, and both
 keep the vendored Aurora-D source on their own `sourcePaths` exactly like the
 other applications in this repository.
 
+## Aurora Designer
+
+A visual UI designer for Aurora-D interfaces (`aurora-designer/`). It reuses
+the vendored Aurora-D library and the frameless window chrome pattern from the
+Notepad (`DesignerTitleBar`), then adds a three-region editing surface:
+
+- **Palette** (left): click any widget kind — Window, Panel, HBox, VBox,
+  Button, Label, Text Field, Check Box, Separator, Scroll View, List View,
+  Image — to place it on the artboard.
+- **Artboard** (center): a checkerboard canvas that is the document's window
+  surface. Click to select, drag to move, drag the corner handles to resize,
+  drag a marquee over empty space to select the topmost intersecting widget,
+  and right-click for an add/delete context menu. Hit-testing maps viewport
+  coordinates to artboard coordinates, so it stays exact at any window size.
+- **Inspector** (bottom): edit the selected widget's name, ID, X/Y/W/H, text,
+  background color (panels/windows), transparent/accent/checked states. The
+  toolbar mirrors X/Y/W/H plus New / Open / Save / Code / Undo / Redo /
+  Delete / theme toggle.
+
+The **Code** button opens a popup with the generated idiomatic Aurora-D source
+(`Widget buildDesignedUi()`): a widget tree with `setId`, text/checked/accent
+setup, and `setBounds`/`add` calls that compiles against the same vendored
+Aurora-D. Ctrl+Z/Y, Ctrl+S/O/N, Delete, and the arrow keys (Shift for 10 px)
+work as shortcuts. Designs serialize to a compact line-per-node `.aurora`
+text format and carry a 50-step undo/redo history. Launch with
+`aurora-designer\RUN-WINDOWS.bat`; `--screenshot <path>` renders a software
+snapshot. The headless smoke (`tests/headless_smoke.d`) drives model
+round-trips, codegen, undo/redo, delete, pointer selection, drag, and palette
+clicks through the real `UiTestDriver` dispatch path.
+
 ## Aurora Notepad
 
 A new standard Notepad built as a downstream application on the vendored

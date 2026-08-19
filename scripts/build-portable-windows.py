@@ -12,6 +12,10 @@ from pathlib import Path
 
 APPLICATIONS = {
     "aurora-cut": (Path("."), Path("aurora-cut.exe")),
+    "aurora-designer": (
+        Path("aurora-designer"),
+        Path("aurora-designer/aurora-designer.exe"),
+    ),
     "aurora-image-viewer": (
         Path("aurora-image-viewer"),
         Path("aurora-image-viewer/aurora-image-viewer.exe"),

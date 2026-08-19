@@ -1,5 +1,123 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Designer — how to build/verify a new Aurora-D UI designer app (2026-08-19)
+
+New `aurora-designer/` (visual UI designer for Aurora-D GUIs). The test
+procedure that keeps it verifiable without a display:
+
+- **Build the app**: `cd aurora-designer && dub build --compiler=dmd`. It
+  must link (GUI-subsystem exe, no console).
+- **Headless smoke** (the real regression gate):
+  ```
+  dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d -of=build\aurora-designer-headless-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+  build\aurora-designer-headless-smoke.exe
+  ```
+  Covers: model serialization round-trip (node count/kind/geometry/root),
+  codegen sanity (`import aurora`, `new Button`, `setId`), undo/redo,
+  delete, pointer selection + drag through `UiTestDriver` (click a node
+  center computed from `canvas.artboardOrigin()`), and a real palette-button
+  click found by widget `id` (`palette-label0`).
+- **Rendered-layout verification without viewing the image**: run
+  `aurora-designer.exe --screenshot build\headless-smoke\designer-visual.ppm`
+  (1600x1000) and sample pixels per region — left palette `#252526`, artboard
+  window node `#2d2d30`, checkerboard `#2b2b2b/#333333`, inspector panel
+  `#252526` — plus a distinct-sampled-color count as a blank-render guard.
+- **Codegen compile check**: generate code for a window + button + vbox tree,
+  paste it into a tiny D `main`, and compile it with the same `dmd -i`
+  command to prove the emitted `setId`/`setText`/`setAccent`/`setBounds`/
+  `add` calls are real Aurora-D API. Only panels/windows get `setBackground`
+  (Button has no such method — a real codegen correctness catch).
+- **Portable policy**: `python scripts\verify-windows-portability.py` (no
+  args) confirms every dub.json carries the `portable-release` static-CRT
+  buildType; `aurora-designer` was added to
+  `scripts/build-portable-windows.py` APPLICATIONS.
+
+**Lesson**: keep the designer's document model self-contained (plain D
+structs + a custom line-per-node text format) and the rendering in one
+`DesignCanvas` widget that maps viewport→artboard coordinates; the headless
+test then exercises real pointer paths instead of poking private state.
+
+## aurora-web milestone 5: parallel subagent buildout — media types, selectors, real navigation, JS polish, images (2026-08-19)
+
+Four parallel `general` subagents each completed one non-overlapping track and
+wrote a marker file (preventing the silent-no-op failures seen earlier).
+Coordinator re-verified every track independently.
+
+- **CSS media types + selectors** (css.d/dombind.d): `MediaQuery.mediaType`
+  (`screen`/`print`/`all`, `not screen`/`not print`) + module `setScreenMedia`;
+  `Selector.combinators` (`>`, `+`) with nearest-first descendant matching;
+  attribute selectors `[attr]`, `[attr="value"]`; querySelector/All pick them
+  up. Unittests: print-not-applied, `div > p`, `p + p`, `[href]`.
+- **Browser real navigation + link clicks** (aurora-browser/appui.d): address
+  bar navigates `http(s)://` via `WebPage.navigate` (WinINet), keeps
+  `auroraweb:` built-ins offline; `WebPageView.hitTestLink(x,y)` walks DOM `<a>`
+  boxes; `onMouseDown` resolves href and navigates; pointer-cursor hover; new
+  `auroraweb:links` page. Headless smoke grew to 29 checks incl. link
+  hit-test and click-to-navigate. NOTE: plain inline `<a>` gets no box —
+  anchors must be inline-block.
+- **JS polish** (js.d): `for-of` (arrays+strings), coercion (`toNumber`;
+  string relational compare; looseEquals ToPrimitive `[]==false`, `[0]==false`;
+  NaN never self-equals; negative zero "0"; 0x/exponent/Infinity/NaN parsing),
+  `instanceof` + `Function.prototype.bind`, Array includes/find/findIndex/
+  every/some/flat, String repeat/padStart/padEnd/lastIndexOf, Object.entries/
+  values, Number.isNaN/isInteger.
+- **Images + CSS background-image** (dom/layout/package/paint): backgroundImage/
+  backgroundSize, `Element.backgroundImage`, loadImages scans
+  `background-image:url(...)`, paint honors cover/contain/px/auto, `<img>` box
+  defaults to intrinsic size and honors CSS width/height. Unittests for img
+  intrinsic sizing, bg image painting, cover scaling. rgba already blends.
+
+**Verification (all re-run by coordinator, all green):**
+```
+cd aurora-web && dub test --compiler=dmd   # 39 modules passed unittests
+build\auroraweb-smoke.exe                   # auroraweb render smoke: ALL PASSED
+cd aurora-browser && dub build --compiler=dmd
+build\aurora-browser-smoke.exe              # headless_smoke: ALL PASSED (29 checks)
+aurora-browser.exe --screenshot out.ppm     # renders real content, exits clean
+```
+
+**Subagent coordination that worked:** one file-scope per agent, exact file
+list, demand a marker file with verbatim verification output, coordinator
+re-runs every command. Four-for-four succeeded.
+
+## aurora-notepad: live-resize rendering audit (2026-08-19)
+
+User asked whether Aurora Notepad still shows a stretched previous frame while
+resizing, or whether it renders real-time/efficiently like aurora-cut.
+
+**Answer: the notepad uses the identical renderer config as aurora-cut and
+renders real-time exact frames during live resize.**
+
+- Both apps set `WindowOptions` with `resizable=true, lowLatency=true,
+  vsync=true, renderer=RendererPreference.automatic`.
+- On this machine the notepad resolves to the **Vulkan** renderer
+  (hardware accelerated); `rendererSupportsLiveResizeScaling()` returns true
+  (WSI surface-maintenance scaling + swapchain-maintenance extensions).
+- Live-resize flow (verified in `aurora/window.d` + `win32.d`):
+  1. `WM_ENTERSIZEMOVE` -> `resizeStarted`, 16 ms `liveResizeTimer`.
+  2. Each `WM_TIMER` runs `onNativeTick(0.016)` then `paintNow()` inside the
+     modal sizing loop.
+  3. Ticks accumulate `_resizeExactDirty`; at the 60 Hz cadence
+     `scheduleLiveResizeExactFrame()` marks `_resizeRenderExactNow`.
+  4. `onNativePaint` renders the exact scene at the new size; between exact
+     frames WSI stretches the last image (no application work).
+  5. `WM_EXITSIZEMOVE` -> `resizeEnded`, swapchain rebuilt once via
+     `finalizeLiveResize` after presentation fences go idle.
+- Measured with a real `SetWindowPos` resize loop while running the app with
+  `AURORA_RESIZE_PROFILE=1`: **live_frames=30** for 30 resize steps
+  (one exact frame per step), `live_max_us=7517,897` (7.5 ms worst scene build,
+  0.9 ms worst render — far under the 16.6 ms budget). Final frame render 254 us.
+
+**How to reproduce the audit:** launch with `AURORA_RESIZE_PROFILE=1`, then
+drive `SetWindowPos` (or drag the border). The window title shows
+`[resize-profile scene_us=.. layout_us=.. paint_us=.. render_us=.. live_frames=.. live_max_us=..,..]`.
+`live_frames` > 0 proves real-time exact frames render during the drag.
+
+**Note:** `SendMessage(WM_SYSCOMMAND, SC_SIZE)` (synthetic resize) does NOT
+run the modal loop, so it reports `live_frames=0` and a huge `render_us` from a
+swapchain rebuild — that path is NOT representative of a real user drag.
+
+
 ## aurora-web milestone 4: real async/await, grid rows, float wrapping (2026-08-19)
 
 An honest audit before this milestone found three features that had been

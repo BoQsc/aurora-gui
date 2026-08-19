@@ -1,5 +1,42 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - Aurora Designer: visual UI designer on Aurora-D (feature, done)
+
+- [x] User: "Would it be possible to gather all the best practices and have
+      aurora designer program." → agreed scope: a visual UI designer tool for
+      building Aurora-D GUIs, built following this repo's documented best
+      practices (frameless Aurora window + custom titlebar, portable-release
+      dub.json, vendored Aurora-D on sourcePaths, headless UiTestDriver smoke).
+- [x] Created `aurora-designer/`:
+  - `dub.json` mirrors `aurora-notepad/dub.json` (GUI-subsystem
+    `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, portable-release buildType,
+    libs-windows user32/gdi32/shell32/wininet, version 0.66.7).
+  - `source/app.d` — GuiWindow + DesignerRoot, `--screenshot <path>` mode.
+  - `source/auroradesigner/model.d` — `DesignDocument`/`Node`/`NodeKind`
+    model, line-per-node `.aurora` text serialization (round-trips), and
+    idiomatic D codegen (`Widget buildDesignedUi()`).
+  - `source/auroradesigner/appui.d` — `DesignerRoot` (palette / artboard /
+    inspector split), `DesignCanvas` (click-select, drag-move, corner-handle
+    resize, marquee, right-click context menu, hover outline), inspector
+    property rows, toolbar (New/Open/Save/Code/Undo/Redo/Delete/theme),
+    Code popup with a real `TextField`-editable generated source preview +
+    Copy-to-clipboard (Win32 CF_UNICODETEXT).
+  - `source/auroradesigner/titlebar.d` — `DesignerTitleBar`, the Notepad
+    frameless-chrome pattern (owner-driven drag, work-area maximize/restore,
+    restore-on-drag, drag-snap preview, system menu).
+  - `tests/headless_smoke.d` — covers model round-trip, codegen sanity,
+    undo/redo, delete, pointer selection, drag, and a real palette-button
+    click (by id) through `UiTestDriver`.
+- [x] Verified: `dub build --compiler=dmd` links; headless smoke passes
+      ("Aurora Designer headless smoke passed."); generated code compiles
+      against the vendored Aurora-D; `--screenshot` renders the three-pane
+      layout (pixel-analyzed); interactive window launches and stays running;
+      `verify-windows-portability.py` still passes (designer dub.json conforms).
+- [x] Registered the app in `scripts/build-portable-windows.py` APPLICATIONS.
+- [ ] Manual: launch `aurora-designer\RUN-WINDOWS.bat`, place a few widgets,
+      drag/resize them, edit properties in the inspector, click Code and copy
+      the generated D into a fresh Aurora-D app.
+
 ## 2026-08-19 - aurora-notepad: toolbar dropdowns open instantly (fixed)
 
 User: "check why toolbar dropdowns are not instantly opening and takes some
@@ -175,10 +212,17 @@ suspension semantics, CSS grid `fr` edge cases, `@media` screen types.
       grid `grid-template-rows` + content-based auto rows; real float wrapping
       (FloatRect list + lineLeft/lineRight shaping). Added `auroraweb:async`
       page + 2 headless checks. headless_smoke now 21 checks, all PASS.
-- [ ] Remaining (recorded honestly): `@media` screen/print media types,
-      grid `fr` in rows, sandboxing/TLS policy for remote content, and true
-      event-loop integration (setTimeout/pumpTimers driven by a real loop
-      rather than explicit pump calls).
+- [x] Milestone 5 (parallel subagents, 4/4 succeeded with marker files +
+      coordinator re-verify): `@media` screen/print media types; child `>` /
+      adjacent `+` / attribute `[attr=value]` selectors; browser real
+      http(s) navigation via WinINet; `<a>` link click handling + hit-testing
+      + `auroraweb:links`; JS for-of, coercion edge cases, instanceof/bind,
+      more Array/String/Object methods; CSS `background-image`/`background-size`
+      + `<img>` intrinsic sizing. headless_smoke now 29 checks, all PASS.
+- [ ] Remaining (recorded honestly): grid `fr` units in `grid-template-rows`,
+      sandboxing/TLS policy hardening for remote content, true event-loop
+      integration (timers driven by a real loop rather than explicit
+      `pumpTimers` calls), and `@media` `min/max-device-width` variants.
 - [ ] Long-term: full Chrome/Firefox parity is a multi-year effort; the
       foundation is now structurally sound and testable (39 modules,
       headless_smoke 21 checks).
