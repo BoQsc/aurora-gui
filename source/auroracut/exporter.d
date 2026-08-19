@@ -11,7 +11,6 @@ import core.thread : Thread;
 import std.algorithm : min, max;
 import std.algorithm.sorting : sort;
 import std.conv : to;
-import std.file : write;
 import std.format : format;
 import std.math : fabs;
 import std.path : buildPath, extension, filenameCmp;
@@ -974,11 +973,14 @@ private void performComposition(ExportRequest request, string workspace,
     ];
     appendInputArguments(arguments, inputs);
 
-    const scriptPath = buildPath(workspace, "composition.ffgraph");
+    // Pass the graph inline rather than via -filter_complex_script: newer
+    // FFmpeg builds (including the minimal bundled release binary) removed that
+    // deprecated option, so exporting would fail there. Inline -filter_complex
+    // works on both the full and the minimal builds, and matches the live
+    // playback/compositor paths which already use it.
     const graph = buildFilterGraph(request, inputs, duration,
         request.kind == ExportKind.mp4, true);
-    write(scriptPath, graph);
-    arguments ~= ["-filter_complex_script", scriptPath];
+    arguments ~= ["-filter_complex", graph];
 
     if (request.kind == ExportKind.mp4)
     {
@@ -1149,11 +1151,10 @@ void renderCompositeFrame(ExportRequest request, double sequenceTime,
     InputClip[] inputs = collectInputs(frameRequest, true, false);
     string[] arguments = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"];
     appendInputArguments(arguments, inputs);
-    const scriptPath = buildPath(workspace, "frame.ffgraph");
     const duration = frameDuration * 2.0;
-    write(scriptPath, buildFilterGraph(frameRequest, inputs, duration, true, false));
+    const graph = buildFilterGraph(frameRequest, inputs, duration, true, false);
     arguments ~= [
-        "-filter_complex_script", scriptPath,
+        "-filter_complex", graph,
         "-map", "[vout]", "-frames:v", "1", "-an",
         "-f", "image2", outputPpmPath
     ];

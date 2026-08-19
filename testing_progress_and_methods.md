@@ -1,5 +1,57 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Released v0.66.3 "playback/export" vs RUN-WINDOWS.bat difference (2026-08-19)
+
+- User: "the released version of aurora cut does not behave or work properly
+  like the one we do via simple RUN-WINDOWS.bat. I mostly see that playback
+  have problems."
+- **Root cause**: the portable single-exe release embeds the MINIMAL
+  cross-compiled FFmpeg (git-2026-08-14 `c48230e`, `--enable-small`), while
+  RUN-WINDOWS.bat (`dub run`) uses the FULL FFmpeg n7.1 from `C:\ffmpeg\bin`.
+  The modern minimal build REMOVED the deprecated `-filter_complex_script`
+  option (full n7.1 still has it). The app used it in exactly two export
+  paths:
+  - `exporter.d` `performComposition()` — every MP4/MP3 export.
+  - `exporter.d` `renderCompositeFrame()` — composed single-frame render.
+  On the release build those fail instantly:
+  `Unrecognized option 'filter_complex_script'`. Live playback paths use
+  inline `-filter_complex` and worked correctly with the bundled build.
+- **Diagnosis method (all verified empirically, not guessed)**:
+  1. Compared the extracted bundle (`%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe`) to
+     the release exe's embedded bytes (the bundle's first 1001 bytes appear at
+     offset 11166528 inside `aurora-cut-v0.66.3.exe`) - same ffmpeg.
+  2. `-h full | findstr filter_complex`: full n7.1 lists
+     `-filter_complex_script`; the minimal build only lists `-filter_complex`
+     and `-filter_complex_threads`.
+  3. Ran the SAME export graph via `-filter_complex_script` (fails on
+     minimal: `Unrecognized option`) vs inline `-filter_complex` (succeeds on
+     BOTH builds, produced a valid MP4).
+  4. Playback/scrub/live-composition verified working on the minimal build:
+     basic h264 decode, `-hwaccel d3d11va` h264 (non-black raw dump), AV1
+     `libdav1d` on the user's portrait 720x960 webm (all 648000 pixels
+     non-black), and the app's own `playback_black_screen_repro` headless test
+     in release mode (brightness 142-162 during Play, not black). The export
+     failure was the only functional difference.
+- **Fix**: `exporter.d` now passes the graph inline via `-filter_complex`
+  instead of writing a `.ffgraph` file and using `-filter_complex_script`
+  (the same approach the live playback/compositor already used). Removed the
+  now-unused `std.file.write` import and the workspace `.ffgraph` writes.
+  Command-line length is not a regression: Windows `CreateProcessW` caps at
+  32767 chars and the inline playback paths already passed full graphs.
+- **How to verify**: `dub test` -> 35 modules; editor-smoke full run passes;
+  export-smoke produces composed.mp4/mp3 + title rasters with exit 0. Direct
+  proof the minimal bundle now exports: the same inline `-filter_complex`
+  graph run against `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe` produces a valid
+  MP4 (12,180 bytes).
+- **Gotcha for local single-exe builds**: `--build=portable-single-exe` /
+  `--build=portable-release` fail on THIS dev machine with
+  `lld-link: error: could not open 'libcmt.lib'` - the static MS CRT import
+  library is only present on CI's windows-latest (VS toolchain). To locally
+  build the release exe, install the MSVC build tools / static CRT or rely on
+  CI. The debug `dub build` is unaffected.
+- Gotcha: `aurora-cut.log` is append-only in the CWD, so it accumulates old
+  `filter_complex_script` lines; always check the NEWEST run, not a raw count.
+
 ## yt-dlp normalize GPU NVENC (2026-08-19)
 
 - User: "what does normalizing mean and why it takes so long?" -> normalization

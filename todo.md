@@ -1,5 +1,31 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - Released v0.66.3 export broken: bundled ffmpeg lacks -filter_complex_script (complaint, fixed)
+
+- [x] User: "for some reason the released version of aurora cut does not
+      behave or work properly like the one we do via simple RUN-WINDOWS.bat I
+      mostly see that playback have problems."
+- [x] Root cause: release = `portable-single-exe` embeds the MINIMAL
+      cross-compiled FFmpeg (git-2026-08-14 `c48230e`); RUN-WINDOWS.bat
+      (`dub run`) uses the FULL FFmpeg n7.1. The minimal build removed the
+      deprecated `-filter_complex_script` option. Both export call sites
+      (`performComposition`, `renderCompositeFrame`) used it -> export failed
+      with `Unrecognized option 'filter_complex_script'` on the release.
+      Playback itself (inline `-filter_complex`) was verified working on the
+      bundled build, including the user's portrait AV1 project.
+- [x] Fix: exporter.d passes the graph inline via `-filter_complex` (same as
+      the live compositor), removed the `.ffgraph` file writes and the unused
+      `std.file.write` import.
+- [x] Verified: `dub test` -> 35 modules; editor-smoke full run passes;
+      export-smoke produced composed.mp4/mp3 + title rasters (exit 0);
+      inline `-filter_complex` export graph run directly against
+      `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe` produces a valid MP4.
+- [ ] Rebuild the release after the fix and confirm exports in the released
+      single-exe build on a machine with the VS static CRT.
+- [ ] Consider pinning the minimal ffmpeg build to a revision that still
+      supports `-filter_complex_script`, or documenting that exports now use
+      inline graphs.
+
 ## 2026-08-19 - yt-dlp normalize uses GPU NVENC when available (feature)
 
 - [x] User: "what does normalizing mean and why it takes so long?"
