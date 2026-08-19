@@ -1,5 +1,60 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## How to prove the released exes are portable / self-contained (2026-08-19)
+
+User: "how could we test that exe like aurora cut is actually portable and
+independent and does not need msvc or other."
+
+Three layers of proof (all verified on the released v0.66.7 assets):
+
+1. **Static PE import check (no MSVC runtime / no third-party DLLs).**
+   `scripts/verify-windows-portability.py --skip-manifests <exe>` parses the
+   PE import table and fails if it imports any forbidden CRT DLL
+   (msvcr*/msvcp*/vcruntime*/ucrtbase/api-ms-win-crt-*). CI runs it on every
+   built exe (`build-portable-windows.py`). The `portable-release` /
+   `portable-single-exe` DUB build types enforce `-mscrtlib=libcmt` (static
+   CRT) + releaseMode/optimize/inline, and `verify-windows-portability.py`
+   (no args) checks every dub.json enforces that policy.
+   Results for v0.66.7:
+   - aurora-cut: imports only ADVAPI32, GDI32, KERNEL32, SHELL32, USER32,
+     WININET, WINMM, ole32 (all Windows system DLLs). No forbidden CRT.
+   - aurora-stream additionally: AVRT, WS2_32 (audio-realtime + Winsock,
+     both in Windows).
+   - The embedded minimal ffmpeg imports msvcrt.dll (the built-in Windows
+     C runtime, present on every Windows since XP) plus CRYPT32/OLEAUT32/
+     Secur32/WS2_32/SHLWAPI/ncrypt - all Windows system DLLs.
+2. **Single-file runtime (no side-by-side files).** Copy just the exe into an
+   empty folder; it launches and works. All assets/ffmpeg/ffprobe are
+   embedded as D `import()` byte strings and extracted at first run into
+   `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg-<ffmpegSize>-<ffprobeSize>\` (content-
+   keyed). Verified: launched `aurora-cut-v0.66.7.exe` from an empty folder
+   with `PATH=C:\Windows\System32`, the process stayed running (GUI up) and
+   the extraction cache gained `ffmpeg-13480464-13836224\ffmpeg.exe`.
+3. **No external tools on PATH.** The app locates ffmpeg/ffprobe from PATH,
+   but the single-exe build prepends the extracted bundled copies to PATH
+   (`enableBundledFfmpeg`), so a machine without ffmpeg/yt-dlp still works.
+   (yt-dlp is the one optional external tool; it is only needed for
+   YouTube downloads.)
+
+**Repeatable test procedure (manual):**
+- `python scripts/verify-windows-portability.py --skip-manifests aurora-cut.exe`
+  -> "portable CRT check passed".
+- `python scripts/verify-windows-portability.py` -> static CRT policy present
+  in every DUB recipe.
+- `python scripts/verify-windows-gui-subsystem.py` -> every windowed app is
+  GUI-subsystem (no console stealing taskbar icon).
+- Copy the released exe into a brand-new empty folder, run it, confirm the
+  GUI appears, and confirm `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg-...-...\ffmpeg.exe`
+  is created. On a truly clean Windows box (no DMD/DUB/ffmpeg/VLC installed)
+  playback/export must still work, proving full independence from MSVC and
+  dev toolchains.
+
+**Gotcha**: `msvcrt.dll` (imported by the embedded ffmpeg) is NOT the MSVC
+redistributable - it is a core Windows system DLL present since Windows 95
+and must NOT be flagged. The verifier deliberately allows it; only
+msvcr/msvcp/vcruntime/ucrtbase/api-ms-win-crt (the redistributable CRT) are
+forbidden.
+
 ## aurora-notepad: native Windows 10 Notepad UI metrics (2026-08-19)
 
 User asked to measure the real Windows 10 Notepad's toolbar/UI text sizes and

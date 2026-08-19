@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - Prove the released exes are portable / self-contained (question, answered)
+
+- [x] User: "how could we test that exe like aurora cut is actually portable
+      and independent and does not need msvc or other."
+- [x] Verified on the released v0.66.7 assets:
+  - PE import scan (`scripts/verify-windows-portability.py --skip-manifests`)
+    on all 6 exes: only Windows system DLLs, no msvcr/msvcp/vcruntime/
+    ucrtbase/api-ms-win-crt. aurora-cut imports ADVAPI32, GDI32, KERNEL32,
+    SHELL32, USER32, WININET, WINMM, ole32.
+  - Embedded ffmpeg imports only Windows system DLLs (msvcrt.dll is the
+    built-in Windows CRT, not the MSVC redistributable).
+  - Ran the exe from an empty folder with PATH=C:\Windows\System32: GUI
+    launched and the bundled ffmpeg extracted to
+    `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg-13480464-13836224\`.
+- [x] Documented the repeatable 3-layer test procedure in
+      testing_progress_and_methods.md.
+
 ## 2026-08-19 - aurora-notepad: match native Windows 10 Notepad UI metrics (done)
 
 User: "check the windows 10 notepad original size of toolbar and ui text
