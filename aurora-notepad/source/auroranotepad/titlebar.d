@@ -84,7 +84,8 @@ final class NotepadTitleBar : TitleBar
         {
             setBackground(Color.fromHex(0x202020));
             setInactiveBackground(Color.fromHex(0x191919));
-            setBorderColor(Color.fromHex(0x000000));
+            // Borderless: the menu bar below sits flush with the titlebar.
+            setBorderColor(Color.rgba(0, 0, 0, 0));
             setTextColor(Color.fromHex(0xffffff));
             setMutedTextColor(Color.fromHex(0xa0a0a0));
             setButtonHoverColor(Color.fromHex(0x3c3c3c));
@@ -96,7 +97,8 @@ final class NotepadTitleBar : TitleBar
         {
             setBackground(Color.fromHex(0xffffff));
             setInactiveBackground(Color.fromHex(0xf0f0f0));
-            setBorderColor(Color.fromHex(0xe5e5e5));
+            // Borderless: the menu bar below sits flush with the titlebar.
+            setBorderColor(Color.rgba(0, 0, 0, 0));
             setTextColor(Color.fromHex(0x1a1a1a));
             setMutedTextColor(Color.fromHex(0x6a6a6a));
             setButtonHoverColor(Color.fromHex(0xe5e5e5));

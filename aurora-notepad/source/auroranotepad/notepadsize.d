@@ -7,11 +7,12 @@ module auroranotepad.notepadsize;
 //   menu bar     20 logical px  (SM_CYMENU 25 px @120 / 1.25)
 //   status bar   23 logical px  (actual msctls_statusbar32 height 29 px @120)
 //   caption btn  36 logical px  (SM_CXSIZE 46 px @120)
+//   caption bar  23 logical px  (SM_CYCAPTION 29 px @120 / 1.25)
 //   caption font 12 px EM       (Segoe UI 9 pt)
 //   status font  12 px EM       (Segoe UI 9 pt)
 enum NotepadMenuBarHeight = 20;
 enum NotepadStatusBarHeight = 23;
 enum NotepadCaptionButtonWidth = 36;
-enum NotepadTitleBarHeight = 28;
+enum NotepadTitleBarHeight = 23;
 enum NotepadStatusFontPixelSize = 12;
 enum NotepadMenuFontPixelSize = 12;

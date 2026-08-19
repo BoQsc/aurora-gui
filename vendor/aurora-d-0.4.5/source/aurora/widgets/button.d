@@ -6,7 +6,8 @@ import aurora.event : Event, Key, MouseButton;
 import aurora.font : FontRole, fontPixelSize;
 import aurora.icons : IconKind, drawIcon;
 import aurora.text.layout : TextLayoutOptions;
-import aurora.types : CursorKind, HorizontalAlign, Rect, VerticalAlign, maxInt;
+import aurora.types : CursorKind, HorizontalAlign, Point, Rect, VerticalAlign,
+    maxInt;
 import aurora.widget : Widget;
 import std.utf : toUTF32;
 
@@ -25,6 +26,7 @@ class Button : Widget
     // Smaller default icon so button icons read as compact Win10-style glyphs;
     // button size is text-measured and never follows the icon size.
     private int _iconSize = 18;
+    private int _pixelSizeOverride;
 
     void delegate() onClick;
 
@@ -81,12 +83,23 @@ class Button : Widget
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast() palette.uiFont;
-        options.pixelSize = fontPixelSize(palette.fontScale);
+        options.pixelSize = _pixelSizeOverride > 0 ? _pixelSizeOverride :
+            fontPixelSize(palette.fontScale);
         options.wrap = false;
         const measured = fontSystem().textEngine.layout(_text, options).measuredSize();
         const horizontalChrome = _icon == IconKind.none ? 24 : 52;
         layoutHints().preferredWidth = maxInt(controlHeight,
             measured.width + horizontalChrome);
+    }
+
+    /** Override the button text pixel size (0 = use the theme fontScale tier). */
+    void setTextPixelSize(int value)
+    {
+        value = maxInt(0, value);
+        if (_pixelSizeOverride == value) return;
+        _pixelSizeOverride = value;
+        updatePreferredSize();
+        invalidate();
     }
 
     void setFlat(bool value)
@@ -174,10 +187,33 @@ class Button : Widget
         if (_text.length > 0)
         {
             const left = _icon == IconKind.none ? 8 : 36;
-            canvas.drawTextInRect(Rect(left + contentOffset, contentOffset,
-                maxInt(0, bounds().width - left - 8), bounds().height), _text, foreground,
-                palette.fontScale, _icon == IconKind.none ? HorizontalAlign.center : HorizontalAlign.left,
-                VerticalAlign.middle, true);
+            if (_pixelSizeOverride > 0)
+            {
+                // Fixed text size (e.g. Windows 10 menu bar items at 9 pt).
+                TextLayoutOptions options;
+                options.role = FontRole.ui;
+                options.overrideFace = cast() palette.uiFont;
+                options.pixelSize = _pixelSizeOverride;
+                options.wrap = false;
+                auto layout = fontSystem().textEngine.layoutCached(_text, options);
+                const measured = layout.measuredSize();
+                int x = left + contentOffset;
+                if (_icon == IconKind.none)
+                {
+                    x += maxInt(0, (maxInt(0, bounds().width - left - 8) -
+                        measured.width) / 2);
+                }
+                const y = maxInt(0, (bounds().height - measured.height) / 2) +
+                    contentOffset;
+                canvas.drawLayout(Point(x, y), layout, foreground);
+            }
+            else
+            {
+                canvas.drawTextInRect(Rect(left + contentOffset, contentOffset,
+                    maxInt(0, bounds().width - left - 8), bounds().height), _text, foreground,
+                    palette.fontScale, _icon == IconKind.none ? HorizontalAlign.center : HorizontalAlign.left,
+                    VerticalAlign.middle, true);
+            }
         }
     }
 

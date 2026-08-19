@@ -43,7 +43,8 @@ int main()
 
     auto bar = root.titleBar();
     assert(bar !is null, "Notepad titlebar missing");
-    assert(bar.barHeight() == 28, "Custom titlebar height not applied");
+    // Windows 10 native caption bar height (23 logical px at 96 DPI).
+    assert(bar.barHeight() == 23, "Custom titlebar height not applied");
     assert(bar.iconKind() == IconKind.notepad, "Notepad icon not set");
     assert(bar.title() == "Untitled — Aurora Notepad", "Default title wrong");
 

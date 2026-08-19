@@ -14,6 +14,7 @@ final class MenuBarItem : Button
     {
         super(label);
         setFlat(true);
+        setTextPixelSize(NotepadMenuFontPixelSize);
         applyMenuSizing();
         onClick = delegate() { showContextMenuBelow(this, items); };
     }
@@ -40,6 +41,28 @@ final class MenuBarItem : Button
         options.wrap = false;
         const measured = fontSystem().textEngine.layout(dtext, options).measuredSize();
         layoutHints().preferredWidth = maxInt(30, cast(int) measured.width + 20);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        // Flat Win10 menu item: hover/pressed tint fills the whole bar, and
+        // the text is centered horizontally within the item.
+        const palette = theme();
+        const background = pressed() ? palette.buttonPressed :
+            (hovered() ? palette.buttonHover : Color.rgba(0, 0, 0, 0));
+        if (background.a != 0)
+            canvas.fillRect(Rect(0, 0, bounds().width, bounds().height), background);
+
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast() palette.uiFont;
+        options.pixelSize = NotepadMenuFontPixelSize;
+        options.wrap = false;
+        auto layout = fontSystem().textEngine.layoutCached(text(), options);
+        const measured = layout.measuredSize();
+        const x = maxInt(0, (bounds().width - measured.width) / 2);
+        const y = maxInt(0, (bounds().height - measured.height) / 2);
+        canvas.drawLayout(Point(x, y), layout, palette.text);
     }
 }
 
@@ -72,7 +95,7 @@ final class MenuBar : Widget
 
     protected override void onLayout()
     {
-        int x = 8;
+        int x = 0;
         const height = bounds().height;
         foreach (child; children())
         {
@@ -84,8 +107,9 @@ final class MenuBar : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        // The Win32 menu bar is separated from the content by a hairline.
+        // Light-gray hairline separating the menu bar from the content,
+        // matching the Win32 menu bar's bottom edge on Windows 10.
         canvas.fillRect(Rect(0, bounds().height - 1, bounds().width, 1),
-            theme().border);
+            Color.fromHex(0xd6d6d6));
     }
 }
