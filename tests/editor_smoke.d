@@ -1154,7 +1154,29 @@ int main(string[] arguments)
         historyList.selectedIndex() == setRangeRow &&
         historyList.items()[cast(size_t) setRangeRow].secondary == "You are here"d,
         "Clicking a disabled history step did not snap to the previous enabled step");
-    // Re-enable the step, jump forward past it, and confirm the rows stayed put.
+    // The toolbar Redo must also skip the disabled step: one press lands on the
+    // next enabled step (Place clip) instead of the disabled Clear export range.
+    // Use Ctrl+Y so the History popup stays open and its view can be checked.
+    driver.pressKey(Key.y, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
+        historyList.selectedIndex() == placeClipRow &&
+        historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        "Redo did not skip the disabled history step");
+    // Ctrl+Z skips the disabled step the same way, back to Set export range out.
+    driver.pressKey(Key.z, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
+        historyList.selectedIndex() == setRangeRow &&
+        historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        "Undo did not skip the disabled history step");
+    // Redo again to restore the placed clip before re-enabling the step.
+    driver.pressKey(Key.y, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
+        historyList.selectedIndex() == placeClipRow,
+        "Redo did not restore the clip after the undo skip");
+    // Re-enable the step; the rows stayed put and it jumps normally again.
     driver.rightClick(mediaRowPoint(historyList, clearRangeRow));
     historyMenu = findOpenContextMenu(editor);
     assert(historyMenu !is null && !menuItemChecked(historyMenu, "Enabled"d),
@@ -1163,10 +1185,35 @@ int main(string[] arguments)
     assert(driver.paint());
     assert(!historyList.items()[cast(size_t) clearRangeRow].dimmed,
         "Re-enabled history step stayed dimmed");
+    driver.click(mediaRowPoint(historyList, clearRangeRow));
+    assert(historyList.selectedIndex() == clearRangeRow,
+        "Re-enabled history step did not jump to its own state");
     driver.click(mediaRowPoint(historyList, placeClipRow));
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow,
         "Re-enabled history step did not jump normally");
+    // The bulk commands apply to every step and update the rows immediately.
+    driver.rightClick(mediaRowPoint(historyList, setRangeRow));
+    historyMenu = findOpenContextMenu(editor);
+    assert(historyMenu !is null,
+        "History right-click did not reopen for the bulk commands");
+    driver.click(menuItemPoint(historyMenu, "Disable all steps"d));
+    assert(driver.paint());
+    assert(historyList.items()[1].dimmed &&
+        historyList.items()[2].dimmed && historyList.items()[3].dimmed,
+        "Disable all steps did not dim every history row");
+    driver.rightClick(mediaRowPoint(historyList, setRangeRow));
+    historyMenu = findOpenContextMenu(editor);
+    assert(historyMenu !is null,
+        "History right-click did not reopen after Disable all");
+    driver.click(menuItemPoint(historyMenu, "Enable all steps"d));
+    assert(driver.paint());
+    assert(!historyList.items()[1].dimmed &&
+        !historyList.items()[2].dimmed && !historyList.items()[3].dimmed,
+        "Enable all steps did not re-enable every history row");
+    assert(historyList.selectedIndex() == placeClipRow &&
+        editor.modelForTesting().trackValue(v1).clips.length == 1,
+        "Bulk toggling disturbed the current state");
     driver.pressKey(Key.escape);
     assert(findById(editor, "history-list") is null,
         "Esc did not dismiss the History popup");
@@ -1804,20 +1851,20 @@ int main(string[] arguments)
     assert(editor.sequencePlaybackForTesting() && preview.playing(),
         "Changing a composition transform stopped active playback");
 
-    // Moving a clip while playback is active must not stop or restart the
-    // current FFmpeg video snapshot. The edited revision is adopted only after
-    // pause/resume or a new Play command.
-    const processesBeforeLiveMove = editor.videoStatsForTesting().processesStarted;
+    // Moving a clip while playback is active must be reflected in the running
+    // playback: the compositor is rebuilt at the current position so the edit
+    // becomes visible without stopping the transport.
+    const requestsBeforeLiveMove = editor.videoStatsForTesting().requests;
     const originalMoveStart = editor.modelForTesting().trackValue(v3).clips[0].start;
     editor.moveClipForTesting(v3, 0, v3, originalMoveStart + 0.10);
     foreach (_; 0 .. 20) editor.tickTree(0.02);
-    assert(editor.sequencePlaybackForTesting() && preview.playing(),
-        "Moving a timeline item interrupted active playback");
-    assert(editor.videoStatsForTesting().processesStarted == processesBeforeLiveMove,
-        "Moving a timeline item restarted the active video decoder");
-    assert(editor.deferredSequenceRefreshForTesting() &&
-        editor.modelRevisionForTesting() != editor.playbackRevisionForTesting(),
-        "The active playback snapshot was not preserved after a timeline edit");
+    assert(editor.sequencePlaybackForTesting(),
+        "Moving a timeline item stopped the active transport");
+    assert(editor.videoStatsForTesting().requests > requestsBeforeLiveMove,
+        "Moving a timeline item did not rebuild the active video compositor");
+    assert(!editor.deferredSequenceRefreshForTesting() &&
+        editor.modelRevisionForTesting() == editor.playbackRevisionForTesting(),
+        "The edited model was not adopted by the running playback");
 
     driver.pressKey(Key.escape);
 

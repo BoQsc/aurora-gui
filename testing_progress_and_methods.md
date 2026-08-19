@@ -1,5 +1,101 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Timeline edits visible during live playback (2026-08-19)
+
+- Previously, moving/resizing a clip while the playhead was playing only set
+  `_sequenceRefreshDeferred = true`; the running FFmpeg snapshot kept showing
+  the pre-edit timeline until pause/resume or a new Play command. The user
+  reported this as "does not show changes/results in the playback".
+- Fix in `source/auroracut/editor.d`:
+  - `markTimelineChanged()` now also sets `_sequenceRefreshPending = true`
+    while running, routing the edit through the existing 0.14 s debounce even
+    during playback (rapid edits still coalesce).
+  - `refreshSequenceAfterEdit()` no longer bails when running; instead it
+    clears `_sequenceRefreshDeferred`, consumes the model revision, and calls
+    `refreshPlaybackStreamsForEdit()`.
+  - `refreshPlaybackStreamsForEdit()` re-anchors the clock to the current
+    position and calls `startPlaybackStreams()` (the same in-place restart
+    path as `loopPlaybackRestart`), so video + audio rebuild from the current
+    playhead without stopping the transport.
+- How it is verified:
+  - `tests/editor_smoke.d` "non-blocking edits" block was updated: moving a
+    clip during active playback must (a) keep the transport running
+    (`sequencePlaybackForTesting()`), (b) rebuild the video compositor
+    (`videoStatsForTesting().requests` increases — use `requests`, not
+    `processesStarted`, because `requests` increments synchronously in
+    `startCommand` while `processesStarted` increments on the worker thread),
+    (c) clear the deferred flag and match the model revision.
+  - Build/run:
+    `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+    tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
+    -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+    -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
+    then
+    `build\headless-smoke\editor-smoke.exe
+    build\headless-smoke\media\base-av.mp4
+    build\headless-smoke\media\overlay.mp4
+    build\headless-smoke\media\audio.mp3`
+  - Full gate on this host: `dub test --compiler=dmd --force` → 35 modules;
+    editor-smoke; static-sequence-playback-smoke (`still.png audio.mp3`);
+    synced-playback-preroll-smoke (`base-av.mp4`);
+    playback-seek-resilience-smoke (`base-av.mp4 overlay.mp4 audio.mp3`);
+    playback-stress (`base-av.mp4`). All exit 0 with the fix.
+
+## Crash when moving a clip during playback (2026-08-19, follow-up fix)
+
+- After the live-refresh feature above, the user reported "absolutely crashed
+  entire program i tried to move timeline item while playback was happening."
+- Root cause: `refreshPlaybackStreamsForEdit()` called `startPlaybackStreams()`
+  WITHOUT a try/catch. If the edit left the playhead past every clip's end
+  (e.g. the sequence shrank below the playhead), the compositor throws
+  "The selected export range is empty." (`normalizeExportRange`,
+  `exporter.d:710`) and that exception propagated out of `onTick` → hard crash.
+  The `aurora-cut.log` tail also showed `startPlaybackPrewarm()` failing every
+  tick with the same exception (caught, but logged ~16×/s → frozen/laggy UI).
+- Fix:
+  1. `refreshPlaybackStreamsForEdit()` now wraps `startPlaybackStreams()` in
+     try/catch; on failure it stops the transport cleanly (leaves the last
+     visible frame) and sets status "Playback stopped: the edit left nothing to
+     render at this point."
+  2. New `_playbackPrewarmFailures` counter: after 3 consecutive prewarm start
+     failures, `updatePlaybackPrewarm()` stops retrying (avoids the log flood /
+     UI freeze). Reset in `notePlaybackPrewarmDirty()` on any playhead move/edit.
+- New regression test `tests/playback_edit_crash_repro.d`:
+  - Setup: one asset (duration 0.5) as clip A on V1 [0,0.5] and clip B on V2
+    [0.6,1.1]; start live playback with the playhead at 0.7 (inside B).
+  - Action: `editor.moveClipForTesting(v2, 0, v2, 0.0)` while playing → B now
+    ends at 0.5, sequence shrank below the playhead → compositor empty range.
+  - Assert: no crash; `sequencePlaybackForTesting()` is false after the
+    debounced refresh (transport stopped gracefully).
+  - Build/run:
+    `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+    tests\playback_edit_crash_repro.d -of=build\headless-smoke\playback-edit-crash-repro.exe
+    -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
+    -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
+    then `build\headless-smoke\playback-edit-crash-repro.exe
+    build\headless-smoke\media\base-av.mp4` → "passed (no crash on empty
+    render range)."
+- **Follow-up complaint (playback stops at old end):** "why playback stops at
+  timeline last item end position before I start moving on the timeline instead
+  of very last item after I move timeline item while playback is going." The
+  live refresh restarted the compositor but left `_playbackEnd`/`_playbackFullEnd`
+  at the PRE-EDIT sequence length, so the transport hit
+  `_playbackPosition >= _playbackEnd - 0.001` (editor.d onTick) and called
+  `finishPlayback()` at the old boundary. Fix: `refreshPlaybackStreamsForEdit()`
+  now re-derives the bounds from `_model.sequenceDuration()` before restarting
+  (updates `_playbackFullEnd`, `_playbackEnd`, `_playbackStart`, re-applies loop
+  bounds, and refreshes `_playbackAsset.duration` for live composition).
+  `tests/playback_edit_crash_repro.d` now also asserts the extend case: after
+  moving the last clip forward during playback, `playbackEndForTesting()` grows
+  and playback keeps running.
+- `aurora-cut.exe` rebuild: `dub build --compiler=dmd --force`. NOTE if the app
+  is currently running, the linker cannot overwrite the exe ("Access is
+  denied") — close the app first, then rebuild.
+- Gotcha: `editor-smoke` is currently failing at the History popup redo test
+  (~line 1111) because the OTHER concurrent opencode session's history refactor
+  is mid-flight — NOT related to this playback work. Re-check `git diff`
+  before attributing failures.
+
 ## Suggested export names + title-based yt-dlp download names (2026-08-18)
 
 - The Export MP4/MP3 dialog now suggests a name instead of a hardcoded
@@ -188,14 +284,19 @@
   - `_historyActionEnabled` parallels `_historyActionLabels`; `refreshHistoryList`
     preserves flags by index (a committed edit appends an enabled step; the
     discarded redo tail drops its flags). Flags are session-only, reset with
-    history on New/Open/Clear.
+    history on New/Open/Clear, and are kept in sync even while the popup is
+    closed so Undo/Redo always know which steps to skip.
   - `applyHistoryView` dims disabled rows (`row.dimmed = true`) with secondary
     "Disabled — right-click to enable" (current row: "You are here — disabled")
     and the hint now says "right-click a step to toggle it".
-  - `jumpToHistory` snaps the clicked row to the nearest enabled step at-or-before
-    it (or Initial state), so a disabled step's effect is reverted when undoing
-    past it and not re-applied when redoing to it; toolbar/keyboard Undo/Redo
-    stay physical ±1.
+  - Disabled steps are NEVER landed on. Undo/Redo are refactored into physical
+    `stepUndo`/`stepRedo` helpers plus `nearestEnabledPosition(from, direction)`;
+    `undo()`/`redo()` (toolbar + Ctrl+Z/Y) compute the nearest enabled state and
+    physically step to it, and `jumpToHistory` snaps the clicked row the same way
+    and calls `updateHistoryButtons()` after the jump. So a disabled step's
+    effect is reverted when undoing past it and not re-applied when redoing to
+    it — toggling a step off now visibly changes undo/redo navigation (the
+    original complaint was that only popup jumps honored the flag).
   - `showHistoryContextMenu` builds the menu (`Enabled` check + `Enable all
     steps`/`Disable all steps`) and opens it via `showHistoryContextMenuPopup`
     — a copy of `showContextMenu` WITHOUT `dismissTransientPopups`, because that
@@ -206,9 +307,14 @@
   assert the row is dimmed with the disabled secondary and the History popup is
   still open (`findById(editor, "history-list") !is null`), click the dimmed row
   and assert it snaps to row 1 (clip removed, `selectedIndex == setRangeRow`),
+  press Ctrl+Y/Ctrl+Z and assert Undo/Redo skip the disabled step (clip back on
+  Place clip, then removed again on Set export range out, row 2 stays dimmed),
   right-click again (menu now shows `Enabled` UNCHECKED — assert `!`checked),
-  click it, assert the row is no longer dimmed, click row 3 and assert the clip
-  is restored, Esc to close.
+  click it, assert the row is no longer dimmed, click row 2 then row 3 and
+  assert it jumps normally, Esc to close.
+- Note: clicking a TOOLBAR undo/redo button while the popup is open dismisses
+  the popup (pointer outside the panel), so the test verifies Undo/Redo skip via
+  Ctrl+Z/Ctrl+Y to keep the popup open and inspect its view.
 - Flakiness (pre-existing, unrelated to this feature): `tests/editor_smoke.d`
   intermittently fails the real-decode playback test ("Direct video decoder
   never reached the end of its range", a simulated-clock vs real-decode

@@ -807,6 +807,11 @@ final class EditorRoot : VBox
     private double _playbackPrewarmAudioPosition = -1.0;
     private double _playbackPrewarmAudioRemaining = -1.0;
     private ulong _playbackPrewarmRevision;
+    // Consecutive background-prewarm start failures (e.g. an edit left the
+    // playhead with no content to render). After a few, retries are suppressed
+    // so the exception log / UI is not flooded; the counter resets on any
+    // playhead move or edit.
+    private int _playbackPrewarmFailures;
 
     private bool _canvasDragEditing;
     private bool _canvasDragChanged;
@@ -908,11 +913,11 @@ final class EditorRoot : VBox
     private ListView _historyList;
     private Label _historyHint;
     private bool _syncingHistoryList;
-    private bool _historyJumping;
     private string[] _historyActionLabels;
-    // Parallel to _historyActionLabels: a disabled step is skipped when jumping
-    // (the jump stops at the nearest enabled step at or before it), so toggling
-    // a step off removes its effect from history navigation.
+    // Parallel to _historyActionLabels: a disabled step is never landed on. Jumps
+    // snap to the nearest enabled step at-or-before it, and Undo/Redo step over
+    // disabled steps to the nearest enabled state, so toggling a step off
+    // removes its effect from history navigation.
     private bool[] _historyActionEnabled;
     private int _historyPosition;
 
@@ -3564,7 +3569,6 @@ final class EditorRoot : VBox
     /// backward or forward never rebuilds; it only moves the highlighted row.
     private void refreshHistoryList()
     {
-        if (_historyList is null) return;
         string[] actionLabels;
         actionLabels.reserve(_undo.length + _redo.length);
         foreach (snapshot; _undo)
@@ -3574,7 +3578,8 @@ final class EditorRoot : VBox
         _historyActionLabels = actionLabels;
         // Preserve enable/disable flags for steps that keep their position (a
         // freshly committed edit appends at the end; the discarded redo tail
-        // drops with the labels).
+        // drops with the labels). Kept in sync even while the popup is closed so
+        // Undo/Redo always know which steps to skip.
         if (_historyActionEnabled.length > actionLabels.length)
             _historyActionEnabled =
                 _historyActionEnabled[0 .. actionLabels.length].dup;
@@ -3586,6 +3591,7 @@ final class EditorRoot : VBox
                 _historyActionEnabled[index] = true;
         }
         _historyPosition = cast(int) _undo.length;
+        if (_historyList is null) return;
         applyHistoryView();
     }
 
@@ -3648,17 +3654,41 @@ final class EditorRoot : VBox
 
     /// Move the highlighted history row after a plain Undo/Redo (toolbar or
     /// keyboard) without rebuilding the list, so rows never jump around.
-    private void moveHistoryHighlight(int delta)
+    /// Nearest enabled step position reachable from `from` in `direction`
+    /// (-1 = backward toward initial, +1 = forward). Disabled steps are never
+    /// landed on; the result is clamped to the valid step range.
+    private int nearestEnabledPosition(int from, int direction) const
     {
-        if (_historyList is null) return;
-        const next = _historyPosition + delta;
-        if (next < 0 || next > cast(int) _historyActionLabels.length)
+        auto position = from + direction;
+        while (position > 0 &&
+            position <= cast(int) _historyActionLabels.length &&
+            !_historyActionEnabled[cast(size_t) position - 1])
         {
-            refreshHistoryList();
-            return;
+            position += direction;
         }
-        _historyPosition = next;
-        if (!_historyJumping) applyHistoryView();
+        if (position < 0) position = 0;
+        if (position > cast(int) _historyActionLabels.length)
+            position = cast(int) _historyActionLabels.length;
+        return position;
+    }
+
+    /// One physical undo/redo step with no status or list-side effects; the
+    /// caller composes the final position, status, and view update.
+    private void stepUndo()
+    {
+        auto snapshot = _undo[$ - 1];
+        _undo.length -= 1;
+        _redo ~= captureTimelineSnapshot(snapshot.label);
+        applyTimelineSnapshot(snapshot, "");
+    }
+
+    private void stepRedo()
+    {
+        auto snapshot = _redo[$ - 1];
+        _redo.length -= 1;
+        if (_undo.length >= 32) _undo = _undo[$ - 31 .. $].dup;
+        _undo ~= captureTimelineSnapshot(snapshot.label);
+        applyTimelineSnapshot(snapshot, "");
     }
 
     /// Jump straight to the state a row represents. Only the highlighted row
@@ -3668,7 +3698,15 @@ final class EditorRoot : VBox
     private void jumpToHistory(int row)
     {
         if (row < 0 || row > cast(int) _historyActionLabels.length) return;
-        int target = row;
+        navigateTo(row);
+    }
+
+    /// Physically step the timeline to `rawTarget` (a row, possibly a disabled
+    /// one) via stepUndo/stepRedo, snapping to the nearest enabled step at or
+    /// before it, and refresh the undo/redo buttons and history view.
+    private void navigateTo(int rawTarget)
+    {
+        int target = rawTarget;
         while (target > 0 && !_historyActionEnabled[cast(size_t) target - 1])
             --target;
         if (target == _historyPosition)
@@ -3676,30 +3714,27 @@ final class EditorRoot : VBox
             applyHistoryView();
             return;
         }
-        _historyJumping = true;
-        if (target < _historyPosition)
-        {
-            const times = _historyPosition - target;
-            foreach (_; 0 .. times) undo();
-            const label = target == 0 ? "Initial state" :
-                _historyActionLabels[cast(size_t) target - 1];
-            setStatus(format("History: undid %d step(s) to \"%s\".", times, label));
-        }
+        const forward = target > _historyPosition;
+        const times = forward ? target - _historyPosition :
+            _historyPosition - target;
+        if (forward)
+            foreach (_; 0 .. times) stepRedo();
         else
-        {
-            const times = target - _historyPosition;
-            foreach (_; 0 .. times) redo();
-            const label = _historyActionLabels[cast(size_t) target - 1];
-            setStatus(format("History: redid %d step(s) to \"%s\".", times, label));
-        }
-        _historyJumping = false;
+            foreach (_; 0 .. times) stepUndo();
         _historyPosition = target;
+        updateHistoryButtons();
+        const label = target == 0 ? "Initial state" :
+            _historyActionLabels[cast(size_t) target - 1];
+        setStatus(format("History: %s %d step%s to \"%s\".",
+            forward ? "redid" : "undid", times, times == 1 ? "" : "s", label));
         applyHistoryView();
     }
 
     /// Right-clicking a history step toggles whether that step takes effect.
-    /// Disabled steps are skipped when jumping, letting the user carve out
-    /// steps they do not want applied. The initial-state row cannot be toggled.
+    /// Disabling acts immediately: the timeline jumps to the nearest enabled
+    /// step before it, reverting the disabled step's effect (and any steps
+    /// after it). Re-enabling re-applies by navigating back forward.
+    /// The initial-state row cannot be toggled.
     private void showHistoryContextMenu(int row, Point point)
     {
         if (_historyList is null || _historyActionLabels.length == 0) return;
@@ -3711,17 +3746,26 @@ final class EditorRoot : VBox
             items ~= ContextMenuItem.check("Enabled", enabled, delegate() {
                 _historyActionEnabled[actionIndex] =
                     !_historyActionEnabled[actionIndex];
-                applyHistoryView();
+                // Act immediately: disabling snaps backward to the nearest
+                // enabled step before it (reverting the step's effect and any
+                // steps after it); re-enabling re-applies by navigating forward.
+                navigateTo(cast(int) actionIndex + 1);
             });
             items ~= ContextMenuItem.separatorItem();
         }
         items ~= ContextMenuItem.command("Enable all steps", delegate() {
             foreach (ref enabled; _historyActionEnabled) enabled = true;
-            applyHistoryView();
+            if (_historyPosition < cast(int) _historyActionLabels.length)
+                navigateTo(cast(int) _historyActionLabels.length);
+            else
+                applyHistoryView();
         });
         items ~= ContextMenuItem.command("Disable all steps", delegate() {
             foreach (ref enabled; _historyActionEnabled) enabled = false;
-            applyHistoryView();
+            if (_historyPosition > 0)
+                navigateTo(0);
+            else
+                applyHistoryView();
         });
         showHistoryContextMenuPopup(_historyList, point, items);
     }
@@ -3748,12 +3792,16 @@ final class EditorRoot : VBox
             setStatus("Nothing to undo.");
             return;
         }
-        auto snapshot = _undo[$ - 1];
-        _undo.length -= 1;
-        _redo ~= captureTimelineSnapshot(snapshot.label);
-        applyTimelineSnapshot(snapshot, "Undo: " ~ snapshot.label ~ ".");
+        const current = cast(int) _undo.length;
+        const target = nearestEnabledPosition(current, -1);
+        foreach (_; 0 .. current - target) stepUndo();
+        _historyPosition = target;
+        const label = target == 0 ? "Initial state" :
+            _historyActionLabels[cast(size_t) target - 1];
         updateHistoryButtons();
-        moveHistoryHighlight(-1);
+        setStatus(format("Undo: %d step%s to \"%s\".",
+            current - target, current - target == 1 ? "" : "s", label));
+        applyHistoryView();
     }
 
     private void redo()
@@ -3764,13 +3812,22 @@ final class EditorRoot : VBox
             setStatus("Nothing to redo.");
             return;
         }
-        auto snapshot = _redo[$ - 1];
-        _redo.length -= 1;
-        if (_undo.length >= 32) _undo = _undo[$ - 31 .. $].dup;
-        _undo ~= captureTimelineSnapshot(snapshot.label);
-        applyTimelineSnapshot(snapshot, "Redo: " ~ snapshot.label ~ ".");
+        const current = cast(int) _undo.length;
+        const target = nearestEnabledPosition(current, +1);
+        if (target > current + cast(int) _redo.length)
+        {
+            updateHistoryButtons();
+            setStatus("Nothing to redo.");
+            return;
+        }
+        foreach (_; 0 .. target - current) stepRedo();
+        _historyPosition = target;
+        const label = target == 0 ? "Initial state" :
+            _historyActionLabels[cast(size_t) target - 1];
         updateHistoryButtons();
-        moveHistoryHighlight(+1);
+        setStatus(format("Redo: %d step%s to \"%s\".",
+            target - current, target - current == 1 ? "" : "s", label));
+        applyHistoryView();
     }
 
     private void applyTimelineSnapshot(TimelineSnapshot snapshot, string statusText)
@@ -3839,7 +3896,7 @@ final class EditorRoot : VBox
         if (_playbackKind == PlaybackKind.none) scheduleTimelineFrame();
         if (_playbackKind == PlaybackKind.sequence && _playbackRunning &&
             _sequenceRefreshDeferred)
-            statusText ~= " Playback continues; the edit is adopted on Pause/Resume.";
+            statusText ~= " Playback continues; the edit will appear as playback refreshes.";
         setStatus(statusText);
     }
 
@@ -3867,13 +3924,14 @@ final class EditorRoot : VBox
         {
             if (_playbackRunning)
             {
-                // Never stop/restart live video or audio because a clip was
-                // moved, resized, split, or otherwise edited. Replacing the
-                // FFmpeg graph here caused the exact interruption reported by
-                // users. Keep the active snapshot alive and adopt the current
-                // model only when playback is paused/resumed or started again.
+                // Timeline edits must be reflected in the running playback.
+                // Rapid edits are coalesced and the live compositor is rebuilt
+                // once the gesture settles, so the change becomes visible
+                // without stopping the transport. The deferred flag blocks a
+                // separate source-audio refresh until this compositor refresh
+                // has adopted the new model.
                 _sequenceRefreshDeferred = true;
-                _sequenceRefreshPending = false;
+                _sequenceRefreshPending = true;
                 _sequenceRefreshDelay = 0.0;
             }
             else
@@ -3891,10 +3949,13 @@ final class EditorRoot : VBox
         if (_playbackKind != PlaybackKind.sequence) return;
         if (_playbackRunning)
         {
-            // Active playback is intentionally immutable. Editing stays
-            // instant and uninterrupted; the current revision is picked up
-            // after Pause/Resume or a new Play command.
-            _sequenceRefreshDeferred = true;
+            // A live edit must be visible in the running playback. Rebuild the
+            // compositor streams at the current position so the change shows
+            // immediately without stopping the transport.
+            if (_playbackModelRevision == _modelRevision) return;
+            _sequenceRefreshDeferred = false;
+            _playbackModelRevision = _modelRevision;
+            refreshPlaybackStreamsForEdit();
             return;
         }
         // A manual Play may already have rebuilt the current revision while
@@ -3905,6 +3966,84 @@ final class EditorRoot : VBox
         stopPlayback(false);
         _timeline.setPlayhead(position, false);
         scheduleTimelineFrame();
+    }
+
+    /** Rebuild the active sequence streams in place so a timeline edit made
+     * during playback becomes visible without stopping the transport. The
+     * clock is re-anchored to the current position and both the video and
+     * audio compositor graphs are restarted from there. Mirrors the proven
+     * loop-restart path in `loopPlaybackRestart`. */
+    private void refreshPlaybackStreamsForEdit()
+    {
+        // An edit during playback may have changed the sequence length (the
+        // moved/resized clip can end later than the pre-edit last item).
+        // Re-derive the transport end from the current model so playback
+        // continues to the new end instead of stopping at the stale pre-edit
+        // boundary captured at Play.
+        const newDuration = _model.sequenceDuration();
+        if (_playbackKind == PlaybackKind.sequence && newDuration > 0.0)
+        {
+            if (_sequencePlaybackLive)
+                _playbackAsset.duration = newDuration;
+            _playbackFullEnd = newDuration;
+            _playbackEnd = newDuration;
+            _playbackStart = 0.0;
+            if (_loopEnabled) applyLoopPlaybackBounds();
+        }
+        _playbackPosition = clampValue(clockPlaybackPosition(),
+            _playbackStart, _playbackEnd);
+        _playbackClockValid = false;
+        _playbackAwaitingFirstFrame = false;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _liveAudioEnd = -1.0;
+        _liveAudioClipId = 0;
+        _seekResumePlayback = false;
+        clearPendingSeekState();
+        _lastTimeLabelPlaybackPosition = -1.0;
+        _lastPreviewClockPaint = -1.0;
+        _preview.setPlaying(false);
+        if (_playbackKind == PlaybackKind.sequence)
+        {
+            _timeline.setPlayhead(_playbackPosition, false);
+            syncPreviewTitleLayers(_playbackPosition);
+        }
+        _scrub.setValue(_playbackPosition, false);
+        updateTimeLabel();
+        try
+        {
+            startPlaybackStreams();
+        }
+        catch (Exception error)
+        {
+            // The edit can leave the playhead with no content to render (e.g.
+            // the moved clip no longer covers the current position, or the
+            // sequence shrank below the playhead), which makes the compositor
+            // reject the range. Never let this crash the transport: stop
+            // cleanly and leave the last visible frame.
+            appLog(format("Live playback refresh failed at %.3f: %s",
+                _playbackPosition, error.msg));
+            _playbackRunning = false;
+            _playbackClockValid = false;
+            _playbackAwaitingFirstFrame = false;
+            _playbackAwaitingAudioClock = false;
+            _preview.setPlaying(false);
+            _videoStream.stop();
+            _audioPlayer.stop();
+            _playbackAudioStarted = false;
+            _previewService.cancel();
+            if (_playbackKind == PlaybackKind.sequence)
+            {
+                _timeline.setPlayhead(_playbackPosition, false);
+                syncPreviewTitleLayers(_playbackPosition);
+            }
+            _scrub.setValue(_playbackPosition, false);
+            updatePlaybackButtons();
+            setStatus("Playback stopped: the edit left nothing to render at this point.");
+            return;
+        }
+        updatePlaybackButtons();
+        setStatus("Playback refreshed to show the edit.");
     }
 
     private bool selectedClip(out TrackAddress track, out int index,
@@ -6336,6 +6475,7 @@ final class EditorRoot : VBox
         }
         _playbackPrewarmDelay = 0.0;
         _playbackPrewarmIdle = 0.0;
+        _playbackPrewarmFailures = 0;
     }
 
     /** Whether a paused playhead position is covered by the active prewarm's
@@ -6594,12 +6734,14 @@ final class EditorRoot : VBox
                 cast(double) 48 / cast(double) max(1, fps) : 0.6;
             _playbackPrewarmActive = true;
             _playbackPrewarmRevision = _modelRevision;
+            _playbackPrewarmFailures = 0;
             appLog(format("Prewarmed %s playback at %.3f",
                 _playbackPrewarmMode, _playbackPrewarmPosition));
         }
         catch (Exception error)
         {
             cancelPlaybackPrewarm();
+            ++_playbackPrewarmFailures;
             appLog(format("Playback prewarm failed: %s", error.toString()));
         }
     }
@@ -6658,6 +6800,14 @@ final class EditorRoot : VBox
         }
         if (_playbackPrewarmDelay < playbackPrewarmDelaySeconds) return;
         _playbackPrewarmDelay = 0.0;
+        if (_playbackPrewarmFailures >= 3)
+        {
+            // After repeated start failures (e.g. an edit left the playhead
+            // with nothing to render) stop retrying every tick so the exception
+            // log and UI are not flooded. Any playhead move or edit resets the
+            // counter (see notePlaybackPrewarmDirty), re-enabling prewarm.
+            return;
+        }
         startPlaybackPrewarm();
     }
 
