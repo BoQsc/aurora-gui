@@ -1,5 +1,41 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Dropdown buttons toggle closed on a second click (2026-08-19)
+
+- User: buttons like History should close their dropdown if the dropdown is
+  already open when the button is clicked a second time (toggle behavior).
+- The framework already provides the exact mechanism:
+  - `PopupOverlay.setConsumeAnchorPress(bool)` (`aurora-d-0.4.5/.../popup.d:207`)
+  - `ContextMenu.setConsumeAnchorPress(Rect globalAnchor)`
+    (`aurora-d-0.4.5/.../contextmenu.d:110`)
+  - `window.d` `dismissOutsidePopups` calls `dismissPopupForPointer` on every
+    mouseDown; when the press lands inside the anchor rect and consume is set,
+    the popup is dismissed AND the press is swallowed so the button's own
+    onClick does NOT immediately reopen it. (Button activation needs a matched
+    mouseDown + mouseUp pair; the consumed down means `_pressed` never sets.)
+- Applied to every dropdown/toggle button in `source/auroracut/editor.d` and
+  `source/auroracut/preview.d`:
+  1. History popup — `_historyPopup.setConsumeAnchorPress(true)` (editor.d ~3564)
+  2. Composition resolution popup — `_resolutionPopup.setConsumeAnchorPress(true)` (1510)
+  3. Compress previous output popup — `_compressOutputPopup.setConsumeAnchorPress(true)` (1632)
+  4. yt-dlp download dialog — `_downloadPopup.setConsumeAnchorPress(true)` (2850)
+  5. Recent Projects menu (`showContextMenuBelow`) — `menu.setConsumeAnchorPress(Rect of button globalOrigin/size)` (2654)
+  6. Inspector font presets menu (`showFontContextMenu`) — same (5663)
+  7. Preview quality menu (`showQualityContextMenu`) — same (8646)
+  8. yt-dlp quality menu inside the download dialog (`showYtDlpQualityMenu`) — same (2725)
+  9. Inline text font menu in `preview.d` (`showInlineFontMenu`) — same (1604)
+- For context menus (anchor keyed by global rect) the anchor rect is built from
+  `button.localToGlobal(Point(0,0))` + `button.bounds().width/height`; the demo
+  (`vendor/.../demos/windows_file_manager.d:5119`) confirms that pattern.
+- Regression tests added to `tests/editor_smoke.d` after the history popup block
+  (~1219): reopen History via the button, click the button again, assert
+  `history-list` and `history-popup` are gone; then reopen Recent Projects,
+  click the button again, assert `findOpenContextMenu(editor)` is null.
+- Verification: rebuilt `aurora-cut.exe` (no errors) and ran the headless
+  editor-smoke (`dmd -i -version=AuroraHeadless ... editor_smoke.d ...` then
+  `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3`) — "Aurora Cut multi-track
+  editor smoke test passed." (exit 0), including the new toggle asserts.
+
 ## Timeline item clickability gap at the bottom (2026-08-19)
 
 - User: after resizing the window there is a "gap" on timeline item

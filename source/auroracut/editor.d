@@ -1507,6 +1507,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(520, 220));
         if (_resolutionPopup !is null)
         {
+            _resolutionPopup.setConsumeAnchorPress(true);
             _resolutionPopup.onDismissed = delegate() { _resolutionPopup = null; };
             widthField.requestFocus();
         }
@@ -1627,9 +1628,12 @@ final class EditorRoot : VBox
             Rect(origin.x, origin.y, owner.bounds().width, owner.bounds().height),
             content, PopupPlacement.below, Size(430, 195));
         if (_compressOutputPopup !is null)
+        {
+            _compressOutputPopup.setConsumeAnchorPress(true);
             _compressOutputPopup.onDismissed = delegate() {
                 _compressOutputPopup = null;
             };
+        }
     }
 
     private bool startCompressLastOutput(string sourcePath, int crf)
@@ -2643,7 +2647,14 @@ final class EditorRoot : VBox
                 });
         }
 
-        showContextMenuBelow(_recentProjectsButton, items);
+        auto menu = showContextMenuBelow(_recentProjectsButton, items);
+        if (menu !is null)
+        {
+            const origin = _recentProjectsButton.localToGlobal(Point(0, 0));
+            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                _recentProjectsButton.bounds().width,
+                _recentProjectsButton.bounds().height));
+        }
     }
 
     private void openImportDialog()
@@ -2710,6 +2721,9 @@ final class EditorRoot : VBox
         const rootOrigin = root.globalOrigin();
         menu.openBelow(Rect(ownerOrigin.x - rootOrigin.x,
             ownerOrigin.y - rootOrigin.y, _ytDlpQualityButton.bounds().width,
+            _ytDlpQualityButton.bounds().height));
+        menu.setConsumeAnchorPress(Rect(ownerOrigin.x, ownerOrigin.y,
+            _ytDlpQualityButton.bounds().width,
             _ytDlpQualityButton.bounds().height));
     }
 
@@ -2833,6 +2847,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(560, 320));
         if (_downloadPopup !is null)
         {
+            _downloadPopup.setConsumeAnchorPress(true);
             _downloadPopup.onDismissed = delegate() {
                 _downloadPopup = null;
                 _ytDlpQualityButton = null;
@@ -3546,6 +3561,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(440, 400));
         if (_historyPopup !is null)
         {
+            _historyPopup.setConsumeAnchorPress(true);
             _historyPopup.onDismissed = delegate() {
                 _historyPopup = null;
                 _historyList = null;
@@ -5640,7 +5656,14 @@ final class EditorRoot : VBox
             current = canonicalTextFontName(clip.fontName);
         foreach (fontName; textFontFamilies)
             items ~= inspectorFontMenuItem(fontName, current);
-        showContextMenu(_fontPresetButton, point, items);
+        auto menu = showContextMenu(_fontPresetButton, point, items);
+        if (menu !is null)
+        {
+            const origin = _fontPresetButton.localToGlobal(Point(0, 0));
+            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                _fontPresetButton.bounds().width,
+                _fontPresetButton.bounds().height));
+        }
     }
 
     private void audioProxyVisibilityChanged(bool value)
@@ -8616,7 +8639,14 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.command("Cancel background render", delegate() {
             cancelBackgroundRender();
         }, "", _exportJob.state().running);
-        showContextMenu(_qualityButton, point, items);
+        auto menu = showContextMenu(_qualityButton, point, items);
+        if (menu !is null)
+        {
+            const origin = _qualityButton.localToGlobal(Point(0, 0));
+            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                _qualityButton.bounds().width,
+                _qualityButton.bounds().height));
+        }
     }
 
     private void addQualityItem(ref ContextMenuItem[] items, int height)

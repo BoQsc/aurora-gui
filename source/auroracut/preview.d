@@ -1597,7 +1597,13 @@ final class PreviewWidget : Widget
         ContextMenuItem[] items;
         foreach (fontName; textFontFamilies)
             items ~= inlineFontMenuItem(fontName);
-        showContextMenu(_inlineFont, globalPoint, items);
+        auto menu = showContextMenu(_inlineFont, globalPoint, items);
+        if (menu !is null)
+        {
+            const origin = _inlineFont.localToGlobal(Point(0, 0));
+            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                _inlineFont.bounds().width, _inlineFont.bounds().height));
+        }
     }
 
     private static Color inlineColor(string value)

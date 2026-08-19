@@ -1216,6 +1216,28 @@ int main(string[] arguments)
     assert(findById(editor, "history-list") is null,
         "Esc did not dismiss the History popup");
 
+    // Toggle behavior: clicking the History button a second time while its
+    // dropdown is open closes the popup instead of reopening it. The button is
+    // the anchor of the popup, so the press must be consumed by dismissal.
+    driver.click(globalCenter(historyButton));
+    assert(driver.paint());
+    assert(findById(editor, "history-list") !is null,
+        "History popup did not reopen before the toggle test");
+    driver.click(globalCenter(historyButton));
+    assert(findById(editor, "history-list") is null,
+        "Clicking the open History button did not close its dropdown");
+    assert(findById(editor, "history-popup") is null,
+        "History popup content remained after the anchor toggle");
+
+    // Toggle behavior for the Recent Projects context-menu dropdown.
+    driver.click(globalCenter(recentProjects));
+    auto recentToggleMenu = findOpenContextMenu(editor);
+    assert(recentToggleMenu !is null,
+        "Recent Projects dropdown did not reopen before the toggle test");
+    driver.click(globalCenter(recentProjects));
+    assert(findOpenContextMenu(editor) is null,
+        "Clicking the open Recent Projects button did not close its dropdown");
+
     // The Export dialog defaults its folder to the app-state Exports folder
     // so rendered output lands in a stable per-user location, and suggests the
     // saved project's name so exports are recognizable and never clobber.
