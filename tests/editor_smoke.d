@@ -398,7 +398,6 @@ int main(string[] arguments)
     auto resolutionButton = requireWidget!Button(editor, "composition-resolution");
     auto saveProject = requireWidget!Button(editor, "save-project");
     auto openProject = requireWidget!Button(editor, "open-project");
-    auto recentProjects = requireWidget!Button(editor, "recent-projects");
     auto downloadMedia = requireWidget!Button(editor, "download-media-url");
     auto undoButton = requireWidget!Button(editor, "undo");
     auto redoButton = requireWidget!Button(editor, "redo");
@@ -417,26 +416,28 @@ int main(string[] arguments)
         editor.compositionHeightForTesting() == 1080 &&
         resolutionButton.text() == "1920×1080"d,
         "MP4 composition/output resolution must default to 1080p");
-    assert(openProject.text() == "Open"d &&
+    // The Open button merges the former Open and Recent Projects controls: it
+    // keeps the folder icon, drops the separate Recent button, and uses the
+    // ▾ affordance because it opens the recent-projects dropdown.
+    assert(openProject.text() == "Open ▾"d &&
         openProject.bounds().x >= saveProject.bounds().right(),
         "Open Project button is not directly to the right of Save");
-    assert(recentProjects.text() == "Recent ▾"d &&
-        recentProjects.bounds().x >= openProject.bounds().right(),
-        "Recent Projects button is not directly to the right of Open");
+    assert(findById(editor, "recent-projects") is null,
+        "Separate Recent Projects button still exists next to Open");
     assert(downloadMedia.text() == "Download"d,
         "Project Media yt-dlp download button was not created");
     assert(undoButton.text() == "Undo"d && redoButton.text() == "Redo"d &&
-        undoButton.bounds().x >= recentProjects.bounds().right() &&
+        undoButton.bounds().x >= openProject.bounds().right() &&
         redoButton.bounds().x >= undoButton.bounds().right(),
         "Global Undo/Redo buttons are not beside the project controls");
     assert(!undoButton.enabled() && !redoButton.enabled(),
         "Global Undo/Redo buttons must start disabled before history exists");
-    driver.click(globalCenter(recentProjects));
+    driver.click(globalCenter(openProject));
     auto recentMenu = findOpenContextMenu(editor);
-    assert(recentMenu !is null, "Recent Projects button did not open a dropdown");
-    assert(recentMenu.menuRect().x == recentProjects.localToGlobal(Point(0, 0)).x &&
-        recentMenu.menuRect().y == recentProjects.localToGlobal(
-            Point(0, recentProjects.bounds().height)).y + 2,
+    assert(recentMenu !is null, "Open Project button did not open a dropdown");
+    assert(recentMenu.menuRect().x == openProject.localToGlobal(Point(0, 0)).x &&
+        recentMenu.menuRect().y == openProject.localToGlobal(
+            Point(0, openProject.bounds().height)).y + 2,
         "Recent Projects dropdown was not anchored immediately below the button");
     assert(menuHasLabel(recentMenu, "No recent projects"d),
         "Empty Recent Projects dropdown did not explain that there is no history");
@@ -444,6 +445,10 @@ int main(string[] arguments)
         "Recent Projects dropdown did not include a browse fallback");
     driver.pressKey(Key.escape);
     driver.click(globalCenter(openProject));
+    auto openBrowseMenu = findOpenContextMenu(editor);
+    assert(openBrowseMenu !is null && menuHasLabel(openBrowseMenu, "Browse project…"d),
+        "Open Project dropdown did not reopen for the browse command");
+    driver.click(menuItemPoint(openBrowseMenu, "Browse project…"d));
     assert(driver.paint(), "Open Project dialog did not paint");
     auto tempAutosaves = requireWidget!Button(editor,
         "open-project-autosaves");
@@ -559,7 +564,7 @@ int main(string[] arguments)
             loadRecentProjects(true)[0] == savedProject,
             "Saving a project did not add it to recent projects");
 
-        driver.click(globalCenter(recentProjects));
+        driver.click(globalCenter(openProject));
         recentMenu = findOpenContextMenu(editor);
         assert(recentMenu !is null,
             "Recent Projects dropdown did not open after saving a project");
@@ -582,7 +587,7 @@ int main(string[] arguments)
         assert(openedRecents.length >= 2 && openedRecents[0] == recentOpenA &&
             editor.projectPathForTesting() == recentOpenB,
             "Recent action test could not create a stale stored order");
-        driver.click(globalCenter(recentProjects));
+        driver.click(globalCenter(openProject));
         recentMenu = findOpenContextMenu(editor);
         assert(recentMenu !is null,
             "Recent Projects dropdown did not open for action binding test");
@@ -600,7 +605,7 @@ int main(string[] arguments)
             "Clicking the first Recent Projects item opened a different project");
 
         rememberRecentProject(buildPath(tempDir(), "missing-recent.auroracut"));
-        driver.click(globalCenter(recentProjects));
+        driver.click(globalCenter(openProject));
         recentMenu = findOpenContextMenu(editor);
         assert(menuHasLabel(recentMenu, "Clear unavailable projects"d),
             "Recent Projects dropdown did not offer cleanup for missing projects");
@@ -617,7 +622,7 @@ int main(string[] arguments)
         clearRecentProjects();
         rememberRecentProject(duplicatePathA);
         rememberRecentProject(duplicatePathB);
-        driver.click(globalCenter(recentProjects));
+        driver.click(globalCenter(openProject));
         recentMenu = findOpenContextMenu(editor);
         assert(menuHasLabel(recentMenu, ("same-name.auroracut (" ~
                 baseName(recentDuplicateB) ~ ") — " ~ recentDuplicateB).to!dstring),
@@ -648,7 +653,7 @@ int main(string[] arguments)
             "Missing recent projects suppressed available older projects");
         assert(availableRecents[0] == availableOverflowProjects[$ - 1],
             "Recent Projects available ordering did not keep the newest real project first");
-        driver.click(globalCenter(recentProjects));
+        driver.click(globalCenter(openProject));
         recentMenu = findOpenContextMenu(editor);
         assert(menuHasLabel(recentMenu, "Clear unavailable projects"d),
             "Recent Projects dropdown lost cleanup while showing available projects");
@@ -1097,8 +1102,10 @@ int main(string[] arguments)
         "History popup did not begin with the Initial state row");
     const setRangeRow = rowIndexContaining(historyList, "Set export range out"d);
     const clearRangeRow = rowIndexContaining(historyList, "Clear export range"d);
+    const importMediaRow = rowIndexContaining(historyList, "Import media"d);
     const placeClipRow = rowIndexContaining(historyList, "Place clip"d);
-    assert(setRangeRow == 1 && clearRangeRow == 2 && placeClipRow == 3,
+    assert(setRangeRow == 1 && clearRangeRow == 2 && importMediaRow == 3 &&
+        placeClipRow == 4,
         "History popup did not list the actions oldest-first with numbers");
     const currentRow = historyList.selectedIndex();
     assert(currentRow == placeClipRow &&
@@ -1106,10 +1113,12 @@ int main(string[] arguments)
         historyList.items()[cast(size_t) currentRow].secondary == "You are here"d,
         "History popup did not highlight the current state");
     assert(historyList.items()[cast(size_t) setRangeRow].secondary ==
-        "Click to undo 2 steps"d &&
+        "Click to undo 3 steps"d &&
         historyList.items()[cast(size_t) clearRangeRow].secondary ==
+            "Click to undo 2 steps"d &&
+        historyList.items()[cast(size_t) importMediaRow].secondary ==
             "Click to undo 1 step"d &&
-        historyList.items()[0].secondary == "Click to undo 3 steps"d,
+        historyList.items()[0].secondary == "Click to undo 4 steps"d,
         "History popup did not describe the exact undo step counts");
     assert(historyHint.text().canFind("Undo: "d) &&
         historyHint.text().canFind("Redo: 0 available"d),
@@ -1125,7 +1134,7 @@ int main(string[] arguments)
         historyList.items()[cast(size_t) clearRangeRow].secondary == "You are here"d,
         "History popup did not highlight the jumped-to state");
     assert(historyList.items()[cast(size_t) placeClipRow].secondary ==
-        "Click to redo 1 step"d,
+        "Click to redo 2 steps"d,
         "History popup did not restyle the future entry as a redo target");
     dstring[] rowsAfterUndo;
     foreach (item; historyList.items()) rowsAfterUndo ~= item.text;
@@ -1133,7 +1142,7 @@ int main(string[] arguments)
         "Clicking a history entry reordered the list");
     assert(redoButton.enabled(),
         "History jump did not move the clip state into the redo stack");
-    assert(historyHint.text().canFind("Redo: 1 available"d),
+    assert(historyHint.text().canFind("Redo: 2 available"d),
         "History popup hint did not update after the undo jump");
     // Clicking the future entry redoes straight back to the placed clip.
     driver.click(mediaRowPoint(historyList, placeClipRow));
@@ -1175,19 +1184,34 @@ int main(string[] arguments)
         historyList.items()[cast(size_t) clearRangeRow].secondary ==
             "Disabled — right-click to enable"d,
         "Disabling a history step did not act immediately");
-    // Undo/Redo still skip the disabled step: Ctrl+Y lands on Place clip,
-    // Ctrl+Z back on Set export range out.
+    // Undo/Redo still skip the disabled step: Ctrl+Y lands on the import step
+    // (no clip), then Place clip on the next redo; Ctrl+Z steps back through
+    // them while always skipping the disabled Clear export range entry.
+    driver.pressKey(Key.y, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(historyList.selectedIndex() == importMediaRow &&
+        historyList.items()[cast(size_t) clearRangeRow].dimmed,
+        "Redo did not skip the disabled history step");
     driver.pressKey(Key.y, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow &&
         historyList.items()[cast(size_t) clearRangeRow].dimmed,
-        "Redo did not skip the disabled history step");
+        "Redo did not restore the clip past the disabled history step");
+    driver.pressKey(Key.z, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(historyList.selectedIndex() == importMediaRow &&
+        editor.modelForTesting().trackValue(v1).clips.length == 0,
+        "Undo did not skip the disabled history step");
     driver.pressKey(Key.z, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
         historyList.selectedIndex() == setRangeRow,
-        "Undo did not skip the disabled history step");
+        "Undo did not return to the export-range step");
+    driver.pressKey(Key.y, cast(uint) KeyModifier.control);
+    assert(driver.paint());
+    assert(historyList.selectedIndex() == importMediaRow,
+        "Redo did not re-enter the import step");
     driver.pressKey(Key.y, cast(uint) KeyModifier.control);
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
@@ -1221,8 +1245,10 @@ int main(string[] arguments)
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 0 &&
         historyList.selectedIndex() == 0 &&
-        historyList.items()[1].dimmed &&
-        historyList.items()[2].dimmed && historyList.items()[3].dimmed,
+        historyList.items()[setRangeRow].dimmed &&
+        historyList.items()[clearRangeRow].dimmed &&
+        historyList.items()[importMediaRow].dimmed &&
+        historyList.items()[placeClipRow].dimmed,
         "Disable all steps did not act immediately");
     driver.rightClick(mediaRowPoint(historyList, setRangeRow));
     historyMenu = findOpenContextMenu(editor);
@@ -1232,8 +1258,10 @@ int main(string[] arguments)
     assert(driver.paint());
     assert(editor.modelForTesting().trackValue(v1).clips.length == 1 &&
         historyList.selectedIndex() == placeClipRow &&
-        !historyList.items()[1].dimmed &&
-        !historyList.items()[2].dimmed && !historyList.items()[3].dimmed,
+        !historyList.items()[setRangeRow].dimmed &&
+        !historyList.items()[clearRangeRow].dimmed &&
+        !historyList.items()[importMediaRow].dimmed &&
+        !historyList.items()[placeClipRow].dimmed,
         "Enable all steps did not restore every history row");
     driver.pressKey(Key.escape);
     assert(findById(editor, "history-list") is null,
@@ -1253,11 +1281,11 @@ int main(string[] arguments)
         "History popup content remained after the anchor toggle");
 
     // Toggle behavior for the Recent Projects context-menu dropdown.
-    driver.click(globalCenter(recentProjects));
+    driver.click(globalCenter(openProject));
     auto recentToggleMenu = findOpenContextMenu(editor);
     assert(recentToggleMenu !is null,
         "Recent Projects dropdown did not reopen before the toggle test");
-    driver.click(globalCenter(recentProjects));
+    driver.click(globalCenter(openProject));
     assert(findOpenContextMenu(editor) is null,
         "Clicking the open Recent Projects button did not close its dropdown");
 
@@ -2602,6 +2630,25 @@ int main(string[] arguments)
             "Delete on a focused media item did not remove it from the project");
         assert(mediaList.items().length == mediaBeforeDelete - 1,
             "Project Media list did not drop the deleted asset");
+
+        // Project media removal must be undoable: Ctrl+Z restores the deleted
+        // asset (and any clips referencing it), Ctrl+Y removes it again.
+        const undoMediaIndex = cast(int) editor.modelForTesting().assets.length;
+        assert(undoMediaIndex == mediaBeforeDelete - 1,
+            "Unexpected asset count before the media undo probe");
+        driver.pressKey(Key.z, cast(uint) KeyModifier.control);
+        assert(editor.modelForTesting().assets.length == mediaBeforeDelete,
+            "Undo did not restore the removed media item");
+        assert(editor.modelForTesting().assets[cast(size_t) undoMediaIndex].path ==
+            unusedMediaPath,
+            "Undo restored the wrong media item");
+        assert(mediaList.items().length == mediaBeforeDelete,
+            "Project Media list did not refresh after undoing the removal");
+        driver.pressKey(Key.y, cast(uint) KeyModifier.control);
+        assert(editor.modelForTesting().assets.length == mediaBeforeDelete - 1,
+            "Redo did not re-remove the media item");
+        assert(mediaList.items().length == mediaBeforeDelete - 1,
+            "Project Media list did not refresh after redoing the removal");
     }
 
     // New Project: the toolbar New button (and Ctrl+N) discard the current

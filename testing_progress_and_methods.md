@@ -1,5 +1,88 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## yt-dlp 403 throttling + retry/backoff + logging (2026-08-19)
+
+- User: "ytdlp failed to start downloading a video, can you check why if there
+  is anything in the logs about error".
+- **Root cause**: YouTube 403-throttles the video-data stream mid-download on
+  this network. The yt-dlp binary (2026.07.04) is the latest release, so
+  updating it does not help. `--simulate` metadata fetch works; the actual
+  `f137`/`136` stream dies after ~15% (~10 MB) with
+  `ERROR: unable to download video data: HTTP Error 403: Forbidden`.
+- **Diagnostic gap**: yt-dlp failures only went to the GUI status bar via
+  `setStatus`; nothing was written to `aurora-cut.log`, so the log file gave no
+  clue. Leftover `.part` file in the Downloads folder was the only trace.
+- **Fixes**:
+  1. `ytdlp.d` `downloadOne`: up to 3 attempts, backoff 2s/4s, **only for
+     transient failures** (`ytDlpTransientFailure`: HTTP 403/429/5xx, timeouts,
+     connection resets). Permanent errors (private/removed video, bad URL) fail
+     fast. yt-dlp resumes leftover `.part` files on retry.
+  2. `editor.d` `drainDownloadedMedia`: both success and failure are logged via
+     `appLog` (failure includes URL + error tail).
+- **How to test retry/backoff** (real network):
+  1. Launch `aurora-cut.exe`, open the yt-dlp download dialog (Download with
+     yt-dlp), paste a YouTube URL (e.g. The Offspring - You're Gonna Go Far,
+     Kid), pick 1080p.
+  2. Expect status-bar "Retrying in 2 s…" / "Retrying in 4 s…" if the first
+     attempt 403s; if a retry succeeds the media is imported.
+  3. Check `aurora-cut.log` for `yt-dlp download failed for '<url>': ...` on
+     total failure, or `yt-dlp download complete: <path>` on success.
+  4. Confirm no `.part` files remain in
+     `%LOCALAPPDATA%\Aurora Cut\Downloads\` after success.
+- Manual real-network retry is still to be confirmed by the user; the live 403
+  reproduction and latest-version check are documented above.
+
+## Open button merge + project media undo/redo (2026-08-19)
+
+- User requests:
+  1. Remove the separate Open button and rename the Recent button to Open, i.e.
+     the Recent dropdown should carry the Open button's name/icon.
+  2. Make undo/redo history include project media actions so an accidental
+     media remove/unlink can be quickly undone/redone.
+- Toolbar merge (editor.d):
+  - Deleted the `Recent ▾` button (id `recent-projects`, field
+    `_recentProjectsButton`).
+  - The `Open` button (id `open-project`, `_openProjectButton`) now shows
+    `Open ▾`, keeps the folder icon, and its onClick opens the recent-projects
+    dropdown (`showRecentProjectsMenu`). "Browse project…" inside that menu
+    opens the classic file dialog (unchanged).
+- Media undo/redo (model.d / editor.d / project.d):
+  - `TimelineSnapshot` gained a `MediaAsset[] assets` field so every history
+    entry carries the full project-media asset array it references.
+  - `MediaAsset.cloneAsset()` and `EditorModel.snapshotAssets()` /
+    `restoreAssets()` deep-copy the array (metadata + proxy paths) so undoing
+    a removal can never alias into the live model.
+  - `captureTimelineSnapshot()` now includes `_model.snapshotAssets()`;
+    `applyTimelineSnapshot()` restores it before the tracks.
+  - `removeMedia()` commits history ("Remove media" / "Remove media and
+    sequence clips") instead of `clearHistory()`. Undo restores the asset and
+    any clips that referenced it.
+  - Media imports (drop/import dialog/yt-dlp/paste-screenshot) commit a single
+    "Import media" undo entry per batch: a "before" snapshot is lazily captured
+    in `drainImportedMedia()` on the first actual asset add and committed once
+    in `finishImportBatchIfIdle()`.
+  - `newProject()`/`openProject()` reset `_importHistoryCaptured` /
+    `_importHistoryBefore` so a stale cross-project snapshot cannot be committed.
+  - project.d: `snapshotToJson`/`snapshotFromJson` serialize/deserialize the
+    snapshot asset array; `assetFromJson()` extracted from `loadProjectFile`.
+    `validHistorySnapshots()` now validates clips against the snapshot's own
+    asset count (falling back to the project asset count for older files).
+- Tests (tests/editor_smoke.d):
+  - Open button assertions: text `Open ▾`, directly right of Save, no
+    `recent-projects` widget, dropdown anchored below it, and "Browse project…"
+    reopens the file dialog.
+  - Media delete undo/redo: delete an unused media item via the Delete key,
+    then Ctrl+Z restores the asset (and list), Ctrl+Y removes it again.
+  - History-popup row indices shifted: the import step is now row 3; the
+    disabled-step skip test walks through Import media and Place clip.
+- project.d unittest: snapshot assets round-trip (path/duration) and stale
+  snapshots referencing removed assets are still dropped.
+- Verification:
+  - `dub test` → 35 modules passed.
+  - Headless `editor-smoke.exe` → "Aurora Cut multi-track editor smoke test
+    passed." (exit 0).
+  - `model_smoke` and `project-test` pass.
+
 ## Delete on media, empty-sequence playhead, In/Out in timeline menu (2026-08-19)
 
 - User reported three timeline/editor issues:

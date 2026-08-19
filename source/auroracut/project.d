@@ -142,9 +142,12 @@ JSONValue trackToJson(const TimelineTrack value)
     ]);
 }
 
-/** Serializable undo/redo snapshot. Each snapshot is a full timeline state. */
+/** Serializable undo/redo snapshot. Each snapshot is a full timeline state
+ * including the project media asset array it references. */
 JSONValue snapshotToJson(const TimelineSnapshot snapshot)
 {
+    JSONValue[] assets;
+    foreach (index, asset; snapshot.assets) assets ~= assetJson(asset, index);
     JSONValue[] video;
     JSONValue[] audio;
     foreach (track; snapshot.video) video ~= trackToJson(track);
@@ -159,6 +162,7 @@ JSONValue snapshotToJson(const TimelineSnapshot snapshot)
         "workIn": jsonNumber(snapshot.workIn, 0.0, "history.workIn"),
         "hasWorkOut": JSONValue(snapshot.hasWorkOut),
         "workOut": jsonNumber(snapshot.workOut, 0.0, "history.workOut"),
+        "assets": JSONValue(assets),
         "video": JSONValue(video),
         "audio": JSONValue(audio)
     ]);
@@ -179,6 +183,10 @@ TimelineSnapshot snapshotFromJson(const JSONValue value)
     snapshot.hasWorkOut = boolValue(value, "hasWorkOut");
     snapshot.workOut = numberValue(value, "workOut");
 
+    auto assets = member(value, "assets");
+    if (assets !is null && assets.type == JSONType.array)
+        foreach (entry; assets.array)
+            snapshot.assets ~= assetFromJson(entry);
     auto video = member(value, "video");
     if (video !is null && video.type == JSONType.array)
         foreach (entry; video.array)
@@ -211,6 +219,29 @@ private JSONValue assetJson(const MediaAsset value, size_t index)
         "playbackProxyFrameRate": jsonNumber(value.playbackProxyFrameRate,
             0.0, path ~ ".playbackProxyFrameRate")
     ]);
+}
+
+private MediaAsset assetFromJson(const JSONValue entry)
+{
+    auto asset = new MediaAsset(stringValue(entry, "path"));
+    asset.name = stringValue(entry, "name", asset.name);
+    asset.duration = numberValue(entry, "duration");
+    asset.hasVideo = boolValue(entry, "hasVideo");
+    asset.hasAudio = boolValue(entry, "hasAudio");
+    asset.videoCodec = stringValue(entry, "videoCodec");
+    asset.width = cast(int) integerValue(entry, "width");
+    asset.height = cast(int) integerValue(entry, "height");
+    asset.frameRate = numberValue(entry, "frameRate");
+    asset.audioChannels = cast(int) integerValue(entry, "audioChannels");
+    asset.sampleRate = cast(int) integerValue(entry, "sampleRate");
+    asset.playbackProxyPath = stringValue(entry, "playbackProxyPath");
+    asset.playbackProxyWidth = cast(int) integerValue(entry,
+        "playbackProxyWidth");
+    asset.playbackProxyHeight = cast(int) integerValue(entry,
+        "playbackProxyHeight");
+    asset.playbackProxyFrameRate = numberValue(entry,
+        "playbackProxyFrameRate");
+    return asset;
 }
 
 void saveProjectFile(string path, EditorModel model, double playhead,
@@ -451,27 +482,7 @@ ProjectData loadProjectFile(string path)
     auto assets = member(root, "assets");
     if (assets !is null && assets.type == JSONType.array)
         foreach (entry; assets.array)
-        {
-            auto asset = new MediaAsset(stringValue(entry, "path"));
-            asset.name = stringValue(entry, "name", asset.name);
-            asset.duration = numberValue(entry, "duration");
-            asset.hasVideo = boolValue(entry, "hasVideo");
-            asset.hasAudio = boolValue(entry, "hasAudio");
-            asset.videoCodec = stringValue(entry, "videoCodec");
-            asset.width = cast(int) integerValue(entry, "width");
-            asset.height = cast(int) integerValue(entry, "height");
-            asset.frameRate = numberValue(entry, "frameRate");
-            asset.audioChannels = cast(int) integerValue(entry, "audioChannels");
-            asset.sampleRate = cast(int) integerValue(entry, "sampleRate");
-            asset.playbackProxyPath = stringValue(entry, "playbackProxyPath");
-            asset.playbackProxyWidth = cast(int) integerValue(entry,
-                "playbackProxyWidth");
-            asset.playbackProxyHeight = cast(int) integerValue(entry,
-                "playbackProxyHeight");
-            asset.playbackProxyFrameRate = numberValue(entry,
-                "playbackProxyFrameRate");
-            result.assets ~= asset;
-        }
+            result.assets ~= assetFromJson(entry);
 
     auto video = member(root, "videoTracks");
     if (video !is null && video.type == JSONType.array)
@@ -483,10 +494,10 @@ ProjectData loadProjectFile(string path)
             result.audioTracks ~= trackFromJson(entry, TrackKind.audio);
 
     // The undo/redo history is written atomically with the assets it
-    // references, so indexes are consistent by construction. A corrupted or
-    // hand-edited file is still sanitized: snapshots whose media clips point
-    // outside the loaded asset array are dropped. Text clips carry no media
-    // reference and stay valid.
+    // references, so indexes are consistent by construction. Snapshots now
+    // carry their own asset array; the loaded project's current asset list is
+    // still used as a fallback to sanitize older project files whose snapshots
+    // predate asset snapshots (they reference the top-level assets).
     const assetCount = result.assets.length;
     auto history = member(root, "history");
     if (history !is null && history.type == JSONType.object)
@@ -505,18 +516,22 @@ ProjectData loadProjectFile(string path)
     return result;
 }
 
-/** Drop snapshots whose media clips reference assets outside the project's
- * asset array. Text clips carry no media reference and stay valid. */
+/** Drop snapshots whose media clips reference assets outside the snapshot's
+ * own asset array, falling back to the project's current asset count for
+ * older snapshots that predate asset tracking. Text clips carry no media
+ * reference and stay valid. */
 private TimelineSnapshot[] validHistorySnapshots(TimelineSnapshot[] snapshots,
-    size_t assetCount)
+    size_t projectAssetCount)
 {
     TimelineSnapshot[] result;
     foreach (snapshot; snapshots)
     {
+        const count = snapshot.assets.length > 0 ? snapshot.assets.length :
+            projectAssetCount;
         bool valid = true;
         foreach (track; snapshot.video)
             foreach (clip; track.clips)
-                if (clip.usesMedia() && clip.assetIndex >= assetCount)
+                if (clip.usesMedia() && clip.assetIndex >= count)
                 {
                     valid = false;
                     break;
@@ -524,7 +539,7 @@ private TimelineSnapshot[] validHistorySnapshots(TimelineSnapshot[] snapshots,
         if (!valid) continue;
         foreach (track; snapshot.audio)
             foreach (clip; track.clips)
-                if (clip.usesMedia() && clip.assetIndex >= assetCount)
+                if (clip.usesMedia() && clip.assetIndex >= count)
                 {
                     valid = false;
                     break;
@@ -560,6 +575,7 @@ unittest
 
     TimelineSnapshot undoSnapshot;
     undoSnapshot.label = "Add clip";
+    undoSnapshot.assets = model.snapshotAssets();
     undoSnapshot.video = model.snapshotTracks(TrackKind.video);
     undoSnapshot.audio = model.snapshotTracks(TrackKind.audio);
     undoSnapshot.playhead = 1.5;
@@ -587,6 +603,10 @@ unittest
         loaded.undo[0].video[0].clips.length == 1 &&
         loaded.undo[0].video[0].clips[0].assetIndex == 0,
         "History snapshot did not preserve the timeline clip");
+    assert(loaded.undo[0].assets.length == 1 &&
+        loaded.undo[0].assets[0].path == "C:\\media\\clip.mp4" &&
+        loaded.undo[0].assets[0].duration == 4.0,
+        "History snapshot did not preserve the media asset array");
     assert(loaded.redo[0].label == "Move clip");
 
     // A snapshot referencing a removed asset must be dropped, not restored.

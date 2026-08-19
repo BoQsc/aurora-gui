@@ -1,6 +1,41 @@
 # Aurora Cut todo / complaints log
 
-## 2026-08-19 — Timeline item clickability gap at the bottom after resize (complaint, fixed)
+## 2026-08-19 - yt-dlp downloads stall/fail with HTTP 403 (complaint, fixed)
+
+- [x] User: "ytdlp failed to start downloading a video, can you check why if
+      there is anything in the logs about error"
+- [x] Diagnosis: `aurora-cut.log` had **no yt-dlp entries** - yt-dlp failures
+      only went to the status bar (`setStatus`), never to `appLog`. Hard
+      evidence in the Downloads folder: a leftover
+      `The Offspring - You're Gonna Go Far, Kid (Official Music Video.f137.mp4.part`
+      (10,364,226 bytes, stalled at 12:20:58, never grew). Reproduced with the
+      app's exact command: yt-dlp downloads to ~15.9% (approx 10 MB) then dies
+      with `ERROR: unable to download video data: HTTP Error 403: Forbidden`.
+      Affects 720p (136+140) and 1080p (137+140) H.264 formats. Metadata
+      fetch works fine; only the video-data stream is throttled. Installed
+      yt-dlp 2026.07.04 IS the latest release (GitHub confirmed), so not an
+      updatable-binary problem. This is the known YouTube 403/throttling issue
+      (docs already noted "YouTube 403s from this network").
+- [x] Fix 1 - retry with backoff (`ytdlp.d`): `downloadOne` now runs up to 3
+      attempts with 2s/4s backoff for **transient** failures only. New
+      `ytDlpTransientFailure(output)` matches HTTP 403/429/5xx, timeouts, and
+      connection resets; permanent failures (bad URL, private/removed video)
+      fail fast. yt-dlp resumes leftover `.part` files on retry, so the partial
+      download carries forward. `runAttempt` closure streamlines the old
+      inline process-handling; marker file now survives the retry loop so the
+      successful attempt's path is readable. Progress reports "Retrying in N s"
+      between attempts.
+- [x] Fix 2 - diagnostic logging (`editor.d` `drainDownloadedMedia`): both
+      yt-dlp success and failure now write to `aurora-cut.log` via `appLog`
+      (failure includes the URL and the tail of the error output), so future
+      failures are visible in the log file, not just the status bar.
+- [x] Verified: `dub test --compiler=dmd --force` -> 35 modules pass; new
+      unittest covers `ytDlpTransientFailure` (403/429/5xx/reset -> transient;
+      private/unavailable/unsupported -> permanent). Live 403 reproduction and
+      latest-version check documented above. Manual real-network retry still
+      to be confirmed by the user.
+
+## 2026-08-19 - Timeline item clickability gap at the bottom after resize (complaint, fixed)
 
 - [x] User: "there is a bug where if you resize window there appears a gab on
       timeline item clickability at the bottom of item, maybe it's for entire

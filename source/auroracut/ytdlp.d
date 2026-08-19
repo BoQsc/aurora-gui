@@ -5,6 +5,7 @@ import auroracut.util : absoluteNormalized, applicationStateDirectory,
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import core.time : dur;
 import std.algorithm.searching : canFind;
 import std.conv : to;
 import std.file : exists, isDir, mkdirRecurse, readText, remove, rename,
@@ -473,6 +474,26 @@ private bool parseDownloadPercent(string line, out double fraction)
     return true;
 }
 
+/**
+ * True when a failed yt-dlp run looks like a transient network/server issue
+ * worth retrying (HTTP 403 throttling, 5xx, connection resets, timeouts).
+ * Permanent failures (bad URL, unavailable video, login required) are left to
+ * fail fast so the user is not kept waiting on a doomed download.
+ */
+private bool ytDlpTransientFailure(string output)
+{
+    if (output.canFind("HTTP Error 403") || output.canFind("HTTP error 403"))
+        return true;
+    if (output.canFind("HTTP Error 429") || output.canFind("HTTP error 429"))
+        return true;
+    if (output.canFind("HTTP Error 5") || output.canFind("HTTP error 5"))
+        return true;
+    if (output.canFind("timed out") || output.canFind("timeout") ||
+        output.canFind("Connection reset") || output.canFind("connection reset"))
+        return true;
+    return false;
+}
+
 /** Keep video downloads within a predictable preview-friendly ceiling. */
 int normalizeYtDlpMaxHeight(int value)
 {
@@ -826,12 +847,28 @@ final class YtDlpDownloadService
         result.url = request.url;
         result.kind = request.kind;
 
-        try
+        const directory = ytDlpImportDirectory();
+
+        void pushProgress(string label, double fraction)
         {
-            const directory = ytDlpImportDirectory();
-            const marker = buildPath(tempDir(),
+            YtDlpDownloadProgress progress;
+            progress.url = request.url;
+            progress.fraction = fraction;
+            progress.label = label;
+            _mutex.lock();
+            if (!_shutdown) _progressQueue ~= progress;
+            _mutex.unlock();
+        }
+
+        // Runs one yt-dlp process for the request while streaming progress.
+        // Returns the raw process output; `status` is the process exit code and
+        // `marker` the per-attempt path-report file to inspect on success. The
+        // marker file survives this call so the successful attempt's path can
+        // be read after the retry loop finishes.
+        string runAttempt(out int status, out string marker)
+        {
+            marker = buildPath(tempDir(),
                 "aurora-cut-ytdlp-" ~ randomUUID().toString() ~ ".txt");
-            scope (exit) removePathQuietly(marker);
             const arguments = downloadArguments(request, directory,
                 ytDlpTitleOutputTemplate(), marker);
             auto pipes = pipeProcess(arguments,
@@ -856,17 +893,6 @@ final class YtDlpDownloadService
             bool downloadPhaseDone;
             try
             {
-                void pushProgress(string label, double fraction)
-                {
-                    YtDlpDownloadProgress progress;
-                    progress.url = request.url;
-                    progress.fraction = fraction;
-                    progress.label = label;
-                    _mutex.lock();
-                    if (!_shutdown) _progressQueue ~= progress;
-                    _mutex.unlock();
-                }
-
                 foreach (rawLine; pipes.stdout.byLine())
                 {
                     const line = cast(string) rawLine;
@@ -903,7 +929,7 @@ final class YtDlpDownloadService
                 if (!_shutdown) result.error = error.msg;
             }
 
-            int status;
+            status = -1;
             try status = wait(pipes.pid);
             catch (Exception error)
             {
@@ -912,16 +938,61 @@ final class YtDlpDownloadService
             }
             _mutex.lock();
             if (_process is pipes.pid) _process = null;
-            const cancelled = _shutdown;
             _mutex.unlock();
-            if (cancelled) return result;
+            return output;
+        }
 
-            if (status != 0)
-                throw new Exception(format("yt-dlp failed with exit code %d.%s%s",
-                    status, output.length > 0 ? "\n" : "",
-                    outputTail(output, 16 * 1024)));
-            if (result.error.length > 0) throw new Exception(result.error);
+        // YouTube periodically throttles mid-download with HTTP 403. yt-dlp
+        // resumes a leftover `.part` on the next run, so a transient failure is
+        // retried a couple of times with backoff (2s, then 4s) instead of
+        // surfacing the error immediately. Permanent failures (bad URL, region
+        // block, removed video) fail fast.
+        enum maxAttempts = 3;
+        string output;
+        string marker;
+        int status = -1;
+        for (int attempt = 0; attempt < maxAttempts; ++attempt)
+        {
+            if (attempt > 0)
+            {
+                _mutex.lock();
+                const shutdown = _shutdown;
+                _mutex.unlock();
+                if (shutdown) return result;
+                const delayMs = 2_000L * (1L << (attempt - 1));
+                pushProgress(format("Retrying in %d s…", delayMs / 1000), 0.0);
+                Thread.sleep(dur!"msecs"(delayMs));
+            }
 
+            result.error = "";
+            output = runAttempt(status, marker);
+            if (status == 0) break;
+            if (!ytDlpTransientFailure(output)) break;
+        }
+        scope (exit) if (marker.length > 0) removePathQuietly(marker);
+
+        _mutex.lock();
+        const cancelled = _shutdown;
+        _mutex.unlock();
+        if (cancelled) return result;
+
+        if (status != 0)
+        {
+            result.path = "";
+            result.error = outputTail(format("yt-dlp failed with exit code %d.%s%s",
+                status, output.length > 0 ? "\n" : "",
+                outputTail(output, 16 * 1024)), 1_000);
+            return result;
+        }
+        if (result.error.length > 0)
+        {
+            result.path = "";
+            result.error = outputTail(result.error, 1_000);
+            return result;
+        }
+
+        try
+        {
             result.path = downloadedPathFromMarker(marker, directory);
             if (result.path.length == 0)
                 throw new Exception("yt-dlp finished but did not produce an Aurora-supported media file.");
@@ -934,13 +1005,7 @@ final class YtDlpDownloadService
                     stem, request.maxHeight,
                     delegate(double fraction, string label)
                     {
-                        YtDlpDownloadProgress progress;
-                        progress.url = request.url;
-                        progress.fraction = fraction;
-                        progress.label = label;
-                        _mutex.lock();
-                        if (!_shutdown) _progressQueue ~= progress;
-                        _mutex.unlock();
+                        pushProgress(label, fraction);
                     });
             }
         }
@@ -1028,4 +1093,21 @@ unittest
     assert(downloadedStem("C:\\Media\\My Video [id].normalized.mp4") ==
         "My Video [id].normalized",
         "downloadedStem must strip only the final extension");
+
+    // Transient failures (throttling, server errors, resets) retry; permanent
+    // failures (bad URL, removed video, region block) fail fast.
+    assert(ytDlpTransientFailure("ERROR: unable to download video data: HTTP Error 403: Forbidden"),
+        "HTTP 403 must be treated as transient for retry");
+    assert(ytDlpTransientFailure("ERROR: HTTP Error 429: Too Many Requests"),
+        "HTTP 429 must be treated as transient for retry");
+    assert(ytDlpTransientFailure("ERROR: HTTP Error 502: Bad Gateway"),
+        "HTTP 5xx must be treated as transient for retry");
+    assert(ytDlpTransientFailure("ERROR: connection reset by peer"),
+        "Connection resets must be treated as transient for retry");
+    assert(!ytDlpTransientFailure("ERROR: [youtube] dQw4w9WgXcQ: Video unavailable"),
+        "Permanent failures must NOT be treated as transient");
+    assert(!ytDlpTransientFailure("ERROR: [youtube] abc123: This video is private"),
+        "Private-video errors must NOT be treated as transient");
+    assert(!ytDlpTransientFailure("ERROR: Unsupported URL"),
+        "Unsupported-URL errors must NOT be treated as transient");
 }

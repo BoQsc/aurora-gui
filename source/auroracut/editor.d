@@ -641,7 +641,6 @@ final class EditorRoot : VBox
     private Button _newProjectButton;
     private Button _saveProjectButton;
     private Button _openProjectButton;
-    private Button _recentProjectsButton;
     private Button _downloadMediaButton;
     private Button _ytDlpQualityButton;
     private Button _undoButton;
@@ -743,6 +742,11 @@ final class EditorRoot : VBox
     private size_t _importIgnoredCount;
     private size_t _importFailedCount;
     private string _importLastError;
+    // Lazily captured "before" snapshot of the first batch that actually adds
+    // assets. Media imports are asynchronous; the undo entry is committed once
+    // when the batch drains, so an accidental import can be undone in one step.
+    private TimelineSnapshot _importHistoryBefore;
+    private bool _importHistoryCaptured;
     private PendingTimelineDrop[] _pendingTimelineDrops;
     private size_t[] _pendingProxyAssetIndices;
     private double _proxyIdleDelay;
@@ -1142,15 +1146,10 @@ final class EditorRoot : VBox
         _saveProjectButton.layoutHints().preferredHeight = 26;
         _saveProjectButton.onClick = delegate() { saveProject(false); };
 
-        _openProjectButton = toolbar.add(new Button("Open", IconKind.folder));
+        _openProjectButton = toolbar.add(new Button("Open ▾", IconKind.folder));
         _openProjectButton.setId("open-project");
         _openProjectButton.layoutHints().preferredHeight = 26;
-        _openProjectButton.onClick = delegate() { openProjectDialog(); };
-
-        _recentProjectsButton = toolbar.add(new Button("Recent ▾", IconKind.clock));
-        _recentProjectsButton.setId("recent-projects");
-        _recentProjectsButton.layoutHints().preferredHeight = 26;
-        _recentProjectsButton.onClick = delegate() {
+        _openProjectButton.onClick = delegate() {
             showRecentProjectsMenu();
         };
         _undoButton = toolbar.add(new Button("Undo"));
@@ -2416,6 +2415,8 @@ final class EditorRoot : VBox
             _pendingProxyAssetIndices.length = 0;
             _proxyIdleDelay = 0.0;
             if (_proxyService !is null) _proxyService.cancel();
+            _importHistoryCaptured = false;
+            _importHistoryBefore = TimelineSnapshot.init;
             auto data = loadProjectFile(path);
             _model.assets = data.assets;
             _model.restoreTimeline(data.videoTracks, data.audioTracks);
@@ -2524,6 +2525,8 @@ final class EditorRoot : VBox
         _pendingPreviewKind = PendingPreviewKind.none;
         _pendingTimelineDrops.length = 0;
         _queuedImportPaths.length = 0;
+        _importHistoryCaptured = false;
+        _importHistoryBefore = TimelineSnapshot.init;
         _importQueuedCount = 0;
         _importImportedCount = 0;
         _importDuplicateCount = 0;
@@ -2640,13 +2643,13 @@ final class EditorRoot : VBox
                 });
         }
 
-        auto menu = showContextMenuBelow(_recentProjectsButton, items);
+        auto menu = showContextMenuBelow(_openProjectButton, items);
         if (menu !is null)
         {
-            const origin = _recentProjectsButton.localToGlobal(Point(0, 0));
+            const origin = _openProjectButton.localToGlobal(Point(0, 0));
             menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
-                _recentProjectsButton.bounds().width,
-                _recentProjectsButton.bounds().height));
+                _openProjectButton.bounds().width,
+                _openProjectButton.bounds().height));
         }
     }
 
@@ -3091,6 +3094,11 @@ final class EditorRoot : VBox
                 }
                 else
                 {
+                    if (!_importHistoryCaptured)
+                    {
+                        _importHistoryCaptured = true;
+                        _importHistoryBefore = captureTimelineSnapshot("Import media");
+                    }
                     lastIndex = cast(int) _model.addAsset(result.asset);
                     ++_importImportedCount;
                     mediaChanged = true;
@@ -3239,10 +3247,15 @@ final class EditorRoot : VBox
             if (result.success())
             {
                 setStatus("yt-dlp download complete: " ~ baseName(result.path));
+                appLog("yt-dlp download complete: " ~ result.path);
                 queueMediaImports([result.path]);
             }
             else
+            {
                 setStatus("yt-dlp download failed: " ~ outputTail(result.error, 700));
+                appLog(format("yt-dlp download failed for '%s': %s",
+                    result.url, outputTail(result.error, 4_000)));
+            }
         }
     }
 
@@ -3278,6 +3291,16 @@ final class EditorRoot : VBox
     {
         if (!_importBatchActive || _importService.busy() ||
             _queuedImportPaths.length > 0) return;
+
+        if (_importHistoryCaptured)
+        {
+            _importHistoryCaptured = false;
+            // The before snapshot was captured before the first asset of this
+            // batch was added; committing it now makes the whole import a
+            // single undoable step.
+            commitHistory(_importHistoryBefore);
+            _importHistoryBefore = TimelineSnapshot.init;
+        }
 
         string summary = format("Import complete: %d imported", _importImportedCount);
         if (_importDuplicateCount > 0)
@@ -3459,6 +3482,7 @@ final class EditorRoot : VBox
     private TimelineSnapshot captureTimelineSnapshot(string label)
     {
         TimelineSnapshot snapshot;
+        snapshot.assets = _model.snapshotAssets();
         snapshot.video = _model.snapshotTracks(TrackKind.video);
         snapshot.audio = _model.snapshotTracks(TrackKind.audio);
         snapshot.selectedTrack = _timeline.selectedTrack();
@@ -3844,6 +3868,7 @@ final class EditorRoot : VBox
 
     private void applyTimelineSnapshot(TimelineSnapshot snapshot, string statusText)
     {
+        _model.restoreAssets(snapshot.assets);
         _model.restoreTimelineSnapshot(snapshot.video, snapshot.audio);
         markTimelineChanged();
         _timeline.modelChanged();
@@ -9378,6 +9403,8 @@ final class EditorRoot : VBox
         if (index >= _model.assets.length) return;
         const name = _model.assets[index].name;
         const uses = _model.assetUseCount(index);
+        auto before = captureTimelineSnapshot(removeClips && uses > 0 ?
+            "Remove media and sequence clips" : "Remove media");
         if (!_model.removeAsset(index, removeClips))
         {
             setStatus(format("%s is used by %d sequence clip%s.", name, uses,
@@ -9385,7 +9412,7 @@ final class EditorRoot : VBox
             return;
         }
 
-        clearHistory();
+        commitHistory(before);
         markTimelineChanged();
         _timeline.modelChanged();
         _timeline.setSelection(TrackAddress(TrackKind.video, 0), -1, false);

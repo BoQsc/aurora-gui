@@ -58,6 +58,28 @@ final class MediaAsset
             (suffix == ".png" || suffix == ".jpg" || suffix == ".jpeg" ||
              suffix == ".webp" || suffix == ".bmp");
     }
+
+    /// Deep copy used by undo/redo snapshots so a history entry owns a
+    /// completely independent asset record (proxy paths and metadata included).
+    MediaAsset cloneAsset() const
+    {
+        auto result = new MediaAsset(path);
+        result.name = name.idup;
+        result.duration = duration;
+        result.hasVideo = hasVideo;
+        result.hasAudio = hasAudio;
+        result.videoCodec = videoCodec.idup;
+        result.width = width;
+        result.height = height;
+        result.frameRate = frameRate;
+        result.audioChannels = audioChannels;
+        result.sampleRate = sampleRate;
+        result.playbackProxyPath = playbackProxyPath.idup;
+        result.playbackProxyWidth = playbackProxyWidth;
+        result.playbackProxyHeight = playbackProxyHeight;
+        result.playbackProxyFrameRate = playbackProxyFrameRate;
+        return result;
+    }
 }
 
 /** Sequence item kind. Text clips are generated composition layers and do not
@@ -291,10 +313,11 @@ struct TimelineTrack
 
 /** A captured editor state used for undo/redo and persisted history. The
  * timeline track arrays are copy-on-write snapshots; media clips reference the
- * owning model's asset array by index, which stays stable because removing an
- * asset clears the history. */
+ * owning model's asset array by index. The asset array itself is deep-copied
+ * into the snapshot so media add/remove actions can be undone and redone. */
 struct TimelineSnapshot
 {
+    MediaAsset[] assets;
     TimelineTrack[] video;
     TimelineTrack[] audio;
     TrackAddress selectedTrack;
@@ -1783,6 +1806,27 @@ final class EditorModel
     TimelineTrack[] snapshotTracks(TrackKind kind)
     {
         return tracks(kind).dup;
+    }
+
+    /// Deep-copy the asset array for an undo/redo snapshot so a later media
+    /// add/remove cannot alias into the saved state.
+    MediaAsset[] snapshotAssets()
+    {
+        MediaAsset[] result;
+        result.reserve(assets.length);
+        foreach (asset; assets)
+            result ~= asset.cloneAsset();
+        return result;
+    }
+
+    /// Restore a snapshot asset array, replacing the current one wholesale.
+    void restoreAssets(MediaAsset[] value)
+    {
+        MediaAsset[] restored;
+        restored.reserve(value.length);
+        foreach (asset; value)
+            restored ~= asset.cloneAsset();
+        assets = restored;
     }
 
     /**
