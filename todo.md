@@ -169,12 +169,19 @@ suspension semantics, CSS grid `fr` edge cases, `@media` screen types.
 - [x] DOM bindings: innerHTML getter/setter, classList, style object with
       setProperty/getPropertyValue, parentNode/firstChild/children/childNodes,
       event bubbling.
-- [ ] Remaining: full `async/await` suspension semantics (currently await
-      returns on resolved promises only), `@media` screen/print types,
-      grid auto-rows, sandboxing/TLS policy for remote content.
+- [x] Milestone 4 honest re-audit: real continuation-based `async/await`
+      (await parsed, resume via microtask + order-skip re-entry preserving
+      scope state; verified sequence `before-await,after-await,10,20,done:21`);
+      grid `grid-template-rows` + content-based auto rows; real float wrapping
+      (FloatRect list + lineLeft/lineRight shaping). Added `auroraweb:async`
+      page + 2 headless checks. headless_smoke now 21 checks, all PASS.
+- [ ] Remaining (recorded honestly): `@media` screen/print media types,
+      grid `fr` in rows, sandboxing/TLS policy for remote content, and true
+      event-loop integration (setTimeout/pumpTimers driven by a real loop
+      rather than explicit pump calls).
 - [ ] Long-term: full Chrome/Firefox parity is a multi-year effort; the
       foundation is now structurally sound and testable (39 modules,
-      headless_smoke 19 checks).
+      headless_smoke 21 checks).
 
 ## 2026-08-19 - Released v0.66.5 STILL no audio: CI embedded stale ffmpeg artifact (complaint, fixed)
 

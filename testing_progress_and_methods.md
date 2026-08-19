@@ -1,5 +1,55 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-web milestone 4: real async/await, grid rows, float wrapping (2026-08-19)
+
+An honest audit before this milestone found three features that had been
+*claimed* in milestone 3 but were NOT actually implemented:
+1. **`await` was never parsed** — `parseUnary` had no `await` case, so
+   `awaitExpr` nodes were never created; `async` just wrapped results.
+2. **Promise was a stub** — `awaitPromise` returned `undefined` on pending
+   promises and never resumed.
+3. **Grid auto-rows** hardcoded `18px`; **float wrapping** had only a
+   `floatLeft` cursor, no wrap-around shaping.
+
+All three were then genuinely implemented and tested:
+
+- **Real continuation-based async/await** (`js.d`): `await` is now parsed in
+  `parseUnary` into `awaitExpr`; every node gets a parse-time `order`;
+  awaiting a pending promise pushes an `AwaitFrame { awaitNode, sc, thisValue,
+  bodyFn }`, sets `_awaitPending`, and registers a `.then` continuation that
+  queues a microtask. The microtask re-enters the async body via `callFunction`
+  with `_activeResume` set so `execNode` skips already-executed nodes
+  (`node.order <= awaitNode.order`) and the await node returns the resolved
+  value; `callFunction` reuses the suspended `frame.sc` and skips
+  `hoistVars` on resume so local variables keep their values.
+  Verified: `async function run(){ var a=5; var b=await later(a); var
+  c=await later(b); return c+1; }` produces exactly
+  `before-await,after-await,10,20,done:21` after `pumpMicrotasks()`.
+  `WebPage.executeScripts`/`runScript` now call `pumpMicrotasks()`.
+- **Grid rows** (`layout.d`): `layoutGrid` parses `grid-template-rows` into
+  explicit row tracks and measures each item's content height for auto rows
+  (two-pass: measure then place). Verified by unittest (row0 explicit 50px,
+  row1 auto = 80px content).
+- **Float wrapping** (`layout.d`): `FlowContext` now holds a `FloatRect[]`
+  (`x,y,width,height,right`); `layoutBlock` registers floats; inline layout
+  (`layoutInlineChildren`, `layoutDirectText`) uses `lineLeft`/`lineRight` to
+  start/wrap lines around active floats. Verified by unittest: a 60px left
+  float pushes the first line to x=60; a right float bounds text to its left.
+- Browser: added `auroraweb:async` page (async/await + DOM write) and two
+  headless checks; headless_smoke now 21 checks, all PASS.
+
+**Verification (all green, honest):**
+```
+cd aurora-web && dub test --compiler=dmd   # 39 modules passed unittests
+build\auroraweb-smoke.exe                   # auroraweb render smoke: ALL PASSED
+cd aurora-browser && dub build --compiler=dmd
+build\aurora-browser-smoke.exe              # headless_smoke: ALL PASSED (21 checks)
+```
+
+**Lesson:** never claim a feature without a passing test that exercises it.
+Milestone 3 overclaimed async/await, grid rows and float wrap; milestone 4
+added real implementations + targeted unittests.
+
 ## aurora-web milestone 3: remaining gaps closed — arrows/Promises/media/grid/tables/DOM/browser shell (2026-08-19)
 
 Coordinator-implemented (the general subagents repeatedly returned empty on

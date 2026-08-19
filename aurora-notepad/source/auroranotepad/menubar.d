@@ -10,16 +10,21 @@ import auroranotepad.notepadsize : NotepadMenuBarHeight,
  */
 final class MenuBarItem : Button
 {
-    this(string label, ContextMenuItem[] items)
+    this(string label, ContextMenuItem[] items, MenuBar ownerBar = null)
     {
         super(label);
         setFlat(true);
         setTextPixelSize(NotepadMenuFontPixelSize);
         applyMenuSizing();
         _items = items;
+        _ownerBar = ownerBar;
+        // Native Windows 10 menu bar items keep the arrow cursor (no hand).
+        setCursor(CursorKind.arrow);
     }
 
     private ContextMenuItem[] _items;
+    private MenuBar _ownerBar;
+    private bool _menuOpen;
 
     override void setText(string value)
     {
@@ -32,7 +37,21 @@ final class MenuBarItem : Button
         if (!enabled() || event.button != MouseButton.left) return false;
         // Native Windows 10 menus open on PRESS, not release. Opening here
         // removes the perceived half-frame delay of firing onClick on mouse-up.
-        showContextMenuBelow(this, _items);
+        // Keep a mild highlight on this item while its dropdown stays open.
+        _menuOpen = true;
+        invalidate();
+        auto popup = showContextMenuBelow(this, _items);
+        if (popup !is null)
+        {
+            // Forward hovers over the menu bar so moving to another item
+            // switches the open dropdown (native Windows behavior).
+            popup.onMouseMoveOutside = delegate(Point localPosition) {
+                if (_ownerBar !is null)
+                    _ownerBar.handleMenuHover(this, popup, localPosition);
+                return true;
+            };
+            popup.onDismissed = delegate() { _menuOpen = false; invalidate(); };
+        }
         return true;
     }
 
@@ -40,6 +59,36 @@ final class MenuBarItem : Button
     {
         if (event.button != MouseButton.left) return false;
         return true;
+    }
+
+    /** Called by the menu bar when another item's dropdown forwards a hover. */
+    void openMenuOnHover()
+    {
+        if (_menuOpen) return;
+        // Reuse the press-open path so the highlight and hover forwarding wire
+        // up exactly as a real click.
+        Event press;
+        press.button = MouseButton.left;
+        onMouseDown(press);
+    }
+
+    bool isMenuOpen() const @safe pure nothrow @nogc { return _menuOpen; }
+
+    bool containsGlobal(Point globalPoint) const @safe pure nothrow @nogc
+    {
+        const origin = globalOrigin();
+        const local = Point(globalPoint.x - origin.x, globalPoint.y - origin.y);
+        return local.x >= 0 && local.y >= 0 &&
+            local.x < bounds().width && local.y < bounds().height;
+    }
+
+    protected override void onMouseEnter()
+    {
+        // With a dropdown open elsewhere, hovering this item switches to its
+        // menu (the popup forwards the move through onMouseMoveOutside).
+        if (_ownerBar !is null && _ownerBar.anyMenuOpen())
+            openMenuOnHover();
+        super.onMouseEnter();
     }
 
     private void applyMenuSizing()
@@ -63,10 +112,15 @@ final class MenuBarItem : Button
     protected override void onPaint(ref Canvas canvas)
     {
         // Flat Win10 menu item: hover/pressed tint fills the whole bar, and
-        // the text is centered horizontally within the item.
+        // the text is centered horizontally within the item. While the item's
+        // dropdown is open it keeps a milder highlight (softer than hover).
         const palette = theme();
-        const background = pressed() ? palette.buttonPressed :
-            (hovered() ? palette.buttonHover : Color.rgba(0, 0, 0, 0));
+        Color background;
+        if (_menuOpen)
+            background = palette.buttonHover.mixed(Color.rgb(255, 255, 255), 0.45);
+        else
+            background = pressed() ? palette.buttonPressed :
+                (hovered() ? palette.buttonHover : Color.rgba(0, 0, 0, 0));
         if (background.a != 0)
             canvas.fillRect(Rect(0, 0, bounds().width, bounds().height), background);
 
@@ -99,10 +153,41 @@ final class MenuBar : Widget
 
     MenuBarItem addItem(string label, ContextMenuItem[] items)
     {
-        auto item = new MenuBarItem(label, items);
+        auto item = new MenuBarItem(label, items, this);
         add(item);
         invalidate();
         return item;
+    }
+
+    /// True when any item's dropdown is currently open.
+    bool anyMenuOpen()
+    {
+        foreach (child; children())
+            if (auto item = cast(MenuBarItem) child)
+                if (item.isMenuOpen()) return true;
+        return false;
+    }
+
+    /**
+     * Forwarded by the open dropdown's onMouseMoveOutside when the pointer is
+     * over this menu bar. Hovering another top-level item switches the open
+     * dropdown to that item, exactly like native Windows menus.
+     */
+    void handleMenuHover(MenuBarItem current, ContextMenu popup, Point localPosition)
+    {
+        // Convert the popup-local position to a root/window position, then
+        // find which top-level item it lies over.
+        const globalPoint = popup.localToGlobal(localPosition);
+        foreach (child; children())
+        {
+            auto item = cast(MenuBarItem) child;
+            if (item is null || item is current) continue;
+            if (item.containsGlobal(globalPoint))
+            {
+                item.openMenuOnHover();
+                return;
+            }
+        }
     }
 
     protected override Size onMeasure(Size available)

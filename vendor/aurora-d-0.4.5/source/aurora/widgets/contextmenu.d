@@ -77,6 +77,13 @@ class ContextMenu : TransientPopup
     private int _separatorHeight = 4;
     private int _padding = 3;
     private int _scrollOffset;
+    /**
+     * Fired on mouse-move while the pointer is OUTSIDE the menu's own rect.
+     * Menu-bar dropdowns use this to switch to another top-level item when the
+     * pointer moves over it (native Windows behavior). The argument is the
+     * menu-local position; the owner may convert to global/root space.
+     */
+    bool delegate(Point localPosition) onMouseMoveOutside;
     this(ContextMenuItem[] items, Widget focusReturn = null)
     {
         super(focusReturn);
@@ -127,8 +134,11 @@ class ContextMenu : TransientPopup
         _hasRequestedAnchor = false;
         _scrollOffset = 0;
         recalculateMenuRect();
-        _hot = firstSelectable();
-        revealHot();
+        // Native Windows menus open with no item highlighted; the highlight
+        // appears only on hover or keyboard navigation (see onMouseMove and
+        // onKeyDown). Pre-selecting the first item would draw a hover band on
+        // the first row immediately after a mouse open.
+        _hot = -1;
         requestFocus();
         invalidate();
     }
@@ -140,8 +150,7 @@ class ContextMenu : TransientPopup
         _requestedOrigin = Point(localAnchor.x, localAnchor.bottom());
         _scrollOffset = 0;
         recalculateMenuRect();
-        _hot = firstSelectable();
-        revealHot();
+        _hot = -1;
         requestFocus();
         invalidate();
     }
@@ -411,6 +420,12 @@ class ContextMenu : TransientPopup
     override bool onMouseMove(ref Event event)
     {
         const index = itemAt(event.position);
+        if (index < 0 && onMouseMoveOutside !is null)
+        {
+            // Pointer left the menu panel (e.g. over the menu bar). Let the
+            // owner switch/highlight top-level items as in native Windows.
+            onMouseMoveOutside(event.position);
+        }
         setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
         return true;
     }
@@ -550,6 +565,11 @@ unittest
     assert(menu !is null);
     assert(menu.menuRect().right() <= 636);
     assert(menu.menuRect().bottom() <= 476);
+    // A mouse-open menu must not pre-highlight an item; Down selects the
+    // first selectable one, then Enter activates it.
+    Event down;
+    down.key = Key.down;
+    assert(menu.onKeyDown(down));
     Event key;
     key.key = Key.enter;
     assert(menu.onKeyDown(key));
