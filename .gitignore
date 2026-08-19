@@ -28,5 +28,6 @@
 *.auroracut
 /embedded/*
 !/embedded/.gitkeep
+/aurora-web/
 *-test-application.exe
 *-test-application.pdb
