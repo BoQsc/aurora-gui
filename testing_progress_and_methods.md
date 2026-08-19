@@ -1,5 +1,60 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-web milestone 3: remaining gaps closed — arrows/Promises/media/grid/tables/DOM/browser shell (2026-08-19)
+
+Coordinator-implemented (the general subagents repeatedly returned empty on
+multi-file tasks; verified diffs before merging and finished the rest by hand).
+
+**JS engine (`js.d`)** — arrow functions (expression + block, lexical `this`
+captured via `__arrow_this` sentinel in the closure scope), template literals
+(backtick token kind `templateLit`, `${expr}` interpolation with nesting),
+Promise + `then`/`catch`/`resolve` + microtask queue + `pumpTimers()` +
+`setTimeout`/`setInterval` (timer list, repeat flag), Set/Map with
+add/has/delete/forEach and size, `async` function flag wraps result in a
+resolved Promise, `await` best-effort. D gotchas hit: `template` is a D
+keyword (enum member renamed `templateLit`); `in` is a keyword (foreach uses
+`;`).
+
+**Layout/CSS** — `@media (min/max-width/height)` with `and`/`,` parsed in
+css.d; `applyMediaRules(rules, vw, vh)` filters before layout; rgba/hsla/rgb/
+hsl colors in paint.d (with hslToRgb); `em`/`rem`/`vh`/`vw` units in
+ComputedStyle.resolveLength; CSS Grid (`grid-template-columns` with `fr`,
+auto-placement, gap) in layoutGrid; basic tables (table/row/cell, `th` bold);
+`box-sizing: border-box` in resolveWidth/resolveHeight; direct-text blocks
+now lay text out inline and measure height (previously a `<p>` with only a
+TextNode child had height 0 → all paragraphs overlapped at y=0).
+
+**DOM bindings (`dombind.d`)** — innerHTML getter/setter (serialize + parse
+fragment via `parseFragment`), classList (add/remove/toggle/contains backed
+by the class attribute), `style` as an object with a `__setHandler` (so
+`el.style.color = "red"` writes the style attribute) + setProperty/
+getPropertyValue, parentNode/firstChild/lastChild/children/childNodes via
+`__get_` getters, event bubbling (leaf → ancestors) with an event object.
+D gotchas: `__setHandler`/`__get_<name>` routing added to setProp/getProp in
+js.d; methods that capture the element must NOT use `unwrap(thisValue)` when
+the receiver is a sub-object (classList/style) — capture the element directly.
+
+**Browser shell (`aurora-browser/appui.d`)** — bookmarks bar (★ toggle +
+per-URL buttons that navigate), vertical page scrolling in WebPageView
+(mouse wheel → scrollY offset, translated+clipped paint, scrollbar thumb),
+`contentHeight()` walks the DOM tree bottom (not root.box.height which is the
+viewport). New `auroraweb:scroll` test page (120 paragraphs).
+
+**Verification (all green):**
+```
+cd aurora-web && dub test --compiler=dmd   # 39 modules passed unittests
+build\auroraweb-smoke.exe                   # auroraweb render smoke: ALL PASSED
+cd aurora-browser && dub build --compiler=dmd
+build\aurora-browser-smoke.exe              # headless_smoke: ALL PASSED (19 checks)
+```
+Browser headless now also verifies: bookmarks toggle/add/remove and
+wheel-scroll + clamp.
+
+**Subagent reliability note:** three different general subagents returned
+empty/no-op on these multi-file layout/dombind tasks. When delegating, verify
+`git diff`/file mtimes before trusting the report, and keep the coordinator as
+the fallback implementer.
+
 ## How to prove the released exes are portable / self-contained (2026-08-19)
 
 User: "how could we test that exe like aurora cut is actually portable and
@@ -235,6 +290,38 @@ build\aurora-browser-headless-smoke.exe   # prints headless_smoke: ALL PASSED
   (that's D's `q"..."` delimited strings). `return q`...`` does not compile.
 - `std.algorithm.startsWith` is required for string prefix checks; D string
   UFCS does not include it by default.
+
+## aurora-web milestone 2: parallelized foundation buildout (2026-08-19)
+
+Coordination milestone. Multiple parallel subagents built the missing engine
+tracks. All verified green:
+
+- **JS engine breadth** (Agent A, `js.d`): real `++/--` (prefix+postfix),
+  compound `+= -= *= /= %= &= |= ^=`, `var` hoisting, `this` binding + `call`/
+  `apply`, String/Array prototype methods, Object.keys/assign/create,
+  JSON.stringify/parse, parseInt radix, Error/TypeError/RangeError/SyntaxError,
+  real `new` + prototype chains + instanceof. DMD quirk: try/catch inside the
+  same `switch` as a `throw` never catches — moved try-body into a helper.
+- **Layout depth** (coordinator): margin collapsing, percentage lengths,
+  min/max-width/height, absolute positioning, flexbox rows, per-side borders,
+  real inline text positions on TextNode.
+- **Networking** (Agent C, `net.d`): `Url.parse`, `httpFetch` WinINet client
+  with redirects, https, lower-cased headers. `pragma(lib,"wininet")` required
+  in net.d (`-i` doesn't propagate main-module pragma); `HttpSendRequestW`
+  `dwHeadersLength` is TCHAR count not bytes. `WebPage.navigate(url)` +
+  `fetchText`/`fetchBytes`; JS `fetch().then(cb)` shim via dombind.
+- **Browser shell** (Agent D, `aurora-browser/`): tabs (Ctrl+T/W), per-tab
+  history + Back/Forward (Alt+Left/Right), address bar, Reload, status bar,
+  window title = page title, `--screenshot` mode, headless test (12 checks).
+  Fixes: `WebPage.resize(int,int)`; `parseFor` consumed `;` after init.
+
+Verification (all green): `dub test` (aurora-web) = 38 modules; smoke =
+ALL PASSED; browser links; browser headless_smoke = ALL PASSED (12 checks);
+live `httpFetch` works (example.com 404, iana 200 after redirect).
+
+**Layout agent lesson:** two general subagents returned empty for the layout
+track (nothing written); the coordinator implemented it directly. Instruct
+agents to write a marker file and verify their own work.
 
 ## aurora-web first milestone: own HTML/CSS/layout/paint + from-scratch JS engine (2026-08-19)
 

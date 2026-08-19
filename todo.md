@@ -1,5 +1,19 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - aurora-notepad: toolbar dropdowns open instantly (fixed)
+
+User: "check why toolbar dropdowns are not instantly opening and takes some
+time".
+
+Root cause: `MenuBarItem` opened the context menu from `Button.onClick`, which
+fires on MOUSE-UP (release). Native Windows 10 menus open on MOUSE-DOWN
+(press), so the dropdown appeared one click-phase later and felt delayed.
+
+Fix: `auroranotepad/menubar.d` `MenuBarItem` now opens the dropdown in
+`onMouseDown` (press) and consumes the release. Verified with a headless probe:
+the popup exists immediately after mouse-down, switching menus keeps a single
+popup, and clicking outside dismisses it. Headless smoke test still passes.
+
 ## 2026-08-19 - Prove the released exes are portable / self-contained (question, answered)
 
 - [x] User: "how could we test that exe like aurora cut is actually portable
@@ -113,10 +127,12 @@ NOTE: `--build=portable-release` fails on this machine for ALL packages
 (aurora-notepad too) because it needs MSVC `libcmt.lib` (`-mscrtlib=libcmt`)
 and only DMD's mingw toolchain is installed. Not a browser-specific issue.
 
-Known gaps: real HTTP/HTTPS fetch, `<img>` loading, bookmark bar, per-tab
-close buttons, scrollable page content, more JS/CSS breadth.
+Known gaps (milestone 3 closed): real HTTP/HTTPS fetch now exists (net.d),
+`<img>` loading wired, bookmark bar + per-tab close + scrollable pages added
+to the shell. Remaining: HTTPS/TLS policy hardening, JS `async/await` full
+suspension semantics, CSS grid `fr` edge cases, `@media` screen types.
 
-## 2026-08-19 - aurora-web: own browser core first milestone (feature, in progress)
+## 2026-08-19 - aurora-web milestone 3: remaining gaps closed (feature, done)
 
 - [x] User: wants a cross-platform standards browser, fully controllable,
       <50MB, no dependence on each OS's engine, no bundled Chromium/WebKit.
@@ -126,22 +142,39 @@ close buttons, scrollable page content, more JS/CSS breadth.
 - [x] Created `aurora-web/` DUB library: HTML parser, CSS parser+cascade,
       block/inline layout, paint to Aurora Canvas, from-scratch JS interpreter
       in D, DOM bindings (`document`, query APIs, events, mutation).
-- [x] `dub build` and `dub test` (35 modules) pass; headless render smoke
-      (`tests/auroraweb_render_smoke.d`) passes end-to-end
-      (HTML->CSS->layout->paint->pixels + JS + DOM binding).
-- [ ] Extract inline `<style>`/`<script>` from HTML automatically in
-      `WebPage.setHtml` (currently done manually in the smoke test).
-- [ ] Networking: HTTP/HTTPS fetch, redirects, cookies, DNS (WinINet first).
-- [ ] `<img>` loading: fetch bytes -> decode PNG (Aurora has PNG decoder) ->
-      set `Element.image`.
-- [ ] Layout correctness: flexbox, absolute positioning, min/max-width,
-      percentage widths, real float wrapping, margin collapsing, tables.
-- [ ] JS engine breadth: prototypes/new semantics, string/array methods,
-      exceptions with Error objects, closures already work; add `this`
-      semantics for plain calls, `var` hoisting, `++`/`+=` real semantics,
-      `===` for objects, JSON.
-- [ ] Browser shell app (`aurora-browser/`): tabs, address bar, bookmarks,
-      history on top of `aurora-web`.
+- [x] `dub build` and `dub test` pass; headless render smoke
+      (`tests/auroraweb_render_smoke.d`) passes end-to-end.
+- [x] Auto-extract `<style>`/`<script>` from HTML in `WebPage.setHtml`;
+      `executeScripts()` runs inline JS in the page runtime (parseInto/
+      runProgram).
+- [x] Networking: `auroraweb.net` WinINet HTTP/HTTPS with redirects;
+      `WebPage.navigate(url)`, `fetchText`/`fetchBytes`, JS `fetch().then(cb)`
+      shim; image loader wired (PNG decode via Aurora).
+- [x] Layout depth: margin collapsing, percentage lengths, min/max-width/height,
+      absolute positioning, flexbox rows (flex-grow/justify/align/gap),
+      per-side borders, real inline text positions.
+- [x] JS breadth: `++/--`, compound ops, var hoisting, `this` + call/apply,
+      String/Array prototype methods, Object helpers, JSON, Error types,
+      real `new`/prototype/instanceof.
+- [x] Browser shell `aurora-browser/`: tabs (Ctrl+T/W), back/forward + history,
+      address bar, reload, status bar, window title = page title, `--screenshot`
+      mode; headless smoke (19 checks) passes.
+- [x] Bookmark bar (★ toggle + per-URL buttons) / page scrolling (wheel +
+      clamped) / per-tab close (Ctrl+W) in the shell.
+- [x] Layout: tables, `box-sizing:border-box`, CSS Grid (`grid-template-columns`
+      with `fr`), rgba/hsl colors, `em`/`rem`/`vh`/`vw` units, `@media`
+      queries, direct-text block height measurement.
+- [x] JS: template literals, arrow functions, Promise + then/catch/resolve,
+      setTimeout/setInterval + pumpTimers, Set/Map, `async` flag.
+- [x] DOM bindings: innerHTML getter/setter, classList, style object with
+      setProperty/getPropertyValue, parentNode/firstChild/children/childNodes,
+      event bubbling.
+- [ ] Remaining: full `async/await` suspension semantics (currently await
+      returns on resolved promises only), `@media` screen/print types,
+      grid auto-rows, sandboxing/TLS policy for remote content.
+- [ ] Long-term: full Chrome/Firefox parity is a multi-year effort; the
+      foundation is now structurally sound and testable (39 modules,
+      headless_smoke 19 checks).
 
 ## 2026-08-19 - Released v0.66.5 STILL no audio: CI embedded stale ffmpeg artifact (complaint, fixed)
 

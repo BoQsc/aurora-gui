@@ -665,11 +665,14 @@ class TitleBar : Widget
         const color = control == TitleBarControl.close && isHot ?
             Color.rgb(255, 255, 255) : (_active ? palette.text : palette.textMuted);
         const cx = rect.x + rect.width / 2;
-        const cy = rect.y + rect.height / 2;
+        // Round half-up so odd-height bars keep the glyphs truly centered
+        // (integer division would bias them ~0.5 px toward the top).
+        const cy = rect.y + rect.height / 2 + (rect.height & 1);
         switch (control)
         {
             case TitleBarControl.minimize:
-                canvas.fillRect(Rect(cx - 6, cy + 3, 12, 2), color);
+                // Centered vertically with the other caption glyphs.
+                canvas.fillRect(Rect(cx - 6, cy - 1, 12, 2), color);
                 break;
             case TitleBarControl.maximize:
                 if (_maximized)

@@ -16,13 +16,30 @@ final class MenuBarItem : Button
         setFlat(true);
         setTextPixelSize(NotepadMenuFontPixelSize);
         applyMenuSizing();
-        onClick = delegate() { showContextMenuBelow(this, items); };
+        _items = items;
     }
+
+    private ContextMenuItem[] _items;
 
     override void setText(string value)
     {
         super.setText(value);
         applyMenuSizing();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (!enabled() || event.button != MouseButton.left) return false;
+        // Native Windows 10 menus open on PRESS, not release. Opening here
+        // removes the perceived half-frame delay of firing onClick on mouse-up.
+        showContextMenuBelow(this, _items);
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        return true;
     }
 
     private void applyMenuSizing()
