@@ -1,5 +1,59 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Delete on media, empty-sequence playhead, In/Out in timeline menu (2026-08-19)
+
+- User reported three timeline/editor issues:
+  1. Delete on a selected Project Media item said "Select a sequence clip to
+     delete".
+  2. A new project with an empty sequence could not move the playhead on the
+     timeline ruler.
+  3. In/Out buttons should move into the timeline context menu.
+- Root causes:
+  1. `deleteSelected()` (editor.d) only handled timeline clips/transitions. When
+     the media list owned keyboard focus, Delete still hit `_model.removeClip`
+     and failed.
+  2. `TimelineWidget.setPlayhead` clamped the new value to
+     `[0, sequenceDuration()]`; on an empty sequence `sequenceDuration() == 0`
+     so every scrub pinned the playhead to 0.
+  3. Dedicated `In×`/`Out×` clear buttons sat in the sequence header (the
+     "move in and out buttons" ask) while the actual Set In/Out commands lived
+     only in the Export context menu.
+- Fixes:
+  1. `deleteSelected()` now checks `_mediaList.focused()` first; when the media
+     list is focused and an item is selected, it calls `removeMedia(index,
+     false)` (which refuses if the asset is used by sequence clips, with a clear
+     status message). Focus is the reliable discriminator because clicking a
+     media item calls `requestFocus()` on the list and clicking a timeline clip
+     focuses the timeline.
+  2. `setPlayhead` only clamps to the sequence maximum when the duration is
+     positive; on an empty sequence the raw value is accepted so the playhead
+     can scrub the ruler freely. (A positive duration still clamps normally.)
+  3. Removed the `In×`/`Out×` header buttons and added "Set export In at
+     playhead" (I), "Set export Out at playhead" (O), and "Clear export
+     In/Out" (Shift+I/O) to the timeline context menu in
+     `showTimelineContextMenu`. Removed the now-dead `clearWorkIn`/`clearWorkOut`
+     helpers.
+- Tests added to `tests/editor_smoke.d`:
+  - Empty-sequence ruler click moves the playhead beyond 0 (after the initial
+    layout assertions, before any media is imported).
+  - Timeline context menu exposes Set export In/Out and Clear export In/Out
+    (extended the existing clip context menu block).
+  - The sequence header no longer has dedicated In/Out clear buttons
+    (`timeline-in-clear` / `timeline-out-clear` ids absent).
+  - Delete on a focused unused media item removes it from the project (after
+    the persisted-history block). Added `syncMediaListForTesting()` to editor.d
+    so the test can add an asset directly and refresh the bin.
+- Verification:
+  - `dub build` clean.
+  - Headless `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3` → "Aurora Cut
+    multi-track editor smoke test passed." (exit 0).
+  - `model_smoke` and `layout_smoke` pass.
+- Command for editor-smoke on Windows (same as before):
+  `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
+  tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib`
+  then run the exe with the three fixture media files.
+
 ## Dropdown buttons toggle closed on a second click (2026-08-19)
 
 - User: buttons like History should close their dropdown if the dropdown is

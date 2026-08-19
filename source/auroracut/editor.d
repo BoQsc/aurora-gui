@@ -996,6 +996,7 @@ final class EditorRoot : VBox
 
     // Small public inspection surface used by deterministic smoke tests.
     EditorModel modelForTesting() { return _model; }
+    void syncMediaListForTesting() { syncMediaList(); }
     bool playbackRunningForTesting() const { return _playbackRunning; }
     bool playbackAwaitingFirstFrameForTesting() const { return _playbackAwaitingFirstFrame; }
     bool sequencePlaybackForTesting() const
@@ -2226,14 +2227,6 @@ final class EditorRoot : VBox
                 "Timeline snapping disabled.");
         };
         updateSnapButton();
-        auto clearIn = header.add(new Button("In×"));
-        clearIn.layoutHints().minWidth = 44;
-        clearIn.layoutHints().preferredWidth = 44;
-        clearIn.onClick = delegate() { clearWorkIn(); };
-        auto clearOut = header.add(new Button("Out×"));
-        clearOut.layoutHints().minWidth = 52;
-        clearOut.layoutHints().preferredWidth = 52;
-        clearOut.onClick = delegate() { clearWorkOut(); };
         auto zoomOut = header.add(new Button("−"));
         zoomOut.layoutHints().minWidth = 34;
         zoomOut.layoutHints().preferredWidth = 34;
@@ -4080,6 +4073,18 @@ final class EditorRoot : VBox
     {
         const track = _timeline.selectedTrack();
         const index = _timeline.selectedIndex();
+
+        // Delete on a focused Project Media item removes that media from the
+        // project instead of reporting a missing timeline selection. Focus is
+        // the authoritative signal that the user is operating on the media bin.
+        const mediaFocused = _mediaList !is null && _mediaList.focused();
+        const mediaIndex = selectedMediaIndex();
+        if (mediaFocused && mediaIndex >= 0)
+        {
+            removeMedia(cast(size_t) mediaIndex, false);
+            return;
+        }
+
         if (_timeline.selectedFadeInTransition() ||
             _timeline.selectedFadeOutTransition())
         {
@@ -8603,22 +8608,6 @@ final class EditorRoot : VBox
         }
     }
 
-    private void clearWorkIn()
-    {
-        if (!_hasWorkIn) return;
-        _hasWorkIn = false;
-        syncTimelineWorkArea();
-        setStatus("Export In point cleared.");
-    }
-
-    private void clearWorkOut()
-    {
-        if (!_hasWorkOut) return;
-        _hasWorkOut = false;
-        syncTimelineWorkArea();
-        setStatus("Export Out point cleared.");
-    }
-
     private void showQualityContextMenu(Point point)
     {
         ContextMenuItem[] items;
@@ -9121,6 +9110,16 @@ final class EditorRoot : VBox
         items ~= ContextMenuItem.command("Zoom sequence to fit", delegate() {
             _timeline.zoomToFit();
         });
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Set export In at playhead", delegate() {
+            setWorkIn(_timeline.playhead());
+        }, "I");
+        items ~= ContextMenuItem.command("Set export Out at playhead", delegate() {
+            setWorkOut(_timeline.playhead());
+        }, "O");
+        items ~= ContextMenuItem.command("Clear export In/Out", delegate() {
+            clearWorkRange();
+        }, "Shift+I/O", _hasWorkIn || _hasWorkOut);
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Undo", delegate() { undo(); }, "Ctrl+Z",
             _undo.length > 0);

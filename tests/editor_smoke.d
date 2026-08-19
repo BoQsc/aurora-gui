@@ -4,8 +4,8 @@ import aurora;
 import auroracut.clipboardimage : setClipboardImageProviderForTesting,
     writeDibAsBmpFile;
 import auroracut.editor : EditorRoot, InspectorValueField;
-import auroracut.model : ClipKind, EditorModel, EffectProperty, TimelineClip,
-    TextAlignment, TrackAddress, TrackKind;
+import auroracut.model : ClipKind, EditorModel, EffectProperty, MediaAsset,
+    TimelineClip, TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
 import auroracut.project : loadProjectFile;
 import auroracut.recentprojects : clearRecentProjects, loadRecentProjects,
@@ -457,6 +457,29 @@ int main(string[] arguments)
         "Export output button must stay disabled until an export completes");
     assert(!compressOutput.enabled() && !editor.compressOutputEnabledForTesting(),
         "Compress previous output button must stay disabled until an MP4 export exists");
+
+    // A fresh empty sequence must still allow moving the playhead on the
+    // timeline ruler. Previously the playhead was clamped to the sequence
+    // duration (0), so scrubbing a new project before any media was placed
+    // silently pinned it at zero.
+    {
+        assert(editor.modelForTesting().sequenceDuration() < 0.000_5,
+            "Empty-sequence playhead test requires a fresh model");
+        const origin = timeline.localToGlobal(Point(0, 0));
+        const rulerY = origin.y + 12;
+        const clickX1 = origin.x + timeline.timeOriginXForTesting() +
+            cast(int) (0.30 * timeline.pixelsPerSecond());
+        driver.click(Point(clickX1, rulerY));
+        assert(timeline.playhead() > 0.10,
+            "Clicking the empty-sequence ruler did not move the playhead");
+        const clickX2 = origin.x + timeline.timeOriginXForTesting() +
+            cast(int) (0.60 * timeline.pixelsPerSecond());
+        driver.click(Point(clickX2, rulerY));
+        assert(timeline.playhead() > 0.25,
+            "Second empty-sequence ruler click did not move the playhead further");
+        timeline.setPlayhead(0.0, false);
+    }
+
     driver.click(globalCenter(resolutionButton));
     assert(driver.paint(), "Composition resolution popup did not paint");
     auto resolutionWidth = requireWidget!TextField(editor,
@@ -1648,6 +1671,11 @@ int main(string[] arguments)
     assert(menuHasLabel(timelineMenu, "Set sequence resolution to 160×90"d),
         "Overlay clip context menu is missing the sequence-resolution command");
     assert(menuHasLabel(timelineMenu, "Reset transform"d));
+    assert(menuHasLabel(timelineMenu, "Set export In at playhead"d) &&
+        menuHasLabel(timelineMenu, "Set export Out at playhead"d),
+        "Timeline context menu is missing the export In/Out commands");
+    assert(menuHasLabel(timelineMenu, "Clear export In/Out"d),
+        "Timeline context menu is missing the Clear export range command");
     assert(!menuHasLabel(timelineMenu, "Move to V1"d) &&
         !menuHasLabel(timelineMenu, "Move to V2"d),
         "Per-lane Move to V* commands still clutter the timeline context menu");
@@ -2138,6 +2166,9 @@ int main(string[] arguments)
     {
         auto snapButton = requireWidget!Button(editor, "timeline-snap");
         assert(snapButton !is null, "Snap button is missing from the sequence header");
+        assert(findById(editor, "timeline-in-clear") is null &&
+            findById(editor, "timeline-out-clear") is null,
+            "Dedicated In/Out clear buttons still clutter the sequence header");
         const accentArgb = Color.fromHex(0x4f8cff).argb();
         // Snap a background pixel just above the vertically-centered text.
         auto snapPixel = delegate() {
@@ -2548,6 +2579,29 @@ int main(string[] arguments)
             "Restored history lost the committed timeline actions");
         assert(requireWidget!Button(editor, "undo").enabled(),
             "Restored history did not enable the Undo button");
+    }
+
+    // Delete on a focused Project Media item must remove that media from the
+    // project instead of reporting "Select a sequence clip to delete". The
+    // media list owns keyboard focus after the click, so Delete targets the
+    // bin rather than the (empty) timeline selection.
+    {
+        const unusedMediaPath = buildPath(tempDir(), "aurora-cut-unused-delete.mp4");
+        auto unusedAsset = new MediaAsset(unusedMediaPath);
+        unusedAsset.duration = 1.0;
+        unusedAsset.hasVideo = true;
+        unusedAsset.hasAudio = false;
+        const unusedIndex = cast(int) model.addAsset(unusedAsset);
+        editor.syncMediaListForTesting();
+        const mediaBeforeDelete = editor.modelForTesting().assets.length;
+        assert(mediaBeforeDelete >= 4,
+            "Media delete test requires the extra unused asset");
+        driver.click(mediaRowPoint(mediaList, unusedIndex));
+        driver.pressKey(Key.deleteKey);
+        assert(editor.modelForTesting().assets.length == mediaBeforeDelete - 1,
+            "Delete on a focused media item did not remove it from the project");
+        assert(mediaList.items().length == mediaBeforeDelete - 1,
+            "Project Media list did not drop the deleted asset");
     }
 
     // New Project: the toolbar New button (and Ctrl+N) discard the current

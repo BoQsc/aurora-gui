@@ -452,8 +452,12 @@ final class TimelineWidget : Widget
 
     void setPlayhead(double value, bool notify = true)
     {
+        // The playhead must remain movable on a fresh empty sequence so the
+        // user can scrub the ruler before any media is placed. Clamping to the
+        // sequence duration would pin the playhead to 0 forever on an empty
+        // timeline.
         const maximum = _model.sequenceDuration();
-        const next = clampValue(value, 0.0, maximum > 0.0 ? maximum : 0.0);
+        const next = value < 0.0 ? 0.0 : (maximum > 0.0 ? clampValue(value, 0.0, maximum) : value);
         if (fabs(next - _playhead) < 0.000_000_5) return;
         _playhead = next;
         const previousScroll = _scrollSeconds;
