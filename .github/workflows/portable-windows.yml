@@ -45,13 +45,43 @@ jobs:
       - name: Enforce single-source version policy
         run: python -X utf8 scripts/version.py check
 
-      - name: Download minimal ffmpeg artifact
+      - name: Ensure minimal ffmpeg is built for this commit, then download it
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run_id="$(gh run list --workflow minimal-ffmpeg.yml --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId')"
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "commit=$SHA"
+          # Find a successful minimal-ffmpeg run built from exactly this commit.
+          run_id="$(gh run list --workflow minimal-ffmpeg.yml --commit "$SHA" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+          if [ -z "$run_id" ]; then
+            # No successful build exists for this commit yet. If one is already
+            # running (e.g. the auto paths-trigger from the build-script change),
+            # wait for it; otherwise dispatch a fresh one. This prevents the
+            # portable build from silently embedding a stale ffmpeg artifact.
+            in_progress="$(gh run list --workflow minimal-ffmpeg.yml --commit "$SHA" \
+              --status in_progress --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+            if [ -z "$in_progress" ]; then
+              echo "dispatching minimal-ffmpeg build for $SHA"
+              gh workflow run minimal-ffmpeg.yml --repo "${{ github.repository }}" \
+                --ref "${{ github.ref_name }}"
+            else
+              echo "reusing in-progress minimal-ffmpeg run $in_progress for $SHA"
+            fi
+            for i in $(seq 1 90); do
+              sleep 20
+              run_id="$(gh run list --workflow minimal-ffmpeg.yml --commit "$SHA" \
+                --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+              if [ -n "$run_id" ]; then break; fi
+              echo "waiting for minimal-ffmpeg run (step $i/90)"
+            done
+          fi
+          if [ -z "$run_id" ]; then
+            echo "::error::minimal-ffmpeg build for commit $SHA did not complete in time"
+            exit 1
+          fi
           echo "using minimal-ffmpeg run $run_id"
           gh run download "$run_id" --repo "${{ github.repository }}" \
             --name ffmpeg-minimal-win64 --dir "$RUNNER_TEMP/ffmpeg"

@@ -1,5 +1,52 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - aurora-web: own browser core first milestone (feature, in progress)
+
+- [x] User: wants a cross-platform standards browser, fully controllable,
+      <50MB, no dependence on each OS's engine, no bundled Chromium/WebKit.
+- [x] Decision: build our own minimal engine on Aurora-D (accepting a defined
+      web subset). Confirmed the three constraints can't all be met with a
+      bundled engine; user chose "own minimal engine".
+- [x] Created `aurora-web/` DUB library: HTML parser, CSS parser+cascade,
+      block/inline layout, paint to Aurora Canvas, from-scratch JS interpreter
+      in D, DOM bindings (`document`, query APIs, events, mutation).
+- [x] `dub build` and `dub test` (35 modules) pass; headless render smoke
+      (`tests/auroraweb_render_smoke.d`) passes end-to-end
+      (HTML->CSS->layout->paint->pixels + JS + DOM binding).
+- [ ] Extract inline `<style>`/`<script>` from HTML automatically in
+      `WebPage.setHtml` (currently done manually in the smoke test).
+- [ ] Networking: HTTP/HTTPS fetch, redirects, cookies, DNS (WinINet first).
+- [ ] `<img>` loading: fetch bytes -> decode PNG (Aurora has PNG decoder) ->
+      set `Element.image`.
+- [ ] Layout correctness: flexbox, absolute positioning, min/max-width,
+      percentage widths, real float wrapping, margin collapsing, tables.
+- [ ] JS engine breadth: prototypes/new semantics, string/array methods,
+      exceptions with Error objects, closures already work; add `this`
+      semantics for plain calls, `var` hoisting, `++`/`+=` real semantics,
+      `===` for objects, JSON.
+- [ ] Browser shell app (`aurora-browser/`): tabs, address bar, bookmarks,
+      history on top of `aurora-web`.
+
+## 2026-08-19 - Released v0.66.5 STILL no audio: CI embedded stale ffmpeg artifact (complaint, fixed)
+
+- [x] User: "Absolutely no improvement in the release."
+- [x] Root cause: the portable-windows workflow downloads the minimal ffmpeg
+      artifact with `gh run list --status success --limit 1` (latest
+      successful run, ANY commit). The minimal-ffmpeg rebuild for the fixed
+      commit ran in parallel and took 8 min while the portable build finished
+      in 2 min, so the single-exe embedded the OLD artifact (still missing
+      the s16le muxer). Verified by extracting the embedded ffmpeg from the
+      published v0.66.5 exe: config still showed `--enable-muxer='...s16le...'`
+      and `-f s16le` produced nothing.
+- [x] Fix: portable-windows.yml now finds a successful minimal-ffmpeg run for
+      the EXACT current commit; if none exists it dispatches the build and
+      polls (90 x 20 s) until that commit's run succeeds, then downloads it.
+- [x] Confirmed the build-script flag fix is correct: muxer component names
+      from allformats.c are `pcm_s16be`/`pcm_s16le`, so only
+      `--enable-muxer=pcm_s16le` matches.
+- [ ] Re-release (0.66.6) and verify the published exe's embedded ffmpeg has
+      `-f s16le` before declaring audio fixed.
+
 ## 2026-08-19 - Released v0.66.4 "waiting for audio output" (complaint, fixed)
 
 - [x] User: "just like before this release, it's keeping on waiting for audio

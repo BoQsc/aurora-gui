@@ -29,6 +29,7 @@
 /embedded/*
 !/embedded/.gitkeep
 /aurora-web/
+/aurora-browser/
 /tests/auroraweb_render_smoke.d
 *-test-application.exe
 *-test-application.pdb

@@ -1,3 +1,19 @@
+Aurora Suite 0.66.6
+Fix the release pipeline to ship the rebuilt minimal FFmpeg
+------------------------------------------------------------
+
+- The previous release (0.66.5) rebuilt the minimal FFmpeg with the corrected
+  s16le PCM muxer, but the single-exe packaging workflow downloaded a stale
+  artifact from an older build because the two workflows ran in parallel and
+  the packaging finished before the FFmpeg rebuild. Audio was therefore still
+  broken in the published executable.
+- The portable build now guarantees it embeds the FFmpeg built from the exact
+  released commit: it looks up a successful minimal-FFmpeg run for the current
+  commit, and if none exists it dispatches the build and waits for it to
+  finish before packaging.
+- No application code changed in this release; the app-level audio fix and
+  muted-playback fallback from 0.66.5 remain.
+
 Aurora Suite 0.66.5
 Audio fix for the bundled minimal FFmpeg
 ----------------------------------------

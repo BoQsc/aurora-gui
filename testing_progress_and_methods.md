@@ -1,5 +1,101 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-web first milestone: own HTML/CSS/layout/paint + from-scratch JS engine (2026-08-19)
+
+A new DUB library `aurora-web/` implements the first full browser-core
+pipeline on top of Aurora-D, with **no third-party engine**:
+
+- HTML tokenizer/parser -> DOM (`auroraweb.html`, `auroraweb.dom`)
+- CSS parser + selector matching + cascade/specificity (`auroraweb.css`)
+- Block/inline layout + box model + explicit heights (`auroraweb.layout`)
+- Paint to Aurora Canvas (backgrounds, text via Aurora TextLayout, borders)
+  (`auroraweb.paint`)
+- A from-scratch JS engine in D: lexer -> parser (AST) -> tree-walking
+  interpreter with numbers/strings/bools/null/undefined/objects/arrays/
+  functions/closures/prototypes, arithmetic/equality/logical/ternary,
+  var/let/const, if/else, while, for, for-in, function decls, return,
+  throw/try-catch (`auroraweb.js`)
+- DOM bindings exposed to JS: `document`, `getElementById`, `querySelector`,
+  `createElement`, `appendChild`, `textContent`, `addEventListener`,
+  `dispatchEvent` (`auroraweb.dombind`)
+- Public entry `WebPage` (`auroraweb/package.d`) with
+  `setHtml/setStylesheet/runScript/layout/paint`.
+
+**How to build and test:**
+
+```
+dub build --compiler=dmd            # in aurora-web/
+dub test  --compiler=dmd            # 35 modules pass unittests
+dmd -i -version=AuroraHeadless -Isource -Iaurora-web\source -Ivendor\aurora-d-0.4.5\source tests\auroraweb_render_smoke.d -of=build\auroraweb-smoke.exe
+build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
+```
+
+**Methods / gotchas learned:**
+
+- D keyword collisions: `function`, `scope`, `float` cannot be used as enum
+  members/parameter/field names. Renamed `JsKind.function`->`JsKind.func`,
+  `scope` param -> `sc`, `ComputedStyle.float` -> `floatStyle`.
+- D has no `int?`/`Color?` nullable syntax. Use sentinel (`-1`) or a struct
+  with a `present` flag (`NullableColor`).
+- `indexOf` returns `ptrdiff_t` (long); assigning into `int` fails. Use
+  `ptrdiff_t` for colon/semi positions in CSS decl parsing.
+- `key in aa` returns a pointer; write `(key in aa) !is null`, not
+  `key in aa !is null`.
+- `execNode` originally used AST node *indices*; switching to a `Node` class
+  (by reference) removed an entire class of index/type bugs.
+- Tree-walking return propagation: a `return` inside a function body was
+  silently dropped. Fixed with `rt.returned`/`rt.returnValue` flags that the
+  block/if/while/for executors check after each child.
+- Method calls: `arr.push(4)` must bind the receiver as `this`. The `call`
+  node now detects a `member` callee and passes `children[0]` of the member
+  as `thisArg`. Without it, `arr.push` silently failed (arrlen stayed 3).
+- `Canvas.layoutText` takes `const(dchar)[]`, so UTF-8 `string` must be
+  converted to `dchar[]` before shaping.
+- parseCompound infinite loop: after consuming `.`/`#`, the scanner must
+  advance `i = start` before scanning the ident; otherwise it re-reads the
+  same `.`/`#` forever.
+
+## Released v0.66.5 STILL no audio: CI embedded a stale minimal ffmpeg (2026-08-19)
+
+- User: "Absolutely no improvement in the release."
+- **Root cause**: v0.66.5 DID rebuild the minimal FFmpeg with the corrected
+  `--enable-muxer=pcm_s16le` flag (minimal-ffmpeg run `32247401685` succeeded,
+  built from the fixed commit). But the portable single-exe workflow
+  (`portable-windows.yml`) downloads the minimal ffmpeg artifact with:
+  `gh run list --workflow minimal-ffmpeg.yml --status success --limit 1` -
+  i.e. the LATEST SUCCESSFUL run regardless of commit. The two workflows run
+  in parallel on the same push:
+  - minimal-ffmpeg rebuild: started 11:24:13, COMPLETED 11:32:05 (~8 min)
+  - portable build: started 11:24:16, COMPLETED 11:26:14 (~2 min)
+  The portable build finished 6 minutes BEFORE the rebuild, so it embedded the
+  OLD artifact (still `--enable-muxer=s16le`, no s16le raw PCM muxer). Audio
+  remained broken.
+- **Verification method**:
+  1. Extracted the embedded ffmpeg from the published `aurora-cut-v0.66.5.exe`
+     (PE at offset 17202560, 13,836,224 bytes). Its config still showed
+     `--enable-muxer='...s16le...'` - the OLD flag.
+  2. Ran `-f s16le` against it: "Requested output format 's16le' is not
+     known" / no output produced.
+  3. Queried the GitHub Actions API: confirmed the minimal-ffmpeg rebuild ran
+     and succeeded but the portable run downloaded the stale artifact because
+     of the parallel scheduling.
+- **Fix** (`portable-windows.yml`): the download step now looks up a
+  successful minimal-ffmpeg run built from the EXACT current commit
+  (`gh run list --workflow minimal-ffmpeg.yml --commit "$SHA"`). If none
+  exists, it dispatches `gh workflow run minimal-ffmpeg.yml` and polls
+  (90 x 20 s) until that commit's run succeeds, THEN downloads it. This
+  guarantees the single-exe embeds the ffmpeg built from the released commit,
+  never a stale artifact.
+- **Confirmed `pcm_s16le` flag mapping**: extracting muxer component names
+  from `libavformat/allformats.c` extern declarations at the pinned FFmpeg
+  commit yields exactly `pcm_s16be` and `pcm_s16le` (not `s16le`). FFmpeg's
+  `--enable-muxer=NAME` builds the exact glob `NAME_muxer`, so only
+  `--enable-muxer=pcm_s16le` matches `pcm_s16le_muxer`; `s16le` matches
+  nothing. The build-script fix is correct.
+- **How to verify the next release**: extract the embedded ffmpeg from the
+  published exe and run `ffmpeg.exe -hide_banner -formats | findstr s16le`
+  (must show `s16le`) and a `-f s16le` decode-to-file (must produce bytes).
+
 ## Released v0.66.4 "waiting for audio output": bundled ffmpeg lacks s16le muxer (2026-08-19)
 
 - User: "just like before this release, it's keeping on waiting for audio
