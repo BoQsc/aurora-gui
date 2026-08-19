@@ -1,3 +1,19 @@
+Aurora Suite 0.66.5
+Audio fix for the bundled minimal FFmpeg
+----------------------------------------
+
+- Fixed playback appearing to wait forever on "Waiting for audio output".
+  The release's minimal embedded FFmpeg was configured with
+  --enable-muxer=s16le, which matches nothing in FFmpeg configure, so the
+  raw s16le PCM muxer was missing and audio decode produced no samples. The
+  configure flag is corrected to --enable-muxer=pcm_s16le, restoring audio
+  playback (and the audio clock) in the portable single-exe build.
+- Added a robustness fallback: if the audio worker ever produces no samples,
+  Aurora Cut now reports the failure and plays the buffered video muted
+  immediately instead of waiting out a 5-second clock-fallback timer
+  repeatedly.
+- Verified: dub test (35 modules) and the headless editor smoke test pass.
+
 Aurora Suite 0.66.4
 Export fix for the bundled minimal FFmpeg
 ------------------------------------------
