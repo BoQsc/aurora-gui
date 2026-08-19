@@ -9609,7 +9609,27 @@ final class EditorRoot : VBox
             {
                 _playbackAudioClockWait += deltaSeconds;
                 double audioPosition;
-                if (_audioPlayer.clockPosition(audioPosition))
+                // If the audio worker already failed (e.g. the bundled FFmpeg
+                // cannot produce s16le PCM), do not wait out the clock-fallback
+                // timer: play the buffered video muted immediately instead of
+                // making the transport appear stuck on "Waiting for audio
+                // output".
+                if (_playbackAudioClockWait >= 0.35 &&
+                    _audioPlayer.error().length > 0)
+                {
+                    _audioPlayer.stop();
+                    _playbackAudioStarted = false;
+                    _playbackAudioRequired = false;
+                    _playbackAwaitingAudioClock = false;
+                    _playbackAwaitingFirstFrame = false;
+                    _playbackAudioClockWait = 0.0;
+                    _playbackAudioClockLostWait = 0.0;
+                    resetPlaybackClock();
+                    _preview.setPlaying(true);
+                    setStatus("Playing video without audio: " ~
+                        _audioPlayer.error());
+                }
+                else if (_audioPlayer.clockPosition(audioPosition))
                 {
                     _playbackPosition = clampValue(audioPosition,
                         _playbackStart, _playbackEnd);

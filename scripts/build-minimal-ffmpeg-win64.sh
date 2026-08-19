@@ -251,7 +251,7 @@ if [ ! -x "$dist/bin/ffmpeg.exe" ]; then
       --enable-hwaccel=d3d11va,dxva2 \
       --enable-indev=lavfi,dshow,gdigrab \
       --enable-demuxer=mov,matroska,mp3,wav,flac,ogg,image2,gif,rawvideo,sdp \
-      --enable-muxer=mp4,mp3,image2,rawvideo,s16le,null,flv,fifo \
+      --enable-muxer=mp4,mp3,image2,rawvideo,pcm_s16le,null,flv,fifo \
       --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg1video,mpeg2video,prores,wrapped_avframe,rawvideo \
       --enable-decoder=png,mjpeg,webp,bmp,gif \
       --enable-decoder=aac,mp3,flac,vorbis,opus,ac3,eac3 \

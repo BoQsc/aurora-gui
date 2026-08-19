@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - Released v0.66.4 "waiting for audio output" (complaint, fixed)
+
+- [x] User: "just like before this release, it's keeping on waiting for audio
+      output or anything else, nothing like how it is before we release."
+- [x] Root cause: the minimal bundled FFmpeg's `--enable-muxer=s16le` flag
+      matched NOTHING in FFmpeg configure (component is `pcm_s16le_muxer`,
+      glob `s16le_muxer` misses it), so `-f s16le` (raw PCM out) is missing.
+      Audio decode starts, produces no PCM, no clock -> transport waits up
+      to 5 s then plays muted, re-triggering on prewarm/loop = "keeps
+      waiting for audio output".
+- [x] Fix 1: build script uses `--enable-muxer=pcm_s16le`.
+- [x] Fix 2: app fails fast to muted playback when the audio worker produced
+      no samples (playback.d publishes a failure; editor.d falls back after
+      0.35 s instead of waiting 5 s).
+- [x] Verified: `dub test` 35 modules; editor-smoke passes.
+- [ ] Rebuild minimal ffmpeg in CI and confirm `-f s16le` works in the
+      artifact before/after the portable build.
+- [ ] Re-release (0.66.5) and confirm audio in the released single-exe build.
+
 ## 2026-08-19 - Released v0.66.3 export broken: bundled ffmpeg lacks -filter_complex_script (complaint, fixed)
 
 - [x] User: "for some reason the released version of aurora cut does not

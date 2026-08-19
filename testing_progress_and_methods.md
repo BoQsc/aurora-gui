@@ -1,5 +1,64 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Released v0.66.4 "waiting for audio output": bundled ffmpeg lacks s16le muxer (2026-08-19)
+
+- User: "just like before this release, it's keeping on waiting for audio
+  output or anything else, nothing like how it is before we release."
+- **Root cause**: the portable single-exe release embeds a minimal
+  cross-compiled FFmpeg. The app's audio playback decodes to raw s16le PCM
+  via `-f s16le pipe:1` (`PcmAudioPlayer.decodeArguments` in `playback.d`
+  and `compositeAudioArguments` in `exporter.d`). The minimal FFmpeg build
+  config used `--enable-muxer=s16le`, which in FFmpeg's configure matches
+  NOTHING: `find_things_extern` names the raw PCM muxer component
+  `pcm_s16le_muxer`, and `--enable-muxer=s16le` creates the glob
+  `s16le_muxer` which does not match `pcm_s16le_muxer` (no `*` wildcard).
+  So the binary genuinely lacks the `s16le` raw PCM format/muxer:
+  `ffmpeg -f s16le` fails with "Requested output format 's16le' is not
+  known."
+- **Symptom chain**: audio FFmpeg process launches (returns "success"),
+  immediately errors on the missing muxer, produces no PCM, no audio clock
+  is ever published. The transport enters `_playbackAwaitingAudioClock` and
+  shows "Waiting for audio output before playback starts." for up to
+  `playbackAudioClockFallbackSeconds` (5 s) before playing muted - and with
+  prewarm/loop/restart it re-triggers, feeling permanently stuck. The full
+  FFmpeg (RUN-WINDOWS.bat `dub run`) has the s16le format, so it works.
+- **Diagnosis method (verified empirically)**:
+  1. Ran the app's exact audio decode command against the bundled
+     `%TEMP%\Aurora-Cut-ffmpeg\ffmpeg.exe`:
+     `ffmpeg -i <webm> -vn -ac 2 -ar 48000 -sample_fmt s16 -f s16le -y out.raw`
+     -> "Error initializing the muxer ... Invalid argument", no output.
+     Same command with the full `C:\ffmpeg\bin\ffmpeg.exe` produced
+     574,752 bytes of valid PCM.
+  2. `-f pcm_s16le` also fails on the minimal build. `-formats` on the
+     minimal build lists NO raw PCM formats; the full build lists
+     `DE s16le`.
+  3. Traced FFmpeg configure: `find_things_extern muxer FFOutputFormat
+     libavformat/allformats.c` emits `pcm_s16le_muxer` from
+     `ff_pcm_s16le_muxer`; the `--enable-muxer=` handler builds the exact
+     glob `s16le_muxer` (no `*`), which does not equal `pcm_s16le_muxer`,
+     so the option silently matched nothing (configure warns "did not match
+     anything"). The correct flag is `--enable-muxer=pcm_s16le`.
+- **Fix 1 (build)**: `scripts/build-minimal-ffmpeg-win64.sh` now uses
+  `--enable-muxer=mp4,mp3,image2,rawvideo,pcm_s16le,null,flv,fifo`.
+- **Fix 2 (app robustness)**: even with a correctly built FFmpeg, if the
+  audio worker produces no samples (any cause), the transport must fail fast
+  to muted playback instead of waiting 5 s repeatedly.
+  - `playback.d` `playRequest`: after the PCM read loop, if `clockPublished`
+    is still false (no PCM ever reached the sink), call
+    `publishAudioFailure("The audio output produced no samples (FFmpeg
+    exited N).")`.
+  - `editor.d` onTick `_playbackAwaitingAudioClock`: if
+    `_audioPlayer.error()` is non-empty after 0.35 s, stop audio, clear the
+    wait flags, reset the clock, and set "Playing video without audio:
+    <error>" immediately.
+- **How to verify**: `dub test` -> 35 modules; editor-smoke full run passes.
+  The definitive check is a fresh CI minimal-ffmpeg build: run
+  `ffmpeg.exe -hide_banner -formats | findstr s16le` and
+  `ffmpeg -f lavfi -i sine=... -f s16le -y out.raw` against the artifact.
+- **Gotcha**: `-f s16le` is the OUTPUT format name (`.p.name`), while the
+  configure component is `pcm_s16le_muxer`; the encoder is `pcm_s16le`. Do
+  not confuse the three namespaces.
+
 ## Released v0.66.3 "playback/export" vs RUN-WINDOWS.bat difference (2026-08-19)
 
 - User: "the released version of aurora cut does not behave or work properly

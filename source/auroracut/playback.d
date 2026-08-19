@@ -812,8 +812,22 @@ final class PcmAudioPlayer
 
             try pipes.stdout.close();
             catch (Exception) {}
-            try wait(pipes.pid);
+            int exitStatus;
+            try exitStatus = wait(pipes.pid);
             catch (Exception) {}
+
+            // If no PCM ever reached the sink, the audio producer failed (for
+            // example the bundled minimal FFmpeg lacking the raw s16le muxer).
+            // Report it so the transport can fall back to muted playback
+            // instead of waiting indefinitely for an audio clock.
+            if (!clockPublished && request.generation == _generation &&
+                !_shutdown)
+            {
+                const detail = exitStatus != 0 ?
+                    format(" (FFmpeg exited %d)", exitStatus) : "";
+                publishAudioFailure(request.generation,
+                    "The audio output produced no samples" ~ detail ~ ".");
+            }
 
             _mutex.lock();
             if (_process is pipes.pid) _process = null;
