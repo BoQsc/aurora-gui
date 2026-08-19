@@ -1,5 +1,8 @@
 /.dub/
 /build/
+/build/**
+**/build/
+**/build/**
 /dist/
 /release/
 /releases/
@@ -13,6 +16,8 @@
 *.pdb
 *.ilk
 *.log
+*.lib
+*.exe
 *.zip
 *.7z
 *.rar
@@ -28,8 +33,5 @@
 *.auroracut
 /embedded/*
 !/embedded/.gitkeep
-/aurora-web/
-/aurora-browser/
-/tests/auroraweb_render_smoke.d
 *-test-application.exe
 *-test-application.pdb

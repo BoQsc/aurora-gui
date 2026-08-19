@@ -1,0 +1,51 @@
+{
+  "name": "aurora-web",
+  "description": "A cross-platform standards-oriented web engine library built on Aurora-D: HTML/CSS parsing, DOM, layout, painting, and a JavaScript host",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright © 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "library",
+  "sourcePaths": [
+    "source",
+    "../vendor/aurora-d-0.4.5/source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "version": "0.66.3"
+}
