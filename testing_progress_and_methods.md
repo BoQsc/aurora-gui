@@ -1,5 +1,56 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-notepad: native Windows 10 Notepad UI metrics (2026-08-19)
+
+User asked to measure the real Windows 10 Notepad's toolbar/UI text sizes and
+apply them to Aurora Notepad.
+
+**How to measure real notepad.exe (authoritative method):** Run Notepad, then
+query Win32 in a per-monitor-DPI-aware PowerShell script:
+
+1. `SetProcessDpiAwarenessContext([IntPtr](-4))` so GetSystemMetrics /
+   NONCLIENTMETRICS / window rects return TRUE physical pixels (otherwise the
+   120 DPI screen is virtualized and values come back 1.25x too small).
+2. `GetDpiForWindow` = 120 on this machine; convert every physical value to
+   96-DPI logical units by dividing by 1.25.
+3. Menu bar height: `SM_CYMENU` (25 @120 = 20 logical) and
+   `GetMenuItemRect` (item 24 px tall @120 = 19.2 logical).
+4. Status bar height: `FindWindowEx(...,"msctls_statusbar32",...)` +
+   `GetWindowRect` (29 @120 = 23 logical).
+5. Caption button width: `SM_CXSIZE` (46 @120 = 36 logical).
+6. Caption bar height: `SM_CYCAPTION` (29 @120 = 23 logical).
+7. Fonts: `NONCLIENTMETRICS` `lfCaptionFont/lfMenuFont/lfStatusFont` =
+   Segoe UI, lfHeight -12 @120 = 9 pt. `WM_GETFONT` on the Edit control =
+   Consolas, lfHeight -18 @120 = 10.8 pt.
+8. Menu text: `GetTextExtentPoint32W` with the real font: "File" = 38 px
+   @120 = 30 logical px wide.
+
+**Gotchas:**
+
+- The classic menu bar lives in the NON-CLIENT area (GetMenuItemRect returns a
+  screen rect above the client origin) — that's why notepad's menu looks like
+  it overlaps the caption area; the caption bar (29 @120) is ABOVE the menu.
+- `GetMenuBarInfo` with OBJID_MENU fails on Win10 notepad (returns False) —
+  use `SM_CYMENU` + `GetMenuItemRect` instead.
+- `PrintWindow`/BitBlt of notepad returns only the white client (the classic
+  menu and status bar don't capture) — measure via Win32 rects, don't rely on
+  screenshots for the native app.
+- Screen `CopyFromScreen`/BitBlt on Aurora's hardware surface returns black
+  (DirectComposition); use Aurora's own `--screenshot <path>` software
+  renderer for pixel verification instead.
+
+**Applied values (logical 96-DPI px):** titlebar 23, menu bar 20, status bar
+23, caption button 36 wide, all UI text 12 px EM (Segoe UI 9 pt), editor
+Consolas 11 pt. New module `auroranotepad/notepadsize.d` centralizes the
+constants. Added vendored API: `TitleBar.setTitleFontSize`,
+`Label.setPixelSize`, `Button.setTextPixelSize`.
+
+**Verify:** `aurora-notepad.exe --screenshot out.png`, then band/bbox analysis
+with PIL: hairline between menu and content should sit at
+(titlebar+menubar)*1.25 physical px, status band 23*1.25 px at the bottom, and
+all UI glyph caps ~8-9 px physical (12 px EM font).
+
+
 ## Released v0.66.6 STILL "waiting for audio": stale locked ffmpeg cache (2026-08-19)
 
 - User: "it keeps on saying it's waiting for audio before playback starts. So
@@ -41,6 +92,9 @@
   newer one - the old instance locks the shared temp cache. With the
   content-keyed fix this no longer matters, but stale running instances also
   run stale code.
+- **RESOLVED (user confirmed 2026-08-19)**: after v0.66.7 (content-keyed
+  extraction) with all old instances closed, the user confirmed "yeah seems
+  to be fine." Audio playback works in the released single-exe build.
 
 ## aurora-browser: desktop browser shell on aurora-web (2026-08-19)
 

@@ -1,5 +1,35 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - aurora-notepad: match native Windows 10 Notepad UI metrics (done)
+
+User: "check the windows 10 notepad original size of toolbar and ui text
+sizes. we need to try to apply them to our aurora notepad."
+
+Measured real `notepad.exe` (Win10 22H2, 120 DPI, per-monitor DPI aware) via
+Win32 (GetMenu/GetMenuItemRect/GetWindowRect/FindWindowEx/GetDpiForWindow/
+NONCLIENTMETRICS/SM_*), converted to 96-DPI logical units:
+
+- menu bar height = 20 logical px (SM_CYMENU 25 @120 / 1.25)
+- status bar height = 23 logical px (msctls_statusbar32 29 @120 / 1.25)
+- caption button width = 36 logical px (SM_CXSIZE 46 @120)
+- caption bar height = 23 logical px (SM_CYCAPTION 29 @120)
+- caption / menu / status font = Segoe UI 9 pt = 12 px EM logical
+- editor font = Consolas 10.8 pt (11 pt logical)
+
+Applied to aurora-notepad:
+
+- `auroranotepad/notepadsize.d` (new): shared constants for all of the above.
+- `appui.d`: menu bar and status band heights, status label 12 px.
+- `menubar.d`: 20 px bar, menu items measured + painted at 12 px.
+- `titlebar.d`: bar height 23, caption button width 36, title 12 px.
+- Vendored `aurora-d` additions (compatible, tests still pass):
+  - `widgets/titlebar.d`: `setTitleFontSize` (fixed-pixel title).
+  - `widgets/label.d`: `setPixelSize` (fixed-pixel status label).
+  - `widgets/button.d`: `setTextPixelSize` (fixed-pixel menu items).
+- Verified via `--screenshot` band/bbox analysis: title bar 23, menu 20,
+  content at 43, status 23, all UI text 12 px logical (matching native 9 pt).
+- headless smoke + aurora-d unittests (32 modules) all pass.
+
 ## 2026-08-19 - Released v0.66.6 STILL "waiting for audio": stale locked ffmpeg cache (complaint, fixed)
 
 - [x] User: "it keeps on saying it's waiting for audio before playback starts.
@@ -16,8 +46,8 @@
       produces valid `-f s16le` PCM (192,000 bytes for 1 s); the user's stale
       cache was deleted and running instances were closed so the next launch
       extracts fresh.
-- [ ] Re-release (0.66.7) and have the user confirm audio playback with NO
-      other Aurora Cut instance running.
+- [x] Re-released (0.66.7) and the user confirmed: "yeah seems to be fine."
+      Audio playback works in the released single-exe build.
 
 ## 2026-08-19 - aurora-browser: desktop web browser shell on aurora-web (feature, done)
 
