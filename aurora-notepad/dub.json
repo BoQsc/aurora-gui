@@ -53,5 +53,5 @@
     "QuartzCore",
     "-lobjc"
   ],
-  "version": "0.66.6"
+  "version": "0.66.7"
 }
