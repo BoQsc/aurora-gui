@@ -160,13 +160,14 @@ private Rect backgroundDestRect(Element element, RgbaImage image)
     }
     else if (size != "auto" && size.length)
     {
+        import auroraweb.dom : cssInt;
         auto parts = size.split();
         if (parts.length == 1)
         {
             // Single length: width is explicit, height preserves the ratio.
             auto wp = parts[0];
             if (wp.length >= 2 && wp[$ - 2 .. $] == "px")
-                w = wp[0 .. $ - 2].strip().to!int;
+                w = cssInt(wp[0 .. $ - 2].strip());
             if (w > 0)
                 h = (imgH * w) / imgW;
         }
@@ -175,9 +176,9 @@ private Rect backgroundDestRect(Element element, RgbaImage image)
             auto wp = parts[0];
             auto hp = parts[1];
             if (wp.length >= 2 && wp[$ - 2 .. $] == "px")
-                w = wp[0 .. $ - 2].strip().to!int;
+                w = cssInt(wp[0 .. $ - 2].strip());
             if (hp.length >= 2 && hp[$ - 2 .. $] == "px")
-                h = hp[0 .. $ - 2].strip().to!int;
+                h = cssInt(hp[0 .. $ - 2].strip());
         }
     }
 
@@ -331,29 +332,29 @@ private int hexDigit(char c)
 /// Parse a percentage value like "50%" into 0..100 (or a bare 0..255 int).
 private int parseChannel(string s)
 {
-    import std.conv : to;
+    import auroraweb.dom : cssInt;
     const t = s.strip();
     if (t.length >= 1 && t[$ - 1] == '%')
-        return (t[0 .. $ - 1].strip().to!int * 255) / 100;
-    return t.to!int;
+        return (cssInt(t[0 .. $ - 1].strip()) * 255) / 100;
+    return cssInt(t);
 }
 
 private double parsePercent(string s)
 {
-    import std.conv : to;
+    import auroraweb.dom : cssDouble;
     const t = s.strip();
     if (t.length >= 1 && t[$ - 1] == '%')
-        return t[0 .. $ - 1].strip().to!double / 100.0;
-    return t.to!double;
+        return cssDouble(t[0 .. $ - 1].strip()) / 100.0;
+    return cssDouble(t);
 }
 
 private double parseAlpha(string s)
 {
-    import std.conv : to;
+    import auroraweb.dom : cssDouble;
     const t = s.strip();
     if (t.length >= 1 && t[$ - 1] == '%')
-        return t[0 .. $ - 1].strip().to!double / 100.0;
-    return t.to!double;
+        return cssDouble(t[0 .. $ - 1].strip()) / 100.0;
+    return cssDouble(t);
 }
 
 /// Convert HSL (h in degrees, s/l in 0..1) to an RGB tuple.

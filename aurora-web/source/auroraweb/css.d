@@ -290,11 +290,11 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
 
 private int parsePxOrZero(string s)
 {
-    import std.conv : to;
+    import auroraweb.dom : cssInt;
     const t = s.strip();
     if (t.length >= 2 && t[$ - 2 .. $] == "px")
-        return t[0 .. $ - 2].strip().to!int;
-    return t.length ? t.to!int : 0;
+        return cssInt(t[0 .. $ - 2].strip());
+    return t.length ? cssInt(t) : 0;
 }
 
 /// Filter rules to those whose media condition matches the given viewport.

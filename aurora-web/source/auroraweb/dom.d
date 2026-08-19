@@ -13,7 +13,7 @@ module auroraweb.dom;
 import core.exception : RangeError;
 import std.algorithm : canFind;
 import std.conv : to;
-import std.string : split;
+import std.string : split, strip;
 
 /** Attribute storage: a plain associative array of attribute name -> value. */
 alias AttrMap = string[string];
@@ -186,46 +186,92 @@ struct ComputedStyle
     /// Parse a px value from a CSS length string; returns -1 if not a px length.
     int pxLength(string prop) const
     {
-        import std.conv : to;
-        import std.string : strip;
         const s = prop.strip();
         if (s.length >= 3 && s[$ - 2 .. $] == "px")
-            return s[0 .. $ - 2].strip().to!int;
+            return cssInt(s[0 .. $ - 2].strip());
         return -1;
     }
 
     /// Parse a percentage value; returns -1 if not a percentage.
     int percentValue(string prop) const
     {
-        import std.conv : to;
-        import std.string : strip;
         const s = prop.strip();
         if (s.length >= 2 && s[$ - 1] == '%')
-            return s[0 .. $ - 1].strip().to!int;
+            return cssInt(s[0 .. $ - 1].strip());
         return -1;
     }
 
     /// Resolve a length-or-percentage against a base. Returns -1 if auto.
     int resolveLength(string prop, int base) const
     {
-        import std.conv : to;
-        import std.string : strip;
         const s = prop.strip();
         if (s.length == 0) return -1;
         if (s.length >= 2 && s[$ - 2 .. $] == "px")
-            return s[0 .. $ - 2].strip().to!int;
+            return cssInt(s[0 .. $ - 2].strip());
         if (s.length >= 2 && s[$ - 1] == '%')
-            return (base * s[0 .. $ - 1].strip().to!int) / 100;
+            return (base * cssInt(s[0 .. $ - 1].strip())) / 100;
         if (s.length >= 2 && s[$ - 2 .. $] == "em")
-            return cast(int)(s[0 .. $ - 2].strip().to!double * fontSizePx);
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * fontSizePx);
         if (s.length >= 3 && s[$ - 3 .. $] == "rem")
-            return cast(int)(s[0 .. $ - 3].strip().to!double * rootFontSizePx);
+            return cast(int)(cssDouble(s[0 .. $ - 3].strip()) * rootFontSizePx);
         if (s.length >= 2 && s[$ - 2 .. $] == "vh")
-            return (viewportHeight * s[0 .. $ - 2].strip().to!int) / 100;
+            return (viewportHeight * cssInt(s[0 .. $ - 2].strip())) / 100;
         if (s.length >= 2 && s[$ - 2 .. $] == "vw")
-            return (viewportWidth * s[0 .. $ - 2].strip().to!int) / 100;
+            return (viewportWidth * cssInt(s[0 .. $ - 2].strip())) / 100;
         return -1;
     }
+}
+
+/// Safely parse the leading integer of a CSS numeric token (e.g. "12px"->12,
+/// "1.5"->1, "auto"->0). Never throws.
+int cssInt(string s) @safe pure nothrow
+{
+    import std.conv : to;
+    const t = s.strip();
+    if (t.length == 0) return 0;
+    int sign = 1;
+    size_t i = 0;
+    if (t[0] == '-') { sign = -1; i = 1; }
+    else if (t[0] == '+') { i = 1; }
+    int value = 0;
+    bool any = false;
+    while (i < t.length)
+    {
+        auto c = t[i];
+        if (c >= '0' && c <= '9') { value = value * 10 + (c - '0'); any = true; }
+        else break;
+        i++;
+    }
+    return any ? sign * value : 0;
+}
+
+/// Safely parse the leading double of a CSS numeric token. Never throws.
+double cssDouble(string s) @safe pure nothrow
+{
+    const t = s.strip();
+    if (t.length == 0) return 0.0;
+    size_t i = 0;
+    if (t[0] == '-' || t[0] == '+') i = 1;
+    double value = 0.0;
+    double scale = 0.1;
+    bool any = false;
+    bool dot = false;
+    while (i < t.length)
+    {
+        auto c = t[i];
+        if (c >= '0' && c <= '9')
+        {
+            if (dot) { value += (c - '0') * scale; scale *= 0.1; }
+            else value = value * 10 + (c - '0');
+            any = true;
+        }
+        else if (c == '.' && !dot) dot = true;
+        else break;
+        i++;
+    }
+    if (!any) return 0.0;
+    if (t[0] == '-') return -value;
+    return value;
 }
 
 /** Placeholder for a laid-out box; the layout module fills this in. */
@@ -247,4 +293,22 @@ struct Box
     int borderRight;
     int borderBottom;
     int borderLeft;
+}
+
+unittest
+{
+    // CSS keyword values must never throw when parsed as numbers (this crashed
+    // the engine on real pages like google.com with "Unexpected 'd'").
+    assert(cssInt("auto") == 0);
+    assert(cssInt("normal") == 0);
+    assert(cssInt("medium") == 0);
+    assert(cssInt("thin") == 0);
+    assert(cssInt("inherit") == 0);
+    assert(cssInt("12px") == 12);
+    assert(cssInt("1.5") == 1);
+    assert(cssInt("-3") == -3);
+    assert(cssInt("100%") == 100);
+    assert(cssDouble("1.5") == 1.5);
+    assert(cssDouble("bold") == 0.0);
+    assert(cssDouble("2.5em") == 2.5);
 }

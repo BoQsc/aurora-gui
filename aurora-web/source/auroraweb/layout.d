@@ -393,8 +393,14 @@ private int resolveSide(string value, int containingWidth, int sideIndex)
 {
     auto parts = value.split();
     if (parts.length == 0) return 0;
-    int px(string s) { return s == "0" ? 0 : (s.length >= 3 && s[$ - 2 .. $] == "px") ? s[0 .. $ - 2].to!int :
-        (s.length >= 2 && s[$ - 1] == '%') ? (containingWidth * s[0 .. $ - 1].to!int) / 100 : -1; }
+    int px(string s)
+    {
+        import auroraweb.dom : cssInt;
+        if (s == "0") return 0;
+        if (s.length >= 3 && s[$ - 2 .. $] == "px") return cssInt(s[0 .. $ - 2]);
+        if (s.length >= 2 && s[$ - 1] == '%') return (containingWidth * cssInt(s[0 .. $ - 1])) / 100;
+        return -1;
+    }
     switch (parts.length)
     {
         case 1: return px(parts[0]);
@@ -923,8 +929,9 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         if (ce is null) continue;
         items ~= ce;
         resolveBoxMetrics(ce, innerW);
+        import auroraweb.dom : cssInt;
         auto growStr = ce.style.flexGrow;
-        int grow = growStr.length ? growStr.to!int : 0;
+        int grow = growStr.length ? cssInt(growStr) : 0;
         totalFlex += grow;
         auto basis = ce.style.resolveLength(ce.style.width, innerW);
         itemWidths ~= basis >= 0 ? basis : 0;
@@ -939,8 +946,9 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         // Distribute remaining proportionally to flex-grow.
         foreach (i, ce; items)
         {
+            import auroraweb.dom : cssInt;
             auto growStr = ce.style.flexGrow;
-            int grow = growStr.length ? growStr.to!int : 0;
+            int grow = growStr.length ? cssInt(growStr) : 0;
             if (grow > 0)
             {
                 const int share = (remaining * grow) / totalFlex;
@@ -1004,7 +1012,7 @@ private int sumWidths(int[] widths)
 /// Parse a grid-template-columns value into resolved column widths.
 private int[] resolveGridTracks(string value, int innerW)
 {
-    import std.conv : to;
+    import auroraweb.dom : cssInt;
     int[] result;
     int fixedTotal = 0;
     int frCount = 0;
@@ -1016,13 +1024,13 @@ private int[] resolveGridTracks(string value, int innerW)
         {
             // fr or auto.
             auto fr = part.length >= 2 && part[$ - 2 .. $] == "fr" ?
-                (part.length == 2 ? 1 : part[0 .. $ - 2].to!int) : 0;
+                (part.length == 2 ? 1 : cssInt(part[0 .. $ - 2])) : 0;
             if (fr > 0) frCount += fr;
             continue;
         }
         auto w = part.strip();
-        auto px = w.length >= 2 && w[$ - 2 .. $] == "px" ? w[0 .. $ - 2].to!int :
-            (w.length >= 1 && w[$ - 1] == '%' ? (innerW * w[0 .. $ - 1].to!int) / 100 : w.to!int);
+        auto px = w.length >= 2 && w[$ - 2 .. $] == "px" ? cssInt(w[0 .. $ - 2]) :
+            (w.length >= 1 && w[$ - 1] == '%' ? (innerW * cssInt(w[0 .. $ - 1])) / 100 : cssInt(w));
         result ~= px;
         fixedTotal += px;
     }
@@ -1035,7 +1043,7 @@ private int[] resolveGridTracks(string value, int innerW)
         if (part == "auto" || part.endsWith("fr"))
         {
             auto fr = part.length >= 2 && part[$ - 2 .. $] == "fr" ?
-                (part.length == 2 ? 1 : part[0 .. $ - 2].to!int) : 0;
+                (part.length == 2 ? 1 : cssInt(part[0 .. $ - 2])) : 0;
             if (fr > 0 && frCount > 0)
                 finalTracks ~= (remaining * fr) / frCount;
             else if (frCount == 0)
@@ -1045,8 +1053,8 @@ private int[] resolveGridTracks(string value, int innerW)
         {
             // Reuse fixed width from first pass.
             auto w = part.strip();
-            auto px = w.length >= 2 && w[$ - 2 .. $] == "px" ? w[0 .. $ - 2].to!int :
-                (w.length >= 1 && w[$ - 1] == '%' ? (innerW * w[0 .. $ - 1].to!int) / 100 : w.to!int);
+            auto px = w.length >= 2 && w[$ - 2 .. $] == "px" ? cssInt(w[0 .. $ - 2]) :
+                (w.length >= 1 && w[$ - 1] == '%' ? (innerW * cssInt(w[0 .. $ - 1])) / 100 : cssInt(w));
             finalTracks ~= px;
         }
     }
