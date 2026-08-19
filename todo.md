@@ -1,5 +1,55 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - aurora-browser: desktop web browser shell on aurora-web (feature, done)
+
+Created `aurora-browser/`, a working desktop browser shell that renders pages
+with the `aurora-web` engine inside Aurora-D windows:
+
+- `aurora-browser/dub.json` — executable mirroring `aurora-notepad/dub.json`
+  (name `aurora-browser`, targetName `aurora-browser`, sourcePaths source +
+  vendor aurora-d + aurora-web, libs/lflags-windows, portable-release buildType,
+  version 0.66.3).
+- `aurora-browser/source/app.d` — slim entry point (GuiWindow + BrowserRoot,
+  plus `--screenshot <path>` software-render mode).
+- `aurora-browser/source/aurorabrowser/appui.d` — the browser chrome:
+  `BrowserRoot` (VBox), `WebPageView` (renders a `WebPage` from a widget's
+  `onPaint`), `AddressField`, tab model. Back/Forward/Reload buttons, address
+  TextField + Go, tab strip label, status bar; window title = page title.
+- `aurora-browser/RUN-WINDOWS.bat` — mirrors `aurora-notepad/RUN-WINDOWS.bat`
+  (dub run --build=release).
+- `aurora-browser/tests/headless_smoke.d` — headless UiTestDriver smoke test.
+
+Behavior:
+- Offline-first navigation: a built-in `auroraweb:` scheme serves constant HTML
+  test pages (`auroraweb:hello`, `auroraweb:css`, `auroraweb:js`,
+  `auroraweb:search`). Plain words -> `auroraweb:search?q=<word>`. HTTP/HTTPS
+  (WinINet) is a known gap.
+- Multi-tab: array of `WebPage` + per-tab history stack + active index;
+  Ctrl+T new tab, Ctrl+W close, Ctrl+L focus address, Alt+Left/Right back/forward.
+- `WebPage` engine fix (aurora-web): added `resize(int,int)` + `width()/height()`
+  so the page viewport follows the widget (engine was otherwise stuck at the
+  construction size; the shell constructs pages before the first layout).
+- aurora-web JS parser fix: `for (init; test; update)` never consumed the `;`
+  after the init clause, so `for (var i=0; i<n; i++)` threw `Expected ')'`.
+  Fixed in `auroraweb/js.d` `parseFor()`; `dub test` (35 modules) still passes.
+
+Build/run:
+```
+cd aurora-browser
+dub build --compiler=dmd              # debug build, succeeds
+dub build --compiler=dmd --build=release
+aurora-browser.exe                    # interactive window (software fallback ok)
+aurora-browser.exe --screenshot out.ppm
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source -I..\aurora-web\source tests\headless_smoke.d -of=build\aurora-browser-headless-smoke.exe
+build\aurora-browser-headless-smoke.exe   # "headless_smoke: ALL PASSED"
+```
+NOTE: `--build=portable-release` fails on this machine for ALL packages
+(aurora-notepad too) because it needs MSVC `libcmt.lib` (`-mscrtlib=libcmt`)
+and only DMD's mingw toolchain is installed. Not a browser-specific issue.
+
+Known gaps: real HTTP/HTTPS fetch, `<img>` loading, bookmark bar, per-tab
+close buttons, scrollable page content, more JS/CSS breadth.
+
 ## 2026-08-19 - aurora-web: own browser core first milestone (feature, in progress)
 
 - [x] User: wants a cross-platform standards browser, fully controllable,
@@ -44,8 +94,11 @@
 - [x] Confirmed the build-script flag fix is correct: muxer component names
       from allformats.c are `pcm_s16be`/`pcm_s16le`, so only
       `--enable-muxer=pcm_s16le` matches.
-- [ ] Re-release (0.66.6) and verify the published exe's embedded ffmpeg has
-      `-f s16le` before declaring audio fixed.
+- [x] Re-released (0.66.6) and VERIFIED: the published `aurora-cut-v0.66.6.exe`
+      embeds an ffmpeg whose config shows `--enable-muxer=...pcm_s16le...`,
+      and `-f s16le` decode of the user's real webm produces 574,752 bytes of
+      valid PCM (identical to the full ffmpeg). The portable workflow waited
+      for the fresh ffmpeg build (11 min) instead of racing ahead (2 min).
 
 ## 2026-08-19 - Released v0.66.4 "waiting for audio output" (complaint, fixed)
 

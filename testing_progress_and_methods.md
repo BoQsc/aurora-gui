@@ -1,5 +1,90 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-browser: desktop browser shell on aurora-web (2026-08-19)
+
+A new executable `aurora-browser/` wraps the `aurora-web` engine in an
+Aurora-D `GuiWindow` with real browser chrome. It is the first end-to-end use
+of the web engine from a desktop app.
+
+**Files:**
+
+- `aurora-browser/dub.json` — executable; sourcePaths include
+  `source`, `../vendor/aurora-d-0.4.5/source`, `../aurora-web/source`;
+  libs-windows `user32 gdi32 shell32 wininet`, lflags-windows
+  `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, portable-release buildType, v0.66.3.
+- `aurora-browser/source/app.d` — entry point: `GuiWindow` + `BrowserRoot`;
+  `--screenshot <path>` runs a software-render paint-and-save cycle.
+- `aurora-browser/source/aurorabrowser/appui.d` — `BrowserRoot` (VBox):
+  toolbar (Back/Forward/Reload buttons, `AddressField`, Go, New tab), tab strip
+  label, `WebPageView` content widget, status bar. `WebPageView` overrides
+  `Widget.onPaint(ref Canvas)` and calls `page.layout()` + `page.paint(canvas,0,0)`.
+- `aurora-browser/RUN-WINDOWS.bat` — `dub run --build=release`.
+- `aurora-browser/tests/headless_smoke.d` — UiTestDriver smoke test (12 checks).
+
+**How to build and test:**
+
+```
+cd aurora-browser
+dub build --compiler=dmd            # debug build: succeeds, exe in aurora-browser/
+dub build --compiler=dmd --build=release
+aurora-browser.exe                  # interactive; software renderer fallback ok
+aurora-browser.exe --screenshot out.ppm   # exit 0, writes PPM
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source -I..\aurora-web\source tests\headless_smoke.d -of=build\aurora-browser-headless-smoke.exe
+build\aurora-browser-headless-smoke.exe   # prints headless_smoke: ALL PASSED
+```
+
+**Real Aurora-D APIs used (verified in `vendor/aurora-d-0.4.5/source`):**
+
+- `WindowOptions` (`aurora.platform.base`) with `title/width/height/resizable/
+  darkTitleBar/renderer`; `RendererPreference.software`.
+- `GuiWindow(WindowOptions, Theme)`; `setRoot(Widget)`; `run()`; `close()`;
+  `saveScreenshot(string)`; `surface()`; `setTitle(string)`.
+- `Theme.light()`; `UiTestDriver(GuiWindow)` with `resize(Size)`/`paint()`/
+  `text(dstring)`/`pressKey(Key, uint)`/`tickTree` (via root).
+- `Widget` (`aurora.widget`): `add(T)`/`onLayout`/`onPaint(ref Canvas)`/
+  `onBoundsChanged`/`onKeyDown(ref Event)`/`setEnabled`/`setBounds`/`size()`/
+  `setId`/`id`/`children`; `layoutTree()`/`paintTree` internals.
+- `HBox`/`VBox`/`Panel`/`Spacer` (`aurora.layout`), `layoutHints().flex/
+  preferredWidth/preferredHeight`.
+- `Button` (`aurora.widgets.button`): `setIconSize(int)`, `onClick`,
+  `setAccent(bool)`.
+- `TextField`/`TextArea`/`TextEditor` (`aurora.widgets.texteditor`):
+  `textUtf8()`, `setText(string, bool)`, `setPlaceholder`, `onSubmitted`,
+  `requestFocus()`, `selectAll()`. Single-line: `TextField("")`.
+- `Label` (`aurora.widgets.label`): `setText`, `setScale`.
+- `Canvas`: `fillRect`, `drawTextInRect`, `layoutText`, `drawLayout`,
+  `translated`, `clipped`.
+- `Key`/`KeyModifier`/`Event` (`aurora.event`): `Key.enter/left/right/t`,
+  `event.control()/alt()`, `KeyModifier.control/alt`.
+- `WebPage` (`auroraweb/package.d`): `setHtml(string)`, `executeScripts()`,
+  `layout()`, `paint(Canvas,int,int)`, `paint(Surface)`, `root()`, `resize(int,int)`.
+- `Element` (`auroraweb.dom`): `tag`, `elements`, `textContent()`, `box`.
+
+**Methods / gotchas learned:**
+
+- A `WebPage` is constructed with a fixed viewport (`WebPage(int,int)`); there
+  was NO way to resize it. The browser shell constructs pages before the first
+  layout (content size 0), so pages laid out at width 1 and text wrapped to a
+  single column. Fix: added `WebPage.resize(int width, int height)` (+
+  `width()/height()`) in `aurora-web/source/auroraweb/package.d`, and
+  `WebPageView.onBoundsChanged` calls `page.resize` before `layout()`.
+- Browser shortcuts (Alt+Left, Ctrl+L) typed while the address field has focus
+  were swallowed by the base `TextField` (caret movement). Fix: subclass
+  `AddressField : TextField` and intercept the shortcuts in `onKeyDown`.
+- The JS interpreter threw `Expected ')'` for `for (var i=0; i<n; i++)`:
+  `parseFor()` in `aurora-web/source/auroraweb/js.d` parsed the init clause but
+  never consumed the terminating `;` before parsing the test expression. Fixed
+  with `match(";")` after both the var-decl and expression init paths.
+  Confirmed with the aurora-web `dub test` (35 modules still pass).
+- `dub build --compiler=dmd --build=portable-release` fails on this machine for
+  EVERY package (including aurora-notepad): `-mscrtlib=libcmt` needs MSVC's
+  `libcmt.lib`, and only DMD's mingw libs are installed. Debug and plain
+  `--build=release` both work. Not a regression from this work.
+- Backtick string literals are `` `...` `` — there is NO `q` prefix form in D
+  (that's D's `q"..."` delimited strings). `return q`...`` does not compile.
+- `std.algorithm.startsWith` is required for string prefix checks; D string
+  UFCS does not include it by default.
+
 ## aurora-web first milestone: own HTML/CSS/layout/paint + from-scratch JS engine (2026-08-19)
 
 A new DUB library `aurora-web/` implements the first full browser-core
