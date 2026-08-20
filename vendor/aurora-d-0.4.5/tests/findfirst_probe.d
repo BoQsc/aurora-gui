@@ -9,27 +9,31 @@ int main()
 {
     version (Windows)
     {
-        auto base = "C:\\Users\\Windows10_new\\Documents\\web_webserver";
-        foreach (pat; [
-            base ~ "\\*.*",
-            "\\\\?\\" ~ base ~ "\\*.*"
+        foreach (base; [
+            "C:\\Users\\Windows10_new\\Documents\\web_webserver",
+            "C:\\Users\\Windows10_new\\Desktop",
+            "C:\\Users\\Windows10_new\\Downloads",
+            "C:\\Users\\Windows10_new\\Documents"
         ])
         {
-            WIN32_FIND_DATAW fd;
-            auto wpat = pat.toUTF16;
-            auto h = FindFirstFileW(wpat.ptr, &fd);
-            if (h is null || h == INVALID_HANDLE_VALUE)
+            foreach (attempt; 0 .. 8)
             {
-                writeln("PATTERN [", pat, "] FAILED err=", GetLastError());
-                continue;
+                WIN32_FIND_DATAW fd;
+                auto wpat = (base ~ "\\*.*").toUTF16;
+                auto h = FindFirstFileW(wpat.ptr, &fd);
+                if (h is null || h == INVALID_HANDLE_VALUE)
+                    writeln("[", base, "] attempt ", attempt, ": FAILED err=", GetLastError());
+                else
+                {
+                    int count;
+                    do
+                    {
+                        ++count;
+                    } while (FindNextFileW(h, &fd));
+                    FindClose(h);
+                    writeln("[", base, "] attempt ", attempt, ": OK count=", count);
+                }
             }
-            int count;
-            do
-            {
-                ++count;
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
-            writeln("PATTERN [", pat, "] OK count=", count, " (incl . and ..)");
         }
     }
     return 0;

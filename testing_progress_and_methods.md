@@ -4597,3 +4597,36 @@ Feature E (v7) - fixed folders showing EMPTY (e.g. web_webserver):
   - ALSO FIXED: the pump filtered out ALL dot-prefixed names (cFileName[0] != " . "") hiding .gitignore/.gitmodules/.pytest_cache. Now only skips exact "." and ".." (isDotOrDotDot); dotfiles show like Explorer.
   - Verified: web_webserver loads 58 items (matches dir listing). scroll-test + dub test pass. Probe configs: findfirst-probe, png-decode-probe, fm-load-probe (dev tools).
 
+
+Feature E (v8) - fix intermittent empty/partial folders (Desktop/Downloads etc.):
+  - Verified FindFirstFileW with *.* is consistent (8/8 OK on web_webserver/Desktop/Downloads/Documents via findfirst-probe). Intermittency was from transient FindFirstFileW failures (err 2/183) + FindNextFileW errors mid-enumeration.
+  - FIX: buildWindowsPumpStep retries FindFirstFileW up to 10x (1ms apart) so a transient failure can never produce an empty folder; FindNextFileW non-NO_MORE_FILES errors finish gracefully with what was enumerated.
+  - FIX: startFolderLoad now calls cancelFolderLoad() first, closing the previous in-flight FindFirstFile handle (prevents handle leak + stale pump on rapid navigation).
+  - Verified real folders: Desktop 417 items, Downloads 186, web_webserver 58 (all match dir counts minus . and ..). scroll-test + dub test pass; app runs.
+
+
+Scroll isolation confirmed + thumbnail-decode-during-scroll jank fixed:
+  - Rendering is ALREADY viewport-limited: drawDetailsView starts at firstViewportVisibleRowIndex() (O(log n) binary search over precomputed offsets) and breaks below the viewport; only visible rows draw per frame, never the whole folder. Row offsets are cached (_visibleRowOffsetsDirty), rebuilt only on view/zoom/width changes, not per scroll.
+  - Remaining scroll jank on image folders was thumbnail PNG decode (47-182ms each) running on the UI thread. FIXED: thumbnails now decode ONLY after the UI has been idle ~0.3s (setListScroll resets _uiIdleClock; onTick gates pumpThumbnails on _uiIdleClock >= 0.3), so scrolling stays smooth and thumbnails fill in after you stop.
+  - Verified: scroll-test + dub test (32) pass; app runs on screenshots folder + Downloads.
+
+
+Feature E (v9) - fix "forever loading" on ACTIVE folders (Downloads):
+  - ROOT CAUSE: Downloads receives files constantly. The folder-change watcher (pollFolderAutoRefresh) detected each change and called autoRefreshCurrentFolder -> navigate -> full reload, resetting the list + "Loading…" status on every change -> looked like it never finished.
+  - FIX: (1) quiet reload (_quietReload): auto-refresh navigates WITHOUT clearing the list or flashing "Loading…" (keeps showing old items until new batch lands); (2) debounce: change-notification reloads at most once per autoRefreshIntervalSeconds (1s); (3) folderSnapshot rewritten to use FindFirstFileW (cheap, no per-file stat) so the periodic change check is fast and matches the loader fingerprint.
+  - Verified: Downloads loads 186 items and stays settled; 0 auto-refresh storms over 9s; scroll-test + dub test (32) pass.
+
+
+Feature E (v10) - load-path audit: correctness + efficiency fixes:
+  - Audit found: (1) pump called windowsWideBufferString twice per entry + buildPath alloc per entry -> now compute name once, use path ~ "\" ~ name; (2) flushDirectoryBatch called rebuildVisibleEntries() (O(n) over all entries) on EVERY 300-entry flush -> O(n^2) for big folders. Now rebuild is throttled to ~10x/sec during streaming (finishFolderLoad always does the final rebuild).
+  - Verified with real timing: 20,000-item folder loads in 782ms total (pump streams 67 flushes, ~300-20000). Downloads (187 items) loads in ~0ms. Small folders = instant, large = streams with visible progress.
+  - Correctness: isDotOrDotDot exact-match (only . and .. skipped, dotfiles shown); path building now path\\name (no double buildPath); FindFirstFileW *.* + retry (no empty folders).
+  - Verified: scroll-test + dub test (32) pass; app runs. No leftover instrumentation.
+
+
+Feature E (v11) - DEFINITIVE fix for "click away and back = forever":
+  - Reproduced deterministically with a tick-driven navigation probe (onTick state machine): start Downloads (195 items) -> navigate Desktop (417) -> navigate BACK to Downloads => FindFirstFileW(path\\*.*) fails REPEATEDLY with error 183 (ERROR_ALREADY_EXISTS) on the second load of the same folder, so buildWindowsPumpStep returned null -> _dirIterating=false + "Loading" stuck + empty list.
+  - FIX: if buildWindowsPumpStep returns null (FindFirstFileW refuses), fall back to std.file dirEntries (foreach form - reliably links) for a synchronous reliable enumeration. Navigation can NEVER get stuck on Loading now.
+  - Verified with the probe: Downloads 197 -> Desktop 417 -> Downloads 197, all settled with correct status; no more stuck Loading.
+  - scroll-test + dub test (32) pass; no leftover instrumentation. Test helpers entryCountForTest/statusTextForTest/navigateForTest kept for future repro.
+

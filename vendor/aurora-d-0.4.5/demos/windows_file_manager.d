@@ -14,6 +14,8 @@ import std.string : icmp, strip, toLower;
 import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 import std.datetime : SysTime;
 import std.datetime.systime : FILETIMEToSysTime;
+import core.thread : Thread;
+import core.time : msecs;
 
 version (Windows)
 {
@@ -889,6 +891,9 @@ private TextField _locateField;
     private void delegate() _dirPumpStep;
     private bool _dirIterating;
     private double _loadSpinnerClock;
+    private double _uiIdleClock;
+    private bool _quietReload;
+    private long _lastStreamRebuildMs;
     version (Windows)
         private HANDLE _dirFindHandle;
     private string _dirIteratePath;
@@ -1118,7 +1123,12 @@ private TextField _locateField;
         updateThisPcArrowFade(deltaSeconds);
         updateSmoothScrolling(deltaSeconds);
         pumpDirectoryLoad();
-        pumpThumbnails();
+        // Only decode thumbnails once the UI has been idle briefly (no recent
+        // scrolling), so scrolling large image folders never hitches on a
+        // 47-180ms PNG decode.
+        _uiIdleClock += deltaSeconds;
+        if (_uiIdleClock >= 0.3)
+            pumpThumbnails();
         if (_dirIterating)
         {
             _loadSpinnerClock += deltaSeconds;
@@ -2657,6 +2667,7 @@ override bool onMouseMove(ref Event event)
         {
             _statusText = "Cannot open folder: " ~ error.msg;
             invalidate();
+            return;
         }
     }
 
@@ -2941,6 +2952,8 @@ override bool onMouseMove(ref Event event)
 
     private void startFolderLoad(string path)
     {
+        // Cancel any previous in-flight pump (closes its FindFirstFile handle).
+        cancelFolderLoad();
         // Reset per-folder load state.
         _dirIteratePath = path;
         _dirIterateFingerprint = 14695981039346656037UL;
@@ -2948,14 +2961,52 @@ override bool onMouseMove(ref Event event)
         _dirIterateBatch.length = 0;
         _folderEntries.length = 0;
         _entries.length = 0;
+        _lastStreamRebuildMs = 0;
         clearSelection();
         rebuildVisibleEntries();
-        _statusText = "Loading " ~ baseName(path) ~ " …";
+        if (!_quietReload)
+        {
+            // Only manual navigation flashes the loading status; quiet
+            // auto-refresh (active folders like Downloads) replaces the list
+            // in place so it never looks stuck.
+            _statusText = "Loading " ~ baseName(path) ~ " …";
+        }
         invalidate();
 
         version (Windows)
         {
             _dirPumpStep = buildWindowsPumpStep(path);
+            if (_dirPumpStep is null)
+            {
+                // FindFirstFileW refused to open the directory (intermittent
+                // error 183/2 on some folders). Fall back to std.file's
+                // dirEntries, which uses a different enumeration mechanism and
+                // reliably links in the foreach form, so navigation can never
+                // get stuck on "Loading".
+                try
+                {
+                    foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
+                    {
+                        ExplorerEntry entry;
+                        if (populateExplorerEntryLight(item, "", entry))
+                        {
+                            _folderEntries ~= entry;
+                            _entries = _folderEntries;
+                            ++_dirIterateCount;
+                            _dirIterateFingerprint ^= folderItemFingerprint(entry);
+                        }
+                    }
+                    finishFolderLoad();
+                    return;
+                }
+                catch (Exception error)
+                {
+                    _dirIterating = false;
+                    _statusText = "Cannot open folder: " ~ error.msg;
+                    invalidate();
+                    return;
+                }
+            }
         }
         else
         {
@@ -2994,16 +3045,30 @@ override bool onMouseMove(ref Event event)
     version (Windows)
     private void delegate() buildWindowsPumpStep(string path)
     {
-        wstring pattern = buildPath(path, "*.*").toUTF16;
-        WIN32_FIND_DATAW findData;
-        HANDLE handle = FindFirstFileW(pattern.ptr, &findData);
-        if (handle is null || handle == INVALID_HANDLE_VALUE)
-            return null;
-        _dirFindHandle = handle;
         import std.datetime.stopwatch : StopWatch;
         StopWatch budget;
         const budgetMilliseconds = 3.0;
         const flushEvery = 300;
+        wstring pattern = buildPath(path, "*.*").toUTF16;
+        WIN32_FIND_DATAW findData;
+        HANDLE handle = null;
+
+        // FindFirstFileW can transiently fail (e.g. ERROR_FILE_NOT_FOUND on
+        // directories with special 8.3-conflicting names, or a briefly locked
+        // directory). Retrying makes an "empty folder" bug impossible: we
+        // never give up on the very first call after one failure.
+        int attempts;
+        while (true)
+        {
+            handle = FindFirstFileW(pattern.ptr, &findData);
+            if (handle !is null && handle != INVALID_HANDLE_VALUE)
+                break;
+            ++attempts;
+            if (attempts >= 10) return null;
+            Thread.sleep(1.msecs);
+        }
+        _dirFindHandle = handle;
+
         return delegate()
         {
             budget.reset();
@@ -3012,10 +3077,10 @@ override bool onMouseMove(ref Event event)
             {
                 if (!isDotOrDotDot(findData.cFileName[]))
                 {
+                    const name = windowsWideBufferString(findData.cFileName[]);
                     ExplorerEntry entry;
-                    entry.path = buildPath(path,
-                        windowsWideBufferString(findData.cFileName[]));
-                    entry.name = windowsWideBufferString(findData.cFileName[]);
+                    entry.path = path ~ "\\" ~ name;
+                    entry.name = name;
                     entry.directory =
                         (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                     if (!entry.directory)
@@ -3032,11 +3097,17 @@ override bool onMouseMove(ref Event event)
                         flushDirectoryBatch();
                 }
                 if (!FindNextFileW(handle, &findData))
+                {
+                    // ERROR_NO_MORE_FILES = normal end. Any other error is
+                    // transient (directory changed under us); finish with what
+                    // we have rather than truncate to empty.
                     break;
+                }
                 if (budget.peek().total!"msecs" >= budgetMilliseconds)
                     return;
             }
             FindClose(handle);
+            handle = null;
             _dirFindHandle = null;
             flushDirectoryBatch();
             finishFolderLoad();
@@ -3083,9 +3154,23 @@ override bool onMouseMove(ref Event event)
         _folderEntries ~= _dirIterateBatch;
         _entries = _folderEntries;
         _dirIterateBatch.length = 0;
-        // Stream rows in enumeration order; the single final sort below runs
-        // once when the folder is complete.
-        rebuildVisibleEntries();
+        // Rebuilding all visible rows is O(n); while streaming, throttle it to
+        // ~10x/sec so a huge folder stays responsive. finishFolderLoad() always
+        // does the final full rebuild.
+        import std.datetime.stopwatch : StopWatch;
+        static StopWatch sw;
+        static bool started;
+        if (!started)
+        {
+            sw.start();
+            started = true;
+        }
+        const now = sw.peek().total!"msecs";
+        if (now - _lastStreamRebuildMs >= 100 || _lastStreamRebuildMs == 0)
+        {
+            _lastStreamRebuildMs = now;
+            rebuildVisibleEntries();
+        }
         _statusText = format("Loading %s … (%d items)", baseName(_currentPath),
             _entries.length);
         invalidate();
@@ -3130,6 +3215,13 @@ override bool onMouseMove(ref Event event)
             {
                 if (!folderChangeNotificationPending())
                     return;
+                // Debounce: an active folder (e.g. Downloads) reports changes
+                // constantly; reloading on every one would look stuck. Refresh
+                // at most once per autoRefreshIntervalSeconds.
+                _autoRefreshClock += deltaSeconds;
+                if (_autoRefreshClock < autoRefreshIntervalSeconds)
+                    return;
+                _autoRefreshClock = 0.0;
                 shouldCheck = true;
                 forceRefresh = _searchQuery.length > 0;
             }
@@ -3183,7 +3275,12 @@ override bool onMouseMove(ref Event event)
         const selectedPath = hasSelection() ? selectedEntry().path : "";
         const savedScroll = _scrollY;
         const savedSidebarScroll = _sidebarScrollY;
+        // Quiet reload: no "Loading…" flash and no scroll reset, so an active
+        // folder (e.g. Downloads receiving files) refreshes in place instead
+        // of looking stuck.
+        _quietReload = true;
         navigate(path, false, false);
+        _quietReload = false;
         setFolderWatchBaseline(path, fingerprint, count);
         if (selectedPath.length > 0)
             selectPath(selectedPath);
@@ -3258,17 +3355,39 @@ override bool onMouseMove(ref Event event)
             return false;
         }
 
-        try
+        version (Windows)
+        {
+            // Cheap change-detection pass using FindFirstFileW directly (no
+            // per-file stat), folding the same fields as the loader's pump so
+            // the baseline always matches.
+            wstring pattern = buildPath(path, "*.*").toUTF16;
+            WIN32_FIND_DATAW findData;
+            HANDLE handle = FindFirstFileW(pattern.ptr, &findData);
+            if (handle is null || handle == INVALID_HANDLE_VALUE)
+                return false;
+            scope (exit) FindClose(handle);
+            do
+            {
+                if (isDotOrDotDot(findData.cFileName[])) continue;
+                ExplorerEntry entry;
+                entry.name = windowsWideBufferString(findData.cFileName[]);
+                entry.directory =
+                    (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                if (!entry.directory)
+                    entry.size = (cast(ulong) findData.nFileSizeHigh << 32) |
+                        findData.nFileSizeLow;
+                entry.modifiedTime = FILETIMEToSysTime(&findData.ftLastWriteTime);
+                fingerprint ^= folderItemFingerprint(entry);
+                ++count;
+            } while (FindNextFileW(handle, &findData));
+        }
+        else
         {
             foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
             {
                 fingerprint ^= folderItemFingerprint(item);
                 ++count;
             }
-        }
-        catch (Exception)
-        {
-            return false;
         }
 
         mixFolderHash(fingerprint, cast(ulong) count);
@@ -6302,6 +6421,9 @@ override bool onMouseMove(ref Event event)
         _listSmoothScrollActive = false;
         rebuildScrollbars();
         updateRenameFieldBounds();
+        // Any scroll is user activity; defer thumbnail decodes until idle so
+        // scrolling large image folders stays smooth.
+        _uiIdleClock = 0.0;
         invalidate();
     }
 
@@ -7861,6 +7983,20 @@ override bool onMouseMove(ref Event event)
         return result;
     }
 
+    // Test/diagnostic helpers (also used by the scripted app build).
+    int entryCountForTest() const @safe pure nothrow @nogc
+    {
+        return cast(int) _entries.length;
+    }
+    string statusTextForTest() const @safe pure nothrow @nogc
+    {
+        return _statusText;
+    }
+    void navigateForTest(string path)
+    {
+        navigate(path, true, true);
+    }
+
     version (AuroraHeadless)
     {
         int testListScrollY() const @safe pure nothrow @nogc { return _scrollY; }
@@ -8376,6 +8512,7 @@ int main(string[] args)
     options.iconPath = windowsFileManagerIconPath();
     auto window = new GuiWindow(options, explorerTheme());
     const initial = args.length > 1 ? args[1] : "";
-    window.setRoot(new WindowsFileManagerRoot(window, initial));
+    auto root = new WindowsFileManagerRoot(window, initial);
+    window.setRoot(root);
     return window.run();
 }

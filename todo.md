@@ -3682,3 +3682,18 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Folders showing EMPTY fixed: FindFirstFileW "\\*" fails err=2 on dirs with special-char filenames -> use "*.*"; dotfiles (.gitignore etc.) now shown (only . and .. skipped).
 
+
+  [x] Intermittent empty/partial folders fixed: retry FindFirstFileW (never give up on first failure) + handle FindNextFileW errors + cancel previous pump on navigation.
+
+
+  [x] Scrolling renders only visible rows (already viewport-limited); thumbnail decodes deferred until UI idle (0.3s) so image-folder scrolling is smooth.
+
+
+  [x] "Forever loading" on active folders fixed: quiet auto-reload (no Loading flash/list clear) + debounced change detection + cheap FindFirstFileW folderSnapshot.
+
+
+  [x] Load-path audit: fixed double-name-conversion + buildPath alloc per entry, throttled O(n) rebuild during streaming (was O(n^2)); 20k folder = 782ms, small folders = 0ms.
+
+
+  [x] "Click away and back = forever" FIXED: FindFirstFileW fails error 183 on 2nd load of a folder -> fallback to dirEntries enumeration so navigation never gets stuck.
+
