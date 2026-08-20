@@ -3659,3 +3659,26 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Image-icon previews (PNG only): lazy thumbnail decode + box-downscale + bounded LRU cache, drawn in all view modes. Non-PNG formats (jpg/bmp/gif) still show generic image icon - TODO later: Windows shell IShellItemImageFactory for all formats + async loading for big folders.
 
+
+  [x] Slow large-folder open: async/streamed directory loading (worker thread, batched drain, inline watch fingerprint, non-blocking navigation cancel, search cancels load, headless keeps sync path).
+
+
+  [x] Large-folder open v2: light worker populate + lazy metadata (visible rows/sorts only) + bounded drain (400/tick) + throttled rebuild (~0.12s) + persistent mutex/generation cancel. Worker I/O remains the floor (cache-dependent).
+  [ ] Cold start still ~2.5s (Vulkan instance/device ~2.1s, unavoidable app-side; first-frame gap ~300ms).
+
+
+  [x] Streaming v3: drain 400/tick + immediate rebuild in enumeration order (first items visible instantly, no sort while loading); single final sort at completion.
+
+
+  [x] Load v4: synchronous budgeted pump (FindFirstFileW, 3ms/tick reset), small folders instant in navigate(), large stream 300/tick; no threads; fixed DirIterator link trap + pattern + budget-reset bugs.
+
+
+  [x] Thumbnails no longer block paint (deferred decode pump, 6ms/tick budget); folder renders instantly with generic icons, thumbs pop in.
+  [x] Documented: never judge behavior from a stale build - always verify exe rebuilt (build errors were being hidden by filtered output).
+
+
+  [x] Visible loading indicator (animated bar + item count) while a folder streams; first items appear immediately, never loads-all-at-once.
+
+
+  [x] Folders showing EMPTY fixed: FindFirstFileW "\\*" fails err=2 on dirs with special-char filenames -> use "*.*"; dotfiles (.gitignore etc.) now shown (only . and .. skipped).
+

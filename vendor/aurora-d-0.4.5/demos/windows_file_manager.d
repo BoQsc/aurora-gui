@@ -12,6 +12,8 @@ import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension,
 import std.process : Config, environment, spawnProcess;
 import std.string : icmp, strip, toLower;
 import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
+import std.datetime : SysTime;
+import std.datetime.systime : FILETIMEToSysTime;
 
 version (Windows)
 {
@@ -109,6 +111,7 @@ private struct ExplorerEntry
     string type;
     bool sizeKnown;
     bool quickAccessRecent;
+    SysTime modifiedTime;
 }
 
 private struct VisibleRow
@@ -883,6 +886,15 @@ private TextField _locateField;
     private bool _watchedFolderValid;
     version (Windows)
         private HANDLE _folderChangeHandle;
+    private void delegate() _dirPumpStep;
+    private bool _dirIterating;
+    private double _loadSpinnerClock;
+    version (Windows)
+        private HANDLE _dirFindHandle;
+    private string _dirIteratePath;
+    private ulong _dirIterateFingerprint;
+    private size_t _dirIterateCount;
+    private ExplorerEntry[] _dirIterateBatch;
     private CommandButton _pressedCommand = CommandButton.none;
     private bool _pendingEntryDrag;
     private bool _draggingEntry;
@@ -932,6 +944,9 @@ private TextField _locateField;
     private RgbaImage[string] _thumbnailCache;
     private string[] _thumbnailOrder;
     private bool[string] _thumbnailFailed;
+    private string[] _thumbnailPending;
+    private bool[string] _thumbnailPendingSet;
+    private bool _thumbnailsChanged;
 
     void delegate(string title) onTitleChanged;
 
@@ -980,7 +995,17 @@ private TextField _locateField;
         _searchField.onChanged = delegate()
         {
             clearLocate();
+            const hadQuery = _searchQuery.length > 0;
             _searchQuery = _searchField.textUtf8();
+            if (_searchQuery.length > 0)
+                cancelFolderLoad();
+            else if (hadQuery && !_showQuickAccess && !_showThisPc)
+            {
+                // A cancelled folder load may have left the entry list partial;
+                // reload the folder to restore the full listing.
+                navigate(_currentPath, false, false);
+                return;
+            }
             updateSearchResults();
         };
         _searchField.onSubmitted = delegate()
@@ -1092,6 +1117,14 @@ private TextField _locateField;
     {
         updateThisPcArrowFade(deltaSeconds);
         updateSmoothScrolling(deltaSeconds);
+        pumpDirectoryLoad();
+        pumpThumbnails();
+        if (_dirIterating)
+        {
+            _loadSpinnerClock += deltaSeconds;
+            if (_loadSpinnerClock >= 0.5)
+                _loadSpinnerClock -= 0.5;
+        }
         pollFolderAutoRefresh(deltaSeconds);
     }
 
@@ -2588,21 +2621,11 @@ override bool onMouseMove(ref Event event)
 
             _showQuickAccess = false;
             _showThisPc = false;
-            ExplorerEntry[] entries;
-            foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
-            {
-                ExplorerEntry entry;
-                if (!populateExplorerEntry(item, "", entry)) continue;
-                entries ~= entry;
-            }
             if (enteringNewFolder)
                 applyDefaultViewForPath(path);
-            _folderEntries = entries;
-            _entries = entries;
             _currentPath = path;
             clearSelection();
             _scrollY = 0;
-            resetFolderWatch(path);
 
             if (clearSearch)
             {
@@ -2614,14 +2637,64 @@ override bool onMouseMove(ref Event event)
 
             if (addHistory)
                 pushHistory(path);
-            updateSearchResults();
             updateWindowTitle();
+
+            version (AuroraHeadless)
+            {
+                // Headless tests are synchronous and assert immediately after
+                // construction, so load the folder inline there.
+                loadFolderSynchronously(path);
+            }
+            else
+            {
+                // Enumerating large folders is I/O bound and would freeze the
+                // UI thread for hundreds of milliseconds. Stream it on a
+                // worker thread; pollFolderLoad() fills the list progressively.
+                startFolderLoad(path);
+            }
         }
         catch (Exception error)
         {
             _statusText = "Cannot open folder: " ~ error.msg;
             invalidate();
         }
+    }
+
+    private void loadFolderSynchronously(string path)
+    {
+        ExplorerEntry[] entries;
+        ulong fingerprint;
+        size_t count;
+        try
+        {
+            foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
+            {
+                ExplorerEntry entry;
+                if (!populateExplorerEntry(item, "", entry))
+                    continue;
+                entries ~= entry;
+                ++count;
+                fingerprint ^= folderItemFingerprint(item);
+            }
+        }
+        catch (Exception)
+        {
+            _statusText = "Cannot open folder: " ~ path;
+            invalidate();
+            return;
+        }
+        mixFolderHash(fingerprint, cast(ulong) count);
+        _folderEntries = entries;
+        _entries = entries;
+        sortEntries(_entries);
+        rebuildVisibleEntries();
+        _watchedFolderPath = _currentPath;
+        _watchedFolderFingerprint = fingerprint;
+        _watchedFolderCount = count;
+        _watchedFolderValid = true;
+        version (Windows)
+            startFolderChangeNotification(_currentPath);
+        updateWindowTitle();
     }
 
     private void applyDefaultViewForPath(string path)
@@ -2866,6 +2939,179 @@ override bool onMouseMove(ref Event event)
         _watchedFolderValid = true;
     }
 
+    private void startFolderLoad(string path)
+    {
+        // Reset per-folder load state.
+        _dirIteratePath = path;
+        _dirIterateFingerprint = 14695981039346656037UL;
+        _dirIterateCount = 0;
+        _dirIterateBatch.length = 0;
+        _folderEntries.length = 0;
+        _entries.length = 0;
+        clearSelection();
+        rebuildVisibleEntries();
+        _statusText = "Loading " ~ baseName(path) ~ " …";
+        invalidate();
+
+        version (Windows)
+        {
+            _dirPumpStep = buildWindowsPumpStep(path);
+        }
+        else
+        {
+            // Non-Windows: enumerate synchronously (the foreach form links
+            // cleanly, unlike a stored lazy iterator).
+            try
+            {
+                foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
+                {
+                    ExplorerEntry entry;
+                    if (populateExplorerEntryLight(item, "", entry))
+                    {
+                        _folderEntries ~= entry;
+                        _entries = _folderEntries;
+                        ++_dirIterateCount;
+                        _dirIterateFingerprint ^= folderItemFingerprint(entry);
+                    }
+                }
+                finishFolderLoad();
+                return;
+            }
+            catch (Exception error)
+            {
+                _dirIterating = false;
+                _statusText = "Cannot open folder: " ~ error.msg;
+                invalidate();
+                return;
+            }
+        }
+        _dirIterating = _dirPumpStep !is null;
+        // Small folders finish synchronously right here (instant); large ones
+        // stream the rest through pumpDirectoryLoad() on each tick.
+        pumpDirectoryLoad();
+    }
+
+    version (Windows)
+    private void delegate() buildWindowsPumpStep(string path)
+    {
+        wstring pattern = buildPath(path, "*.*").toUTF16;
+        WIN32_FIND_DATAW findData;
+        HANDLE handle = FindFirstFileW(pattern.ptr, &findData);
+        if (handle is null || handle == INVALID_HANDLE_VALUE)
+            return null;
+        _dirFindHandle = handle;
+        import std.datetime.stopwatch : StopWatch;
+        StopWatch budget;
+        const budgetMilliseconds = 3.0;
+        const flushEvery = 300;
+        return delegate()
+        {
+            budget.reset();
+            budget.start();
+            while (true)
+            {
+                if (!isDotOrDotDot(findData.cFileName[]))
+                {
+                    ExplorerEntry entry;
+                    entry.path = buildPath(path,
+                        windowsWideBufferString(findData.cFileName[]));
+                    entry.name = windowsWideBufferString(findData.cFileName[]);
+                    entry.directory =
+                        (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    if (!entry.directory)
+                    {
+                        entry.size = (cast(ulong) findData.nFileSizeHigh << 32) |
+                            findData.nFileSizeLow;
+                        entry.sizeKnown = true;
+                    }
+                    entry.modifiedTime = FILETIMEToSysTime(&findData.ftLastWriteTime);
+                    _dirIterateBatch ~= entry;
+                    ++_dirIterateCount;
+                    _dirIterateFingerprint ^= folderItemFingerprint(entry);
+                    if (_dirIterateBatch.length >= flushEvery)
+                        flushDirectoryBatch();
+                }
+                if (!FindNextFileW(handle, &findData))
+                    break;
+                if (budget.peek().total!"msecs" >= budgetMilliseconds)
+                    return;
+            }
+            FindClose(handle);
+            _dirFindHandle = null;
+            flushDirectoryBatch();
+            finishFolderLoad();
+        };
+    }
+
+    /// True for the "." and ".." pseudo-entries only; real dotfiles (e.g.
+    /// ".gitignore") are shown like Windows Explorer does.
+    private static bool isDotOrDotDot(const(wchar)[] name) @safe pure nothrow @nogc
+    {
+        if (name.length == 0 || name[0] != '.') return false;
+        if (name[1] == 0) return true;
+        return name[1] == '.' && name[2] == 0;
+    }
+
+    /// Stop the in-progress directory pump (if any). Synchronous, so it just
+    /// prevents further tick work; navigation to another folder replaces the
+    /// pump immediately.
+    private void cancelFolderLoad()
+    {
+        _dirIterating = false;
+        _dirPumpStep = null;
+        _dirIterateBatch.length = 0;
+        version (Windows)
+        {
+            if (_dirFindHandle !is null)
+            {
+                FindClose(_dirFindHandle);
+                _dirFindHandle = null;
+            }
+        }
+    }
+
+    /// Advance the directory pump by one time-budgeted slice on the UI thread.
+    private void pumpDirectoryLoad()
+    {
+        if (!_dirIterating || _dirPumpStep is null) return;
+        _dirPumpStep();
+    }
+
+    private void flushDirectoryBatch()
+    {
+        if (_dirIterateBatch.length == 0) return;
+        _folderEntries ~= _dirIterateBatch;
+        _entries = _folderEntries;
+        _dirIterateBatch.length = 0;
+        // Stream rows in enumeration order; the single final sort below runs
+        // once when the folder is complete.
+        rebuildVisibleEntries();
+        _statusText = format("Loading %s … (%d items)", baseName(_currentPath),
+            _entries.length);
+        invalidate();
+    }
+
+    private void finishFolderLoad()
+    {
+        _dirIterating = false;
+        // Final sort + rebuild now that the whole folder is present.
+        _entries = _folderEntries;
+        sortEntries(_entries);
+        rebuildVisibleEntries();
+
+        // One enumeration pass above also produced the watch baseline, so the
+        // folder watcher starts without a second directory scan.
+        _watchedFolderPath = _currentPath;
+        _watchedFolderFingerprint = _dirIterateFingerprint;
+        _watchedFolderCount = _dirIterateCount;
+        _watchedFolderValid = true;
+        version (Windows)
+            startFolderChangeNotification(_currentPath);
+        updateStatus();
+        updateWindowTitle();
+        invalidate();
+    }
+
     private void pollFolderAutoRefresh(double deltaSeconds)
     {
         if (_showQuickAccess || _showThisPc || _currentPath.length == 0)
@@ -2999,7 +3245,7 @@ override bool onMouseMove(ref Event event)
     private static bool folderSnapshot(string path, out ulong fingerprint,
         out size_t count)
     {
-        fingerprint = 14695981039346656037UL;
+        fingerprint = 0;
         count = 0;
         if (path.length == 0) return false;
         try
@@ -3012,12 +3258,11 @@ override bool onMouseMove(ref Event event)
             return false;
         }
 
-        string[] signatures;
         try
         {
             foreach (DirEntry item; dirEntries(path, SpanMode.shallow))
             {
-                signatures ~= folderSnapshotEntry(item);
+                fingerprint ^= folderItemFingerprint(item);
                 ++count;
             }
         }
@@ -3026,29 +3271,31 @@ override bool onMouseMove(ref Event event)
             return false;
         }
 
-        sort(signatures);
-        foreach (signature; signatures)
-            mixFolderHash(fingerprint, signature);
         mixFolderHash(fingerprint, cast(ulong) count);
         return true;
     }
 
-    private static string folderSnapshotEntry(DirEntry item)
+    /// Order-independent (XOR) per-item fingerprint so a single directory pass
+    /// can accumulate it while the worker builds entries. Reuses the already
+    /// formatted strings so it costs almost nothing per file.
+    private static ulong folderItemFingerprint(ExplorerEntry entry)
     {
-        bool directory;
-        ulong size;
-        string modified;
-        try
-        {
-            directory = item.isDir;
-            if (!directory) size = item.size;
-            modified = format("%s", item.timeLastModified);
-        }
-        catch (Exception)
-        {
-        }
-        return item.name ~ "\t" ~ (directory ? "d" : "f") ~ "\t" ~
-            format("%d", size) ~ "\t" ~ modified;
+        ulong hash = 14695981039346656037UL;
+        mixFolderHash(hash, entry.name);
+        mixFolderHash(hash, entry.directory ? "d" : "f");
+        mixFolderHash(hash, entry.size);
+        mixFolderHash(hash, entry.modifiedTime.stdTime);
+        return hash;
+    }
+
+    private static ulong folderItemFingerprint(DirEntry item)
+    {
+        ExplorerEntry entry;
+        entry.name = item.name;
+        entry.directory = item.isDir;
+        if (!entry.directory) entry.size = item.size;
+        entry.modifiedTime = item.timeLastModified;
+        return folderItemFingerprint(entry);
     }
 
     private static void mixFolderHash(ref ulong hash, const(char)[] value)
@@ -3127,6 +3374,7 @@ override bool onMouseMove(ref Event event)
                 entry.size = item.size;
                 entry.sizeKnown = true;
             }
+            entry.modifiedTime = item.timeLastModified;
             entry.modified = modifiedText(item);
             entry.modifiedSortKey = modifiedSortKey(item);
             entry.modifiedDay = entry.modifiedSortKey.length >= 10
@@ -3140,6 +3388,7 @@ override bool onMouseMove(ref Event event)
             return false;
         }
     }
+
 
     private static string relativeSearchName(string root, string path)
     {
@@ -3245,6 +3494,8 @@ override bool onMouseMove(ref Event event)
         string previousGroupLabel;
         if (!_showQuickAccess && !_showThisPc)
         {
+            if (_groupBy == GroupBy.dateModified)
+                finalizeAllEntries();
             foreach (index, entry; _entries)
             {
                 if (query.length == 0 || containsInsensitive(entry.name, query))
@@ -3274,6 +3525,62 @@ override bool onMouseMove(ref Event event)
         setListScroll(_scrollY);
         updateStatus();
         invalidate();
+    }
+
+    /// Cheap populate for the background loader. The worker also calls
+    /// finalizeExplorerEntry() so the expensive SysTime string formatting runs
+    /// off the UI thread; the UI drain then just appends rows.
+    private static bool populateExplorerEntryLight(DirEntry item,
+        string displayName, out ExplorerEntry entry)
+    {
+        entry = ExplorerEntry.init;
+        entry.path = item.name;
+        entry.name = displayName.length > 0 ? displayName : baseName(item.name);
+        if (entry.name.length == 0) entry.name = item.name;
+        try
+        {
+            entry.directory = item.isDir;
+            if (!entry.directory)
+            {
+                entry.size = item.size;
+                entry.sizeKnown = true;
+            }
+            entry.modifiedTime = item.timeLastModified;
+            return true;
+        }
+        catch (Exception)
+        {
+            entry = ExplorerEntry.init;
+            return false;
+        }
+    }
+
+    private static void finalizeExplorerEntry(ref ExplorerEntry entry)
+    {
+        if (entry.type.length > 0) return;
+        entry.modified = modifiedText(entry);
+        entry.modifiedSortKey = modifiedSortKey(entry);
+        entry.modifiedDay = entry.modifiedSortKey.length >= 10
+            ? entry.modifiedSortKey[0 .. 10] : "Unknown date";
+        entry.type = typeText(entry.name, entry.directory);
+    }
+
+    /// Lazy metadata: fills the display strings for a stored entry on demand
+    /// (visible rows and metadata sorts only), keeping the background folder
+    /// load cheap even for folders with tens of thousands of files.
+    private void ensureEntryMetadata(int entryIndex)
+    {
+        if (entryIndex < 0 || entryIndex >= cast(int) _entries.length) return;
+        auto entry = _entries[cast(size_t) entryIndex];
+        if (entry.type.length > 0) return;
+        finalizeExplorerEntry(entry);
+        _entries[cast(size_t) entryIndex] = entry;
+    }
+
+    private void finalizeAllEntries()
+    {
+        foreach (ref entry; _entries)
+            finalizeExplorerEntry(entry);
     }
 
     private void ensureVisibleRowOffsets()
@@ -3411,6 +3718,10 @@ override bool onMouseMove(ref Event event)
 
     private void sortEntries(ref ExplorerEntry[] entries)
     {
+        if (_sortColumn == SortColumn.modified || _sortColumn == SortColumn.type ||
+            _groupBy == GroupBy.dateModified)
+            foreach (ref entry; entries)
+                finalizeExplorerEntry(entry);
         sort!((a, b) => compareEntries(a, b) < 0)(entries);
     }
 
@@ -3566,6 +3877,7 @@ override bool onMouseMove(ref Event event)
 
     private void openQuickAccess()
     {
+        cancelFolderLoad();
         clearLocate();
         _showQuickAccess = true;
         _showThisPc = false;
@@ -3588,6 +3900,7 @@ override bool onMouseMove(ref Event event)
 
     private void openThisPc()
     {
+        cancelFolderLoad();
         clearLocate();
         _showQuickAccess = false;
         _showThisPc = true;
@@ -5153,6 +5466,7 @@ override bool onMouseMove(ref Event event)
 
     private void showEntryProperties(ExplorerEntry entry)
     {
+        finalizeExplorerEntry(entry);
         const location = entry.drive ? "This PC" : dirName(entry.path);
         showProperties(entry.path, entry.name, entry.type, entry.sizeText, location);
     }
@@ -6364,6 +6678,7 @@ override bool onMouseMove(ref Event event)
     private void drawDetailsEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
+        ensureEntryMetadata(entryIndexForVisibleRow(visibleIndex));
         const iconSize = inlineEntryIconSizePx();
         const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
         const textX = row.x + inlineEntryTextXOffsetPx();
@@ -6418,6 +6733,7 @@ override bool onMouseMove(ref Event event)
     private void drawTileEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
+        ensureEntryMetadata(entryIndexForVisibleRow(visibleIndex));
         const iconSize = viewIconSizePx();
         const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
         drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(8), iconY,
@@ -6435,6 +6751,7 @@ override bool onMouseMove(ref Event event)
     private void drawContentEntry(ref Canvas canvas, Rect row,
         int visibleIndex, ExplorerEntry entry)
     {
+        ensureEntryMetadata(entryIndexForVisibleRow(visibleIndex));
         const iconSize = viewIconSizePx();
         const iconY = row.y + maxInt(0, (row.height - iconSize) / 2);
         drawExplorerEntryIcon(canvas, entry, Rect(row.x + scaled(8), iconY,
@@ -6497,22 +6814,53 @@ override bool onMouseMove(ref Event event)
         auto cached = path in _thumbnailCache;
         if (cached !is null) return *cached;
         if (path in _thumbnailFailed) return null;
+        // Defer the (potentially expensive) PNG decode off the paint path;
+        // pumpThumbnails() decodes a few per tick so paint never stalls.
+        if (!(path in _thumbnailPendingSet))
+        {
+            _thumbnailPending ~= path;
+            _thumbnailPendingSet[path] = true;
+        }
+        return null;
+    }
+
+    private void pumpThumbnails()
+    {
+        if (_thumbnailPending.length == 0) return;
+        import std.datetime.stopwatch : StopWatch;
+        StopWatch budget;
+        budget.start();
+        const budgetMilliseconds = 6.0;
+        while (_thumbnailPending.length > 0)
+        {
+            const path = _thumbnailPending[0];
+            _thumbnailPending = _thumbnailPending[1 .. $];
+            _thumbnailPendingSet.remove(path);
+            if (path in _thumbnailCache || path in _thumbnailFailed)
+                continue;
         try
         {
             auto image = loadPngImage(path);
             if (image is null)
             {
                 _thumbnailFailed[path] = true;
-                return null;
+                continue;
             }
             auto downscaled = downscaleThumbnail(image, thumbnailTargetSide);
             cacheThumbnail(path, downscaled);
-            return downscaled;
+            _thumbnailsChanged = true;
         }
-        catch (Exception)
+            catch (Exception)
+            {
+                _thumbnailFailed[path] = true;
+            }
+            if (budget.peek().total!"msecs" >= budgetMilliseconds)
+                break;
+        }
+        if (_thumbnailsChanged)
         {
-            _thumbnailFailed[path] = true;
-            return null;
+            _thumbnailsChanged = false;
+            invalidate();
         }
     }
 
@@ -6852,8 +7200,7 @@ override bool onMouseMove(ref Event event)
     }
 
     private void drawStatusBar(ref Canvas canvas)
-    {
-        canvas.fillRect(_statusRect, explorerStatus);
+    {        canvas.fillRect(_statusRect, explorerStatus);
         canvas.fillRect(Rect(_statusRect.x, _statusRect.y, _statusRect.width, 1),
             explorerLine);
         const rightInset = _locateActive
@@ -6862,6 +7209,8 @@ override bool onMouseMove(ref Event event)
         drawText(canvas, Rect(_statusRect.x + scaled(20), _statusRect.y,
             maxInt(0, _statusRect.width - scaled(20) - rightInset), _statusRect.height), _statusText,
             explorerText, HorizontalAlign.left);
+        if (_dirIterating)
+            drawLoadingIndicator(canvas);
         if (_locateActive)
         {
             canvas.drawRoundedRect(_locateRect, 0, explorerField, explorerFieldBorder, 1);
@@ -6869,6 +7218,26 @@ override bool onMouseMove(ref Event event)
                 scaled(42), _locateRect.height), "Find:", explorerMuted,
                 HorizontalAlign.left);
         }
+    }
+
+    /// An indeterminate animated loader drawn in the status bar while the
+    /// folder is still streaming, so loading is clearly visible and alive.
+    private void drawLoadingIndicator(ref Canvas canvas)
+    {
+        const barWidth = scaled(120);
+        const barHeight = scaled(4);
+        const y = _statusRect.y + (_statusRect.height - barHeight) / 2;
+        const x = _statusRect.right() - scaled(20) - barWidth;
+        canvas.fillRoundedRect(Rect(x, y, barWidth, barHeight), barHeight / 2,
+            explorerField);
+        // A moving highlight segment cycles across the bar.
+        const segment = scaled(36);
+        const maxOffset = barWidth - segment;
+        const phase = _loadSpinnerClock / 0.5;
+        const slide = cast(int) (phase * 2.0 * maxOffset);
+        const segX = slide <= maxOffset ? slide : maxOffset * 2 - slide;
+        canvas.fillRoundedRect(Rect(x + segX, y, segment, barHeight),
+            barHeight / 2, explorerBlue);
     }
 
     private void drawNavButton(ref Canvas canvas, Rect rect, CommandButton command,
@@ -7378,6 +7747,34 @@ override bool onMouseMove(ref Event event)
         const haystack = value.toLower();
         return haystack.length >= loweredNeedle.length &&
             haystack[0 .. loweredNeedle.length] == loweredNeedle;
+    }
+
+    private static string modifiedSortKey(ExplorerEntry entry)
+    {
+        try
+        {
+            const time = entry.modifiedTime;
+            return format("%04d-%02d-%02d %02d:%02d:%02d",
+                cast(int) time.year, cast(int) time.month, cast(int) time.day,
+                cast(int) time.hour, cast(int) time.minute, cast(int) time.second);
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    private static string modifiedText(ExplorerEntry entry)
+    {
+        try
+        {
+            auto text = format("%s", entry.modifiedTime);
+            return text.length > 16 ? text[0 .. 16] : text;
+        }
+        catch (Exception)
+        {
+            return "";
+        }
     }
 
     private static string modifiedSortKey(DirEntry item)

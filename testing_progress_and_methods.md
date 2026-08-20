@@ -4542,3 +4542,58 @@ Feature D - image-icon thumbnails (PNG, lazy + bounded LRU):
   - Verify: dub run --config=file-manager-scroll-test passes - it now writes real generated PNGs into the scroll dir and paints them (decode+downscale+drawImage), plus testDownscale asserts 300x200->192x128.
   - App runs fine on a PNG-heavy folder (aurora-notepad/build).
 
+
+Feature E - async/streamed folder loading (fixes slow large-folder open):
+  - Diagnosis: dirEntries enumeration was ~750ms on a 15k-file folder on the UI thread + folderSnapshot did a SECOND full enumeration (~1.5s total freeze). Rendering was already viewport-limited.
+  - Fix: navigate() now starts startFolderLoad() - a worker thread enumerates once, batches ~500 entries, and computes the watch fingerprint inline (XOR combine, order-independent). pollFolderLoad() on onTick drains batches (sort+rebuild ~1-3ms each) so the list streams in and the UI stays responsive; window title/status appear immediately.
+  - folderSnapshot() changed to the same order-independent XOR fingerprint so the worker baseline and later change-detection agree (verified: adding a file auto-refreshes 15000 -> 15001).
+  - Navigation cancels the old load without blocking (generation counter + stale-thread self-terminate); search cancels the load; destructor joins. Headless (AuroraHeadless) builds use the old synchronous loadFolderSynchronously() so tests stay deterministic.
+  - Verified: bigdir 15k files loads to 15000 entries async (window visible at ~3s, i.e. no UI freeze); auto-refresh to 15001 works; scroll-test + dub test + app-on-normal-folder all pass/run.
+
+
+Feature E (v2) - perf work on large-folder open:
+  - Measured with temp StopWatch logs: dirEntries enumeration I/O dominates (130ms warm-cache .. 785ms cold-cache for 15k files). CPU formatting is secondary.
+  - Worker now does a LIGHT populate (name/path/dir/size + raw SysTime) + cheap order-independent XOR fingerprint (folds name/dir/size/modifiedTime.stdTime, no format).
+  - Metadata (modified/modifiedSortKey/modifiedDay/type) is LAZY: ensureEntryMetadata(finalizeExplorerEntry) fills on demand for visible rows (drawDetails/Tile/Content), and for modified/type sorts or date grouping (sortEntries + rebuildVisibleEntries finalizeAllEntries). showEntryProperties finalizes too.
+  - pollFolderLoad drains at most 400 entries/tick (bounded, so a fast worker/cold-start gap never stalls the UI), appends cheaply, and throttles sort+rebuild to ~every 0.12s; final rebuild on completion.
+  - Worker + UI thread: single persistent Mutex (created in ctor), generation counter for non-blocking cancel, search cancels load, destructor joins. Headless keeps synchronous loadFolderSynchronously.
+  - Verified: streaming ticks every ~15ms with no UI stall; 15k folder fully loaded ~1.05s cold / ~150ms warm; scroll-test + dub test (32 modules) pass; app runs on normal + PNG folders.
+  - REMAINING: cold start is dominated by Vulkan instance/device (~2.1s) + first-frame gap (~300-400ms before first tick) which cannot be avoided app-side.
+
+
+Feature E (v3) - make streaming actually visible/progressive:
+  - Removed the sort+rebuild throttle that delayed row appearance. pollFolderLoad now drains <=400/tick and rebuilds rows IMMEDIATELY in enumeration order (no sort while loading).
+  - Rows stream in 400-item increments (verified via temp log: 400..15000, 38 increments), so the first items are visible on the very first drain instead of waiting for the whole folder + sort.
+  - A single final sort + rebuild runs once when the load completes (O(n log n), ~1-2ms even for 15k).
+  - Scrolling uses precomputed row offsets (O(1) per row); only visible rows paint.
+
+
+Feature E (v4) - REPLACED threaded loader with synchronous time-budgeted pump:
+  - Thread + mutex + scratch-buffer approach was fragile and produced confusing stalls. Now: startFolderLoad() builds a closure that pumps the directory via raw Windows FindFirstFileW/FindNextFileW with a 3ms budget RESET per tick.
+  - Small folders complete synchronously INSIDE navigate() (instant, no loading flash). Large folders stream ~300-item chunks per tick; rows appear immediately in enumeration order; single final sort on completion.
+  - Phobos gotcha: importing/using std.file.DirIterator (lazy dirEntries stored in any struct/closure/field) breaks lld-link on this DMD (undefined SafeRefCounted!DirIteratorImpl dtor). Must NOT import DirIterator; use raw FindFirstFileW on Windows (foreach dirEntries is fine, it links).
+  - BUG fixed: FindFirstFileW pattern must be buildPath(path, "*") NOT path ~ "*" (the latter matches <folder>* in the parent). BUG fixed: the pump StopWatch must be reset each invocation or it processes 1 item/tick.
+  - cancelFolderLoad() stops pumping + closes the FindFirstFile handle; search cancels load; navigation replaces the pump; no threads, no mutex, no races.
+  - Verified: 9-file folder -> 9 items instantly; 15k folder -> 15000 items via streaming; scroll-test + dub test (32) pass; app runs both sizes.
+
+
+Feature E (v5) - thumbnail decode off paint path + real root-cause:
+  - REAL culprit for "screenshots folder stuck": PNG thumbnail decode ran SYNCHRONOUSLY during onPaint (measured 47-182ms per decode; demos-montage.png is 16-bit and fails decode). Fixed: thumbnailFor() now only ENQUEUES the path (returns null -> generic icon), and pumpThumbnails() on onTick decodes a few per 6ms budget; paint never stalls.
+  - CRITICAL LESSON: multiple "still slow" reports were caused by testing STALE exes (build errors swallowed by | findstr /V, old binary ran). ALWAYS rebuild with errors shown and verify exe is current before judging behavior.
+  - Verified real app: screenshots folder -> FindFirstFileW ok, pump invoke, finishFolderLoad: 9 items (instant), 8 thumbnails decoded lazily; 20k folder streams and completes. dub test 32 modules + scroll-test pass.
+  - Added dev probes: tests/fm_load_probe.d (aurora-fm-load-probe) times enumeration (20k = ~1.4-2.1s disk I/O floor) + tick/paint throughput; tests/png_decode_probe.d times PNG decode.
+
+
+Feature E (v6) - loading UX + verification:
+  - PROVED the real app streams: instrumented pump log showed 300->20000 items in ~70 progressive flushes on a 20k folder (startFolderLoad -> pump tick -> flush total=300,600,...20000). The loader never loads all-at-once; it shows the first items immediately and streams.
+  - Added a visible indeterminate loading indicator (animated bar) + "Loading X … (N items)" status while _dirIterating, so loading is clearly happening.
+  - Small folders complete synchronously inside navigate() (no loading flash at all).
+  - Verified: app runs on 20k folder; scroll-test + dub test (32) pass; no leftover instrumentation.
+
+
+Feature E (v7) - fixed folders showing EMPTY (e.g. web_webserver):
+  - ROOT CAUSE: FindFirstFileW(path ~ "\\*") FAILS with ERROR_FILE_NOT_FOUND (err=2) on directories that contain a filename with special chars (e.g. "$(if($w){$w.Substring(0") that breaks 8.3 short-name resolution. Pump returned null -> folder appeared empty.
+  - FIX: use pattern buildPath(path, "*.*") instead of "*". *.* matches all entries reliably (verified via tests/findfirst_probe.d: * fails err=2, *.* returns 60 incl . and ..; \\?\ prefix also works).
+  - ALSO FIXED: the pump filtered out ALL dot-prefixed names (cFileName[0] != " . "") hiding .gitignore/.gitmodules/.pytest_cache. Now only skips exact "." and ".." (isDotOrDotDot); dotfiles show like Explorer.
+  - Verified: web_webserver loads 58 items (matches dir listing). scroll-test + dub test pass. Probe configs: findfirst-probe, png-decode-probe, fm-load-probe (dev tools).
+

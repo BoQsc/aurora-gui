@@ -363,6 +363,49 @@
       ]
     },
     {
+      "name": "findfirst-probe",
+      "targetType": "executable",
+      "targetName": "aurora-findfirst-probe",
+      "mainSourceFile": "tests/findfirst_probe.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "png-decode-probe",
+      "targetType": "executable",
+      "targetName": "aurora-png-decode-probe",
+      "mainSourceFile": "tests/png_decode_probe.d",
+      "sourceFiles": [
+        "demos/windows_file_manager.d"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    },
+    {
+      "name": "file-manager-load-probe",
+      "targetType": "executable",
+      "targetName": "aurora-fm-load-probe",
+      "mainSourceFile": "tests/fm_load_probe.d",
+      "sourceFiles": [
+        "demos/windows_file_manager.d"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    },
+    {
       "name": "widget-infrastructure-test",
       "targetType": "executable",
       "targetName": "aurora-widget-infrastructure-test",
