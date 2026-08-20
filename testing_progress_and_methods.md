@@ -1,4 +1,4 @@
-# Testing Progress and Methods (Aurora Cut)
+﻿# Testing Progress and Methods (Aurora Cut)
 
 ## aurora-d: TrueType bytecode hinting, retry (2026-08-19)
 
@@ -18,12 +18,12 @@ collapsed to empty) and was reverted. Redone carefully.
 
 **Corpus verification** (`hint_corpus_test`): full printable ASCII at
 8/10/12/14/16 px across Segoe UI, Consolas, Arial.
-- Before safety net: Segoe had 3-4 EMPTY glyphs (K/L/l/T/Z) — unreadable.
+- Before safety net: Segoe had 3-4 EMPTY glyphs (K/L/l/T/Z) â€” unreadable.
 - After: 0 empty glyphs. Consolas 0 broken; Segoe/Arial flags are all thin
   glyphs (i/l/!|./;) that legitimately have near-zero dark-pixel ratio.
 
 **Measured:** menu text solid_fraction 0.628 (hinted) vs 0.235 (unhinted
-baseline) — ~2.7x crisper. Live Vulkan app menu text readable and crisp.
+baseline) â€” ~2.7x crisper. Live Vulkan app menu text readable and crisp.
 `headless_smoke` + 32 vendored unittests pass.
 
 **Files:** `source/aurora/text/hinter.d` (new VM), `truetype.d` (fpgm/prep/
@@ -50,7 +50,7 @@ Three parallel `general` subagents (marker-file protocol, 3/3 succeeded):
 Parallel-edit caution: agents ran simultaneously on the same files; each noted
 and fixed minor cross-compile issues (net.d `DWORD decoding`, layout `cast`).
 Coordinator re-ran the FULL suite: 40 modules, engine smoke, browser force
-build + 29-check headless smoke — all green.
+build + 29-check headless smoke â€” all green.
 
 ## aurora-web milestone 9: internally-wrapping text runs overlapped following inline content (2026-08-19)
 
@@ -110,7 +110,7 @@ viewport bug, not subtle spacing. Root cause found in the browser shell
   page out at `maxInt(1, size().width)` = **1px wide**.
 - `onPaint` called `_page.layout()` every frame but NEVER re-sized the page to
   the widget's actual bounds (only `onBoundsChanged` did, and only when the
-  size *changed* from the stored 1x1 — which could be missed).
+  size *changed* from the stored 1x1 â€” which could be missed).
 - At 1px width, EVERY character wraps to its own line; all text stacks
   vertically and overlaps into an unreadable mess. Exactly what the user saw.
 
@@ -149,7 +149,7 @@ Fix:
   by `layoutDirectText`); before, they were laid out as 0x0 blocks.
 
 Verified: the same `<p>` now lays out `Hello `@x=0, `<b>bold</b>`@x=40..71,
-` world `@x=71..119, `<i>italic</i>`@x=119..151, ` tail`@x=151..176 — strictly
+` world `@x=71..119, `<i>italic</i>`@x=119..151, ` tail`@x=151..176 â€” strictly
 increasing x, no overlap. Painted output confirms dark text spans the row, and
 the browser's rendered hello page shows distinct text bands with correct
 spacing. New smoke regression asserts inline runs have strictly increasing x.
@@ -157,7 +157,7 @@ spacing. New smoke regression asserts inline runs have strictly increasing x.
 Full suite green: 39 modules, engine smoke ALL PASSED, browser smoke ALL
 PASSED (29 checks).
 
-## aurora-web milestone 6: rendering made correct — the real root cause (2026-08-19)
+## aurora-web milestone 6: rendering made correct â€” the real root cause (2026-08-19)
 
 User: "the web browser is nonsense the rendering makes no sense."
 
@@ -168,8 +168,8 @@ A real diagnosis found THREE compounding defects:
    overflowed its box; block heights and text positions didn't match paint.
 2. **HTML parser auto-closed every block ancestor** (html.d): when a `<p>`
    opened inside a `<div>`, the block-push loop popped the `<div>` too, so
-   `<div><p>…</p></div>` became two siblings.
-3. **THE big one — `Canvas.layoutText(text, scale, …)` treats its 4th arg as a
+   `<div><p>â€¦</p></div>` became two siblings.
+3. **THE big one â€” `Canvas.layoutText(text, scale, â€¦)` treats its 4th arg as a
    typographic SCALE, not a pixel size** (`fontPixelSize(2)=17`,
    `fontPixelSize(16)=102`). paint.d's `drawTextRun` passed `pixelSize=16`
    into `layoutText`, so every text run was shaped at **102px**, drawn ~36px
@@ -198,7 +198,7 @@ bug. Assert positions, not just presence. And never assume a library's
 parameter means what a similar library's does (`layoutText` scale vs
 `textEngine.layout` pixelSize).
 
-## Aurora Designer — how to build/verify a new Aurora-D UI designer app (2026-08-19)
+## Aurora Designer â€” how to build/verify a new Aurora-D UI designer app (2026-08-19)
 
 New `aurora-designer/` (visual UI designer for Aurora-D GUIs). The test
 procedure that keeps it verifiable without a display:
@@ -217,14 +217,14 @@ procedure that keeps it verifiable without a display:
   click found by widget `id` (`palette-label0`).
 - **Rendered-layout verification without viewing the image**: run
   `aurora-designer.exe --screenshot build\headless-smoke\designer-visual.ppm`
-  (1600x1000) and sample pixels per region — left palette `#252526`, artboard
+  (1600x1000) and sample pixels per region â€” left palette `#252526`, artboard
   window node `#2d2d30`, checkerboard `#2b2b2b/#333333`, inspector panel
-  `#252526` — plus a distinct-sampled-color count as a blank-render guard.
+  `#252526` â€” plus a distinct-sampled-color count as a blank-render guard.
 - **Codegen compile check**: generate code for a window + button + vbox tree,
   paste it into a tiny D `main`, and compile it with the same `dmd -i`
   command to prove the emitted `setId`/`setText`/`setAccent`/`setBounds`/
   `add` calls are real Aurora-D API. Only panels/windows get `setBackground`
-  (Button has no such method — a real codegen correctness catch).
+  (Button has no such method â€” a real codegen correctness catch).
 - **Portable policy**: `python scripts\verify-windows-portability.py` (no
   args) confirms every dub.json carries the `portable-release` static-CRT
   buildType; `aurora-designer` was added to
@@ -232,10 +232,10 @@ procedure that keeps it verifiable without a display:
 
 **Lesson**: keep the designer's document model self-contained (plain D
 structs + a custom line-per-node text format) and the rendering in one
-`DesignCanvas` widget that maps viewport→artboard coordinates; the headless
+`DesignCanvas` widget that maps viewportâ†’artboard coordinates; the headless
 test then exercises real pointer paths instead of poking private state.
 
-## aurora-web milestone 5: parallel subagent buildout — media types, selectors, real navigation, JS polish, images (2026-08-19)
+## aurora-web milestone 5: parallel subagent buildout â€” media types, selectors, real navigation, JS polish, images (2026-08-19)
 
 Four parallel `general` subagents each completed one non-overlapping track and
 wrote a marker file (preventing the silent-no-op failures seen earlier).
@@ -251,7 +251,7 @@ Coordinator re-verified every track independently.
   `auroraweb:` built-ins offline; `WebPageView.hitTestLink(x,y)` walks DOM `<a>`
   boxes; `onMouseDown` resolves href and navigates; pointer-cursor hover; new
   `auroraweb:links` page. Headless smoke grew to 29 checks incl. link
-  hit-test and click-to-navigate. NOTE: plain inline `<a>` gets no box —
+  hit-test and click-to-navigate. NOTE: plain inline `<a>` gets no box â€”
   anchors must be inline-block.
 - **JS polish** (js.d): `for-of` (arrays+strings), coercion (`toNumber`;
   string relational compare; looseEquals ToPrimitive `[]==false`, `[0]==false`;
@@ -304,7 +304,7 @@ renders real-time exact frames during live resize.**
 - Measured with a real `SetWindowPos` resize loop while running the app with
   `AURORA_RESIZE_PROFILE=1`: **live_frames=30** for 30 resize steps
   (one exact frame per step), `live_max_us=7517,897` (7.5 ms worst scene build,
-  0.9 ms worst render — far under the 16.6 ms budget). Final frame render 254 us.
+  0.9 ms worst render â€” far under the 16.6 ms budget). Final frame render 254 us.
 
 **How to reproduce the audit:** launch with `AURORA_RESIZE_PROFILE=1`, then
 drive `SetWindowPos` (or drag the border). The window title shows
@@ -313,16 +313,16 @@ drive `SetWindowPos` (or drag the border). The window title shows
 
 **Note:** `SendMessage(WM_SYSCOMMAND, SC_SIZE)` (synthetic resize) does NOT
 run the modal loop, so it reports `live_frames=0` and a huge `render_us` from a
-swapchain rebuild — that path is NOT representative of a real user drag.
+swapchain rebuild â€” that path is NOT representative of a real user drag.
 
 
 ## aurora-web milestone 4: real async/await, grid rows, float wrapping (2026-08-19)
 
 An honest audit before this milestone found three features that had been
 *claimed* in milestone 3 but were NOT actually implemented:
-1. **`await` was never parsed** — `parseUnary` had no `await` case, so
+1. **`await` was never parsed** â€” `parseUnary` had no `await` case, so
    `awaitExpr` nodes were never created; `async` just wrapped results.
-2. **Promise was a stub** — `awaitPromise` returned `undefined` on pending
+2. **Promise was a stub** â€” `awaitPromise` returned `undefined` on pending
    promises and never resumed.
 3. **Grid auto-rows** hardcoded `18px`; **float wrapping** had only a
    `floatLeft` cursor, no wrap-around shaping.
@@ -366,12 +366,12 @@ build\aurora-browser-smoke.exe              # headless_smoke: ALL PASSED (21 che
 Milestone 3 overclaimed async/await, grid rows and float wrap; milestone 4
 added real implementations + targeted unittests.
 
-## aurora-web milestone 3: remaining gaps closed — arrows/Promises/media/grid/tables/DOM/browser shell (2026-08-19)
+## aurora-web milestone 3: remaining gaps closed â€” arrows/Promises/media/grid/tables/DOM/browser shell (2026-08-19)
 
 Coordinator-implemented (the general subagents repeatedly returned empty on
 multi-file tasks; verified diffs before merging and finished the rest by hand).
 
-**JS engine (`js.d`)** — arrow functions (expression + block, lexical `this`
+**JS engine (`js.d`)** â€” arrow functions (expression + block, lexical `this`
 captured via `__arrow_this` sentinel in the closure scope), template literals
 (backtick token kind `templateLit`, `${expr}` interpolation with nesting),
 Promise + `then`/`catch`/`resolve` + microtask queue + `pumpTimers()` +
@@ -381,28 +381,28 @@ resolved Promise, `await` best-effort. D gotchas hit: `template` is a D
 keyword (enum member renamed `templateLit`); `in` is a keyword (foreach uses
 `;`).
 
-**Layout/CSS** — `@media (min/max-width/height)` with `and`/`,` parsed in
+**Layout/CSS** â€” `@media (min/max-width/height)` with `and`/`,` parsed in
 css.d; `applyMediaRules(rules, vw, vh)` filters before layout; rgba/hsla/rgb/
 hsl colors in paint.d (with hslToRgb); `em`/`rem`/`vh`/`vw` units in
 ComputedStyle.resolveLength; CSS Grid (`grid-template-columns` with `fr`,
 auto-placement, gap) in layoutGrid; basic tables (table/row/cell, `th` bold);
 `box-sizing: border-box` in resolveWidth/resolveHeight; direct-text blocks
 now lay text out inline and measure height (previously a `<p>` with only a
-TextNode child had height 0 → all paragraphs overlapped at y=0).
+TextNode child had height 0 â†’ all paragraphs overlapped at y=0).
 
-**DOM bindings (`dombind.d`)** — innerHTML getter/setter (serialize + parse
+**DOM bindings (`dombind.d`)** â€” innerHTML getter/setter (serialize + parse
 fragment via `parseFragment`), classList (add/remove/toggle/contains backed
 by the class attribute), `style` as an object with a `__setHandler` (so
 `el.style.color = "red"` writes the style attribute) + setProperty/
 getPropertyValue, parentNode/firstChild/lastChild/children/childNodes via
-`__get_` getters, event bubbling (leaf → ancestors) with an event object.
+`__get_` getters, event bubbling (leaf â†’ ancestors) with an event object.
 D gotchas: `__setHandler`/`__get_<name>` routing added to setProp/getProp in
 js.d; methods that capture the element must NOT use `unwrap(thisValue)` when
-the receiver is a sub-object (classList/style) — capture the element directly.
+the receiver is a sub-object (classList/style) â€” capture the element directly.
 
-**Browser shell (`aurora-browser/appui.d`)** — bookmarks bar (★ toggle +
+**Browser shell (`aurora-browser/appui.d`)** â€” bookmarks bar (â˜… toggle +
 per-URL buttons that navigate), vertical page scrolling in WebPageView
-(mouse wheel → scrollY offset, translated+clipped paint, scrollbar thumb),
+(mouse wheel â†’ scrollY offset, translated+clipped paint, scrollbar thumb),
 `contentHeight()` walks the DOM tree bottom (not root.box.height which is the
 viewport). New `auroraweb:scroll` test page (120 paragraphs).
 
@@ -504,12 +504,12 @@ query Win32 in a per-monitor-DPI-aware PowerShell script:
 **Gotchas:**
 
 - The classic menu bar lives in the NON-CLIENT area (GetMenuItemRect returns a
-  screen rect above the client origin) — that's why notepad's menu looks like
+  screen rect above the client origin) â€” that's why notepad's menu looks like
   it overlaps the caption area; the caption bar (29 @120) is ABOVE the menu.
-- `GetMenuBarInfo` with OBJID_MENU fails on Win10 notepad (returns False) —
+- `GetMenuBarInfo` with OBJID_MENU fails on Win10 notepad (returns False) â€”
   use `SM_CYMENU` + `GetMenuItemRect` instead.
 - `PrintWindow`/BitBlt of notepad returns only the white client (the classic
-  menu and status bar don't capture) — measure via Win32 rects, don't rely on
+  menu and status bar don't capture) â€” measure via Win32 rects, don't rely on
   screenshots for the native app.
 - Screen `CopyFromScreen`/BitBlt on Aurora's hardware surface returns black
   (DirectComposition); use Aurora's own `--screenshot <path>` software
@@ -580,18 +580,18 @@ of the web engine from a desktop app.
 
 **Files:**
 
-- `aurora-browser/dub.json` — executable; sourcePaths include
+- `aurora-browser/dub.json` â€” executable; sourcePaths include
   `source`, `../vendor/aurora-d-0.4.5/source`, `../aurora-web/source`;
   libs-windows `user32 gdi32 shell32 wininet`, lflags-windows
   `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, portable-release buildType, v0.66.3.
-- `aurora-browser/source/app.d` — entry point: `GuiWindow` + `BrowserRoot`;
+- `aurora-browser/source/app.d` â€” entry point: `GuiWindow` + `BrowserRoot`;
   `--screenshot <path>` runs a software-render paint-and-save cycle.
-- `aurora-browser/source/aurorabrowser/appui.d` — `BrowserRoot` (VBox):
+- `aurora-browser/source/aurorabrowser/appui.d` â€” `BrowserRoot` (VBox):
   toolbar (Back/Forward/Reload buttons, `AddressField`, Go, New tab), tab strip
   label, `WebPageView` content widget, status bar. `WebPageView` overrides
   `Widget.onPaint(ref Canvas)` and calls `page.layout()` + `page.paint(canvas,0,0)`.
-- `aurora-browser/RUN-WINDOWS.bat` — `dub run --build=release`.
-- `aurora-browser/tests/headless_smoke.d` — UiTestDriver smoke test (12 checks).
+- `aurora-browser/RUN-WINDOWS.bat` â€” `dub run --build=release`.
+- `aurora-browser/tests/headless_smoke.d` â€” UiTestDriver smoke test (12 checks).
 
 **How to build and test:**
 
@@ -652,7 +652,7 @@ build\aurora-browser-headless-smoke.exe   # prints headless_smoke: ALL PASSED
   EVERY package (including aurora-notepad): `-mscrtlib=libcmt` needs MSVC's
   `libcmt.lib`, and only DMD's mingw libs are installed. Debug and plain
   `--build=release` both work. Not a regression from this work.
-- Backtick string literals are `` `...` `` — there is NO `q` prefix form in D
+- Backtick string literals are `` `...` `` â€” there is NO `q` prefix form in D
   (that's D's `q"..."` delimited strings). `return q`...`` does not compile.
 - `std.algorithm.startsWith` is required for string prefix checks; D string
   UFCS does not include it by default.
@@ -667,7 +667,7 @@ tracks. All verified green:
   `apply`, String/Array prototype methods, Object.keys/assign/create,
   JSON.stringify/parse, parseInt radix, Error/TypeError/RangeError/SyntaxError,
   real `new` + prototype chains + instanceof. DMD quirk: try/catch inside the
-  same `switch` as a `throw` never catches — moved try-body into a helper.
+  same `switch` as a `throw` never catches â€” moved try-body into a helper.
 - **Layout depth** (coordinator): margin collapsing, percentage lengths,
   min/max-width/height, absolute positioning, flexbox rows, per-side borders,
   real inline text positions on TextNode.
@@ -855,8 +855,8 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   The modern minimal build REMOVED the deprecated `-filter_complex_script`
   option (full n7.1 still has it). The app used it in exactly two export
   paths:
-  - `exporter.d` `performComposition()` — every MP4/MP3 export.
-  - `exporter.d` `renderCompositeFrame()` — composed single-frame render.
+  - `exporter.d` `performComposition()` â€” every MP4/MP3 export.
+  - `exporter.d` `renderCompositeFrame()` â€” composed single-frame render.
   On the release build those fail instantly:
   `Unrecognized option 'filter_complex_script'`. Live playback paths use
   inline `-filter_complex` and worked correctly with the bundled build.
@@ -947,7 +947,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   1. Launch `aurora-cut.exe`, open the yt-dlp download dialog (Download with
      yt-dlp), paste a YouTube URL (e.g. The Offspring - You're Gonna Go Far,
      Kid), pick 1080p.
-  2. Expect status-bar "Retrying in 2 s…" / "Retrying in 4 s…" if the first
+  2. Expect status-bar "Retrying in 2 sâ€¦" / "Retrying in 4 sâ€¦" if the first
      attempt 403s; if a retry succeeds the media is imported.
   3. Check `aurora-cut.log` for `yt-dlp download failed for '<url>': ...` on
      total failure, or `yt-dlp download complete: <path>` on success.
@@ -964,11 +964,11 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   2. Make undo/redo history include project media actions so an accidental
      media remove/unlink can be quickly undone/redone.
 - Toolbar merge (editor.d):
-  - Deleted the `Recent ▾` button (id `recent-projects`, field
+  - Deleted the `Recent â–¾` button (id `recent-projects`, field
     `_recentProjectsButton`).
   - The `Open` button (id `open-project`, `_openProjectButton`) now shows
-    `Open ▾`, keeps the folder icon, and its onClick opens the recent-projects
-    dropdown (`showRecentProjectsMenu`). "Browse project…" inside that menu
+    `Open â–¾`, keeps the folder icon, and its onClick opens the recent-projects
+    dropdown (`showRecentProjectsMenu`). "Browse projectâ€¦" inside that menu
     opens the classic file dialog (unchanged).
 - Media undo/redo (model.d / editor.d / project.d):
   - `TimelineSnapshot` gained a `MediaAsset[] assets` field so every history
@@ -992,8 +992,8 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     `validHistorySnapshots()` now validates clips against the snapshot's own
     asset count (falling back to the project asset count for older files).
 - Tests (tests/editor_smoke.d):
-  - Open button assertions: text `Open ▾`, directly right of Save, no
-    `recent-projects` widget, dropdown anchored below it, and "Browse project…"
+  - Open button assertions: text `Open â–¾`, directly right of Save, no
+    `recent-projects` widget, dropdown anchored below it, and "Browse projectâ€¦"
     reopens the file dialog.
   - Media delete undo/redo: delete an unused media item via the Delete key,
     then Ctrl+Z restores the asset (and list), Ctrl+Y removes it again.
@@ -1002,8 +1002,8 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
 - project.d unittest: snapshot assets round-trip (path/duration) and stale
   snapshots referencing removed assets are still dropped.
 - Verification:
-  - `dub test` → 35 modules passed.
-  - Headless `editor-smoke.exe` → "Aurora Cut multi-track editor smoke test
+  - `dub test` â†’ 35 modules passed.
+  - Headless `editor-smoke.exe` â†’ "Aurora Cut multi-track editor smoke test
     passed." (exit 0).
   - `model_smoke` and `project-test` pass.
 
@@ -1022,7 +1022,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   2. `TimelineWidget.setPlayhead` clamped the new value to
      `[0, sequenceDuration()]`; on an empty sequence `sequenceDuration() == 0`
      so every scrub pinned the playhead to 0.
-  3. Dedicated `In×`/`Out×` clear buttons sat in the sequence header (the
+  3. Dedicated `InÃ—`/`OutÃ—` clear buttons sat in the sequence header (the
      "move in and out buttons" ask) while the actual Set In/Out commands lived
      only in the Export context menu.
 - Fixes:
@@ -1035,7 +1035,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   2. `setPlayhead` only clamps to the sequence maximum when the duration is
      positive; on an empty sequence the raw value is accepted so the playhead
      can scrub the ruler freely. (A positive duration still clamps normally.)
-  3. Removed the `In×`/`Out×` header buttons and added "Set export In at
+  3. Removed the `InÃ—`/`OutÃ—` header buttons and added "Set export In at
      playhead" (I), "Set export Out at playhead" (O), and "Clear export
      In/Out" (Shift+I/O) to the timeline context menu in
      `showTimelineContextMenu`. Removed the now-dead `clearWorkIn`/`clearWorkOut`
@@ -1052,7 +1052,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     so the test can add an asset directly and refresh the bin.
 - Verification:
   - `dub build` clean.
-  - Headless `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3` → "Aurora Cut
+  - Headless `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3` â†’ "Aurora Cut
     multi-track editor smoke test passed." (exit 0).
   - `model_smoke` and `layout_smoke` pass.
 - Command for editor-smoke on Windows (same as before):
@@ -1076,15 +1076,15 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     mouseDown + mouseUp pair; the consumed down means `_pressed` never sets.)
 - Applied to every dropdown/toggle button in `source/auroracut/editor.d` and
   `source/auroracut/preview.d`:
-  1. History popup — `_historyPopup.setConsumeAnchorPress(true)` (editor.d ~3564)
-  2. Composition resolution popup — `_resolutionPopup.setConsumeAnchorPress(true)` (1510)
-  3. Compress previous output popup — `_compressOutputPopup.setConsumeAnchorPress(true)` (1632)
-  4. yt-dlp download dialog — `_downloadPopup.setConsumeAnchorPress(true)` (2850)
-  5. Recent Projects menu (`showContextMenuBelow`) — `menu.setConsumeAnchorPress(Rect of button globalOrigin/size)` (2654)
-  6. Inspector font presets menu (`showFontContextMenu`) — same (5663)
-  7. Preview quality menu (`showQualityContextMenu`) — same (8646)
-  8. yt-dlp quality menu inside the download dialog (`showYtDlpQualityMenu`) — same (2725)
-  9. Inline text font menu in `preview.d` (`showInlineFontMenu`) — same (1604)
+  1. History popup â€” `_historyPopup.setConsumeAnchorPress(true)` (editor.d ~3564)
+  2. Composition resolution popup â€” `_resolutionPopup.setConsumeAnchorPress(true)` (1510)
+  3. Compress previous output popup â€” `_compressOutputPopup.setConsumeAnchorPress(true)` (1632)
+  4. yt-dlp download dialog â€” `_downloadPopup.setConsumeAnchorPress(true)` (2850)
+  5. Recent Projects menu (`showContextMenuBelow`) â€” `menu.setConsumeAnchorPress(Rect of button globalOrigin/size)` (2654)
+  6. Inspector font presets menu (`showFontContextMenu`) â€” same (5663)
+  7. Preview quality menu (`showQualityContextMenu`) â€” same (8646)
+  8. yt-dlp quality menu inside the download dialog (`showYtDlpQualityMenu`) â€” same (2725)
+  9. Inline text font menu in `preview.d` (`showInlineFontMenu`) â€” same (1604)
 - For context menus (anchor keyed by global rect) the anchor rect is built from
   `button.localToGlobal(Point(0,0))` + `button.bounds().width/height`; the demo
   (`vendor/.../demos/windows_file_manager.d:5119`) confirms that pattern.
@@ -1094,17 +1094,17 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   click the button again, assert `findOpenContextMenu(editor)` is null.
 - Verification: rebuilt `aurora-cut.exe` (no errors) and ran the headless
   editor-smoke (`dmd -i -version=AuroraHeadless ... editor_smoke.d ...` then
-  `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3`) — "Aurora Cut multi-track
+  `editor-smoke.exe base-av.mp4 overlay.mp4 audio.mp3`) â€” "Aurora Cut multi-track
   editor smoke test passed." (exit 0), including the new toggle asserts.
 
 ## Timeline item clickability gap at the bottom (2026-08-19)
 
 - User: after resizing the window there is a "gap" on timeline item
-  clickability at the bottom of the item/row — resizing seems to shift where
+  clickability at the bottom of the item/row â€” resizing seems to shift where
   the mouse clicks land vs where the item is painted.
 - Decided **upstream vs downstream** first: traced the framework's pointer
-  pipeline (`aurora-d-0.4.5`): `window.d` `handleMouseDown` →
-  `updateHover`/`targetAt` → `hitTest` → `dispatchToBubble` sets
+  pipeline (`aurora-d-0.4.5`): `window.d` `handleMouseDown` â†’
+  `updateHover`/`targetAt` â†’ `hitTest` â†’ `dispatchToBubble` sets
   `event.position = current.globalToLocal(event.globalPosition)`; the OS
   pointer is converted via `DisplayScale.physicalToLogical`
   (`win32.d:1714`/`1848`/`2312`). That conversion is internally consistent
@@ -1116,9 +1116,9 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     `y = rulerHeight() + NewTrackDropGap + rowTop(row) - _verticalScroll`.
   - **Hit-test** `trackAtY()` (`timeline.d:996`):
     `localY = y - rulerHeight() + _verticalScroll` (missing the 8 px gap).
-  With a default 24 px track: painted row y∈[32,56), hit-tested row y∈[24,48).
+  With a default 24 px track: painted row yâˆˆ[32,56), hit-tested row yâˆˆ[24,48).
   The bottom ~8 px of every painted clip body is a dead zone where
-  `trackAtY` fails → `clipAtPoint` returns -1 → the click falls through to the
+  `trackAtY` fails â†’ `clipAtPoint` returns -1 â†’ the click falls through to the
   playhead-scrub branch. `clipAtPoint` also gates on
   `trackRect(address).contains(point)` (the *painted* origin), so the two paths
   contradicted each other inside the same click handler. Resizing re-runs
@@ -1129,18 +1129,18 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   (`localY = y - rulerHeight() - NewTrackDropGap + _verticalScroll`).
 - Regression test (`tests/editor_smoke.d`, after the "selecting a timeline item
   moved the playhead" block): build the global point from
-  `clipRectForTesting` at `bottom()-4` (inside the body, below the ±3 px
+  `clipRectForTesting` at `bottom()-4` (inside the body, below the Â±3 px
   track-resize band at `resizeTrackAtY`), deselect first, `driver.click`, then
   assert `selectedTrack()==v1 && selectedIndex()==0` and that a second click
   does not move the playhead.
 - Verification workflow (proves the test catches the bug):
-  1. With the fix: compile + run editor-smoke → passes.
+  1. With the fix: compile + run editor-smoke â†’ passes.
   2. `copy timeline.d timeline.d.fixed`, `git checkout timeline.d` (revert fix
-     only), rebuild editor-smoke → the new assert fails ("Clicking the bottom
+     only), rebuild editor-smoke â†’ the new assert fails ("Clicking the bottom
      edge of a timeline item did not select it"), confirming the test detects
      the exact regression.
-  3. `move timeline.d.fixed timeline.d` (restore fix), rebuild, re-run → passes.
-  4. Full gate: `dub test --compiler=dmd --force` → 35 modules pass.
+  3. `move timeline.d.fixed timeline.d` (restore fix), rebuild, re-run â†’ passes.
+  4. Full gate: `dub test --compiler=dmd --force` â†’ 35 modules pass.
 - Commands (same as other smokes):
   `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
   tests\editor_smoke.d -of=build\headless-smoke\editor-smoke.exe
@@ -1173,7 +1173,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   - `tests/editor_smoke.d` "non-blocking edits" block was updated: moving a
     clip during active playback must (a) keep the transport running
     (`sequencePlaybackForTesting()`), (b) rebuild the video compositor
-    (`videoStatsForTesting().requests` increases — use `requests`, not
+    (`videoStatsForTesting().requests` increases â€” use `requests`, not
     `processesStarted`, because `requests` increments synchronously in
     `startCommand` while `processesStarted` increments on the worker thread),
     (c) clear the deferred flag and match the model revision.
@@ -1187,7 +1187,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     build\headless-smoke\media\base-av.mp4
     build\headless-smoke\media\overlay.mp4
     build\headless-smoke\media\audio.mp3`
-  - Full gate on this host: `dub test --compiler=dmd --force` → 35 modules;
+  - Full gate on this host: `dub test --compiler=dmd --force` â†’ 35 modules;
     editor-smoke; static-sequence-playback-smoke (`still.png audio.mp3`);
     synced-playback-preroll-smoke (`base-av.mp4`);
     playback-seek-resilience-smoke (`base-av.mp4 overlay.mp4 audio.mp3`);
@@ -1201,9 +1201,9 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   WITHOUT a try/catch. If the edit left the playhead past every clip's end
   (e.g. the sequence shrank below the playhead), the compositor throws
   "The selected export range is empty." (`normalizeExportRange`,
-  `exporter.d:710`) and that exception propagated out of `onTick` → hard crash.
+  `exporter.d:710`) and that exception propagated out of `onTick` â†’ hard crash.
   The `aurora-cut.log` tail also showed `startPlaybackPrewarm()` failing every
-  tick with the same exception (caught, but logged ~16×/s → frozen/laggy UI).
+  tick with the same exception (caught, but logged ~16Ã—/s â†’ frozen/laggy UI).
 - Fix:
   1. `refreshPlaybackStreamsForEdit()` now wraps `startPlaybackStreams()` in
      try/catch; on failure it stops the transport cleanly (leaves the last
@@ -1215,8 +1215,8 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
 - New regression test `tests/playback_edit_crash_repro.d`:
   - Setup: one asset (duration 0.5) as clip A on V1 [0,0.5] and clip B on V2
     [0.6,1.1]; start live playback with the playhead at 0.7 (inside B).
-  - Action: `editor.moveClipForTesting(v2, 0, v2, 0.0)` while playing → B now
-    ends at 0.5, sequence shrank below the playhead → compositor empty range.
+  - Action: `editor.moveClipForTesting(v2, 0, v2, 0.0)` while playing â†’ B now
+    ends at 0.5, sequence shrank below the playhead â†’ compositor empty range.
   - Assert: no crash; `sequencePlaybackForTesting()` is false after the
     debounced refresh (transport stopped gracefully).
   - Build/run:
@@ -1225,7 +1225,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32
     -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
     then `build\headless-smoke\playback-edit-crash-repro.exe
-    build\headless-smoke\media\base-av.mp4` → "passed (no crash on empty
+    build\headless-smoke\media\base-av.mp4` â†’ "passed (no crash on empty
     render range)."
 - **Follow-up complaint (playback stops at old end):** "why playback stops at
   timeline last item end position before I start moving on the timeline instead
@@ -1242,18 +1242,18 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   and playback keeps running.
 - `aurora-cut.exe` rebuild: `dub build --compiler=dmd --force`. NOTE if the app
   is currently running, the linker cannot overwrite the exe ("Access is
-  denied") — close the app first, then rebuild.
+  denied") â€” close the app first, then rebuild.
 - Gotcha: `editor-smoke` is currently failing at the History popup redo test
   (~line 1111) because the OTHER concurrent opencode session's history refactor
-  is mid-flight — NOT related to this playback work. Re-check `git diff`
+  is mid-flight â€” NOT related to this playback work. Re-check `git diff`
   before attributing failures.
 
 ## Suggested export names + title-based yt-dlp download names (2026-08-18)
 
 - The Export MP4/MP3 dialog now suggests a name instead of a hardcoded
   `aurora-cut-export.mp4`:
-  1. **Saved project's name** (`_projectPath` base name without extension) —
-     the most recognizable handle; `fall of fallout.auroracut` → `fall of
+  1. **Saved project's name** (`_projectPath` base name without extension) â€”
+     the most recognizable handle; `fall of fallout.auroracut` â†’ `fall of
      fallout.mp4`.
   2. **First media clip's source name** for unnamed projects (first video clip
      on the first video track for MP4, first audio clip for MP3, falling back
@@ -1263,7 +1263,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   - The stem strips the extension AND a trailing `.normalized` so a downloaded
     `Title [id].normalized.mp4` suggests `Title [id].mp4`.
   - **Dedup**: the suggested name is checked against the default
-    `applicationExportDirectory()` and suffixed `-2`, `-3`, … up to 999 when it
+    `applicationExportDirectory()` and suffixed `-2`, `-3`, â€¦ up to 999 when it
     exists (same style as `compressedOutputPath`), so repeated exports never
     silently overwrite. `uniqueExportFileName` returns the base name only; the
     dialog combines it with the folder.
@@ -1282,9 +1282,9 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     only accepts a supported-media path inside the Downloads folder (stale
     markers, wrong folders, or unsupported extensions are rejected).
   - `downloadedStem` turns the downloaded name into the normalized-copy prefix:
-    `Title [id].mp4` → `Title [id].normalized.mp4`.
+    `Title [id].mp4` â†’ `Title [id].normalized.mp4`.
   - `ytDlpTitleOutputTemplate()` is public; `downloadArguments` gained a
-    `markerFile` param (param named `titleTemplate` — `template` is a reserved
+    `markerFile` param (param named `titleTemplate` â€” `template` is a reserved
     D keyword).
 - How it is verified:
   - `tests/editor_smoke.d`:
@@ -1308,7 +1308,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     --trim-filenames 120 --print-to-file after_move:filepath <marker> -o
     "<dir>/%(title)s [%(id)s].%(ext)s" -f b http://127.0.0.1:8123/base-av.mp4`
     produced `base-av [base-av].mp4` and the marker contained its exact path.
-  - Full gate: `dub test --compiler=dmd --force` → 35 modules pass;
+  - Full gate: `dub test --compiler=dmd --force` â†’ 35 modules pass;
     editor-smoke full run; model/export/gpu-decode-args/recompress/layout/
     static-sequence smokes exit 0.
 - Gotchas:
@@ -1334,22 +1334,22 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   `%LOCALAPPDATA%\Aurora Cut\Autosaves\untitled-autosave.auroracut` via
   `unnamedProjectAutosavePath()`), then: stops playback, cancels proxy work,
   clears `_model.assets`, restores one empty V1+A1 track
-  (`_model.restoreTimeline([], [])`), clears work range, preview quality →
-  720, composition → 1920×1080, clears `_undo`/`_redo` + clipboard, playhead →
+  (`_model.restoreTimeline([], [])`), clears work range, preview quality â†’
+  720, composition â†’ 1920Ã—1080, clears `_undo`/`_redo` + clipboard, playhead â†’
   0, and re-syncs media list / timeline / inspector / title / scrubber
   (`syncTimelineRange` makes an empty scrubber max 0.001, not 0).
 - Test hooks added: `newProjectForTesting()`, `projectDirtyForTesting()`.
 - How it is verified (headless `tests/editor_smoke.d`, after the persisted
   history block): New button exists, labeled "New", left of Save; make a dirty
-  project (`setWorkOutForTesting(1.5)`), click New, assert path==“”, not dirty,
+  project (`setWorkOutForTesting(1.5)`), click New, assert path==â€œâ€, not dirty,
   no assets, exactly V1+A1 empty, undo/redo==0 (Undo disabled), no work range,
-  1920×1080 + 720p, scrubber range reset, and that `loadProjectFile(recentOpenB)`
-  (the previously open project file) contains workOut 1.5 — proving the autosave
+  1920Ã—1080 + 720p, scrubber range reset, and that `loadProjectFile(recentOpenB)`
+  (the previously open project file) contains workOut 1.5 â€” proving the autosave
   preserved the work. Then setWorkOut(2.5), press Ctrl+N, assert the same reset
   and that the UNNAMED autosave (`unnamedProjectAutosavePath()`) now holds
   workOut 2.5.
 - Gotcha: after the first New, `_projectPath` is empty, so the second autosave
-  goes to the unnamed autosave, NOT the recent project file — verify each with
+  goes to the unnamed autosave, NOT the recent project file â€” verify each with
   the correct path.
 - Commands: same editor-smoke compile/run as the History popout section below;
   `dub test --compiler=dmd --force`; app link check via temp output.
@@ -1357,7 +1357,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
 ## App-state output/export + undo/redo history in the project file (2026-08-18)
 
 - `auroracut.util`:
-  - `applicationExportDirectory()` → `%LOCALAPPDATA%\Aurora Cut\Exports`
+  - `applicationExportDirectory()` â†’ `%LOCALAPPDATA%\Aurora Cut\Exports`
     (Windows; per-OS analogues for OSX/Linux), created on demand, with a
     `setApplicationExportDirectoryForTesting` override. This is the default
     folder for the Export MP4/MP3 dialog.
@@ -1383,7 +1383,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     exit covers clean closes).
   - Because the unnamed autosave is a real `.auroracut` file in
     `%LOCALAPPDATA%\Aurora Cut\Autosaves`, the unnamed project's history is
-    stored in appdata too — satisfying the original "history in appdata"
+    stored in appdata too â€” satisfying the original "history in appdata"
     request for unnamed work while named projects keep history beside their own
     data.
 - How it is verified (headless `tests/editor_smoke.d`):
@@ -1439,14 +1439,14 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     history on New/Open/Clear, and are kept in sync even while the popup is
     closed so Undo/Redo always know which steps to skip.
   - `applyHistoryView` dims disabled rows (`row.dimmed = true`) with secondary
-    "Disabled — right-click to enable" (current row: "You are here — disabled")
+    "Disabled â€” right-click to enable" (current row: "You are here â€” disabled")
     and the hint now says "right-click a step to toggle it".
   - Disabled steps are NEVER landed on. Undo/Redo are refactored into physical
     `stepUndo`/`stepRedo` helpers plus `nearestEnabledPosition(from, direction)`;
     `undo()`/`redo()` (toolbar + Ctrl+Z/Y) compute the nearest enabled state and
     physically step to it, and `jumpToHistory` snaps the clicked row the same way
     and calls `updateHistoryButtons()` after the jump.
-  - Toggling is an IMMEDIATE action (the user's key requirement — "should act
+  - Toggling is an IMMEDIATE action (the user's key requirement â€” "should act
     like the Undo/Redo buttons"): `showHistoryContextMenu`'s `Enabled` check
     calls the shared `navigateTo(rawTarget)` (extracted from `jumpToHistory`).
     Disabling a step navigates right away to the nearest enabled step before it
@@ -1456,7 +1456,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
     `Disable all steps` navigates to Initial state (row 0).
   - `showHistoryContextMenu` builds the menu (`Enabled` check + `Enable all
     steps`/`Disable all steps`) and opens it via `showHistoryContextMenuPopup`
-    — a copy of `showContextMenu` WITHOUT `dismissTransientPopups`, because that
+    â€” a copy of `showContextMenu` WITHOUT `dismissTransientPopups`, because that
     call would dismiss the History popup itself (it is a root-level
     `TransientPopup`). This is the key gotcha for menus anchored inside popups.
 - Regression (`tests/editor_smoke.d`, end of the history block): right-click
@@ -1467,7 +1467,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   (`findById(editor, "history-list") !is null`). Then press Ctrl+Y/Ctrl+Z and
   assert Undo/Redo skip the disabled step (clip back on Place clip, then removed
   again on Set export range out, row 2 stays dimmed), right-click again (menu now
-  shows `Enabled` UNCHECKED — assert `!`checked), click it and assert the full
+  shows `Enabled` UNCHECKED â€” assert `!`checked), click it and assert the full
   state restores (clip back on Place clip, row 2 no longer dimmed), assert clicks
   on rows 2 then 3 jump normally, then `Disable all steps` (timeline returns to
   Initial, `selectedIndex == 0`, all rows dimmed) and `Enable all steps`
@@ -1482,7 +1482,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   ~2/34 runs while validating; the history block passed every run; a `-g` build
   passed 6/6; LocalDumps/WER captured nothing. Load/timing dependent.
 - Gotcha: editing the UTF-8 test file with PowerShell `Get-Content`/`Set-Content`
-  (ANSI default) mangles every non-ASCII char (`▶` → `â–¶` mojibake). Recover
+  (ANSI default) mangles every non-ASCII char (`â–¶` â†’ `Ã¢â€“Â¶` mojibake). Recover
   from git and re-apply only the intended edits; never round-trip the file
   through PS without `-Encoding UTF8`.
 
@@ -1516,7 +1516,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
   unittest dir initializer (`&directory` inside its own declaration) with a
   static counter; give `workIn`/`workOut` explicit `0.0` defaults in `model.d`
   `TimelineSnapshot` (they defaulted to `double.init` = NaN, and `std.json`
-  throws "Cannot encode NaN" in `saveHistoryStacks` — visible in `aurora-cut.log`
+  throws "Cannot encode NaN" in `saveHistoryStacks` â€” visible in `aurora-cut.log`
   since the catch calls `appLog`). `dub test` now passes 34 modules.
 - Commands: same editor-smoke build/run as the History popout section above;
   `dub test --compiler=dmd --force`; app link check via temp output
@@ -1524,23 +1524,23 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
 
 ## Undo/Redo history popout (2026-08-18)
 
-- New toolbar `History ▾` button (`id="history"`) opens a `PopupOverlay`
+- New toolbar `History â–¾` button (`id="history"`) opens a `PopupOverlay`
   (`history-popup`, 440x400) beside Undo/Redo. The `ListView` (`history-list`)
   is a standard flat numbered list: an `Initial state` row, then each timeline
-  action oldest-first (`1. …`, `2. …`, `…`). The current state's row is
+  action oldest-first (`1. â€¦`, `2. â€¦`, `â€¦`). The current state's row is
   highlighted ("You are here"); past rows read "Click to undo N steps" and
   future rows "Click to redo N steps", with direction icons (refresh = undo,
   clock = current, chevron = redo).
 - The list is FROZEN for the popup session: `jumpToHistory` loops
   `undo()`/`redo()` the required steps but only moves the highlighted row and
-  re-styles icons/step text — the row order and positions never change. The
+  re-styles icons/step text â€” the row order and positions never change. The
   list is rebuilt only by `commitHistory`/`clearHistory` (a new edit appends a
   row, discarding undone future rows, standard behavior). Toolbar/keyboard
-  Undo/Redo call `moveHistoryHighlight(∓1)` instead of rebuilding, so rows never
+  Undo/Redo call `moveHistoryHighlight(âˆ“1)` instead of rebuilding, so rows never
   jump around. `updateHistoryButtons` no longer rebuilds the list; the rebuild
   is explicit in commit/clear, and highlight moves are explicit in undo/redo.
-- Listing reworks: v1 flat+ambiguous → v2 section headers (rebuilt on every
-  click, reordering rows) → v3 standard flat numbered list frozen for the
+- Listing reworks: v1 flat+ambiguous â†’ v2 section headers (rebuilt on every
+  click, reordering rows) â†’ v3 standard flat numbered list frozen for the
   session. The user reported v1/v2 as confusing, overlapping, and reordering on
   click.
 - How it is verified (headless, `tests/editor_smoke.d`, after the global
@@ -1584,7 +1584,7 @@ build\auroraweb-smoke.exe           # "auroraweb render smoke: ALL PASSED"
 - The remaining gray strip was confirmed in the source artwork and the 64px derivative. The title derivative is now a purpose-built flat notebook variant with that external outline/shadow removed; `build/icon-flat-crop.png` shows the clean result. Details are recorded in `aurora-notepad/ICON-RENDERING-IMPROVEMENT.txt`.
 - Shadow cannot appear in the client-area screenshot; the DPI-aware live probe separately confirmed the 1 px border plus DWM shadow gradient on all four sides. Left/top are intentionally subtler than right/bottom, matching Windows 10 DWM behavior.
 
-## Aurora Notepad — custom downstream titlebar (2026-08-15)
+## Aurora Notepad â€” custom downstream titlebar (2026-08-15)
 
 New downstream app `aurora-notepad/`. Frameless window whose top strip is the
 custom `NotepadTitleBar` (`source/auroranotepad/titlebar.d`), a subclass of the
@@ -1592,16 +1592,16 @@ vendored `TitleBar` that owns all window chrome: styling, owner-driven
 drag/restore-on-drag, work-area maximize via `setWindowBounds`, the system
 menu, and aero drag-snap (preview via `onSnapPreview`, applied on release).
 
-Layout: slim 28 px titlebar → 30 px classic Win10 **menu bar**
+Layout: slim 28 px titlebar â†’ 30 px classic Win10 **menu bar**
 (`File Edit Format View Help`, flat text items, dropdowns via
-`showContextMenuBelow`, 1 px bottom hairline) → borderless editor
+`showContextMenuBelow`, 1 px bottom hairline) â†’ borderless editor
 (`setShowBorder(false)` + `setFocusDecoration(false)`,
-`setPixelSizeOverride(14)` for Consolas 11 pt) → 28 px status band (Panel,
+`setPixelSizeOverride(14)` for Consolas 11 pt) â†’ 28 px status band (Panel,
 `0xf0f0f0` light / `0x2b2b2b` dark) with a 1 px `0xd6d6d6` top hairline
 (Separator added after the band so it paints over the top edge) and 8 px
 left-padded text.
 
-Themes: full Win10 palette — accent `0x0078d4`, danger `0xe81123` (close
+Themes: full Win10 palette â€” accent `0x0078d4`, danger `0xe81123` (close
 hover), neutral hover grays, `cornerRadius = 3`, `controlHeight = 32`,
 `fontScale = TextScale.caption` (13 px UI text). Titlebar colors live in
 `NotepadTitleBar.setDarkMode(bool)`: white / `0x202020`, Win10 red close,
@@ -1612,7 +1612,7 @@ neutral caption-button hover.
   `dmd -version=AuroraHeadless -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-smoke.exe`
   then run `build\headless-smoke.exe`. It drives the real UiTestDriver path:
   caption callbacks, work-area maximize (set `setTestWorkArea` then click
-  maximize → `lastWindowBounds` == work area), double-click maximize toggle,
+  maximize â†’ `lastWindowBounds` == work area), double-click maximize toggle,
   left-edge drag-snap (set `setTestScreenPointerPosition` then drag; release
   applies 960x1040), preview show/hide + input transparency (disabled overlay
   must never block a caption click), document-title dirty/clean updates, the
@@ -1626,15 +1626,15 @@ neutral caption-button hover.
   bar + 38 px toolbar) must be pure white `(255,255,255)` with zero
   accent-blue `(36,107,253)` pixels.
 - Win10 toolbar checks: `notepad-smoke-toolbar-hover.ppm` is saved while the
-  pointer hovers the first menu item — the menu bar is white with a `0xd6d6d6`
+  pointer hovers the first menu item â€” the menu bar is white with a `0xd6d6d6`
   hairline and the hovered item shows the `0xe5e5e5` highlight.
-  `notepad-smoke-filemenu.ppm` is saved while the File dropdown is open — the
+  `notepad-smoke-filemenu.ppm` is saved while the File dropdown is open â€” the
   white menu panel shows dark labels (New/Open/Save/Save As/Exit) with accent
   `0x0078d4` icons and a `0xe5e5e5` hover.
 - Window shadow (upstream, `aurora.platform.win32`): the class carries
   `CS_DROPSHADOW` (DWM SysShadow appears), frameless windows without an
   explicit position are centered on the monitor work area (fixes
-  `CW_USEDEFAULT`→(0,0) clipping the left/top shadow), and
+  `CW_USEDEFAULT`â†’(0,0) clipping the left/top shadow), and
   `DwmExtendFrameIntoClientArea({1,1,1,1})` gives the full DWM frame + drop
   shadow. `GuiWindow.setFrameDark(bool)` re-applies light/dark frame colors on
   theme toggle (the DWMWA border/caption/text attributes are Win11-only and
@@ -1648,7 +1648,7 @@ neutral caption-button hover.
   returns virtualized logical pixels while `ImageGrab` reads physical pixels
   and every edge read is garbage. Minimize unrelated windows (restore after),
   `SetForegroundWindow` the notepad, then sample a strip crossing each edge:
-  expect shadow gradient → `(214,214,214)` border → white content.
+  expect shadow gradient â†’ `(214,214,214)` border â†’ white content.
 - Live screenshot: `aurora-notepad.exe --screenshot build\notepad-live.ppm`
   (PPM; convert to PNG with PIL to view; the real window is physical DPI, so
   at 125% a 1080x680 logical window screenshots as 1350x850).
@@ -1657,7 +1657,7 @@ neutral caption-button hover.
   `.github/workflows/portable-windows.yml` now build/ship `aurora-notepad.exe`.
 
 - Icon sizes: upstream `TitleBar.setIconSize(int)` (notepad uses 16) and
-  `Button.setIconSize(int)` (default lowered 22 → 18). Button size is
+  `Button.setIconSize(int)` (default lowered 22 â†’ 18). Button size is
   text-measured and never follows the icon size. To pixel-verify a button
   icon, render a `Button("Open", IconKind.open)` and check the icon row
   spans exactly the configured size; the button's preferred width stays
@@ -1798,7 +1798,7 @@ neutral caption-button hover.
   on the composed desktop. The rectangle is clipped to the virtual screen (the
   observed VLC restore geometry was x=-4 and extended below 1080p), then captured
   through a Desktop Duplication region or cropped `gdigrab desktop` fallback.
-- The headless clipped-GDI probe returned the exact 1532×710 BGRA byte count
+- The headless clipped-GDI probe returned the exact 1532Ã—710 BGRA byte count
   (4,350,880) with 31.8% non-black pixels. D unittests exercise VLC selection,
   DDA/GDI argument construction, black-frame probe rejection, label matching,
   geometry failures, and the preview's visible-screen-DC branch.
@@ -1832,11 +1832,11 @@ neutral caption-button hover.
   builds passed for both `application` and `notitlebar`.
 - The optimized standalone D-only hook built with `-betterC`,
   `/NODEFAULTLIB`, and `/ENTRY:gamecaphookEntry`; no C compiler is involved.
-- The final background-only 1920×1080 harness matrix passed BGRA8, RGBA8, and
-  RGB10A2. Each format completed two injection → capture → restore → self-unload
+- The final background-only 1920Ã—1080 harness matrix passed BGRA8, RGBA8, and
+  RGB10A2. Each format completed two injection â†’ capture â†’ restore â†’ self-unload
   rounds and a third round through the production `GameCaptureSession`. Manual
-  rounds delivered 236–237 non-black/color-correct frames in four seconds; the
-  production reader received 238–239. Final production metrics had zero hook
+  rounds delivered 236â€“237 non-black/color-correct frames in four seconds; the
+  production reader received 238â€“239. Final production metrics had zero hook
   drops and zero sequence gaps for every format.
 - The 72-byte v2 protocol covers ready/frame/error messages, QPC timestamps,
   source DXGI format, cumulative drops, sequence validation, and bounded shared
@@ -1866,7 +1866,7 @@ neutral caption-button hover.
   each, final speeds 1.020x and 0.996x, no queue/RTP/pacing/send failures.
 - Actual VLC validation was performed without fullscreen: the existing VLC
   HWND playing a real video was captured through the normalized gdigrab chain;
-  1920×1080, 60/1, 300 frames, exactly 5.000 seconds, and no timestamp
+  1920Ã—1080, 60/1, 300 frames, exactly 5.000 seconds, and no timestamp
   warnings. The raw unnormalized probe produced repeated DTS warnings; the
   production `fps/settb/setpts/scale/pad` chain removed them.
 - GUI diagnostic stdout was fixed to preserve inherited subprocess pipes;
@@ -1915,7 +1915,7 @@ Where the lines come from:
   source preview, streaming-server fields, minimize-to-tray / close-to-tray,
   desktop audio / microphone selection (friendly name only), audio refresh,
   browser quick-link opens, browser choice, settings menu opens. **Stream keys
-  and server URLs are NEVER logged** — text fields record only the
+  and server URLs are NEVER logged** â€” text fields record only the
   populated/cleared transition (`logFieldPopulatedChange` in `root.d`), never
   the content.
 - `ActivityLog` (`activitylog.d`) gained `info/warning/error/action` helpers
@@ -1951,7 +1951,7 @@ Verify (no stream keys needed):
 5. Settings menu -> "View activity log" opens the file in the default editor.
 6. User-action lines: change any dropdown/checkbox in the UI and watch the log
    for `[INFO] <control> ...`; type/paste a stream key and confirm the log only
-   says "Twitch stream key entered." / "pasted" — the key itself never appears.
+   says "Twitch stream key entered." / "pasted" â€” the key itself never appears.
    On first launch with no saved desktop-audio selection, the auto-selected
    default endpoint logs `[INFO] Desktop audio device set to <name>`.
 7. Environment block: the first session in a log shows `[INFO] OS: ...`,
@@ -1960,7 +1960,7 @@ Verify (no stream keys needed):
    "configured (hidden)" / "not configured". Verify the FFmpeg line matches the
    bundled build (version.py / single-exe) or the PATH ffmpeg.
 
-## Aurora Stream: OBS-style game capture via D3D11 render hook — implemented (2026-08-14)
+## Aurora Stream: OBS-style game capture via D3D11 render hook â€” implemented (2026-08-14)
 
 User: "We want to stream a window even if it's minimized or out of focus or not
 here. That's the main point." and then "we need just like obs per game render
@@ -1972,14 +1972,14 @@ this machine: no MSVC `cl.exe`, no Windows SDK headers, only a stubbed VS 2019
 and `dmd`).
 
 ### What was built and VERIFIED working
-- `aurora-stream/source/aurorastream/d3d11.d` — raw D3D11/DXGI COM bindings as
+- `aurora-stream/source/aurorastream/d3d11.d` â€” raw D3D11/DXGI COM bindings as
   explicit vtable-struct layouts (`extern(C)` function-pointer fields). D
   `interface` types are NOT used because they do not dispatch through the native
   COM vtable. The test surface verified: `D3D11CreateDeviceAndSwapChain`,
   `IDXGISwapChain` (GetBuffer/Present/GetDesc), `ID3D11Device`
   (CreateTexture2D/CreateRenderTargetView), `ID3D11DeviceContext`
   (ClearRenderTargetView), and Release. 16,684 frames presented in the test app.
-- `aurora-stream/gamecaphook.d` — the injected hook DLL, built as
+- `aurora-stream/gamecaphook.d` â€” the injected hook DLL, built as
   `-betterC` with a **custom entry point** (`/ENTRY:gamecaphookEntry`) and
   `/NODEFAULTLIB`, so no CRT startup runs in the foreign process. This is
   mandatory: a normal DMD `-shared` DLL (msvcrt120 or betterC-with-CRT) crashes
@@ -1992,7 +1992,7 @@ and `dmd`).
 - Injection + transport (`tests/gamecap_test.d`, `tests/inject_notepad.d`):
   `CreateRemoteThread(GetProcAddress(kernel32,"LoadLibraryW"))`. CRITICAL:
   `&LoadLibraryW` in D resolves to THIS EXE's import thunk, NOT the kernel32
-  function (verified: 0x14000BED0 vs 0x7FFD...) — always use GetProcAddress for
+  function (verified: 0x14000BED0 vs 0x7FFD...) â€” always use GetProcAddress for
   the injected function pointer. Verified the hook DLL injects into notepad AND
   the D3D11 test app (returns a valid HMODULE), reads config, patches the vtable
   ("setup: vtable patched"), and connects the pipe ("setup: pipe connected").
@@ -2000,7 +2000,7 @@ and `dmd`).
   runs.
 
 ### Resolved capture and integration details
-- [RESOLVED] `ID3D11Device::GetImmediateContext` — the D3D11 device vtable has
+- [RESOLVED] `ID3D11Device::GetImmediateContext` â€” the D3D11 device vtable has
   `GetCreationFlags` (slot 38) and `GetDeviceRemovedReason` (slot 39) BEFORE
   `GetImmediateContext`, so its real slot is **40**, not 38 (my original layout
   was missing those two methods). Verified by fetching the authoritative
@@ -2008,19 +2008,19 @@ and `dmd`).
   real context. The probe that found it: create a plain device with
   `D3D11CreateDevice`, read the vtable, call each slot with
   `void(this, void**)` + a sentinel (0x12345678) and find the one that writes
-  the known context — but the vtable dump + header comparison is what settled it.
+  the known context â€” but the vtable dump + header comparison is what settled it.
 - [RESOLVED] **Frame capture works end-to-end**: the hook copies the back
   buffer through a reusable asynchronous staging ring, performs nonblocking
   readback, and delivers versioned BGRA frames on a dedicated worker. The final
-  minimized 1920×1080 matrix covered BGRA8, RGBA8, and RGB10A2 with two restart
+  minimized 1920Ã—1080 matrix covered BGRA8, RGBA8, and RGB10A2 with two restart
   rounds and the production session for each. Two earlier pitfalls fixed:
   (a) moving multi-megabyte frames through a named pipe consumed roughly
   500 MB/s at 1080p60 and was load-sensitive; pixels now use a three-slot
   shared-memory ring and the 64 KiB pipe carries only framed control headers;
   (b) releasing a COM object must go through ITS OWN vtable slot 2 as an
-  `extern(C)` call (`comRelease` helper) — releasing through another object's
+  `extern(C)` call (`comRelease` helper) â€” releasing through another object's
   vtable, or via a `extern(D)` function pointer, crashes/hangs.
-- [RESOLVED] The test target now uses a minimized, never-activated 1920×1080
+- [RESOLVED] The test target now uses a minimized, never-activated 1920Ã—1080
   swap chain paced by a high-resolution waitable timer at 250 FPS. It stresses
   a 60 FPS capture without monopolizing the GPU or opening a foreground window.
 - [RESOLVED] Aurora persists `gameCaptureMode`, injects with the real kernel32
@@ -2045,22 +2045,22 @@ test target; it does not need a foreground process-control wrapper.
 
 ### Hard-won facts (recorded so they are not rediscovered)
 - `dmd -shared` D DLLs default to `msvcrt120` (missing on this system) and do
-  NOT export `extern(C)` symbols automatically — use `export` (D-mangled) or
+  NOT export `extern(C)` symbols automatically â€” use `export` (D-mangled) or
   `-L/EXPORT:name` for clean names.
 - An injectable DLL must skip the CRT startup: `-betterC` + custom `/ENTRY` +
   `/NODEFAULTLIB`, linking kernel32/user32/gdi32/ucrtbase import libs explicitly.
   Link `ucrtbase.lib` for `memcpy`/`memcmp`/`strlen` (present on the system);
   `libcmt`/`libucrt` import libs are NOT in this dmd distribution.
-- `-betterC` globals must be `__gshared` (no TLS runtime → `_tls_index` is
+- `-betterC` globals must be `__gshared` (no TLS runtime â†’ `_tls_index` is
   undefined otherwise). No D runtime/GC: use HeapAlloc, raw Win32, fixed buffers.
 - String/format helpers written by hand are a trap: "aurora-gamecap-" is 15
-  chars, not 16 — a hardcoded `+16` offset left the config path truncated
+  chars, not 16 â€” a hardcoded `+16` offset left the config path truncated
   (null at 52, pid orphaned at 53). Always use `enum prefix; ... prefix.length`.
 
-## Aurora Stream: minimize to tray — implementation + verification method (2026-08-14)
+## Aurora Stream: minimize to tray â€” implementation + verification method (2026-08-14)
 
-Feature: `Settings → Minimize to tray when streaming starts` (auto-hide on
-Start), `Settings → Close button hides to tray instead of exiting`, and a tray
+Feature: `Settings â†’ Minimize to tray when streaming starts` (auto-hide on
+Start), `Settings â†’ Close button hides to tray instead of exiting`, and a tray
 icon whose **single-click** toggles Start/Stop streaming, **double-click**
 restores the window, and **right-click** opens a custom dark menu
 (Show window / Start-Stop / Status / Exit). Persisted as
@@ -2089,7 +2089,7 @@ defaults to ON**; an explicitly saved value is respected.
   cursor, highlights on hover, closes on item click / Escape (registered
   hotkey) / outside click, and delivers the chosen command to the owner tray
   window via `wmMenuAction` (WM_APP+0x40). A previous
-  `SetPreferredAppMode(ForceDark)` attempt was removed — it does not darken
+  `SetPreferredAppMode(ForceDark)` attempt was removed â€” it does not darken
   native menus on this machine (verified: the native menu rendered light).
 - **Outside-click dismissal lesson:** `SetCapture` alone does NOT deliver a
   click that lands on the desktop/taskbar to the captured window (reproduced in
@@ -2097,13 +2097,13 @@ defaults to ON**; an explicitly saved value is respected.
   window never received `WM_LBUTTONDOWN`; the standalone probe masked this
   because its outside clicks landed on a test form instead of the shell). The
   menu now shows activated (`SW_SHOW` + `SetForegroundWindow`) so an outside
-  click deactivates it (`WM_ACTIVATE WA_INACTIVE` → close) AND installs a
+  click deactivates it (`WM_ACTIVATE WA_INACTIVE` â†’ close) AND installs a
   `WH_MOUSE_LL` low-level hook while open that closes it on any press outside
   its rectangle (posted as `wmMenuCloseRequest` to avoid reentrancy). Keep
   those layers if a custom menu is ever revisited.
 
 ### How to verify
-1. `dub test` in `aurora-stream` → 43 modules pass (trayicon menu-structure
+1. `dub test` in `aurora-stream` â†’ 43 modules pass (trayicon menu-structure
    unittest: idle/live menu labels + disabled status row; settings schema-8
    round-trip unittest).
 2. `dub build` + `dub build --config=notitlebar` link.
@@ -2113,7 +2113,7 @@ defaults to ON**; an explicitly saved value is respected.
    build\trayicon_probe.exe
    ```
    Creates a real tray icon, then drives the callback window with synthesized
-   messages: a WM_LBUTTONUP → exactly one toggle; UP, DBLCLK, UP → one
+   messages: a WM_LBUTTONUP â†’ exactly one toggle; UP, DBLCLK, UP â†’ one
    window-show and NO toggle (guards the trailing-UP regression). Tooltip and
    balloon calls are exercised; remove()/shutdown() clean up. Exit 0 = pass.
    NOTE: the probe leaves a tray icon on the screen briefly.
@@ -2128,22 +2128,22 @@ defaults to ON**; an explicitly saved value is respected.
    outside-click dismiss without an action. Exit 0 = pass.
    To verify the menu's dark rendering, launch the probe under a solid-red
    fullscreen topmost form and screenshot the region around the cursor: the
-   non-red pixels (the menu) should be ~96% dark, avg RGB ≈ (45,52,60)
+   non-red pixels (the menu) should be ~96% dark, avg RGB â‰ˆ (45,52,60)
    (`#252c34`), NOT the OS light menu.
 4. Real-app close-to-tray test (PowerShell driver `verify-tray.ps1`, kept
    under `%TEMP%`): back up
    `%APPDATA%\Aurora Stream\aurora-stream-settings.json` first; add
    `closeToTray:true` + `minimizeToTrayOnStart:true` (write WITHOUT a UTF-8 BOM
-   — a BOM makes `parseJSON` fail and the app silently overwrites settings with
+   â€” a BOM makes `parseJSON` fail and the app silently overwrites settings with
    defaults on shutdown!); launch `aurora-stream.exe`; find the main window by
-   pid; send WM_CLOSE → assert process alive AND `IsWindowVisible` false; find
+   pid; send WM_CLOSE â†’ assert process alive AND `IsWindowVisible` false; find
    the `AuroraStreamTrayWindow` and PostMessage the registered
    `AuroraStreamTrayCallback` message with wParam=1 and
-   lParam=WM_LBUTTONUP / WM_LBUTTONDBLCLK / WM_LBUTTONUP (80 ms apart) → assert
+   lParam=WM_LBUTTONUP / WM_LBUTTONDBLCLK / WM_LBUTTONUP (80 ms apart) â†’ assert
    the window is visible again. Kill the process and RESTORE the settings file.
 5. `aurora-stream-activity.log` records "Window hidden to the system tray." and
    "Window restored from the system tray.".
-6. **Refined behavior — "once the tray icon exists, X and minimize keep it in
+6. **Refined behavior â€” "once the tray icon exists, X and minimize keep it in
    the tray"** (user request): verify A) with no tray feature enabled X still
    exits and minimize still taskbar-minimizes; B) with closeToTray on, X hides
    to tray; C) after a tray exists (restore via double-click), pressing X again
@@ -2153,12 +2153,12 @@ defaults to ON**; an explicitly saved value is respected.
    covered by unit-tested routing through `requestMinimize()`.
 
 ### Gotchas learned while testing
-- **A launched app rewrites the settings file** — on save (dirty timer) and on
+- **A launched app rewrites the settings file** â€” on save (dirty timer) and on
   shutdown `saveSettingsNow()` always writes schema 8 from its in-memory state.
   Any probe that launches the app therefore leaves `%APPDATA%\Aurora
   Stream\aurora-stream-settings.json` rewritten (e.g. stream keys/browser
   choice can be lost if the app loaded different values). ALWAYS restore the
-  exact original bytes afterward — a fresh `ConvertFrom-Json` round-trip is
+  exact original bytes afterward â€” a fresh `ConvertFrom-Json` round-trip is
   fine, but do not rely on a backup that was itself re-written. Keep the keys
   (Twitch `twitchKey`, YouTube `youtubeKey`) and `browserChoice` in the restore.
 - `Write-Content`/`Set-Content -Encoding UTF8` in Windows PowerShell adds a
@@ -2204,21 +2204,21 @@ main point."
 ### Diagnosis (all verified empirically, not guessed)
 - The published version's saved settings selected a **minimized** cmd.exe
   window (`windowCaptureHwnd: 3867700`). The dropdown turns red
-  ("Window (minimized): …") the moment the window list refreshes, because a
-  minimized window cannot be captured — and it stayed red until changed.
+  ("Window (minimized): â€¦") the moment the window list refreshes, because a
+  minimized window cannot be captured â€” and it stayed red until changed.
 - A busy desktop is mostly minimized windows (this machine: 54 of 69), so the
   CAPTURE SOURCE list was ~73 rows with most flagged
-  "(minimized — not capturable)", making it effectively impossible to pick a
+  "(minimized â€” not capturable)", making it effectively impossible to pick a
   usable window.
 - Hard technical limits verified with real Win32/FFmpeg tests:
-  - `ffmpeg -f gdigrab -i hwnd=<minimized>` → `I/O error`.
+  - `ffmpeg -f gdigrab -i hwnd=<minimized>` â†’ `I/O error`.
   - `PrintWindow(PW_RENDERFULLCONTENT)` on a truly minimized window returns only
-    a 159×27 taskbar stub, not the window's content. A minimized window has no
+    a 159Ã—27 taskbar stub, not the window's content. A minimized window has no
     rendered surface, so **no capture API** (gdigrab, PrintWindow, or Windows
     Graphics Capture) can capture it.
   - `PrintWindow(PW_RENDERFULLCONTENT)` IS occlusion-immune: a deterministic
     probe (red window fully covered by a black window, Z-order forced) returned
-    86,480 red pixels — the window's own content, not the cover.
+    86,480 red pixels â€” the window's own content, not the cover.
 - Headless UI probes (the aurora `UiTestDriver` + a real `GuiWindow`) drove the
   actual `CaptureSourceDropdown`: opening the menu, real clicks on rows,
   verifying captions/danger state. These confirmed selection works and that the
@@ -2228,20 +2228,20 @@ main point."
 - `windowsources.d`: `capturableWindows()` filters minimized windows out of the
   list; `updateCaption` keeps the red minimized warning for a selection that
   isn't in the (filtered) list; the saved-minimized row is labeled
-  "Saved window (minimized — not capturable)"; an all-minimized desktop shows
-  "All visible windows are minimized — restore one to capture it".
-- `root.d`: startup self-heal — a saved capture window that is closed or
+  "Saved window (minimized â€” not capturable)"; an all-minimized desktop shows
+  "All visible windows are minimized â€” restore one to capture it".
+- `root.d`: startup self-heal â€” a saved capture window that is closed or
   minimized falls back to "Entire desktop" with a status message, persisted
   (schema 7), so the dropdown can never be stuck red across launches.
 - `windowcontent.d` (new): `WindowContentCapturer` uses
-  `PrintWindow(PW_RENDERFULLCONTENT)` → BGRA DIB, scaled to target, straight
+  `PrintWindow(PW_RENDERFULLCONTENT)` â†’ BGRA DIB, scaled to target, straight
   through to FFmpeg `-pix_fmt bgra` (DIB bytes are already BGRA little-endian).
   Returns false while the window is minimized/closed so the caller holds the
   last frame.
 - `broadcast.d`: content-capture mode switches `captureArguments` from
   `gdigrab hwnd=` to `-f rawvideo -pix_fmt bgra -video_size WxH -framerate N -i
   pipe:0`, launches FFmpeg with stdin redirected, runs `runWindowContentPump`
-  (writes raw BGRA via the CRT `_write` on the raw fd — never shares the Phobos
+  (writes raw BGRA via the CRT `_write` on the raw fd â€” never shares the Phobos
   `File` across threads), re-sends the held frame while minimized, and the
   monitor no longer stops on minimize in content mode (only on window close).
 - `settings.d`: schema 7 adds `windowContentCapture` (opt-in; GPU/games can
@@ -2249,21 +2249,21 @@ main point."
   checkbox (enabled only when a window is selected and not streaming).
 
 ### How to verify
-1. `dub test` in `aurora-stream` → 42 modules pass (added windowcontent,
+1. `dub test` in `aurora-stream` â†’ 42 modules pass (added windowcontent,
    settings round-trip, and broadcast content-capture-arguments tests).
 2. `dub build` + `dub build --config=notitlebar --force` link; the default app
    launches and closes cleanly.
-3. Standalone `WindowContentCapturer` probe: visible window → green pixels
-   captured; minimized → `capture()` false; restored → true.
+3. Standalone `WindowContentCapturer` probe: visible window â†’ green pixels
+   captured; minimized â†’ `capture()` false; restored â†’ true.
 4. End-to-end pipe probe (mirrors the broadcaster's pump): create a colored
    window, pipe `PrintWindow` frames into
    `ffmpeg -f rawvideo -pix_fmt bgra -video_size 320x180 -framerate 30 -i
    pipe:0 -c:v libx264 ... out.flv` for 3 s, minimize at 1.3 s, restore at
    2.2 s. Asserts ffmpeg exit 0 and both the t=1.6 s (minimized, held frame)
    and t=2.6 s (restored, live) frames show the window's real content
-   (signalstats SATAVG≈62.5, blue-dominant). Rebuild this probe from the
+   (signalstats SATAVGâ‰ˆ62.5, blue-dominant). Rebuild this probe from the
    deleted `tests/pipecontent_probe.d` pattern if needed.
-5. The deterministic occlusion probe (red window under a black window →
+5. The deterministic occlusion probe (red window under a black window â†’
    PrintWindow returns the red content) is the proof that content capture is
    occlusion-immune.
 
@@ -2274,19 +2274,19 @@ main point."
 - GPU/DirectX-rendered windows can render black through PrintWindow; hence the
   opt-in checkbox. A Windows.Graphics.Capture (WinRT) engine would handle
   those when occluded, but druntime has no WinRT types and no Win10 SDK is
-  installed here — that is a separate hand-written-WinRT project.
+  installed here â€” that is a separate hand-written-WinRT project.
 - Method note: `schema_probe.d` and the app save wrote schema 7; a manual probe
-  run once overwrote the user's settings with defaults — restore the real
+  run once overwrote the user's settings with defaults â€” restore the real
   values (stream keys/browser/cache) before finishing, and verify with
   `Select-String` on `%APPDATA%\Aurora Stream\aurora-stream-settings.json`.
 
-## Aurora Stream: "stops when I alt-tab" + one-time freeze — activity log + alt-tab capture recovery (2026-08-14)
+## Aurora Stream: "stops when I alt-tab" + one-time freeze â€” activity log + alt-tab capture recovery (2026-08-14)
 
 Two user reports: the stream stops when alt-tabbing, and the app froze once.
 Plan agreed with the user: "we will start logging to understand freeze and will
 look into alt tab problem". Two changes:
 
-### 1. Freeze logging — `aurora-stream-activity.log` + UI-thread stall detector
+### 1. Freeze logging â€” `aurora-stream-activity.log` + UI-thread stall detector
 
 New `aurora-stream/source/aurorastream/activitylog.d` (class `ActivityLog`):
 - Persistent, timestamped, thread-safe log written beside the executable
@@ -2311,13 +2311,13 @@ How to verify the stall detector without the GUI:
 ```
 dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source build\activitylog_probe.d -of=build\activitylog-probe.exe user32.lib gdi32.lib shell32.lib winmm.lib ole32.lib avrt.lib -L/SUBSYSTEM:CONSOLE
 ```
-(probe: heartbeat ~1 s, stop, wait ~4.5 s, resume, shutdown) → the log shows
+(probe: heartbeat ~1 s, stop, wait ~4.5 s, resume, shutdown) â†’ the log shows
 `UI STALL DETECTED ... 3.1 s` then `UI STALL RESOLVED after 4.6 s`, and prints
 `ACTIVITYLOG PROBE PASSED`. Note: `Thread.join()` in this DMD has no `Duration`
-overload — use a plain `join()` (the watchdog sleeps at most 0.5 s between
+overload â€” use a plain `join()` (the watchdog sleeps at most 0.5 s between
 checks, so it returns promptly once `_shutdown` is set).
 
-### 2. Alt-tab stream stop — recoverable Desktop Duplication loss
+### 2. Alt-tab stream stop â€” recoverable Desktop Duplication loss
 
 Root cause: alt-tab to/from a fullscreen-exclusive app, a resolution change,
 the lock screen, or a UAC prompt makes Desktop Duplication lose its output.
@@ -2328,7 +2328,7 @@ Before this change `parseLine` treated that first line as a permanent
 Change in `aurora-stream/source/aurorastream/broadcast.d`:
 - `parseLine`: an `AcquireNextFrame failed` line sets `_captureLossRecoverable`
   (recoverable) instead of `_videoCaptureFailed` (fatal). Kills FFmpeg (the
-  input is already dead), status becomes "Desktop capture lost — reconnecting…",
+  input is already dead), status becomes "Desktop capture lost â€” reconnectingâ€¦",
   startup log gets `DESKTOP CAPTURE OUTPUT LOST` + the exact line.
 - `monitorProcess`: returns early when `_captureLossRecoverable` is set (same as
   process-gone / user-stop / shutdown), so the launch loop can act promptly.
@@ -2339,13 +2339,13 @@ Change in `aurora-stream/source/aurorastream/broadcast.d`:
   bounded FIFO muxer reconnects the Twitch/YouTube destination. Only when the
   budget is exhausted is it reported as a permanent capture failure (status
   "Desktop capture failed (did not recover after 3 relaunches)"). A user Stop
-  during the recovery window is respected — no relaunch.
+  during the recovery window is respected â€” no relaunch.
 
 How to verify (automated):
-- `dub test` → 41 modules pass. A new broadcast unittest drives `parseLine`
+- `dub test` â†’ 41 modules pass. A new broadcast unittest drives `parseLine`
   with `AcquireNextFrame failed` and asserts: recoverable flag set, NOT
-  `_videoCaptureFailed` (not fatal yet), status "Desktop capture lost —
-  reconnecting…", a second loss line doesn't re-diagnose, clearing the flag
+  `_videoCaptureFailed` (not fatal yet), status "Desktop capture lost â€”
+  reconnectingâ€¦", a second loss line doesn't re-diagnose, clearing the flag
   works, and the monitor exit condition triggers on capture loss AND on user
   stop (`_requestedRunning` false).
 - `python tests/verify-audio-transport.py`, `verify-rtp-sdp.py`,
@@ -2354,7 +2354,7 @@ How to verify (automated):
 - Manual: launch the app, start a stream, alt-tab to/from a
   fullscreen-exclusive app. Expected: `aurora-stream-startup.log` shows
   `DESKTOP CAPTURE OUTPUT LOST` + `RELAUNCH ... recovery 1 of 3`, the status
-  briefly reads "Desktop capture lost — reconnecting…", then live metrics
+  briefly reads "Desktop capture lost â€” reconnectingâ€¦", then live metrics
   resume. If the desktop stays unavailable for > 3 relaunches, the stream stops
   with the "did not recover after 3 relaunches" message. `aurora-stream-activity.log`
   shows the matching focus-loss line and stream-stop transition.
@@ -2367,7 +2367,7 @@ How to verify (automated):
   gdigrab failure is still a normal capture failure (no relaunch). Only the
   Desktop Duplication backend is auto-recovered.
 
-## Aurora Stream: settings file location — per-user by default, `--portable-config` opt-in (2026-08-14)
+## Aurora Stream: settings file location â€” per-user by default, `--portable-config` opt-in (2026-08-14)
 
 The settings file (`aurora-stream-settings.json`) previously lived in the
 current working directory (`getcwd()`), i.e. "beside the folder the app is
@@ -2393,17 +2393,17 @@ Key code:
 - `aurora-stream/source/app.d` + `app_titlebar.d`: `--portable-config` loop.
 
 How to verify:
-- `dub test` in `aurora-stream` → 38 modules pass (a new unittest toggles
+- `dub test` in `aurora-stream` â†’ 38 modules pass (a new unittest toggles
   portable mode and asserts per-user != portable path).
 - Build both configs: `dub build --config=application` (needs the running
-  `aurora-stream.exe` stopped first — the exe locks its own file) and
+  `aurora-stream.exe` stopped first â€” the exe locks its own file) and
   `dub build --config=notitlebar`.
 - Launch the rebuilt exe: the status row shows the settings path; it must be
   under `%APPDATA%\Aurora Stream\`. Launch with `--portable-config` to confirm
   the path reverts to the launch folder.
 - Existing CWD settings file migrates once on first default-mode launch.
 
-## Aurora Stream: game/window capture (CAPTURE SOURCE) — stream only a window (2026-08-14)
+## Aurora Stream: game/window capture (CAPTURE SOURCE) â€” stream only a window (2026-08-14)
 
 User: "would be nice a setting for only game capture so they can't see desktop
 xd". Aurora Stream now streams **only the selected window** when a window is
@@ -2411,34 +2411,34 @@ chosen in the new **CAPTURE SOURCE** dropdown (top of the settings panel), so
 viewers never see the rest of the desktop.
 
 Key code:
-- `aurora-stream/source/aurorastream/windowsources.d` — `WindowSource`
+- `aurora-stream/source/aurorastream/windowsources.d` â€” `WindowSource`
   (`hwnd`/`title`/`processName`), `enumerateWindows()` (Win32 `EnumWindows` +
   `GetWindowTextW` + `QueryFullProcessImageNameW`; filters the shell window,
   tool windows, owned dialogs, title-less windows, and Aurora Stream's own
   process), `windowExists()`, `hwndFromText()`, and the `CaptureSourceDropdown`
   widget (lists "Entire desktop" + windows, re-enumerates on open, has a
   "Refresh window list" item).
-- `aurora-stream/source/aurorastream/broadcast.d` — `captureArguments` emits
+- `aurora-stream/source/aurorastream/broadcast.d` â€” `captureArguments` emits
   `-f gdigrab -framerate 60 -draw_mouse 0 -i hwnd=<handle>` for window capture;
   `usesD3D11ZeroCopyVideo` is false for it (CPU path); `videoPipelineLabel`
-  shows `Window capture (GDI) → CPU processing → encoder`;
+  shows `Window capture (GDI) â†’ CPU processing â†’ encoder`;
   `validateBroadcastSettings` rejects a stale/closed window handle with a clear
   message instead of silently streaming the desktop.
-- `aurora-stream/source/aurorastream/settings.d` — schema 6 keys
+- `aurora-stream/source/aurorastream/settings.d` â€” schema 6 keys
   `windowCaptureHwnd` (decimal handle) + `windowCaptureLabel` (cached
-  `process — title`), persisted and round-tripped.
-- `aurora-stream/source/aurorastream/root.d` — CAPTURE SOURCE section, live
+  `process â€” title`), persisted and round-tripped.
+- `aurora-stream/source/aurorastream/root.d` â€” CAPTURE SOURCE section, live
   video-path label, and the preview window target.
-- `aurora-stream/source/aurorastream/desktoppreview.d` — `setWindowTarget` lets
+- `aurora-stream/source/aurorastream/desktoppreview.d` â€” `setWindowTarget` lets
   the LIVE SOURCE CANVAS preview capture the selected window's client area
   instead of the primary monitor.
 
 How to verify (automated):
-1. `dub test` in `aurora-stream` → 40 modules pass (includes new
+1. `dub test` in `aurora-stream` â†’ 40 modules pass (includes new
    `windowsources.d` tests and broadcast/settings round-trip + gdigrab-hwnd
    argument tests). The windowsources unittest requires, on an interactive
    desktop, that enumeration finds non-empty-titled windows with unique handles
-   and that a freshly enumerated handle passes `windowExists` — this catches the
+   and that a freshly enumerated handle passes `windowExists` â€” this catches the
    callback-convention regression that emptied the list (see below).
 2. `dub build` (application/titlebar) and `dub build --config=notitlebar --force`
    link.
@@ -2454,7 +2454,7 @@ How to verify (automated):
    ```
    Expect ~300 frames at 60/1 and non-black frames (e.g.
    `ffmpeg -ss 3 -i out.flv -frames:v 1 -vf signalstats,metadata=print:file=- -f null -`
-   → `YAVG` well above ~16).
+   â†’ `YAVG` well above ~16).
    Get an HWND: `powershell "Get-Process | ? { $_.MainWindowTitle } | select Id,MainWindowHandle,MainWindowTitle"`.
 
 Gotcha that WILL bite you (2026-08-14, fixed):
@@ -2466,13 +2466,13 @@ Gotcha that WILL bite you (2026-08-14, fixed):
   `private extern (Windows) BOOL cb(HWND hwnd, LPARAM lParam)`.
 
 Minimized windows cannot be captured (2026-08-14):
-- A minimized window's client area is 0×0; `gdigrab` fails to open it (start)
+- A minimized window's client area is 0Ã—0; `gdigrab` fails to open it (start)
   or stops producing fresh frames while encoder timestamps keep advancing
-  (mid-stream) → the stream sits on a frozen last frame forever, and the frame
+  (mid-stream) â†’ the stream sits on a frozen last frame forever, and the frame
   counter can keep advancing so no watchdog fires. Handle it explicitly:
   - `windowsources.windowIsMinimized` (IsIconic); the dropdown labels such
-    windows `(minimized — not capturable)` and the caption shows
-    `Window (minimized): …`.
+    windows `(minimized â€” not capturable)` and the caption shows
+    `Window (minimized): â€¦`.
   - `validateBroadcastSettings` rejects a minimized selection at Start.
   - The broadcast monitor (`monitorProcess`) is passed `windowCaptureHwnd` and
     stops the stream within ~0.1 s the moment the captured window is minimized
@@ -2486,16 +2486,16 @@ Minimized windows cannot be captured (2026-08-14):
   must return false for it.
 
 Manual (GUI):
-- Launch Aurora Stream → CAPTURE SOURCE dropdown lists visible windows
-  (`process.exe — Window Title`) plus Entire desktop; open a game/app after
+- Launch Aurora Stream â†’ CAPTURE SOURCE dropdown lists visible windows
+  (`process.exe â€” Window Title`) plus Entire desktop; open a game/app after
   startup and the dropdown shows it after **Refresh window list** (or on the
   next open).
 - Pick a window, start streaming: status row shows `Capture: Window capture:
-  <label> • Window capture (GDI) → CPU processing → encoder`. The LIVE SOURCE
+  <label> â€¢ Window capture (GDI) â†’ CPU processing â†’ encoder`. The LIVE SOURCE
   CANVAS preview shows the window, not the desktop.
-- Close the selected window, restart the app, Start → rejected with "The
+- Close the selected window, restart the app, Start â†’ rejected with "The
   selected capture window is no longer open ...".
-- Switch back to Entire desktop → desktop capture (ddagrab/NVENC) returns
+- Switch back to Entire desktop â†’ desktop capture (ddagrab/NVENC) returns
   (`Desktop Duplication (cursor-safe)` label / `D3D11` path when hardware
   supports it).
 
@@ -2506,7 +2506,7 @@ User: dragging the window by the custom titlebar should not change the cursor.
 Root cause in `vendor/aurora-d-0.4.5/source/aurora/widgets/titlebar.d`: when a
 real drag starts (`onMouseMove`, movement threshold crossed) the bar called
 `setCursor(CursorKind.move)`, so the pointer flipped to the move cursor for the
-whole drag. Dragging a window is not a resize/move cursor situation — the
+whole drag. Dragging a window is not a resize/move cursor situation â€” the
 pointer should stay an arrow (drag only starts from the title/icon area, which
 already uses the arrow cursor, so the arrow is left untouched).
 
@@ -2516,10 +2516,10 @@ What changed:
 - The comment in `onMouseMove`'s `_dragging` branch now says "keep the cursor
   and the hover visuals frozen" (the move-cursor rationale is gone).
 - `setDraggable(false)` and `onMouseUp` still reset to `CursorKind.arrow`
-  (unchanged — correct and harmless).
+  (unchanged â€” correct and harmless).
 
 How to verify:
-- `dub test` in `vendor/aurora-d-0.4.5` → all unit tests pass (the drag
+- `dub test` in `vendor/aurora-d-0.4.5` â†’ all unit tests pass (the drag
   self-move unittest exercises the exact code path that used to set the move
   cursor).
 - `dub build --config=application` in `aurora-stream` links.
@@ -2566,7 +2566,7 @@ Mechanism (both apps, mirrored):
   `stringImportPaths: ["embedded"]` in dub.json.
 - At startup (`main()` in app.d / app_titlebar.d) `enableBundledFfmpeg()`
   extracts the two exes into `%TEMP%\Aurora-Stream-ffmpeg` (cut:
-  `Aurora-Cut-ffmpeg`) — size-cached so it runs once — and prepends that dir to
+  `Aurora-Cut-ffmpeg`) â€” size-cached so it runs once â€” and prepends that dir to
   the process `PATH`. Every bare `"ffmpeg"`/`"ffprobe"` call (media.d,
   exporter.d, playback.d, preview.d, ytdlp.d, broadcast.d, ...) then resolves
   to the bundle with zero call-site changes. Dev builds (no BundledFfmpeg)
@@ -2585,7 +2585,7 @@ Build:
 How to verify the mechanism (no GUI):
 1. Drop placeholder (or real) `ffmpeg.exe`/`ffprobe.exe` into `embedded/`.
 2. `dub build --build=portable-single-exe` in the app dir; confirm the exe
-   links (local link needs MSVC's libcmt.lib — present on CI windows-latest;
+   links (local link needs MSVC's libcmt.lib â€” present on CI windows-latest;
    locally drop `-mscrtlib=libcmt` temporarily to link with DMD's default CRT).
 3. Standalone: compile `ffmpegbundle.d` with `-version=BundledFfmpeg
    -Jembedded`, run a main that calls `enableBundledFfmpeg()`, assert the files
@@ -2658,11 +2658,11 @@ completion, so a clean EOF while buffering was misreported as a decoder
 failure and playback was stopped mid-range.
 
 What changed:
-- `playback.d`: `VideoFrameStream.hasReadyFrames()` — distinguishes "finished
+- `playback.d`: `VideoFrameStream.hasReadyFrames()` â€” distinguishes "finished
   but tail frames still queued" from "nothing left to display".
 - `editor.d` `displayedVideoBehindPlaybackClock()`: false once the stream is
   finished with no ready frames (a finished decoder can't catch up, so the
-  transport must not re-enter buffering; also breaks a resume→re-pause loop).
+  transport must not re-enter buffering; also breaks a resumeâ†’re-pause loop).
 - `editor.d` halt block: clean EOF while waiting resumes the transport
   (`resumeAfterVideoBuffer()`) or lets the waiting branch drain the tail;
   genuine FFmpeg errors surface as a status message only. The audio-start
@@ -2671,7 +2671,7 @@ What changed:
 How to verify (deterministic, no decode-speed dependence):
 - `tests/editor_smoke.d` direct-playback regression block: after playback is
   active, wait until `videoStreamFinishedForTesting()` (decoder reached the end
-  of its range during normal playback — no halt while not waiting), then force
+  of its range during normal playback â€” no halt while not waiting), then force
   the exact production buffering state with `simulateVideoBufferWaitForTesting()`
   (which calls the real `waitForVideoBuffer()`), tick, and run to completion.
   Asserts `playbackPositionForTesting() >= playbackEndForTesting() - 0.03` and
@@ -2696,7 +2696,7 @@ multi-clip timeline with audio while the machine is under load; the status must
 never show the decoder-end failure and playback must complete at the sequence
 end.
 
-## Timeline playback performance / immediacy — analysis (2026-08-13)
+## Timeline playback performance / immediacy â€” analysis (2026-08-13)
 
 End-to-end review of the playback pipeline. Two processes can exist per Play:
 video (`VideoFrameStream`) and audio (`PcmAudioPlayer`), both spawning fresh
@@ -2711,7 +2711,7 @@ Key measurement method (noisy machine, so use code reasoning + min-of-N):
 - Raw decode/filter throughput is measured with ffmpeg writing to `NUL`
   (`-RedirectStandardOutput NUL` in PowerShell) to remove disk I/O; this host
   bounces 1.0-2.3 s for identical 1 s 720p workloads when the box is ~100%
-  loaded (4 logical CPUs), so single runs are not trustworthy — take minimums
+  loaded (4 logical CPUs), so single runs are not trustworthy â€” take minimums
   and reason from the code.
 - First-frame latency is the real "immediacy" metric: ffmpeg spawn + graph
   build + input open/seek + preroll wait (0.055 s direct / 0.090 s live) before
@@ -2805,7 +2805,7 @@ How to verify (headless):
 
 ## Timeline vertical scrollbar: draggable, wider track (2026-08-13)
 
-User complaint: the timeline's vertical scrollbar was a 4px painted thumb only —
+User complaint: the timeline's vertical scrollbar was a 4px painted thumb only â€”
 you could not grab it, so moving up/down relied on the mouse wheel alone.
 
 What changed in `source/auroracut/timeline.d`:
@@ -2822,12 +2822,12 @@ What changed in `source/auroracut/timeline.d`:
 
 How to verify (headless, no GUI click needed):
 1. `tests/editor_smoke.d` now builds a 4-track fixture that overflows a 120px
-   viewport and asserts: track is ≥10px wide and docked right, mouse-down on the
+   viewport and asserts: track is â‰¥10px wide and docked right, mouse-down on the
    thumb enters drag mode, dragging to the track bottom scrolls to
    `maxVerticalScrollForTesting`, and mouse-up leaves drag mode.
 2. The stale `ListView` scrollbar assertion was rewritten to drive the vendored
    `Scrollbar` widget (drags from the thumb; a track click pages). This was
-   pre-existing on the clean base commit — see todo.md.
+   pre-existing on the clean base commit â€” see todo.md.
 3. `tests/layout_smoke.d` was stale too: the status-bar loading bar is anchored
    right (inside the 8px inset), not centered; the assertion was renamed
    `assertStatusProgressDocked`. `status-progress` id was missing on
@@ -2851,18 +2851,18 @@ titlebar app (access violation `0xc0000005`). Two crash dumps
 at the same RVA `0x12fe9`.
 
 How it was diagnosed:
-1. WER `Report.wer` → ExceptionCode `c0000005`, ExceptionOffset `0x12fe9`.
-2. Minidump parse (hand-written Python with the stream directory) →
+1. WER `Report.wer` â†’ ExceptionCode `c0000005`, ExceptionOffset `0x12fe9`.
+2. Minidump parse (hand-written Python with the stream directory) â†’
    exception address `0x140012fe9` (image base + `0x12fe9`), i.e. the fault is
    in the app itself, not a system DLL. The saved thread context pointed into
    ntdll only because the dump captures the exception dispatcher frame.
-3. Disassembled the containing function with capstone → it dereferences
+3. Disassembled the containing function with capstone â†’ it dereferences
    `[rbp+0x10]` (`this`), then `[rax]` (`this._p`), then `[rcx]`
    (`this._p.handle`) and calls; a nearby `lea` references the
    `"Wrote ... instead of ... objects of type ubyte"` string from
-   `phobos/std/stdio.d` line 1122 — i.e. **`File.rawWrite!ubyte`**.
+   `phobos/std/stdio.d` line 1122 â€” i.e. **`File.rawWrite!ubyte`**.
 4. Grep: the only `rawWrite` in aurora-stream is
-   `BroadcastWorker.runCanvasPump` → `stdin.rawWrite(cast(ubyte[]) surface.pixels())`.
+   `BroadcastWorker.runCanvasPump` â†’ `stdin.rawWrite(cast(ubyte[]) surface.pixels())`.
 
 Root cause and fix: the phobos `File` (a `@system` struct with a heap-allocated,
 manually refcounted `_p` Impl pointer) was captured by reference into the pump
@@ -2872,20 +2872,20 @@ see a null/garbage `_p`. Fixed in `broadcast.d` by passing only the raw fd
 `File` via `stdin.fdopen(stdinFd, "wb")` so each thread owns a valid `File`.
 
 How to verify (no GUI click needed):
-1. `dub test` in `aurora-stream` → 38 modules pass.
+1. `dub test` in `aurora-stream` â†’ 38 modules pass.
 2. `dub build` (default `application` config = the custom titlebar) links.
 3. Launch the titlebar app; it opens its window and stays up (no console, no
    crash).
 4. Standalone repro: spawn ffmpeg with `Redirect.stderr | Redirect.stdin`,
    `int fd = pipes.stdin.fileno()`, pump thread does
-   `File stdin; stdin.fdopen(fd, "wb"); stdin.rawWrite(frames)` — runs clean.
+   `File stdin; stdin.fdopen(fd, "wb"); stdin.rawWrite(frames)` â€” runs clean.
 
 ## Aurora Stream no-stray-console-on-stream-start (2026-08-12)
 
 The broadcaster spawns the isolated WASAPI RTP helper as
 `aurora-stream.exe --audio-rtp-helper ...` with `Config.suppressConsole`
 (CREATE_NO_WINDOW). Previously `app.d` listed `--audio-rtp-helper` in
-`isDiagnosticCommand()`, so `main()` called `attachDiagnosticConsole()` →
+`isDiagnosticCommand()`, so `main()` called `attachDiagnosticConsole()` â†’
 `AllocConsole()` and popped up a visible command prompt on every Start
 streaming. The helper communicates only through status/metrics files and UDP
 (no stdout), so `--audio-rtp-helper` was removed from the console-allocating
@@ -2913,7 +2913,7 @@ How to verify (no GUI click needed):
 The roadmap's "Aurora-rendered program canvas" is implemented in
 `aurora-stream` as a composited source canvas rendered by Aurora itself. When
 **Aurora-rendered program canvas (replaces desktop capture)** is checked in
-Settings → Program canvas, `BroadcastWorker` launches FFmpeg with
+Settings â†’ Program canvas, `BroadcastWorker` launches FFmpeg with
 `-f rawvideo -pix_fmt bgra -s WxH -framerate 60 -i pipe:0` (stdin redirected)
 and a dedicated paced frame-pump thread (`runCanvasPump`) composites the canvas
 into a `Surface` each frame and writes the BGRA bytes to stdin. The existing
@@ -2921,17 +2921,17 @@ into a `Surface` each frame and writes the BGRA bytes to stdin. The existing
 normalizes CFR downstream, so the pump only needs approximate pacing.
 
 Key modules/files:
-- `aurora-stream/source/aurorastream/programcanvas.d` — `ProgramSource` model
+- `aurora-stream/source/aurorastream/programcanvas.d` â€” `ProgramSource` model
   (normalized rects, opacity, visibility), `paintProgramCanvas` compositor,
   `ProgramCanvasPreview` widget, `ProgramCanvasEditor` (add color/image/text,
   reorder, opacity, visibility), JSON (de)serialization.
-- `broadcast.d` — canvas fields on `BroadcastSettings`, raw-pipe capture args,
+- `broadcast.d` â€” canvas fields on `BroadcastSettings`, raw-pipe capture args,
   `runCanvasPump`, zero-copy bypass, `videoPipelineLabel`.
-- `settings.d` — schema 5 persistence.
-- `root.d` — LIVE SOURCE CANVAS preview panel + Program canvas editor section.
+- `settings.d` â€” schema 5 persistence.
+- `root.d` â€” LIVE SOURCE CANVAS preview panel + Program canvas editor section.
 
 How to verify (model level, no GUI needed):
-1. `dub test` in `aurora-stream` → 38 modules pass; new programcanvas unittests
+1. `dub test` in `aurora-stream` â†’ 38 modules pass; new programcanvas unittests
    cover color/image/text compositing into a `Surface` and JSON round-trips.
 2. Rebuild and run the broadcast-model smoke:
    ```
@@ -2955,7 +2955,7 @@ the unchanged `StreamRoot`. The `notitlebar` configuration
 (`dub run --config=notitlebar`, target `aurora-stream-notitlebar`) keeps the
 plain OS-titlebar window.
 
-**Taskbar icon:** the root cause was that aurora-stream was console-subsystem —
+**Taskbar icon:** the root cause was that aurora-stream was console-subsystem â€”
 double-clicking the exe opened a console window that claimed the taskbar button
 with the exe-path title and no icon (verified: the window/class icons were
 already set via WM_SETICON/SetClassLongPtr). The default build is now
@@ -2978,7 +2978,7 @@ How to build (CI only):
 2. Download artifact `ffmpeg-minimal-win64` (bin/ffmpeg.exe + bin/ffprobe.exe).
 
 How to reproduce locally (Linux or WSL with mingw-w64 + nasm + meson/ninja +
-cmake): `scripts/build-minimal-ffmpeg-win64.sh` — set `WINE=wine` to also run
+cmake): `scripts/build-minimal-ffmpeg-win64.sh` â€” set `WINE=wine` to also run
 the smoke test. `FFMPEG_TAG` overrides the pinned revision; the current default
 is `c48230eb86ff02246f6a14fa1475a0d9398363b4`, verified for the Windows
 Graphics Capture HWND source.
@@ -3008,7 +3008,7 @@ CI verification:
   ddagrab/dshow/gdigrab/udp/rtmp/rtmps.
 - configure failures dump ffbuild/config.log.
 
-How to verify on the real machine (definitive — wine has no GPU/capture):
+How to verify on the real machine (definitive â€” wine has no GPU/capture):
 1. Put the minimal ffmpeg.exe + ffprobe.exe on PATH (ahead of any other).
 2. aurora-cut: `scripts/verify-export.sh` and `scripts/verify-headless.sh`,
    `scripts/verify-playback-stress.sh`; then launch the GUI and do: import
@@ -3057,9 +3057,9 @@ Three drag artifacts were reported on the frameless demo and fixed:
    window-relative (client) coordinates, but the first owner-drag mixed them
    with screen bounds. After each SetWindowPos, Windows synthesizes a
    WM_MOUSEMOVE inside the moved window; the recomputed absolute position then
-   moved the window back → hunting/oscillation. Fixed by dragging with the
+   moved the window back â†’ hunting/oscillation. Fixed by dragging with the
    pointer DELTA from the drag start:
-   `windowOrigin + (pointer − startPointer)` — deltas are identical in
+   `windowOrigin + (pointer âˆ’ startPointer)` â€” deltas are identical in
    window-relative and screen space, so the synthesized event yields zero delta
    and the loop is stable.
 
@@ -3090,9 +3090,9 @@ titlebar spot stays under the pointer before the OS loop resumes.
 
 Covered by `tests/titlebar_smoke.d`: in-canvas restore-on-drag asserts the
 press pointer, the state clear, and the re-anchored final Y (start + 70 for a
-40→120 downward drag); system-move restore-on-drag asserts the restore fires
+40â†’120 downward drag); system-move restore-on-drag asserts the restore fires
 and the state clears. Verify manually in the demo: maximize (double-click), then
-click the titlebar and drag down — the window should restore and follow.
+click the titlebar and drag down â€” the window should restore and follow.
 
 ## Titlebar fixes: double-click maximize + white frame border (2026-08-12)
 
@@ -3102,7 +3102,7 @@ Two user-reported issues with the frameless TitleBar demo:
    `systemMoveOnDrag` branch before the double-click branch, so the second
    press of a double-click (clickCount >= 2) started another native move loop
    instead of maximizing. Fix: double-click branch now runs first. Also removed
-   the `captureMouse()` before `beginSystemMove()` — the OS caption-drag loop
+   the `captureMouse()` before `beginSystemMove()` â€” the OS caption-drag loop
    owns capture and swallows the mouse-up, so the logical capture leaked.
    Covered by a smoke-test regression: with `setSystemMoveOnDrag(true)`, a
    double-click still maximizes and restores.
@@ -3126,14 +3126,14 @@ coverage = `tests/titlebar_smoke.d` double-click-with-system-move regression.
 The toolbar has one "Tools" checkbox (native D tools), on by default. The
 legacy bash/cmd/powershell shell tool moved to a "Legacy tools" checkbox in
 Settings with a "(?)" hover tooltip. New `Settings.legacyTools` (default off);
-old `nativeTools` settings are migrated (native-only users → legacy off).
+old `nativeTools` settings are migrated (native-only users â†’ legacy off).
 
 Verify: Pro smoke test opens Settings and asserts the Legacy tools checkbox
 exists, is off by default, and its tooltip mentions the shell tool.
 
 ## Aurora Custom TitleBar widget (2026-08-12)
 
-New reusable `aurora.widgets.titlebar.TitleBar` widget — a completely
+New reusable `aurora.widgets.titlebar.TitleBar` widget â€” a completely
 customizable in-canvas title bar. Everything is configurable:
 
 - `setTitle` / `setIcon` / `setShowIcon` / `setTitleAlign` (left/center/right)
@@ -3146,7 +3146,7 @@ customizable in-canvas title bar. Everything is configurable:
   `setInactiveBackground`, `setBorderColor`, `setTextColor`,
   `setMutedTextColor`, `setButtonHover/PressedColor`, `setCloseHover/
   PressedColor`, `setActive`, `setMaximized`
-- `setContent(Widget)` puts an arbitrary widget (search box, tabs…) between the
+- `setContent(Widget)` puts an arbitrary widget (search box, tabsâ€¦) between the
   title and the caption buttons; `setTitleWidth` fixes the title region size.
 
 Two framework hooks were added so the widget can drag a real frameless window:
@@ -3220,13 +3220,13 @@ added as the LAST child of a frameless window root so it paints above content;
 drive it from `onSnapChanged`, mapping screen bounds to local coordinates with
 the window origin.
 
-### CRITICAL gotcha — the preview must be input-transparent
+### CRITICAL gotcha â€” the preview must be input-transparent
 
 `TitleBarSnapPreview` is created **disabled** (`setEnabled(false)`). This is
 what keeps it a pure paint layer: `Widget.hitTest` (widget.d) walks children
 from last to first and returns the topmost **enabled** widget at the point, so
 a full-size enabled overlay added as the last child would receive every
-mouse-down and bubble to its ancestors only — the titlebar (a sibling, earlier
+mouse-down and bubble to its ancestors only â€” the titlebar (a sibling, earlier
 in paint order) would NEVER get clicks, breaking dragging and every caption
 button on the live window. This exact regression broke the live demo originally
 and is covered headlessly by `tests/titlebar_smoke.d`: with the full-size
@@ -3235,9 +3235,9 @@ bar must still drag.
 
 ### Platform plumbing added
 
-- `NativeWindow.queryWorkArea(Point screenPoint, out Rect)` — Win32
+- `NativeWindow.queryWorkArea(Point screenPoint, out Rect)` â€” Win32
   `MonitorFromPoint` + `GetMonitorInfoW` `rcWork` converted to logical units.
-- `NativeWindow.setWindowBounds(Rect)` — Win32 `SetWindowPos` move+resize.
+- `NativeWindow.setWindowBounds(Rect)` â€” Win32 `SetWindowPos` move+resize.
 - `WidgetHost.queryPointerScreenPosition` + `queryWorkArea` (with `Widget`
   helpers) so the titlebar can sample the cursor/monitor without an owner.
 - Headless `PlatformWindow.setTestWorkArea(Rect)` /
@@ -3267,7 +3267,7 @@ mid-drag move off the edge clears the preview and the release applies nothing,
 verifies `setSnapEnabled(false)` never engages, and verifies the caption
 buttons + drag still work with the full-size preview overlay present. Manual
 verification: run the titlebar demo or Aurora Stream, drag the window to the
-top / sides / corners and release — the window must maximize / half-screen /
+top / sides / corners and release â€” the window must maximize / half-screen /
 quadrant with a translucent preview shown while dragging.
 
 ### Gotchas
@@ -3308,19 +3308,19 @@ Two root causes were fixed:
    pre-maximize bounds in `_restoredBounds` (on caption/double-click maximize
    and on snap-to-top) and restore to them: if `_window.fullscreen()` is set
    they toggle fullscreen off, otherwise they `setWindowBounds(_restoredBounds)`
-   — then the existing grab-point re-anchor keeps the drag under the cursor.
+   â€” then the existing grab-point re-anchor keeps the drag under the cursor.
 
 Manual check: maximize (button, double-click, or drag to the top edge and
-release), then drag the titlebar down a little and release quickly — the window
-must stay restored (no snap-back). Drag down and out to a side edge — it must
+release), then drag the titlebar down a little and release quickly â€” the window
+must stay restored (no snap-back). Drag down and out to a side edge â€” it must
 snap to the half-screen target.
 
 ### Distorted frame while resizing (2026-08-15, user report)
 
-NOT a regression from the titlebar/snap work — the resize code is untouched by
+NOT a regression from the titlebar/snap work â€” the resize code is untouched by
 that commit. The distorted/stretched frame is the **software live-resize proxy**:
-during a native resize, `window.presentNativeResizeProxyFrame` →
-`win32.presentScaledResizeFrame` → `StretchDIBits` stretches a cached snapshot
+during a native resize, `window.presentNativeResizeProxyFrame` â†’
+`win32.presentScaledResizeFrame` â†’ `StretchDIBits` stretches a cached snapshot
 of the last frame to the current window size. It only runs when
 `liveResizeScalingSupported()` is false, i.e. the Software renderer or a Vulkan
 renderer without swapchain present-scaling (`RendererPreference.automatic`
@@ -3338,7 +3338,7 @@ Improvements made to the fallback experience:
   new size between proxy frames instead of freezing on the pre-resize frame.
 
 Verify: run `aurora-stream\RUN-WINDOWS.bat` (automatic renderer) and drag a
-window border — content should track the size (interpolated, not one frozen
+window border â€” content should track the size (interpolated, not one frozen
 blocky stretch). `AURORA_RESIZE_PROFILE=1` prints per-frame scene/render times
 in the window title for tuning.
 
@@ -3359,8 +3359,8 @@ hiding to the tray on minimize is opt-in:
   minimizing to taskbar". Startup settings line reports it
   (`environment.d`).
 
-Verify: run the app, press the titlebar minimize — the window should minimize
-to the taskbar. Enable the checkbox and press minimize — it hides to the tray
+Verify: run the app, press the titlebar minimize â€” the window should minimize
+to the taskbar. Enable the checkbox and press minimize â€” it hides to the tray
 (tray icon appears). Close-to-tray behavior is unchanged.
 
 ### Aurora Notepad drag-down restore kept the maximized size (2026-08-15, user complaint)
@@ -3369,7 +3369,7 @@ The new Notepad (`aurora-notepad/`) did not return to its initial window size
 after dragging the titlebar down out of maximization. Root cause:
 `NotepadTitleBar.restoreFromDrag` guarded on the vendored widget's
 `maximized()`, but the vendored `TitleBar` clears its own `_maximized` flag
-BEFORE firing `onRestoreRequested` — so the guard always bailed and the restore
+BEFORE firing `onRestoreRequested` â€” so the guard always bailed and the restore
 never ran. The stream app tracks its own state, which is why it wasn't hit.
 
 Fix (`aurora-notepad/source/auroranotepad/titlebar.d`):
@@ -3383,11 +3383,11 @@ Also: headless `PlatformWindow` (`vendor/aurora-d-0.4.5/.../platform/headless.d`
 now reports `windowBounds` (initial = requested size, updated by
 `setWindowBounds`), so headless tests verify restore/maximize bookkeeping
 exactly like the live platform. Regression in `aurora-notepad/tests/headless_smoke.d`:
-maximize → drag down → assert the window returns to its initial size and the
+maximize â†’ drag down â†’ assert the window returns to its initial size and the
 maximized state clears.
 
 Test-order gotcha: the drag-restore press reused the snap test's titlebar point,
-which made the snap test's press read as a double-click (clickCount 2 →
+which made the snap test's press read as a double-click (clickCount 2 â†’
 `toggleMaximize` instead of dragging). A `resetClickState` between the two
 fixes it.
 
@@ -3405,15 +3405,15 @@ Fix (in both `aurora-stream/source/app_titlebar.d` and
 - `_restoredBounds` is captured only when the window is genuinely restored
   (`applySnap` guards on `!_window.fullscreen()`, `toggleMaximize` captures it
   only in the maximize branch).
-- `toggleMaximize` is state-based: `_maximized || _window.fullscreen()` →
+- `toggleMaximize` is state-based: `_maximized || _window.fullscreen()` â†’
   restore (leave fullscreen if set, then force `setWindowBounds(_restoredBounds)`);
   otherwise maximize (capture bounds, set `_maximized`, enter fullscreen).
 - `restoreFromDrag` always forces `setWindowBounds(_restoredBounds)` after
   leaving fullscreen (was `else if`, which skipped the resize whenever the
-  window was fullscreen — the OS placement could then leave the maximized size).
+  window was fullscreen â€” the OS placement could then leave the maximized size).
 
 Manual check: maximize via button, double-click, and drag-to-top, then drag
-down repeatedly — the window must return to its pre-maximize size every time.
+down repeatedly â€” the window must return to its pre-maximize size every time.
 
 ### Close button honors the close-to-tray setting (2026-08-15, user complaint)
 
@@ -3421,9 +3421,9 @@ The Close button (X / Alt+F4 / system menu) went to the tray even after
 disabling "Close button hides to tray". Root cause: `StreamRoot.closeRequested()`
 had a hard `if (_tray !is null)` override that ran before the `closeToTray`
 check, so once the tray icon existed X always hid to the tray. The override is
-removed; `closeToTray` alone decides (enabled → tray, disabled → real exit; the
-tray is removed in `shutdown()`). Verify: uncheck close-to-tray, press X — the
-app exits; recheck it — X hides to the tray.
+removed; `closeToTray` alone decides (enabled â†’ tray, disabled â†’ real exit; the
+tray is removed in `shutdown()`). Verify: uncheck close-to-tray, press X â€” the
+app exits; recheck it â€” X hides to the tray.
 
 ## Aurora OpenCode Pro per-message Copy pill removed (2026-08-12)
 
@@ -3435,7 +3435,7 @@ pills are unchanged (they copy just the code block).
 
 An assistant message that only requested tools (no content, no reasoning) no
 longer renders as an empty bubble. `MessageBubble.setHidden` collapses it to a
-zero-height, paint-nothing slot so the child↔message index mapping stays intact.
+zero-height, paint-nothing slot so the childâ†”message index mapping stays intact.
 `handleToolCalls` rebuilds the column to hide the wrapper; `rebuildMessageColumn`
 hides wrappers on session restore too.
 
@@ -3496,7 +3496,7 @@ the round limit). The original opencode app has a `doom_loop` permission: when
 the same tool call repeats with identical input 3 times it stops and asks.
 
 Our implementation: `handleToolCalls` builds a signature of each tool-call
-batch (`name(arguments)`); when the same signature repeats 3× it breaks the
+batch (`name(arguments)`); when the same signature repeats 3Ã— it breaks the
 loop, injects a `user` recovery message ("You appear to be repeating the same
 tool call... answer directly"), resets the counters, and runs one final request
 so the model answers instead of looping. The 12-round cap now also injects a
@@ -3508,16 +3508,16 @@ message.
 
 ## Aurora OpenCode Pro collapsed thinking with progress animation (2026-08-12)
 
-Reasoning blocks now render as a slim collapsed `▸ Thinking` header (same
+Reasoning blocks now render as a slim collapsed `â–¸ Thinking` header (same
 pattern as the tool result headers). Clicking toggles the full reasoning text.
 While the assistant is still streaming, the header shows an animated pulsing
-`▌`/`▐` indicator, driven by the root's per-frame tick (`tickThinking`), which
+`â–Œ`/`â–` indicator, driven by the root's per-frame tick (`tickThinking`), which
 repaints only when the indicator phase changes (every ~0.5s), so the animation
 is cheap. `finishAssistantMessage` freezes the indicator.
 
 This mirrors the original opencode app: it renders reasoning as a streamed text
 part behind a show/hide toggle (/thinking in the TUI) and tools as collapsible
-cards — no full-spinner animation; the pulsing cursor is our lightweight
+cards â€” no full-spinner animation; the pulsing cursor is our lightweight
 equivalent of the typing reveal.
 
 Verify in the Pro smoke test: an assistant message with reasoning is created
@@ -3527,8 +3527,8 @@ open/closed on demand.
 ## Aurora OpenCode Pro tool collapse UX (2026-08-12)
 
 A `tool` result bubble is now a single element: a header showing the command
-(`▸ ⚙ name(args)`) that is always visible, with the output below shown only
-when expanded (`▾` when open). Clicking the header toggles the output.
+(`â–¸ âš™ name(args)`) that is always visible, with the output below shown only
+when expanded (`â–¾` when open). Clicking the header toggles the output.
 
 Two fixes shipped:
 1. No scroll jump: the collapse/expand `onSizeChanged` handler no longer sets
@@ -3546,7 +3546,7 @@ offset does not snap to the bottom.
 ## Aurora OpenCode Pro collapsed tool outputs (2026-08-12)
 
 `tool` role result bubbles start collapsed to a compact header
-(`⚙ <name> · <first line> ▾`) and expand on click. The bubble calls
+(`âš™ <name> Â· <first line> â–¾`) and expand on click. The bubble calls
 `onSizeChanged`, which invalidates the message column and scroll view so the
 content re-measures, the scroll re-follows, and large outputs (e.g. `dir`
 listings) don't blow up the conversation view by default.
@@ -3576,7 +3576,7 @@ probe: "where are we now?" calls `dshell where` (+ `list`) only, both modes.
 
 The shell/run tools read console output as raw bytes (cmd emits the OEM
 codepage, not UTF-8). A bug wrote those bytes straight into a `string`, which
-is invalid UTF-8 and broke `sessions.json` persistence → `restore sessions
+is invalid UTF-8 and broke `sessions.json` persistence â†’ `restore sessions
 failed: Invalid UTF-8 sequence` on the next launch.
 
 Fix in `runProcess`: each raw byte is mapped to its own `dchar` and UTF-8
@@ -3591,10 +3591,10 @@ Verified a clean app restart logs zero errors.
 `dshell` deliberately uses short natural-English words instead of the legacy
 shell abbreviations, so conversations read clearly:
 
-- `where` — prints the workspace path (alias `pwd`).
-- `list` — shows a directory with `[f]`/`[d]` tags and byte sizes (aliases
+- `where` â€” prints the workspace path (alias `pwd`).
+- `list` â€” shows a directory with `[f]`/`[d]` tags and byte sizes (aliases
   `ls`/`dir`).
-- `info` — file/directory metadata: type, size, modified time (alias `stat`).
+- `info` â€” file/directory metadata: type, size, modified time (alias `stat`).
 
 Legacy words still work as aliases so a model that reaches for `ls`/`pwd`/
 `stat` never fails. All implemented natively in D (`std.file`), no shell.
@@ -3610,7 +3610,7 @@ native-only toolset shapes OK`, then `Aurora OpenCode Pro tools module test
 passed.`
 
 Live (temp probe): "where am I and what's in the workspace?" now answers via
-`dshell where` + `dshell list` then `read` in 3 rounds — the model uses the
+`dshell where` + `dshell list` then `read` in 3 rounds â€” the model uses the
 natural words.
 
 ## Aurora OpenCode Pro dshell tool (2026-08-12)
@@ -3619,10 +3619,10 @@ The model still reached for bash for plain directory introspection
 (pwd/ls/dir/stat). Added a D-native `dshell` tool in
 `aurora-opencode-pro/auroraopencode/tools.d`:
 
-- `pwd` — prints the workspace path.
-- `ls` / `dir` — lists a directory (`SpanMode.shallow`) with `[f]`/`[d]` tags
+- `pwd` â€” prints the workspace path.
+- `ls` / `dir` â€” lists a directory (`SpanMode.shallow`) with `[f]`/`[d]` tags
   and byte sizes.
-- `stat` — file/directory type, size, and modified time.
+- `stat` â€” file/directory type, size, and modified time.
 
 It never spawns a shell; everything uses `std.file` (`dirEntries`, `getSize`,
 `timeLastModified`). Advertised in both the default and native-only toolsets,
@@ -3647,12 +3647,12 @@ mode uses `dshell ls` directly.
 User feedback: the model defaulted to bash for file operations and fumbled
 ("list files" burned many rounds on `dir` variants). Two fixes shipped:
 
-1. **Shell output capture bug** — cmd's `dir` emits the OEM codepage, which is
+1. **Shell output capture bug** â€” cmd's `dir` emits the OEM codepage, which is
    not valid UTF-8; strict `readText` threw and the tool returned "(no
    output)". `runProcess` now reads stdout/stderr as raw bytes and decodes
    leniently, so `dir`/`echo %CD%` return real output.
 
-2. **Native-tool mode** — a new D-native `run` tool (`program` + `args` array,
+2. **Native-tool mode** â€” a new D-native `run` tool (`program` + `args` array,
    spawned directly, no shell), a system-prompt steering message that directs
    the model to glob/read/write/grep, and a "Native tools" toggle (off by
    default). When enabled, the bash tool is not advertised and the model only
@@ -3668,13 +3668,13 @@ Pass = `D-native run tool executes a program directly`, `Default vs native-only
 toolset shapes OK`, then `Aurora OpenCode Pro tools module test passed.`
 
 Live probe (temp file `list_probe.d`): native mode answers "what files are in
-the workspace?" with glob → read in 3 rounds, no shell. Default mode with the
+the workspace?" with glob â†’ read in 3 rounds, no shell. Default mode with the
 steering prompt completes the same task in 3 rounds too.
 
 ## Aurora OpenCode Pro cross-platform tools (2026-08-12)
 
 Design decision (mirrors the original opencode app): keep native D file/content
-tools (`read`, `write`, `glob`, `grep`) — cross-platform by construction — and
+tools (`read`, `write`, `glob`, `grep`) â€” cross-platform by construction â€” and
 make the one shell tool ("bash") shell-aware per platform rather than shipping
 separate cmd / powershell tools.
 
@@ -3684,7 +3684,7 @@ separate cmd / powershell tools.
   model it runs in cmd.exe (or the chosen PowerShell) with the right commands,
   on Unix it says bash.
 - Execution uses `spawnProcess(argv, stdin, outFile, outFile, null,
-  Config.none, workdir)` — the shell binary is invoked directly with
+  Config.none, workdir)` â€” the shell binary is invoked directly with
   stdout/stderr redirected to a temp file, so no shell quoting is involved and
   a timeout can still kill the process.
 
@@ -3741,8 +3741,8 @@ The core client (`aurora-opencode-core/opencode_client.d`) gained
 `startChatMessages(messages, tools, model, thinking)` with
 `ChatRequestMessage`/`OpenCodeToolDef`, SSE `delta.tool_calls` accumulation,
 a `toolCalls` terminal event, and `pushLocalEvent`. The Pro UI drives the
-loop: Tools checkbox → workspace setting → tool-call chips + `tool` role
-result bubbles → worker-thread batch execution → history re-sent until `stop`
+loop: Tools checkbox â†’ workspace setting â†’ tool-call chips + `tool` role
+result bubbles â†’ worker-thread batch execution â†’ history re-sent until `stop`
 (12-round cap).
 
 ### Tests
@@ -3780,7 +3780,7 @@ worker results arrive, and asserts two `tool` role messages landed with the
 right contents and the session history was preserved.
 
 4. Live tool loop against the real API (verified): a sum tool request runs two
-rounds (tool_calls → result → text `The result of adding 1 and 2 is 3.`), and
+rounds (tool_calls â†’ result â†’ text `The result of adding 1 and 2 is 3.`), and
 the built-in tool set (glob/read/bash) completes a workspace task with
 `LIVE BUILTIN TOOL LOOP OK` and a clean `errors.log`.
 
@@ -3794,20 +3794,20 @@ breaks the usage down (mirrors how the real opencode app meters context):
   provider's `usage` object stored per assistant message
   (`tokens: {input, output, reasoning, cache:{read,write}}`), displayed as
   `total / model.limit.context` percent. There is **no live mid-stream
-  estimate** in the real UI — the indicator updates at each `step-finish`. The
+  estimate** in the real UI â€” the indicator updates at each `step-finish`. The
   only local approximation (`Math.round(chars/4)`) is used for compaction /
   overflow decisions and the estimated breakdown bar. The context limit comes
   from provider metadata (`model.limit.context`).
 - **Implementation** in `aurora-opencode-pro/appui.d`: `ContextUsageBadge`
   (toolbar pill, fill bar + percent) + `ContextUsageTooltip` (hover panel,
-  never steals the pointer — its `hitTest` reports the badge while hovered).
+  never steals the pointer â€” its `hitTest` reports the badge while hovered).
   The shared client pushes a live `usage` event when the provider reports token
   counts mid-stream (`opencode_client.d`, `_streamActive` guard), and the `done`
   event records the final `prompt/completion/total` on the `ChatMessage`
   (persisted in `sessions.json`).
 - **Context limit**: `contextLimitForModel()` in `aurora-opencode-core/core.d`
   mirrors `model.limit.context` with the **official opencode model catalog**
-  (`https://models.opencode.ai/api.json` — the exact source the opencode CLI
+  (`https://models.opencode.ai/api.json` â€” the exact source the opencode CLI
   fetches). Verified live against that catalog: deepseek-v4-flash and
   deepseek-v4-pro are 1,000,000 tokens, gpt-5.6-luna 1,050,000, qwen3.8-max
   and glm-5.2 1,000,000, grok-4.5 500,000, kimi-k3 1,048,576, minimax-m3
@@ -3828,10 +3828,10 @@ screenshot (badge region: 24 distinct colors, tooltip region: 29).
 Pro-only chat quality (implemented in `aurora-opencode-pro/appui.d`, shared
 `ChatMessage.failed` flag in core):
 
-- **Regenerate / Retry** — the last assistant bubble shows a footer pill. It
+- **Regenerate / Retry** â€” the last assistant bubble shows a footer pill. It
   drops the last assistant reply and re-runs the request with the remaining
   history; labelled "Retry" when that reply failed.
-- **Edit & resend** — a user bubble's footer pill (and right-click on any user
+- **Edit & resend** â€” a user bubble's footer pill (and right-click on any user
   bubble) truncates the conversation at that message and prefills the input so
   the edited text can be re-sent.
 
@@ -3907,11 +3907,11 @@ list Delete hook, and Markdown code-block/link bubbles painting.
 The OpenCode chat clients are split so the baseline stays small while the
 extended version grows freely:
 
-- `aurora-opencode-core` — DUB library (`targetType: library`) with the
+- `aurora-opencode-core` â€” DUB library (`targetType: library`) with the
   shared `auroraopencode.opencode_client`, `auroraopencode.markdown`, and
   `auroraopencode.core` modules. Both clients depend on it by path.
-- `aurora-opencode` — the baseline client (thin `appui.d` on top of core).
-- `aurora-opencode-pro` — the extended client with its own `appui.d`.
+- `aurora-opencode` â€” the baseline client (thin `appui.d` on top of core).
+- `aurora-opencode-pro` â€” the extended client with its own `appui.d`.
 
 Build and run the baseline or Pro exactly like the other apps:
 
@@ -4060,8 +4060,8 @@ and needs three generated media files.
   clips, plus the shared action via `matchClipResolutionForTesting`.
 
 ### Move-to-track dialog (2026-08-13)
-- Timeline clip context menu has ONE `Move to track…` item instead of a
-  per-lane `Move to V1/V2/…` list, but keeps the direct
+- Timeline clip context menu has ONE `Move to trackâ€¦` item instead of a
+  per-lane `Move to V1/V2/â€¦` list, but keeps the direct
   `Move to new video track` / `Move to new audio track` commands (user
   requested they stay in the context menu).
   `openMoveToTrackDialog` in `source/auroracut/editor.d` opens a centered
@@ -4073,19 +4073,19 @@ and needs three generated media files.
   (`move-to-track-apply`) or Enter/double-click moves via
   `moveSelectedToTrack` (existing selection+move path; `ensureTrack` appends
   new lanes).
-- Text clips (no media asset) get the move section too (`Move to track…` +
+- Text clips (no media asset) get the move section too (`Move to trackâ€¦` +
   `Move to new video track`, video-track layers only); previously they showed
   none. Verified with a throwaway real-GUI probe (`tests/menu_probe.d`, since
   deleted) that dumps the full context menu: media clip = all three move
   commands, text clip = the two video ones.
-- How to test interactively: right-click a timeline clip -> `Move to track…` ->
+- How to test interactively: right-click a timeline clip -> `Move to trackâ€¦` ->
   pick a row -> Move; the clip relocates and the status shows
-  `Moved clip to Vn at …`.
-- Covered by `tests/editor_smoke.d`: menu shows `Move to track…` + `Move to
+  `Moved clip to Vn at â€¦`.
+- Covered by `tests/editor_smoke.d`: menu shows `Move to trackâ€¦` + `Move to
   new video track` (no `Move to V1/V2`, no `Move to new audio track` for the
   video-only overlay), dialog lists `V1/V2/V3(disabled)/New video track` for
   the video-only overlay, move to V2 and back through the same dialog restores
-  the clip on V3, a text clip menu shows `Move to track…` + `Move to new video
+  the clip on V3, a text clip menu shows `Move to trackâ€¦` + `Move to new video
   track` (no audio move), and the long-menu wheel-scroll assertion still runs
   on a reopened menu. Menu-row clicks use `menuItemPoint(menu, label)` which
   maps a label to its row center accounting for separators (4px) vs rows
@@ -4093,7 +4093,7 @@ and needs three generated media files.
 
 ## Aurora Image Viewer (aurora-image-viewer)
 
-Standalone viewer in `aurora-image-viewer/`. **No FFmpeg dependency** — decode
+Standalone viewer in `aurora-image-viewer/`. **No FFmpeg dependency** â€” decode
 is pure D: PNG (Aurora-D built-in), BMP (24/32/16/8/4/1 bpp, BITFIELDS, RLE8/RLE4),
 TGA (truecolor/gray/colormap, RLE, 16/24/32/8 bpp), PNM (P2/P3/P5/P6/P7), and
 GIF (first frame, LZW, interlace, transparency). Rendering is a custom
@@ -4113,7 +4113,7 @@ console window). Run with `RUN-WINDOWS.bat` or `RUN-WINDOWS-SOFTWARE.bat`
 (software renderer). CLI: pass an image path to open it directly.
 
 ### Headless smoke test (headless_smoke.d)
-No media generation needed — the test writes its own PNG/BMP/TGA/PPM/PAM/GIF
+No media generation needed â€” the test writes its own PNG/BMP/TGA/PPM/PAM/GIF
 files with pure D (std.zlib for PNG), so it also exercises the decoders
 without any external tools.
 
@@ -4183,7 +4183,7 @@ Phase 3 - robust prewarm keep-alive and adoption (`editor.d`):
   once its 16-slot queue is full). This removes the 45 s cancel/restart churn
   at the same position that the app log showed every ~45 s.
 - `notePlaybackPrewarmDirty(position)` only cancels when the playhead leaves
-  `_playbackPrewarmForwardWindow` (≈ two slot-queues, `32/fps` seconds) ahead
+  `_playbackPrewarmForwardWindow` (â‰ˆ two slot-queues, `32/fps` seconds) ahead
   of the prewarm start, or when the model revision changes.
 - A prewarm that decoded to the end of its range (finished, no ready frames)
   is cancelled instead of being adopted dead; `startPlaybackPrewarm` skips
@@ -4243,7 +4243,7 @@ never stop or desync, at efficient perfect playhead playback with no latency.
 
 ### What changed and why (verified against `editor.d` onTick + `playback.d`)
 
-1. **Hard "Buffering video…" stop removed (`editor.d`).** The old transport
+1. **Hard "Buffering videoâ€¦" stop removed (`editor.d`).** The old transport
    entered `waitForVideoBuffer()` whenever the displayed frame lagged the audio
    clock by > `playbackVideoLagToleranceSeconds` (0.075), which PAUSED audio
    and the transport, then re-prerolled. That pause is the "randomly stopping"
@@ -4255,19 +4255,19 @@ never stop or desync, at efficient perfect playhead playback with no latency.
    clock running and the display catches up by fast-forwarding stale frames via
    the ordinary `takeReadyAtOrBefore(clock + lead)` pull, so it never pauses
    for video performance.
-2. **Deeper video frame queue (`playback.d`).** `videoFrameSlotCount` 16 → 24
-   (≈0.8 s at 30 fps), absorbing ordinary decode jitter. The prewarm keep-alive
-   forward window widened `32/fps` → `48/fps` (two slot-queues) in
+2. **Deeper video frame queue (`playback.d`).** `videoFrameSlotCount` 16 â†’ 24
+   (â‰ˆ0.8 s at 30 fps), absorbing ordinary decode jitter. The prewarm keep-alive
+   forward window widened `32/fps` â†’ `48/fps` (two slot-queues) in
    `startPlaybackPrewarm`.
 3. **Adaptive decode height (`editor.d`).** ~~During steady playback, if the
-   frame queue stays empty ≥ 0.30 s the decode/composite height steps down one
-   ladder rung (1080→720→540→480→360→240) and the video stream restarts at the
+   frame queue stays empty â‰¥ 0.30 s the decode/composite height steps down one
+   ladder rung (1080â†’720â†’540â†’480â†’360â†’240) and the video stream restarts at the
    current audio position, stepping back up after 12 s stable.~~ **REVERTED**
-   — this mid-playback stream restart was the cause of the black screen on Play
+   â€” this mid-playback stream restart was the cause of the black screen on Play
    in the real GUI (see the follow-up section below). Playback now never
    restarts a stream mid-flight; a slow decoder simply holds the last frame and
    catches up by dropping stale frames.
-4. **Prewarm immediacy (`editor.d`).** `playbackPrewarmDelaySeconds` 0.10 →
+4. **Prewarm immediacy (`editor.d`).** `playbackPrewarmDelaySeconds` 0.10 â†’
    0.06; a committed paused seek sets `_playbackPrewarmPrompt` so
    `updatePlaybackPrewarm` starts the warm decoder on the next tick instead of
    waiting out the settle debounce again. All prewarm/prepare/still paths use
@@ -4278,7 +4278,7 @@ never stop or desync, at efficient perfect playhead playback with no latency.
    presentation on the prerolled frame and resumes the paused audio.
 6. **Live compositor efficiency + aspect parity (`editor.d`).** Live playback
    previously built `ExportPreset.previewForHeight(renderHeight)` (fixed 16:9)
-   and let `compositeStreamArguments` force-scale to the decode size — wasted
+   and let `compositeStreamArguments` force-scale to the decode size â€” wasted
    pixels AND stretched portrait/square sequences. New
    `previewPlaybackPreset(Size decode)` builds the preset directly from the
    decode size, so the `[vout]scale=` tail is elided (no double render) and the
@@ -4303,7 +4303,7 @@ never stop or desync, at efficient perfect playhead playback with no latency.
   `stress.mp4` (2.0 s real file declared 3.0 s); it passes with `base-av.mp4`.
   Worth a follow-up on the media/duration mismatch.
 - Manual GUI pass still worthwhile on this 4-CPU host: play a multi-clip live
-  timeline under load (status must never show "Buffering video…", playback must
+  timeline under load (status must never show "Buffering videoâ€¦", playback must
   not stop), and scrub then press Play quickly to confirm the warm stream is
   adopted.
 
@@ -4316,7 +4316,7 @@ a black screen. Evidence-based diagnosis and resolution:
    `raiserfredposts.auroracut` = portrait 720x960 shorts project, webm VP9
    source + text overlays) showed "Adaptive playback decode switched to
    320x420" / "320x360" firing THREE times in ~40 s. Every downgrade ran
-   `restartPlaybackVideoAtPlaybackClock()` — a mid-playback stream teardown +
+   `restartPlaybackVideoAtPlaybackClock()` â€” a mid-playback stream teardown +
    FFmpeg respawn while the audio clock kept running. On this slow machine the
    respawned lower-resolution composite could not catch the already-running
    audio clock, so the transport held the last frame while re-prerolling; the
@@ -4326,7 +4326,7 @@ a black screen. Evidence-based diagnosis and resolution:
    user's actual proxy mp4 AND the actual VP9 webm, a portrait 720x960
    composition, a V1 transform and a text overlay (forcing the live composition
    path), then samples an 8x8 grid of preview pixels every 250 ms. Average
-   brightness stays ~40-80 across a 10 s run at a 320x390 decode — NON-BLACK.
+   brightness stays ~40-80 across a 10 s run at a 320x390 decode â€” NON-BLACK.
    Command (Windows):
    `dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source
    tests\live_portrait_playback_repro.d -of=build\repro.exe -Luser32.lib
@@ -4341,7 +4341,7 @@ a black screen. Evidence-based diagnosis and resolution:
    slow decoder only holds the last frame and catches up by dropping stale
    frames (original "never stop, never desync" behavior) with no resolution
    churn. Kept the safe fixes: 24-slot queue, prewarm prompt + 60 ms debounce,
-   48/fps prewarm window, concurrent paused audio, no hard "Buffering video…"
+   48/fps prewarm window, concurrent paused audio, no hard "Buffering videoâ€¦"
    stop, aspect-correct `previewPlaybackPreset`.
 4. **Verified** after the revert: `dub test` 33 modules, `dub build`,
    editor-smoke, synced-preroll-smoke, static-sequence-smoke, seek-resilience
@@ -4365,7 +4365,7 @@ was wrong. Definitively reproduced and fixed:
    surface (`window.surface().pixels()`), saving BMP snapshots. With the user's
    project headless:
    - Scrub still: RAW brightness 91 (visible).
-   - After Play: RAW avgRGB **0,0,0** the whole run — the composite stream
+   - After Play: RAW avgRGB **0,0,0** the whole run â€” the composite stream
      emitted pure black frames. Window surface ~46% near-black.
    - ffmpeg stderr: `Decode error rate 1 exceeds maximum 0.666667` (AV1).
 2. **Root cause.** The user's source is an **AV1 .webm** (720x960) whose stored
@@ -4375,8 +4375,8 @@ was wrong. Definitively reproduced and fixed:
    encodes `testsrc2` with `libx264`). But `appendInputArguments` (exporter.d)
    and `playbackDecodeInputOptions` (editor.d) applied those options to ANY
    input whose stored codec wasn't exactly `"av1"`. Forcing the H.264-validated
-   accelerator onto AV1 fails the AV1 decode → the compositor graph outputs its
-   `color=c=black` canvas → pure black playback. Scrub looked fine only because
+   accelerator onto AV1 fails the AV1 decode â†’ the compositor graph outputs its
+   `color=c=black` canvas â†’ pure black playback. Scrub looked fine only because
    the PreviewService returned a cached still.
 3. **Fix.** In `appendInputArguments` (exporter.d): the probed decode options are
    zeroed unless the input codec is a known `h264`/`hevc`/`h265`; detected
@@ -4406,7 +4406,7 @@ between the markers.
    `_playbackEnd` to `[_workIn, _workOut]` when `_loopEnabled`, falls back to
    the full sequence without markers, `loopPlaybackRestart` rewinds to
    `_playbackStart`, and the onTick end-check wraps. editor-smoke has a
-   loop test (marks → enable loop → play → wrap at Out → return to In).
+   loop test (marks â†’ enable loop â†’ play â†’ wrap at Out â†’ return to In).
 2. **Gap = order of operations.** Toggling loop ON mid-playback, or changing
    the marks mid-playback, did not re-derive the bounds (it kept looping the
    whole sequence). Fixed with:
@@ -4416,24 +4416,24 @@ between the markers.
      block in `startPlayback`.
    - `applyLoopPlaybackBounds()`: called from `toggleLoop` (loop-ON), and from
      `setWorkIn`/`setWorkOut`/`clearWorkRange`; only acts while sequence
-     playback is running and loop is on — re-derives bounds from the current
+     playback is running and loop is on â€” re-derives bounds from the current
      marks, pulls the playhead inside the range (wraps to In if past Out).
      Loop-OFF leaves the current bounds untouched (matches prior behavior).
 3. **Test:** editor-smoke block: start playback loop-OFF (assert full-sequence
    bounds), toggle loop on mid-flight (bounds instantly [0.5, 0.9], wraps at
    Out), move Out to 0.7 while looping (wrap point re-bounds live). All pass.
 4. **Follow-up bug (user report): resume path skipped the loop bounds.**
-   Sequence: play once WITHOUT loop → pause → enable loop + set marks → Play
+   Sequence: play once WITHOUT loop â†’ pause â†’ enable loop + set marks â†’ Play
    again. The resumed transport kept the stale `[0, full-sequence]` bounds and
    `loopPlaybackRestart` rewound to the sequence start instead of the In
    marker. Two causes: `resumePlayback` never called `applyLoopPlaybackBounds`,
    and that helper early-returned while `!_playbackRunning`. Fixed: the helper
    now guards on `_playbackAsset is null` (works while paused/idle too), and
    `resumePlayback` calls it after pending-seek handling. editor-smoke
-   regression: play loop-off → pause → enable loop+marks → resume → bounds
+   regression: play loop-off â†’ pause â†’ enable loop+marks â†’ resume â†’ bounds
    become [0.5, 0.9] and wrap at Out. Passes.
 5. **How to test live in the GUI:** set I/O marks (Shift+I / Shift+O at the
-   playhead), enable Loop, press Play → playback confines to the markers and
+   playhead), enable Loop, press Play â†’ playback confines to the markers and
    wraps. Toggling Loop or moving the markers during playback re-bounds it
    immediately. To exercise the resume path: play without loop, pause, enable
    loop + set marks, press Play again.
@@ -4450,15 +4450,15 @@ bounds of playback.
    re-deriving loop bounds via `applyLoopPlaybackBounds`). `setWorkIn`,
    `setWorkOut`, and `clearWorkRange` capture a snapshot BEFORE mutating and
    call `commitHistory`, so every mark change becomes one undo step. Note this
-   makes marks part of the regular undo stack — any test that assumed the
+   makes marks part of the regular undo stack â€” any test that assumed the
    stack was empty after a single undo of a clip edit must be updated.
 2. **Free playhead drag.** The playhead is a free cursor limited only by the
    full sequence:
    - `seekPlayback`: clamp is now `[0, _playbackFullEnd]` (full sequence),
      never `[_playbackStart, _playbackEnd]`.
    - `commitPendingSeek`: a target outside the active playback range (e.g.
-     dragged past the loop Out marker) parks the transport there — stops
-     playback and shows a still — instead of clamping/wrapping it into the
+     dragged past the loop Out marker) parks the transport there â€” stops
+     playback and shows a still â€” instead of clamping/wrapping it into the
      range.
    - onTick end-of-playback check: guarded with `!_seekPending` so a mid-drag
      position past the Out marker never wraps the playhead mid-gesture.
@@ -4484,7 +4484,44 @@ accent background, matching the Loop transport button.
 2. **Pixel-level test method:** the button accent is verified by sampling a
    background pixel just above the vertically-centered text against the dark
    theme accent `0x4f8cff`. Gotcha: after `driver.click`, the pointer stays
-   over the button so it paints `accentHover` — call `driver.moveTo(Point(0,0))`
+   over the button so it paints `accentHover` â€” call `driver.moveTo(Point(0,0))`
    before sampling to get the plain accent.
-3. Test asserts: blue while on → not blue after toggle-off → blue again after
+3. Test asserts: blue while on â†’ not blue after toggle-off â†’ blue again after
    re-enable, plus `snappingEnabledForTesting()` and the On/Off label.
+
+# Aurora GUI - Windows File Manager (aurora-d demos/windows_file_manager.d)
+
+## Session: breadcrumb address bar + Open-in-new-window (dev, DMD dmd2, Win x64)
+
+Build (from vendor/aurora-d-0.4.5):
+  dub build --config=windows-file-manager
+  dub build --config=file-manager-scroll-test   (must also pass)
+
+Run app:
+  aurora-windows-file-manager.exe "C:\\Windows"
+  verify single window stays alive (poll.ps1: alive) and closes cleanly.
+
+Feature A - clickable breadcrumb address bar:
+  - computeAddressSegments() lays out segments (This PC, drive root via displayRoot, subfolders).
+  - Click a segment -> navigate(path); clicking the empty right side -> beginAddressEditing() (shows hidden AddressField, selectAll).
+  - Escape or blur restores breadcrumb. Class AddressField overrides onFocusChanged.
+
+Feature B - context menu "Open in new window":
+  - Added to Quick Access, This PC, and main file/folder list menu. openSelectionInNewWindow() -> openInNewWindow(path).
+  - openInNewWindow SPAWNS a fresh process (thisExePath + spawnProcess). It does NOT reuse the process/device.
+
+Startup timing (measured on this machine, debug build):
+  - total cold->visible ~2.5s. Vulkan createInstance 1.17s + createDevice 0.57s + createSwapchain 0.35s dominate (per process/window).
+  - So a spawned "new window" costs ~2.5s again (driver init, not app-cacheable).
+
+Why single-process shared-device multi-window was REVERTED (do not retry casually):
+  - Implemented a SharedVulkanContext (module-level, reused instance+device) and reworked VulkanRenderer ctor/shutdown + a demo thread-per-window coordinator.
+  - VERIFIED FAIL: opening a 2nd GuiWindow on a background Thread hard-crashes the process (no D exception; dies ~4-5s after a 4s-delayed auto-open).
+  - Same crash with sharing DISABLED (each window own device) => the limitation is the platform/library threading of a 2nd Win32 window, not the device sharing.
+  - Reverted all of it to restore the working single-window app. Keep Open-in-new-window = spawn process.
+
+Test tooling notes: (a) can NOT view images (model lacks image input); verify via EnumWindows/GetProcess MainWindowTitle (wins.ps1/poll.ps1), not screenshots.
+  (b) Lang D: module-scope `version (X) { }` has no else at module level (use version inside a function), module `__gshared` needed for cross-thread, `new Mutex()` cannot be a module static initializer (use `shared static this`).
+
+
+

@@ -3644,3 +3644,12 @@ must be blue (pressed/active accent), like the Loop transport button.
       stays hovered and paints `accentHover`.
 - [x] **Verified:** `dub test` 33 modules and editor-smoke pass;
       `aurora-cut.exe` rebuilt at the repo root.
+
+## File manager (aurora-d demos/windows_file_manager.d) - session
+ADDRESSED/COMPLETED:
+  [x] Breadcrumb address bar: click folder segments to navigate; click empty right side to edit path (AddressField + onFocusChanged).
+  [x] Context menu "Open in new window" for files/folders (Quick Access, This PC, main list).
+NOT ADDRESSED (verified infeasible now):
+  [ ] Making "Open in new window" fast via single-process shared Vulkan device: hard-crashes on a background-thread 2nd window; reverted to spawn-process (cost ~2.5s is GPU driver init, not app-cacheable).
+
+

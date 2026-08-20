@@ -5101,20 +5101,24 @@ override bool onMouseMove(ref Event event)
     {
         string exe = "";
         try { exe = thisExePath(); } catch (Exception) { exe = ""; }
+        bool spawned = false;
         if (exe.length > 0)
         {
             try
             {
                 spawnProcess([exe, path], null, Config.detached);
-                _statusText = "Opened " ~ baseName(path) ~ " in a new window";
-                invalidate();
-                return;
+                spawned = true;
             }
             catch (Exception)
             {
             }
         }
-        if (path.length > 0 && isDir(path))
+        if (spawned)
+        {
+            _statusText = "Opened " ~ baseName(path) ~ " in a new window";
+            invalidate();
+        }
+        else if (path.length > 0 && isDir(path))
             navigate(path, true, true);
         else
             openPath(path);
