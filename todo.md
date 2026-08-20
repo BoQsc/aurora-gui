@@ -3712,3 +3712,6 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Thumbnails decode from the TOP of visible items: queue rebuilt each frame (keep still-visible in order, drop off-screen, append new top-to-bottom).
 
+
+  [x] Thumbnails: fixed in-flight marking (set by worker, not queue) so all visible items decode; queue rebuilt to current visible order each frame so scroll up re-prioritizes top item; stale-build trap documented.
+

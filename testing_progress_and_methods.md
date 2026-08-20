@@ -4663,3 +4663,11 @@ Feature E (v16) - thumbnails decode from TOP of visible items (scroll fix round 
   - FIX: drain now REBUILDS the queue each frame: keeps pending items still visible (preserving order), drops off-screen ones, then appends newly-visible top-to-bottom. Worker always decodes the visible top item first.
   - Verified decode order on screenshots folder (top-to-bottom / alphabetical): desktop-environment, file-explorer, font-gallery, ... all 8 load. scroll-test + dub test (32) pass.
 
+
+Feature E (v17) - scroll-up re-prioritization + only-visible decode fixes (root causes):
+
+- BUG 1 (queue re-picked same item): rebuild added items to _thumbInFlight when QUEUED, but worker only takes the first -> rebuild saw rest as in-flight and skipped them -> they never reached the worker (only 1-2 decoded). FIX: _thumbInFlight now set ONLY by the worker when it takes a path; rebuild no longer sets it, so queued items are always reachable.
+- BUG 2 (stale binary masked fixes twice): build errors were hidden by "| findstr /V" filters -> old exe ran. ALWAYS build with full error output.
+- Queue now rebuilt each frame to EXACTLY the current visible set (top-to-bottom), skipping cached/results/inflight/failed; so scroll up re-prioritizes the new top item and off-screen items drop out.
+- Verified: notepad/build (14 PNGs, 2 visible) decodes both visible top-to-bottom; scroll-test + dub test (32) pass.
+

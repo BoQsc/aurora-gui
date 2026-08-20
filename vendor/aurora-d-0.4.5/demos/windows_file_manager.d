@@ -7042,6 +7042,7 @@ override bool onMouseMove(ref Event event)
                 {
                     path = _thumbPending[0];
                     _thumbPending = _thumbPending[1 .. $];
+                    _thumbInFlight[path] = true;
                 }
             }
             if (path.length == 0)
@@ -7088,34 +7089,25 @@ override bool onMouseMove(ref Event event)
         bool changed;
         synchronized (_thumbMutex)
         {
-            // Rebuild the queue each frame: keep pending items that are still
-            // visible (preserving their top-to-bottom order), then append any
-            // newly-visible items. Off-screen items drop out so the worker
-            // always decodes what is on screen, starting from the top.
-            bool[string] visibleNow;
-            foreach (path; _thumbVisibleOrder)
-                visibleNow[path] = true;
-
-            string[] kept;
-            foreach (path; _thumbPending)
-            {
-                if (path in visibleNow)
-                    kept ~= path;
-                else
-                    _thumbPendingSet.remove(path);
-            }
-            _thumbPending = kept;
+            // Rebuild the queue to EXACTLY the current visible set, in
+            // top-to-bottom draw order. Anything not visible right now drops
+            // out; anything visible is queued (dedup against pending/in-flight/
+            // cached/failed). This makes the worker always decode the item at
+            // the top of the viewport first, in either scroll direction.
+            // Drop pending items that are no longer visible.
+            _thumbPending.length = 0;
+            _thumbPendingSet = null;
 
             foreach (path; _thumbVisibleOrder)
             {
                 if (path in _thumbPendingSet) continue;
                 if (path in _thumbnailCache) continue;
+                if (path in _thumbResults) continue;
                 if (path in _thumbInFlight) continue;
                 if (path in _thumbFailedResults) continue;
                 if (path in _thumbnailFailed) continue;
                 _thumbPending ~= path;
                 _thumbPendingSet[path] = true;
-                _thumbInFlight[path] = true;
             }
             _thumbVisible = null;
             _thumbVisibleOrder = null;
@@ -7128,6 +7120,7 @@ override bool onMouseMove(ref Event event)
             results = _thumbResults;
             _thumbResults = null;
             failures = _thumbFailedResults;
+            _thumbFailedResults = null;
             _thumbFailedResults = null;
             _thumbResultsChanged = false;
             changed = true;
