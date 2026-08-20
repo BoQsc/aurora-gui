@@ -4535,3 +4535,10 @@ Feature C - context menu "View" slide-out submenu (library change):
   - Verified: dub test (32 modules pass, incl. new cascade unittest), both configs build, app runs (poll alive 21s).
   - NOTE: "slide out" is placement-to-the-right (no animated slide in the library); hover opens/closes as in Windows Explorer.
 
+
+Feature D - image-icon thumbnails (PNG, lazy + bounded LRU):
+  - drawExplorerEntryIcon checks thumbnailFor(entry): decodes .png via loadPngImage, box-downscales to <=192px, caches (max 200, LRU evict), failure-set avoids re-decoding bad files.
+  - Thumbnails drawn with a field background + border + fitImageRect (works in all view modes). Non-PNG (jpg/bmp/gif) fall back to the generic image icon (no decoder yet).
+  - Verify: dub run --config=file-manager-scroll-test passes - it now writes real generated PNGs into the scroll dir and paints them (decode+downscale+drawImage), plus testDownscale asserts 300x200->192x128.
+  - App runs fine on a PNG-heavy folder (aurora-notepad/build).
+

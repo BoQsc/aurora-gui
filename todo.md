@@ -3656,3 +3656,6 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Context menu "View" slide-out submenu (hover opens to right, lists view modes) - library ContextMenu cascade support added; context menus use it (Quick Access/This PC/main).
 
+
+  [x] Image-icon previews (PNG only): lazy thumbnail decode + box-downscale + bounded LRU cache, drawn in all view modes. Non-PNG formats (jpg/bmp/gif) still show generic image icon - TODO later: Windows shell IShellItemImageFactory for all formats + async loading for big folders.
+

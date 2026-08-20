@@ -5,8 +5,68 @@ import std.file : exists, getcwd, mkdirRecurse, write;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : format;
+import std.zlib : compress;
 
 import demos.windows_file_manager : WindowsFileManagerRoot;
+
+/// CRC-32 (ITU V.42) used by the PNG chunk checksums.
+private uint crc32Of(const(ubyte)[] data)
+{
+    uint crc = 0xFFFFFFFF;
+    foreach (value; data)
+    {
+        crc ^= value;
+        foreach (_; 0 .. 8)
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+    }
+    return ~crc;
+}
+
+private void appendU32(ref ubyte[] chunk, uint value)
+{
+    chunk ~= cast(ubyte) ((value >> 24) & 0xFF);
+    chunk ~= cast(ubyte) ((value >> 16) & 0xFF);
+    chunk ~= cast(ubyte) ((value >> 8) & 0xFF);
+    chunk ~= cast(ubyte) (value & 0xFF);
+}
+
+/// A minimal 8-bit RGBA PNG so the thumbnail decode path is exercised.
+private void writeTestPng(string path, int width, int height)
+{
+    ubyte[] raw;
+    foreach (y; 0 .. height)
+    {
+        raw ~= 0; // filter: none
+        foreach (x; 0 .. width)
+        {
+            raw ~= cast(ubyte) (x * 4);
+            raw ~= cast(ubyte) (y * 4);
+            raw ~= cast(ubyte) 128;
+            raw ~= 255;
+        }
+    }
+    auto idat = compress(raw);
+
+    ubyte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    ubyte[] ihdr;
+    appendU32(ihdr, width);
+    appendU32(ihdr, height);
+    ihdr ~= [8, 6, 0, 0, 0]; // bit depth, color type RGBA, compression, filter, interlace
+    void appendChunk(ref ubyte[] stream, const(ubyte)[] type, const(ubyte)[] body)
+    {
+        appendU32(stream, cast(uint) body.length);
+        stream ~= type;
+        stream ~= body;
+        ubyte[] crcInput;
+        crcInput ~= type;
+        crcInput ~= body;
+        appendU32(stream, crc32Of(crcInput));
+    }
+    appendChunk(png, cast(ubyte[]) "IHDR", ihdr);
+    appendChunk(png, cast(ubyte[]) "IDAT", idat);
+    appendChunk(png, cast(ubyte[]) "IEND", []);
+    write(path, png);
+}
 
 private void createScrollDirectory(string path, int count)
 {
@@ -14,6 +74,31 @@ private void createScrollDirectory(string path, int count)
     foreach (index; 0 .. count)
         write(buildPath(path, format("scroll-item-%03d.txt", index)),
             "Aurora file manager scroll test item.\n");
+    // A handful of PNGs so the file manager's image-thumbnail path runs during
+    // the paint pass below (decode + downscale + drawImage must not throw).
+    writeTestPng(buildPath(path, "thumb-01.png"), 300, 200);
+    writeTestPng(buildPath(path, "thumb-02.png"), 64, 96);
+}
+
+private void testThumbnailDownscale(WindowsFileManagerRoot fm)
+{
+    // 300x200 -> 192-side box downscale keeps aspect ratio and bounds the side.
+    ubyte[] pixels;
+    pixels.length = 300 * 200 * 4;
+    foreach (i, ref p; pixels)
+        p = cast(ubyte) (i & 0xFF);
+    auto image = new RgbaImage(300, 200, pixels);
+    auto small = fm.testDownscale(image, 192);
+    if (small.width() > 192 || small.height() > 192)
+        throw new Exception("Downscale exceeded the target side");
+    if (small.width() != 192 || small.height() != 128)
+        throw new Exception(format("Unexpected downscaled size %dx%d",
+            small.width(), small.height()));
+    // Images already small are returned as-is.
+    auto tiny = new RgbaImage(16, 16, pixels[0 .. 16 * 16 * 4]);
+    auto kept = fm.testDownscale(tiny, 192);
+    if (kept.width() != 16 || kept.height() != 16)
+        throw new Exception("Small images must not be downscaled");
 }
 
 private int settleScrollY(WindowsFileManagerRoot fm, GuiWindow window)
@@ -224,6 +309,8 @@ int main()
 
     if (fm.testVisibleEntryCount() < count)
         throw new Exception("File manager did not list all test files");
+
+    testThumbnailDownscale(fm);
 
     testStandardMouseWheel(window, fm, driver);
     testTouchpadFineGrainWheel(window, fm, driver);

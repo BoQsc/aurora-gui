@@ -806,6 +806,8 @@ final class WindowsFileManagerRoot : Widget
     private enum quickAccessRecentFileLimit = 20;
     private enum maximumSearchDepth = 64;
     private enum maximumSearchResults = 10000;
+    private enum maxThumbnailCacheSize = 200;
+    private enum thumbnailTargetSide = 192;
     private enum wheelUnitsPerNotch = 3;
     private enum double autoRefreshIntervalSeconds = 1.0;
     private enum double thisPcArrowFadeSpeed = 8.0;
@@ -927,6 +929,9 @@ private TextField _locateField;
     private AddressSegment[] _addressSegments;
     private bool _addressEditing;
     private int _addressHoverIndex = -1;
+    private RgbaImage[string] _thumbnailCache;
+    private string[] _thumbnailOrder;
+    private bool[string] _thumbnailFailed;
 
     void delegate(string title) onTitleChanged;
 
@@ -6462,10 +6467,140 @@ override bool onMouseMove(ref Event event)
 
     private void drawExplorerEntryIcon(ref Canvas canvas, ExplorerEntry entry, Rect rect)
     {
+        auto thumbnail = thumbnailFor(entry);
+        if (thumbnail !is null)
+        {
+            canvas.fillRect(rect, explorerField);
+            canvas.strokeRect(rect, explorerFieldBorder, 1);
+            const fit = fitImageRect(rect.inset(1), thumbnail.bounds());
+            canvas.drawImage(fit, thumbnail, thumbnail.bounds(),
+                Color(255, 255, 255, 255), true);
+            return;
+        }
         if (drawAtlasIcon(canvas, atlasIconNameForEntry(entry), rect))
             return;
         drawIcon(canvas, entryIcon(entry), rect, explorerText,
             entry.directory ? folderAccent : fileAccent);
+    }
+
+    private static bool isPngImageEntry(ExplorerEntry entry)
+        @safe pure nothrow @nogc
+    {
+        return !entry.directory && !entry.drive &&
+            icmp(extension(entry.name), ".png") == 0;
+    }
+
+    private RgbaImage thumbnailFor(ExplorerEntry entry)
+    {
+        if (!isPngImageEntry(entry)) return null;
+        const path = entry.path;
+        auto cached = path in _thumbnailCache;
+        if (cached !is null) return *cached;
+        if (path in _thumbnailFailed) return null;
+        try
+        {
+            auto image = loadPngImage(path);
+            if (image is null)
+            {
+                _thumbnailFailed[path] = true;
+                return null;
+            }
+            auto downscaled = downscaleThumbnail(image, thumbnailTargetSide);
+            cacheThumbnail(path, downscaled);
+            return downscaled;
+        }
+        catch (Exception)
+        {
+            _thumbnailFailed[path] = true;
+            return null;
+        }
+    }
+
+    private void cacheThumbnail(string path, RgbaImage image)
+    {
+        if (path in _thumbnailCache) return;
+        if (_thumbnailOrder.length >= maxThumbnailCacheSize)
+        {
+            const oldest = _thumbnailOrder[0];
+            _thumbnailOrder = _thumbnailOrder[1 .. $];
+            _thumbnailCache.remove(oldest);
+        }
+        _thumbnailCache[path] = image;
+        _thumbnailOrder ~= path;
+    }
+
+    private static RgbaImage downscaleThumbnail(RgbaImage image, int targetSide)
+    {
+        const sourceWidth = image.width();
+        const sourceHeight = image.height();
+        if (sourceWidth <= targetSide && sourceHeight <= targetSide)
+            return image;
+        int width = targetSide;
+        int height = cast(int) ((cast(long) targetSide * sourceHeight +
+            sourceWidth / 2) / sourceWidth);
+        if (height > targetSide)
+        {
+            height = targetSide;
+            width = cast(int) ((cast(long) targetSide * sourceWidth +
+                sourceHeight / 2) / sourceHeight);
+        }
+        width = maxInt(1, width);
+        height = maxInt(1, height);
+        return boxDownscale(image, width, height);
+    }
+
+    private static RgbaImage boxDownscale(RgbaImage image, int outWidth,
+        int outHeight)
+    {
+        const inWidth = image.width();
+        const inHeight = image.height();
+        const source = image.pixels();
+        ubyte[] pixels;
+        pixels.length = cast(size_t) outWidth * outHeight * 4;
+        foreach (outY; 0 .. outHeight)
+        {
+            const startY = cast(int) ((cast(long) outY * inHeight) / outHeight);
+            const endY = cast(int) (((cast(long) (outY + 1) * inHeight) /
+                outHeight));
+            foreach (outX; 0 .. outWidth)
+            {
+                const startX = cast(int) ((cast(long) outX * inWidth) / outWidth);
+                const endX = cast(int) (((cast(long) (outX + 1) * inWidth) /
+                    outWidth));
+                long r;
+                long g;
+                long b;
+                long a;
+                ulong count;
+                for (int y = startY; y < endY; ++y)
+                {
+                    for (int x = startX; x < endX; ++x)
+                    {
+                        const offset = (cast(size_t) y * inWidth + x) * 4;
+                        r += source[offset];
+                        g += source[offset + 1];
+                        b += source[offset + 2];
+                        a += source[offset + 3];
+                        ++count;
+                    }
+                }
+                if (count == 0)
+                {
+                    const offset = (cast(size_t) startY * inWidth + startX) * 4;
+                    r = source[offset];
+                    g = source[offset + 1];
+                    b = source[offset + 2];
+                    a = source[offset + 3];
+                    count = 1;
+                }
+                const outOffset = (cast(size_t) outY * outWidth + outX) * 4;
+                pixels[outOffset] = cast(ubyte) (r / cast(long) count);
+                pixels[outOffset + 1] = cast(ubyte) (g / cast(long) count);
+                pixels[outOffset + 2] = cast(ubyte) (b / cast(long) count);
+                pixels[outOffset + 3] = cast(ubyte) (a / cast(long) count);
+            }
+        }
+        return new RgbaImage(outWidth, outHeight, pixels);
     }
 
     private bool drawAtlasIcon(ref Canvas canvas, string name, Rect rect,
@@ -7350,6 +7485,10 @@ override bool onMouseMove(ref Event event)
         Scrollbar testSidebarScrollbar() @safe pure nothrow @nogc
         {
             return _sidebarScrollbar;
+        }
+        RgbaImage testDownscale(RgbaImage image, int targetSide)
+        {
+            return downscaleThumbnail(image, targetSide);
         }
     }
 }
