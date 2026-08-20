@@ -4645,3 +4645,21 @@ Feature E (v13) - thumbnail priority follows the viewport (scroll fix):
   - So scrolling now always decodes what is on screen; off-screen queued items are dropped.
   - Verified: scroll-test + dub test (32) pass; app runs on screenshots folder.
 
+
+Feature E (v14) - thumbnails decode top-to-bottom (not bottom-first):
+  - BUG: front-enqueue (LIFO) made the paint loop (top->bottom) put the LAST drawn row at the FRONT, so decoding started at the bottom of the visible area.
+  - FIX: thumbnailFor now records visible paths in DRAW ORDER (_thumbVisibleOrder, top-to-bottom). drainThumbnailResults rebuilds _thumbPending from that order each frame (FIFO top-first), filtering cached/inflight/failed; worker decodes top item first. Off-screen items drop out of the rebuild automatically.
+  - Verified: scroll-test + dub test (32) pass; app runs on screenshots folder.
+
+
+Feature E (v15) - fix only-1-thumbnail-loading:
+  - BUG: drainThumbnailResults rebuilt _thumbPending from scratch every tick using only _thumbVisibleOrder (last frame) + set _thumbInFlight for new items. Once item1 was in-flight and no repaint added more, the queue stayed empty -> only 1 thumbnail ever decoded.
+  - FIX: drain now APPENDS new visible items to the existing queue (dedup via _thumbPendingSet/_thumbInFlight/cache) instead of wiping it; worker drains across frames. Worker removes from _thumbPendingSet on completion to avoid unbounded growth.
+  - Verified: screenshots folder streams 0->8 then 9->21 thumbnails (log), pending drains to 0; scroll-test + dub test (32) pass.
+
+
+Feature E (v16) - thumbnails decode from TOP of visible items (scroll fix round 2):
+  - BUG: append-only queue kept stale OFF-SCREEN items at the front, so after scrolling the worker decoded old (now off-screen) items first and the current visible-top item loaded last.
+  - FIX: drain now REBUILDS the queue each frame: keeps pending items still visible (preserving order), drops off-screen ones, then appends newly-visible top-to-bottom. Worker always decodes the visible top item first.
+  - Verified decode order on screenshots folder (top-to-bottom / alphabetical): desktop-environment, file-explorer, font-gallery, ... all 8 load. scroll-test + dub test (32) pass.
+

@@ -960,17 +960,17 @@ private TextField _locateField;
         private Thread _thumbThread;
         private Mutex _thumbMutex;
         private string[] _thumbPending;
+        private bool[string] _thumbPendingSet;
         private bool[string] _thumbInFlight;
         private bool _thumbStop;
         private RgbaImage[string] _thumbResults;
         private bool[string] _thumbFailedResults;
         private bool _thumbResultsChanged;
-        // Paths that are currently visible; updated each frame so the worker
-        // decodes what the user is actually looking at, not folder-top items.
+        // Paths visible this frame, in top-to-bottom draw order. Each frame the
+        // pending queue is rebuilt from this so the worker decodes the visible
+        // items starting from the top of the viewport.
+        private string[] _thumbVisibleOrder;
         private bool[string] _thumbVisible;
-        // Number of frames without a pending re-prioritization; used to prune
-        // off-screen queued paths periodically.
-        private int _thumbVisibleStale;
     }
 
     void delegate(string title) onTitleChanged;
@@ -6995,19 +6995,17 @@ override bool onMouseMove(ref Event event)
         {
             // Only rows that are actually drawn reach here (the paint loop is
             // viewport-limited), so thumbnails are requested for visible items
-            // only. Enqueue at the FRONT so the most recently visible item is
-            // decoded first; off-screen items already queued get pruned.
+            // only. Record them in draw order (top-to-bottom); drainThumbnail-
+            // Results rebuilds the decode queue from this each frame, so the
+            // worker always decodes the visible items starting from the top.
             synchronized (_thumbMutex)
             {
-                _thumbVisible[path] = true;
-                if (!(path in _thumbInFlight) && !(path in _thumbResults) &&
-                    !(path in _thumbFailedResults))
+                if (!(path in _thumbVisible))
                 {
-                    _thumbPending = path ~ _thumbPending;
-                    _thumbInFlight[path] = true;
+                    _thumbVisible[path] = true;
+                    _thumbVisibleOrder ~= path;
                 }
             }
-            ensureThumbnailWorker();
             return null;
         }
     }
@@ -7070,6 +7068,7 @@ override bool onMouseMove(ref Event event)
             synchronized (_thumbMutex)
             {
                 _thumbInFlight.remove(path);
+                _thumbPendingSet.remove(path);
                 if (_thumbStop) return;
                 if (failed)
                     _thumbFailedResults[path] = true;
@@ -7089,17 +7088,37 @@ override bool onMouseMove(ref Event event)
         bool changed;
         synchronized (_thumbMutex)
         {
-            // Reset the visible set; the next paint repopulates it from the
-            // viewport-limited draw loop, so it always reflects what is on
-            // screen right now.
-            _thumbVisible = null;
-            // Prune off-screen queued paths periodically so the worker always
-            // decodes what the user is currently looking at.
-            if (++_thumbVisibleStale >= 20)
+            // Rebuild the queue each frame: keep pending items that are still
+            // visible (preserving their top-to-bottom order), then append any
+            // newly-visible items. Off-screen items drop out so the worker
+            // always decodes what is on screen, starting from the top.
+            bool[string] visibleNow;
+            foreach (path; _thumbVisibleOrder)
+                visibleNow[path] = true;
+
+            string[] kept;
+            foreach (path; _thumbPending)
             {
-                _thumbVisibleStale = 0;
-                pruneOffScreenThumbnailsLocked();
+                if (path in visibleNow)
+                    kept ~= path;
+                else
+                    _thumbPendingSet.remove(path);
             }
+            _thumbPending = kept;
+
+            foreach (path; _thumbVisibleOrder)
+            {
+                if (path in _thumbPendingSet) continue;
+                if (path in _thumbnailCache) continue;
+                if (path in _thumbInFlight) continue;
+                if (path in _thumbFailedResults) continue;
+                if (path in _thumbnailFailed) continue;
+                _thumbPending ~= path;
+                _thumbPendingSet[path] = true;
+                _thumbInFlight[path] = true;
+            }
+            _thumbVisible = null;
+            _thumbVisibleOrder = null;
             if (!_thumbResultsChanged)
             {
                 if (_thumbThread is null && _thumbPending.length > 0)
@@ -7142,22 +7161,6 @@ override bool onMouseMove(ref Event event)
         }
     }
 
-    /// Drop queued thumbnail requests for paths that scrolled out of view, so
-    /// the worker spends its time on what is visible. Caller holds _thumbMutex.
-    private void pruneOffScreenThumbnailsLocked()
-    {
-        if (_thumbPending.length == 0) return;
-        string[] keep;
-        keep.reserve(_thumbPending.length);
-        foreach (path; _thumbPending)
-        {
-            if (path in _thumbVisible)
-                keep ~= path;
-            else
-                _thumbInFlight.remove(path);
-        }
-        _thumbPending = keep;
-    }
     } // end version (AuroraHeadless) else block for thumbnail worker
 
     private void cacheThumbnail(string path, RgbaImage image)

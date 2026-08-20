@@ -3703,3 +3703,12 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Thumbnail priority follows viewport: front-enqueue visible + prune off-screen queued items, so scrolling decodes what is on screen (was: FIFO from folder top).
 
+
+  [x] Thumbnails decode top-to-bottom of the visible area (was bottom-first due to LIFO front-enqueue); queue rebuilt each frame from draw order.
+
+
+  [x] Only-1-thumbnail bug fixed: queue append (not rebuild-from-scratch) so worker keeps draining across frames; dedup + inflight cleanup.
+
+
+  [x] Thumbnails decode from the TOP of visible items: queue rebuilt each frame (keep still-visible in order, drop off-screen, append new top-to-bottom).
+
