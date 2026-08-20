@@ -4063,7 +4063,20 @@ override bool onMouseMove(ref Event event)
                 navigate(seg.path, true, true);
             return;
         }
-        beginAddressEditing();
+        // Only the empty area to the right of the last segment begins editing.
+        // Gaps between segments (and the left icon padding) must stay inert.
+        if (clickIsEmptyRightSide(position))
+            beginAddressEditing();
+    }
+
+    private bool clickIsEmptyRightSide(Point position) const
+    {
+        if (_addressSegments.length == 0)
+            return true;
+        const lastRight = _addressSegments[$ - 1].rect.right();
+        return position.x >= lastRight && position.x < _addressTextRect.right() &&
+            position.y >= _addressTextRect.y &&
+            position.y < _addressTextRect.bottom();
     }
 
     private int addressSegmentIndexAt(Point position) const
