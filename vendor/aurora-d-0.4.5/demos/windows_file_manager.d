@@ -138,6 +138,14 @@ private struct NavigationItem
     bool thisPcChild;
 }
 
+private struct AddressSegment
+{
+    string label;
+    string path;
+    bool thisPc;
+    Rect rect;
+}
+
 private final class FileManagerIconAtlas
 {
     RgbaImage image;
@@ -152,7 +160,7 @@ private final class FileManagerIconAtlas
     }
 }
 
-private final class PreviewTextField : TextField
+private class PreviewTextField : TextField
 {
     bool delegate(ref Event event) onPreviewKeyDown;
 
@@ -166,6 +174,23 @@ private final class PreviewTextField : TextField
         if (onPreviewKeyDown !is null && onPreviewKeyDown(event))
             return true;
         return super.onKeyDown(event);
+    }
+}
+
+private final class AddressField : PreviewTextField
+{
+    void delegate() onAddressLostFocus;
+
+    this()
+    {
+        super();
+    }
+
+    override void onFocusChanged(bool value)
+    {
+        super.onFocusChanged(value);
+        if (!value && onAddressLostFocus !is null)
+            onAddressLostFocus();
     }
 }
 
@@ -789,10 +814,10 @@ final class WindowsFileManagerRoot : Widget
     private enum headerHeight = 34;
     private enum scrollbarWidth = 12;
 
-    private GuiWindow _window;
-    private TextField _addressField;
+private GuiWindow _window;
+    private AddressField _addressField;
     private TextField _searchField;
-    private TextField _locateField;
+private TextField _locateField;
     private TextField _renameField;
     private Scrollbar _listScrollbar;
     private Scrollbar _sidebarScrollbar;
@@ -899,6 +924,9 @@ final class WindowsFileManagerRoot : Widget
     private int _typeX;
     private int _sizeX;
     private int _sizeWidth;
+    private AddressSegment[] _addressSegments;
+    private bool _addressEditing;
+    private int _addressHoverIndex = -1;
 
     void delegate(string title) onTitleChanged;
 
@@ -909,12 +937,35 @@ final class WindowsFileManagerRoot : Widget
         layoutHints().minWidth = scaled(820);
         layoutHints().minHeight = scaled(500);
 
-        _addressField = add(new TextField());
+        _addressField = add(new AddressField());
         _addressField.setTransparentBackground(true);
         _addressField.setShowBorder(false);
         _addressField.setPadding(scaled(4));
         _addressField.setTextColor(explorerText);
+        _addressField.setVisible(false);
         _addressField.onSubmitted = delegate() { submitAddress(); };
+        _addressField.onPreviewKeyDown = delegate(ref Event event)
+        {
+            if (event.key == Key.escape && !event.control() &&
+                !event.meta() && !event.alt())
+            {
+                _addressField.setText(_showThisPc ? "This PC" : _currentPath, false);
+                requestFocus();
+                invalidate();
+                return true;
+            }
+            return false;
+        };
+        _addressField.onAddressLostFocus = delegate()
+        {
+            if (_addressEditing)
+            {
+                _addressEditing = false;
+                _addressField.setVisible(false);
+                _addressHoverIndex = -1;
+                invalidate();
+            }
+        };
 
         _searchField = add(new TextField());
         _searchField.setTransparentBackground(true);
@@ -1079,8 +1130,7 @@ final class WindowsFileManagerRoot : Widget
 
         if (_addressRect.contains(event.position))
         {
-            _addressField.requestFocus();
-            _addressField.selectAll();
+            handleAddressClick(event.position);
             return true;
         }
 
@@ -1132,9 +1182,15 @@ final class WindowsFileManagerRoot : Widget
         return true;
     }
 
-    override bool onMouseMove(ref Event event)
+override bool onMouseMove(ref Event event)
     {
         updateThisPcHoverArea(event.position);
+        const hoverIndex = addressSegmentIndexAt(event.position);
+        if (hoverIndex != _addressHoverIndex)
+        {
+            _addressHoverIndex = hoverIndex;
+            invalidate();
+        }
         if (_pendingEntryDrag || _draggingEntry)
         {
             updateEntryDrag(event.position);
@@ -1151,6 +1207,11 @@ final class WindowsFileManagerRoot : Widget
     protected override void onMouseLeave()
     {
         setThisPcHoverArea(false);
+        if (_addressHoverIndex >= 0)
+        {
+            _addressHoverIndex = -1;
+            invalidate();
+        }
     }
 
     override bool onMouseUp(ref Event event)
@@ -1348,8 +1409,7 @@ final class WindowsFileManagerRoot : Widget
             }
             if (event.key == Key.l)
             {
-                _addressField.requestFocus();
-                _addressField.selectAll();
+                beginAddressEditing();
                 return true;
             }
             if (event.key == Key.f)
@@ -3968,6 +4028,145 @@ final class WindowsFileManagerRoot : Widget
         requestFocus();
     }
 
+    private void beginAddressEditing()
+    {
+        if (_addressEditing) return;
+        _addressEditing = true;
+        _addressField.setText(_showThisPc ? "This PC" : _currentPath, false);
+        _addressField.setVisible(true);
+        _addressField.requestFocus();
+        _addressField.selectAll();
+        _addressHoverIndex = -1;
+        invalidate();
+    }
+
+    private void handleAddressClick(Point position)
+    {
+        if (_addressEditing) return;
+        const index = addressSegmentIndexAt(position);
+        if (index >= 0)
+        {
+            const seg = _addressSegments[cast(size_t) index];
+            if (seg.thisPc)
+                openThisPc();
+            else if (seg.path.length > 0 && !_showQuickAccess && !_showThisPc &&
+                !pathsEqual(seg.path, _currentPath))
+                navigate(seg.path, true, true);
+            return;
+        }
+        beginAddressEditing();
+    }
+
+    private int addressSegmentIndexAt(Point position) const
+    {
+        foreach (index, seg; _addressSegments)
+        {
+            if (seg.rect.contains(position))
+                return cast(int) index;
+        }
+        return -1;
+    }
+
+    private void computeAddressSegments(ref Canvas canvas)
+    {
+        _addressSegments.length = 0;
+        if (_addressEditing || _showQuickAccess || _showThisPc ||
+            _currentPath.length == 0)
+            return;
+
+        string[] paths;
+        string[] labels;
+        const root = rootName(_currentPath);
+        if (root.length > 0)
+        {
+            paths ~= "";
+            labels ~= "This PC";
+            paths ~= root;
+            labels ~= displayRoot(root);
+            string cumulative = root;
+            foreach (part; splitPathParts(_currentPath[root.length .. $]))
+            {
+                cumulative = buildPath(cumulative, part);
+                paths ~= cumulative;
+                labels ~= part;
+            }
+        }
+        else
+        {
+            paths ~= "";
+            labels ~= "This PC";
+            foreach (part; splitPathParts(_currentPath))
+            {
+                paths ~= part;
+                labels ~= part;
+            }
+        }
+
+        const separator = scaled(16);
+        const chipPadding = scaled(6);
+        int[] widths;
+        widths.length = labels.length;
+        foreach (index, label; labels)
+            widths[cast(size_t) index] =
+                canvas.measureText(toUTF32(label), textScale(), FontRole.ui).width;
+        const available = _addressTextRect.width;
+        long total = 0;
+        foreach (index, width; widths)
+        {
+            if (index > 0) total += separator;
+            total += widths[cast(size_t) index];
+        }
+
+        int firstIndex = 0;
+        if (total > available && labels.length > 1)
+        {
+            long consumed = cast(long) available;
+            int first = cast(int) labels.length;
+            for (int i = cast(int) labels.length - 1; i >= 0; --i)
+            {
+                if (i < cast(int) labels.length - 1) consumed -= separator;
+                consumed -= widths[cast(size_t) i];
+                if (consumed < 0)
+                {
+                    first = i + 1;
+                    consumed += widths[cast(size_t) i];
+                    break;
+                }
+            }
+            firstIndex = maxInt(1, minInt(first, cast(int) labels.length));
+        }
+
+        int x = _addressTextRect.x;
+        int startIndex = 0;
+        if (firstIndex > 0)
+        {
+            AddressSegment dots;
+            dots.label = "...";
+            dots.path = paths[cast(size_t) (firstIndex - 1)];
+            dots.thisPc = false;
+            dots.rect = Rect(x, _addressTextRect.y,
+                widths[0] + chipPadding, _addressTextRect.height);
+            _addressSegments ~= dots;
+            startIndex = firstIndex;
+            x = dots.rect.right() + separator;
+        }
+
+        foreach (index; startIndex .. cast(int) labels.length)
+        {
+            const segmentPath = paths[cast(size_t) index];
+            if (x + widths[cast(size_t) index] > _addressTextRect.right())
+                break;
+            AddressSegment seg;
+            seg.label = labels[cast(size_t) index];
+            seg.path = segmentPath;
+            seg.thisPc = index == 0;
+            seg.rect = Rect(x - chipPadding / 2, _addressTextRect.y,
+                widths[cast(size_t) index] + chipPadding, _addressTextRect.height);
+            _addressSegments ~= seg;
+            x += widths[cast(size_t) index] + chipPadding + separator;
+        }
+    }
+
     private void clearSelection()
     {
         _selectedVisibleRows = null;
@@ -4890,6 +5089,37 @@ final class WindowsFileManagerRoot : Widget
         invalidate();
     }
 
+    private void openSelectionInNewWindow()
+    {
+        const entryIndex = entryIndexForVisibleRow(_selectedVisibleIndex);
+        if (entryIndex < 0) return;
+        const entry = _entries[cast(size_t) entryIndex];
+        openInNewWindow(entry.directory ? entry.path : dirName(entry.path));
+    }
+
+    private void openInNewWindow(string path)
+    {
+        string exe = "";
+        try { exe = thisExePath(); } catch (Exception) { exe = ""; }
+        if (exe.length > 0)
+        {
+            try
+            {
+                spawnProcess([exe, path], null, Config.detached);
+                _statusText = "Opened " ~ baseName(path) ~ " in a new window";
+                invalidate();
+                return;
+            }
+            catch (Exception)
+            {
+            }
+        }
+        if (path.length > 0 && isDir(path))
+            navigate(path, true, true);
+        else
+            openPath(path);
+    }
+
     private void showEntryProperties(ExplorerEntry entry)
     {
         const location = entry.drive ? "This PC" : dirName(entry.path);
@@ -5260,6 +5490,9 @@ final class WindowsFileManagerRoot : Widget
                 auto entry = selectedEntry();
                 quickAccessItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+                quickAccessItems ~= ContextMenuItem.command("Open in new window",
+                    IconKind.open,
+                    delegate() { openSelectionInNewWindow(); });
                 if (!entry.directory)
                     quickAccessItems ~= ContextMenuItem.command("Open with system", IconKind.open,
                         delegate() { openPath(entry.path); });
@@ -5320,6 +5553,9 @@ final class WindowsFileManagerRoot : Widget
                 auto entry = selectedEntry();
                 thisPcItems ~= ContextMenuItem.command("Open", IconKind.open,
                     delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+                thisPcItems ~= ContextMenuItem.command("Open in new window",
+                    IconKind.open,
+                    delegate() { openSelectionInNewWindow(); });
                 if (canClipboardSelection())
                 {
                     thisPcItems ~= ContextMenuItem.separatorItem();
@@ -5381,6 +5617,9 @@ final class WindowsFileManagerRoot : Widget
             auto entry = selectedEntry();
             items ~= ContextMenuItem.command("Open", IconKind.open,
                 delegate() { activateEntry(_selectedVisibleIndex); }, "Enter");
+            items ~= ContextMenuItem.command("Open in new window",
+                IconKind.open,
+                delegate() { openSelectionInNewWindow(); });
             if (!entry.directory)
                 items ~= ContextMenuItem.command("Open with system", IconKind.open,
                     delegate() { openPath(entry.path); });
@@ -5899,12 +6138,28 @@ final class WindowsFileManagerRoot : Widget
             _addressRect.y + scaled(6), scaled(16), scaled(16)),
             explorerText, folderAccent);
 
+        if (!_addressEditing)
+            drawAddressSegments(canvas);
+
         drawRefreshButton(canvas, _refreshRect);
 
         canvas.drawRoundedRect(_searchRect, 0, explorerField, explorerFieldBorder, 1);
         drawIcon(canvas, IconKind.search, Rect(_searchRect.x + scaled(9),
             _searchRect.y + scaled(7), scaled(15), scaled(15)),
             explorerMuted, explorerMuted);
+    }
+
+    private void drawAddressSegments(ref Canvas canvas)
+    {
+        computeAddressSegments(canvas);
+        foreach (index, seg; _addressSegments)
+        {
+            if (cast(int) index == _addressHoverIndex)
+                canvas.fillRect(seg.rect, explorerSelection);
+            const textColor = seg.thisPc ? explorerBlue : explorerText;
+            drawTextWithScale(canvas, seg.rect, seg.label, textColor,
+                HorizontalAlign.center, textScale());
+        }
     }
 
     private void drawSidebar(ref Canvas canvas)
