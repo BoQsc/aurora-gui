@@ -3697,3 +3697,9 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] "Click away and back = forever" FIXED: FindFirstFileW fails error 183 on 2nd load of a folder -> fallback to dirEntries enumeration so navigation never gets stuck.
 
+
+  [x] Thumbnails: async background decode worker + visible-only enqueue + streamed drain (no UI-thread PNG decode; loading not noticeable).
+
+
+  [x] Thumbnail priority follows viewport: front-enqueue visible + prune off-screen queued items, so scrolling decodes what is on screen (was: FIFO from folder top).
+

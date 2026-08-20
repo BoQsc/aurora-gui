@@ -4630,3 +4630,18 @@ Feature E (v11) - DEFINITIVE fix for "click away and back = forever":
   - Verified with the probe: Downloads 197 -> Desktop 417 -> Downloads 197, all settled with correct status; no more stuck Loading.
   - scroll-test + dub test (32) pass; no leftover instrumentation. Test helpers entryCountForTest/statusTextForTest/navigateForTest kept for future repro.
 
+
+Feature E (v12) - thumbnails are now truly async + visible-only:
+  - PNG decode moved OFF the UI thread to a background worker thread (pure loadPngImage+downscale, no GUI/Vulkan - safe). Only VISIBLE rows enqueue (thumbnailFor runs from the viewport-limited paint path), so decoding is localized to what is on screen + streams in as you scroll.
+  - UI thread just drains finished results each tick (drainThumbnailResults) and repaints; zero PNG decode on the UI thread, so loading is never noticeable/stuttery.
+  - Headless builds (scroll test) decode inline synchronously for determinism; worker gated with version(AuroraHeadless) {} else {}. (NOTE: D has no version(!X); must use version(A) {} else {}.)
+  - Verified: screenshots folder thumbnails stream 0->8 via worker; scroll-test passes; dub test (32) passes; app runs.
+  - Earlier scroll-test "hang" was shell/process-launch flakiness (direct exe / start / cmd /c hang the wrapper), NOT the code - always verify via dub run.
+
+
+Feature E (v13) - thumbnail priority follows the viewport (scroll fix):
+  - BUG: worker decoded the queue FIFO from the folder top, so scrolling showed the TOP items decoding instead of the visible ones.
+  - FIX: (1) thumbnailFor enqueues at the FRONT of _thumbPending (newest visible decodes first); (2) _thumbVisible tracks paths drawn this frame (cleared each tick, repopulated by the viewport-limited paint); (3) pruneOffScreenThumbnailsLocked drops queued paths no longer visible every ~20 ticks.
+  - So scrolling now always decodes what is on screen; off-screen queued items are dropped.
+  - Verified: scroll-test + dub test (32) pass; app runs on screenshots folder.
+

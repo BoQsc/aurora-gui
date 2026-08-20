@@ -15,6 +15,7 @@ import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
 import std.datetime : SysTime;
 import std.datetime.systime : FILETIMEToSysTime;
 import core.thread : Thread;
+import core.sync.mutex : Mutex;
 import core.time : msecs;
 
 version (Windows)
@@ -891,7 +892,6 @@ private TextField _locateField;
     private void delegate() _dirPumpStep;
     private bool _dirIterating;
     private double _loadSpinnerClock;
-    private double _uiIdleClock;
     private bool _quietReload;
     private long _lastStreamRebuildMs;
     version (Windows)
@@ -949,9 +949,29 @@ private TextField _locateField;
     private RgbaImage[string] _thumbnailCache;
     private string[] _thumbnailOrder;
     private bool[string] _thumbnailFailed;
-    private string[] _thumbnailPending;
-    private bool[string] _thumbnailPendingSet;
-    private bool _thumbnailsChanged;
+    // Background PNG decode pipeline (app only; headless decodes inline).
+    // Only visible rows enqueue (thumbnailFor runs from the draw path); the
+    // worker decodes and the UI drains results, so decoding never blocks paint.
+    version (AuroraHeadless)
+    {
+    }
+    else
+    {
+        private Thread _thumbThread;
+        private Mutex _thumbMutex;
+        private string[] _thumbPending;
+        private bool[string] _thumbInFlight;
+        private bool _thumbStop;
+        private RgbaImage[string] _thumbResults;
+        private bool[string] _thumbFailedResults;
+        private bool _thumbResultsChanged;
+        // Paths that are currently visible; updated each frame so the worker
+        // decodes what the user is actually looking at, not folder-top items.
+        private bool[string] _thumbVisible;
+        // Number of frames without a pending re-prioritization; used to prune
+        // off-screen queued paths periodically.
+        private int _thumbVisibleStale;
+    }
 
     void delegate(string title) onTitleChanged;
 
@@ -1086,6 +1106,13 @@ private TextField _locateField;
         };
 
         rebuildNavigation();
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            _thumbMutex = new Mutex();
+        }
         navigate(initialPath.length > 0 ? initialPath : getcwd(), true, true);
     }
 
@@ -1093,6 +1120,13 @@ private TextField _locateField;
     {
         version (Windows)
             closeFolderChangeNotification();
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            stopThumbnailWorker();
+        }
     }
 
     protected override Size onMeasure(Size available)
@@ -1123,12 +1157,15 @@ private TextField _locateField;
         updateThisPcArrowFade(deltaSeconds);
         updateSmoothScrolling(deltaSeconds);
         pumpDirectoryLoad();
-        // Only decode thumbnails once the UI has been idle briefly (no recent
-        // scrolling), so scrolling large image folders never hitches on a
-        // 47-180ms PNG decode.
-        _uiIdleClock += deltaSeconds;
-        if (_uiIdleClock >= 0.3)
-            pumpThumbnails();
+        // Decoding happens on the background worker; just drain finished
+        // results each tick (fast, no PNG decode on the UI thread).
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            drainThumbnailResults();
+        }
         if (_dirIterating)
         {
             _loadSpinnerClock += deltaSeconds;
@@ -6421,9 +6458,6 @@ override bool onMouseMove(ref Event event)
         _listSmoothScrollActive = false;
         rebuildScrollbars();
         updateRenameFieldBounds();
-        // Any scroll is user activity; defer thumbnail decodes until idle so
-        // scrolling large image folders stays smooth.
-        _uiIdleClock = 0.0;
         invalidate();
     }
 
@@ -6936,55 +6970,195 @@ override bool onMouseMove(ref Event event)
         auto cached = path in _thumbnailCache;
         if (cached !is null) return *cached;
         if (path in _thumbnailFailed) return null;
-        // Defer the (potentially expensive) PNG decode off the paint path;
-        // pumpThumbnails() decodes a few per tick so paint never stalls.
-        if (!(path in _thumbnailPendingSet))
+        version (AuroraHeadless)
         {
-            _thumbnailPending ~= path;
-            _thumbnailPendingSet[path] = true;
-        }
-        return null;
-    }
-
-    private void pumpThumbnails()
-    {
-        if (_thumbnailPending.length == 0) return;
-        import std.datetime.stopwatch : StopWatch;
-        StopWatch budget;
-        budget.start();
-        const budgetMilliseconds = 6.0;
-        while (_thumbnailPending.length > 0)
-        {
-            const path = _thumbnailPending[0];
-            _thumbnailPending = _thumbnailPending[1 .. $];
-            _thumbnailPendingSet.remove(path);
-            if (path in _thumbnailCache || path in _thumbnailFailed)
-                continue;
-        try
-        {
-            auto image = loadPngImage(path);
-            if (image is null)
+            // Tests are deterministic and single-threaded; decode inline.
+            try
             {
-                _thumbnailFailed[path] = true;
-                continue;
+                auto image = loadPngImage(path);
+                if (image is null)
+                {
+                    _thumbnailFailed[path] = true;
+                    return null;
+                }
+                auto downscaled = downscaleThumbnail(image, thumbnailTargetSide);
+                cacheThumbnail(path, downscaled);
+                return downscaled;
             }
-            auto downscaled = downscaleThumbnail(image, thumbnailTargetSide);
-            cacheThumbnail(path, downscaled);
-            _thumbnailsChanged = true;
-        }
             catch (Exception)
             {
                 _thumbnailFailed[path] = true;
+                return null;
             }
-            if (budget.peek().total!"msecs" >= budgetMilliseconds)
-                break;
         }
-        if (_thumbnailsChanged)
+        else
         {
-            _thumbnailsChanged = false;
-            invalidate();
+            // Only rows that are actually drawn reach here (the paint loop is
+            // viewport-limited), so thumbnails are requested for visible items
+            // only. Enqueue at the FRONT so the most recently visible item is
+            // decoded first; off-screen items already queued get pruned.
+            synchronized (_thumbMutex)
+            {
+                _thumbVisible[path] = true;
+                if (!(path in _thumbInFlight) && !(path in _thumbResults) &&
+                    !(path in _thumbFailedResults))
+                {
+                    _thumbPending = path ~ _thumbPending;
+                    _thumbInFlight[path] = true;
+                }
+            }
+            ensureThumbnailWorker();
+            return null;
         }
     }
+
+    /// Start the background decode worker if it is not running.
+    version (AuroraHeadless)
+    {
+    }
+    else
+    {
+    private void ensureThumbnailWorker()
+    {
+        if (_thumbThread !is null) return;
+        _thumbStop = false;
+        _thumbThread = new Thread(delegate()
+        {
+            thumbnailWorkerLoop();
+        });
+        _thumbThread.start();
+    }
+
+    /// Worker thread: takes pending paths one at a time and decodes them off
+    /// the UI thread. Pure PNG decode + downscale — no GUI/Vulkan — so it is
+    /// safe to run concurrently (unlike creating a second window).
+    private void thumbnailWorkerLoop()
+    {
+        while (true)
+        {
+            string path;
+            synchronized (_thumbMutex)
+            {
+                if (_thumbStop) return;
+                if (_thumbPending.length > 0)
+                {
+                    path = _thumbPending[0];
+                    _thumbPending = _thumbPending[1 .. $];
+                }
+            }
+            if (path.length == 0)
+            {
+                Thread.sleep(2.msecs);
+                continue;
+            }
+
+            bool failed;
+            RgbaImage thumb;
+            try
+            {
+                auto image = loadPngImage(path);
+                if (image is null)
+                    failed = true;
+                else
+                    thumb = downscaleThumbnail(image, thumbnailTargetSide);
+            }
+            catch (Exception)
+            {
+                failed = true;
+            }
+
+            synchronized (_thumbMutex)
+            {
+                _thumbInFlight.remove(path);
+                if (_thumbStop) return;
+                if (failed)
+                    _thumbFailedResults[path] = true;
+                else if (thumb !is null)
+                    _thumbResults[path] = thumb;
+                _thumbResultsChanged = true;
+            }
+        }
+    }
+
+    /// UI thread: move finished decodes into the cache and repaint so the
+    /// thumbnails stream in as they become ready.
+    private void drainThumbnailResults()
+    {
+        RgbaImage[string] results;
+        bool[string] failures;
+        bool changed;
+        synchronized (_thumbMutex)
+        {
+            // Reset the visible set; the next paint repopulates it from the
+            // viewport-limited draw loop, so it always reflects what is on
+            // screen right now.
+            _thumbVisible = null;
+            // Prune off-screen queued paths periodically so the worker always
+            // decodes what the user is currently looking at.
+            if (++_thumbVisibleStale >= 20)
+            {
+                _thumbVisibleStale = 0;
+                pruneOffScreenThumbnailsLocked();
+            }
+            if (!_thumbResultsChanged)
+            {
+                if (_thumbThread is null && _thumbPending.length > 0)
+                    ensureThumbnailWorker();
+                return;
+            }
+            results = _thumbResults;
+            _thumbResults = null;
+            failures = _thumbFailedResults;
+            _thumbFailedResults = null;
+            _thumbResultsChanged = false;
+            changed = true;
+        }
+        foreach (path, image; results)
+        {
+            if (path in _thumbnailCache || path in _thumbnailFailed) continue;
+            cacheThumbnail(path, image);
+        }
+        foreach (path; failures.keys)
+        {
+            if (!(path in _thumbnailCache))
+                _thumbnailFailed[path] = true;
+        }
+        if (_thumbThread is null && _thumbPending.length > 0)
+            ensureThumbnailWorker();
+        if (changed)
+            invalidate();
+    }
+
+    private void stopThumbnailWorker()
+    {
+        synchronized (_thumbMutex)
+        {
+            _thumbStop = true;
+        }
+        if (_thumbThread !is null)
+        {
+            _thumbThread.join();
+            _thumbThread = null;
+        }
+    }
+
+    /// Drop queued thumbnail requests for paths that scrolled out of view, so
+    /// the worker spends its time on what is visible. Caller holds _thumbMutex.
+    private void pruneOffScreenThumbnailsLocked()
+    {
+        if (_thumbPending.length == 0) return;
+        string[] keep;
+        keep.reserve(_thumbPending.length);
+        foreach (path; _thumbPending)
+        {
+            if (path in _thumbVisible)
+                keep ~= path;
+            else
+                _thumbInFlight.remove(path);
+        }
+        _thumbPending = keep;
+    }
+    } // end version (AuroraHeadless) else block for thumbnail worker
 
     private void cacheThumbnail(string path, RgbaImage image)
     {
