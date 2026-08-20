@@ -3653,3 +3653,6 @@ NOT ADDRESSED (verified infeasible now):
   [ ] Making "Open in new window" fast via single-process shared Vulkan device: hard-crashes on a background-thread 2nd window; reverted to spawn-process (cost ~2.5s is GPU driver init, not app-cacheable).
 
 
+
+  [x] Context menu "View" slide-out submenu (hover opens to right, lists view modes) - library ContextMenu cascade support added; context menus use it (Quick Access/This PC/main).
+

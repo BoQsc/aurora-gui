@@ -3527,6 +3527,15 @@ override bool onMouseMove(ref Event event)
             delegate() { setViewMode(mode); });
     }
 
+    /// Adds a single cascading "View" item whose children list the view modes.
+    /// Used by the right-click context menus (slides out to the right).
+    private void appendViewModeSubmenu(ref ContextMenuItem[] items)
+    {
+        ContextMenuItem[] views;
+        appendViewModeItems(views);
+        items ~= ContextMenuItem.submenuItem("View", IconKind.none, views);
+    }
+
     private static string fileViewModeLabel(FileViewMode mode)
     {
         final switch (mode)
@@ -5534,7 +5543,7 @@ override bool onMouseMove(ref Event event)
                     delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 quickAccessItems ~= ContextMenuItem.separatorItem();
             }
-            appendViewModeItems(quickAccessItems);
+            appendViewModeSubmenu(quickAccessItems);
             quickAccessItems ~= ContextMenuItem.separatorItem();
             quickAccessItems ~= ContextMenuItem.command("Refresh", IconKind.refresh,
                 delegate() { refresh(); }, "F5");
@@ -5594,7 +5603,7 @@ override bool onMouseMove(ref Event event)
                     delegate() { copySelectedPath(); }, "Ctrl+Shift+C");
                 thisPcItems ~= ContextMenuItem.separatorItem();
             }
-            appendViewModeItems(thisPcItems);
+            appendViewModeSubmenu(thisPcItems);
             thisPcItems ~= ContextMenuItem.separatorItem();
             thisPcItems ~= ContextMenuItem.command("Open This PC with system", IconKind.open,
                 delegate() { openThisPcWithSystem(); });
@@ -5671,7 +5680,7 @@ override bool onMouseMove(ref Event event)
         items ~= ContextMenuItem.command("New text file", IconKind.newDocument,
             delegate() { createNewTextFile(); });
         items ~= ContextMenuItem.separatorItem();
-        appendViewModeItems(items);
+        appendViewModeSubmenu(items);
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command(
             _groupBy == GroupBy.dateModified ? "Ungroup" : "Group by date modified",

@@ -20,6 +20,9 @@ struct ContextMenuItem
     bool enabled = true;
     bool checked;
     void delegate() action;
+    /// Non-empty marks a cascading (sub-menu) item; its items render in a
+    /// child menu that slides out to the right of the parent on hover.
+    ContextMenuItem[] submenu;
 
     static ContextMenuItem command(string label, IconKind icon,
         void delegate() action, string shortcut = "", bool enabled = true)
@@ -54,6 +57,20 @@ struct ContextMenuItem
         result.enabled = false;
         return result;
     }
+
+    /// A sub-menu item whose children render in a slide-out parent menu.
+    static ContextMenuItem submenuItem(string label, IconKind icon,
+        ContextMenuItem[] children, bool enabled = true)
+    {
+        auto result = command(label, icon, null, "", enabled);
+        result.submenu = children;
+        return result;
+    }
+
+    bool hasSubmenu() const @safe pure nothrow @nogc
+    {
+        return submenu.length > 0;
+    }
 }
 
 /**
@@ -84,6 +101,12 @@ class ContextMenu : TransientPopup
      * menu-local position; the owner may convert to global/root space.
      */
     bool delegate(Point localPosition) onMouseMoveOutside;
+    /// Child sub-menu currently open to the right of a cascade item.
+    private ContextMenu _child;
+    /// The parent cascade item index that owns `_child`.
+    private int _submenuOwnerIndex = -1;
+    /// The menu that opened `this` as a cascade, if any.
+    private ContextMenu _parentMenu;
     this(ContextMenuItem[] items, Widget focusReturn = null)
     {
         super(focusReturn);
@@ -99,6 +122,12 @@ class ContextMenu : TransientPopup
     Rect menuRect() const @safe pure nothrow @nogc
     {
         return _menuRect;
+    }
+
+    /// The currently open cascade sub-menu, or null when none is open.
+    ContextMenu childMenu()
+    {
+        return _child;
     }
 
     int rowHeightForTesting() const @safe pure nothrow @nogc
@@ -158,12 +187,75 @@ class ContextMenu : TransientPopup
     override void dismiss()
     {
         if (dismissed()) return;
+        closeChild();
         if (_pressed >= 0)
         {
             _pressed = -1;
             releaseMouse();
         }
         super.dismiss();
+    }
+
+    /// Close the cascade sub-menu, if any, without dismissing this menu.
+    private void closeChild()
+    {
+        if (_child !is null)
+        {
+            _child.dismiss();
+            _child = null;
+        }
+        _submenuOwnerIndex = -1;
+        invalidate();
+    }
+
+    private bool openChildFor(int index)
+    {
+        if (index < 0 || index >= cast(int) _items.length) return false;
+        if (!_items[cast(size_t) index].hasSubmenu() ||
+            !_items[cast(size_t) index].enabled)
+            return false;
+        if (_child !is null && index == _submenuOwnerIndex) return true;
+        closeChild();
+
+        auto root = popupRoot(this);
+        if (root is null) return false;
+        auto childItems = _items[cast(size_t) index].submenu.dup;
+        if (childItems.length == 0) return false;
+        auto child = new ContextMenu(childItems, this);
+        child._parentMenu = this;
+        root.add(child);
+        child.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+        root.bringChildToFront(child);
+        // Position the cascade just right of the parent item, aligned to the
+        // item's top so it reads as "sliding out to the right".
+        const parentRect = itemRect(index);
+        child.openAt(Point(parentRect.right(), parentRect.y - 2));
+        child.onDismissed = delegate()
+        {
+            if (_child is child)
+            {
+                _child = null;
+                _submenuOwnerIndex = -1;
+                invalidate();
+            }
+        };
+        _child = child;
+        _submenuOwnerIndex = index;
+        invalidate();
+        return true;
+    }
+
+    private void updateChildForHot()
+    {
+        const int index = _hot;
+        if (index >= 0 && index < cast(int) _items.length &&
+            _items[cast(size_t) index].hasSubmenu() &&
+            _items[cast(size_t) index].enabled)
+        {
+            openChildFor(index);
+            return;
+        }
+        closeChild();
     }
 
     protected override void onBoundsChanged()
@@ -344,13 +436,19 @@ class ContextMenu : TransientPopup
         _hot = value;
         revealHot();
         invalidate();
+        updateChildForHot();
     }
 
     private void activate(int index)
     {
         if (!selectable(index)) return;
-        auto action = _items[cast(size_t) index].action;
+        const item = _items[cast(size_t) index];
+        if (item.hasSubmenu())
+            return; // cascade items never activate; hover drives their child
+        auto action = item.action;
         dismiss();
+        if (_parentMenu !is null)
+            _parentMenu.dismiss();
         if (action !is null) action();
     }
 
@@ -410,6 +508,10 @@ class ContextMenu : TransientPopup
                         shortcutWidth, rect.height), item.shortcut,
                     item.enabled ? palette.textMuted : palette.disabled,
                     palette.fontScale, HorizontalAlign.right, VerticalAlign.middle, true);
+            if (item.hasSubmenu())
+                content.drawTextInRect(Rect(rect.right() - 20, rect.y, 16, rect.height),
+                    "►", foreground, palette.fontScale,
+                    HorizontalAlign.center, VerticalAlign.middle, true);
         }
 
         if (_scrollOffset > 0)
@@ -487,7 +589,19 @@ class ContextMenu : TransientPopup
         switch (event.key)
         {
             case Key.escape:
+                if (_child !is null)
+                {
+                    closeChild();
+                    return true;
+                }
                 dismiss();
+                return true;
+            case Key.left:
+                closeChild();
+                return true;
+            case Key.right:
+                if (_hot >= 0 && _items[cast(size_t) _hot].hasSubmenu())
+                    openChildFor(_hot);
                 return true;
             case Key.down:
                 setHot(nextSelectable(_hot < 0 ? cast(int) _items.length - 1 : _hot, 1));
@@ -580,6 +694,45 @@ unittest
     assert(menu.onKeyDown(key));
     assert(activated);
     assert(menu.dismissed());
+
+    // Cascade sub-menu: hover opens it to the right, moving away closes it,
+    // and activating a child dismisses the whole cascade chain.
+    bool childActivated;
+    ContextMenuItem[] views;
+    views ~= ContextMenuItem.command("Details", delegate() { childActivated = true; });
+    auto cascade = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.submenuItem("View", IconKind.none, views),
+        ContextMenuItem.command("Refresh", delegate() {})
+    ]);
+    assert(cascade !is null);
+    const cr = cascade.menuRect();
+    assert(cr.x == 122 && cr.y == 92);
+    // Hover the cascade row (row 0): the sub-menu slides out to the right.
+    Event hover;
+    hover.position = Point(cr.x + 30, cr.y + 11);
+    cascade.onMouseMove(hover);
+    auto child = cascade.childMenu();
+    assert(child !is null);
+    assert(child.menuRect().x >= cr.right() - 4);
+    assert(child.menuRect().y >= cr.y - 4);
+    // Hovering the plain second row closes the sub-menu.
+    hover.position = Point(cr.x + 30, cr.y + 11 + 22);
+    cascade.onMouseMove(hover);
+    assert(cascade.childMenu() is null);
+    // Re-open and activate a child with the keyboard: both menus close.
+    hover.position = Point(cr.x + 30, cr.y + 11);
+    cascade.onMouseMove(hover);
+    child = cascade.childMenu();
+    assert(child !is null);
+    Event downKey;
+    downKey.key = Key.down;
+    assert(child.onKeyDown(downKey));
+    Event enterKey;
+    enterKey.key = Key.enter;
+    assert(child.onKeyDown(enterKey));
+    assert(childActivated);
+    assert(child.dismissed());
+    assert(cascade.dismissed());
 }
 
 private final class ContextMenuTestRoot : Widget

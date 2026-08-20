@@ -4525,3 +4525,13 @@ Test tooling notes: (a) can NOT view images (model lacks image input); verify vi
 
 
 
+
+Feature C - context menu "View" slide-out submenu (library change):
+  - ContextMenuItem gained `submenuItem(label, icon, children)` + `submenu` field; ContextMenu gained cascade support:
+    hovering a cascade item opens a child ContextMenu to the right of the parent item (openChildFor), closes it when moving away,
+    renders a > chevron, supports Right/Left/Escape keyboard nav, and activating a child dismisses the whole chain (activate -> parentMenu.dismiss).
+  - Right-click context menus (Quick Access / This PC / main list) now list view modes under a "View" submenu instead of inline (appendViewModeSubmenu).
+  - View ribbon dropdown (showViewMenu) keeps the inline list.
+  - Verified: dub test (32 modules pass, incl. new cascade unittest), both configs build, app runs (poll alive 21s).
+  - NOTE: "slide out" is placement-to-the-right (no animated slide in the library); hover opens/closes as in Windows Explorer.
+
