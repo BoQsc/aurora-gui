@@ -1,5 +1,35 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## aurora-d: TrueType bytecode hinting, retry (2026-08-19)
+
+First attempt at hinting made text unreadable (Segoe UI glyphs like K/L/l/T/Z
+collapsed to empty) and was reverted. Redone carefully.
+
+**What fixed the unreadable text:**
+1. Correct GraphicsState defaults per the TrueType spec: `roundState=1`
+   (RTHG), `minimumDistance=1` (1/64 px), `deltaBase=9`, `cvtCutIn=68`,
+   `rp0/1/2=0`.
+2. IUP uses separate X/Y touched arrays; a point is marked touched in the
+   freedom-vector axis by point-movement ops.
+3. `pointIn` returns a harmless dummy for out-of-range indices instead of
+   clamping to `_points[0]` (which collapsed valid points together).
+4. **Per-glyph safety net**: after `hintGlyph`, if the outline bbox collapsed
+   (empty), keep the unhinted outline. Guarantees no glyph ever becomes blank.
+
+**Corpus verification** (`hint_corpus_test`): full printable ASCII at
+8/10/12/14/16 px across Segoe UI, Consolas, Arial.
+- Before safety net: Segoe had 3-4 EMPTY glyphs (K/L/l/T/Z) — unreadable.
+- After: 0 empty glyphs. Consolas 0 broken; Segoe/Arial flags are all thin
+  glyphs (i/l/!|./;) that legitimately have near-zero dark-pixel ratio.
+
+**Measured:** menu text solid_fraction 0.628 (hinted) vs 0.235 (unhinted
+baseline) — ~2.7x crisper. Live Vulkan app menu text readable and crisp.
+`headless_smoke` + 32 vendored unittests pass.
+
+**Files:** `source/aurora/text/hinter.d` (new VM), `truetype.d` (fpgm/prep/
+cvt parsing + glyph instruction extraction + hint integration + safety net).
+`AURORA_NO_HINTING=1` toggles off for A/B.
+
 ## aurora-web milestone 10: network/cookies/gzip, layout fixed/text-align, forms (2026-08-19)
 
 Three parallel `general` subagents (marker-file protocol, 3/3 succeeded):

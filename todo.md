@@ -1,5 +1,49 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-19 - aurora-d font hinting: FINAL diagnosis + revert (honest conclusion)
+
+User: "after this many failures what could it be that we still see bad results
+horrible, impossible to read."
+
+The TrueType bytecode hinting attempts were reverted to the clean unhinted
+baseline. Root cause of the repeated failures:
+
+- A **partial TrueType interpreter cannot match native rendering**. Real fonts
+  use the full opcode set (IUP with precise semantics, SCANCTRL/SCANTYPE,
+  GETINFO, composite-glyph hinting, DELTAC, precise rounding/single-width
+  behavior). A partial interpreter produces glyphs that are approximately
+  right but visibly distorted — wrong stem thickness, deformed curves,
+  collapsed glyphs (Segoe K/L/l/T/Z became EMPTY in the first attempt).
+- Screenshots/metrics looked "readable" (solid fraction up) but the real
+  on-screen result was worse than the simple baseline. Metric improvements
+  did NOT equal visual correctness.
+- The safety net (fall back to unhinted if a glyph collapses) prevents blank
+  glyphs but cannot fix the glyphs that hint *wrong but not empty*.
+
+Decision: the unhinted baseline (4x supersample + sharp contrast) is the
+reliable, readable state. Real hinting needs either a COMPLETE spec-tested
+TrueType interpreter (very large, risky) or a native backend (DirectWrite/GDI).
+Partial interpreters are worse than none.
+
+State: reverted `truetype.d`, deleted `hinter.d`. Baseline builds; headless
+smoke + 32 vendored unittests pass; notepad renders readable.
+
+## 2026-08-19 - aurora-d: TrueType bytecode hinting retry (done, readable)
+
+User: "i reverted it only made it all unreadable" — the first hinting attempt
+made Segoe UI glyphs like K/L/l/T/Z collapse to empty (unreadable). Redone:
+
+- Fixed GraphicsState defaults per TrueType spec (roundState=1, minDist=1,
+  deltaBase=9, cvtCutIn=68, rp=0).
+- IUP uses separate X/Y touched flags; moved points marked in freedom axis.
+- pointIn returns a dummy for OOB indices instead of clamping to point[0].
+- Added a per-glyph safety net: if hinting collapses a glyph's bbox, fall back
+  to the unhinted outline — so text can never become blank.
+- Verified with a full-ASCII corpus test at 8/10/12/14/16px on Segoe UI,
+  Consolas, Arial: 0 empty glyphs after the safety net (was 3-4 before).
+- Measured: menu solid_fraction 0.628 vs 0.235 baseline (2.7x crisper). Live
+  Vulkan app text readable. Smoke + 32 unittests pass.
+
 ## 2026-08-19 - Aurora Designer: visual UI designer on Aurora-D (feature, done)
 
 - [x] User: "Would it be possible to gather all the best practices and have
