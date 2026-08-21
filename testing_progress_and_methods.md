@@ -4671,3 +4671,10 @@ Feature E (v17) - scroll-up re-prioritization + only-visible decode fixes (root 
 - Queue now rebuilt each frame to EXACTLY the current visible set (top-to-bottom), skipping cached/results/inflight/failed; so scroll up re-prioritizes the new top item and off-screen items drop out.
 - Verified: notepad/build (14 PNGs, 2 visible) decodes both visible top-to-bottom; scroll-test + dub test (32) pass.
 
+
+Feature E (v18) - parallel thumbnail decoding (multi-core):
+
+- The thumbnail decode worker was a single thread; PNG decode is CPU-bound. Now spawn up to min(totalCPUs, 4) worker threads that share the same pending queue (mutex-guarded), each pulling the next visible path top-to-bottom.
+- _thumbThread -> _thumbThreads[] (Thread[]); ensureThumbnailWorker starts one per core (capped 4); stopThumbnailWorker stops+joins all.
+- Verified: app runs with 31 threads (pool active); scroll-test + dub test (32) pass. Image-folder thumbnails now decode across cores -> faster.
+

@@ -957,7 +957,7 @@ private TextField _locateField;
     }
     else
     {
-        private Thread _thumbThread;
+        private Thread[] _thumbThreads;
         private Mutex _thumbMutex;
         private string[] _thumbPending;
         private bool[string] _thumbPendingSet;
@@ -7010,7 +7010,9 @@ override bool onMouseMove(ref Event event)
         }
     }
 
-    /// Start the background decode worker if it is not running.
+    /// Start the background decode workers (one per CPU core, capped) so PNG
+    /// decoding runs in parallel. PNG decode is CPU-bound, so multiple cores
+    /// make thumbnail loading of image folders noticeably faster.
     version (AuroraHeadless)
     {
     }
@@ -7018,13 +7020,19 @@ override bool onMouseMove(ref Event event)
     {
     private void ensureThumbnailWorker()
     {
-        if (_thumbThread !is null) return;
+        if (_thumbThreads.length > 0) return;
         _thumbStop = false;
-        _thumbThread = new Thread(delegate()
+        import std.parallelism : totalCPUs;
+        const workerCount = minInt(4, maxInt(1, cast(int) totalCPUs));
+        _thumbThreads.length = workerCount;
+        foreach (ref thread; _thumbThreads)
         {
-            thumbnailWorkerLoop();
-        });
-        _thumbThread.start();
+            thread = new Thread(delegate()
+            {
+                thumbnailWorkerLoop();
+            });
+            thread.start();
+        }
     }
 
     /// Worker thread: takes pending paths one at a time and decodes them off
@@ -7113,7 +7121,7 @@ override bool onMouseMove(ref Event event)
             _thumbVisibleOrder = null;
             if (!_thumbResultsChanged)
             {
-                if (_thumbThread is null && _thumbPending.length > 0)
+                if (_thumbThreads.length == 0 && _thumbPending.length > 0)
                     ensureThumbnailWorker();
                 return;
             }
@@ -7135,7 +7143,7 @@ override bool onMouseMove(ref Event event)
             if (!(path in _thumbnailCache))
                 _thumbnailFailed[path] = true;
         }
-        if (_thumbThread is null && _thumbPending.length > 0)
+        if (_thumbThreads.length == 0 && _thumbPending.length > 0)
             ensureThumbnailWorker();
         if (changed)
             invalidate();
@@ -7147,11 +7155,12 @@ override bool onMouseMove(ref Event event)
         {
             _thumbStop = true;
         }
-        if (_thumbThread !is null)
+        foreach (thread; _thumbThreads)
         {
-            _thumbThread.join();
-            _thumbThread = null;
+            if (thread !is null)
+                thread.join();
         }
+        _thumbThreads.length = 0;
     }
 
     } // end version (AuroraHeadless) else block for thumbnail worker

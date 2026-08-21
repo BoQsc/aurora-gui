@@ -3715,3 +3715,6 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Thumbnails: fixed in-flight marking (set by worker, not queue) so all visible items decode; queue rebuilt to current visible order each frame so scroll up re-prioritizes top item; stale-build trap documented.
 
+
+  [x] Multi-core thumbnail decoding: thread pool (min(totalCPUs,4)) shares the pending queue; PNG thumbnails decode in parallel.
+
