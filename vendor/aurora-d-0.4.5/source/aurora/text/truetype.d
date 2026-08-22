@@ -12,6 +12,7 @@ module aurora.text.truetype;
 import aurora.text.cff : CffFace;
 import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
 import aurora.text.variations : FontVariations;
+import aurora.text.colr : ColrRenderer, ColorSurface, RgbaColor;
 import std.algorithm : min, max;
 import std.exception : enforce;
 import std.file : read;
@@ -94,6 +95,7 @@ final class TrueTypeFace
     private string _sourcePath;
     private TrueTypeHinter _hinter;
     private FontVariations _variations;
+    private ColrRenderer _colr;
 
     static TrueTypeFace load(string path, uint faceIndex = 0)
     {
@@ -408,6 +410,19 @@ final class TrueTypeFace
         {
             // Variations are optional.
         }
+        try
+        {
+            _colr = new ColrRenderer(_data, _faceOffset);
+            if (_colr.isColorFont())
+            {
+                _colr.outlineRasterizer = &rasterizeOutlineIntoSurface;
+                _colr.layerGlyphRenderer = &rasterizeLayerGlyph;
+            }
+        }
+        catch (Exception)
+        {
+            // Color glyphs are optional.
+        }
     }
 
     /// The font's variable-font handler, or null when static.
@@ -576,6 +591,78 @@ final class TrueTypeFace
         foreach (value; _variations.normalizedCoords())
             result ~= cast(int) (value >> 2); // 16.16 -> 2.14
         return result;
+    }
+
+    /// Whether this face has color (COLR) glyph definitions.
+    bool hasColorGlyphs() const @safe pure nothrow @nogc
+    {
+        return _colr !is null && _colr.isColorFont();
+    }
+
+    /// Rasterize a COLR color glyph into an RGBA buffer at the given size.
+    /// Returns true when a color glyph was drawn; the buffer is sized size*size.
+    bool rasterizeColorGlyph(uint glyph, int pixelSize, ref ubyte[] rgba) const
+    {
+        if (_colr is null || !_colr.isColorFont()) return false;
+        auto surface = ColorSurface.create(pixelSize, pixelSize);
+        bool drew = (cast() _colr).render(glyph, surface, 0, 0, pixelSize);
+        rgba = surface.pixels.dup;
+        return drew;
+    }
+
+    /// Rasterize a glyph outline's alpha into a ColorSurface (COLR layer).
+    private void rasterizeOutlineIntoSurface(uint glyphID, int x, int y,
+        ref ColorSurface surface, ubyte alpha)
+    {
+        // Render the glyph outline as a mask, then apply it with the alpha.
+        if (glyphID >= _numGlyphs) return;
+        auto bitmap = rasterize(glyphID, max(1, surface.height), 1);
+        if (bitmap.empty()) return;
+        foreach (py; 0 .. bitmap.height)
+        {
+            const sy = y - bitmap.height + bitmap.bearingY + py;
+            if (sy < 0 || sy >= surface.height) continue;
+            foreach (px; 0 .. bitmap.width)
+            {
+                const sx = x + bitmap.bearingX + px;
+                if (sx < 0 || sx >= surface.width) continue;
+                const coverage = bitmap.alpha[cast(size_t) py * bitmap.width + px];
+                if (coverage == 0) continue;
+                const combined = cast(ubyte) (coverage * alpha / 255);
+                RgbaColor color;
+                color.r = 255; color.g = 255; color.b = 255;
+                color.a = combined;
+                surface.composite(sx, sy, color);
+            }
+        }
+    }
+
+    /// Render a COLR layer glyph (outline or bitmap) with its palette color.
+    private void rasterizeLayerGlyph(uint glyphID, int x, int y,
+        ref ColorSurface surface, int pixelSize, RgbaColor color)
+    {
+        if (glyphID >= _numGlyphs) return;
+        auto bitmap = rasterize(glyphID, max(1, pixelSize), 1);
+        if (bitmap.empty()) return;
+        foreach (py; 0 .. bitmap.height)
+        {
+            const sy = y - bitmap.height + bitmap.bearingY + py;
+            if (sy < 0 || sy >= surface.height) continue;
+            foreach (px; 0 .. bitmap.width)
+            {
+                const sx = x + bitmap.bearingX + px;
+                if (sx < 0 || sx >= surface.width) continue;
+                const coverage = bitmap.alpha[cast(size_t) py * bitmap.width + px];
+                if (coverage == 0) continue;
+                RgbaColor tinted;
+                const f = coverage / 255.0;
+                tinted.r = cast(ubyte) (color.r * f + 0.5);
+                tinted.g = cast(ubyte) (color.g * f + 0.5);
+                tinted.b = cast(ubyte) (color.b * f + 0.5);
+                tinted.a = cast(ubyte) (color.a * f + 0.5);
+                surface.composite(sx, sy, tinted);
+            }
+        }
     }
 
     private int leftSideBearing(uint glyph) const

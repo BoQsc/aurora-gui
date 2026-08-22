@@ -185,6 +185,19 @@ final class FontFace
         return _trueType.variationHash();
     }
 
+    /** Whether this face has COLR color-glyph definitions. */
+    bool hasColorGlyphs() const @safe pure nothrow @nogc
+    {
+        return _trueType !is null && _trueType.hasColorGlyphs();
+    }
+
+    /** Rasterize a COLR color glyph into an RGBA buffer at the given size. */
+    bool rasterizeColorGlyph(uint glyph, int pixelSize, ref ubyte[] rgba) const
+    {
+        if (_trueType is null) return false;
+        return _trueType.rasterizeColorGlyph(glyph, pixelSize, rgba);
+    }
+
     // Compatibility name retained from Aurora-D 0.2.0. It reports a parsed
     // sfnt face, including one whose outlines are static CFF1.
     bool isTrueType() const @safe pure nothrow @nogc { return isOpenType(); }
