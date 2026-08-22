@@ -1,5 +1,19 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-22 - aurora-d font stack: all gaps closed (hinting/variable/color/complex-script/font-manager)
+
+User: implement font rendering + support with no gaps, standalone cross-platform (no DirectWrite/GDI).
+
+All five layers implemented pure-D in vendored aurora-d, verified on real fonts:
+- [x] Complete TrueType bytecode hinting interpreter (text/hinter.d) + wired into rasterizeGlyph; fallback keeps glyphs non-blank.
+- [x] System font inventory (text/fontmanager.d): per-OS dir scan + name/OS2/cmap parse; SystemFonts resolves through it.
+- [x] Variable fonts (text/variations.d): fvar/avar/gvar/HVAR, normalized coords, per-glyph deltas, HVAR advance; atlas cache keyed on variation hash.
+- [x] Color emoji (text/colr.d): COLR v0+v1 paint tree, CPAL, CBDT/sbix PNG; rendered via RGBA image path in canvas.
+- [x] Complex-script shaping (text/indic.d): syllable segmentation + reordering for Indic/Khmer/Myanmar before GSUB.
+- [x] All verified: 37 modules pass, text-system 23/0, headless renders, hintprobe/variationsprobe/colrprobe/indicprobe pass.
+- [ ] Manual GUI pass: confirm the notepad/etc. render readable hinted text and color emoji in a live window.
+
+
 ## 2026-08-19 - aurora-d font hinting: FINAL diagnosis + revert (honest conclusion)
 
 User: "after this many failures what could it be that we still see bad results

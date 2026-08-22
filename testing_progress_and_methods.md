@@ -4678,3 +4678,77 @@ Feature E (v18) - parallel thumbnail decoding (multi-core):
 - _thumbThread -> _thumbThreads[] (Thread[]); ensureThumbnailWorker starts one per core (capped 4); stopThumbnailWorker stops+joins all.
 - Verified: app runs with 31 threads (pool active); scroll-test + dub test (32) pass. Image-folder thumbnails now decode across cores -> faster.
 
+
+## aurora-d: complete font stack, no gaps (2026-08-22)
+
+Implemented all remaining font-rendering / font-support gaps in the pure-D
+`aurora-d` text engine. **Constraint honored**: no native/OS text APIs
+(DirectWrite/GDI/etc.) — everything is cross-platform pure D; per-OS support
+is only a font-directory list. Verified on Windows (Segoe UI, Nirmala UI,
+Segoe UI Emoji, InterVariable).
+
+### What was implemented
+
+1. **Complete TrueType bytecode hinting interpreter** (`text/hinter.d`)
+   - Full opcode set per OpenType 1.9 + FreeType `ttinterp.c` semantics:
+     fpgm/prep/glyph programs, FDEF/IDEF/CALL/LOOPCALL, DELTAP/C,
+     SROUND/S45ROUND, GETINFO, INSTCTRL/SCANCTRL, IUP, SHP/SHC/SHZ/SHPIX,
+     MDRP/MIRP/MIAP/MDAP/MSIRP/ALIGNRP/ALIGNPTS/IP/ISECT, four phantom
+     points, twilight zone (on-demand growth), graphics-state defaults from
+     `tt_default_graphics_state`. Wired into `rasterizeGlyph`; any hinting
+     failure falls back to the unhinted outline (never blanks glyphs).
+2. **System font inventory** (`text/fontmanager.d`) — scans per-OS font
+   dirs, parses `name`/`OS/2`/`cmap` directly; family/weight/stretch/italic
+   lookup. `SystemFonts` now resolves UI fonts through it.
+3. **Variable fonts** (`text/variations.d`) — `fvar`/`avar`/`gvar`/`HVAR`
+   parsing, coordinate normalization + avar mapping, per-glyph outline
+   deltas (packed points/deltas, shared/embedded/intermediate tuples), HVAR
+   advance adjustment. Glyph atlas cache keyed by variation hash so different
+   weights rasterize distinctly.
+4. **Color emoji** (`text/colr.d`) — COLR v0 (base+layer records) + COLR v1
+   paint tree (formats 1..32: layers, solid, gradients, glyph clip,
+   colrGlyph, transforms, scale/rotate/skew, composite), CPAL palette
+   resolution, CBDT/CBLC + sbix PNG bitmap strikes (reusing the existing PNG
+   decoder). Wired into the canvas so color glyphs render via the RGBA image
+   path in both software and Vulkan renderers.
+5. **Complex-script shaping** (`text/indic.d`) — syllable segmentation +
+   reordering for Devanagari/Bengali/Gurmukhi/Gujarati/Oriya/Tamil/Telugu/
+   Kannada/Malayalam/Khmer/Myanmar, applied before GSUB.
+
+### New verification methods
+
+All in `vendor/aurora-d-0.4.5`:
+
+- `dub test --compiler=dmd` -> 37 modules pass (was 32).
+- **Hinting**: `tests/hintprobe.d` — rasterize printable ASCII at 9/12/16/24px
+  on Segoe UI; asserts zero blank glyphs (only U+0020 legitimately blank).
+  Build: `dmd -i -Isource -of=build\hintprobe.exe tests\hintprobe.d`.
+- **Variable fonts**: `tests/variationsprobe.d` — loads
+  `tests/fonts/InterVariable.ttf`, renders 'A' at default vs max weight,
+  asserts pixel buffers differ (69 differing pixels at 48px).
+- **Color emoji**: `tests/colrprobe.d` — loads `C:\Windows\Fonts\seguiemj.ttf`,
+  renders U+1F600 at 32px via `FontFace.rasterizeColorGlyph`, asserts colored
+  (non-gray) opaque pixels exist (739 opaque, 416 colored).
+- **Indic**: `tests/indicprobe.d` — loads `C:\Windows\Fonts\Nirmala.ttf`,
+  shapes the Devanagari ra+virama+ka+i-matra sequence, asserts the reph
+  reorders after the base consonant.
+- **Full app regression**: `dub run --config=headless-test`, `text-system-test`
+  (23 checks, 0 failures), notepad + font-gallery link and launch.
+
+### Key gotchas discovered (reproduce -> fix)
+
+- **gvar glyph offsets**: the offsets array sits right after the 20-byte gvar
+  header, and each entry is relative to the glyphVariationDataArray
+  (entry + `offsetToData`). Reading them at `gvar+offsetToData` or without
+  adding `offsetToData` yields garbage deltas (verified against InterVariable).
+- **Twilight zone**: fonts' fpgm/prep/glyph programs reference twilight points
+  by raw index; the zone must be pre-sized from `maxp.maxTwilightPoints` and
+  **grown on demand** (`ensurePoint`), or real fonts crash the interpreter.
+  Also `zoneSelect0/1/2` must route `zone0Ref/1Ref/2Ref` to the twilight zone,
+  not just the glyph points.
+- **Hinter crash surfaced by headless test**: without the zone routing +
+  growth fixes, `dub run --config=headless-test` crashes with
+  `ArrayIndexError` in `executeOpcode` (MIAP on an empty zone). Fixed by
+  routing zone selects to twilight + `ensurePoint` guards.
+- **Atlas cache must key on variation hash**: two weights of the same glyph
+  would otherwise return the same cached bitmap.
