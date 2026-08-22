@@ -6,7 +6,7 @@ import aurora.image : RgbaImage;
 import aurora.render.drawlist : DrawList;
 import aurora.surface : Surface;
 import aurora.text.atlas : AtlasGlyph, FontSystem;
-import aurora.text.layout : TextLayout, TextLayoutOptions;
+import aurora.text.layout : PositionedGlyph, TextLayout, TextLayoutOptions;
 import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
     clampInt, maxInt, minInt;
@@ -359,6 +359,12 @@ struct Canvas
                 // the renderer or by Windows DPI virtualization.
                 const pixelSize = maxInt(1,
                     _drawList.logicalToDeviceY(layout.pixelSize));
+                if (positioned.font.hasColorGlyphs() &&
+                    positioned.font.isColorGlyph(positioned.glyphIndex))
+                {
+                    drawColorGlyph(positioned, position, pixelSize);
+                    continue;
+                }
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
                     positioned.glyphIndex, pixelSize, _fonts.renderMode);
                 if (!glyph.hasPixels()) continue;
@@ -372,6 +378,12 @@ struct Canvas
             }
             else
             {
+                if (positioned.font.hasColorGlyphs() &&
+                    positioned.font.isColorGlyph(positioned.glyphIndex))
+                {
+                    drawColorGlyph(positioned, position, layout.pixelSize);
+                    continue;
+                }
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
                     positioned.glyphIndex, layout.pixelSize, _fonts.renderMode);
                 if (!glyph.hasPixels()) continue;
@@ -379,6 +391,94 @@ struct Canvas
                 const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;
                 drawGlyphImmediate(toSurface(Rect(x, y,
                     glyph.region.width, glyph.region.height)), glyph, color);
+            }
+        }
+    }
+
+    /// Rasterize a COLR color glyph and draw it as an RGBA image.
+    private void drawColorGlyph(const(PositionedGlyph) positioned,
+        Point position, int pixelSize)
+    {
+        ubyte[] rgba;
+        bool drew = positioned.font.rasterizeColorGlyph(positioned.glyphIndex,
+            maxInt(1, pixelSize), rgba);
+        if (!drew || rgba.length == 0) return;
+        // Render at the requested size; find the actual rasterized extent by
+        // scanning the alpha bounds so placement uses the real ink.
+        const size = maxInt(1, pixelSize);
+        int minX = size, minY = size, maxX = -1, maxY = -1;
+        foreach (y; 0 .. size)
+        {
+            foreach (x; 0 .. size)
+            {
+                if (rgba[(cast(size_t) y * size + x) * 4 + 3] != 0)
+                {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX < 0) return;
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+
+        // Place the ink centered on the glyph origin (the COLR renderer draws
+        // from the top-left at the origin, so shift to the visual baseline).
+        int x;
+        int y;
+        if (_drawList !is null)
+        {
+            x = _drawList.logicalToDeviceX(
+                position.x + _offsetX + positioned.x) - (width / 2);
+            y = _drawList.logicalToDeviceY(
+                position.y + _offsetY + positioned.y) - (height / 2);
+        }
+        else
+        {
+            x = position.x + cast(int) floor(positioned.x + 0.5) - (width / 2);
+            y = position.y + cast(int) floor(positioned.y + 0.5) - (height / 2);
+        }
+
+        // Build an RgbaImage from the color buffer, trimmed to the ink extent.
+        ubyte[] trimmed;
+        trimmed.length = cast(size_t) width * height * 4;
+        foreach (dy; 0 .. height)
+            foreach (dx; 0 .. width)
+            {
+                const src = ((cast(size_t) (minY + dy) * size + (minX + dx))) * 4;
+                const dst = (cast(size_t) dy * width + dx) * 4;
+                trimmed[dst .. dst + 4] = rgba[src .. src + 4];
+            }
+        auto image = new RgbaImage(width, height, trimmed);
+
+        if (_drawList !is null)
+        {
+            const deviceClip = _drawList.logicalToDevice(_clip);
+            _drawList.addRgbaImage(Rect(x, y, width, height), image,
+                Rect(0, 0, width, height), Color(255, 255, 255, 255),
+                deviceClip, false);
+        }
+        else
+        {
+            auto target = _surface;
+            foreach (dy; 0 .. height)
+            {
+                const sy = y + dy;
+                if (sy < 0 || sy >= target.height()) continue;
+                foreach (dx; 0 .. width)
+                {
+                    const sx = x + dx;
+                    if (sx < 0 || sx >= target.width()) continue;
+                    const src = (cast(size_t) dy * width + dx) * 4;
+                    const alpha = trimmed[src + 3];
+                    if (alpha == 0) continue;
+                    // Premultiply for the surface.
+                    target.setPixelClipped(sx, sy,
+                        Color(trimmed[src], trimmed[src + 1], trimmed[src + 2],
+                            alpha), Rect(0, 0, target.width(), target.height()));
+                }
             }
         }
     }

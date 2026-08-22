@@ -599,6 +599,13 @@ final class TrueTypeFace
         return _colr !is null && _colr.isColorFont();
     }
 
+    /// Whether a specific glyph has a COLR color definition.
+    bool isColorGlyph(uint glyph) const
+    {
+        if (_colr is null || !_colr.isColorFont()) return false;
+        return (cast() _colr).hasGlyph(glyph);
+    }
+
     /// Rasterize a COLR color glyph into an RGBA buffer at the given size.
     /// Returns true when a color glyph was drawn; the buffer is sized size*size.
     bool rasterizeColorGlyph(uint glyph, int pixelSize, ref ubyte[] rgba) const
