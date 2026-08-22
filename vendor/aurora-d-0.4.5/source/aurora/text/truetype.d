@@ -10,6 +10,7 @@ module aurora.text.truetype;
  */
 
 import aurora.text.cff : CffFace;
+import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
 import std.algorithm : min, max;
 import std.exception : enforce;
 import std.file : read;
@@ -90,6 +91,7 @@ final class TrueTypeFace
     private CffFace _cff;
     private bool _glyfOutlines;
     private string _sourcePath;
+    private TrueTypeHinter _hinter;
 
     static TrueTypeFace load(string path, uint faceIndex = 0)
     {
@@ -182,26 +184,83 @@ final class TrueTypeFace
             return bitmap;
         if (_cff !is null)
             return _cff.rasterize(glyph, pixelSize, bitmap.advance, supersample);
-
         OutlinePoint[][] contours;
         loadGlyphContours(glyph, contours, 0);
         if (contours.length == 0)
             return bitmap;
+
+        // Gather raw design-unit points, contours, and the glyph instructions.
+        int[] rawXs;
+        int[] rawYs;
+        bool[] rawOnCurve;
+        int[] contourEnds;
+        int pointCount;
+        foreach (contour; contours)
+        {
+            foreach (point; contour)
+            {
+                rawXs ~= cast(int) point.x;
+                rawYs ~= cast(int) point.y;
+                rawOnCurve ~= point.onCurve;
+                ++pointCount;
+            }
+            contourEnds ~= pointCount - 1;
+        }
+
+        const(ubyte)[] glyphIns;
+        if (_hinter !is null)
+            glyphIns = glyphInstructions(glyph);
+
+        // Hint the outline (design units in, design units out). Any hinting
+        // failure falls back to the raw outline so glyphs never blank.
+        int[] fitXs = rawXs;
+        int[] fitYs = rawYs;
+        int fitLsb = advanceUnits(glyph);
+        int fitAdvance = advanceUnits(glyph);
+        if (_hinter !is null && glyphIns.length > 0)
+        {
+            try
+            {
+                HintInput input;
+                input.instructions = glyphIns;
+                input.xs = rawXs;
+                input.ys = rawYs;
+                input.onCurve = rawOnCurve;
+                input.contours = contourEnds;
+                input.unitsPerEm = _unitsPerEm;
+                input.pixelSize = pixelSize;
+                input.lsb = leftSideBearing(glyph);
+                input.advance = advanceUnits(glyph);
+                input.tsb = topSideBearing(glyph);
+                input.vadvance = verticalAdvance(glyph);
+                input.fpgm = tableData(tag!"fpgm");
+                input.prep = tableData(tag!"prep");
+                auto fitted = (cast() _hinter).hint(input);
+                fitXs = fitted.xs;
+                fitYs = fitted.ys;
+                fitLsb = fitted.lsb;
+                fitAdvance = fitted.advance;
+                bitmap.advance = max(0, scaleUnits(fitAdvance, pixelSize));
+            }
+            catch (Exception)
+            {
+                // Fall through to the unhinted outline.
+            }
+        }
 
         const scale = scaleFor(pixelSize);
         double minX = double.infinity;
         double minY = double.infinity;
         double maxX = -double.infinity;
         double maxY = -double.infinity;
-        foreach (contour; contours)
+        foreach (i; 0 .. fitXs.length)
         {
-            foreach (point; contour)
-            {
-                minX = min(minX, point.x * scale);
-                minY = min(minY, point.y * scale);
-                maxX = max(maxX, point.x * scale);
-                maxY = max(maxY, point.y * scale);
-            }
+            const px = fitXs[i] * scale;
+            const py = fitYs[i] * scale;
+            minX = min(minX, px);
+            minY = min(minY, py);
+            maxX = max(maxX, px);
+            maxY = max(maxY, py);
         }
         if (minX == double.infinity)
             return bitmap;
@@ -216,8 +275,27 @@ final class TrueTypeFace
             return bitmap;
 
         Edge[] edges;
-        foreach (contour; contours)
-            flattenContour(contour, scale, bitmap.bearingX, bitmap.bearingY, edges);
+        // Rebuild contour points from the fitted coordinates.
+        {
+            int first;
+            foreach (endPoint; contourEnds)
+            {
+                const last = endPoint;
+                OutlinePoint[] contour;
+                contour.length = last - first + 1;
+                foreach (local; 0 .. contour.length)
+                {
+                    const index = first + local;
+                    OutlinePoint point;
+                    point.x = fitXs[index];
+                    point.y = fitYs[index];
+                    point.onCurve = rawOnCurve[index];
+                    contour[local] = point;
+                }
+                flattenContour(contour, scale, bitmap.bearingX, bitmap.bearingY, edges);
+                first = last + 1;
+            }
+        }
         if (edges.length == 0)
             return bitmap;
 
@@ -292,6 +370,8 @@ final class TrueTypeFace
 
         chooseCmap();
         parseKerning();
+        if (_glyfOutlines)
+            _hinter = new TrueTypeHinter(_data, _faceOffset);
     }
 
     private void parseDirectory()
@@ -419,6 +499,49 @@ final class TrueTypeFace
         return be16(_data, offset);
     }
 
+    private int leftSideBearing(uint glyph) const
+    {
+        const hmtx = requiredTable(tag!"hmtx");
+        const metricCount = max(1, cast(int) _numberOfHMetrics);
+        const metric = min(cast(uint) metricCount - 1, glyph);
+        const offset = hmtx.offset + cast(size_t) metric * 4;
+        if (offset + 4 > hmtx.offset + hmtx.length) return 0;
+        if (glyph < cast(uint) metricCount)
+            return beS16(_data, offset + 2);
+        // The lsb array follows the metrics.
+        const lsbOffset = hmtx.offset + cast(size_t) metricCount * 4 +
+            cast(size_t) (glyph - cast(uint) metricCount) * 2;
+        if (lsbOffset + 2 > hmtx.offset + hmtx.length) return 0;
+        return beS16(_data, lsbOffset);
+    }
+
+    private int topSideBearing(uint glyph) const
+    {
+        const vmtx = tag!"vmtx" in _tables;
+        if (vmtx is null) return 0;
+        const metricCount = max(1, cast(int) _numberOfHMetrics);
+        const metric = min(cast(uint) metricCount - 1, glyph);
+        const offset = vmtx.offset + cast(size_t) metric * 4;
+        if (offset + 4 > vmtx.offset + vmtx.length) return 0;
+        if (glyph < cast(uint) metricCount)
+            return beS16(_data, offset + 2);
+        const lsbOffset = vmtx.offset + cast(size_t) metricCount * 4 +
+            cast(size_t) (glyph - cast(uint) metricCount) * 2;
+        if (lsbOffset + 2 > vmtx.offset + vmtx.length) return 0;
+        return beS16(_data, lsbOffset);
+    }
+
+    private int verticalAdvance(uint glyph) const
+    {
+        const vmtx = tag!"vmtx" in _tables;
+        if (vmtx is null) return _unitsPerEm / 2;
+        const metricCount = max(1, cast(int) _numberOfHMetrics);
+        const metric = min(cast(uint) metricCount - 1, glyph);
+        const offset = vmtx.offset + cast(size_t) metric * 4;
+        if (offset + 2 > vmtx.offset + vmtx.length) return _unitsPerEm / 2;
+        return be16(_data, offset);
+    }
+
     private void parseKerning()
     {
         const kernPointer = tag!"kern" in _tables;
@@ -462,6 +585,71 @@ final class TrueTypeFace
         if (_locaFormat == 0)
             return cast(size_t) be16(_data, loca.offset + cast(size_t) glyph * 2) * 2;
         return be32(_data, loca.offset + cast(size_t) glyph * 4);
+    }
+
+    /// Extract the bytecode program for one glyph (empty when absent).
+    private const(ubyte)[] glyphInstructions(uint glyph) const
+    {
+        if (glyph >= _numGlyphs) return null;
+        const glyf = requiredTable(tag!"glyf");
+        const relativeStart = glyphOffset(glyph);
+        const relativeEnd = glyphOffset(glyph + 1);
+        if (relativeEnd <= relativeStart || relativeEnd > glyf.length) return null;
+        const start = glyf.offset + relativeStart;
+        const contourCount = beS16(_data, start);
+        if (contourCount < 0)
+        {
+            // Composite glyph: instructions may appear after the components.
+            return compositeInstructions(start);
+        }
+        if (contourCount == 0) return null;
+        size_t cursor = start + 10;
+        foreach (_; 0 .. contourCount)
+        {
+            if (cursor + 2 > _data.length) return null;
+            cursor += 2;
+        }
+        if (cursor + 2 > _data.length) return null;
+        const instructionLength = be16(_data, cursor);
+        cursor += 2;
+        if (cursor + instructionLength > _data.length) return null;
+        return _data[cursor .. cursor + cast(size_t) instructionLength];
+    }
+
+    private const(ubyte)[] compositeInstructions(size_t start) const
+    {
+        enum ushort ArgWords = 0x0001;
+        enum ushort MoreComponents = 0x0020;
+        enum ushort HaveInstructions = 0x0100;
+        size_t cursor = start + 10;
+        ushort flags;
+        do
+        {
+            if (cursor + 4 > _data.length) return null;
+            flags = be16(_data, cursor);
+            cursor += 4;
+            const argumentsAreXY = (flags & 0x0002) != 0;
+            if ((flags & ArgWords) != 0)
+                cursor += 4;
+            else
+                cursor += 2;
+            if ((flags & 0x0008) != 0)
+                cursor += 2;
+            else if ((flags & 0x0040) != 0)
+                cursor += 4;
+            else if ((flags & 0x0080) != 0)
+                cursor += 8;
+        }
+        while ((flags & MoreComponents) != 0);
+        if ((flags & HaveInstructions) != 0)
+        {
+            if (cursor + 2 > _data.length) return null;
+            const instructionLength = be16(_data, cursor);
+            cursor += 2;
+            if (cursor + instructionLength > _data.length) return null;
+            return _data[cursor .. cursor + cast(size_t) instructionLength];
+        }
+        return null;
     }
 
     private void loadGlyphContours(uint glyph, ref OutlinePoint[][] output, int depth) const
