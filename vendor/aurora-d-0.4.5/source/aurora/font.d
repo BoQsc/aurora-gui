@@ -2,6 +2,7 @@ module aurora.font;
 
 import aurora.text.glyph : GlyphBitmap;
 import aurora.text.truetype : TrueTypeFace;
+import aurora.text.fontmanager : SystemFontInventory, FontWeight;
 import aurora.types : Size, maxInt;
 import std.file : exists;
 import std.path : buildPath;
@@ -324,6 +325,12 @@ struct SystemFonts
         {
             triedSans = true;
             cachedSans = findFirst(sansCandidates(), "AURORA_UI_FONT");
+            if (cachedSans is null)
+                cachedSans = SystemFontInventory.loadBest("Segoe UI", FontWeight.normal);
+            if (cachedSans is null)
+                cachedSans = SystemFontInventory.loadBest("Arial", FontWeight.normal);
+            if (cachedSans is null)
+                cachedSans = SystemFontInventory.loadBest("DejaVu Sans", FontWeight.normal);
             if (cachedSans is null) cachedSans = FontFace.bitmapFallback();
         }
         return cachedSans;
@@ -335,6 +342,12 @@ struct SystemFonts
         {
             triedMonospace = true;
             cachedMonospace = findFirst(monospaceCandidates(), "AURORA_MONOSPACE_FONT");
+            if (cachedMonospace is null)
+                cachedMonospace = SystemFontInventory.loadBest("Consolas", FontWeight.normal);
+            if (cachedMonospace is null)
+                cachedMonospace = SystemFontInventory.loadBest("Courier New", FontWeight.normal);
+            if (cachedMonospace is null)
+                cachedMonospace = SystemFontInventory.loadBest("DejaVu Sans Mono", FontWeight.normal);
             if (cachedMonospace is null) cachedMonospace = sans();
         }
         return cachedMonospace;
@@ -345,8 +358,13 @@ struct SystemFonts
         if (!triedSansBold)
         {
             triedSansBold = true;
-            cachedSansBold = findFirst(sansBoldCandidates(),
-                "AURORA_UI_BOLD_FONT");
+            cachedSansBold = findFirst(sansBoldCandidates(), "AURORA_UI_BOLD_FONT");
+            if (cachedSansBold is null)
+                cachedSansBold = SystemFontInventory.loadBest("Segoe UI", FontWeight.bold);
+            if (cachedSansBold is null)
+                cachedSansBold = SystemFontInventory.loadBest("Arial", FontWeight.bold);
+            if (cachedSansBold is null)
+                cachedSansBold = SystemFontInventory.loadBest("DejaVu Sans", FontWeight.bold);
             if (cachedSansBold is null) cachedSansBold = sans();
         }
         return cachedSansBold;
