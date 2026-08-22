@@ -405,8 +405,15 @@ private final class Context
     /// Move one point by `distance` (F26Dot6) along the freedom vector.
     void movePoint(ref Zone zone, int point, long distance)
     {
-        if (point < 0 || point >= zone.points.length)
-            throw new HintAbort("Point out of range");
+        if (point < 0) throw new HintAbort("Negative point index");
+        if (point >= zone.points.length)
+        {
+            // The twilight zone grows on demand (FreeType semantics).
+            const oldLength = zone.points.length;
+            zone.points.length = point + 1;
+            foreach (i; oldLength .. zone.points.length)
+                zone.points[i] = Pt(0, 0, 0, 0, 0, 0, false, false, true);
+        }
         if (freeVectorX != 0)
         {
             zone.points[point].curX += mulFix(distance, freeVectorX);
@@ -419,14 +426,36 @@ private final class Context
         }
     }
 
-    ref Zone zone0Ref() { return zone0; }
-    ref Zone zone1Ref() { return zone1; }
-    ref Zone zone2Ref() { return zone2; }
+    /// Ensure a point index is addressable (growing the twilight zone).
+    void ensurePoint(ref Zone zone, int point)
+    {
+        if (point < 0 || point < zone.points.length) return;
+        const oldLength = zone.points.length;
+        zone.points.length = point + 1;
+        foreach (i; oldLength .. zone.points.length)
+            zone.points[i] = Pt(0, 0, 0, 0, 0, 0, false, false, true);
+    }
+
+    ref Zone zone0Ref()
+    {
+        return zoneSelect0 == 0 ? twilight : zone0;
+    }
+
+    ref Zone zone1Ref()
+    {
+        return zoneSelect1 == 0 ? twilight : zone1;
+    }
+
+    ref Zone zone2Ref()
+    {
+        return zoneSelect2 == 0 ? twilight : zone2;
+    }
 
     void mdrp(int opcode)
     {
         const point = cast(int) pop();
         auto zone = zone1Ref();
+        ensurePoint(zone, point);
         const orgDist = dualProject2(zone.points[point].orgX, zone.points[point].orgY,
             zone0.points[rp0].orgX, zone0.points[rp0].orgY);
 
@@ -463,6 +492,7 @@ private final class Context
         const point = cast(int) pop();
         const cvtEntry = cast(int) pop() + 1;
         auto zone = zone1Ref();
+        ensurePoint(zone, point);
         long cvtDist = cvtEntry > 0 && cast(size_t) cvtEntry - 1 < cvt.length ? cvt[cvtEntry - 1] : 0;
 
         long delta = cvtDist - singleWidthValue;
@@ -650,8 +680,15 @@ final class TrueTypeHinter
         ctx.zone1.points[n .. $] = ctx.zone0.points[n .. $];
         ctx.zone2.points[n .. $] = ctx.zone0.points[n .. $];
 
-        // Twilight zone starts empty.
-        ctx.twilight.points.length = 0;
+        // Twilight zone: reserve maxTwilightPoints + 4 (from maxp) so the
+        // fpgm/prep/glyph programs can reference twilight points by index.
+        int twilightCount = 4;
+        const maxp = tableData(tag!"maxp");
+        if (maxp !is null && maxp.length >= 16)
+            twilightCount += be16(maxp, 14); // maxTwilightPoints
+        ctx.twilight.points.length = twilightCount;
+        foreach (ref pt; ctx.twilight.points)
+            pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
 
         if (input.instructions.length > 0)
             runProgram(ctx, input.instructions);
@@ -708,6 +745,24 @@ final class TrueTypeHinter
         auto ctx = new Context(this, _cvt, _storage, unitsPerEm, pixelSize);
         ctx.fdefs[] = _fdefs[];
         ctx.idefs[] = _idefs[];
+
+        // During fpgm/prep there are no glyph points; route all zones to the
+        // reserved twilight array so point accesses are in bounds.
+        int twilightCount = 4;
+        if (maxp.length >= 16)
+            twilightCount += be16(maxp, 14); // maxTwilightPoints
+        ctx.twilight.points.length = twilightCount;
+        foreach (ref pt; ctx.twilight.points)
+            pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
+        ctx.zone0.points.length = twilightCount;
+        ctx.zone1.points.length = twilightCount;
+        ctx.zone2.points.length = twilightCount;
+        ctx.zone0.points[] = ctx.twilight.points[];
+        ctx.zone1.points[] = ctx.twilight.points[];
+        ctx.zone2.points[] = ctx.twilight.points[];
+        ctx.zoneSelect0 = 0;
+        ctx.zoneSelect1 = 0;
+        ctx.zoneSelect2 = 0;
 
         if (fpgm.length > 0)
             runProgram(ctx, fpgm);
@@ -1047,6 +1102,7 @@ final class TrueTypeHinter
             {
                 const point = cast(int) ctx.pop();
                 auto zone = ctx.zone0Ref();
+                ctx.ensurePoint(zone, point);
                 int distance;
                 if ((opcode & 1) != 0)
                 {
@@ -1064,6 +1120,7 @@ final class TrueTypeHinter
                 const point = cast(int) ctx.pop();
                 const cvtEntry = cast(int) ctx.pop();
                 auto zone = ctx.zone0Ref();
+                ctx.ensurePoint(zone, point);
                 long distance = cvtEntry >= 0 && cast(size_t) cvtEntry < ctx.cvt.length ? ctx.cvt[cvtEntry] : 0;
                 if (ctx.zoneSelect0 == 0)
                 {
@@ -1108,6 +1165,7 @@ final class TrueTypeHinter
                 const point = cast(int) ctx.pop();
                 const distance = cast(int) ctx.pop();
                 auto zone = ctx.zone1Ref();
+                ctx.ensurePoint(zone, point);
                 if (ctx.zoneSelect1 == 0)
                 {
                     zone.points[point].orgX = ctx.zone0.points[ctx.rp0].orgX;
@@ -1154,6 +1212,7 @@ final class TrueTypeHinter
             {
                 const point = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
+                ctx.ensurePoint(zone, point);
                 if ((opcode & 1) != 0)
                     ctx.push(ctx.dualProject(cast(int) zone.points[point].orgX,
                         cast(int) zone.points[point].orgY));
@@ -1167,6 +1226,7 @@ final class TrueTypeHinter
                 const point = cast(int) ctx.pop();
                 const value = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
+                ctx.ensurePoint(zone, point);
                 if (ctx.zoneSelect2 == 0)
                     zone.points[point].orgX = zone.points[point].curX;
                 const cur = ctx.project(cast(int) zone.points[point].curX,
@@ -1232,6 +1292,7 @@ final class TrueTypeHinter
                 const b0 = cast(int) ctx.pop();
                 const b1 = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
+                ctx.ensurePoint(zone, point);
                 const bdx = ctx.zone0.points[b1].curX - ctx.zone0.points[b0].curX;
                 const bdy = ctx.zone0.points[b1].curY - ctx.zone0.points[b0].curY;
                 const adx = ctx.zone1.points[a1].curX - ctx.zone1.points[a0].curX;
@@ -1407,6 +1468,9 @@ final class TrueTypeHinter
                 foreach (_; 0 .. count)
                 {
                     const point = cast(int) ctx.pop();
+                    if (point < 0 || point >= ctx.zone2.points.length ||
+                        ctx.rp1 < 0 || ctx.rp1 >= ctx.zone0.points.length)
+                        continue;
                     const orgDist = twilight
                         ? ctx.dualProject2(cast(int) ctx.zone2.points[point].orgX,
                             cast(int) ctx.zone2.points[point].orgY,
