@@ -12,6 +12,7 @@ module aurora.text.opentype;
 import aurora.font : FontFace;
 import aurora.text.unicode.properties : JoiningType, Script, bidiMirror,
     isDefaultIgnorable, joiningType, openTypeScriptTag;
+import aurora.text.indic : segmentSyllables, reorderSyllable;
 import std.algorithm : max, min;
 import std.exception : enforce;
 
@@ -513,6 +514,9 @@ final class OpenTypeShaper
         }
         assignJoiningForms(glyphs);
 
+        // Complex-script syllable reordering (Indic family) before GSUB.
+        reorderComplexScripts(glyphs, input, options);
+
         try
             applyGsub(glyphs, options);
         catch (Exception)
@@ -549,6 +553,69 @@ final class OpenTypeShaper
     double[] ligatureCarets(uint glyph, int pixelSize) const
     {
         return gdef is null ? null : gdef.ligatureCarets(glyph, face, pixelSize);
+    }
+
+    private void reorderComplexScripts(ref ShapedGlyph[] glyphs,
+        const(ShapeInput)[] input, ShapeOptions options)
+    {
+        // Only applies to the Indic-family scripts that require reordering.
+        switch (options.script)
+        {
+            case Script.devanagari:
+            case Script.bengali:
+            case Script.gurmukhi:
+            case Script.gujarati:
+            case Script.oriya:
+            case Script.tamil:
+            case Script.telugu:
+            case Script.kannada:
+            case Script.malayalam:
+            case Script.khmer:
+            case Script.myanmar:
+                break;
+            default:
+                return;
+        }
+
+        // Rebuild the source text from the inputs.
+        dstring text;
+        foreach (item; input)
+            text ~= item.codepoint;
+
+        auto syllables = segmentSyllables(text, options.script);
+        if (syllables.length == 0) return;
+
+        // Build a new glyph array applying each syllable's reorder plan.
+        ShapedGlyph[] reordered;
+        foreach (syllable; syllables)
+        {
+            const start = syllable.start;
+            const end = syllable.end;
+            if (start >= glyphs.length) break;
+            // Collect the glyph slice for this syllable (glyphs and inputs are
+            // 1:1 because the reorder happens before GSUB substitution).
+            size_t gStart = start;
+            size_t gEnd = min(end, glyphs.length);
+            if (gStart >= gEnd) continue;
+
+            auto plan = reorderSyllable(text, start, end, options.script);
+            if (plan.length == gEnd - gStart)
+            {
+                foreach (from; plan)
+                    reordered ~= glyphs[gStart + cast(size_t) from];
+            }
+            else
+            {
+                // Fall back to the natural order.
+                foreach (i; gStart .. gEnd)
+                    reordered ~= glyphs[i];
+            }
+        }
+        // Append any trailing glyphs outside syllables (shouldn't happen).
+        if (reordered.length < glyphs.length)
+            foreach (i; reordered.length .. glyphs.length)
+                reordered ~= glyphs[i];
+        glyphs = reordered;
     }
 
     private void applyGsub(ref ShapedGlyph[] glyphs, ShapeOptions options)
