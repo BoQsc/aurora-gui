@@ -178,6 +178,13 @@ final class FontFace
     bool isBitmapFallback() const @safe pure nothrow @nogc { return _bitmap; }
     bool isOpenType() const @safe pure nothrow @nogc { return _trueType !is null; }
 
+    /** Hash of the current variable-font coordinates (0 for static faces). */
+    uint variationHash() const
+    {
+        if (_trueType is null) return 0;
+        return _trueType.variationHash();
+    }
+
     // Compatibility name retained from Aurora-D 0.2.0. It reports a parsed
     // sfnt face, including one whose outlines are static CFF1.
     bool isTrueType() const @safe pure nothrow @nogc { return isOpenType(); }

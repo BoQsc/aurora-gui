@@ -69,7 +69,7 @@ final class GlyphAtlas
         pixelSize = maxInt(1, pixelSize);
         if (pixelSize > ushort.max) pixelSize = ushort.max;
         const key = GlyphKey(selected.identity(), glyphIndex, cast(ushort) pixelSize,
-            cast(ushort) renderMode, 0);
+            cast(ushort) renderMode, selected.variationHash());
         if (auto cached = key in _glyphs)
             return *cached;
 

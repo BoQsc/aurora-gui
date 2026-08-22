@@ -11,6 +11,7 @@ module aurora.text.truetype;
 
 import aurora.text.cff : CffFace;
 import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
+import aurora.text.variations : FontVariations;
 import std.algorithm : min, max;
 import std.exception : enforce;
 import std.file : read;
@@ -92,6 +93,7 @@ final class TrueTypeFace
     private bool _glyfOutlines;
     private string _sourcePath;
     private TrueTypeHinter _hinter;
+    private FontVariations _variations;
 
     static TrueTypeFace load(string path, uint faceIndex = 0)
     {
@@ -211,30 +213,56 @@ final class TrueTypeFace
         if (_hinter !is null)
             glyphIns = glyphInstructions(glyph);
 
+        // Apply variable-font deltas to the outline (design units).
+        int[] deltasXs = rawXs;
+        int[] deltasYs = rawYs;
+        if (_variations !is null && _variations.hasVariations())
+        {
+            try
+            {
+                (cast() _variations).applyGlyphDeltas(glyph, deltasXs, deltasYs);
+            }
+            catch (Exception)
+            {
+                // Ignore malformed variation data.
+            }
+        }
+
         // Hint the outline (design units in, design units out). Any hinting
         // failure falls back to the raw outline so glyphs never blank.
-        int[] fitXs = rawXs;
-        int[] fitYs = rawYs;
+        int[] fitXs = deltasXs;
+        int[] fitYs = deltasYs;
         int fitLsb = advanceUnits(glyph);
         int fitAdvance = advanceUnits(glyph);
+        if (_variations !is null && _variations.hasVariations())
+        {
+            try
+            {
+                fitAdvance = (cast() _variations).adjustAdvance(glyph, fitAdvance);
+            }
+            catch (Exception)
+            {
+            }
+        }
         if (_hinter !is null && glyphIns.length > 0)
         {
             try
             {
                 HintInput input;
                 input.instructions = glyphIns;
-                input.xs = rawXs;
-                input.ys = rawYs;
+                input.xs = deltasXs;
+                input.ys = deltasYs;
                 input.onCurve = rawOnCurve;
                 input.contours = contourEnds;
                 input.unitsPerEm = _unitsPerEm;
                 input.pixelSize = pixelSize;
                 input.lsb = leftSideBearing(glyph);
-                input.advance = advanceUnits(glyph);
+                input.advance = fitAdvance;
                 input.tsb = topSideBearing(glyph);
                 input.vadvance = verticalAdvance(glyph);
                 input.fpgm = tableData(tag!"fpgm");
                 input.prep = tableData(tag!"prep");
+                input.normalizedAxes = variationsNormalizedAxes();
                 auto fitted = (cast() _hinter).hint(input);
                 fitXs = fitted.xs;
                 fitYs = fitted.ys;
@@ -372,6 +400,48 @@ final class TrueTypeFace
         parseKerning();
         if (_glyfOutlines)
             _hinter = new TrueTypeHinter(_data, _faceOffset);
+        try
+        {
+            _variations = new FontVariations(_data, _faceOffset);
+        }
+        catch (Exception)
+        {
+            // Variations are optional.
+        }
+    }
+
+    /// The font's variable-font handler, or null when static.
+    FontVariations variations()
+    {
+        return _variations;
+    }
+
+    /// Set design-space coordinates (F16DOT16 per axis); returns true if changed.
+    bool setVariationCoords(long[] coords)
+    {
+        if (_variations is null) return false;
+        return _variations.setDesignCoords(coords);
+    }
+
+    /** Hash of the current variable-font coordinates (0 when static). */
+    uint variationHash() const
+    {
+        if (_variations is null || !_variations.hasVariations()) return 0;
+        uint hash = 1469598103934665603UL & 0xFFFFFFFF;
+        foreach (value; _variations.normalizedCoords())
+        {
+            hash ^= cast(uint) value;
+            hash = hash * 16777619;
+        }
+        return hash;
+    }
+
+    /// Debug: apply gvar deltas to a caller-supplied outline; returns changed.
+    bool debugApplyDeltas(uint glyph, ref int[] xs, ref int[] ys)
+    {
+        if (_variations is null || !_variations.hasVariations()) return false;
+        try { return _variations.applyGlyphDeltas(glyph, xs, ys); }
+        catch (Exception) { return false; }
     }
 
     private void parseDirectory()
@@ -497,6 +567,15 @@ final class TrueTypeFace
         const offset = hmtx.offset + cast(size_t) metric * 4;
         if (offset + 2 > hmtx.offset + hmtx.length) return _unitsPerEm / 2;
         return be16(_data, offset);
+    }
+
+    private int[] variationsNormalizedAxes() const
+    {
+        int[] result;
+        if (_variations is null) return result;
+        foreach (value; _variations.normalizedCoords())
+            result ~= cast(int) (value >> 2); // 16.16 -> 2.14
+        return result;
     }
 
     private int leftSideBearing(uint glyph) const
