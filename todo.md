@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-26 - Selection tool drag hijacked the playhead instead of marquee-select (fixed)
+
+User: "Why we can't drag select using selection tool, it always takeover the
+timeline playhead instead of trying to select."
+
+Root cause: `TimelineWidget.onMouseDown` gated the marquee (drag-select) behind
+`event.clickCount >= 2` (a double-click). A single-click drag in empty sequence
+space with the Selection tool therefore fell through to the playhead-scrub
+branch and moved the playhead instead of drawing a selection marquee.
+
+Fix (`source/auroracut/timeline.d`): with the Selection tool active, a plain
+drag across empty space now starts a marquee and selects every clip the
+rectangle touches. The playhead is scrubbed only from the ruler (and from
+Cut/Text tool drags), so the Selection tool always selects rather than hijacking
+the playhead. Otherwise unchanged.
+
+Verification:
+- `tests/timeline_multiselect_smoke.d` new regression block: with the Selection
+  tool, dragging across empty space (a gap between clips) marquee-selects the
+  intersected clips and leaves the playhead untouched. This test FAILS on the
+  old double-click gate ("did not marquee-select clips") and PASSES with the fix.
+- `dub test` 40 modules; model_smoke, cascade_smoke, timeline_multiselect_smoke
+  all pass; editor_smoke compiles.
+
 ## 2026-08-26 - Timeline multi-select: Ctrl/Shift click + move/resize together (feature)
 
 User: "timeline update: allow to select two or more timeline items at the same

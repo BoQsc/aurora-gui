@@ -68,6 +68,27 @@ int main()
     assert(timeline.selectedCountForTesting() == 2,
         "selectRange did not build a 2-clip range");
 
+    // Marquee drag-select with the Selection tool: dragging across empty space
+    // (v1 has a gap between clip@0..5 and clip@6..11) must select the clips the
+    // rectangle touches, NOT scrub the playhead. Regression: this used to require
+    // a double-click and otherwise hijacked the playhead.
+    {
+        auto driver = new UiTestDriver(window);
+        const gapOrigin = timeline.pointForTrackTime(v1, 5.5); // empty on v1
+        const acrossEnd = timeline.pointForTrackTime(v1, 8.0);
+        const beforePlayhead = timeline.playhead();
+        driver.drag(gapOrigin, acrossEnd, 8);
+        assert(timeline.selectedCountForTesting() >= 1,
+            "Selection tool drag did not marquee-select clips");
+        assert(timeline.playhead() == beforePlayhead,
+            "Selection tool drag moved the playhead instead of selecting");
+    }
+
+    // Re-establish a clean 2-clip group selection for the move test.
+    timeline.selectSingle(v1, 0, false);
+    timeline.toggleSelection(v1, 1, false);
+    assert(timeline.selectedCountForTesting() == 2);
+
     // A drag on a selected clip fires onSelectionMoveRequested for the group.
     bool moveFired;
     TrackAddress moveTrack;

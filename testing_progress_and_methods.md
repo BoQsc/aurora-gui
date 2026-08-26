@@ -1,5 +1,18 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Selection tool drag marquee vs playhead (2026-08-26)
+
+Bug: with the Selection tool, dragging across empty timeline space moved the
+playhead instead of marquee-selecting. Cause: `TimelineWidget.onMouseDown` gated
+marquee behind `event.clickCount >= 2`. Fix: the Selection tool now marquee
+selects on a single drag; the ruler (and Cut/Text tool drags) still scrub.
+
+**How to regression-test:** in `tests/timeline_multiselect_smoke.d`, with the
+Selection tool active, drag from an empty gap between two clips across them and
+assert `selectedCountForTesting() >= 1` AND `playhead()` is unchanged. Drive it
+through `UiTestDriver.drag` (real hit-test/dispatch). It FAILS on the old gate
+(the drag scrubs instead) and PASSES with the fix.
+
 ## Timeline multi-select: click selection + move/resize together (2026-08-26)
 
 Aurora Cut previously only supported marquee multi-select (visual) with a single

@@ -2336,12 +2336,12 @@ final class TimelineWidget : Widget
             return true;
         }
 
-        // Double-click empty sequence space, keep the second press held,
-        // and drag a marquee across one or more tracks to select every item
-        // touched by the rectangle. A normal single drag remains the playhead
-        // scrub gesture, preserving fast transport access.
+        // With the Selection tool, dragging across empty sequence space draws a
+        // marquee and selects every clip the rectangle touches. The playhead is
+        // scrubbed from the ruler (and from Cut/Text tool drags) instead, so the
+        // Selection tool always selects rather than hijacking the playhead.
         if (_activeTool == TimelineTool.selection && overTrack && index < 0 &&
-            event.position.x >= labelWidth() && event.clickCount >= 2)
+            event.position.x >= labelWidth())
         {
             _pointerMode = PointerMode.marqueeSelect;
             _marqueeOrigin = event.position;
