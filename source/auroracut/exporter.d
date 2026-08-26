@@ -39,6 +39,8 @@ struct ExportClip
     double outPoint = 0.0;
     double volume = 1.0;
     bool muted;
+    // FFmpeg audio stream index inside `path` (`0:a:<index>`). Defaults to 0.
+    int audioStreamIndex;
     double playbackRate = 1.0;
     bool reversed;
     bool cropEnabled;
@@ -818,6 +820,7 @@ private ExportClip cloneExportClip(const ref ExportClip source)
     result.outPoint = source.outPoint;
     result.volume = source.volume;
     result.muted = source.muted;
+    result.audioStreamIndex = source.audioStreamIndex;
     result.playbackRate = source.playbackRate;
     result.reversed = source.reversed;
     result.cropEnabled = source.cropEnabled;
@@ -1378,7 +1381,8 @@ private string buildFilterGraph(const ExportRequest request, const InputClip[] i
             const label = format("a%04d", audioIndex++);
             const delayMs = cast(long) (max(0.0, clip.start) * 1000.0 + 0.5);
             const volume = effectExpression(clip, EffectProperty.volume, "t");
-            graph ~= format("[%d:a:0]", input.inputIndex);
+            graph ~= format("[%d:a:%d]", input.inputIndex,
+                max(0, clip.audioStreamIndex));
             if (clip.reversed) graph ~= "areverse,";
             if (fabs(clip.playbackRate - 1.0) > 0.000_001)
                 graph ~= format("atempo=%s,", formatSeconds(clip.playbackRate, 6));

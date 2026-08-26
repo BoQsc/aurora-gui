@@ -1,5 +1,224 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-26 - Cascade sub-menu: cursor tracking + retraction (framework fix)
+
+User (after using the Audio-track cascade): "the ui for audio track seems to be
+awkward, everything is alright except it doesn't select where the mouse cursor
+is. and also if we hover back it doesn't retract."
+
+Root cause in the vendored Aurora-D context menu (`vendor/aurora-d-0.4.5/source/
+aurora/widgets/contextmenu.d`): a cascade sub-menu is a front-most FULL-WINDOW
+popup added as a sibling of its parent, so the framework's hit-testing routes
+EVERY pointer move to the child, even when the cursor is actually over the
+parent menu. Consequences:
+- Hovering the parent while a child is open: the child swallowed the move, the
+  parent never recomputed its hot item, so highlighted items did not follow the
+  cursor ("doesn't select where the mouse cursor is").
+- Moving back onto the parent: the child (still front-most) kept swallowing
+  moves, so the parent never recomputed hover and the child never retracted
+  ("if we hover back it doesn't retract").
+
+Fix (contextmenu.d):
+- `ContextMenu.onMouseMove`: when a menu has a `_parentMenu` and the pointer is
+  outside its own `_menuRect`, it now forwards the move to the parent via the
+  new `forwardPointerMove`, and consumes it. The parent recomputes `_hot` and
+  `updateChildForHot` retracts the cascade when the pointer leaves the owning
+  cascade item (or keeps it open while over that item).
+- `forwardPointerMove(Point)`: recomputes the parent's hot item from the shared
+  root-local coordinates and fires `onMouseMoveOutside` if the pointer left the
+  parent panel.
+- `openChildFor`: flips the cascade to the LEFT of the owning item when it would
+  overflow the root's right edge, so every child item stays on screen and under
+  the cursor.
+
+Verification:
+- New `tests/cascade_smoke.d` drives real pointer events through
+  `UiTestDriver`/`onNativeEvent` (the actual hit-test + dispatch path). It
+  asserts: hovering the cascade opens the child; hovering a child item keeps it
+  open; moving back onto a plain parent row RETRACTS the child; re-opening and
+  moving away retracts it. All pass WITH the fix, and it FAILS (asserts
+  "did not retract") when the forwarding is disabled — proving the guard.
+- `dub test` → 40 modules pass; `aurora-cut.exe` rebuilt.
+
+### Follow-up (same session): "it just selects last item for no reason"
+
+User: "also selecting any of items of audio it just selects last item for no
+reason" and "now it's harder to hover to extend and show items, almost
+impossible."
+
+Two separate root causes:
+
+1. **"Selects last item" — D closure-by-reference bug** in
+   `editor.d` `showTimelineContextMenu`'s "Audio track" submenu. The loop did:
+   ```
+   const currentIndex = streamIndex;
+   const label = streamLabel(info, currentIndex);
+   streamItems ~= ContextMenuItem.check(label, ..., delegate() {
+       ... _model.setClipAudioStream(track, index, currentIndex) ...
+   });
+   ```
+   D captures `const` loop-locals **by reference**, so every delegate's
+   `currentIndex`/`label` was the LAST iteration's value → clicking ANY track
+   activated the last one. Proven with a minimal D repro: 3 closures all
+   printed `currentIndex=2`. FIX: extracted the item into
+   `buildAudioTrackMenuItem(track, index, streamIndex, label, checked)` — the
+   args are passed **by value**, giving each delegate a distinct copy (repro
+   then prints 0,1,2).
+
+2. **"Harder to hover / almost impossible"** — the cascade left-flip in
+   `openChildFor` made the child overlap the parent in the common case, so the
+   pointer had to pass over the child to reach parent items, retracting it
+   (child forwards "outside its rect" moves to the parent = retract). Reduced
+   aggressiveness is not needed once 1 is fixed; the child now opens to the
+   right (or flips left ONLY when it would truly overflow, which the audio
+   submenu in a 1920-wide editor never does), and the parent keeps the child
+   open while the pointer is over the owning cascade item.
+
+Verification: minimal-closure repro confirms value capture (0,1,2 vs 2,2,2);
+`dub test` 40 modules; cascade_smoke passes; app rebuilt.
+
+## 2026-08-26 - (Aurora Stream) Linux port: per-app audio feasibility (research, exploration only)
+
+User: "if we will want to expand to linux, will it be possible" (re: per-app/window
+audio broadcast). Two-part answer, evidence-backed (see testing_progress_and_methods.md):
+
+PORT COST (whole app): Reachable, not a rewrite. The isolated
+--audio-rtp-helper subprocess + localhost-RTP→FFmpeg + SDP transport, the FFmpeg
+filter-graph/mixing, and the UI/scanner glue are ALREADY cross-platform.
+per-file cost: wasapi.d ~90% Windows (the only big island), audiodevices.d ~45%,
+audiobridge.d ~15%, broadcast.d audio ~25%; audioendpoint.d/devicedropdown.d/
+settings.d ~0%. dub.json already lists Linux/macOS libs. To port: add 2 capture
+backends (WASAPI loopback→PipeWire/Pulse; DirectShow mic→Pulse/ALSA). Bounded.
+
+PER-APP AUDIO ON LINUX: NOT NATIVELY POSSIBLE. Windows per-app is an OS feature
+(TargetProcessId process-loopback); Linux has NO equivalent API.
+- OBS on Linux = whole-device only (pulse_output_capture records sink.monitor;
+  alsa-input whole device; linux-pipewire plugin is video-only).
+- PipeWire module-loopback/pw-loopback = whole-sink monitor only, not per-process.
+- WirePlumber: app playback nodes have NO monitor ports; no capture_audio_of_pid().
+- OBS PR #6207 (per-app PipeWire audio) is OPEN/DRAFT, NOT merged; uses virtual-sink
+  routing hack; upstream won't ship until an XDG per-app-audio standard exists.
+
+DECISION for implementation: per-app "tick which app audio to broadcast" is
+WINDOWS-SPECIFIC. On Linux expose whole-device desktop-audio + microphone
+selectors (what OBS does on Linux), not per-app ticks. See Part A/B in
+testing_progress_and_methods.md.
+
+## 2026-08-26 - (Aurora Stream) Per-application audio broadcast selection (feature, exploration done)
+
+User: "We need to know if we can add ability to mute windows on aurora
+broadcaster or isolate/select windows to be audio captured, a dropdown with
+ticks to select what window audio to broadcast. Let's explore first."
+
+Verdict: FEASIBLE, and it works on THIS machine (Win10 22H2 build 19045).
+
+- The OBS-style "per-app audio" is the WASAPI PROCESS LOOPBACK activation
+  (`ActivateAudioInterfaceAsync` + `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK` +
+  `AUDIOCLIENT_ACTIVATION_PARAMS.TargetProcessId`). No injection, no global mute.
+- IMPORTANT GRANULARITY LIMIT: Windows isoates audio by PROCESS (audio session),
+  NOT by WINDOW. A dropdown should be labeled "Application audio" and list
+  process/sessions, not HWNDs. Video is window-scoped; audio is process-scoped.
+- PROBE RESULT: process-loopback activation is ACCEPTED and the completion
+  callback FIRES on build 19045 despite MS docs claiming build 20348+. So it can
+  be built to actually run here. Live probe in
+  `aurora-stream/build/processloopback_probe.d` (see testing_progress_and_methods.md).
+
+Not yet addressed (planned next if user wants implementation):
+- [ ] Enumerate active IAudioSessionManager2 sessions -> PID + friendly name list.
+- [ ] Per-app tick UI + persist selected app list in settings.
+- [ ] For each ticked app, open a process-loopback IAudioClient in the isolated
+      helper and send each as its own RTP stream for FFmpeg to mix.
+- [ ] Runtime fallback/disable message on OS builds where activation faults.
+
+## 2026-08-26 - Timeline clip "Audio track" context-menu picker (multi-stream, feature)
+
+User: "add context menu to aurora cut timeline video items so we can select which
+audio track to use. I hope that if we separate/split video into separate video
+and audio timeline items that's the track that will be."
+
+Implemented **full multi-audio-stream support** end-to-end (previously Aurora Cut
+assumed every media file had exactly one audio stream and hardcoded `0:a:0`):
+
+- **Probe** (`media.d`): FFprobe now requests `stream=index,...` and collects
+  EVERY audio stream into a new `AudioStreamInfo` list on `MediaAsset`
+  (`array.audioStreams`), preserving each stream's real ffprobe index, codec,
+  channels and sample rate. `hasAudio`/`audioChannels`/`sampleRate` still come
+  from the first audio stream.
+- **Model** (`model.d`): `AudioStreamInfo` struct added. `MediaAsset.cloneAsset`
+  copies the list. `TimelineClip` gained `audioStreamIndex` (0 = first stream),
+  threaded through `cloneClip` so split/duplicate/move/detach all carry it.
+  New `audioStreamCountForClip`, `validAudioStreamForClip`, `setClipAudioStream`.
+  `restoreTimeline` clamps a stale index (loaded project whose media changed)
+  back to 0 so export/playback never select a non-existent stream.
+- **Project file** (`project.d`): asset JSON round-trips `audioStreams`; clip
+  JSON round-trips `audioStreamIndex`. Legacy files without the list get a
+  synthesized stream 0 so they stay usable.
+- **Export** (`exporter.d`): `ExportClip.audioStreamIndex` threaded through
+  `exportClip`/`cloneExportClip`; the composite/mix filter graph now emits
+  `[<input>:a:<index>]` instead of `[<input>:a:0]` (live preview audio and MP4
+  export both select the chosen stream).
+- **Playback** (`playback.d`): `AudioRequest`/`decodeArguments` gained
+  `audioStreamIndex`; direct playback emits `-map 0:a:<index>` only when > 0
+  (stream 0 keeps the byte-identical command).
+- **Editor** (`editor.d`): `startPlayback`/`startDirectSequencePlayback` carry
+  the clip's stream index; prewarm signatures include it; all direct-audio
+  call sites pass it. New `streamLabel` + an "Audio track ▸" cascade submenu in
+  the timeline context menu (Video OR Audio-track items) listing each probed
+  stream as a check item, activating `setClipAudioStream`.
+- **Self-heal** (`editor.d` `refreshAssetAudioStreams` + `assetAudioStreamsNeedRefresh`):
+  assets imported BEFORE this feature (they carry `hasAudio` but no real
+  `audioStreams` list, or only the synthesized stream-0 default that legacy
+  project loads write) would hide the picker. When the context menu opens on
+  such a clip, the source is re-probed once (`probeMedia`) and the model asset's
+  stream list is restored in place, so the menu appears without re-importing.
+  The synthesized default is recognised by `index<=0 && codec==""`; a genuine
+  single-stream probe (real index>0 + codec) is never re-probed.
+- **Proxy/normalize** (`media.d`, `ytdlp.d`): playback proxy maps `0:a?` (keeps
+  every audio stream so the ordinal survives proxy playback) and yt-dlp
+  normalize maps `0:a?` instead of `0:a:0?`.
+
+Stream semantics note (verified with ffprobe + a real 3-stream file): `0:a:N` in
+FFmpeg selects the **Nth audio stream (audio ordinal)** — NOT the absolute
+stream index. The `audioStreams[]` array position == the ordinal == the value
+used everywhere, so proxy re-numbering (video first, then audio in order) does
+not change the ordinal.
+
+### Verification
+- [x] `dub test --compiler=dmd` → 40 modules pass (added `AudioStreamInfo` +
+      `audioStreamIndex` round-trips).
+- [x] `tests/model_smoke.d` new block: multi-stream probe asset; `setClipAudioStream`
+      accepts 0..1, rejects 2; split/detach carry the selected stream; project
+      round-trip preserves both the stream list and the selection; a stale index
+      is clamped back to 0 on `restoreTimeline`. → "multi-track model smoke test
+      passed."
+- [x] Real 2-audio-stream file (`build/media/multiaudio.mp4`, 440 Hz sine +
+      silent anullsrc): the real exporter graph (
+      `compositeAudioArguments`) with `audioStreamIndex=0` produced non-silent
+      PCM (max byte 255) and with `audioStreamIndex=1` produced silent PCM (max
+      byte 0) — proving the probe→clip→ExportClip→filter-graph stream switch is
+      wired correctly. Direct `-map 0:a:0` (sine) vs `0:a:1` (silent) also
+      confirmed the ordinal semantics.
+- [x] `tests/editor_smoke.d` new block: injects a 2-stream asset, right-clicks
+      the V1 clip, hovers the "Audio track" cascade, asserts both stream labels
+      are listed, stream 1 is checked, then selects stream 2 and asserts the
+      model clip's `audioStreamIndex` becomes 1 and the cascade is dismissed.
+- [ ] FULL `editor-smoke` could NOT be verified to a green finish: the current
+      working tree is shared with a concurrent opencode session actively porting
+      a NEW TrueType bytecode interpreter into the vendored aurora-d
+      `text/hinter.d` (git stash@{0}/stash@{1}, `does not compile` note). That
+      session's `hinter.d` throws `ArrayIndexError` during any text paint, so the
+      runner aborts at "[editor-smoke] non-blocking edits" AFTER my block. One
+      earlier run also hit a timing flake ("Direct video decoder never reached
+      the end of its range") in the untouched direct->live playback path. Neither
+      failure is in my code; re-run `editor-smoke` once this tree is free of the
+      in-flight font work and later `dub test`/`model-smoke` still pass.
+- [ ] Manual GUI: import a multi-audio-track video, right-click the timeline item,
+      pick "Audio track ▸" stream 2, and confirm preview + MP4 export use the
+      selected stream. (Also confirm this works on a file imported by an OLDER
+      build - the picker re-probes it on right-click via `refreshAssetAudioStreams`,
+      so no re-import is needed.)
+
+
 ## 2026-08-22 - aurora-d font stack: all gaps closed (hinting/variable/color/complex-script/font-manager)
 
 User: implement font rendering + support with no gaps, standalone cross-platform (no DirectWrite/GDI).

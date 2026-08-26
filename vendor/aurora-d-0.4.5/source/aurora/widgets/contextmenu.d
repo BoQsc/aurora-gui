@@ -227,9 +227,15 @@ class ContextMenu : TransientPopup
         child.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
         root.bringChildToFront(child);
         // Position the cascade just right of the parent item, aligned to the
-        // item's top so it reads as "sliding out to the right".
+        // item's top so it reads as "sliding out to the right". When the menu
+        // would overflow the root's right edge, flip it to the left of the item
+        // so every child item stays on screen and under the cursor.
         const parentRect = itemRect(index);
-        child.openAt(Point(parentRect.right(), parentRect.y - 2));
+        const childOrigin = parentRect.right() + child.preferredMenuWidth() >
+            bounds().width - 4 ?
+            Point(parentRect.x - 2, parentRect.y - 2) :
+            Point(parentRect.right(), parentRect.y - 2);
+        child.openAt(childOrigin);
         child.onDismissed = delegate()
         {
             if (_child is child)
@@ -526,6 +532,16 @@ class ContextMenu : TransientPopup
 
     override bool onMouseMove(ref Event event)
     {
+        // A cascade sub-menu sits in front of its parent as a full-window popup,
+        // so the framework routes every pointer move to it, even when the cursor
+        // is actually over the parent menu. Forward such moves to the parent so
+        // it recomputes its hover and can retract this child (or switch to a
+        // neighbouring cascade) instead of the child swallowing the event.
+        if (_parentMenu !is null && !_menuRect.contains(event.position))
+        {
+            _parentMenu.forwardPointerMove(event.position);
+            return true;
+        }
         const index = itemAt(event.position);
         if (index < 0 && onMouseMoveOutside !is null)
         {
@@ -535,6 +551,17 @@ class ContextMenu : TransientPopup
         }
         setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
         return true;
+    }
+
+    /// Handle a pointer move that arrived at a child cascade menu but actually
+    /// lies over this (parent) menu's panel. Recomputes the hot item and, via
+    /// updateChildForHot, keeps or retracts the open cascade.
+    private void forwardPointerMove(Point localPoint)
+    {
+        const index = itemAt(localPoint);
+        if (index < 0 && onMouseMoveOutside !is null)
+            onMouseMoveOutside(localPoint);
+        setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
     }
 
     override bool onMouseDown(ref Event event)

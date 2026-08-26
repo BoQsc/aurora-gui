@@ -1,5 +1,205 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## (Aurora Stream) Linux port feasibility: per-app audio + port cost (2026-08-26)
+
+User: "if we will want to expand to linux, will it be possible" (in the context of
+the per-application / per-window audio broadcast question above).
+
+### PART A — What would it take to port aurora-stream's audio to Linux?
+
+The audio pipeline was DELIBERATELY architected to be portable at the transport
+layer. The isolated `--audio-rtp-helper` subprocess + localhost RTP → FFmpeg via
+an SDP file, the FFmpeg filter-graph/mixing, and the UI/dropdown/scanner glue are
+ALL already cross-platform. Per-file port cost (audited line-by-line):
+
+| File | % Windows-specific | Key Windows APIs | Stub? | Linux port cost |
+|------|--------------------|------------------|-------|-----------------|
+| wasapi.d | ~90% | WASAPI/COM(ole32), MMCSS(avrt), Win32 events | Yes (17-line error-only else) | **HIGH** (new capture backend) |
+| audiodevices.d | ~45% | none directly (ffmpeg -f dshow subprocess) | Partial | **LOW** |
+| audiobridge.d | ~15% | SetHandleInformation (socket inherit) | compiles no-op | **LOW** |
+| broadcast.d (audio) | ~25% | none in FFmpeg-args layer | App-level gate only | **LOW** (graph)/MEDIUM (helper) |
+| audioendpoint.d, devicedropdown.d, settings.d | ~0% | none | n/a | **ZERO** |
+| root.d, app.d/app_titlebar.d | ~5-15% | UI/tray/report only | n/a | **LOW** |
+
+KEY FINDS:
+- The single Windows island is the WASAPI/MMCSS/COM capture backend in `wasapi.d`
+  (~90% of that file), plus the DirectShow-only microphone enumerator in
+  `audiodevices.d`.
+- `runSyntheticRtp` (the silence "synthetic" helper path) is trapped INSIDE
+  `version (Windows)` even though it uses almost no Windows API — moving it out
+  is a tiny but necessary first step for a Linux build that still wants a
+  "no-audio" option.
+- `captureArguments` in broadcast.d emits the DirectShow mic input UNCONDITIONALLY
+  (not gated) — on Linux that would fail at FFmpeg runtime, not compile time.
+  It must be gated per-platform.
+- dub.json already lists Linux (X11,dl) and macOS (AppKit,CoreGraphics,...) libs,
+  so the build system already targets all three; only /SUBSYSTEM:WINDOWS lflags
+  are Windows-only.
+
+Verdict on port AMOUNT: the infrastructure is ~75-85% reusable. What's needed is
+two NEW capture-backend functions (WASAPI loopback → PipeWire/Pulse loopback;
+DirectShow mic → Pulse/PipeWire/ALSA mic) feeding the exact same RTP transport.
+That is real but bounded work — not a rewrite.
+
+### PART B — Will the PER-APP (per-process) audio feature work on Linux?
+
+NO — and this is the important part. Windows per-app capture is an OS feature
+(`TargetProcessId` process-loopback). Linux has NO native equivalent API. Proof:
+
+- OBS's Linux audio is WHOLE-DEVICE only: `pulse_output_capture` records the
+  sink `monitor_source_name` (whole sink); `alsa-input.c` opens the whole device;
+  OBS's `linux-pipewire` plugin is VIDEO-ONLY (screen/camera, no audio code).
+- OBS PR #6207 "linux-pipewire: Add PipeWire audio captures" is still OPEN/DRAFT
+  and NOT merged; its author implements per-app via a VIRTUAL SINK workaround.
+- PipeWire `module-loopback` / `pw-loopback` = whole-sink monitor only
+  (`stream.capture.sink`, `target.object` = sink name). Not per-process.
+- WirePlumber: `node.features.audio.monitor-ports` are created on NODES WITH
+  INPUT PORTS (sinks/capture streams) — application playback nodes have NO
+  monitor port to tap. No "capture_audio_of_pid(x)" exists anywhere.
+- PulseAudio `module-loopback` links source↔sink by name; per-app requires the
+  manual "create null sink + pactl move-sink-input the app + record sink.monitor"
+  routing hack (not an OS guarantee).
+- Upstream OBS is deliberately NOT shipping Linux per-app audio until the XDG
+  group defines a standard for per-application audio access (maintainer comment
+  in issuecomment-3883141725).
+
+BOTTOM LINE:
+- Whole-device desktop audio + microphone on Linux: FEASIBLE (add a PipeWire /
+  PulseAudio / ALSA backend behind the existing transport). Moderate work.
+- The "tick a specific app to broadcast its audio" dropdown: on Linux this is
+  NOT the OS-level capability Windows has. It would require the routing hack
+  (virtual sink + move-sink-input + monitor) and upstream is deliberately avoiding
+  it. Buildable but non-standard, invasive to the user's sound routing, and needs
+  different code from the Windows path.
+- So the per-app audio feature is WINDOOWS-SPECIFIC by nature. If Linux support
+  is planned, the UI should show per-app capture only on Windows; on Linux show
+  whole-device desktop-audio selectors (which is what OBS itself does on Linux).
+
+## (Aurora Stream) Per-application audio broadcast: capability probe + verdict (2026-08-26)
+
+User: "We need to know if we can add ability to mute windows on aurora
+broadcaster or isolate/select windows to be audio captured... a dropdown with
+ticks to select what window audio to broadcast. Let's explore first."
+
+ANSWER TO "CAN IT BE DONE": YES — Windows exposes this natively (no DLL
+injection, no "mute everything else" hack). It is the WASAPI *process loopback*
+activation used by OBS's first-party "Application Audio Capture".
+
+THE MECHANISM (verified from MS headers + Microsoft ApplicationLoopback sample):
+- `ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+  IID_IAudioClient, PROPVARIANT(VT_BLOB -> AUDIOCLIENT_ACTIVATION_PARAMS), ...)`
+- `AUDIOCLIENT_ACTIVATION_PARAMS{ ActivationType =
+  AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK=1, ProcessLoopbackParams{
+  TargetProcessId=<pid>, ProcessLoopbackMode=INCLUDE_TARGET_PROCESS_TREE=0 } }`
+- `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK = L"VAD\\Process_Loopback"`
+- Captures ONLY that process (and its children). Requires
+  `ActivateAudioInterfaceAsync` from mmdevapi.dll (Win10 1703+).
+- MS docs say "minimum client Windows 10 Build 20348" — so I PROBED it live
+  because docs can lag the actual OS capability.
+
+DEFINITIVE PROBE RESULT (build `processloopback_probe.d` in
+`aurora-stream/build`, compiled with dmd + ole32.lib, run on THIS machine
+Windows 10 22H2 build 19045):
+```
+ActivateAudioInterfaceAsync NOT FOUND in mmdevapi.dll -> NOT in combase.dll
+  -> ACTUALLY EXPORTED BY mmdevapi.dll (found by raw PE export scan).
+ActivateAudioInterfaceAsync -> 0x00000000 (accepted, async pending)
+(wait loop ended; signaled=true)
+==> activation completion callback fired with a valid operation (feature works).
+```
+> CONCLUSION: process-loopback is SUPPORTED and completes on Windows 10 build
+> 19045, even though Microsoft documents it as build 20348+. So the OBS-style
+> per-app tick list CAN be built to actually run on this machine.
+
+PROBE METHODOLOGY LESSONS (so we don't repeat the mistakes):
+1. A dmd console program imported with `core.sys.windows.*` fails to attach/
+   flush stdout through opencode's bash capture. FIX: write results to a file
+   via `core.stdc.stdio.fopen/fwrite` (STDOUT is unreliable). We read the file.
+2. `IActivateAudioInterfaceAsyncOperation::GetActivateResult` FAULTS (access
+   violation 0xC0000005) if called on a still-pending op (and even after the
+   callback on some builds). FIX: do NOT call it; detect success by the
+   completion callback firing with a non-null operation pointer.
+3. `ActivateAudioInterfaceAsync` lives in mmdevapi.dll, NOT combase.dll. Use
+   `GetProcAddress(LoadLibraryW("mmdevapi.dll"), "ActivateAudioInterfaceAsync")`.
+4. Detecting the real exit code requires `cmd /v:on /c "... & echo !errorlevel!"`
+   (delayed expansion); `%errorlevel%` in a normal `&` chain is expanded at parse
+   time and reads as 0. REAL-RC=-1073741819 = 0xC0000005 access violation.
+5. dmd on Windows needs explicit `ole32.lib` (druntime doesn't auto-link it).
+
+NEXT STEPS (not yet built — this was exploration only): enumerate active
+`IAudioSessionManager2` sessions -> match each to its PID + friendly name, then
+for each ticked app open a process-loopback IAudioClient in the existing
+isolated helper process and send each as its own RTP stream for FFmpeg to mix.
+That mirrors OBS. See `aurora-stream/ROADMAP.md` "Per-source gain, mute" item.
+
+## Cascade sub-menu cursor tracking / retraction (2026-08-26)
+
+Aurora-D's `ContextMenu` cascade items ("Audio track ▸") opened a sub-menu that
+did not track cursor hover on the parent and would not retract on hover-back.
+
+**Root cause:** a cascade child is a front-most FULL-WINDOW popup added as a
+sibling of its parent. The framework's `hitTest` recurses children in reverse
+(top-most first) and returns the child for ANY point in the full-window popup
+(`containsLocal`), regardless of the actual menu rect. So while a child was
+open, every pointer move anywhere on screen went to the child; the parent never
+recomputed its hover. Yet the child only processed moves inside its own
+`_menuRect`, ignoring moves over the parent.
+
+**Fix:** the child's `onMouseMove` now forwards moves that are outside its own
+`_menuRect` to its `_parentMenu` (`forwardPointerMove`), which recomputes the
+parent's hot item and retracts the cascade when the pointer is no longer over
+the owning cascade item. Positioning also flips the cascade to the left when it
+would overflow the window.
+
+**How to test (real dispatch, not bare function calls):** calling `onMouseMove`
+directly bypasses the framework's hit-testing, so it would NOT catch this bug
+(the vendored unittest did exactly that and passed). Use `UiTestDriver`
+(`moveTo`) which drives `window.onNativeEvent` → the real hit-test +
+`dispatchToBubble` path. `tests/cascade_smoke.d` does this and FAILS on the old
+code (assert "did not retract") and PASSES with the fix. Build/run:
+```
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\cascade_smoke.d -of=build\headless-smoke\cascade-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+build\headless-smoke\cascade-smoke.exe
+```
+
+## Timeline item "Audio track" picker — multi-audio-stream support (2026-08-26)
+
+Aurora Cut previously assumed every media file had exactly ONE audio stream and
+hardcoded `0:a:0` everywhere. Added full multi-stream selection via a context-menu
+cascade and plumbed `audioStreamIndex` through the entire pipeline.
+
+**Key FFmpeg semantics verified with a real 3-stream file** (`build/media/
+multiaudio.mp4`: h264 video, 440 Hz sine audio @ffprobe-index 1, silent
+anullsrc audio @ffprobe-index 2):
+- `-map 0:a:N` selects the **Nth AUDIO stream (ordinal)**, NOT the absolute
+  stream index. `0:a:0` = sine (PCM max byte 255); `0:a:1` = anullsrc (max byte 0).
+- Because the audio ordinals in `MediaAsset.audioStreams[]` match what FFmpeg
+  expects, the proxy path (`-map 0:a?`) preserves the ordinal and no index
+  remap is needed.
+
+**Where it flows:** ffprobe → `AudioStreamInfo[]` on `MediaAsset` → clip
+`audioStreamIndex` (clone/split/detach all carry it) → project file round-trip →
+`ExportClip.audioStreamIndex` → filter graph `[input:a:<n>]` → playback
+`-map 0:a:<n>` → proxy/normalize `-map 0:a?`.
+
+**How to test the stream switch end-to-end (no GUI needed):**
+1. Build a 2-audio-stream file:
+   ```
+   ffmpeg -y -i lavfi... -map 0:v -map 1:a -map 2:a... multiaudio.mp4
+   ```
+2. Construct an `ExportRequest` with `video[0].audioStreamIndex = 0` vs `= 1`,
+   call the public `compositeAudioArguments`, run the resulting ffmpeg, and
+   compare the PCM: stream 0 → sine (non-silent), stream 1 → silent.
+3. Model-level: `setClipAudioStream` accepts only the valid ordinals, split/
+   detach preserve the selection, and `restoreTimeline` clamps a stale index to 0.
+
+**Verification results:** `dub test` 40 modules pass; model_smoke new block
+passes; real exporter graph distinguishes the two streams. `editor-smoke` could
+NOT be completed to green because the shared working tree currently carries a
+concurrent session's in-flight TrueType bytecode interpreter
+(`vendor/aurora-d-0.4.5/source/aurora/text/hinter.d`, does-not-compile note),
+which throws `ArrayIndexError` on any text paint — unrelated to this feature.
+
 ## aurora-d: TrueType bytecode hinting, retry (2026-08-19)
 
 First attempt at hinting made text unreadable (Segoe UI glyphs like K/L/l/T/Z

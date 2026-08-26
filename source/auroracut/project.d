@@ -1,7 +1,7 @@
 module auroracut.project;
 
-import auroracut.model : ClipKind, EditorModel, EffectKeyframe, EffectProperty,
-    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
+import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectKeyframe,
+    EffectProperty, KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
     TimelineSnapshot, TimelineTrack, TrackAddress, TrackKind,
     textAlignmentFromName, textAlignmentName;
 import auroracut.util : appLog, clampValue;
@@ -90,6 +90,7 @@ private JSONValue clipJson(const TimelineClip value)
         "outPoint": jsonNumber(value.outPoint, inPoint, path ~ ".outPoint"),
         "volume": jsonNumber(value.volume, 1.0, path ~ ".volume"),
         "muted": JSONValue(value.muted),
+        "audioStreamIndex": jsonNumber(value.audioStreamIndex, 0, path ~ ".audioStreamIndex"),
         "audioProxyVisible": JSONValue(value.audioProxyVisible),
         "playbackRate": jsonNumber(value.playbackRate, 1.0, path ~ ".playbackRate"),
         "reversed": JSONValue(value.reversed),
@@ -201,12 +202,21 @@ TimelineSnapshot snapshotFromJson(const JSONValue value)
 private JSONValue assetJson(const MediaAsset value, size_t index)
 {
     const path = format("assets[%s]", index);
+    JSONValue[] streams;
+    foreach (stream; value.audioStreams)
+        streams ~= JSONValue([
+            "index": JSONValue(cast(long) stream.index),
+            "codec": JSONValue(stream.codec),
+            "channels": JSONValue(cast(long) stream.channels),
+            "sampleRate": JSONValue(cast(long) stream.sampleRate)
+        ]);
     return JSONValue([
         "path": JSONValue(value.path),
         "name": JSONValue(value.name),
         "duration": jsonNumber(value.duration, 0.0, path ~ ".duration"),
         "hasVideo": JSONValue(value.hasVideo),
         "hasAudio": JSONValue(value.hasAudio),
+        "audioStreams": JSONValue(streams),
         "videoCodec": JSONValue(value.videoCodec),
         "width": JSONValue(cast(long) value.width),
         "height": JSONValue(cast(long) value.height),
@@ -228,12 +238,33 @@ private MediaAsset assetFromJson(const JSONValue entry)
     asset.duration = numberValue(entry, "duration");
     asset.hasVideo = boolValue(entry, "hasVideo");
     asset.hasAudio = boolValue(entry, "hasAudio");
+    auto streams = member(entry, "audioStreams");
+    if (streams !is null && streams.type == JSONType.array)
+        foreach (stream; streams.array)
+        {
+            AudioStreamInfo info;
+            info.index = cast(int) integerValue(stream, "index", -1);
+            info.codec = stringValue(stream, "codec");
+            info.channels = cast(int) integerValue(stream, "channels");
+            info.sampleRate = cast(int) integerValue(stream, "sampleRate");
+            if (info.index >= 0 && info.channels > 0) asset.audioStreams ~= info;
+        }
     asset.videoCodec = stringValue(entry, "videoCodec");
     asset.width = cast(int) integerValue(entry, "width");
     asset.height = cast(int) integerValue(entry, "height");
     asset.frameRate = numberValue(entry, "frameRate");
     asset.audioChannels = cast(int) integerValue(entry, "audioChannels");
     asset.sampleRate = cast(int) integerValue(entry, "sampleRate");
+    // Older project files predate the audio-stream list. Synthesize a single
+    // default stream so every audio-bearing asset still offers stream 0.
+    if (asset.hasAudio && asset.audioStreams.length == 0)
+    {
+        AudioStreamInfo info;
+        info.index = 0;
+        info.channels = asset.audioChannels;
+        info.sampleRate = asset.sampleRate;
+        asset.audioStreams ~= info;
+    }
     asset.playbackProxyPath = stringValue(entry, "playbackProxyPath");
     asset.playbackProxyWidth = cast(int) integerValue(entry,
         "playbackProxyWidth");
@@ -383,6 +414,7 @@ private TimelineClip parseClip(const JSONValue value)
     clip.outPoint = numberValue(value, "outPoint");
     clip.volume = numberValue(value, "volume", 1.0);
     clip.muted = boolValue(value, "muted");
+    clip.audioStreamIndex = cast(int) integerValue(value, "audioStreamIndex", 0);
     clip.audioProxyVisible = boolValue(value, "audioProxyVisible");
     clip.playbackRate = numberValue(value, "playbackRate", 1.0);
     clip.reversed = boolValue(value, "reversed");

@@ -25,6 +25,16 @@ struct TrackAddress
     }
 }
 
+/** One probe result for a single audio stream inside a media file. */
+struct AudioStreamInfo
+{
+    // FFmpeg stream index within the file, used as `0:a:<index>`.
+    int index;
+    string codec;
+    int channels;
+    int sampleRate;
+}
+
 final class MediaAsset
 {
     string path;
@@ -32,6 +42,10 @@ final class MediaAsset
     double duration = 0.0;
     bool hasVideo;
     bool hasAudio;
+    // Every audio stream probed from the file. `hasAudio` is true when this
+    // list is non-empty or when audio metadata was recovered. A timeline item
+    // may select any one of these (defaulting to index 0) for playback/export.
+    AudioStreamInfo[] audioStreams;
     // Codec name is persisted so playback can avoid applying a hardware
     // accelerator that was only validated against a different codec.
     string videoCodec;
@@ -68,6 +82,7 @@ final class MediaAsset
         result.duration = duration;
         result.hasVideo = hasVideo;
         result.hasAudio = hasAudio;
+        result.audioStreams = audioStreams.dup;
         result.videoCodec = videoCodec.idup;
         result.width = width;
         result.height = height;
@@ -170,6 +185,11 @@ struct TimelineClip
     // Audio effects.
     double volume = 1.0;
     bool muted;
+    // Which audio stream inside the referenced media file this item uses. The
+    // audio ordinal (0 = the file's first audio stream), matching FFmpeg's
+    // `-map 0:a:<index>`. Only meaningful when the referenced asset has audio;
+    // defaults to 0 for single-stream media.
+    int audioStreamIndex;
     // Optional display-only shadow of embedded video audio on A1.
     bool audioProxyVisible;
     // Source-time controls. 1.0 is normal speed; reverse reads source frames
@@ -526,6 +546,25 @@ final class EditorModel
     {
         return clip.usesMedia() && clip.assetIndex < assets.length ?
             assets[clip.assetIndex] : null;
+    }
+
+    /** Number of probe-recorded audio streams an asset offers. 0 keeps the
+     * older single-stream behavior. */
+    int audioStreamCountForClip(const TimelineClip clip) const
+    {
+        const asset = assetForClip(clip);
+        if (asset is null || !asset.hasAudio) return 0;
+        if (asset.audioStreams.length > 0)
+            return cast(int) asset.audioStreams.length;
+        return 1;
+    }
+
+    /** Whether a clip's chosen audio stream index is valid (and used only when
+     * the file actually exposes a selectable list). */
+    bool validAudioStreamForClip(const TimelineClip clip) const
+    {
+        return clip.audioStreamIndex >= 0 &&
+            clip.audioStreamIndex < audioStreamCountForClip(clip);
     }
 
     bool canPlace(size_t assetIndex, TrackKind kind) const
@@ -1786,6 +1825,20 @@ final class EditorModel
         return true;
     }
 
+    bool setClipAudioStream(TrackAddress address, int index, int streamIndex)
+    {
+        if (!validTrack(address)) return false;
+        const clips = trackValue(address).clips;
+        if (index < 0 || index >= cast(int) clips.length) return false;
+        const current = clips[cast(size_t) index];
+        if (current.isText() || streamIndex < 0 ||
+            streamIndex >= audioStreamCountForClip(current)) return false;
+        if (current.audioStreamIndex == streamIndex) return false;
+        detachTrackClips(address);
+        track(address).clips[cast(size_t) index].audioStreamIndex = streamIndex;
+        return true;
+    }
+
     bool setMuted(TrackAddress address, int index, bool value)
     {
         if (!validTrack(address)) return false;
@@ -1873,7 +1926,25 @@ final class EditorModel
         if (videoTracks.length == 0) addTrack(TrackKind.video);
         if (audioTracks.length == 0) addTrack(TrackKind.audio);
 
+        clampClipAudioStreams();
         recalculateIdentifiers();
+    }
+
+    /** Clamp every clip's audio stream index to a range its asset actually
+     * exposes. A project opened against a changed/replaced media file must not
+     * let a stale index select a non-existent audio stream. */
+    private void clampClipAudioStreams()
+    {
+        foreach (ref timelineTrack; videoTracks)
+            foreach (ref clip; timelineTrack.clips)
+                if (clip.usesMedia() && clip.audioStreamIndex >=
+                    audioStreamCountForClip(clip))
+                    clip.audioStreamIndex = 0;
+        foreach (ref timelineTrack; audioTracks)
+            foreach (ref clip; timelineTrack.clips)
+                if (clip.usesMedia() && clip.audioStreamIndex >=
+                    audioStreamCountForClip(clip))
+                    clip.audioStreamIndex = 0;
     }
 
     /** Begin a high-frequency edit. The affected lane is detached once. */
@@ -1961,6 +2032,7 @@ final class EditorModel
         result.outPoint = source.outPoint;
         result.volume = source.volume;
         result.muted = source.muted;
+        result.audioStreamIndex = source.audioStreamIndex;
         result.audioProxyVisible = source.audioProxyVisible;
         result.playbackRate = source.playbackRate;
         result.reversed = source.reversed;

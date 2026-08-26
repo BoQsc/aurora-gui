@@ -4,8 +4,8 @@ import aurora;
 import auroracut.clipboardimage : setClipboardImageProviderForTesting,
     writeDibAsBmpFile;
 import auroracut.editor : EditorRoot, InspectorValueField;
-import auroracut.model : ClipKind, EditorModel, EffectProperty, MediaAsset,
-    TimelineClip, TextAlignment, TrackAddress, TrackKind;
+import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectProperty,
+    MediaAsset, TimelineClip, TextAlignment, TrackAddress, TrackKind;
 import auroracut.preview : PreviewWidget;
 import auroracut.project : loadProjectFile;
 import auroracut.recentprojects : clearRecentProjects, loadRecentProjects,
@@ -1913,6 +1913,61 @@ int main(string[] arguments)
         menuHasLabel(avMenu, "Detach audio to separate A track"d),
         "Video-item context menu does not expose audio detachment");
     driver.pressKey(Key.escape);
+
+    // Multi-audio-stream media: a video item with several probed audio tracks
+    // exposes an "Audio track" cascade whose children select one stream. The
+    // choice is carried down into the model and persists.
+    {
+        const avAssetIndex = editor.modelForTesting().trackValue(v1)
+            .clips[cast(size_t) 0].assetIndex;
+        auto avAsset = editor.modelForTesting().assets[avAssetIndex];
+        avAsset.audioStreams = [
+            AudioStreamInfo(1, "aac", 2, 48_000),
+            AudioStreamInfo(2, "aac", 1, 44_100)
+        ];
+        timeline.setSelection(v1, 0);
+        editor.tickTree(0.02);
+        driver.paint();
+
+        driver.rightClick(clipCenter(timeline, v1, 0));
+        auto streamMenu = findOpenContextMenu(editor);
+        assert(streamMenu !is null && menuHasLabel(streamMenu, "Audio track"d),
+            "Multi-audio video item context menu does not expose an audio track picker");
+        const cascadeRect = streamMenu.menuRect();
+        const audioTrackPoint = menuItemPoint(streamMenu, "Audio track"d);
+        Event hover;
+        hover.position = Point(audioTrackPoint.x, audioTrackPoint.y);
+        streamMenu.onMouseMove(hover);
+        auto childMenu = streamMenu.childMenu();
+        assert(childMenu !is null, "Audio track cascade did not open a submenu");
+        assert(menuHasLabel(childMenu, "Track 1 · Stream 1 · 2 ch · 48000 Hz"d) &&
+            menuHasLabel(childMenu, "Track 2 · Stream 2 · 1 ch · 44100 Hz"d),
+            "Audio track submenu did not list each probed stream");
+        assert(menuItemChecked(childMenu, "Track 1 · Stream 1 · 2 ch · 48000 Hz"d),
+            "The default audio stream was not checked");
+        childMenu.dismiss();
+        driver.pressKey(Key.escape);
+        driver.paint();
+
+        // Selecting stream 2 changes the model's clip audio stream index.
+        driver.rightClick(clipCenter(timeline, v1, 0));
+        streamMenu = findOpenContextMenu(editor);
+        const audioTrackPoint2 = menuItemPoint(streamMenu, "Audio track"d);
+        hover.position = Point(audioTrackPoint2.x, audioTrackPoint2.y);
+        streamMenu.onMouseMove(hover);
+        childMenu = streamMenu.childMenu();
+        assert(childMenu !is null);
+        const stream2Point = menuItemPoint(childMenu,
+            "Track 2 · Stream 2 · 1 ch · 44100 Hz"d);
+        driver.click(stream2Point);
+        driver.paint();
+        assert(editor.modelForTesting().trackValue(v1).clips[0].audioStreamIndex == 1,
+            "Selecting an audio track in the context menu did not update the clip");
+        // The cascade chain must be fully dismissed after the child action.
+        assert(findOpenContextMenu(editor) is null,
+            "Audio track submenu action left a menu open");
+    }
+
     timeline.setSelection(v1, 0);
     editor.tickTree(0.02);
     driver.paint();

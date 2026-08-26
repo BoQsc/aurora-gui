@@ -557,7 +557,7 @@ string[] ytDlpNormalizedVideoArguments(string inputPath, string outputPath,
 {
     string[] arguments = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", inputPath, "-map", "0:v:0", "-map", "0:a:0?",
+        "-i", inputPath, "-map", "0:v:0", "-map", "0:a?",
         "-vf", ytDlpVideoNormalizeFilterForHeight(maxHeight),
         "-c:v", videoEncoder,
         "-g", "15", "-keyint_min", "15", "-sc_threshold", "0",

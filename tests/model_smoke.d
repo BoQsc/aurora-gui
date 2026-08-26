@@ -1,8 +1,8 @@
 module tests.model_smoke;
 
-import auroracut.model : EditorModel, EffectProperty, KeyframeInterpolation,
-    MediaAsset, TextAlignment, TimelineClip, TimelineTrack, TrackAddress,
-    TrackKind;
+import auroracut.model : AudioStreamInfo, EditorModel, EffectProperty,
+    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
+    TimelineTrack, TrackAddress, TrackKind;
 import auroracut.project : loadProjectFile, saveProjectFile;
 import std.file : exists, remove, tempDir, write;
 import std.math : fabs, isFinite;
@@ -425,6 +425,71 @@ int main()
     assert(model.clipAtTime(v1, 500.01) == 10_000);
     assert(model.clipAtTime(v1, 500.049) == -1);
     assert(isFinite(model.sequenceDuration()));
+
+    // Multi-audio-stream media: a single video item must be able to select any
+    // probed audio stream, carry that choice through split/detach/duplicate,
+    // persist it through a project round-trip, and clamp a stale index on load.
+    {
+        auto streamModel = new EditorModel();
+        const sV1 = TrackAddress(TrackKind.video, 0);
+        auto multiaudio = videoAsset("multiaudio.mp4", 6.0);
+        multiaudio.audioStreams = [
+            AudioStreamInfo(0, "aac", 2, 48_000),
+            AudioStreamInfo(2, "aac", 1, 44_100)
+        ];
+        const multiIndex = streamModel.addAsset(multiaudio);
+        const multiClipIndex = streamModel.insertClip(multiIndex, sV1, 0.0);
+        assert(streamModel.audioStreamCountForClip(
+            streamModel.trackValue(sV1).clips[cast(size_t) multiClipIndex]) == 2);
+        assert(streamModel.validAudioStreamForClip(
+            streamModel.trackValue(sV1).clips[cast(size_t) multiClipIndex]));
+        assert(streamModel.setClipAudioStream(sV1, multiClipIndex, 1));
+        assert(streamModel.trackValue(sV1).clips[cast(size_t) multiClipIndex]
+            .audioStreamIndex == 1);
+        // An out-of-range stream must be rejected.
+        assert(!streamModel.setClipAudioStream(sV1, multiClipIndex, 2));
+
+        // Split carries the selected stream to both halves.
+        const splitRight = streamModel.splitAt(sV1, 3.0);
+        assert(splitRight >= 0);
+        foreach (clip; streamModel.trackValue(sV1).clips)
+            assert(clip.audioStreamIndex == 1,
+                "Split did not preserve the selected audio stream");
+
+        // Detaching embedded audio into an A-track item keeps the selection.
+        TrackAddress sDetachTrack;
+        int sDetachIndex;
+        assert(streamModel.detachAudioFromVideo(sV1, 0, sDetachTrack,
+            sDetachIndex));
+        assert(streamModel.trackValue(sDetachTrack)
+            .clips[cast(size_t) sDetachIndex].audioStreamIndex == 1,
+            "Detached audio item lost the selected audio stream");
+
+        // Project round-trip preserves both the stream list and the selection.
+        const streamPath = buildPath(tempDir(),
+            "aurora-cut-stream-roundtrip.auroracut");
+        scope (exit) if (exists(streamPath)) remove(streamPath);
+        saveProjectFile(streamPath, streamModel, 0.0, false, 0.0, false, 0.0,
+            720);
+        auto streamLoaded = loadProjectFile(streamPath);
+        assert(streamLoaded.assets[0].audioStreams.length == 2 &&
+            streamLoaded.assets[0].audioStreams[1].index == 2,
+            "Project save dropped the probed audio-stream list");
+        foreach (track; streamLoaded.videoTracks) foreach (clip; track.clips)
+            if (clip.usesMedia()) assert(clip.audioStreamIndex == 1,
+                "Project save dropped the selected audio stream");
+
+        streamLoaded.assets[0].audioStreams.length = 1;
+        streamLoaded.audioTracks = [];
+        streamLoaded.videoTracks = [streamLoaded.videoTracks[0]];
+        auto clampedModel = new EditorModel();
+        clampedModel.assets = streamLoaded.assets;
+        clampedModel.restoreTimeline(streamLoaded.videoTracks,
+            streamLoaded.audioTracks);
+        foreach (track; clampedModel.tracks(TrackKind.video)) foreach (clip; track.clips)
+            if (clip.usesMedia()) assert(clip.audioStreamIndex == 0,
+                "A stale audio stream index was not clamped on load");
+    }
 
     writeln("Aurora Cut multi-track model smoke test passed.");
     return 0;

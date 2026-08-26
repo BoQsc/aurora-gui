@@ -1,6 +1,6 @@
 module auroracut.media;
 
-import auroracut.model : MediaAsset;
+import auroracut.model : AudioStreamInfo, MediaAsset;
 import auroracut.util : absoluteNormalized, applicationCacheDirectory,
     commandAvailable, createWorkspace, formatTimecode, isSupportedMediaPath,
     outputTail, removePathQuietly, runChecked;
@@ -206,7 +206,7 @@ private string[] probeArguments(string path)
     return [
         "ffprobe", "-v", "error",
         "-show_entries",
-        "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,channels,sample_rate",
+        "format=duration:stream=index,codec_type,codec_name,width,height,r_frame_rate,channels,sample_rate",
         "-of", "json", path
     ];
 }
@@ -267,11 +267,23 @@ private MediaAsset parseProbeJson(string requestedPath, string output)
                 asset.frameRate = parseRate(objectText(stream, "r_frame_rate"));
                 asset.hasVideo = asset.width > 0 && asset.height > 0;
             }
-            else if (kind == "audio" && !asset.hasAudio)
+            else if (kind == "audio")
             {
-                asset.audioChannels = parseIntOr(objectText(stream, "channels"));
-                asset.sampleRate = parseIntOr(objectText(stream, "sample_rate"));
-                asset.hasAudio = asset.audioChannels > 0 || asset.sampleRate > 0;
+                AudioStreamInfo info;
+                info.index = parseIntOr(objectText(stream, "index"), -1);
+                info.codec = objectText(stream, "codec_name");
+                info.channels = parseIntOr(objectText(stream, "channels"));
+                info.sampleRate = parseIntOr(objectText(stream, "sample_rate"));
+                if (info.index >= 0 && (info.channels > 0 || info.sampleRate > 0))
+                    asset.audioStreams ~= info;
+                if (!asset.hasAudio)
+                {
+                    asset.audioChannels = asset.audioStreams.length > 0 ?
+                        asset.audioStreams[0].channels : info.channels;
+                    asset.sampleRate = asset.audioStreams.length > 0 ?
+                        asset.audioStreams[0].sampleRate : info.sampleRate;
+                    asset.hasAudio = asset.audioChannels > 0 || asset.sampleRate > 0;
+                }
             }
         }
     }
@@ -829,7 +841,7 @@ final class MediaProxyService
             "-map", "0:v:0"
         ];
         if (request.hasAudio)
-            arguments ~= ["-map", "0:a:0?"];
+            arguments ~= ["-map", "0:a?"];
         else
             arguments ~= ["-an"];
 

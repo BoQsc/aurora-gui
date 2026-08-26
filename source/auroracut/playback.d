@@ -37,6 +37,7 @@ private struct AudioRequest
     double displayStartTime;
     double duration;
     double volume;
+    int audioStreamIndex;
     bool startPaused;
 }
 
@@ -320,7 +321,7 @@ final class PcmAudioPlayer
      * media in-point can differ from its sequence time. */
     bool start(string path, double startTime = 0.0, double duration = 0.0,
         double volume = 1.0, double displayStartTime = -1.0,
-        bool startPaused = false)
+        bool startPaused = false, int audioStreamIndex = 0)
     {
         if (path.length == 0 || volume <= 0.000_001 || duration <= 0.000_001)
         {
@@ -335,6 +336,7 @@ final class PcmAudioPlayer
             request.startTime : displayStartTime;
         request.duration = duration;
         request.volume = volume;
+        request.audioStreamIndex = audioStreamIndex;
         request.startPaused = startPaused;
         return enqueue(request);
     }
@@ -519,9 +521,13 @@ final class PcmAudioPlayer
         string[] arguments = [
             "ffmpeg", "-hide_banner", "-loglevel", "fatal", "-nostdin",
             "-threads", "1",
-            "-ss", formatSeconds(request.startTime, 6), "-i", request.path,
-            "-t", formatSeconds(request.duration, 6), "-vn", "-sn", "-dn"
+            "-ss", formatSeconds(request.startTime, 6), "-i", request.path
         ];
+        // Explicitly select the requested audio stream. The audio index is
+        // the per-file stream index (map 0:a:<n>), not the input index.
+        if (request.audioStreamIndex > 0)
+            arguments ~= ["-map", format("0:a:%d", request.audioStreamIndex)];
+        arguments ~= ["-t", formatSeconds(request.duration, 6), "-vn", "-sn", "-dn"];
         if (request.volume < 0.999_5 || request.volume > 1.000_5)
             arguments ~= ["-af", "volume=" ~ formatSeconds(request.volume, 5)];
         arguments ~= [

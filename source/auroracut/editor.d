@@ -9,10 +9,10 @@ import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
 import auroracut.filedialog : FileDialogController;
 import auroracut.media : MediaImportResult, MediaImportService,
     MediaProxyResult, MediaProxyService, ToolStatus, inspectToolStatus,
-    mediaSecondaryText, playbackProxyReady;
-import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation,
-    MediaAsset, TextAlignment, TimelineClip, TimelineSnapshot, TimelineTrack,
-    TrackAddress, TrackKind, textAlignmentLabel;
+    mediaSecondaryText, playbackProxyReady, probeMedia;
+import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectProperty,
+    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
+    TimelineSnapshot, TimelineTrack, TrackAddress, TrackKind, textAlignmentLabel;
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
@@ -777,6 +777,9 @@ final class EditorRoot : VBox
     private bool _loopEnabled;
     private double _playbackSourceVolume = 1.0;
     private bool _playbackSourceMuted;
+    // Direct sequence passthrough decodes the source audio stream the selected
+    // timeline item points at (0 = the file's first audio stream).
+    private int _playbackAudioStreamIndex;
     // Direct sequence passthrough keeps transport positions in sequence time
     // while decoding the original media at sequenceTime + mediaOffset.
     private double _playbackMediaOffset = 0.0;
@@ -6316,7 +6319,8 @@ final class EditorRoot : VBox
     private void startPlayback(MediaAsset asset, double start, double end,
         PlaybackKind kind, double volume = 1.0, bool muted = false,
         double mediaOffset = 0.0, bool directSequence = false,
-        bool liveSequence = false, bool staticSequenceVisual = false)
+        bool liveSequence = false, bool staticSequenceVisual = false,
+        int audioStreamIndex = 0)
     {
         // Composition Preview is a sequence monitor, never a source monitor.
         // Keep this guard even though current UI paths no longer request source
@@ -6379,6 +6383,7 @@ final class EditorRoot : VBox
         }
         _playbackSourceVolume = volume;
         _playbackSourceMuted = muted;
+        _playbackAudioStreamIndex = audioStreamIndex;
         _playbackRunning = true;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
@@ -6482,10 +6487,10 @@ final class EditorRoot : VBox
     }
 
     private static string directAudioSignature(string path, double volume,
-        bool muted)
+        bool muted, int audioStreamIndex = 0)
     {
         return "direct\x1f" ~ path ~ "\x1f" ~ format("%.6f", volume) ~
-            "\x1f" ~ (muted ? "1" : "0");
+            "\x1f" ~ (muted ? "1" : "0") ~ "\x1f" ~ format("%d", audioStreamIndex);
     }
 
     /** The video stream identity the current playback state would start, or ""
@@ -6670,10 +6675,12 @@ final class EditorRoot : VBox
                     {
                         const audioStarted = _audioPlayer.start(
                             _playbackAsset.path, mediaPosition, remaining,
-                            _playbackSourceVolume, _playbackPosition, true);
+                            _playbackSourceVolume, _playbackPosition, true,
+                            _playbackAudioStreamIndex);
                         _playbackPrewarmAudioSignature = audioStarted ?
                             directAudioSignature(_playbackAsset.path,
-                                _playbackSourceVolume, _playbackSourceMuted) : "";
+                                _playbackSourceVolume, _playbackSourceMuted,
+                                _playbackAudioStreamIndex) : "";
                         if (audioStarted)
                         {
                             _playbackPrewarmAudioPosition = mediaPosition;
@@ -6734,10 +6741,12 @@ final class EditorRoot : VBox
                     {
                         const audioStarted = _audioPlayer.start(
                             playbackAsset.path, mediaPosition, remaining,
-                            directClip.volume, start, true);
+                            directClip.volume, start, true,
+                            directClip.audioStreamIndex);
                         _playbackPrewarmAudioSignature = audioStarted ?
                             directAudioSignature(playbackAsset.path,
-                                directClip.volume, muted) : "";
+                                directClip.volume, muted,
+                                directClip.audioStreamIndex) : "";
                         if (audioStarted)
                         {
                             _playbackPrewarmAudioPosition = mediaPosition;
@@ -7302,7 +7311,8 @@ final class EditorRoot : VBox
                 _playbackSourceVolume > 0.000_001)
             {
                 target = directAudioSignature(_playbackAsset.path,
-                    _playbackSourceVolume, _playbackSourceMuted);
+                    _playbackSourceVolume, _playbackSourceMuted,
+                    _playbackAudioStreamIndex);
             }
             if (target.length > 0 && target == _playbackPrewarmAudioSignature)
             {
@@ -7351,7 +7361,7 @@ final class EditorRoot : VBox
                 0.0, _playbackAsset.duration);
             if (!_audioPlayer.start(_playbackAsset.path, mediaPosition,
                 remaining, _playbackSourceVolume, _playbackPosition,
-                startPaused))
+                startPaused, _playbackAudioStreamIndex))
             {
                 _playbackAudioStarted = false;
                 setStatus("Visual playback is ready, but audio output could not start.");
@@ -8128,7 +8138,8 @@ final class EditorRoot : VBox
         auto playbackAsset = playbackAssetForPreview(asset);
         startPlayback(playbackAsset, start, clip.end(), PlaybackKind.sequence,
             clip.volume, clip.muted || track.muted,
-            clip.inPoint - clip.start, true);
+            clip.inPoint - clip.start, true, false, false,
+            clip.audioStreamIndex);
     }
 
     private void startLiveSequencePlayback()
@@ -8414,6 +8425,7 @@ final class EditorRoot : VBox
         result.outPoint = clip.outPoint;
         result.volume = clip.volume;
         result.muted = clip.muted;
+        result.audioStreamIndex = clip.audioStreamIndex;
         result.playbackRate = clip.playbackRate;
         result.reversed = clip.reversed;
         result.cropEnabled = clip.cropEnabled;
@@ -8859,6 +8871,85 @@ final class EditorRoot : VBox
             interpolationLabel(interpolation) ~ ".");
     }
 
+    private static string streamLabel(const AudioStreamInfo info, int streamIndex)
+    {
+        const trackNumber = streamIndex + 1;
+        // Stream indexes inside a file are not always contiguous and do not
+        // equal the audio ordinal, so show the real FFmpeg index as detail.
+        string detail;
+        if (info.index >= 0)
+            detail = " · Stream " ~ format("%d", info.index);
+        if (info.channels > 0 && info.sampleRate > 0)
+            detail ~= format(" · %d ch · %d Hz", info.channels, info.sampleRate);
+        else if (info.codec.length > 0 && info.channels > 0)
+            detail ~= format(" · %d ch · %s", info.channels, info.codec);
+        return format("Track %d%s", trackNumber, detail);
+    }
+
+    /** Build one "Audio track" check item. `streamIndex` and `label` are passed
+     * BY VALUE so the returned delegate closes over a distinct copy per item.
+     * Inlining this in a loop would let D capture the loop-local by reference,
+     * making every item activate the last stream. */
+    private ContextMenuItem buildAudioTrackMenuItem(TrackAddress track, int index,
+        int streamIndex, string label, bool checked)
+    {
+        return ContextMenuItem.check(label, checked, delegate() {
+            _timeline.setSelection(track, index, false);
+            auto before = captureTimelineSnapshot("Select audio track " ~ label);
+            if (_model.setClipAudioStream(track, index, streamIndex))
+            {
+                commitHistory(before);
+                afterTimelineMutation("Audio track set to " ~ label ~ ".",
+                    track, index, false);
+                queueSourceAudioRefresh();
+            }
+        });
+    }
+
+    /** Re-probe a media file to recover its audio-stream list when an older
+     * asset record (imported before multi-stream support) has `hasAudio` but
+     * no stream list. Updates the model's asset in place. Returns whether the
+     * asset now exposes a stream list. */
+    private bool refreshAssetAudioStreams(MediaAsset asset)
+    {
+        if (asset is null || asset.path.length == 0 || !_tools.ffmpeg) return false;
+        try
+        {
+            auto refreshed = probeMedia(asset.path);
+            if (refreshed.audioStreams.length > 0)
+            {
+                asset.audioStreams = refreshed.audioStreams.dup;
+                if (asset.audioChannels <= 0)
+                    asset.audioChannels = refreshed.audioChannels;
+                if (asset.sampleRate <= 0)
+                    asset.sampleRate = refreshed.sampleRate;
+                return true;
+            }
+        }
+        catch (Exception error)
+        {
+            appLog(format("Could not refresh audio streams for '%s': %s",
+                asset.path, error.toString()));
+        }
+        return false;
+    }
+
+    /** Whether an asset's stored audio-stream list is missing or only holds the
+     * synthesized single default written by a legacy project. A real probe
+     * records the actual FFmpeg stream index (> 0 when a video stream exists)
+     * and codec, so a genuine single-stream record is never re-probed. */
+    private bool assetAudioStreamsNeedRefresh(const MediaAsset asset)
+    {
+        if (asset is null) return false;
+        if (asset.audioStreams.length == 0) return true;
+        if (asset.audioStreams.length == 1)
+        {
+            const first = asset.audioStreams[0];
+            return first.index <= 0 && first.codec.length == 0;
+        }
+        return false;
+    }
+
     private void showTimelineContextMenu(TrackAddress track, int index, Point point)
     {
         const validTrack = _model.validTrack(track);
@@ -8876,7 +8967,7 @@ final class EditorRoot : VBox
         if (validClip)
         {
             const clip = clips[cast(size_t) index];
-            const asset = _model.assetForClip(clip);
+            auto asset = _model.assetForClip(clip);
             EffectProperty markerProperty;
             double markerLocalTime;
             KeyframeInterpolation markerInterpolation;
@@ -9009,6 +9100,38 @@ final class EditorRoot : VBox
                     _timeline.setSelection(track, index, false);
                     resetSelectedAudio();
                 }, "", clip.volume != 1.0 || clip.muted);
+            }
+            if (!clip.isText() && asset !is null && asset.hasAudio)
+            {
+                // Self-heal older assets whose audio-stream list is missing or
+                // only holds the synthesized single default (a legacy project
+                // written before multi-stream support). Re-probe the source
+                // once to recover the real stream list. A genuine single-stream
+                // file keeps its real probe (index > 0, real codec), so this
+                // never repopulates a correct record.
+                if (assetAudioStreamsNeedRefresh(asset) &&
+                    refreshAssetAudioStreams(asset))
+                    asset = _model.assetForClip(clip);
+                if (_model.audioStreamCountForClip(clip) > 1)
+                {
+                    ContextMenuItem[] streamItems;
+                    foreach (streamIndex; 0 .. _model.audioStreamCountForClip(clip))
+                    {
+                        const info = asset.audioStreams.length > streamIndex ?
+                            asset.audioStreams[streamIndex] : AudioStreamInfo.init;
+                        const label = streamLabel(info, streamIndex);
+                        // NOTE: the action index/label are captured BY VALUE via a
+                        // helper call. D closures capture loop-local consts by
+                        // reference, so inlining the delegate here would make every
+                        // item activate the LAST stream.
+                        auto item = buildAudioTrackMenuItem(track, index,
+                            streamIndex, label,
+                            clip.audioStreamIndex == streamIndex);
+                        streamItems ~= item;
+                    }
+                    items ~= ContextMenuItem.submenuItem("Audio track", IconKind.music,
+                        streamItems);
+                }
             }
             if (track.kind == TrackKind.video && asset !is null && asset.hasAudio)
             {
