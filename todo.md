@@ -1,5 +1,121 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - aurora-font-viewer: standalone pure-D font viewer (feature, done)
+
+User: "could you make aurora font-viewer completely new simple program so we are
+sure." (confirmed earlier that aurora-cut uses FFmpeg ONLY for playback + final
+encode — UI text and title rasters are rendered by Aurora's own text stack.)
+
+Built `aurora-font-viewer/`, a self-contained Aurora-D app that proves font
+enumeration + live specimen rendering through Aurora's pure-D engine (no FFmpeg,
+no OS font API, no DirectWrite/GDI):
+
+- `aurora-font-viewer/dub.json` — mirrors aurora-designer (GUI subsystem,
+  portable-release buildType, vendored Aurora-D sourcePaths, version 0.66.7).
+- `RUN-WINDOWS.bat` — `dub run --build=release`.
+- `source/aurorafontviewer/fontviewer.d`:
+  - `enumerateFamilies()` scans `SystemFontInventory.installed()` (395 real
+    faces on this machine), dedupes by typographic family, counts members, and
+    picks a regular face for the specimen.
+  - `FontViewerRoot` (HBox) = `ListView` of families on the left +
+    `SpecimenView` on the right + status Label. Selecting a family loads the
+    exact `FontFace` and repaints.
+  - `SpecimenView` draws pangrams / digits / Latin / Greek / Cyrillic / CJK /
+    Thai at several sizes via `canvas.drawText(..., FontRole.ui, face)` — the
+    SAME path aurora-cut uses, with no `drawtext`/libass/fontconfig anywhere.
+  - `--screenshot <path> [index]` mode (software renderer) + test-only
+    `familyCount()` / `selectFamilyForTesting()`.
+- `tests/headless_smoke.d` — asserts the inventory finds real faces, that a
+  specimen rendered into a `Surface` has real glyph coverage (1189 darkish
+  pixels, not blank), and that the widget tree lays out (fixed: the HBox
+  children got 0 width until `left` got preferredWidth/minWidth/flex=0 and
+  `right` flex=1.0) and paints.
+- Registered in `scripts/build-portable-windows.py` APPLICATIONS
+  (`aurora-font-viewer`, non-embedded single-exe like designer).
+
+Verified: `dub build --compiler=dmd` links; headless smoke ALL PASSED; a
+`screenshot` shows the family list + live Alef specimen (kerning, ligatures,
+Greek/Cyrillic/Japanese) + "Alef | Alef-Bold.ttf | members: 2" status. The CJK
+line renders tofu for Alef (no CJK glyphs in that face) — correct: the specimen
+uses a single face, confirming single-face title render falls back to nothing
+(the gap noted in the font-analysis notes).
+
+NOTE (portability verifier): the debug-built exe imports MSVCR120.dll, and so
+does aurora-designer's - this is the pre-existing toolchain limitation recorded
+in todo.md ("portable-release needs MSVC libcmt.lib; only DMD's mingw toolchain
+is installed"). Identical to the other apps, not a regression.
+
+
+## 2026-08-27 - yt-dlp URL field: no copy/paste + timeline scrollbar: no zoom handles (both fixed)
+
+User: "Make text input of yt-dlp dialog have context of paste and copy. Allow
+bottom timeline scroller to have right and left tips that u can hold and drag to
+zoom-in and zoom-out."
+
+Two independent enhancements:
+
+### 1. Editing context menu (Cut/Copy/Paste/Select All) on right-click
+
+The yt-dlp dialog URL field is a `TextField`; the frameless Aurora-D text editor
+had keyboard clipboard shortcuts (Ctrl+C/X/V/A) but no right-click context menu.
+
+Fix (`vendor/aurora-d-0.4.5/source/aurora/widgets/texteditor.d`):
+- Added `showEditingContextMenu` to the base `TextEditor`, so `TextField`,
+  `TextArea`, and every inspector field inherit it. Right-click (handled in
+  `onMouseDown` for `MouseButton.right`) shows Cut / Copy / Paste / Select All,
+  each wired to the existing clipboard methods and honoring `_readOnly` and
+  `hasSelection`.
+
+Critical fix (`contextmenu.d`): the existing `showContextMenu` calls
+`dismissTransientPopups(root)`, which closes EVERY root-level popup. Right-
+clicking a field inside the yt-dlp popup would therefore have dismissed the
+yt-dlp dialog itself. Added `showContextMenuKeepPopups`, which closes only other
+ContextMenu siblings and leaves host popups open. The TextEditor now uses it.
+
+### 2. Timeline scrollbar zoom grips (hold + drag to zoom)
+
+The bottom horizontal scrollbar only panned. Added a zoom grip at each end of
+the track (`TimelineHorizontalScrollbar`):
+- Left grip + right grip (12 px), rendered as accent-blue wedges with a grab
+  marker (verified visually: blue grips at both ends, gray pan thumb between).
+- Dragging the left grip right narrows the visible window (zoom in); dragging it
+  left widens it (zoom out), anchored so the right content edge stays under the
+  cursor. The right grip mirrors this, anchoring the left content edge.
+- New `TimelineWidget.setZoomWindow(start, end)` sets pixels-per-second so the
+  given time window fills the viewport and places `start` at the left edge.
+- Panning the thumb still moves the window without changing zoom. Zoom is
+  clamped to the existing [14, 900] px/s range.
+
+### Verification
+
+- `vendor/aurora-d-0.4.5`: `dub test --compiler=dmd` → 37 modules pass.
+- aurora-cut compiles (dub build reaches link; final exe copy blocked only
+  because `aurora-cut.exe` is still running).
+- New `tests/textfield_context_smoke.d` (right-click opens the menu with the
+  right items; Cut/Copy/Paste across a selection round-trips) → passes.
+- New `tests/textfield_context_popup_smoke.d` → FAILS on the old code (the host
+  popup is dismissed) and PASSES with `showContextMenuKeepPopups` (popup stays
+  open, menu appears on top).
+- New `tests/timeline_zoombar_smoke.d` → right grip inward zooms in, right grip
+  outward zooms out, thumb pan leaves zoom unchanged, left grip inward zooms in.
+- New `tests/timeline_zoombar_panmap.d` → dragging the thumb from the inner
+  left edge to the inner right edge maps scroll 0 → max, and back — proving the
+  pan gesture is 1:1 after the geometry fix.
+- `tests/editor_smoke.d` with the three media files → all assertions pass
+  (includes the scrollbar thumb-geometry regression).
+- `tests/cascade_smoke.d` → still passes.
+- Visual screenshot of the rendered zoom bar confirmed both grips paint
+  (accent blue) with the pan thumb between them.
+
+Follow-up fix (user: "seems like you broke the bottom scrollbar"): the first
+attempt inset the pan thumb's track by GripWidth but kept `updateThumb` mapping
+over the FULL track width. The thumb drew and dragged in two different regions,
+so at scroll=0 the thumb overlapped the left grip and the pan reach/no-reach
+didn't match. Fixed by introducing a shared `innerTrackRect()` (track minus both
+grips) used by BOTH `thumbRect()` and `updateThumb()`, so the thumb renders and
+pans in the same region and the two zoom grips stay as clear non-overlapping
+handles at the outer edges.
+
 ## 2026-08-27 - "Idle" word cut to "dle" + random number missing in timeline ruler (fixed)
 
 User: "Why aurora cut rendering idle word as dle and in timeline ruler random

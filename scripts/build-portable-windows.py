@@ -16,6 +16,10 @@ APPLICATIONS = {
         Path("aurora-designer"),
         Path("aurora-designer/aurora-designer.exe"),
     ),
+    "aurora-font-viewer": (
+        Path("aurora-font-viewer"),
+        Path("aurora-font-viewer/aurora-font-viewer.exe"),
+    ),
     "aurora-image-viewer": (
         Path("aurora-image-viewer"),
         Path("aurora-image-viewer/aurora-image-viewer.exe"),
