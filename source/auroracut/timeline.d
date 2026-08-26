@@ -2659,7 +2659,20 @@ final class TimelineWidget : Widget
             return true;
         if (mode == PointerMode.marqueeSelect)
         {
-            if (_marqueeMoved) updateMarqueeSelection();
+            if (_marqueeMoved)
+                updateMarqueeSelection();
+            else
+            {
+                // A plain click on empty space clears the selection. (The
+                // playhead no longer moves here for the Selection tool, so an
+                // empty click must deselect instead of doing nothing.)
+                TrackAddress clickTrack = _selectedTrack;
+                if (trackAtY(_marqueeOrigin.y, clickTrack))
+                    _selectedTrack = clickTrack;
+                _selectedIndex = -1;
+                _selectedClipIds.length = 0;
+                _selectedPart = TimelineSelectionPart.clip;
+            }
             if (onSelectionChanged !is null)
                 onSelectionChanged(_selectedTrack, _selectedIndex);
             invalidate();

@@ -84,6 +84,19 @@ int main()
             "Selection tool drag moved the playhead instead of selecting");
     }
 
+    // A plain click on empty space must DESELECT (clear the current selection),
+    // not scrub or do nothing.
+    {
+        auto driver = new UiTestDriver(window);
+        timeline.selectSingle(v1, 0, false);
+        timeline.toggleSelection(v1, 1, false);
+        assert(timeline.selectedCountForTesting() == 2);
+        const gapClick = timeline.pointForTrackTime(v1, 5.5); // empty on v1
+        driver.click(gapClick);
+        assert(timeline.selectedCountForTesting() == 0,
+            "Clicking empty timeline space did not deselect");
+    }
+
     // Re-establish a clean 2-clip group selection for the move test.
     timeline.selectSingle(v1, 0, false);
     timeline.toggleSelection(v1, 1, false);

@@ -1,5 +1,26 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-26 - Empty-space click did not deselect the timeline (fixed)
+
+User: "Why we can't deselect by clicking on any empty space on timeline."
+
+Root cause: after the marquee change, a plain click (no drag) on empty sequence
+space entered `PointerMode.marqueeSelect` but `onMouseUp` only applied
+`updateMarqueeSelection()` `if (_marqueeMoved)`. A zero-size marquee left the
+selection untouched (and the playhead no longer moved either), so an empty click
+did nothing.
+
+Fix (`source/auroracut/timeline.d`): on marquee mouse-up, if the marquee moved,
+apply `updateMarqueeSelection()`; otherwise clear the selection (deselect). The
+clicked track is preserved as the new reference track so deselection feels
+natural.
+
+Verification:
+- `tests/timeline_multiselect_smoke.d` new block: select two clips, then click
+  empty space and assert `selectedCountForTesting() == 0`. FAILS on the old code
+  ("Clicking empty timeline space did not deselect") and PASSES with the fix.
+- `dub test` 40 modules; all smokes pass; the app builds.
+
 ## 2026-08-26 - Selection tool drag hijacked the playhead instead of marquee-select (fixed)
 
 User: "Why we can't drag select using selection tool, it always takeover the

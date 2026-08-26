@@ -1,5 +1,17 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Empty-space click deselect on the timeline (2026-08-26)
+
+After the Selection-tool marquee change, a plain click (no drag) on empty
+sequence space did nothing: `onMouseUp` only applied `updateMarqueeSelection()`
+when `_marqueeMoved`. Fix: on marquee mouse-up, move → `updateMarqueeSelection()`;
+no move → clear the selection (deselect).
+
+**Regression test:** in `tests/timeline_multiselect_smoke.d`, select two clips,
+`driver.click` empty space, then assert `selectedCountForTesting() == 0`. It
+FAILS on the old code ("Clicking empty timeline space did not deselect") and
+PASSES with the fix.
+
 ## Selection tool drag marquee vs playhead (2026-08-26)
 
 Bug: with the Selection tool, dragging across empty timeline space moved the
