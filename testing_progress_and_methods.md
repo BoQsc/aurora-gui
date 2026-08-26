@@ -1,5 +1,50 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## "Idle" rendered "dle" + missing ruler digits — TrueType hinting corrupts glyphs (2026-08-27)
+
+Bug: some text renders with leading glyphs missing. "Idle" showed as "dle" and
+the timeline ruler occasionally dropped a digit ("a random number is missing").
+
+**Root cause.** The vendored partial TrueType bytecode hinting interpreter
+(`vendor/aurora-d-0.4.5/source/aurora/text/hinter.d`) corrupts glyph outlines in
+an order-dependent way. A focused probe (`tests/hinting_regression_probe.d`)
+rasterized the ruler/idle glyph set `"Idle" ~ "0123456789:"` at 13 px, 3 runs:
+
+- Hinting ON: `'1'` collapsed to a 0×0 blank bitmap (advance=0) after the first
+  call, `'I'` blanked, yielding 5 blanks. The ruler draws timecodes
+  digit-by-digit, so a blanked `1` (advance 0) makes the following digits
+  collapse into that spot → "number missing". The status label "Idle" blanks its
+  leading `I` → "dle".
+- Hinting OFF (the fix): all glyphs stable → 0 blanks.
+
+**Why hinting is order/size dependent.** `TrueTypeFace.rasterize` is `const`,
+but the glyph programs run inside a shared `TrueTypeHinter` whose CVT/storage
+regions persist across glyph runs; a glyph program's `WS`/`WCVTP` writes leak
+into the next glyph and (combined with the partial interpreter's incomplete
+opcode coverage) corrupt points to a zero bbox. Repo decision: an unhinted
+baseline is the reliable, readable state.
+
+**Fix.** `truetype.d` now creates the hinter only when `AURORA_HINTING=1`;
+otherwise default OFF:
+```d
+import std.process : environment;
+const enableHinting = environment.get("AURORA_HINTING", "0") == "1";
+if (enableHinting) _hinter = new TrueTypeHinter(_data, _faceOffset);
+```
+
+**How to verify (repeatable).**
+```
+cd vendor\aurora-d-0.4.5
+dmd -i -Isource tests\hinting_regression_probe.d -of=build\hinting_regression_probe.exe
+set AURORA_HINTING=      (off/fixed)  -> build\hinting_regression_probe.exe   # blanks=0
+set AURORA_HINTING=1     (on/bug)     -> build\hinting_regression_probe.exe   # blanks=5
+```
+
+**Lesson.** A bug in a glyph rasterizer does not always show as "everything is
+blank". When a user reports "a number is missing" or "a leading character is
+cut", suspect order/state-dependent glyph corruption, and reproduce by
+rasterizing the exact char set repeatedly (not just a single glyph once).
+
 ## Empty-space click deselect on the timeline (2026-08-26)
 
 After the Selection-tool marquee change, a plain click (no drag) on empty

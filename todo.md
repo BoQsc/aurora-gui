@@ -1,5 +1,42 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - "Idle" word cut to "dle" + random number missing in timeline ruler (fixed)
+
+User: "Why aurora cut rendering idle word as dle and in timeline ruler random
+number missing sometimes."
+
+Root cause — the partial TrueType bytecode hinting interpreter
+(`vendor/aurora-d-0.4.5/source/aurora/text/hinter.d`, committed 2026-08-22 in
+5779efa + 4d3ac7d) corrupts some glyph outlines in an ORDER-DEPENDENT way:
+
+- With hinting on, glyph `'1'` (gid 20) rasterizes correctly the FIRST time at
+  a given pixel size, then collapses to a 0×0 blank with advance=0 on every
+  subsequent call. Glyph `'I'` (gid 44) blanks from the start. The failure is
+  size-scoped (switching sizes 13→12→13 resets it) and gly-phen-order-dependent
+  (rasterizing `1,2,1` → 23,32,0; `0,1,2,…` blanks `1`).
+- The ruler draws `formatTimecode(value,false)` = HH:MM:SS digit-by-digit; a
+  blanked `1` contributes advance=0 so the following digits collapse into the
+  gap → "a random number is missing". The status "Idle" label blanks its
+  leading `I` → renders as "dle".
+- Reproduced with a focused probe: rasterizing the ruler/idle glyph set
+  `"Idle0123456789:"` at 13px across 3 runs reports blanks with hinting on and
+  is stable with hinting off.
+
+Fix (`vendor/aurora-d-0.4.5/source/aurora/text/truetype.d`): TrueType bytecode
+hinting is OFF by default (a partial interpreter corrupts glyphs; unhinted
+baseline is the reliable, readable state — the repo reached the same conclusion
+on 2026-08-19). Opt-in via `AURORA_HINTING=1` for font debugging.
+
+Verification:
+- New `vendor/aurora-d-0.4.5/tests/hinting_regression_probe.d`: rasterizes the
+  ruler/idle glyph set 3× at 13px, asserts no blank glyph. FAILS with hinting
+  on (5 blanks: '1' and 'I') and PASSES with the fix (0 blanks).
+- `dub test --compiler=dmd` in `vendor/aurora-d-0.4.5` → 37 modules pass.
+- `dub build --compiler=dmd` in the repo root compiles (link copy blocked only
+  because `aurora-cut.exe` was running, PID 8060).
+- Screenshot / GUI re-check of the timeline ruler + status bar is still to be
+  confirmed by the user once the running instance is closed.
+
 ## 2026-08-26 - Empty-space click did not deselect the timeline (fixed)
 
 User: "Why we can't deselect by clicking on any empty space on timeline."

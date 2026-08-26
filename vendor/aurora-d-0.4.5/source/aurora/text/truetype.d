@@ -401,7 +401,17 @@ final class TrueTypeFace
         chooseCmap();
         parseKerning();
         if (_glyfOutlines)
-            _hinter = new TrueTypeHinter(_data, _faceOffset);
+        {
+            // TrueType bytecode hinting is OFF by default. A partial bytecode
+            // interpreter corrupts some glyph outlines (e.g. '1' and 'I'
+            // collapse to a zero bbox, and the failure is order-dependent), so
+            // the unhinted baseline is the reliable, readable state. Opt back
+            // in for font debugging with AURORA_HINTING=1.
+            import std.process : environment;
+            const enableHinting = environment.get("AURORA_HINTING", "0") == "1";
+            if (enableHinting)
+                _hinter = new TrueTypeHinter(_data, _faceOffset);
+        }
         try
         {
             _variations = new FontVariations(_data, _faceOffset);
