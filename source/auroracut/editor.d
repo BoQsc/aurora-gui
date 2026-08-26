@@ -11,8 +11,9 @@ import auroracut.media : MediaImportResult, MediaImportService,
     MediaProxyResult, MediaProxyService, ToolStatus, inspectToolStatus,
     mediaSecondaryText, playbackProxyReady, probeMedia;
 import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectProperty,
-    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
-    TimelineSnapshot, TimelineTrack, TrackAddress, TrackKind, textAlignmentLabel;
+    KeyframeInterpolation, MediaAsset, SelectedClipMove, TextAlignment,
+    TimelineClip, TimelineSnapshot, TimelineTrack, TrackAddress, TrackKind,
+    textAlignmentLabel;
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
@@ -21,7 +22,8 @@ import auroracut.project : defaultCompositionHeight, defaultCompositionWidth,
 import auroracut.recentprojects : clearRecentProjects,
     clearUnavailableRecentProjects, hasUnavailableRecentProjects,
     loadRecentProjects, rememberRecentProject;
-import auroracut.timeline : TimelineHorizontalScrollbar, TimelineWidget;
+import auroracut.timeline : SelectedClipRef, TimelineHorizontalScrollbar,
+    TimelineWidget;
 import auroracut.titlelayer : TitleVisual;
 import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
     textFontFilePath;
@@ -34,6 +36,7 @@ import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
     ytDlpMaxWidthForHeight;
 import core.time : MonoTime;
 import std.algorithm : endsWith, max, min;
+import std.algorithm.sorting : sort;
 import std.array : join;
 import std.file : exists;
 import std.conv : ConvException, to;
@@ -2285,9 +2288,17 @@ final class EditorRoot : VBox
             TrackAddress destination, double start) {
             moveClipRequested(source, index, destination, start);
         };
+        _timeline.onSelectionMoveRequested = delegate(TrackAddress pressedTrack,
+            int pressedIndex, double targetStart) {
+            moveSelectionRequested(pressedTrack, pressedIndex, targetStart);
+        };
         _timeline.onClipResizeRequested = delegate(TrackAddress track, int index,
             double start, double end) {
             resizeClipRequested(track, index, start, end);
+        };
+        _timeline.onSelectionResizeRequested = delegate(TrackAddress track,
+            int pressedIndex, double newStart, double newEnd) {
+            resizeSelectionRequested(track, pressedIndex, newStart, newEnd);
         };
         _timeline.onMediaDropRequested = delegate(size_t assetIndex,
             TrackAddress destination, double start) {
@@ -4209,6 +4220,59 @@ final class EditorRoot : VBox
             destination, newIndex, false);
     }
 
+    /** Move the whole multi-selection by the pressed clip's drag delta. The
+     * delta is uniform, preserving every selected clip's relative position. */
+    private void moveSelectionRequested(TrackAddress pressedTrack,
+        int pressedIndex, double targetStart)
+    {
+        const clips = _model.trackValue(pressedTrack).clips;
+        if (pressedIndex < 0 || pressedIndex >= cast(int) clips.length) return;
+        const pressedStart = clips[cast(size_t) pressedIndex].start;
+        const delta = targetStart - pressedStart;
+        if (fabs(delta) < 0.000_001) return;
+
+        auto before = captureTimelineSnapshot("Move selection");
+        SelectedClipMove[] moves;
+        const selected = _timeline.selectedClips();
+        foreach (refentry; selected)
+        {
+            // Group clips that share a track; each gets the same delta.
+            moves ~= SelectedClipMove(refentry.address, refentry.clip.id,
+                delta, selectionClipIdsOnTrack(refentry.address));
+        }
+        int movedCount;
+        if (!_model.moveSelection(moves, movedCount) || movedCount == 0)
+        {
+            setStatus("The selected clips could not be moved together.");
+            return;
+        }
+        commitHistory(before);
+        const newTrack = _model.validTrack(pressedTrack) ? pressedTrack :
+            TrackAddress(TrackKind.video, 0);
+        const newIndex = movedCount > 0 ?
+            _model.clipIndexForId(newTrack,
+                _timeline.selectedClipIds().length > 0 ?
+                    _timeline.selectedClipIds()[0] : 0) : -1;
+        afterTimelineMutation(format("Moved %d selected clips by %.2fs.", movedCount,
+            delta), newTrack, newIndex, false);
+        _timeline.modelChanged();
+    }
+
+    private const(ulong)[] selectionClipIdsOnTrack(TrackAddress address)
+    {
+        const selected = _timeline.selectedClipIds();
+        const clips = _model.trackValue(address).clips;
+        // Only the ids on this track matter; the model uses them as excluded
+        // obstacles so the group keeps its internal geometry.
+        ulong[] result;
+        foreach (cid; selected)
+        {
+            foreach (clip; clips)
+                if (clip.id == cid) { result ~= cid; break; }
+        }
+        return result.dup;
+    }
+
     private void resizeClipRequested(TrackAddress track, int index,
         double start, double end)
     {
@@ -4223,6 +4287,71 @@ final class EditorRoot : VBox
         afterTimelineMutation(format("Clip duration changed to %.2fs.",
             _model.trackValue(track).clips[cast(size_t) newIndex].duration()),
             track, newIndex, false);
+    }
+
+    /** Resize the pressed clip and every selected clip on the same track that
+     * shares the same edge (start for a left-drag, end for a right-drag). Each
+     * sharing clip gets the identical edge delta. */
+    private void resizeSelectionRequested(TrackAddress track, int pressedIndex,
+        double newStart, double newEnd)
+    {
+        if (!_model.validTrack(track)) return;
+        const clipsAtPress = _model.trackValue(track).clips;
+        if (pressedIndex < 0 ||
+            pressedIndex >= cast(int) clipsAtPress.length) return;
+        const pressed = clipsAtPress[cast(size_t) pressedIndex];
+        if (!clipIdSelected(pressed.id)) return;
+
+        // Determine which edge moved and the delta.
+        const resizeStart = newStart < pressed.start - 0.000_001 ||
+            newStart > pressed.start + 0.000_001;
+        const oldEdge = resizeStart ? pressed.start : pressed.end();
+        const newEdge = resizeStart ? newStart : newEnd;
+        const delta = newEdge - oldEdge;
+        if (fabs(delta) < 0.000_001) return;
+
+        // Gather selected clips sharing the moved edge by id.
+        ulong[] ids;
+        const tol = 0.000_5;
+        foreach (clip; clipsAtPress)
+        {
+            if (!clipIdSelected(clip.id)) continue;
+            const edge = resizeStart ? clip.start : clip.end();
+            if (edge > oldEdge - tol && edge < oldEdge + tol) ids ~= clip.id;
+        }
+        if (ids.length == 0) return;
+
+        auto before = captureTimelineSnapshot("Resize selection");
+        int changed;
+        // Fetch each clip fresh by id (the model mutates between calls), then
+        // resize it with the shared edge delta.
+        foreach (id; ids)
+        {
+            const idx = _model.clipIndexForId(track, id);
+            if (idx < 0) continue;
+            const clip = _model.trackValue(track).clips[cast(size_t) idx];
+            const s2 = resizeStart ? clip.start + delta : clip.start;
+            const e2 = resizeStart ? clip.end() : clip.end() + delta;
+            int newIndex;
+            if (_model.resizeClipTimeline(track, idx, s2, e2, newIndex))
+                ++changed;
+        }
+        if (changed == 0)
+        {
+            setStatus("The selected clip edges could not be resized farther.");
+            return;
+        }
+        commitHistory(before);
+        afterTimelineMutation(format("Resized %d selected clips together.", changed),
+            track, pressedIndex, false);
+        _timeline.modelChanged();
+    }
+
+    private bool clipIdSelected(ulong id) const
+    {
+        foreach (cid; _timeline.selectedClipIds())
+            if (cid == id) return true;
+        return false;
     }
 
     private void copySelected()

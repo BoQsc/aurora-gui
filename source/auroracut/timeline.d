@@ -3,6 +3,7 @@ module auroracut.timeline;
 import aurora;
 import auroracut.model : ClipKind, EditorModel, EffectProperty, KeyframeInterpolation, TimelineClip, TrackAddress, TrackKind;
 import auroracut.util : clampValue, formatTimecode;
+import std.algorithm.sorting : sort;
 import std.format : format;
 import std.math : fabs, isNaN;
 import std.utf : toUTF32;
@@ -42,6 +43,14 @@ private enum TimelineSelectionPart : ubyte
     clip,
     fadeIn,
     fadeOut
+}
+
+/** One clip in the current multi-selection, exposed to the editor so it can
+ * apply multi-clip operations (move, delete, resize) as one action. */
+struct SelectedClipRef
+{
+    TrackAddress address;
+    TimelineClip clip;
 }
 
 /**
@@ -101,6 +110,10 @@ final class TimelineWidget : Widget
     private TrackAddress _selectedTrack = TrackAddress(TrackKind.video, 0);
     private int _selectedIndex = -1;
     private TimelineSelectionPart _selectedPart = TimelineSelectionPart.clip;
+    // Anchor for Shift-click range selection. Kept as an address + index so a
+    // range can be recomputed on a track even if clips between moved.
+    private TrackAddress _anchorTrack = TrackAddress(TrackKind.video, 0);
+    private int _anchorIndex = -1;
 
     private PointerMode _pointerMode;
     private TrackAddress _pressTrack;
@@ -109,6 +122,13 @@ final class TimelineWidget : Widget
     private double _grabOffset = 0.0;
     private int _pressClickCount;
     private ulong[] _selectedClipIds;
+    // When a drag starts on a clip that is part of a multi-selection, the whole
+    // group moves together. Each entry is the absolute start-time offset of a
+    // selected clip relative to the pressed clip's start, so the relative
+    // geometry is preserved while dragging. Track is captured per clip too.
+    private bool _dragSelection;
+    private TrackAddress[] _dragSelectionTracks;
+    private double[] _dragSelectionOffsets;
     private Point _marqueeOrigin;
     private Point _marqueeCurrent;
     private bool _marqueeMoved;
@@ -124,6 +144,9 @@ final class TimelineWidget : Widget
     private double _resizePreviewEnd;
     private double _transitionPreviewDuration;
     private double _transitionGrabOffset;
+    // When edge-resizing one clip in a multi-selection that shares the edge with
+    // other selected clips on the same track, resize the whole edge together.
+    private bool _resizeSelection;
 
     // Time of the vertical marker the active drag currently snaps to, or NaN
     // when no guide is shown. Painted as a bright rule while a clip is being
@@ -136,6 +159,14 @@ final class TimelineWidget : Widget
     private TrackAddress _ghostTrack;
     private double _ghostStart = 0.0;
     private double _ghostDuration = 0.0;
+
+    // Multi-selection move ghost. Stores the live clips being dragged with the
+    // offset of each from the pressed clip's start, so dragging one selected
+    // item translates the whole group while preserving relative geometry.
+    private TrackAddress[] _selectionGhostTracks;
+    private double[] _selectionGhostOffsets;
+    private double[] _selectionGhostDurations;
+    private double[] _selectionGhostAssetIndexes;
 
     private bool _externalDrag;
     private size_t _externalAssetIndex;
@@ -193,8 +224,12 @@ final class TimelineWidget : Widget
     void delegate(TrackAddress track, int index) onClipActivated;
     void delegate(TrackAddress source, int index, TrackAddress destination,
         double start) onClipMoveRequested;
+    void delegate(TrackAddress pressedTrack, int pressedIndex, double targetStart)
+        onSelectionMoveRequested;
     void delegate(TrackAddress track, int index, double start, double end)
         onClipResizeRequested;
+    void delegate(TrackAddress track, int pressedIndex, double newStart,
+        double newEnd) onSelectionResizeRequested;
     void delegate(size_t assetIndex, TrackAddress destination, double start)
         onMediaDropRequested;
     void delegate(string[] paths, TrackAddress destination, double start)
@@ -249,6 +284,40 @@ final class TimelineWidget : Widget
     size_t selectedCountForTesting() const @safe pure nothrow @nogc
     {
         return _selectedClipIds.length;
+    }
+    /// The selected clip ids, in selection order (primary first). Used by the
+    /// editor to operate on the whole multi-selection.
+    const(ulong)[] selectedClipIds() const @safe pure nothrow @nogc
+    {
+        return _selectedClipIds;
+    }
+    bool multiSelectionActive() const @safe pure nothrow @nogc
+    {
+        return _selectedClipIds.length > 1;
+    }
+    /// The actual clips in the current selection (primary first), resolved by
+    /// id against the live model. Used by the editor for group operations.
+    SelectedClipRef[] selectedClips() const
+    {
+        SelectedClipRef[] result;
+        foreach (trackKind; [TrackKind.video, TrackKind.audio])
+        {
+            foreach (lane; 0 .. _model.trackCount(trackKind))
+            {
+                const address = TrackAddress(trackKind, lane);
+                const clips = _model.trackValue(address).clips;
+                foreach (i, clip; clips)
+                    if (clipIsSelected(clip.id))
+                    {
+                        TimelineClip copy;
+                        if (_model.copyClip(address, cast(int) i, copy))
+                            result ~= SelectedClipRef(address, copy);
+                    }
+            }
+        }
+        // Order by absolute start so a range/move reads left-to-right.
+        result.sort!((a, b) => a.clip.start < b.clip.start);
+        return result;
     }
     bool selectedFadeInTransition() const @safe pure nothrow @nogc
     {
@@ -518,6 +587,110 @@ final class TimelineWidget : Widget
         if (_selectedIndex < 0) return;
         _selectedPart = fadeIn ? TimelineSelectionPart.fadeIn :
             TimelineSelectionPart.fadeOut;
+        invalidate();
+        if (notify && onSelectionChanged !is null)
+            onSelectionChanged(_selectedTrack, _selectedIndex);
+    }
+
+    private ulong clipIdAt(TrackAddress track, int index) const
+    {
+        if (!_model.validTrack(track) || index < 0) return 0;
+        const clips = _model.trackValue(track).clips;
+        if (index >= cast(int) clips.length) return 0;
+        return clips[cast(size_t) index].id;
+    }
+
+    private void setPrimarySelection(TrackAddress track, int index)
+    {
+        _selectedTrack = track;
+        _selectedIndex = index;
+        _selectedPart = TimelineSelectionPart.clip;
+        _anchorTrack = track;
+        _anchorIndex = index;
+        revealTrack(track);
+    }
+
+    /** Select exactly one clip (clearing any multi-selection). */
+    void selectSingle(TrackAddress track, int index, bool notify = true)
+    {
+        if (!_model.validTrack(track))
+        {
+            track = TrackAddress(TrackKind.video, 0);
+            index = -1;
+        }
+        else
+        {
+            const clips = _model.trackValue(track).clips;
+            if (index < 0 || index >= cast(int) clips.length) index = -1;
+        }
+        setPrimarySelection(track, index);
+        _selectedClipIds.length = 0;
+        if (index >= 0)
+            _selectedClipIds ~= _model.trackValue(track).clips[cast(size_t) index].id;
+        invalidate();
+        if (notify && onSelectionChanged !is null)
+            onSelectionChanged(_selectedTrack, _selectedIndex);
+    }
+
+    /** Ctrl/Cmd-click: add the clip to the current selection, or remove it if
+     * already selected. Never collapses the existing selection to one item. */
+    void toggleSelection(TrackAddress track, int index, bool notify = true)
+    {
+        if (!_model.validTrack(track) || index < 0) return;
+        const id = clipIdAt(track, index);
+        if (id == 0) return;
+        bool removed;
+        foreach (i, selectedId; _selectedClipIds)
+            if (selectedId == id)
+            {
+                _selectedClipIds = _selectedClipIds[0 .. i] ~
+                    _selectedClipIds[i + 1 .. $];
+                removed = true;
+                break;
+            }
+        _anchorTrack = track;
+        _anchorIndex = index;
+        if (!removed)
+        {
+            // First added clip becomes the primary (drives the Inspector).
+            if (_selectedClipIds.length == 0)
+                setPrimarySelection(track, index);
+            _selectedClipIds ~= id;
+        }
+        else if (_selectedClipIds.length == 0)
+        {
+            _selectedTrack = TrackAddress(TrackKind.video, 0);
+            _selectedIndex = -1;
+        }
+        invalidate();
+        if (notify && onSelectionChanged !is null)
+            onSelectionChanged(_selectedTrack, _selectedIndex);
+    }
+
+    /** Shift-click: select the contiguous clip range on a track between the
+     * anchor and the clicked clip (inclusive). */
+    void selectRange(TrackAddress track, int index, bool notify = true)
+    {
+        if (!_model.validTrack(track) || index < 0) return;
+        const clips = _model.trackValue(track).clips;
+        if (index >= cast(int) clips.length) return;
+        int from;
+        int to;
+        if (_anchorTrack == track && _anchorIndex >= 0 &&
+            _anchorIndex < cast(int) clips.length)
+        {
+            from = _anchorIndex < index ? _anchorIndex : index;
+            to = _anchorIndex < index ? index : _anchorIndex;
+        }
+        else
+        {
+            from = index;
+            to = index;
+        }
+        setPrimarySelection(track, index);
+        _selectedClipIds.length = 0;
+        foreach (i; from .. to + 1)
+            _selectedClipIds ~= clips[cast(size_t) i].id;
         invalidate();
         if (notify && onSelectionChanged !is null)
             onSelectionChanged(_selectedTrack, _selectedIndex);
@@ -1395,6 +1568,127 @@ final class TimelineWidget : Widget
         if (changed) invalidate();
     }
 
+    private bool selectionIsDraggable() const
+    {
+        return _selectedClipIds.length > 1 || _selectedIndex >= 0;
+    }
+
+    /** Called when a clip press becomes a drag: if the pressed clip is part of
+     * a multi-selection, capture the whole group so it moves together. */
+    private void beginSelectionDrag()
+    {
+        _dragSelection = false;
+        const pressedId = clipIdAt(_pressTrack, _pressIndex);
+        if (pressedId == 0 || !clipIsSelected(pressedId) || _selectedClipIds.length < 2)
+            return;
+        // Only move clips together when they are all in the selection. Capture
+        // each clip's track, duration, and offset relative to the pressed clip.
+        _selectionGhostTracks.length = 0;
+        _selectionGhostOffsets.length = 0;
+        _selectionGhostDurations.length = 0;
+        _selectionGhostAssetIndexes.length = 0;
+        const pressedStart = _selectedClipIds.length > 0 ?
+            _model.trackValue(_pressTrack).clips[cast(size_t) _pressIndex].start : 0.0;
+        foreach (trackKind; [TrackKind.video, TrackKind.audio])
+        {
+            foreach (lane; 0 .. _model.trackCount(trackKind))
+            {
+                const address = TrackAddress(trackKind, lane);
+                const clips = _model.trackValue(address).clips;
+                foreach (i, clip; clips)
+                {
+                    if (!clipIsSelected(clip.id)) continue;
+                    _selectionGhostTracks ~= address;
+                    _selectionGhostOffsets ~= clip.start - pressedStart;
+                    _selectionGhostDurations ~= clip.duration();
+                    _selectionGhostAssetIndexes ~= cast(double) clip.assetIndex;
+                }
+            }
+        }
+        if (_selectionGhostTracks.length < 2)
+        {
+            _dragSelection = false;
+            return;
+        }
+        _dragSelection = true;
+    }
+
+    /** Update the group ghost while dragging. All selected clips translate by
+     * the same delta; each is drawn on its captured track at its offset. */
+    private void updateSelectionGhost(Point local, double pressedStart)
+    {
+        autoScrollDuringDrag(local);
+        TrackAddress target;
+        bool createsTrack;
+        if (!candidateTrackAt(local, target, createsTrack))
+        {
+            clearSelectionGhost();
+            return;
+        }
+        double desired = local.x < labelWidth() ? _playhead : timeForX(local.x);
+        desired -= _grabOffset;
+        double snapGuide = double.nan;
+        // Snap the pressed clip's new start, then translate the whole group by
+        // the same delta so relative geometry is preserved.
+        const snappedDesired = snapGroupStart(desired, snapGuide);
+        const delta = snappedDesired - pressedStart;
+        _snapGuideTime = snapGuide;
+        _ghostVisible = true;
+        _ghostNewTrack = createsTrack;
+        _ghostValid = groupPlacementValid(snappedDesired);
+        _ghostStart = snappedDesired;
+        invalidate();
+    }
+
+    private void clearSelectionGhost()
+    {
+        setSelectionGhostVisible(false);
+    }
+
+    private void setSelectionGhostVisible(bool value)
+    {
+        const changed = _ghostVisible;
+        _ghostVisible = value;
+        if (changed) invalidate();
+    }
+
+    /** Snap the pressed clip's candidate start using the markers on its track.
+     * Returns the snapped absolute start; `guide` is the guide marker time. */
+    private double snapGroupStart(double desired, ref double guide) const
+    {
+        guide = double.nan;
+        if (!_model.validTrack(_pressTrack)) return desired;
+        const clips = _model.trackValue(_pressTrack).clips;
+        if (_pressIndex < 0 || _pressIndex >= cast(int) clips.length) return desired;
+        const clip = clips[cast(size_t) _pressIndex];
+        return snappedStart(desired, clip.duration(), _pressTrack, clip.id, guide);
+    }
+
+    /** Whether placing the moved group (pressed clip at `pressedNextStart`) is
+     * valid: no moved clip collides with an unselected clip on its own track.
+     * The group's internal offsets are preserved so its clips cannot overlap. */
+    private bool groupPlacementValid(double pressedNextStart) const
+    {
+        foreach (i; 0 .. _selectionGhostTracks.length)
+        {
+            const address = _selectionGhostTracks[i];
+            const start = pressedNextStart + _selectionGhostOffsets[i];
+            const end = start + _selectionGhostDurations[i];
+            if (start < -0.000_001) return false;
+            foreach (clip; _model.trackValue(address).clips)
+            {
+                if (clipIsSelected(clip.id)) continue;
+                if (overlaps(start, end, clip.start, clip.end())) return false;
+            }
+        }
+        return true;
+    }
+
+    private bool overlaps(double aStart, double aEnd, double bStart, double bEnd) const
+    {
+        return aStart < bEnd - 0.000_001 && aEnd > bStart + 0.000_001;
+    }
+
     private void clearExternalDrag()
     {
         _externalDrag = false;
@@ -1793,6 +2087,11 @@ final class TimelineWidget : Widget
     private void drawGhost(ref Canvas canvas)
     {
         if (!_ghostVisible) return;
+        if (_dragSelection)
+        {
+            drawSelectionGhost(canvas);
+            return;
+        }
         Rect row;
         if (_ghostNewTrack)
         {
@@ -1822,10 +2121,53 @@ final class TimelineWidget : Widget
                 HorizontalAlign.right, VerticalAlign.middle, true);
     }
 
+    /// Draw the moved group as a set of ghost boxes, one per selected clip, at
+    /// the translated start on each clip's own track.
+    private void drawSelectionGhost(ref Canvas canvas)
+    {
+        const color = _ghostValid ? theme().accent : Color.fromHex(0xd65454);
+        foreach (i; 0 .. _selectionGhostTracks.length)
+        {
+            const address = _selectionGhostTracks[i];
+            const row = trackRect(address);
+            if (row.empty()) continue;
+            const start = _ghostStart + _selectionGhostOffsets[i];
+            const end = start + _selectionGhostDurations[i];
+            int x0 = maxInt(labelWidth(), xForTime(start));
+            int x1 = minInt(bounds().width, xForTime(end));
+            const ghostHeight = maxInt(18, minInt(22, row.height - 4));
+            const rect = Rect(x0, row.y + maxInt(2, (row.height - ghostHeight) / 2),
+                maxInt(4, x1 - x0), ghostHeight);
+            canvas.fillRoundedRect(rect, 2, color.withAlpha(105));
+            canvas.strokeRect(rect, color, 1);
+        }
+    }
+
     private bool clipIsSelected(ulong id) const
     {
         foreach (selectedId; _selectedClipIds)
             if (selectedId == id) return true;
+        return false;
+    }
+
+    private bool resizeSelectionHasSharedEdge(TrackAddress address, int index,
+        bool resizeStart) const
+    {
+        if (!_model.validTrack(address) || index < 0) return false;
+        const clips = _model.trackValue(address).clips;
+        if (index >= cast(int) clips.length) return false;
+        const pressed = clips[cast(size_t) index];
+        if (!clipIsSelected(pressed.id)) return false;
+        const edgeTime = resizeStart ? pressed.start : pressed.end();
+        const tolerance = 0.000_5;
+        foreach (i, clip; clips)
+        {
+            if (cast(int) i == index) continue;
+            if (!clipIsSelected(clip.id)) continue;
+            const otherEdge = resizeStart ? clip.start : clip.end();
+            if ((otherEdge > edgeTime - tolerance &&
+                otherEdge < edgeTime + tolerance)) return true;
+        }
         return false;
     }
 
@@ -2057,7 +2399,29 @@ final class TimelineWidget : Widget
 
         if (overTrack && index >= 0)
         {
-            setSelection(address, index);
+            const clickedId = clipIdAt(address, index);
+            if (event.control() || event.meta())
+            {
+                toggleSelection(address, index);
+                return true;
+            }
+            if (event.shift())
+            {
+                selectRange(address, index);
+                return true;
+            }
+            // Re-clicking a clip that is already part of a multi-selection keeps
+            // the whole group selected, so dragging moves every selected item.
+            // A plain click elsewhere collapses to a single selection.
+            if (!clipIsSelected(clickedId))
+                selectSingle(address, index);
+            else
+            {
+                setPrimarySelection(address, index);
+                invalidate();
+                if (onSelectionChanged !is null)
+                    onSelectionChanged(_selectedTrack, _selectedIndex);
+            }
             TimelineClip clip;
             if (!_model.copyClip(address, index, clip)) return true;
             const edge = clipEdgeAtPoint(address, index, event.position);
@@ -2068,6 +2432,8 @@ final class TimelineWidget : Widget
                 _resizeClip = clip;
                 _resizePreviewStart = clip.start;
                 _resizePreviewEnd = clip.end();
+                _resizeSelection = resizeSelectionHasSharedEdge(address, index,
+                    edge < 0);
                 _pointerMode = edge < 0 ? PointerMode.clipResizeStart :
                     PointerMode.clipResizeEnd;
                 captureMouse();
@@ -2213,9 +2579,17 @@ final class TimelineWidget : Widget
             if (dx * dx + dy * dy < 16) return true;
             _pointerMode = PointerMode.clipDrag;
             setCursor(CursorKind.move);
+            beginSelectionDrag();
         }
         if (_pointerMode == PointerMode.clipDrag)
         {
+            if (_dragSelection && _model.validTrack(_pressTrack))
+            {
+                const pressedClip = _model.trackValue(_pressTrack)
+                    .clips[cast(size_t) _pressIndex];
+                updateSelectionGhost(event.position, pressedClip.start);
+                return true;
+            }
             if (!_model.validTrack(_pressTrack)) return true;
             const clips = _model.trackValue(_pressTrack).clips;
             if (_pressIndex < 0 || _pressIndex >= cast(int) clips.length) return true;
@@ -2311,9 +2685,17 @@ final class TimelineWidget : Widget
         }
         if (mode == PointerMode.clipResizeStart || mode == PointerMode.clipResizeEnd)
         {
-            if (onClipResizeRequested !is null)
+            if (_resizeSelection)
+            {
+                if (onSelectionResizeRequested !is null)
+                    onSelectionResizeRequested(_pressTrack, _pressIndex,
+                        _resizePreviewStart, _resizePreviewEnd);
+            }
+            else if (onClipResizeRequested !is null)
+            {
                 onClipResizeRequested(_pressTrack, _pressIndex,
                     _resizePreviewStart, _resizePreviewEnd);
+            }
             invalidate();
             return true;
         }
@@ -2330,10 +2712,18 @@ final class TimelineWidget : Widget
 
         if (mode == PointerMode.clipDrag)
         {
+            const wasSelectionDrag = _dragSelection;
+            _dragSelection = false;
             const valid = _ghostVisible && _ghostValid;
             const destination = _ghostTrack;
             const start = _ghostStart;
             clearGhost();
+            if (wasSelectionDrag)
+            {
+                if (valid && onSelectionMoveRequested !is null)
+                    onSelectionMoveRequested(_pressTrack, _pressIndex, start);
+                return true;
+            }
             if (valid && onClipMoveRequested !is null)
                 onClipMoveRequested(_pressTrack, _pressIndex, destination, start);
             return true;
@@ -2416,6 +2806,8 @@ final class TimelineWidget : Widget
         {
             clearExternalDrag();
             clearGhost();
+            _dragSelection = false;
+            _resizeSelection = false;
             _draggingVerticalThumb = false;
             _verticalScrollbarHovered = false;
             _snapGuideTime = double.nan;

@@ -1,5 +1,48 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Timeline multi-select: click selection + move/resize together (2026-08-26)
+
+Aurora Cut previously only supported marquee multi-select (visual) with a single
+selection driving all operations. Added click multi-select and group move/resize.
+
+**How the multi-select gesture is modeled:**
+- `TimelineWidget` stores selection as `_selectedClipIds[]` plus a primary
+  `_selectedTrack`/`_selectedIndex`. New public methods: `selectSingle`,
+  `toggleSelection` (Ctrl/Cmd-click), `selectRange` (Shift-click, anchored on
+  `_anchorTrack`/`_anchorIndex`). `selectedClips()` resolves the ids to live
+  clips (via `model.copyClip`) so the editor can operate on the whole set.
+- Move-together: `beginSelectionDrag` captures per-clip track/duration/offset
+  when the pressed clip is part of a >=2 selection; `updateSelectionGhost`
+  draws one ghost per clip and checks placement; drop → `onSelectionMoveRequested`.
+- Resize-together: `resizeSelectionHasSharedEdge` detects selected clips on the
+  same track sharing the moved edge; drop → `onSelectionResizeRequested`.
+
+**How to test the model move (`moveSelection`) in isolation** (no GUI):
+Build an `EditorModel`, insert clips (e.g. video@0.0 and video@6.0 on V1,
+audio@0.0 on A1), keep one unselected, then:
+```
+SelectedClipMove[] m;
+m ~= SelectedClipMove(v1, id0, 0.5, [id0, id1]); // exclude both group clips
+m ~= SelectedClipMove(v1, id1, 0.5, [id0, id1]);
+int moved; assert(model.moveSelection(m, moved) && moved == 2);
+```
+Assert the moved starts changed by the delta and an unselected clip is untouched.
+`moveSelection` validates the whole group first (atomic) and processes clips
+right-to-left so index removal never shifts a later clip.
+
+**How to test the click multi-select + drag without a display** (`tests/
+timeline_multiselect_smoke.d`): create a real `GuiWindow` (software renderer) +
+`TimelineWidget` + model, then either drive the public selection methods or use
+`UiTestDriver.drag` for the group-move gesture. NOTE: `UiTestDriver` cannot
+inject mouse modifiers, so Ctrl+click must be tested via the public
+`toggleSelection`/`selectRange` API, not the driver.
+
+**Gating**: `editor_smoke.d` compiles but cannot run to green in this tree because
+a concurrent session's in-flight vendored `text/hinter.d` throws
+`ArrayIndexError` during any text paint. Re-run full `editor-smoke` once that
+session lands. `model-smoke` + `timeline-multiselect-smoke` + `cascade-smoke`
++ `dub test` (40 modules) all pass here.
+
 ## (Aurora Stream) Linux port feasibility: per-app audio + port cost (2026-08-26)
 
 User: "if we will want to expand to linux, will it be possible" (in the context of

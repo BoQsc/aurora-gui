@@ -1,5 +1,49 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-26 - Timeline multi-select: Ctrl/Shift click + move/resize together (feature)
+
+User: "timeline update: allow to select two or more timeline items at the same
+time." Follow-up (via question): specifically **move/resize all selected together**.
+
+Implementation (the existing marquee multi-select was visual-only; a single
+selection drove every operation, and there was no click-based multi-select):
+
+- **Click multi-select** (`timeline.d`): new `toggleSelection` (Ctrl/Cmd+click
+  toggles a clip on/off, never collapses the existing selection), `selectRange`
+  (Shift+click selects the contiguous clip range between the anchor and the
+  clicked clip), and `selectSingle` (plain click collapses to one). A plain
+  click on a clip that is already in a multi-selection keeps the whole group so
+  it can be dragged. Added `_anchorTrack`/`_anchorIndex` range anchors +
+  `selectedClipIds()`/`selectedClips()`/`multiSelectionActive()` accessors.
+- **Move together**: pressing and dragging one selected clip translates the
+  whole selection. `beginSelectionDrag` captures each selected clip's track,
+  duration and offset relative to the pressed clip; `updateSelectionGhost`
+  draws a ghost box per clip and validates placement; drop fires
+  `onSelectionMoveRequested` → editor `moveSelectionRequested` → new model
+  `moveSelection`. The model applies a uniform delta to each selected clip on
+  its own track, right-to-left, excluding the whole selection as obstacles so
+  the group keeps its internal geometry, and rejects collisions with unselected
+  clips atomically.
+- **Resize together** (same-track shared edge): edge-resizing a selected clip
+  also resizes every selected clip on that track whose matching edge (start for
+  a left drag, end for a right drag) aligns with the pressed clip's edge. Detected
+  by `resizeSelectionHasSharedEdge`; commit fires `onSelectionResizeRequested`
+  → editor `resizeSelectionRequested` (applies the same edge delta to each).
+
+Verification:
+- `dub test` → 40 modules pass.
+- `tests/model_smoke.d` new block: `moveSelection` moves both selected clips by
+  a uniform delta, preserving relative offset, and leaves an unselected clip
+  untouched.
+- New `tests/timeline_multiselect_smoke.d`: `toggleSelection` builds a 2-clip
+  selection, `selectRange` builds a 2-clip range, a plain click collapses to
+  one, dragging a selected clip fires `onSelectionMoveRequested` with a valid
+  target, and applying it moves both clips together preserving the 6 s gap.
+- `tests/cascade_smoke.d` still passes (framework dispatch).
+- `tests/editor_smoke.d` compiles (full run blocked by the concurrent session's
+  in-flight vendored `text/hinter.d`, unrelated).
+- Full app compiles + links (exe copy blocked while an instance is running).
+
 ## 2026-08-26 - Cascade sub-menu: cursor tracking + retraction (framework fix)
 
 User (after using the Audio-track cascade): "the ui for audio track seems to be

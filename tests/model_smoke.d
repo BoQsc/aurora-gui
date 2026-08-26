@@ -1,8 +1,8 @@
 module tests.model_smoke;
 
 import auroracut.model : AudioStreamInfo, EditorModel, EffectProperty,
-    KeyframeInterpolation, MediaAsset, TextAlignment, TimelineClip,
-    TimelineTrack, TrackAddress, TrackKind;
+    KeyframeInterpolation, MediaAsset, SelectedClipMove, TextAlignment,
+    TimelineClip, TimelineTrack, TrackAddress, TrackKind;
 import auroracut.project : loadProjectFile, saveProjectFile;
 import std.file : exists, remove, tempDir, write;
 import std.math : fabs, isFinite;
@@ -489,6 +489,39 @@ int main()
         foreach (track; clampedModel.tracks(TrackKind.video)) foreach (clip; track.clips)
             if (clip.usesMedia()) assert(clip.audioStreamIndex == 0,
                 "A stale audio stream index was not clamped on load");
+    }
+
+    // Multi-selection move: N clips move by a uniform delta on their own tracks,
+    // preserving internal relative offsets and refusing to collide with an
+    // unselected clip.
+    {
+        auto moveModel = new EditorModel();
+        const mV1 = TrackAddress(TrackKind.video, 0);
+        const mB1 = TrackAddress(TrackKind.audio, 0);
+        const mA = moveModel.addAsset(videoAsset("sel-move.mp4", 5.0));
+        const aA = moveModel.addAsset(audioAsset("sel-move.mp3", 5.0));
+        const c0 = moveModel.insertClip(mA, mB1, 0.0);      // audio at 0..5
+        const v0 = moveModel.insertClip(mA, mV1, 0.0);      // video at 0..5
+        const v1clip = moveModel.insertClip(mA, mV1, 6.0);  // video at 6..11 (gap)
+
+        // Select the audio@0 and video@0 clips; keep video@6 unselected.
+        SelectedClipMove[] moves;
+        const audioId = moveModel.trackValue(mB1).clips[cast(size_t) c0].id;
+        const videoId = moveModel.trackValue(mV1).clips[cast(size_t) v0].id;
+        moves ~= SelectedClipMove(mB1, audioId, 0.5, [audioId]);
+        moves ~= SelectedClipMove(mV1, videoId, 0.5, [videoId]);
+        int movedCount;
+        assert(moveModel.moveSelection(moves, movedCount) && movedCount == 2,
+            "moveSelection did not move both selected clips");
+        assert(near(moveModel.trackValue(mB1).clips[cast(size_t) c0].start, 0.5),
+            "Audio selection move did not apply the delta");
+        assert(near(moveModel.trackValue(mV1).clips[cast(size_t) v0].start, 0.5),
+            "Video selection move did not apply the delta");
+        // The unselected clip at 6.0 must be untouched.
+        const v1Index = moveModel.clipIndexForId(mV1,
+            moveModel.trackValue(mV1).clips[cast(size_t) v1clip].id);
+        assert(near(moveModel.trackValue(mV1).clips[cast(size_t) v1Index].start, 6.0),
+            "An unselected clip moved during a selection move");
     }
 
     writeln("Aurora Cut multi-track model smoke test passed.");

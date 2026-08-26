@@ -331,6 +331,17 @@ struct TimelineTrack
     }
 }
 
+/** One clip being relocated by a multi-selection move. `delta` is applied
+ * uniformly to `clipId` on `address`; `clipIds` are all clips in the selection
+ * on that track, so the group may keep its internal geometry while moving. */
+struct SelectedClipMove
+{
+    TrackAddress address;
+    ulong clipId;
+    double delta;
+    const(ulong)[] clipIds;
+}
+
 /** A captured editor state used for undo/redo and persisted history. The
  * timeline track arrays are copy-on-write snapshots; media clips reference the
  * owning model's asset array by index. The asset array itself is deep-copied
@@ -831,6 +842,92 @@ final class EditorModel
         clip.start = nearestAvailableStart(destination, requestedStart, clip.duration());
         newIndex = insertSorted(track(destination).clips, clip);
         return true;
+    }
+
+    /** Move every clip in a multi-selection by a uniform delta on its own track.
+     * Each is re-placed with nearestAvailableStart so it cannot collide with an
+     * unselected clip, and the whole group is validated before any removal so a
+     * failed placement leaves the timeline untouched. */
+    bool moveSelection(const SelectedClipMove[] moves, out int movedCount)
+    {
+        movedCount = 0;
+        // Right-to-left avoids shifting the indices of later clips.
+        for (size_t index_ = moves.length; index_ > 0; --index_)
+        {
+            const entry = moves[index_ - 1];
+            if (!validTrack(entry.address)) return false;
+            const clipIndex = clipIndexForId(entry.address, entry.clipId);
+            if (clipIndex < 0) return false;
+            const source = trackValue(entry.address).clips;
+            if (clipIndex >= cast(int) source.length) return false;
+            const clip = source[cast(size_t) clipIndex];
+            const desired = clip.start + entry.delta;
+            if (desired < -0.000_001) return false;
+        }
+        for (size_t index_ = moves.length; index_ > 0; --index_)
+        {
+            const entry = moves[index_ - 1];
+            const clipIndex = clipIndexForId(entry.address, entry.clipId);
+            const source = trackValue(entry.address).clips;
+            TimelineClip clip = cloneClip(source[cast(size_t) clipIndex]);
+            const desired = clip.start + entry.delta;
+            detachTrackClips(entry.address);
+            removeClipAt(track(entry.address).clips, cast(size_t) clipIndex);
+            const placed = nearestAvailableStartExcluding(entry.address, desired,
+                clip.duration(), entry.clipIds);
+            clip.start = placed;
+            insertSorted(track(entry.address).clips, clip);
+            ++movedCount;
+        }
+        return true;
+    }
+
+    int clipIndexForId(TrackAddress address, ulong id) const
+    {
+        if (!validTrack(address)) return -1;
+        const clips = trackValue(address).clips;
+        foreach (i, clip; clips)
+            if (clip.id == id) return cast(int) i;
+        return -1;
+    }
+
+    /// Like nearestAvailableStart but ignores a whole set of clip ids as
+    /// obstacles, so a moving group may stay contiguous within itself.
+    private double nearestAvailableStartExcluding(TrackAddress address,
+        double desiredStart, double duration, const ulong[] excludedIds) const
+    {
+        desiredStart = desiredStart < 0.0 ? 0.0 : desiredStart;
+        if (!validTrack(address) || duration <= 0.0) return desiredStart;
+        const clips = trackValue(address).clips;
+        if (clips.length == 0) return desiredStart;
+        bool excluded(ulong id)
+        {
+            foreach (e; excludedIds) if (e == id) return true;
+            return false;
+        }
+        double best = double.max;
+        double bestDistance = double.max;
+        double gapStart = 0.0;
+        foreach (clip; clips)
+        {
+            if (excluded(clip.id)) continue;
+            const gapEnd = clip.start;
+            if (gapEnd - gapStart >= duration - 0.000_001)
+            {
+                const candidate = clampValue(desiredStart, gapStart,
+                    gapEnd - duration);
+                const distance = candidate < desiredStart ?
+                    desiredStart - candidate : candidate - desiredStart;
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = candidate;
+                }
+            }
+            gapStart = clip.end();
+        }
+        if (bestDistance != double.max) return best;
+        return desiredStart;
     }
 
     bool nudgeClip(TrackAddress address, int index, double delta, out int newIndex)
