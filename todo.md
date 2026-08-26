@@ -1,5 +1,47 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Text-font dropdown exposes all installed fonts (feature, done)
+
+User: "let's pick one thing and try to implement to make fonts better" - chose
+"Installed-font dropdown" (replace the hardcoded 10-family list with real
+enumeration of every installed font).
+
+The core limitation was TWO-fold in `source/auroracut/textfonts.d`:
+1. `textFontFamilies` was an `immutable string[]` of 10 hardcoded families
+   (Segoe UI, Arial, ...), so the font font pickers could never show the
+   hundreds of actually-installed fonts.
+2. `textFontFilePath` resolved a family to a Windows file ONLY for those 10
+   names. Any other installed family (Inter, Roboto, Noto, most variable
+   faces, per-user installs) returned "" and could never be used.
+
+Fix (`textfonts.d`):
+- New `installedTextFontFamilies()`: enumerates every distinct typographic
+  family via `SystemFontInventory.installed()` (the pure-D scan), sorted, with
+  the curated favorites first and generic "Sans" last. → 133 families on this
+  machine (was 10).
+- `textFontFamilies` is now a function returning `installedTextFontFamilies()`
+  (all call sites `foreach (fontName; textFontFamilies)` still work).
+- `textFontFilePath` now resolves ANY installed family first through
+  `SystemFontInventory.find(family, weight, italic)` (which ranks by
+  weight/italic/stretch, so bold/italic map to the correct face), returning the
+  real `.path` (+ faceIndex consumed by `FontFace.load`). The curated-filename
+  lookup remains as a fallback for the shell-backed Fonts dir that the scan
+  cannot always observe, and for generic names like "Sans".
+- Only installed curated favorites are surfaced (not Segoe UI on Linux).
+
+Verification:
+- New `tests/textfonts_smoke.d`: asserts the dropdown lists >= 20 (133 on this
+  machine), Segoe UI stays first, every non-"Sans" family resolves to a file
+  (0 unresolvable), and a non-curated family (Consolas here) resolves to
+  `C:/Windows/Fonts/consola.ttf`. → "textfonts_smoke: ALL PASSED".
+- `dmd -c` on textfonts/preview/editor/titlelayer: all compile (no errors).
+- `dub build --compiler=dmd --build=release`: aurora-cut links.
+- Checked `contextmenu.d` already scrolls (`maximumScroll`/`_scrollOffset`), so
+  133 items are handled by the dropdown UI.
+
+NOTE: the inspector + inline-text font context menus now scroll through 133
+entries (curated favorites pinned at top). This directly answers "more fonts".
+
 ## 2026-08-27 - aurora-font-viewer: standalone pure-D font viewer (feature, done)
 
 User: "could you make aurora font-viewer completely new simple program so we are

@@ -1,24 +1,67 @@
 module auroracut.textfonts;
 
+import std.algorithm : sort;
 import std.file : exists;
 import std.path : buildPath;
 import std.process : environment;
 import std.string : endsWith, replace, strip, toLower;
+import aurora.text.fontmanager : SystemFontInventory, InstalledFont, FontWeight;
 
-/** Font families exposed by every Aurora Cut text-font dropdown. */
-immutable string[] textFontFamilies = [
+/** Built-in favorite families shown first in the text-font dropdown. */
+immutable string[] preferredTextFontFamilies = [
     "Segoe UI",
     "Arial",
     "Calibri",
     "Consolas",
     "Georgia",
     "Times New Roman",
-    "Impact",
     "Tahoma",
     "Verdana",
     "Sans"
 ];
 
+/**
+ * Every distinct installed font family, ordered so the curated favorites come
+ * first and the remaining installed families follow alphabetically. This lets
+ * the text-font dropdown expose all installed fonts instead of a hardcoded
+ * handful. */
+string[] installedTextFontFamilies()
+{
+    string[] result;
+    foreach (font; SystemFontInventory.installed())
+    {
+        const fam = strip(font.familyName);
+        if (fam.length == 0) continue;
+        bool present;
+        foreach (existing; result)
+            if (existing == fam) { present = true; break; }
+        if (!present) result ~= fam;
+    }
+    sort(result);
+    string[] ordered;
+    // Only surface curated favorites that are actually installed on this OS.
+    foreach (preferred; preferredTextFontFamilies)
+        if (preferred != "Sans" && containsFamily(result, preferred))
+            ordered ~= preferred;
+    foreach (fam; result)
+        if (!containsFamily(preferredTextFontFamilies, fam))
+            ordered ~= fam;
+    ordered ~= "Sans";
+    return ordered;
+}
+
+private bool containsFamily(const(string)[] list, string family)
+{
+    foreach (candidate; list)
+        if (candidate == family) return true;
+    return false;
+}
+
+/** Backward-compatible accessor: curated favorites first, then installed set. */
+string[] textFontFamilies()
+{
+    return installedTextFontFamilies();
+}
 /** Normalize built-in aliases and dropdown families without rejecting a custom
  * family typed into the Inspector. */
 string canonicalTextFontName(string family)
@@ -94,36 +137,64 @@ string textFontFilePath(string family, bool bold, bool italic)
     if (looksLikeFontFile(requested) && exists(requested))
         return normalizedFontPath(requested);
 
+    // Resolve any installed family through the system inventory first. This is
+    // what makes truly "more fonts" visible: families that are not in the
+    // curated filename table (Inter, Roboto, most variable faces, per-user
+    // installs) still get an exact, loadable file. Non-installed generic names
+    // (e.g. "Sans") fall through to the curated filename logic below.
+    {
+        auto matches = SystemFontInventory.find(requested,
+            bold ? FontWeight.bold : FontWeight.normal, italic);
+        if (matches.length > 0)
+            return normalizedFontPath(matches[0].path);
+    }
+
+    // Per-user and system font files (curated families) may live in the
+    // shell-backed Fonts directory that `SystemFontInventory` cannot always
+    // observe, so keep the filename-based lookup as a fallback.
+    string[] curatedDirectories()
+    {
+        string[] dirs;
+        version (Windows)
+        {
+            auto windowsDirectory = environment.get("WINDIR", "C:/Windows");
+            dirs ~= buildPath(windowsDirectory, "Fonts");
+            const localAppData = environment.get("LOCALAPPDATA", "");
+            if (localAppData.length > 0)
+                dirs ~= buildPath(localAppData, "Microsoft", "Windows", "Fonts");
+        }
+        return dirs;
+    }
+
+    string findInDirectories(string filename)
+    {
+        foreach (directory; curatedDirectories())
+        {
+            const candidate = buildPath(directory, filename);
+            if (exists(candidate)) return normalizedFontPath(candidate);
+        }
+        return "";
+    }
+
     version (Windows)
     {
         const preferredFilename = textFontFilename(requested, bold, italic);
         if (preferredFilename.length == 0) return "";
         const regularFilename = textFontFilename(requested, false, false);
 
-        auto windowsDirectory = environment.get("WINDIR", "C:/Windows");
-        const systemFonts = buildPath(windowsDirectory, "Fonts");
-        const localAppData = environment.get("LOCALAPPDATA", "");
-        const userFonts = localAppData.length > 0 ?
-            buildPath(localAppData, "Microsoft", "Windows", "Fonts") : "";
-
-        string[] directories;
-        if (userFonts.length > 0) directories ~= userFonts;
-        directories ~= systemFonts;
-
-        foreach (directory; directories)
+        auto result = findInDirectories(preferredFilename);
+        if (result.length > 0) return result;
+        if (regularFilename.length > 0 && regularFilename != preferredFilename)
         {
-            const preferred = buildPath(directory, preferredFilename);
-            if (exists(preferred)) return normalizedFontPath(preferred);
-            if (regularFilename.length > 0 && regularFilename != preferredFilename)
-            {
-                const regular = buildPath(directory, regularFilename);
-                if (exists(regular)) return normalizedFontPath(regular);
-            }
+            result = findInDirectories(regularFilename);
+            if (result.length > 0) return result;
         }
 
         // Listed Windows families are deterministic system assets. Do not
         // silently replace one with FFmpeg's generic fallback just because the
         // shell-backed Fonts directory was not observable through exists().
+        auto windowsDirectory = environment.get("WINDIR", "C:/Windows");
+        const systemFonts = buildPath(windowsDirectory, "Fonts");
         return normalizedFontPath(buildPath(systemFonts, preferredFilename));
     }
     else version (linux)
