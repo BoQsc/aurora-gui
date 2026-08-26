@@ -673,6 +673,31 @@ ContextMenu showContextMenu(Widget owner, Point globalPosition, ContextMenuItem[
     return popup;
 }
 
+/**
+ * Show a context menu without dismissing the host popup. Used by edit fields
+ * that live inside a popup (e.g. the yt-dlp URL field): right-clicking them
+ * must open the editing menu while keeping the dialog itself open. Only other
+ * open context menus are closed, so the new one stays on top.
+ */
+ContextMenu showContextMenuKeepPopups(Widget owner, Point globalPosition,
+    ContextMenuItem[] items)
+{
+    if (owner is null || items.length == 0) return null;
+    auto root = popupRoot(owner);
+    if (root is null) return null;
+    // Close only sibling context menus, never the popup that owns the field.
+    ContextMenu[] existing;
+    foreach (child; root.children())
+        if (auto menu = cast(ContextMenu) child) existing ~= menu;
+    foreach (menu; existing) menu.dismiss();
+    auto popup = new ContextMenu(items, owner);
+    root.add(popup);
+    popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+    root.bringChildToFront(popup);
+    popup.openAt(root.globalToLocal(globalPosition));
+    return popup;
+}
+
 /** Show a context menu directly below the owner widget as a dropdown. */
 ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items)
 {

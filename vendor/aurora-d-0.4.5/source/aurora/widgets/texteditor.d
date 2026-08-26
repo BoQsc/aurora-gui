@@ -4,6 +4,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.font : FontFace, FontRole, fontPixelSize;
+import aurora.icons : IconKind;
 import aurora.text.atlas : FontSystem;
 import aurora.text.layout : CaretAffinity, CaretPosition, TextLayout, TextLayoutOptions;
 import aurora.text.titlepaint : TitlePaintStyle, paintTitleBackdrop,
@@ -15,6 +16,7 @@ import aurora.text.unicode.grapheme : ceilGraphemeBoundary,
 import aurora.types : CursorKind, HorizontalAlign, Point, Rect, Size,
     clampInt, maxInt;
 import aurora.widget : Widget;
+import aurora.widgets.contextmenu : ContextMenuItem, showContextMenuKeepPopups;
 import aurora.widgets.scrollbar : Scrollbar;
 import std.algorithm.comparison : max, min;
 import std.math : ceil, floor;
@@ -556,6 +558,27 @@ class TextEditor : Widget
     {
         if (_readOnly || !hasSelection()) return;
         deleteSelection();
+    }
+
+    /** Show the editing context menu (Cut/Copy/Paste/Select All) on right-click. */
+    void showEditingContextMenu(Point localPosition)
+    {
+        const globalPosition = localToGlobal(localPosition);
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Cut", IconKind.none, delegate() {
+            cutToClipboard();
+        }, "Ctrl+X", !_readOnly && hasSelection());
+        items ~= ContextMenuItem.command("Copy", IconKind.none, delegate() {
+            copyToClipboard();
+        }, "Ctrl+C", hasSelection());
+        items ~= ContextMenuItem.command("Paste", IconKind.none, delegate() {
+            pasteFromClipboard();
+        }, "Ctrl+V", !_readOnly);
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Select All", IconKind.none, delegate() {
+            selectAll();
+        }, "Ctrl+A");
+        showContextMenuKeepPopups(this, globalPosition, items);
     }
 
     /** Insert text at the caret, replacing any selection. */
@@ -1174,6 +1197,12 @@ class TextEditor : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        if (event.button == MouseButton.right)
+        {
+            requestFocus();
+            showEditingContextMenu(event.position);
+            return true;
+        }
         if (event.button != MouseButton.left) return false;
         requestFocus();
         const hit = caretAtPoint(event.position);

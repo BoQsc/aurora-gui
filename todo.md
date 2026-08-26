@@ -1,5 +1,39 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Text-font picker: search-to-filter + right-side scrollbar (feature, done)
+
+User: after the installed-font dropdown, "could we add some small font search
+so we can type to filter out. also font scrollbar to the right so we can
+scroll."
+
+The flat context-menu (now 133 entries) was replaced with a dedicated
+`FontPickerPopup` in `source/auroracut/textfonts.d`:
+- A VBox with a "Font" header, a search `TextField` ("Type to filter fonts…"),
+  and a `ListView`.
+- `rebuildFilter()` live-filters `installedTextFontFamilies()` by the typed
+  substring (case-insensitive); the `ListView` keeps its built-in RIGHT-side
+  scrollbar, so scrolling through all installed fonts works.
+- `showFontPicker(owner, anchor, currentFamily, onPicked)` wraps it in a
+  `PopupOverlay` (below the button), focuses the search box, and dismisses on
+  pick. The chosen family sets the button text and model (setFontPreset /
+  setInlineFont).
+- Wired into BOTH pickers: `editor.d` `showFontContextMenu` (Inspector) and
+  `preview.d` `showInlineFontMenu` (inline text toolbar). Removed the now-unused
+  `inspectorFontMenuItem` / `inlineFontMenuItem` factories and the `textFontFamilies`
+  imports there.
+
+Verification:
+- New `tests/fontpicker_smoke.d`: loads all 133 families, typing "consol"
+  filters to 2 and every match contains "consol", activating the row emits the
+  family (Consolas), and clearing the search restores the full set; the
+  ListView scrollbar is shown for the long list → ALL PASSED.
+- Existing `tests/textfonts_smoke.d` still passes (133 families, all non-Sans
+  resolve).
+- Screenshot of the picker: shows the "Font" title, focused search field, the
+  right-side scrollbar, and the family list (Arial..Amiri).
+- `dub build --compiler=dmd --build=release` builds + links (temp build path
+  because a running aurora-cut.exe locks the normal output).
+
 ## 2026-08-27 - Text-font dropdown exposes all installed fonts (feature, done)
 
 User: "let's pick one thing and try to implement to make fonts better" - chose
@@ -157,6 +191,36 @@ didn't match. Fixed by introducing a shared `innerTrackRect()` (track minus both
 grips) used by BOTH `thumbRect()` and `updateThumb()`, so the thumb renders and
 pans in the same region and the two zoom grips stay as clear non-overlapping
 handles at the outer edges.
+
+Also raised the Sequence timeline-area minimum height
+(`editor.d buildTimelineArea` `layoutHints().minHeight` 148 → 190) so the
+bottom scrollbar is given guaranteed vertical room and remains visible even at
+short window heights. Verified headless: at logical 1152×675 AND 1440×844 the
+scrollbar's global bottom is within the client (636 < 675 and 805 < 844).
+NOTE: the pre-existing layout at a 1536×864 physical / ~120 DPI screen still
+places the scrollbar near the client's bottom edge, and the status/timecode
+rows consume space — this is a screen-size constraint present in the ORIGINAL
+code too (A/B verified), not specific to the zoom-grip feature.
+
+Scrollbar usability + alignment pass (user: "make scrollbar more centered and
+equal centered, make sure to allow to scroll out a lot by default, even if
+nothing on timeline"):
+- **Zoom out a lot**: lowered the zoom-out floor from 14 px/s to
+  `MinPixelsPerSecond = 2` (max stays 900), so you can pull far out to see a
+  wide span. `setZoom`, `setZoomWindow`, and `applyFitView` all use it.
+- **Scroll when the timeline is empty**: added a virtual
+  `DefaultEditSpanSeconds = 600` (10 min). `horizontalContentDuration()` and
+  `clampScroll()`/`setZoomWindow` now use it via `horizontalContentDuration()`,
+  so an empty sequence still reports a content range and the scrollbar/zoom are
+  usable (previously an empty timeline had 0 content → scrollbar max = 0 → no
+  pan, no zoom-out).
+- **Centered/equal-aligned**: the horizontal scrollbar now starts after the
+  label column AND ends before the vertical scrollbar column (new
+  `TimelineWidget.horizontalViewportRight()`), so it aligns exactly with the
+  timeline's horizontal content region instead of reaching the panel's far edge.
+- Verified: `tests/timeline_zoomout_smoke.d` (zoom to 2 px/s, wide visible
+  span, pan an empty timeline, track aligned to content region), plus the
+  existing `timeline_zoombar_smoke` and `timeline_zoombar_panmap`.
 
 ## 2026-08-27 - "Idle" word cut to "dle" + random number missing in timeline ruler (fixed)
 

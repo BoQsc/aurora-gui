@@ -1,5 +1,95 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Text-field editing context menu (right-click) + timeline zoom grips (2026-08-27)
+
+Two features added: a Cut/Copy/Paste/Select All context menu on text fields,
+and hold-drag zoom grips at the ends of the timeline scrollbar.
+
+### Feature 1 — right-click editing context menu
+
+`vendor/aurora-d-0.4.5/source/aurora/widgets/texteditor.d`: the base `TextEditor`
+now handles `MouseButton.right` in `onMouseDown` and calls `showEditingContextMenu`,
+which builds Cut/Copy/Paste/Select All items wired to the existing clipboard
+methods. Because it is on the base class, `TextField`, `TextArea`, and all
+inspector fields (including the yt-dlp URL field) inherit it.
+
+**KEY LESSON — context menus inside popups:** the standard `showContextMenu`
+calls `dismissTransientPopups(root)`, closing EVERY root-level popup. So a
+right-click on a field inside the yt-dlp popup would have dismissed the
+yt-dlp dialog. A new `showContextMenuKeepPopups` (in `contextmenu.d`) closes only
+other ContextMenu siblings and leaves host popups open; the TextEditor uses it.
+
+**How to verify (repeatable):**
+```
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\textfield_context_smoke.d -of=build\headless-smoke\textfield-context-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+build\headless-smoke\textfield-context-smoke.exe
+```
+The popup variant (`tests/textfield_context_popup_smoke.d`) opens a real
+`showPopup` containing a `TextField`, right-clicks the field, and asserts BOTH a
+context menu appears AND the host popup is still present. This test FAILS on
+`showContextMenu` (popup dismissed) and PASSES with `showContextMenuKeepPopups`.
+
+### Feature 2 — timeline scrollbar zoom grips
+
+`source/auroracut/timeline.d` `TimelineHorizontalScrollbar` now has a left and
+right zoom grip (12 px) at the track ends, plus a new
+`TimelineWidget.setZoomWindow(start, end)`. Dragging a grip resizes the visible
+time window (the edge under the pointer stays anchored), so it zooms in/out
+without the content jumping. The middle thumb still pans without zooming.
+
+**How to verify (repeatable):**
+```
+dmd -i -version=AuroraHeadless -Isource -Ivendor\aurora-d-0.4.5\source tests\timeline_zoombar_smoke.d -of=build\headless-smoke\timeline-zoombar-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+build\headless-smoke\timeline-zoombar-smoke.exe
+```
+Assertions: right grip inward → `pixelsPerSecond()` increases; right grip outward
+→ decreases; thumb pan leaves zoom unchanged; left grip inward → increases.
+NOTE: when asserting a left-grip drag, pan the window to mid-scroll first — if
+the window is clamped at content start (scroll 0), dragging the left grip
+leftward cannot zoom out (it is already at the boundary), which is why the test
+pans to `horizontalScrollMaximum()*0.5` before the left-grip check.
+
+**Visual check:** a screenshot of the rendered bar shows accent-blue grips at
+both ends and the muted-gray thumb between them.
+
+**Regression found during manual review (user: "seems like you broke the \
+bottom scrollbar"):** the first implementation inset the pan thumb's `trackRect`
+by `GripWidth` (so the thumb drew starting `GripWidth` in) BUT left `updateThumb`
+mapping over the FULL track width. The thumb rendered in one region and was
+dragged in another — at scroll 0 the thumb overlapped the left grip, and the
+pan couldn't reach the extremes consistently. Fix: add a private
+`innerTrackRect()` (track minus both grips) and have BOTH `thumbRect()` and
+`updateThumb()` use it, so the pan gesture is 1:1 with the drawn thumb. The two
+grips stay as non-overlapping handles at the outer track edges.
+
+**How to verify the pan is 1:1:** `tests/timeline_zoombar_panmap.d` drags the
+thumb from the inner left edge to the inner right edge and asserts `scroll` goes
+0 → `horizontalScrollMaximum()`, then drags back and asserts it returns to 0.
+Drive it through `UiTestDriver.drag`.
+
+**Layout guarantee for the scrollbar being visible:** the Sequence timeline
+area's `layoutHints().minHeight` was raised (148 → 190 in `editor.d
+buildTimelineArea`) so the split reserves room for the bottom scrollbar. Verify
+headless with an `EditorRoot` at the target client size:
+```
+window.setRoot(new EditorRoot(window)); driver.resize(Size(w, h)); driver.paint();
+```
+then `sequence-horizontal-scrollbar.bounds()` global bottom must be `<= h`.
+At 1152×675 and 1440×844 it is (636 and 805 respectively). NOTE: on very short
+screens the scrollbar sits near the client's bottom edge — a screen-size
+constraint present in the original code too (A/B verified by stashing the
+scrollbar change and re-capturing the live app; identical clipping).
+
+**Zoom-out + empty-timeline usability (2026-08-27):** the zoom-out floor was
+lowered (14 → 2 px/s) and a virtual `DefaultEditSpanSeconds = 600` was added so
+panning/zoom work even on an empty timeline. Verify with
+`tests/timeline_zoomout_smoke.d`: (1) `horizontalContentDuration() > 0` on an
+empty model, (2) `zoomOut()` reaches 2 px/s (below the old 14 floor), (3) the
+zoomed-out `horizontalVisibleDuration() > 200`, (4) `setHorizontalScroll(max)`
+moves on an empty timeline, (5) the scrollbar track aligns to the content region
+(`track.x >= horizontalViewportLeft()` and
+`track.right() <= bounds().width - 12`).
+
 ## "Idle" rendered "dle" + missing ruler digits — TrueType hinting corrupts glyphs (2026-08-27)
 
 Bug: some text renders with leading glyphs missing. "Idle" showed as "dle" and

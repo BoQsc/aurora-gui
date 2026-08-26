@@ -2211,7 +2211,7 @@ final class EditorRoot : VBox
     {
         auto area = new VBox(4, Insets(6, 5));
         area.setBackground(Color.fromHex(0x15181c));
-        area.layoutHints().minHeight = 148;
+        area.layoutHints().minHeight = 190;
 
         auto header = area.add(new HBox(6));
         header.layoutHints().preferredHeight = 28;

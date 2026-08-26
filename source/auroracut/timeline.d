@@ -12,6 +12,17 @@ private enum SequenceRulerHeight = 24;
 private enum AutomaticFitDurationLimit = 180.0;
 private enum NewTrackDropGap = 8;
 private enum VerticalScrollbarWidth = 12;
+// The timeline always represents at least this much time so the horizontal
+// scrollbar stays usable (and zooming out shows a wide range) even before any
+// clip is placed. Without a virtual span an empty sequence reports 0 content,
+// so the scrollbar could never pan or zoom out. Must comfortably exceed the
+// widest possible view (usableWidth / MinPixelsPerSecond) so there is always a
+// range to pan across even at full zoom-out.
+private enum DefaultEditSpanSeconds = 600.0;
+// Zoom-out floor. Lower than the old 14 px/s so the user can pull far out to
+// see a long span of the (possibly empty) timeline.
+private enum MinPixelsPerSecond = 2.0;
+private enum MaxPixelsPerSecond = 900.0;
 
 private enum PointerMode : ubyte
 {
@@ -348,16 +359,24 @@ final class TimelineWidget : Widget
     }
     double horizontalScrollMaximum() const
     {
-        const maximum = _model.sequenceDuration() - visibleDuration();
+        const maximum = horizontalContentDuration() - visibleDuration();
         return maximum > 0.0 ? maximum : 0.0;
     }
     double horizontalContentDuration() const
     {
-        return _model.sequenceDuration();
+        const duration = _model.sequenceDuration();
+        return duration > DefaultEditSpanSeconds ? duration : DefaultEditSpanSeconds;
     }
     int horizontalViewportLeft() const
     {
         return labelWidth();
+    }
+    /** Right edge (local X) of the horizontal content region, before the
+     * vertical scrollbar. The horizontal scrollbar aligns to this so it never
+     * reaches past the timeline's content into the vertical scrollbar column. */
+    int horizontalViewportRight() const
+    {
+        return maxInt(labelWidth(), bounds().width - VerticalScrollbarWidth);
     }
     bool fitViewForTesting() const @safe pure nothrow @nogc { return _fitView; }
     int verticalScroll() const @safe pure nothrow @nogc { return _verticalScroll; }
@@ -780,7 +799,7 @@ final class TimelineWidget : Widget
 
     private void applyFitView()
     {
-        const duration = _model.sequenceDuration();
+        const duration = horizontalContentDuration();
         _scrollSeconds = 0.0;
         if (duration <= 0.0)
         {
@@ -801,7 +820,7 @@ final class TimelineWidget : Widget
         }
         const usableWidth = maxInt(1, bounds().width - labelWidth() - 16);
         _pixelsPerSecond = clampValue(cast(double) usableWidth / duration,
-            14.0, 900.0);
+            MinPixelsPerSecond, MaxPixelsPerSecond);
         clampScroll();
         notifyHorizontalViewportChanged();
     }
@@ -818,13 +837,37 @@ final class TimelineWidget : Widget
     void setZoom(double value)
     {
         const old = _pixelsPerSecond;
-        const next = clampValue(value, 14.0, 900.0);
+        const next = clampValue(value, MinPixelsPerSecond, MaxPixelsPerSecond);
         if (old == next) return;
         _fitView = false;
         _fitAllDurations = false;
         _pixelsPerSecond = next;
         const anchor = _playhead;
         _scrollSeconds = anchor - (anchor - _scrollSeconds) * old / _pixelsPerSecond;
+        clampScroll();
+        syncPlayheadLayer();
+        notifyHorizontalViewportChanged();
+        invalidate();
+    }
+
+    /**
+     * Zoom so the given time window [start, end] fills the viewport width,
+     * placing `start` at the left edge. The horizontal scrollbar's zoom handles
+     * drive this: dragging the left or right handle resizes the visible window
+     * so the edge under the pointer stays anchored to the content.
+     */
+    void setZoomWindow(double start, double end)
+    {
+        const duration = end - start;
+        if (duration <= 0.000_001) return;
+        _fitView = false;
+        _fitAllDurations = false;
+        const usableWidth = maxInt(1, bounds().width - labelWidth());
+        _pixelsPerSecond = clampValue(usableWidth / duration,
+            MinPixelsPerSecond, MaxPixelsPerSecond);
+        const contentEnd = horizontalContentDuration() - visibleDuration();
+        _scrollSeconds = clampValue(start, 0.0,
+            contentEnd > 0.0 ? contentEnd : 0.0);
         clampScroll();
         syncPlayheadLayer();
         notifyHorizontalViewportChanged();
@@ -1078,7 +1121,7 @@ final class TimelineWidget : Widget
 
     private void clampScroll()
     {
-        const maximum = _model.sequenceDuration() - visibleDuration();
+        const maximum = horizontalContentDuration() - visibleDuration();
         _scrollSeconds = clampValue(_scrollSeconds, 0.0,
             maximum > 0.0 ? maximum : 0.0);
     }
@@ -2906,9 +2949,19 @@ final class TimelineWidget : Widget
  * visible portion of the sequence and dragging it pans without changing zoom. */
 final class TimelineHorizontalScrollbar : Widget
 {
+    private enum int GripWidth = 14;
     private TimelineWidget _timeline;
     private bool _draggingThumb;
+    private bool _draggingLeftGrip;
+    private bool _draggingRightGrip;
     private int _thumbGrabOffset;
+    // At the start of a grip drag, snapshot the visible window and the pointer.
+    // The grip resizes the window from this snapshot: the dragged edge follows
+    // the pointer (scaled to content seconds-per-pixel) while the opposite edge
+    // stays anchored, so dragging predictably zooms in/out.
+    private double _gripWindowStart;
+    private double _gripWindowEnd;
+    private double _gripDragStartX;
 
     this(TimelineWidget timeline)
     {
@@ -2930,53 +2983,153 @@ final class TimelineHorizontalScrollbar : Widget
         return thumbRect();
     }
 
+    Rect leftGripRectForTesting() const
+    {
+        return leftGripRect();
+    }
+
+    Rect rightGripRectForTesting() const
+    {
+        return rightGripRect();
+    }
+
     private Rect trackRect() const
     {
-        const left = _timeline is null ? 2 :
-            clampInt(_timeline.horizontalViewportLeft(), 2, maxInt(2, bounds().width - 2));
-        return Rect(left, 2, maxInt(1, bounds().width - left - 2),
+        if (_timeline is null) return Rect(2, 2, maxInt(1, bounds().width - 4),
             maxInt(4, bounds().height - 4));
+        const left = clampInt(_timeline.horizontalViewportLeft(), 2,
+            maxInt(2, bounds().width - 2));
+        const right = clampInt(_timeline.horizontalViewportRight(), left + 1,
+            bounds().width);
+        return Rect(left, 2, maxInt(1, right - left),
+            maxInt(4, bounds().height - 4));
+    }
+
+    /** The pan region between the two side handles. The thumb geometry and the
+     * thumb drag math both use this same inset rect, so the handles (which sit
+     * at the outer ends) never overlap the thumb and panning maps 1:1. */
+    private Rect innerTrackRect() const
+    {
+        const track = trackRect();
+        if (track.empty()) return track;
+        return Rect(track.x + GripWidth, track.y,
+            maxInt(1, track.width - 2 * GripWidth), track.height);
+    }
+
+    private Rect leftGripRect() const
+    {
+        const track = trackRect();
+        if (track.empty()) return track;
+        // A grab-tab at the track's left end, slightly taller than the channel
+        // so it bulges out and reads as a handle on the side of the scrollbar.
+        const width = minInt(GripWidth, track.width);
+        return Rect(track.x, track.y - 1, width, track.height + 2);
+    }
+
+    private Rect rightGripRect() const
+    {
+        const track = trackRect();
+        if (track.empty()) return track;
+        const width = minInt(GripWidth, track.width);
+        return Rect(track.right() - width, track.y - 1, width, track.height + 2);
     }
 
     private Rect thumbRect() const
     {
-        const track = trackRect();
-        if (_timeline is null || track.empty()) return track;
+        const inner = innerTrackRect();
+        if (_timeline is null || inner.empty()) return inner;
         const visible = _timeline.horizontalVisibleDuration();
         const content = _timeline.horizontalContentDuration();
         const total = content > visible ? content : visible;
-        const minimumThumb = minInt(24, track.width);
-        const width = clampInt(cast(int) (cast(double) track.width * visible /
-            (total > 0.000_001 ? total : 1.0) + 0.5), minimumThumb, track.width);
-        const travel = maxInt(0, track.width - width);
+        const minimumThumb = minInt(24, inner.width);
+        const width = clampInt(cast(int) (cast(double) inner.width * visible /
+            (total > 0.000_001 ? total : 1.0) + 0.5), minimumThumb, inner.width);
+        const travel = maxInt(0, inner.width - width);
         const maximum = _timeline.horizontalScrollMaximum();
-        const x = track.x + (maximum <= 0.000_001 ? 0 :
+        const x = inner.x + (maximum <= 0.000_001 ? 0 :
             cast(int) (cast(double) travel * _timeline.horizontalScroll() /
                 maximum + 0.5));
-        return Rect(x, track.y, width, track.height);
+        return Rect(x, inner.y, width, inner.height);
     }
 
     protected override void onPaint(ref Canvas canvas)
     {
         const track = trackRect();
         const thumb = thumbRect();
+        const leftGrip = leftGripRect();
+        const rightGrip = rightGripRect();
         const maximum = _timeline is null ? 0.0 :
             _timeline.horizontalScrollMaximum();
+        const active = maximum > 0.000_001;
+        // Track: a thin recessed pan channel. The pan thumb fills it; the two
+        // resize handles flank the track at its outer sides (left/right ends),
+        // slightly taller than the channel so they read as grab-tabs on the
+        // sides of the scrollbar rather than bars inside the track.
         canvas.fillRoundedRect(track, maxInt(2, track.height / 2),
             theme().border.withAlpha(70));
+
+        const controlColor = active ? theme().textMuted : theme().disabled;
         canvas.fillRoundedRect(thumb, maxInt(2, thumb.height / 2),
-            (maximum > 0.000_001 ? theme().textMuted : theme().disabled)
-                .withAlpha(_draggingThumb ? 230 : 170));
+            active ? controlColor.withAlpha(_draggingThumb ? 235 : 175) :
+                controlColor.withAlpha(90));
+
+        const gripFill = active ? controlColor.withAlpha(
+            (_draggingLeftGrip || _draggingRightGrip) ? 235 : 165) :
+            controlColor.withAlpha(100);
+        if (!leftGrip.empty())
+            canvas.fillRoundedRect(leftGrip, maxInt(2, leftGrip.height / 2), gripFill);
+        if (!rightGrip.empty())
+            canvas.fillRoundedRect(rightGrip, maxInt(2, rightGrip.height / 2), gripFill);
+
+        // Resize-handle glyphs: two thin vertical lines centered in each
+        // side tab, the universal "drag to resize" affordance.
+        const glyph = Color.rgb(9, 11, 14).withAlpha(active ? 210 : 90);
+        const midY = track.y + track.height / 2;
+        if (leftGrip.width >= 9)
+        {
+            canvas.fillRect(Rect(leftGrip.x + leftGrip.width / 2 - 3, midY - 2, 1, 4), glyph);
+            canvas.fillRect(Rect(leftGrip.x + leftGrip.width / 2 + 1, midY - 2, 1, 4), glyph);
+        }
+        if (rightGrip.width >= 9)
+        {
+            canvas.fillRect(Rect(rightGrip.x + rightGrip.width / 2 - 3, midY - 2, 1, 4), glyph);
+            canvas.fillRect(Rect(rightGrip.x + rightGrip.width / 2 + 1, midY - 2, 1, 4), glyph);
+        }
     }
 
     override bool onMouseDown(ref Event event)
     {
-        if (event.button != MouseButton.left || _timeline is null ||
-            _timeline.horizontalScrollMaximum() <= 0.000_001)
-            return false;
+        if (event.button != MouseButton.left || _timeline is null) return false;
         const track = trackRect();
         if (!track.contains(event.position)) return false;
         requestFocus();
+        const leftGrip = leftGripRect();
+        const rightGrip = rightGripRect();
+        const content = _timeline.horizontalContentDuration();
+        if (content <= 0.000_001) return false;
+        if (leftGrip.contains(event.position) && leftGrip.width < track.width)
+        {
+            _draggingLeftGrip = true;
+            _gripWindowStart = _timeline.horizontalScroll();
+            _gripWindowEnd = _timeline.horizontalScroll() +
+                _timeline.horizontalVisibleDuration();
+            _gripDragStartX = event.position.x;
+            captureMouse();
+            invalidate();
+            return true;
+        }
+        if (rightGrip.contains(event.position) && rightGrip.width < track.width)
+        {
+            _draggingRightGrip = true;
+            _gripWindowStart = _timeline.horizontalScroll();
+            _gripWindowEnd = _timeline.horizontalScroll() +
+                _timeline.horizontalVisibleDuration();
+            _gripDragStartX = event.position.x;
+            captureMouse();
+            invalidate();
+            return true;
+        }
+        if (_timeline.horizontalScrollMaximum() <= 0.000_001) return false;
         const thumb = thumbRect();
         _draggingThumb = true;
         _thumbGrabOffset = thumb.contains(event.position) ?
@@ -2989,6 +3142,16 @@ final class TimelineHorizontalScrollbar : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_draggingLeftGrip)
+        {
+            updateLeftGrip(event.position.x);
+            return true;
+        }
+        if (_draggingRightGrip)
+        {
+            updateRightGrip(event.position.x);
+            return true;
+        }
         if (!_draggingThumb) return false;
         updateThumb(event.position.x);
         return true;
@@ -2996,12 +3159,64 @@ final class TimelineHorizontalScrollbar : Widget
 
     override bool onMouseUp(ref Event event)
     {
-        if (event.button != MouseButton.left || !_draggingThumb) return false;
+        if (event.button != MouseButton.left) return false;
+        if (_draggingLeftGrip)
+        {
+            updateLeftGrip(event.position.x);
+            _draggingLeftGrip = false;
+            releaseMouse();
+            invalidate();
+            return true;
+        }
+        if (_draggingRightGrip)
+        {
+            updateRightGrip(event.position.x);
+            _draggingRightGrip = false;
+            releaseMouse();
+            invalidate();
+            return true;
+        }
+        if (!_draggingThumb) return false;
         updateThumb(event.position.x);
         _draggingThumb = false;
         releaseMouse();
         invalidate();
         return true;
+    }
+
+    /// Resize the visible window by its LEFT edge: dragging right narrows the
+    /// window (zoom in), dragging left widens it (zoom out). The right edge is
+    /// anchored (captured at drag start) so it never shifts under the cursor.
+    /// The pointer delta is scaled to the visible window so the drag feels
+    /// proportional to what is on screen (one thumb length = one viewport).
+    private void updateLeftGrip(int pointerX)
+    {
+        const inner = innerTrackRect();
+        if (inner.empty()) return;
+        const secondsPerPixel = _timeline.horizontalVisibleDuration() /
+            maxInt(1, inner.width);
+        double newStart = _gripWindowStart +
+            cast(double) (pointerX - _gripDragStartX) * secondsPerPixel;
+        newStart = clampValue(newStart, 0.0, _gripWindowEnd - 0.02);
+        _timeline.setZoomWindow(newStart, _gripWindowEnd);
+    }
+
+    /// Resize the visible window by its RIGHT edge: dragging left narrows the
+    /// window (zoom in), dragging right widens it (zoom out). The left edge is
+    /// anchored (captured at drag start) so it never shifts under the cursor.
+    /// The pointer delta is scaled to the visible window so the drag feels
+    /// proportional to what is on screen (one thumb length = one viewport).
+    private void updateRightGrip(int pointerX)
+    {
+        const inner = innerTrackRect();
+        if (inner.empty()) return;
+        const secondsPerPixel = _timeline.horizontalVisibleDuration() /
+            maxInt(1, inner.width);
+        double newEnd = _gripWindowEnd +
+            cast(double) (pointerX - _gripDragStartX) * secondsPerPixel;
+        newEnd = clampValue(newEnd, _gripWindowStart + 0.02,
+            _timeline.horizontalContentDuration());
+        _timeline.setZoomWindow(_gripWindowStart, newEnd);
     }
 
     override bool onMouseWheel(ref Event event)
@@ -3047,12 +3262,12 @@ final class TimelineHorizontalScrollbar : Widget
 
     private void updateThumb(int pointerX)
     {
-        const track = trackRect();
+        const inner = innerTrackRect();
         const thumb = thumbRect();
-        const travel = maxInt(1, track.width - thumb.width);
-        const x = clampInt(pointerX - _thumbGrabOffset, track.x,
-            track.right() - thumb.width);
-        _timeline.setHorizontalScroll(cast(double) (x - track.x) /
+        const travel = maxInt(1, inner.width - thumb.width);
+        const x = clampInt(pointerX - _thumbGrabOffset, inner.x,
+            inner.right() - thumb.width);
+        _timeline.setHorizontalScroll(cast(double) (x - inner.x) /
             cast(double) travel * _timeline.horizontalScrollMaximum());
     }
 }
