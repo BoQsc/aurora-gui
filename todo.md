@@ -1,5 +1,161 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Step 1: analytic coverage AA (done, proven closer to authoritative)
+
+User approved starting Step 1 (analytic coverage AA) after reviewing the plan + evidence harness.
+
+### Change
+`vendor/aurora-d-0.4.5/source/aurora/text/truetype.d`: replaced the **4x4
+supersampled box-average** coverage loop in `TrueTypeFace.rasterize` with
+**analytic scanline coverage**. New `fillAnalyticCoverage(edges, alpha, w, h)`
++ `columnCoverage(x, xa, xb)`. Per scanline (pixel row + 0.5) it gathers the
+outline edge-crossings, sorts them by x, and pairs consecutive crossings into
+inside spans (even-odd fill == non-zero for simple closed glyph contours); each
+pixel column's alpha is the exact overlap of the cell with the spans. This is the
+same grayscale AA technique FreeType / DirectWrite use, replacing the blurry
+box-average. The public `rasterize(glyph, pixelSize, supersample=4)` signature is
+unchanged (the TrueType path now ignores `supersample`; the CFF path still uses
+it). `supersample` clamp line removed; unused `import std.algorithm.sorting : sort`
+added for `xs.sort()`.
+
+### Evidence (comparison harness in `build/fontref/`)
+Rendered "Idle0123456789:I" and compared pure-D vs authoritative GDI+ grid-fit:
+- Consolas 16px: baseline MAD 25.91 -> analytic MAD **23.13**; edge energy
+  112.3 -> **118.45** (ref 113.7). Ink bbox both **142x11**.
+- Consolas 13px: baseline MAD 27.64 -> analytic MAD **22.65**; edge energy
+  131.6 -> **143.1** (ref 120.6).
+- Segoe UI 16px: analytic MAD **12.16**, bbox both **120x12**, edge 118.5 vs 115.4.
+- Hollow glyphs "O08dopqBb": analytic MAD 23.68, bbox both 80x14 (counters render).
+
+Side-by-side images show the analytic output matching the authoritative reference
+weight/sharpness; overlay shows only thin AA fringing at glyph edges (cyan/magenta
+slivers), no structural difference.
+
+### Correctness
+- `vendor/aurora-d-0.4.5`: 37 modules pass (dub test).
+- Root: 40 modules pass (dub test).
+- Corpus probe (`vendor/aurora-d-0.4.5/tests/dtextcorpus.d`): 0 blank glyphs on
+  Consolas/Segoe UI/Arial/Calibri/Verdana at 9/11/12/13/16/24/32/48px, broad ASCII
+  corpus, 3 runs.
+- Full `aurora-cut.exe` builds + links.
+
+Test files kept for the harness: `vendor/aurora-d-0.4.5/tests/dtextrender.d`
+(lay out a string with the pure-D engine -> PGM) and `dtextcorpus.d` (blank-glyph
+corpus probe). Reference renderer: `build/refrender/` (.NET GDI+). Comparator:
+`build/fontref/compare.py`.
+
+## 2026-08-27 - Font rendering: evidence harness built; pure-D already matches authoritative grayscale (done)
+
+User: "we would use images/pictures to see evidence and compare against
+authoritative so we become authoritative."
+
+Built a reproducible **image-comparison harness** and measured the real gap to
+the authoritative Windows renderer. Result: the pure-D engine already closely
+matches the OS grayscale grid-fit standard; the residual difference is AA
+texture, not structure.
+
+### Harness (all under `build/fontref/`)
+- **Authoritative reference** (`build/refrender/`, a .NET 9 GDI+ tool):
+  renders a string with `System.Drawing` at three authoritative modes:
+  `AntiAliasGridFit` (standard grayscale grid-fit), `AntiAlias` (no grid-fit),
+  `ClearTypeGridFit` (subpixel). Outputs PNG.
+  Build/run: `dotnet build` in `build/refrender`, then
+  `refrender.exe <outdir> <family> <em> <text>`.
+- **Pure-D renderer** (`vendor/aurora-d-0.4.5/tests/dtextrender.d`): lays out the
+  same string glyph-by-glyph on a shared baseline using the engine's advance,
+  rasterizes with the pure-D supersampled rasterizer, writes a PGM.
+  Build/run: `dmd -i -Isource tests\dtextrender.d -of=build\dtextrender.exe`,
+  then `dtextrender.exe <font> <px> <out.pgm> <text>`.
+- **Comparator** (`build/fontref/compare.py`): crops both to the inked text bbox,
+  resizes reference to the D crop, and produces a magnified side-by-side, a
+  color overlay (D=green, ref=magenta, both=blue), and stats: mean-abs-diff,
+  edge energy, bbox. `python compare.py <d.pgm> <ref.png> <prefix>`.
+
+### Measured result (Consolas 16px, text "Idle0123456789:I")
+- Pure-D ink bbox == GDI+ grid-fit ink bbox == **142x11** (layout matches).
+- `mean_abs_diff=25.91/255`; edge energy **112.3** (pure-D) vs **113.7** (grid-fit).
+- Visually the side-by-side is near-identical; the OS grid-fit is marginally
+  crisper on vertical stems. ClearType (subpixel) is a distinct color-fringed
+  look that pure-D grayscale cannot (and should not) replicate.
+
+### Implication
+The current pure-D rasterizer is already authoritative-close for the grayscale
+"standard" tier. Concretely narrowing the residual 25.9 MAD means improving
+**analytic coverage AA** (replace 4x4 supersample box-average) and/or
+**grid-fitting** — both are the hardening steps in the plan below, and now each
+one can be proven with this harness before/after.
+
+Reference artifacts (kept for A/B): `build/fontref/*.png`, `*.pgm`,
+`cmp_*_side.png`, `cmp_*_overlay.png`, `cmp_*_stats.txt`.
+
+## 2026-08-27 - Font rendering: authoritative / bleeding-edge plan (analysis, no code yet)
+
+User: "We need to figure out how to have authoritative standard and bleeding
+edge font rendering or at least complete." Then chose: keep the pure-D engine
+and APPROXIMATE the platform look; then asked for a written plan first.
+
+### Current state (measured on real Windows fonts, not guessed)
+The pure-D stack already has: TrueType/OpenType outlines (glyf + CFF), kerning,
+layout, complex-script (Indic), COLR/CPAL color, CBDT/sbix, variable fonts
+(fvar/avar/gvar/HVAR), a system font inventory, and a TrueType bytecode
+`hinter.d`. Rasterizer: `flattenContour` -> line `Edge[]` -> 4x4 supersampled
+`insideNonZero` coverage -> `increaseCoverageContrast` (a 35% sharpening S-curve).
+Alpha is grayscale coverage only; `renderFlags` is "reserved for hinting/subpixel".
+
+Diagnostic probe (Consolas, Segoe UI, Arial, Calibri, Verdana; 9/11/12/13/16/24px;
+3 runs; corpus of ASCII + '[]{}@#%&'):
+- **Corruption is fixed.** With `AURORA_HINTING=1`, 0 blank/collapsed glyphs on
+  every font/size/run (the old '1'/'I' collapse from 2026-08-19/22 is gone after
+  the `4d3ac7d` hinter fixes).
+- **But hinting is ineffective.** The 'I' glyph at 16px is byte-identical with
+  hinting ON vs OFF. The hinter is created (env read, per-glyph instructions
+  present) yet the fitted outline does not change the rasterized pixels, so
+  enabling hinting by default gains nothing right now.
+
+### Why "authoritative platform output" is hard
+Windows' authoritative text is DirectWrite = subpixel ClearType + correct
+grid-fitting. To APPROXIMATE it in pure-D, three independent quality levers:
+1. **Analytic coverage AA** (replace 4x4 supersample box-average with true
+   per-pixel analytic coverage of the outline). This is the single biggest,
+   lowest-risk "standard" improvement: FreeType/DirectWrite grayscale use it.
+2. **Correct grid-fitting** (make the hinter actually snap stems to the pixel
+   grid). This is the hard, order/interpreter-dependent work that failed 3x.
+3. **RGB subpixel AA** (ClearType-like color fringing; LCD panels only; interacts
+   with the GPU/compositor and subpixel order, so needs a runtime opt-out).
+
+Also noted: `pixelSize` in `rasterizeGlyph(glyph, pixelSize, supersample)` and
+the integer `scaleFor`/`scaleUnits` — metrics and hinting must agree to avoid
+double-scaling.
+
+### Recommended order and risk
+- **Step 1 — analytic coverage AA** (recommended first). A new
+  `coverageNonZero(edges, x, y, w, h)` that computes the fraction of each pixel
+  covered by the polygon (scanline/edge-crossing area integration), replacing
+  the 4x4 loop. ~self-contained in `text/truetype.d`. Sharper, matches the
+  standard AA the platform uses. Must keep the outline flattening and bearing;
+  unit-test invariant: coverage in [0,1], white pixel = 1, hollow = 0, total
+  ink conserved, and no blank-glyph regression across the font corpus.
+  Risk: low. Value: high.
+- **Step 2 — correct grid-fitting** (big win, high risk). Debug why the hinter
+  produces identical output to raw (the fitted xs/ys equal the raw X/Y, or the
+  fit is scale-mismatched so it collapses back). Then make stems snap to the
+  pixel grid. Requires a per-glyph verification harness; the interpreter has
+  failed 3x, so gate on a broad corpus + visual snapshots. Only enable by
+  default after a corpus proves stable and visibly crisper.
+- **Step 3 — subpixel (ClearType-like)**. Add an RGB-alpha path behind a runtime
+  flag (default off, matches "no OS/pixel-order dependency"). Lower priority;
+  only benefits LCD and must be portable-agnostic (BGR vs RGB order).
+
+### Verification harness (to build alongside Step 1/2)
+A corpus probe in `vendor/aurora-d-0.4.5/tests/` that:
+- Loads N real fonts (Segoe UI, Arial, Consolas, Calibri, Verdana) via
+  `SystemFontInventory`.
+- Rasterizes a wide glyph set at many pixel sizes, asserting: no blank glyphs;
+  invariant bounds; ink-scale conservation (sum of coverage ≈ analytic area) so
+  a change is a real quality gain, not just a threshold shift.
+- Renders a few glyphs to PGM for visual A/B (supersampled vs analytic; hinted
+  vs unhinted) so the improvement is image-verifiable, not just asserted.
+
 ## 2026-08-27 - Tray context menu: no more OS font APIs (portable/cross-platform, done)
 
 User: portable/cross-platform goal, do not get polluted by the OS font API.
