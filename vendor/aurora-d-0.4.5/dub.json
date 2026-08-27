@@ -262,6 +262,35 @@
       ]
     },
     {
+      "name": "font-capabilities",
+      "targetType": "executable",
+      "targetName": "aurora-font-capabilities",
+      "mainSourceFile": "demos/font_capabilities.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
       "name": "headless-test",
       "targetType": "executable",
       "targetName": "aurora-headless-test",

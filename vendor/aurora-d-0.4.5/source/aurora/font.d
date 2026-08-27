@@ -185,6 +185,32 @@ final class FontFace
         return _trueType.variationHash();
     }
 
+    /** Set variable-font design coordinates (F16DOT16 per axis); true if changed. */
+    bool setVariationCoords(long[] coords)
+    {
+        if (_trueType is null) return false;
+        return _trueType.setVariationCoords(coords);
+    }
+
+    /** Number of variable-font axes (0 for static faces). */
+    int variationAxisCount()
+    {
+        if (_trueType is null) return 0;
+        const variations = _trueType.variations();
+        return variations is null ? 0 : cast(int) variations.axes().length;
+    }
+
+    /** True when this face has a weight axis. */
+    bool hasWeightAxis()
+    {
+        if (_trueType is null) return false;
+        const variations = _trueType.variations();
+        if (variations is null) return false;
+        foreach (axis; variations.axes())
+            if (axis.axisTag == 0x77676874) return true; // 'wght'
+        return false;
+    }
+
     /** Whether this face has COLR color-glyph definitions. */
     bool hasColorGlyphs() const @safe pure nothrow @nogc
     {
