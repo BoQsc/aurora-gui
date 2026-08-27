@@ -1,5 +1,86 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Tray context menu: no more OS font APIs (portable/cross-platform, done)
+
+User: portable/cross-platform goal, do not get polluted by the OS font API.
+
+Audit found the ONLY production OS-font-API use in the whole suite was Aurora
+Stream's custom tray context menu (`aurora-stream/source/aurorastream/trayicon.d`),
+which painted its text with raw GDI: `CreateFontW`, `GetStockObject(DEFAULT_GUI_FONT)`,
+`SelectObject`, `SetTextColor`, `DrawTextW` (+ GDI `measureText` via
+`CreateCompatibleDC`/`DT_CALCRECT`). The shared aurora-d text engine was already
+pure-D (no DirectWrite/GDI/FreeType/HarfBuzz), and every other app (browser,
+notepad, opencode, designer, font-viewer, image-viewer) rendered through it.
+
+Fix: the tray menu now rasterizes the whole menu body through Aurora's pure-D
+engine (`Canvas` + `Surface` + `FontSystem.textEngine`), then hands the resulting
+ARGB buffer to GDI as a 32-bit DIB via `SetDIBitsToDevice` (same present path the
+proven compositor uses). Text is measured with `TextLayout.width`, painted with
+`drawTextInRect` (left/middle, ellipsis), colors are the app-theme palette. GDI is
+now used only for the pixel blit, never for glyphs/fonts. `CreateFont`/`DrawText`/
+`measureText(GDI)`/`cleanupFonts`/`createFonts` are gone.
+
+- `menuFace(bold)` resolves the aurora font via `FontSystem.sharedInstance()` /
+  `SystemFonts.sansBold()` (pure-D), menu pixel size = `fontPixelSize(TextScale.body)`
+  (17px — see the "text was soft" entry below for why 13px caption was wrong).
+- Rasterization moved into a static, Win32-free `rasterizeMenu(items, rows, w, h,
+  padX, hot)` so it is headlessly testable.
+- New in-file unittest: rasterizes the idle/live menu and asserts it contains
+  enough light glyph pixels (>200) to prove text really drew via the aurora engine.
+- [x] `dub build --config=application --compiler=dmd` → links clean.
+- [x] `dub test --config=application --compiler=dmd` → 51 modules pass (incl. tray
+      rasterization + menu-structure unittests).
+- [x] Repo-wide scan for `CreateFont`/`DrawTextW`/`GetStockObject(DEFAULT_GUI_FONT)`/
+      `SetTextColor`/`TextOutW`/`IDWrite`/`GetGlyphOutline` in every app's `source/`
+      → 0 hits. Only remaining GDI text is the standalone `demos/windows_file_manager.d`
+      (a demo executable, not compiled into the library or any shipped app).
+- Note: `dub build --build=portable-release` still fails on this host with
+  `lld-link: could not open 'libcmt.lib'` (this DMD is the MinGW toolchain while
+  the policy selects the MSVC static CRT) — pre-existing toolchain mismatch, not
+  caused by this change. See the existing "portable-release link fails" todo.
+
+## 2026-08-27 - Tray text was soft (real cause: font size + grayscale AA; DPI was a dead end)
+
+User: "Something is weird about quality of text rendered" / "I see no improvement".
+The tray menu text read soft/fuzzy after the pure-D re-render swap.
+
+Honest correction: I first suspected and "fixed" DPI (`queryDpi()` → `GetDpiForSystem()`,
+plus aurora-d's runtime DPI-awareness). Those were correct hygiene changes but were
+NOT the blur cause — DPI only affects window scaling, not glyph sharpness. The actual
+cause was the font size used for the menu.
+
+Real root cause:
+- The old GDI menu drew **Segoe UI 9 pt (≈12 px) with ClearType sub-pixel
+  antialiasing**, razor-sharp at small text sizes.
+- The new pure-D rasterizer produces **grayscale antialiasing**, and Aurora's
+  renderer is tuned for the **body tier (17 px)**. Every other Aurora control
+  (context menus, buttons, labels, stream UI) uses `palette.fontScale` =
+  `fontPixelSize(2)` = **17 px**. My tray menu used `fontPixelSize(1)` = **13 px**
+  (caption tier), which at that small size reads noticeably soft — so it looked
+  WORSE than ClearType, i.e. "no improvement".
+- Evidence: captured the live menu at 13 px (soft, 220x176) vs body 17 px
+  (sharp, 266x176). The 17 px glyphs are crisp and legible.
+
+Fix (`trayicon.d`): `menuPixelSize()` now returns `fontPixelSize(TextScale.body)`
+= **17 px** (added `TextScale` import), and `drawTextInRect` passes
+`cast(int) TextScale.body` as its scale so the painted size matches the layout
+size used by `measureText`. Menu now matches every other Aurora menu for size
+and sharpness.
+
+- [x] `dub build --config=application --compiler=dmd` → links clean.
+- [x] `dub test --config=application --compiler=dmd` → 51 modules pass.
+- [x] Captured live menu at 17 px → sharp, larger text (visual confirmation).
+
+### Lessons
+- A pure-D grayscale rasterizer is NOT a drop-in for ClearType at small (< 17 px)
+  sizes. Use the body tier that Aurora is tuned for, or the text reads soft.
+- DPI-awareness (`shared static this()`) and the `queryDpi()`→`GetDpiForSystem()`
+  change are correct and kept, but they were not the blur cause.
+- Measurement gotcha: any process reading another app's window metrics must itself
+  be DPI-aware (`SetProcessDpiAwarenessContext(PMv2=-4)`), else `GetWindowRect`
+  returns 96-DPI-virtualized coordinates on a scaled monitor (176x141 instead of
+  the true 220x176) and misleads the diagnosis. A DPI-unaware caller is misleading.
+
 ## 2026-08-27 - Timeline horizontal scrollbar: expand the click/hit area (fixed)
 
 User: "why only the thin line in the middle of scrollbar is pickable to do

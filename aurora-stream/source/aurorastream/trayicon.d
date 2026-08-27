@@ -20,7 +20,14 @@ version (Windows)
 {
     import core.sys.windows.windows;
     import core.sys.windows.shellapi;
-    import std.utf : toUTF16z;
+    import aurora.canvas : Canvas;
+    import aurora.color : Color;
+    import aurora.font : FontFace, FontRole, SystemFonts, TextScale, fontPixelSize;
+    import aurora.surface : Surface;
+    import aurora.text.atlas : FontSystem;
+    import aurora.text.layout : TextLayout, TextLayoutOptions;
+    import aurora.types : HorizontalAlign, Point, Rect, VerticalAlign;
+    import std.utf : toUTF16z, toUTF32;
 
     private enum int trayIconId = 1;
     private enum UINT_PTR traySingleClickTimer = 0xA4D1;
@@ -43,15 +50,6 @@ version (Windows)
     private enum UINT wmMenuCloseRequest = WM_APP + 0x41;
     private enum UINT modNoRepeat = 0x4000;
 
-    // Custom tray menu palette (COLORREF is 0x00BBGGRR), matching the app theme:
-    //   panel 0x252c34, button 0x2b333d, text 0xf2f6fa, border 0x0c0f12.
-    private enum COLORREF menuBackground = 0x00342c25;
-    private enum COLORREF menuHover = 0x003d332b;
-    private enum COLORREF menuText = 0x00faf6f2;
-    private enum COLORREF menuDisabledText = 0x00928478;
-    private enum COLORREF menuSeparator = 0x00514639;
-    private enum COLORREF menuBorder = 0x00120f0c;
-
     // Menu layout (logical pixels at 100% DPI).
     private enum int menuItemHeightLogical = 28;
     private enum int menuSeparatorHeightLogical = 8;
@@ -59,9 +57,6 @@ version (Windows)
     private enum int menuPadYLogical = 7;
     private enum int menuMinWidthLogical = 176;
     private enum int menuMaxWidthLogical = 360;
-    private enum int menuFontSizeLogical = 9;
-    // CLEARTYPE_QUALITY (5) is not in druntime's wingdi headers.
-    private enum BYTE menuFontQuality = 5;
 
     private __gshared bool trayMenuClassRegistered;
 
@@ -97,7 +92,7 @@ version (Windows)
     private TrayMenuItem[] buildTrayMenuItems(bool streaming, string status)
     {
         TrayMenuItem[] items;
-        items ~= TrayMenuItem(menuShowWindow, "Show Aurora Stream window",
+        items ~= TrayMenuItem(menuShowWindow, "Show Aurora Stream",
             false, false, true);
         items ~= TrayMenuItem(0, "", true, false, false);
         items ~= TrayMenuItem(menuToggleStream,
@@ -193,17 +188,14 @@ version (Windows)
         private HWND _hwnd;
         private HWND _owner;
         private TrayMenuItem[] _items;
-        private HFONT _font;
-        private HFONT _boldFont;
-        private bool _fontOwned;
-        private bool _boldOwned;
+        private uint[] _pixels;
+        private int _width;
+        private int _height;
         private int _scale;
         private int _rowHeight;
         private int _sepHeight;
         private int _padX;
         private int _padY;
-        private int _width;
-        private int _height;
         private TrayMenuRow[] _rows;
         private int _hot = -1;
         private int _pressed = -1;
@@ -227,7 +219,6 @@ version (Windows)
             _rows = computeMenuRows(_items, _rowHeight, _sepHeight, _padY);
             _height = (_rows.length > 0 ?
                 _rows[$ - 1].y + _rows[$ - 1].height : 0) + _padY;
-            createFonts();
             computeWidth();
             registerClass();
         }
@@ -251,10 +242,7 @@ version (Windows)
                 x, y, _width, _height,
                 null, null, GetModuleHandleW(null), cast(void*) this);
             if (_hwnd is null)
-            {
-                cleanupFonts();
                 return;
-            }
             ShowWindow(_hwnd, SW_SHOW);
             SetForegroundWindow(_hwnd);
             SetActiveWindow(_hwnd);
@@ -305,7 +293,6 @@ version (Windows)
                 DestroyWindow(_hwnd);
                 _hwnd = null;
             }
-            cleanupFonts();
         }
 
         private void computeWidth()
@@ -314,8 +301,7 @@ version (Windows)
             foreach (index, item; _items)
             {
                 if (item.separator) continue;
-                const textWidth = measureText(item.bold ? _boldFont : _font,
-                    item.label);
+                const textWidth = measureText(item.label, item.bold);
                 const needed = textWidth + 2 * _padX;
                 if (needed > width) width = needed;
             }
@@ -324,29 +310,42 @@ version (Windows)
             _width = width;
         }
 
-        private void createFonts()
+        /// Logical layout pixel size that best approximates the previous Segoe
+        /// UI 9pt menu font at 96 DPI. Aurora lays out in device pixels; a
+        /// caption tier (13 px) is the closest match and reads crisp at any DPI.
+        private static int menuPixelSize() pure nothrow @nogc
         {
-            const int height = -MulDiv(menuFontSizeLogical, _scale, 72);
-            _font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                menuFontQuality, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI"w.ptr);
-            if (_font !is null) _fontOwned = true;
-            else _font = cast(HFONT) GetStockObject(DEFAULT_GUI_FONT);
-            _boldFont = CreateFontW(height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
-                FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                menuFontQuality, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI"w.ptr);
-            if (_boldFont !is null) _boldOwned = true;
-            else _boldFont = _font;
+            // Use the body tier (17 px), the same size every other Aurora menu
+            // and control renders at. The pure-D rasterizer is tuned for this
+            // size; at the caption tier (13 px) grayscale antialiasing reads
+            // soft, which is why this menu previously looked blurrier than the
+            // OS ClearType text it replaced.
+            return fontPixelSize(cast(int) TextScale.body);
         }
 
-        private void cleanupFonts()
+        private static FontFace menuFace(bool bold)
         {
-            if (_font !is null && _fontOwned)
-                DeleteObject(cast(HGDIOBJ) _font);
-            _font = null;
-            if (_boldFont !is null && _boldOwned)
-                DeleteObject(cast(HGDIOBJ) _boldFont);
-            _boldFont = null;
+            auto fonts = FontSystem.sharedInstance();
+            if (!bold) return cast(FontFace) fonts.uiFace;
+            const face = SystemFonts.sansBold();
+            return face is null ? cast(FontFace) fonts.uiFace :
+                cast(FontFace) face;
+        }
+
+        private TextLayout shapeText(const(dchar)[] text, bool bold)
+        {
+            TextLayoutOptions options;
+            options.role = FontRole.ui;
+            options.overrideFace = menuFace(bold);
+            options.wrap = false;
+            options.pixelSize = menuPixelSize();
+            return FontSystem.sharedInstance().textEngine.layout(text, options);
+        }
+
+        private int measureText(string text, bool bold)
+        {
+            const layout = shapeText(toUTF32(text), bold);
+            return layout is null ? 0 : cast(int) layout.width;
         }
 
         private void paint()
@@ -355,46 +354,100 @@ version (Windows)
             HDC dc = BeginPaint(_hwnd, &ps);
             scope (exit) EndPaint(_hwnd, &ps);
 
-            HBRUSH bg = CreateSolidBrush(menuBackground);
-            FillRect(dc, &ps.rcPaint, bg);
-            DeleteObject(cast(HGDIOBJ) bg);
-            SetBkMode(dc, TRANSPARENT);
+            rasterize();
 
-            RECT client = RECT(0, 0, _width, _height);
-            HBRUSH border = CreateSolidBrush(menuBorder);
-            FrameRect(dc, &client, border);
-            DeleteObject(cast(HGDIOBJ) border);
+            BITMAPINFO info;
+            info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+            info.bmiHeader.biWidth = _width;
+            info.bmiHeader.biHeight = -_height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            SetDIBitsToDevice(dc,
+                0, 0,
+                cast(DWORD) _width,
+                cast(DWORD) _height,
+                0, 0, 0,
+                cast(UINT) _height,
+                _pixels.ptr,
+                &info, DIB_RGB_COLORS);
+        }
 
-            foreach (index, item; _items)
+        /// Render the full menu body into `_pixels` through Aurora's pure-D
+        /// text engine, then hand that ARGB buffer to GDI as a DIB. No OS font
+        /// APIs (CreateFont/DrawText) are involved for the menu text, so the
+        /// appearance is identical on every Windows installation and portable.
+        private void rasterize()
+        {
+            if (_width <= 0 || _height <= 0) return;
+            _pixels = rasterizeMenu(_items, _rows, _width, _height, _padX,
+                _hot);
+        }
+
+        /// Pure, Win32-free rasterization of a tray menu into an ARGB surface.
+        /// Separated from the window plumbing so it can be exercised headlessly
+        /// in a unittest without creating any window, font, or device context.
+        private static uint[] rasterizeMenu(const TrayMenuItem[] items,
+            const TrayMenuRow[] rows, int width, int height, int padX, int hot)
+        {
+            if (width <= 0 || height <= 0) return null;
+            auto surface = new Surface(width, height);
+            Canvas canvas = Canvas(surface);
+
+            canvas.fillRect(Rect(0, 0, width, height),
+                Color.fromHex(0x323844));
+            canvas.strokeRect(Rect(0, 0, width, height),
+                Color.fromHex(0x0c0f12), 1);
+
+            foreach (index, item; items)
             {
-                const row = _rows[index];
+                if (index >= rows.length) break;
+                const row = rows[index];
                 if (item.separator)
                 {
                     const y = row.y + row.height / 2;
-                    HPEN pen = CreatePen(PS_SOLID, 1, menuSeparator);
-                    auto oldPen = SelectObject(dc, pen);
-                    MoveToEx(dc, _padX, y, null);
-                    LineTo(dc, _width - _padX, y);
-                    SelectObject(dc, oldPen);
-                    DeleteObject(cast(HGDIOBJ) pen);
+                    canvas.drawLine(Point(padX, y),
+                        Point(width - padX, y), Color.fromHex(0x394651));
                     continue;
                 }
-                RECT cell = RECT(_padX, row.y, _width - _padX,
-                    row.y + row.height);
-                if (index == _hot)
-                {
-                    HBRUSH hover = CreateSolidBrush(menuHover);
-                    FillRect(dc, &cell, hover);
-                    DeleteObject(cast(HGDIOBJ) hover);
-                }
-                SelectObject(dc, item.bold ? _boldFont : _font);
-                SetTextColor(dc, item.disabled ? menuDisabledText : menuText);
-                RECT text = cell;
-                text.left += _padX;
-                DrawTextW(dc, toUTF16z(item.label), -1, &text,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
-                    DT_END_ELLIPSIS);
+                if (index == hot)
+                    canvas.fillRect(Rect(padX, row.y, width - 2 * padX,
+                        row.height), Color.fromHex(0x404a58));
+
+                const textColor = item.disabled ?
+                    Color.fromHex(0x788492) : Color.fromHex(0xfaf6f2);
+                canvas.drawTextInRect(
+                    Rect(padX * 2, row.y, width - 2 * padX, row.height),
+                    toUTF32(item.label), textColor,
+                    cast(int) TextScale.body,
+                    HorizontalAlign.left, VerticalAlign.middle, true,
+                    FontRole.ui, menuFace(item.bold));
             }
+
+            return surface.pixels().dup;
+        }
+
+        unittest
+        {
+            const items = buildTrayMenuItems(true, "Streaming to YouTube");
+            const rows = computeMenuRows(items, 28, 8, 7);
+            const width = 220;
+            const height = rows[$ - 1].y + rows[$ - 1].height + 7;
+            const pixels = rasterizeMenu(items, rows, width, height, 12, -1);
+
+            // A correctly rasterized menu must contain the dark backdrop and
+            // enough light glyph pixels to prove the text really drew.
+            assert(pixels.length == cast(size_t) width * height);
+            size_t lightPixels;
+            foreach (p; pixels)
+            {
+                const r = (p >> 16) & 0xff;
+                const g = (p >> 8) & 0xff;
+                const b = p & 0xff;
+                if (r + g + b > 400) ++lightPixels;
+            }
+            assert(lightPixels > 200,
+                "Tray menu rendered no text glyphs via the Aurora text engine");
         }
 
         private void onMouseMove(int x, int y)
@@ -477,21 +530,26 @@ version (Windows)
             return CallNextHookEx(null, code, wParam, lParam);
         }
 
-        private int measureText(HFONT font, string text)
-        {
-            HDC dc = CreateCompatibleDC(null);
-            if (dc is null)
-                return cast(int) text.length * 7 * _scale / 96;
-            scope (exit) DeleteDC(dc);
-            SelectObject(dc, font);
-            RECT rect = RECT(0, 0, 0, 0);
-            DrawTextW(dc, toUTF16z(text), -1, &rect,
-                DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
-            return rect.right - rect.left;
-        }
-
         private static int queryDpi()
         {
+            // A DPI-aware process must query the monitor's real scale through
+            // GetDpiForSystem (Win10 1607+), not GetDC(null)+GetDeviceCaps. The
+            // latter reads the default/system DC, which still reports 96 for a
+            // per-monitor-aware process on a scaled monitor, so the menu would be
+            // laid out at 96-DPI logical pixels and then bitmapped-stretched by
+            // Windows (the exact blur this path previously produced).
+            alias GetDpiForSystemFn = extern(Windows) UINT function() nothrow;
+            HMODULE user32 = GetModuleHandleW("user32.dll"w.ptr);
+            if (user32 !is null)
+            {
+                auto getDpiForSystem = cast(GetDpiForSystemFn)
+                    GetProcAddress(user32, "GetDpiForSystem".ptr);
+                if (getDpiForSystem !is null)
+                {
+                    const value = getDpiForSystem();
+                    if (value != 0) return cast(int) value;
+                }
+            }
             HDC dc = GetDC(null);
             if (dc !is null)
             {

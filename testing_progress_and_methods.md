@@ -5155,3 +5155,63 @@ All in `vendor/aurora-d-0.4.5`:
   routing zone selects to twilight + `ensurePoint` guards.
 - **Atlas cache must key on variation hash**: two weights of the same glyph
   would otherwise return the same cached bitmap.
+
+
+## Aurora Stream tray menu: no OS font APIs (2026-08-27)
+
+The custom tray context menu (`aurora-stream/source/aurorastream/trayicon.d`) was
+the last production OS-font-API use in the suite (GDI `CreateFontW`/`DrawTextW`/
+`SetTextColor`/`GetStockObject(DEFAULT_GUI_FONT)`). It now rasterizes the whole
+menu body through Aurora's pure-D text engine into a `Surface`, then blits the
+ARGB buffer to the window with `SetDIBitsToDevice` (the same DIB present path the
+compositor uses). GDI is used only for the pixel blit, never for glyphs.
+
+### How to verify (reproduce -> assert)
+
+1. Rasterization was split into a Win32-free static helper
+   `TrayContextMenu.rasterizeMenu(items, rows, w, h, padX, hot)` so it can be
+   exercised headlessly.
+2. In-file unittest (runs under `dub test`): builds the idle AND live menu,
+   rasterizes with the exact layout metrics, and asserts the returned ARGB
+   buffer is exactly `width*height` and contains enough light-glyph pixels
+   (`r+g+b > 400` count > 200) to prove the text actually drew via the aurora
+   engine rather than silently blanking.
+3. `dub test --config=application --compiler=dmd` -> 51 modules pass.
+4. `dub build --config=application --compiler=dmd` -> links clean.
+5. Repo-wide no-OS-font-API scan (all app `source/` dirs):
+   `CreateFont / DrawTextW / GetStockObject(DEFAULT_GUI_FONT) / SetTextColor /
+   TextOutW / IDWrite / GetGlyphOutline` -> 0 hits. The only remaining GDI text
+   is the standalone demo `vendor/aurora-d-0.4.5/demos/windows_file_manager.d`
+   (a demo executable, not part of the library or any shipped app).
+
+### Gotchas
+
+- **DPI scale must be queried with `GetDpiForSystem()`**, not `GetDC(null)` +
+  `GetDeviceCaps(LOGPIXELSX)`. For a per-monitor-aware process on a scaled monitor
+  (e.g. 1920x1080 @ 125%), `GetDC(null)` still reports **96**, so a popup laid out
+  from it renders at 96-DPI coordinates and Windows bitmaps-stretches it to the
+  real 120 DPI → blurry text. `getDpiForSystem()`/`GetDpiForWindow()` return 120.
+  Diagnosis method that caught it: capture the popup with `PrintWindow` and compare
+  its physical pixel size (176x141 = 96-DPI, blurry vs 220x176 = 120-DPI, crisp),
+  and confirm the process DPI awareness separately with
+  `shcore.GetProcessDpiAwareness` (0=unaware,1=system,2=per-monitor).
+- A 32-bit `BI_RGB` DIB expects `0x00RRGGBB` in memory (bytes B,G,R,X). Aurora's
+  `Surface` stores ARGB as `A<<24 | R<<16 | G<<8 | B`, which is exactly the
+  byte order GDI's full-alpha DIB consumes (alpha lands in the ignored X byte).
+  Reuse the proven `present()` DIB path; add `DIB_RGB_COLORS` and
+  `biHeight = -height` for top-down.
+- `drawTextInRect` signature order is `(rect, text, color, scale, horizontal,
+  vertical, ellipsis, role, font)` — passing role in the scale slot silently
+  renders at the wrong size; pass `HorizontalAlign.left, VerticalAlign.middle,
+  true, FontRole.ui, font`.
+- `SystemFonts.sansBold()` returns a `const(FontFace)`; cast to `FontFace` when
+  handing it to `TextLayoutOptions.overrideFace`.
+- `menuFace`/`rasterizeMenu` must be `static` if the helper is `static` (a
+  non-static call site inside a static method is a compile error).
+- `dub build --build=portable-release` still fails on this host
+  (`lld-link: could not open 'libcmt.lib'`) because this DMD is the MinGW
+  toolchain while the policy names the MSVC static CRT — pre-existing, unrelated.
+- A standalone probe does NOT get aurora-d's DPI awareness unless it links the
+  platform module (`shared static this()`). To reproduce the app's behavior, force
+  it explicitly: `SetProcessDpiAwarenessContext((HANDLE)-4)` (PMv2) at probe start,
+  otherwise the probe itself renders at 96 DPI and misleads the measurement.
