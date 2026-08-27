@@ -2993,6 +2993,11 @@ final class TimelineHorizontalScrollbar : Widget
         return rightGripRect();
     }
 
+    bool draggingThumbForTesting() const @safe pure nothrow @nogc
+    {
+        return _draggingThumb;
+    }
+
     private Rect trackRect() const
     {
         if (_timeline is null) return Rect(2, 2, maxInt(1, bounds().width - 4),
@@ -3003,6 +3008,17 @@ final class TimelineHorizontalScrollbar : Widget
             bounds().width);
         return Rect(left, 2, maxInt(1, right - left),
             maxInt(4, bounds().height - 4));
+    }
+
+    /**
+     * The interactive hit zone. The channel is painted thin (see trackRect) so
+     * it stays visually compact, but the whole widget strip is clickable so the
+     * small scrollbar is easy to grab with the mouse. Dragging is still anchored
+     * to the visual trackRect, so the thumb/grip math is unaffected.
+     */
+    private Rect hitRect() const
+    {
+        return Rect(0, 0, maxInt(1, bounds().width), maxInt(1, bounds().height));
     }
 
     /** The pan region between the two side handles. The thumb geometry and the
@@ -3101,13 +3117,19 @@ final class TimelineHorizontalScrollbar : Widget
     {
         if (event.button != MouseButton.left || _timeline is null) return false;
         const track = trackRect();
-        if (!track.contains(event.position)) return false;
+        if (!hitRect().contains(event.position)) return false;
         requestFocus();
         const leftGrip = leftGripRect();
         const rightGrip = rightGripRect();
+        // Widen the grip hit zones to the full widget height so they are easy to
+        // grab even though the painted handle only bulges a couple of pixels.
+        const leftGripHit = Rect(leftGrip.x, 0, leftGrip.width,
+            maxInt(1, bounds().height));
+        const rightGripHit = Rect(rightGrip.x, 0, rightGrip.width,
+            maxInt(1, bounds().height));
         const content = _timeline.horizontalContentDuration();
         if (content <= 0.000_001) return false;
-        if (leftGrip.contains(event.position) && leftGrip.width < track.width)
+        if (leftGripHit.contains(event.position) && leftGrip.width < track.width)
         {
             _draggingLeftGrip = true;
             _gripWindowStart = _timeline.horizontalScroll();
@@ -3118,7 +3140,7 @@ final class TimelineHorizontalScrollbar : Widget
             invalidate();
             return true;
         }
-        if (rightGrip.contains(event.position) && rightGrip.width < track.width)
+        if (rightGripHit.contains(event.position) && rightGrip.width < track.width)
         {
             _draggingRightGrip = true;
             _gripWindowStart = _timeline.horizontalScroll();

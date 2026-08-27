@@ -1,5 +1,35 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Timeline horizontal scrollbar: expand the click/hit area (fixed)
+
+User: "why only the thin line in the middle of scrollbar is pickable to do
+scrolling with mouse." Follow-up: "how about increasing the scrollbar
+collision/hit area" - keep it visually compact but make it easy to grab.
+
+Root cause (`source/auroracut/timeline.d` `TimelineHorizontalScrollbar`): the
+widget is deliberately compact (preferredHeight 11, asserted <= 12 in
+editor_smoke), so the clickable channel (trackRect) is only `maxInt(4,
+height-4)` = ~7 px tall. The whole strip is hard to hit, so it "feels" like only
+the thin painted line works. The hit area was exactly the painted channel
+(track.contains in onMouseDown, grip.contains), with no padding.
+
+Fix: keep the painted track thin but make the interactive zone the full widget
+height.
+- Added `hitRect()` = the whole widget bounds (used only for hit-testing).
+- `onMouseDown` now checks `hitRect().contains(...)` instead of
+  `track.contains(...)`, and the left/right zoom grips use full-height hit
+  zones (`leftGripHit`/`rightGripHit`), so clicking above/below the thin
+  channel still pans or zooms. Dragging stays anchored to the visual trackRect,
+  so the thumb/grip math is unchanged.
+- Added `draggingThumbForTesting()` accessor.
+
+Verification:
+- New `tests/scrollbar_hit_smoke.d`: with a 7 px track, clicks at the TOP and
+  BOTTOM padding (outside the painted channel) are hit-tested and start a
+  thumb pan; the left grip is also hit-testable at the padding; the painted
+  track stays <= 8 px → ALL PASSED. (These clicks returned false before.)
+- Full `aurora-cut` compiles + links (temp build).
+
 ## 2026-08-27 - Font picker: typing into search dismissed the popup (fixed)
 
 User: "the moment i tried to type into font search input it out of focused and
