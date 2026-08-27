@@ -233,3 +233,158 @@ string textFontFilePath(string family, bool bold, bool italic)
     else
         return "";
 }
+
+// ---------------------------------------------------------------------------
+// Searchable font picker popup
+// ---------------------------------------------------------------------------
+
+import aurora.color : Color;
+import aurora.layout : HBox, VBox;
+import aurora.types : Insets, Point, Rect, Size;
+import aurora.widget : Widget;
+import aurora.widgets.label : Label;
+import aurora.widgets.listview : ListView;
+import aurora.widgets.popup : PopupOverlay, PopupPlacement, showPopup;
+import aurora.widgets.texteditor : TextField;
+import std.string : indexOf, toLower;
+
+/**
+ * A searchable font-family picker: a text field that live-filters the list and
+ * a `ListView` with its built-in right-side scrollbar. Emits the chosen family
+ * through `onFamilyPicked`. Designed to be hosted inside a `PopupOverlay`.
+ */
+final class FontPickerPopup : VBox
+{
+    void delegate(string family) onFamilyPicked;
+
+    private TextField _search;
+    private ListView _list;
+    private string[] _all;
+    private string[] _filtered;
+    private bool _rebuilding;
+
+    this(string currentFamily = "")
+    {
+        super(6, Insets(10));
+        setBackground(Color.fromHex(0x242a32));
+        setBorder(Color.fromHex(0x4a5562), 6);
+        layoutHints().preferredWidth = 320;
+        layoutHints().preferredHeight = 420;
+        layoutHints().flex = 1.0;
+
+        auto header = new HBox(8);
+        header.layoutHints().preferredHeight = 34;
+        auto title = header.add(new Label("Font"));
+        title.setScale(2);
+        title.layoutHints().flex = 1.0;
+        add(header);
+
+        _search = new TextField("");
+        _search.setPlaceholder("Type to filter fonts…");
+        _search.setId("font-search");
+        _search.layoutHints().preferredHeight = 30;
+        _search.onSubmitted = delegate() { pickFilteredFirst(); };
+        _search.onChanged = delegate() { rebuildFilter(); };
+        add(_search);
+
+        _list = new ListView();
+        _list.setId("font-list");
+        _list.setRowHeight(34);
+        _list.layoutHints().flex = 1.0;
+        _list.onSelectionChanged = delegate(int index)
+        {
+            // A programmatic re-filter select must not pick+dismiss; only a
+            // user click on a row dismisses (via notifyPick). Filtering keeps
+            // the popup open so the user can keep typing.
+            if (!_rebuilding) notifyPick(index);
+        };
+        _list.onActivated = delegate(int index) { notifyPick(index); };
+        add(_list);
+
+        _all = installedTextFontFamilies();
+        const current = canonicalTextFontName(currentFamily);
+        rebuildFilter(current);
+    }
+
+    TextField searchField() @safe pure nothrow @nogc { return _search; }
+    ListView listView() @safe pure nothrow @nogc { return _list; }
+    const(string)[] filteredFamilies() const @safe pure nothrow @nogc
+    {
+        return _filtered;
+    }
+
+    /// Select a family programmatically (test hook).
+    void selectFamily(string family)
+    {
+        foreach (i, fam; _filtered)
+            if (fam == family)
+            {
+                _list.setSelectedIndex(cast(int) i);
+                return;
+            }
+    }
+
+    private void rebuildFilter(string preferred = "")
+    {
+        _rebuilding = true;
+        scope(exit) _rebuilding = false;
+        const needle = strip(_search is null ? "" : _search.textUtf8()).toLower();
+        _filtered.length = 0;
+        foreach (fam; _all)
+        {
+            if (needle.length > 0 && fam.toLower().indexOf(needle) < 0)
+                continue;
+            _filtered ~= fam;
+        }
+        string[] items;
+        foreach (fam; _filtered)
+            items ~= fam;
+        _list.setStrings(items);
+        if (preferred.length > 0)
+        {
+            foreach (i, fam; _filtered)
+                if (fam == preferred) { _list.setSelectedIndex(cast(int) i, false); return; }
+        }
+        if (_filtered.length > 0) _list.setSelectedIndex(0, false);
+    }
+
+    private void pickFilteredFirst()
+    {
+        notifyPick(0);
+    }
+
+    private void notifyPick(int index)
+    {
+        if (index < 0 || index >= cast(int) _filtered.length) return;
+        if (onFamilyPicked !is null) onFamilyPicked(_filtered[cast(size_t) index]);
+    }
+}
+
+/**
+ * Show a searchable font picker anchored below `owner`. The chosen family is
+ * delivered through `onPicked`; the popup is dismissed on selection.
+ */
+PopupOverlay showFontPicker(Widget owner, Rect anchor, string currentFamily,
+    void delegate(string) onPicked)
+{
+    auto content = new FontPickerPopup(currentFamily);
+    content.onFamilyPicked = delegate(string family)
+    {
+        if (onPicked !is null) onPicked(family);
+        if (auto popup = currentPopupFor(content)) popup.dismiss();
+    };
+    auto popup = showPopup(owner, anchor, content, PopupPlacement.below,
+        Size(320, 420));
+    if (popup !is null) content.searchField().requestFocus();
+    return popup;
+}
+
+private PopupOverlay currentPopupFor(Widget content)
+{
+    if (content is null) return null;
+    auto root = content;
+    while (root.parent() !is null) root = root.parent();
+    foreach (child; root.children())
+        if (auto popup = cast(PopupOverlay) child) return popup;
+    return null;
+}

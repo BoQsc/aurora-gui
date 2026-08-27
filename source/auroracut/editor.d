@@ -25,8 +25,8 @@ import auroracut.recentprojects : clearRecentProjects,
 import auroracut.timeline : SelectedClipRef, TimelineHorizontalScrollbar,
     TimelineWidget;
 import auroracut.titlelayer : TitleVisual;
-import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
-    textFontFilePath;
+import auroracut.textfonts : canonicalTextFontName, textFontFilePath,
+    showFontPicker;
 import auroracut.util : absoluteNormalized, appLog, applicationCacheDirectory,
     applicationExportDirectory, clampValue, formatTimecode, isSupportedMediaPath,
     outputTail, unnamedProjectAutosavePath;
@@ -758,6 +758,7 @@ final class EditorRoot : VBox
     private PopupOverlay _compressOutputPopup;
     private PopupOverlay _moveToTrackPopup;
     private PopupOverlay _historyPopup;
+    private PopupOverlay _fontPickerPopup;
     private bool _openYtDlpDialogAfterInstall;
     private int _ytDlpMaxHeight = 1080;
 
@@ -5795,21 +5796,8 @@ final class EditorRoot : VBox
         fontFieldChanged();
     }
 
-    /** Create a menu callback outside the foreach frame. D otherwise captures
-     * the reused loop variable and every font command resolves to the final
-     * item in the array. */
-    private ContextMenuItem inspectorFontMenuItem(string requestedFont,
-        string currentFont)
-    {
-        string capturedFont = requestedFont.idup;
-        return ContextMenuItem.check(capturedFont,
-            currentFont == capturedFont,
-            delegate() { setFontPreset(capturedFont); });
-    }
-
     private void showFontContextMenu(Point point)
     {
-        ContextMenuItem[] items;
         string current = "Sans";
         TrackAddress track;
         int index;
@@ -5817,15 +5805,23 @@ final class EditorRoot : VBox
         MediaAsset asset;
         if (selectedClip(track, index, clip, asset) && clip.isText())
             current = canonicalTextFontName(clip.fontName);
-        foreach (fontName; textFontFamilies)
-            items ~= inspectorFontMenuItem(fontName, current);
-        auto menu = showContextMenu(_fontPresetButton, point, items);
-        if (menu !is null)
+        // A searchable popup (type to filter + right-side scrollbar) instead of
+        // a long flat menu, so all installed fonts are reachable by typing.
+        const origin = _fontPresetButton.localToGlobal(Point(0, 0));
+        _fontPickerPopup = showFontPicker(_fontPresetButton,
+            Rect(origin.x, origin.y, _fontPresetButton.bounds().width,
+                _fontPresetButton.bounds().height),
+            current, delegate(string picked)
+            {
+                setFontPreset(picked);
+            });
+        if (_fontPickerPopup !is null)
         {
-            const origin = _fontPresetButton.localToGlobal(Point(0, 0));
-            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
-                _fontPresetButton.bounds().width,
-                _fontPresetButton.bounds().height));
+            _fontPickerPopup.setConsumeAnchorPress(true);
+            _fontPickerPopup.onDismissed = delegate()
+            {
+                _fontPickerPopup = null;
+            };
         }
     }
 

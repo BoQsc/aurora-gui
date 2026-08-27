@@ -1,5 +1,34 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Font picker: typing into search dismissed the popup (fixed)
+
+User: "the moment i tried to type into font search input it out of focused and
+closed the font input."
+
+Root cause (`source/auroracut/textfonts.d` `FontPickerPopup`): BOTH the
+`ListView.onSelectionChanged` and `onActivated` handlers called `notifyPick()`,
+and `notifyPick()` -> `onFamilyPicked` -> `showFontPicker`'s closure -> dismissed
+the popup. Every keystroke runs `rebuildFilter()`, which calls
+`_list.setStrings(...)` (auto-selects row 0) and `setSelectedIndex(0)`, firing
+`onSelectionChanged(0)` -> the popup closed on the first typed character.
+
+Fix:
+- `onSelectionChanged` now picks ONLY when not rebuilding (`if (!_rebuilding)`).
+  So a user click on a row still picks, but a filter-driven re-select does not.
+- `onActivated` (Enter / double-click) still picks explicitly.
+- `rebuildFilter()` sets `_rebuilding = true` (scope-exit guarded) around the
+  setStrings/select, and selects the initial preferred row / row 0 with
+  `setSelectedIndex(..., false)` (no notify), so typing keeps the popup open
+  and the search field focused.
+- Added `_rebuilding` flag.
+
+Verification:
+- `tests/fontpicker_smoke.d` rewritten: asserts the pick count is 0 after
+  construction and AFTER typing a filter ("consol" -> 2 rows, all matching),
+  then +1 on a user row click and +1 on activation; clearing the filter fires
+  nothing. → ALL PASSED. (This test FAILS on the old code: typing fired a pick.)
+- Full `aurora-cut` builds + links (temp build; a running exe locks the output).
+
 ## 2026-08-27 - Text-font picker: search-to-filter + right-side scrollbar (feature, done)
 
 User: after the installed-font dropdown, "could we add some small font search

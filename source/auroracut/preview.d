@@ -5,8 +5,8 @@ import auroracut.exporter : ExportRequest, compositeFrameArguments;
 import auroracut.model : MediaAsset, TextAlignment;
 import auroracut.titlelayer : TitleVisual, loadTitleFace, titlePaintStyle,
     titleRasterScale;
-import auroracut.textfonts : canonicalTextFontName, textFontFamilies,
-    textFontFilePath;
+import auroracut.textfonts : canonicalTextFontName, textFontFilePath,
+    showFontPicker;
 import auroracut.util : clampValue, formatSeconds, formatTimecode;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
@@ -1130,6 +1130,7 @@ final class PreviewWidget : Widget
     private TextField _inlineSize;
     private Button _inlineFont;
     private string _inlineFontName = "Sans";
+    private PopupOverlay _inlineFontPicker;
     private FontFace[string] _inlineFontFaces;
     private TextField _inlineColor;
     private Button _inlineBold;
@@ -1575,34 +1576,24 @@ final class PreviewWidget : Widget
             onInlineTextAlignmentChanged(value);
     }
 
-    /** Build one font command in its own call frame.
-     *
-     * D delegates capture foreach variables by reference. Building the
-     * callbacks directly inside the loop made every row use the final family
-     * (Sans), so the UI appeared to reset and every render used one face.
-     * A separate factory call gives each delegate an independent captured
-     * family value. */
-    private ContextMenuItem inlineFontMenuItem(string requestedFont)
-    {
-        string capturedFont = requestedFont.idup;
-        return ContextMenuItem.check(capturedFont,
-            canonicalTextFontName(_inlineFontName) == capturedFont, delegate() {
-                setInlineFont(capturedFont, true);
-                if (_inlineText !is null) _inlineText.requestFocus();
-            });
-    }
-
     private void showInlineFontMenu(Point globalPoint)
     {
-        ContextMenuItem[] items;
-        foreach (fontName; textFontFamilies)
-            items ~= inlineFontMenuItem(fontName);
-        auto menu = showContextMenu(_inlineFont, globalPoint, items);
-        if (menu !is null)
+        const origin = _inlineFont.localToGlobal(Point(0, 0));
+        _inlineFontPicker = showFontPicker(_inlineFont,
+            Rect(origin.x, origin.y, _inlineFont.bounds().width,
+                _inlineFont.bounds().height),
+            _inlineFontName, delegate(string picked)
+            {
+                setInlineFont(picked, true);
+                if (_inlineText !is null) _inlineText.requestFocus();
+            });
+        if (_inlineFontPicker !is null)
         {
-            const origin = _inlineFont.localToGlobal(Point(0, 0));
-            menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
-                _inlineFont.bounds().width, _inlineFont.bounds().height));
+            _inlineFontPicker.setConsumeAnchorPress(true);
+            _inlineFontPicker.onDismissed = delegate()
+            {
+                _inlineFontPicker = null;
+            };
         }
     }
 
