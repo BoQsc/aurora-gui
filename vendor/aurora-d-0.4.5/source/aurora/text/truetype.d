@@ -237,6 +237,11 @@ final class TrueTypeFace
         int[] fitYs = deltasYs;
         int fitLsb = advanceUnits(glyph);
         int fitAdvance = advanceUnits(glyph);
+        // The TrueType hinter returns PIXEL-space coordinates (it folds the
+        // design->pixel scale into the glyph program). When it succeeds we must
+        // NOT re-apply `scale` below; when it is off (default) or fails the fit
+        // arrays are design units and `scale` is applied as before.
+        bool hintedCoords;
         if (_variations !is null && _variations.hasVariations())
         {
             try
@@ -271,7 +276,8 @@ final class TrueTypeFace
                 fitYs = fitted.ys;
                 fitLsb = fitted.lsb;
                 fitAdvance = fitted.advance;
-                bitmap.advance = max(0, scaleUnits(fitAdvance, pixelSize));
+                hintedCoords = true;
+                bitmap.advance = max(0, fitAdvance);
             }
             catch (Exception)
             {
@@ -279,7 +285,7 @@ final class TrueTypeFace
             }
         }
 
-        const scale = scaleFor(pixelSize);
+        const scale = hintedCoords ? 1.0 : scaleFor(pixelSize);
         double minX = double.infinity;
         double minY = double.infinity;
         double maxX = -double.infinity;
