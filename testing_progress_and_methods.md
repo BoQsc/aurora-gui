@@ -1,5 +1,32 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Status-bar Cancel button + last-export persistence (2026-08-27)
+
+Two features in `editor.d` + `project.d`.
+
+**Cancel button:** `buildStatusBar` adds a `Cancel` button (id `cancel-render`)
+next to `status-progress`. `updateCancelButton(jobRunning)` is called from
+`syncOutputButtons()` (which `startJob` and the completion handler invoke) and
+from every `onTick` via `updateCancelButton(state.running)`, so it enables while
+an export/compress/preview job runs and disables when it ends. It triggers
+`cancelBackgroundRender()`.
+
+**Last-export persistence:** `ProjectData.lastExportPath` is written as
+`"lastExportPath"` in `saveProjectFile` and read in `loadProjectFile`. In the
+editor, `_lastExportPath` is passed to every `saveProjectFile` call
+(`writeProject`, `autoSaveProjectOnExit`, `newProject` pre-save), restored in
+`openProject`, and cleared in `newProject`. `syncOutputButtons()` is called after
+open/new so the Output and Compress… buttons enable from the restored path.
+
+**How to test:**
+- Project round-trip: `project.d` unittest sets a `lastExportPath`, saves, reloads,
+  asserts it equals the original; also asserts a save with no path loads empty.
+- Editor: set `editor.setLastExportPathForTesting(...)`, `saveProjectForTesting`,
+  click New (assert cleared), `openProjectForTesting`, assert restored. Assert the
+  `cancel-render` Button exists and is disabled with no job running.
+- Verdict here: root `dub test` 40 modules, vendored 37 modules pass; editor-smoke
+  compiles (full run blocked by the concurrent font `hinter.d`).
+
 ## Text-field editing context menu (right-click) + timeline zoom grips (2026-08-27)
 
 Two features added: a Cut/Copy/Paste/Select All context menu on text fields,

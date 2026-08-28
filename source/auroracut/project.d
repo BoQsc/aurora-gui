@@ -31,6 +31,9 @@ struct ProjectData
     int previewQualityHeight = defaultPreviewQualityHeight;
     int compositionWidth = defaultCompositionWidth;
     int compositionHeight = defaultCompositionHeight;
+    // Path of the last successful export output, so the Output/Compress buttons
+    // remember it across restart/reopen. Persisted in the project file.
+    string lastExportPath;
     TimelineSnapshot[] undo;
     TimelineSnapshot[] redo;
 }
@@ -280,7 +283,8 @@ void saveProjectFile(string path, EditorModel model, double playhead,
     int previewQualityHeight, int compositionWidth = defaultCompositionWidth,
     int compositionHeight = defaultCompositionHeight,
     const(TimelineSnapshot)[] undo = null,
-    const(TimelineSnapshot)[] redo = null)
+    const(TimelineSnapshot)[] redo = null,
+    string lastExportPath = "")
 {
     JSONValue[] assets;
     foreach (index, asset; model.assets) assets ~= assetJson(asset, index);
@@ -305,6 +309,7 @@ void saveProjectFile(string path, EditorModel model, double playhead,
         "previewQualityHeight": JSONValue(cast(long) previewQualityHeight),
         "compositionWidth": JSONValue(cast(long) compositionWidth),
         "compositionHeight": JSONValue(cast(long) compositionHeight),
+        "lastExportPath": JSONValue(lastExportPath),
         "assets": JSONValue(assets),
         "videoTracks": JSONValue(video),
         "audioTracks": JSONValue(audio),
@@ -510,6 +515,7 @@ ProjectData loadProjectFile(string path)
         "compositionWidth", defaultCompositionWidth);
     result.compositionHeight = cast(int) integerValue(root,
         "compositionHeight", defaultCompositionHeight);
+    result.lastExportPath = stringValue(root, "lastExportPath");
 
     auto assets = member(root, "assets");
     if (assets !is null && assets.type == JSONType.array)
@@ -621,11 +627,14 @@ unittest
 
     saveProjectFile(projectPath, model, 2.0, false, 0.0, true, 3.0, 720,
         defaultCompositionWidth, defaultCompositionHeight,
-        [undoSnapshot], [redoSnapshot]);
+        [undoSnapshot], [redoSnapshot],
+        "C:\\media\\output\\clip-export.mp4");
 
     const loaded = loadProjectFile(projectPath);
     assert(loaded.undo.length == 1 && loaded.redo.length == 1,
         "Project history did not round-trip through the project file");
+    assert(loaded.lastExportPath == "C:\\media\\output\\clip-export.mp4",
+        "The last export path did not round-trip through the project file");
     assert(loaded.undo[0].label == "Add clip");
     assert(loaded.undo[0].playhead == 1.5);
     assert(loaded.undo[0].selectedTrack.kind == TrackKind.video);
@@ -659,4 +668,6 @@ unittest
     const legacy = loadProjectFile(projectPath);
     assert(legacy.undo.length == 0 && legacy.redo.length == 0,
         "Legacy project file gained phantom history");
+    assert(legacy.lastExportPath.length == 0,
+        "A save without an export path must load an empty last export");
 }

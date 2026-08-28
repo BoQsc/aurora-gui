@@ -403,6 +403,7 @@ int main(string[] arguments)
     auto redoButton = requireWidget!Button(editor, "redo");
     auto revealExport = requireWidget!Button(editor, "reveal-export-output");
     auto compressOutput = requireWidget!Button(editor, "compress-last-output");
+    auto cancelRender = requireWidget!Button(editor, "cancel-render");
     auto addTransitions = requireWidget!Button(editor, "clip-add-transitions");
     auto mp4Compression = requireWidget!Slider(editor, "export-mp4-compression");
     auto mp4CompressionValue = requireWidget!Label(editor,
@@ -416,6 +417,8 @@ int main(string[] arguments)
         editor.compositionHeightForTesting() == 1080 &&
         resolutionButton.text() == "1920×1080"d,
         "MP4 composition/output resolution must default to 1080p");
+    assert(!cancelRender.enabled(),
+        "The status-bar Cancel button must start disabled with no job running");
     // The Open button merges the former Open and Recent Projects controls: it
     // keeps the folder icon, drops the separate Recent button, and uses the
     // ▾ affordance because it opens the recent-projects dropdown.
@@ -2745,6 +2748,20 @@ int main(string[] arguments)
         assert(editor.previewQualityHeightForTesting() == 720 &&
             qualityButton.text() == "720p"d,
             "New Project did not restore the default preview quality");
+        // The last-export output must persist through the project file: set it,
+        // save, start a new project (clears it), then reopen and confirm restore.
+        editor.setLastExportPathForTesting("C:\\media\\output\\clip-export.mp4");
+        editor.saveProjectForTesting(recentOpenB);
+        assert(editor.lastExportPathForTesting() ==
+            "C:\\media\\output\\clip-export.mp4",
+            "Saving a project did not retain the last export output");
+        driver.click(globalCenter(newProjectButton));
+        assert(editor.lastExportPathForTesting().length == 0,
+            "New Project did not clear the last export output");
+        editor.openProjectForTesting(recentOpenB);
+        assert(editor.lastExportPathForTesting() ==
+            "C:\\media\\output\\clip-export.mp4",
+            "Reopening a project did not restore the last export output");
         assert(editor.scrubMinimumForTesting() < 0.0001 &&
             editor.scrubMaximumForTesting() <= 0.0011 &&
             editor.scrubValueForTesting() < 0.0001,

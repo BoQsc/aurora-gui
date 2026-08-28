@@ -635,6 +635,9 @@ final class EditorRoot : VBox
     private PlaybackScrubber _scrub;
     private Label _status;
     private ProgressBar _progress;
+    // Visible cancel action shown in the status bar while a background export/
+    // compression job is running.
+    private Button _cancelRenderButton;
     private Button _sourcePlayButton;
     private Button _sequencePreviewButton;
     private Button _loopButton;
@@ -1535,6 +1538,13 @@ final class EditorRoot : VBox
         if (_compressOutputButton !is null)
             _compressOutputButton.setEnabled(outputExists &&
                 extension(_lastExportPath).toLower() == ".mp4" && !running);
+        updateCancelButton(running);
+    }
+
+    private void updateCancelButton(bool jobRunning)
+    {
+        if (_cancelRenderButton is null) return;
+        _cancelRenderButton.setEnabled(jobRunning);
     }
 
     private void closeCompressOutputPopup()
@@ -2344,6 +2354,11 @@ final class EditorRoot : VBox
         _progress.layoutHints().preferredWidth = 260;
         _progress.setShowPercent(false);
         _progress.setLabel("Idle");
+        _cancelRenderButton = bar.add(new Button("Cancel", IconKind.close));
+        _cancelRenderButton.setId("cancel-render");
+        _cancelRenderButton.layoutHints().preferredHeight = 26;
+        _cancelRenderButton.setEnabled(false);
+        _cancelRenderButton.onClick = delegate() { cancelBackgroundRender(); };
     }
 
     private void updateProjectTitle()
@@ -2376,7 +2391,8 @@ final class EditorRoot : VBox
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
-                _compositionWidth, _compositionHeight, _undo, _redo);
+                _compositionWidth, _compositionHeight, _undo, _redo,
+                _lastExportPath);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2400,7 +2416,8 @@ final class EditorRoot : VBox
             endInlineTextEditing();
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
-                _compositionWidth, _compositionHeight, _undo, _redo);
+                _compositionWidth, _compositionHeight, _undo, _redo,
+                _lastExportPath);
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2455,6 +2472,8 @@ final class EditorRoot : VBox
                 defaultCompositionWidth);
             _compositionHeight = normalizedCompositionDimension(data.compositionHeight,
                 defaultCompositionHeight);
+            // Restore the last export output so Output/Compress remember it.
+            _lastExportPath = data.lastExportPath;
             clearHistory();
             _clipboardHasClip = false;
             _clipboardSystemSequence = clipboardSequenceNumber();
@@ -2477,6 +2496,7 @@ final class EditorRoot : VBox
             syncInspector();
             updateCompositionResolutionUi();
             updateQualityUi();
+            syncOutputButtons();
             updateProjectTitle();
             queueMissingPlaybackProxies();
             scheduleTimelineFrame();
@@ -2509,7 +2529,8 @@ final class EditorRoot : VBox
             const normalizedPath = absoluteNormalized(path);
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
-                _compositionWidth, _compositionHeight, _undo, _redo);
+                _compositionWidth, _compositionHeight, _undo, _redo,
+                _lastExportPath);
             rememberRecentProject(normalizedPath);
             appLog("Project autosaved before creating a new project: " ~
                 normalizedPath);
@@ -2532,6 +2553,7 @@ final class EditorRoot : VBox
         _previewQualityHeight = defaultPreviewQualityHeight;
         _compositionWidth = defaultCompositionWidth;
         _compositionHeight = defaultCompositionHeight;
+        _lastExportPath = "";
         _projectPath = "";
         _projectDirty = false;
         clearHistory();
@@ -2558,6 +2580,7 @@ final class EditorRoot : VBox
         syncInspector();
         updateCompositionResolutionUi();
         updateQualityUi();
+        syncOutputButtons();
         updatePlaybackButtons();
         updateProjectTitle();
         scheduleTimelineFrame();
@@ -10157,6 +10180,7 @@ final class EditorRoot : VBox
         }
 
         const state = _exportJob.state();
+        updateCancelButton(state.running);
         if (state.running)
         {
             if (_lastProgressValue < 0.0 ||

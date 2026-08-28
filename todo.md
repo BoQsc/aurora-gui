@@ -1,5 +1,158 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Status-bar Cancel button + persist last export output (feature)
+
+User: "Add ability to cancel action like compression or export with a gui
+button. Make sure that output and compress button does not forget the last
+output on restart ... Would it be reasonable to save to the project file."
+(Chose: status-bar Cancel button; save last-output to the project file.)
+
+### Part 1 — visible Cancel button
+`editor.d` `buildStatusBar` adds a **Cancel** button (id `cancel-render`, `×`
+icon) next to the status-bar progress bar. It is enabled only while a
+background export/compression/preview job is running (`ExportJob.state().running`)
+and calls the existing `cancelBackgroundRender()` (`ExportJob.cancel()`).
+`updateCancelButton(jobRunning)` is driven from `syncOutputButtons()` (startJob,
+completion) and each `onTick`, so it appears/enables exactly while work runs and
+disables when done. The old context-menu "Cancel background render" remains.
+
+### Part 2 — last-export-output persistence in the project file
+- `project.d`: `ProjectData.lastExportPath`; `saveProjectFile` gained a trailing
+  `lastExportPath` param and writes `"lastExportPath"`; `loadProjectFile` reads
+  it (empty for legacy files).
+- `editor.d`: `_lastExportPath` is now saved in `writeProject`,
+  `autoSaveProjectOnExit`, and the `newProject` pre-save; restored in
+  `openProject`; cleared in `newProject`. `syncOutputButtons()` after open/new so
+  **Output** and **Compress…** enable immediately from the restored path. The
+  Output/Compress buttons therefore remember the last export across restart,
+  close, or any project-switch.
+
+Verified: project.d unittest round-trips `lastExportPath` (and legacy files load
+empty); editor_smoke compiles with a Cancel-button check + a save→new→reopen
+round-trip; root dub test 40 modules, vendored 37 modules pass; app compiles
+(exe copy blocked only by a running instance).
+
+## 2026-08-27 - Light autohinter trial: measured, REVERTED (analytic AA is the best stable)
+
+User: "as long as we become authoritative and standard all good." Tried the
+"light autohinter" path (grid-fit via stem snapping, no bytecode VM) since the
+bytecode VM is broken.
+
+Built a first `lightGridFit` (snap near-vertical runs to shared whole-pixel x,
+near-horizontal runs to shared whole-pixel y, opt-in via `AURORA_AUTOHINT=1`).
+Measured against the authoritative GDI+ grid-fit reference (aligned MAD):
+
+```
+                  baseline(no hint)   autohint
+Consolas 13px:       40.43              40.25
+Consolas 16px:       14.36              16.71  (WORSE)
+Arial    16px:       36.42              34.76  (marginal)
+Segoe UI 13px:        9.51              11.38  (WORSE)
+```
+
+Visual side-by-side (Consolas 16) shows the crude integer rounding distorts
+curved glyphs ('5','9' become spiky) and misaligns stems vs the reference.
+
+### Conclusion (honest)
+The plain analytic coverage AA (Step 1, committed) is the best stable state. The
+crude light autohinter is NOT closer to the authoritative reference and adds
+artifact risk. The remaining small-size gap is inherent to not running the
+font's bytecode; neither fixing the broken 1700-line VM nor my simple stem
+snapping closes it reliably.
+
+### What was kept
+Only the safe latent `hintedCoords` fix in `text/truetype.d` (the hinter returns
+pixel coords; the rasterizer used to double-scale them). The hinter is off by
+default and aborts, so the default render is byte-identical to before (verified).
+The `lightGridFit` experiment was removed entirely. Green: vendored dub test 37
+modules, root dub test 40 modules.
+
+## 2026-08-27 - Step 2 investigation: bytecode hinter aborts on glyph programs (root-caused)
+
+The evidence pointed to grid-fitting as the remaining small-size gap. Investigated
+the vendored TrueType bytecode hinter. Findings:
+
+- **Latent coordinate bug fixed** (`text/truetype.d`): the hinter returns
+  PIXEL-space coordinates (it folds the design->pixel scale into the glyph
+  program), but the rasterizer re-applied `scale` again, double-scaling. Added a
+  `hintedCoords` flag: when hinting succeeds the rasterizer uses the fitted
+  coords directly (scale=1.0) and `bitmap.advance` from the hint. This does NOT
+  change the default (unhinted) render — verified byte-identical.
+- **But the hinter never succeeds anyway**: for Consolas 'I' the glyph program
+  aborts with `HintAbort: ENDF outside a function` (hinter.d:874). The catch
+  silently falls back to the unhinted outline, which is why hinted output has
+  always been byte-identical to unhinted. This is a flaw in the 1700-line VM
+  (instruction dispatch / function-call state), and the repo already attempted a
+  full bytecode interpreter 3x (2026-08-19/22) and disabled it for corrupting
+  glyphs.
+
+### Decision point
+Fixing the bytecode VM is high-risk/low-certainty (3 prior failures). The safer
+path to native-like grid-fitting is a **light autohinter** (like FreeType's
+"light" mode): algorithmically detect and snap vertical/horizontal stems WITHOUT
+running the font's bytecode. That is a self-contained, testable component.
+
+Verified green: vendored dub test 37 modules; root dub test 40 modules; default
+unhinted render byte-identical to pre-change.
+
+## 2026-08-27 - Corrected baseline: AA matches; remaining gap is grid-fitting (metrics NOT the issue)
+
+Follow-up to the 15-case matrix. Per-glyph gap analysis (not absolute position)
+proved the earlier "metrics/advance alignment gap" diagnosis was WRONG: pure-D
+advances match the OS within **max 1px per glyph** (most 0). The high MAD was a
+comparison-origin artifact, not an engine defect.
+
+Fixed the comparator to align the two renders (small x/y shift search) before
+scoring, so it reports genuine AA/shape difference. Corrected aligned MAD:
+- Segoe UI: 7.7-9.5 (excellent), Calibri: 7.2-15.9 (excellent),
+  Consolas 16: 14.4, Arial 24: 18.8, Verdana 24: 14.6.
+- Remaining HIGH cases are all SMALL sizes (Arial 13/16 ~40, Verdana 13/16
+  ~24, Consolas 13/24 ~40-54), where unhinted-vs-hinted (grid-fit) differs most.
+
+Conclusion: the dominant remaining error is **grid-fitting/hinting at small
+sizes**, NOT metrics. This makes Step 2 (grid-fitting) the correct next lever.
+
+Harness tools now in `build/fontref/`: `compare.py` (aligned diff + side/overlay),
+`matrix.py` (15-case batch), `colstarts.py`/`gaps.py` (advance analysis),
+`build/refrender/` (GDI+ reference), `vendor/aurora-d-0.4.5/tests/dmetric.d`.
+
+## 2026-08-27 - Full-baseline A/B matrix + metrics-gap diagnosis (evidence)
+
+User chose "Both" (more A/B comparisons, then Step 2). Built a batch matrix
+(`build/fontref/matrix.py`) that renders 15 (font,size) cases through both the
+pure-D analytic renderer and the authoritative Windows GDI+ grid-fit reference,
+and diffs each. Measured MAD / edge energy / ink bbox (text "Idle0123456789:I"):
+
+```
+Consolas 13/16/24: 22.65 / 23.13 / 16.53   (bbox matches at 16,24)
+Segoe UI 13/16/24: 40.92 / 12.16 / 11.74   (bbox matches at 16,24)
+Arial    13/16/24: 59.89 / 67.21 / 54.91
+Calibri  13/16/24: 61.17 / 11.71 / 14.11   (bbox matches at 16,24)
+Verdana  13/16/24: 39.83 / 45.77 / 25.60
+```
+
+### Diagnosis (from the side-by-side images)
+Cases that match well (Segoe 16/24, Calibri 16/24, Consolas 16/24) share a
+matching ink bbox and the difference is only thin AA fringing. The high-MAD
+cases (Arial all sizes, Verdana 16, Segoe 13) show the SAME glyphs but DIFFERENT
+**spacing**: the pure-D text is wider/narrower than the reference (e.g. Arial 16
+bbox 122 vs 119). That is a **metrics/advance alignment** gap, not an AA or
+grid-fitting issue.
+
+### What this means
+Three distinct gaps to "be authoritative":
+1. **AA quality** — addressed by Step 1 (done). Well-aligned cases now match
+   (MAD 11-23).
+2. **Grid-fitting** (Step 2) — improves vertical-stem crispness, but does NOT fix
+   the spacing differences seen above.
+3. **Metrics/advance alignment** — the pure-D engine's per-glyph advance rounding
+   (`round(units*px/upem)`, integer rounding) diverges from GDI+/DirectWrite's
+   layout, so cross-engine spacing differs. Pixel-matching GDI+ layout exactly
+   (origin + advance rounding + kerning) is a large, brittle, separate effort.
+
+So before Step 2, the dominant error on Arial/Verdana is metrics, not AA. Grid-
+fitting alone will not make those match; metric alignment would.
+
 ## 2026-08-27 - Step 1: analytic coverage AA (done, proven closer to authoritative)
 
 User approved starting Step 1 (analytic coverage AA) after reviewing the plan + evidence harness.
