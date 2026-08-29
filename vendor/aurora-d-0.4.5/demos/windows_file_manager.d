@@ -7096,10 +7096,11 @@ override bool onMouseMove(ref Event event)
             RgbaImage thumb;
             try
             {
-                // Fused decode+downscale: never materializes the full-resolution
-                // RGBA buffer (halves per-thumbnail memory churn) and drops the
-                // separate box-downscale pass.
-                thumb = loadPngScaled(path, thumbnailTargetSide);
+                // Fused decode+downscale, GC-free: file bytes, IDAT and the
+                // inflated scanline buffer are malloc-backed, so decoding a large
+                // folder never triggers stop-the-world GC that would freeze the UI
+                // thread mid-scroll.
+                thumb = loadPngScaledNogc(path, thumbnailTargetSide);
                 if (thumb is null)
                     failed = true;
             }

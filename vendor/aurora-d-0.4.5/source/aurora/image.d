@@ -5,6 +5,10 @@ import std.conv : text;
 import std.exception : enforce;
 import std.file : read;
 import std.zlib : uncompress, UnCompress;
+import core.stdc.stdlib : malloc, free;
+import core.stdc.string : memcpy;
+import etc.c.zlib : z_stream, Z_OK, Z_STREAM_END, Z_NO_FLUSH,
+    inflateInit2, inflate, inflateEnd;
 
 /** Immutable-size, revisioned straight-alpha RGBA8 image data. */
 final class RgbaImage
@@ -57,11 +61,125 @@ RgbaImage loadPngImage(string path)
     return decodePngImage(cast(const(ubyte)[]) read(path), path);
 }
 
+/// RAII ubyte[] backed by malloc/free so large transient decode buffers never
+/// touch the GC heap. Background thumbnail decoding allocates ~8MB per image;
+/// on-the-GC buffers force stop-the-world collections that freeze the UI thread.
+private struct MallocBytes
+{
+    void* _ptr;
+    size_t _len;
+
+    @disable this(this);
+    ~this() @trusted { if (_ptr !is null) free(_ptr); }
+
+    static MallocBytes allocate(size_t length) @trusted
+    {
+        MallocBytes result;
+        result._len = length;
+        result._ptr = malloc(length == 0 ? 1 : length);
+        enforce(result._ptr !is null, "out of memory allocating image buffer");
+        return result;
+    }
+
+    @property ubyte* ptr() const @trusted { return cast(ubyte*) _ptr; }
+    @property size_t length() const { return _len; }
+    @property bool empty() const { return _len == 0; }
+}
+
+/// GC-free zlib inflate of `idat` exactly `expectedSize` bytes into a malloc'd
+/// buffer. Returns null if the stream does not end cleanly.
+private MallocBytes inflateNogc(const(ubyte)[] idat, size_t expectedSize,
+    string label)
+{
+    // A little slack so zlib can emit Z_STREAM_END without needing one extra
+    // output byte (avail_out reaching 0 returns Z_BUF_ERROR, not Z_STREAM_END).
+    auto inflated = MallocBytes.allocate(expectedSize + 4096);
+    z_stream zs;
+    const initErr = inflateInit2(&zs, 15);
+    enforce(initErr == Z_OK, label ~ " failed to initialize zlib");
+    scope (exit) inflateEnd(&zs);
+    zs.next_in = cast(ubyte*) idat.ptr;
+    zs.avail_in = cast(uint) idat.length;
+    zs.next_out = inflated.ptr;
+    zs.avail_out = cast(uint) (expectedSize + 4096);
+    const err = inflate(&zs, Z_NO_FLUSH);
+    enforce(err == Z_STREAM_END,
+        label ~ " has corrupt or truncated compressed data");
+    return inflated;
+}
+
+/// GC-free scan of the PNG chunks to concatenate the IDAT payload into a
+/// malloc'd buffer (avoids the GC append/realloc of parsePngHeader).
+private MallocBytes gatherIdatNogc(const(ubyte)[] bytes)
+{
+    immutable ubyte[8] signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    enforce(bytes.length >= signature.length && bytes[0 .. signature.length] == signature[],
+        "PNG has an invalid signature");
+
+    size_t idatLength;
+    size_t offset = signature.length;
+    bool sawEnd;
+    while (offset + 12 <= bytes.length)
+    {
+        const length = readU32(bytes, offset);
+        const chunkType = cast(string) bytes[offset + 4 .. offset + 8];
+        if (chunkType == "IDAT") idatLength += length;
+        else if (chunkType == "IEND") { sawEnd = true; }
+        offset += 12 + length;
+        if (sawEnd) break;
+    }
+    enforce(idatLength > 0, "PNG is missing IDAT data");
+
+    auto idat = MallocBytes.allocate(idatLength);
+    size_t idatPos = 0;
+    offset = signature.length;
+    sawEnd = false;
+    while (offset + 12 <= bytes.length)
+    {
+        const length = readU32(bytes, offset);
+        const chunkType = cast(string) bytes[offset + 4 .. offset + 8];
+        if (chunkType == "IDAT")
+        {
+            memcpy(idat.ptr + idatPos, bytes.ptr + offset + 8, length);
+            idatPos += length;
+        }
+        else if (chunkType == "IEND") { sawEnd = true; }
+        offset += 12 + length;
+        if (sawEnd || idatPos >= idatLength) break;
+    }
+    idat._len = idatPos;
+    return idat;
+}
+
 /** Load a PNG and box-downscale it to `targetSide` (longer edge) in a single
  * pass, never materializing the full-resolution RGBA buffer. */
 RgbaImage loadPngScaled(string path, int targetSide)
 {
     return decodePngScaled(cast(const(ubyte)[]) read(path), path, targetSide);
+}
+
+/// GC-free load for the file-manager thumbnail worker: file bytes, IDAT, and the
+/// inflated scanline buffer are all malloc-backed, so a large folder decode never
+/// triggers stop-the-world GC that freezes the UI thread.
+RgbaImage loadPngScaledNogc(string path, int targetSide)
+{
+    auto file = readFileNogc(path);
+    const(ubyte)[] bytes = file.ptr[0 .. file.length];
+    return decodePngScaled(bytes, path, targetSide);
+}
+
+/// GC-free read of a whole file into a malloc'd buffer.
+private MallocBytes readFileNogc(string path)
+{
+    import std.file : getSize;
+    const size = getSize(path);
+    auto buf = MallocBytes.allocate(size);
+    import std.stdio : File;
+    auto f = File(path, "rb");
+    scope (exit) f.close();
+    const read = f.rawRead(buf.ptr[0 .. size]);
+    enforce(read.length == size, "file '" ~ path ~ "' changed while reading");
+    return buf;
 }
 
 /**
@@ -536,36 +654,18 @@ RgbaImage decodePngScaled(const(ubyte)[] bytes, string label,
     outWidth = outWidth < 1 ? 1 : outWidth;
     outHeight = outHeight < 1 ? 1 : outHeight;
 
-    // Fully inflate the IDAT with a bounded, non-doubling stream buffer. zlib
-    // must consume the whole compressed stream; using UnCompress avoids the
-    // repeated realloc*2+grow pattern of uncompress().
-    ubyte[] inflated;
-    {
-        const idat = header.idat;
-        auto decomp = new UnCompress();
-        inflated.length = (stride + 1) * cast(size_t) height;
-        size_t filled = 0;
-        size_t pos = 0;
-        const size_t chunk = 64 * 1024;
-        while (pos < idat.length)
-        {
-            const end = pos + chunk < idat.length ? pos + chunk : idat.length;
-            auto piece = decomp.uncompress(idat[pos .. end]);
-            if (filled + piece.length > inflated.length)
-                inflated.length = filled + piece.length;
-            inflated[filled .. filled + piece.length] = cast(ubyte[]) piece;
-            filled += piece.length;
-            pos = end;
-        }
-        auto piece = decomp.flush();
-        if (filled + piece.length > inflated.length)
-            inflated.length = filled + piece.length;
-        inflated[filled .. filled + piece.length] = cast(ubyte[]) piece;
-        filled += piece.length;
-        inflated.length = filled;
-        enforce(filled >= (stride + 1) * cast(size_t) height,
-            label ~ " has truncated pixel data");
-    }
+    // Inflate the IDAT into a malloc'd buffer (never the GC heap). This is the
+    // ~8MB per-thumbnail allocation that, on the GC heap, would force stop-the-
+    // world collections which freeze the UI thread on a busy image folder.
+    // The IDAT payload is gathered into a malloc'd buffer too (no GC append).
+    MallocBytes idatBuf = gatherIdatNogc(bytes);
+    const(ubyte)[] idat = idatBuf.ptr[0 .. idatBuf.length];
+    MallocBytes inflatedBuf = inflateNogc(idat,
+        (stride + 1) * cast(size_t) height, label);
+    const(ubyte)[] inflated = inflatedBuf.ptr[0 .. inflatedBuf.length];
+    enforce(inflated.length >= (stride + 1) * cast(size_t) height,
+        label ~ " has truncated pixel data");
+    scope (exit) { /* idatBuf/inflatedBuf free via RAII */ }
 
     ubyte[] outPixels;
     outPixels.length = cast(size_t) outWidth * cast(size_t) outHeight * 4;
