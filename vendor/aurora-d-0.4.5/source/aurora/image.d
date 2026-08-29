@@ -290,77 +290,187 @@ RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
     auto inflated = cast(ubyte[]) uncompress(idat);
     enforce(inflated.length >= expected, label ~ " has truncated pixel data");
 
-    ubyte[] scanlines;
-    scanlines.length = stride * cast(size_t) height;
-    foreach (row; 0 .. height)
-    {
-        const filter = inflated[cast(size_t) row * (stride + 1)];
-        const sourceStart = cast(size_t) row * (stride + 1) + 1;
-        const targetStart = cast(size_t) row * stride;
-        const previousStart = row == 0 ? size_t.max : targetStart - stride;
-        foreach (index; 0 .. stride)
-        {
-            const raw = inflated[sourceStart + index];
-            const left = index >= channels ? scanlines[targetStart + index - channels] : 0;
-            const up = row > 0 ? scanlines[previousStart + index] : 0;
-            const upperLeft = row > 0 && index >= channels
-                ? scanlines[previousStart + index - channels] : 0;
-            scanlines[targetStart + index] = cast(ubyte) ((cast(uint) raw +
-                reconstructedFilterByte(filter, left, up, upperLeft, label)) & 0xffu);
-        }
-    }
-
+    // Fuse PNG unfilter + channel expansion into a single pass. Filters only
+    // reference the previous row (and the left/upper-left bytes within the
+    // current row), so a one-row lookback is sufficient -- we never need to
+    // materialize the full unfiltered scanline plane. This avoids a full-image
+    // intermediate buffer and a second full-image pass, which is the dominant
+    // cost for large images (thumbnails decode the source at full resolution).
     ubyte[] rgba;
     rgba.length = cast(size_t) width * cast(size_t) height * 4;
-    foreach (pixel; 0 .. cast(size_t) width * cast(size_t) height)
+    ubyte[] prevRow;
+    prevRow.length = stride;
+    ubyte[] currRow;
+    currRow.length = stride;
+
+    size_t src = 0;
+    foreach (row; 0 .. height)
     {
-        const source = pixel * channels;
-        const target = pixel * 4;
+        const filter = inflated[src];
+        ++src;
+        // Dispatch the PNG row filter type ONCE per row and run a tight,
+        // branch-free loop per filter. The tiny full-image decompress time for
+        // thumbnails is dominated by per-byte filter reconstruction, so this
+        // replaces the generic reconstructedFilterByte() call (which re-dispatched
+        // the switch + carried a string for every one of the width*height*channels
+        // bytes) with a single dispatch + straight-line inner loops.
+        switch (filter)
+        {
+            case 0:
+                foreach (index; 0 .. stride)
+                    currRow[index] = inflated[src + index];
+                break;
+            case 1:
+                foreach (index; 0 .. stride)
+                {
+                    const left = index >= channels ? currRow[index - channels] : 0;
+                    currRow[index] = cast(ubyte)
+                        ((cast(uint) inflated[src + index] + left) & 0xffu);
+                }
+                break;
+            case 2:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                        currRow[index] = inflated[src + index];
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const up = prevRow[index];
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + up) & 0xffu);
+                    }
+                }
+                break;
+            case 3:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + (left + 0) / 2) & 0xffu);
+                    }
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        const up = prevRow[index];
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + (left + up) / 2) & 0xffu);
+                    }
+                }
+                break;
+            case 4:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + left) & 0xffu);
+                    }
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        const up = prevRow[index];
+                        const ul = index >= channels ? prevRow[index - channels] : 0;
+                        const p = cast(int) left + cast(int) up - cast(int) ul;
+                        const pa = p - left; const pab = pa < 0 ? -pa : pa;
+                        const pb = p - up;   const pbb = pb < 0 ? -pb : pb;
+                        const pc = p - ul;   const pcb = pc < 0 ? -pc : pc;
+                        const recon = cast(uint)
+                            ((pab <= pbb && pab <= pcb) ? left :
+                             (pbb <= pcb ? up : ul));
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + recon) & 0xffu);
+                    }
+                }
+                break;
+            default:
+                throw new Exception(label ~ " uses unsupported PNG row filter " ~ text(filter));
+        }
+        src += stride;
+
+        const pixelStart = cast(size_t) row * cast(size_t) width;
         switch (colorType)
         {
             case 0:
-            {
-                const value = scanlines[source];
-                rgba[target + 0] = value;
-                rgba[target + 1] = value;
-                rgba[target + 2] = value;
-                rgba[target + 3] = grayscaleAlpha(value, transparency);
+                foreach (x; 0 .. cast(size_t) width)
+                {
+                    const value = currRow[x];
+                    const t = (pixelStart + x) * 4;
+                    rgba[t + 0] = value;
+                    rgba[t + 1] = value;
+                    rgba[t + 2] = value;
+                    rgba[t + 3] = grayscaleAlpha(value, transparency);
+                }
                 break;
-            }
             case 2:
-                rgba[target + 0] = scanlines[source + 0];
-                rgba[target + 1] = scanlines[source + 1];
-                rgba[target + 2] = scanlines[source + 2];
-                rgba[target + 3] = rgbAlpha(rgba[target + 0], rgba[target + 1],
-                    rgba[target + 2], transparency);
+                foreach (x; 0 .. cast(size_t) width)
+                {
+                    const cs = x * channels;
+                    const t = (pixelStart + x) * 4;
+                    const r = currRow[cs + 0];
+                    const g = currRow[cs + 1];
+                    const b = currRow[cs + 2];
+                    rgba[t + 0] = r;
+                    rgba[t + 1] = g;
+                    rgba[t + 2] = b;
+                    rgba[t + 3] = rgbAlpha(r, g, b, transparency);
+                }
                 break;
             case 3:
-            {
-                const index = scanlines[source];
-                const paletteOffset = cast(size_t) index * 3;
-                enforce(paletteOffset + 2 < palette.length,
-                    label ~ " contains a palette index outside PLTE");
-                rgba[target + 0] = palette[paletteOffset + 0];
-                rgba[target + 1] = palette[paletteOffset + 1];
-                rgba[target + 2] = palette[paletteOffset + 2];
-                rgba[target + 3] = index < transparency.length ? transparency[index] : 255;
+                foreach (x; 0 .. cast(size_t) width)
+                {
+                    const index = currRow[x];
+                    const paletteOffset = cast(size_t) index * 3;
+                    enforce(paletteOffset + 2 < palette.length,
+                        label ~ " contains a palette index outside PLTE");
+                    const t = (pixelStart + x) * 4;
+                    rgba[t + 0] = palette[paletteOffset + 0];
+                    rgba[t + 1] = palette[paletteOffset + 1];
+                    rgba[t + 2] = palette[paletteOffset + 2];
+                    rgba[t + 3] = index < transparency.length ? transparency[index] : 255;
+                }
                 break;
-            }
             case 4:
-                rgba[target + 0] = scanlines[source + 0];
-                rgba[target + 1] = scanlines[source + 0];
-                rgba[target + 2] = scanlines[source + 0];
-                rgba[target + 3] = scanlines[source + 1];
+                foreach (x; 0 .. cast(size_t) width)
+                {
+                    const cs = x * channels;
+                    const t = (pixelStart + x) * 4;
+                    const value = currRow[cs + 0];
+                    rgba[t + 0] = value;
+                    rgba[t + 1] = value;
+                    rgba[t + 2] = value;
+                    rgba[t + 3] = currRow[cs + 1];
+                }
                 break;
             case 6:
-                rgba[target + 0] = scanlines[source + 0];
-                rgba[target + 1] = scanlines[source + 1];
-                rgba[target + 2] = scanlines[source + 2];
-                rgba[target + 3] = scanlines[source + 3];
+                foreach (x; 0 .. cast(size_t) width)
+                {
+                    const cs = x * channels;
+                    const t = (pixelStart + x) * 4;
+                    rgba[t + 0] = currRow[cs + 0];
+                    rgba[t + 1] = currRow[cs + 1];
+                    rgba[t + 2] = currRow[cs + 2];
+                    rgba[t + 3] = currRow[cs + 3];
+                }
                 break;
             default:
                 throw new Exception(label ~ " uses unsupported PNG color type " ~ text(colorType));
         }
+
+        auto swap = prevRow;
+        prevRow = currRow;
+        currRow = swap;
     }
     return new RgbaImage(width, height, rgba);
 }

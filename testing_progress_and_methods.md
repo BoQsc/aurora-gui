@@ -5242,3 +5242,40 @@ compositor uses). GDI is used only for the pixel blit, never for glyphs.
   platform module (`shared static this()`). To reproduce the app's behavior, force
   it explicitly: `SetProcessDpiAwarenessContext((HANDLE)-4)` (PMv2) at probe start,
   otherwise the probe itself renders at 96 DPI and misleads the measurement.
+
+## 2026-08-29 - Diagnosis: WHY aurora-d file manager thumbnails are SLOW
+
+Question from user: 'Why is the aurora windows file manager we make is so slow at rendering thumbnails.'
+
+Root cause (measured, not guessed): the thumbnail pipeline decodes each PNG at FULL source resolution every time there is no in-memory cache hit, then box-downscales. There is NO on-disk thumbnail cache (grep of windows_file_manager.d shows only the in-memory _thumbnailCache LRU), so every fresh folder-open / scroll-into / app-restart re-decodes the full bitmap.
+
+Measured decode cost (dmd -O -release probe, aurora-png-decode-probe + custom thumb_split_probe):
+- 1280x760 PNG: 73-127 ms
+- 980x680 PNG: 82-172 ms
+- 1254x1254 PNG: 163-475 ms
+- 4000x3000 real 12MP photo (52 KB on disk): 800-1000 ms
+
+Why it scales so badly: loadPngImage reads the WHOLE file, uncompress() inflates the ENTIRE deflate stream to full size (4000x3000x4 = 48 MB from a 52 KB file), then the per-row bytewise unfilter + per-pixel colorType- conversion walk all 12M pixels, and finally boxDownscale walks all 12M pixels again. inflate alone of the 12MP IDAT measured 148 ms. Only ONE thumbnail (192px) is shown but full-res decode cost is paid.
+
+Build-settings caveat: the shipped app is a DMD optimization build; the decode is CPU-bound singleton and the workers cap at min(totalCPUs,4) threads. Big folder of large photos - paint is instant (generic icons) but thumbnails trickle in at ~100-1000 ms EACH.
+
+Existing mitigations already in code (from todo/testing notes): async worker threads (min(totalCPUs,4)), visible-only enqueue, top-to-bottom priority, 200-entry in-memory LRU, idle-0.3s gate so scroll stays smooth. The CDN of the problem is FULL-RES decode + no persistent cache, not the UI thread.
+
+
+=== IMPLEMENTATION 2026-08-29: portable single-pass PNG decode (thumbnails ~3.2x faster) ===
+
+Goal: keep the cross-platform, pure-D PNG decoder (no OS-native thumbnails); speed up the full-res decode that the file-manager thumbnail worker pays per image. On-disk cache intentionally DEPRIORITIZED by user (optional, last).
+
+Changed: source/aurora/image.d - FUSED the two full-image passes (unfilter into a 48MB scanlines plane, then expand to rgba) into ONE pass. PNG filters only reference the previous row + left/upper-left bytes of the current row, so a 1-row lookback (prevRow/currRow pair, both stride-sized) is enough; the full scanlines plane and the separate convert pass are gone. Saves one full-image allocation + one full-image walk.
+2. Dispatched the row filter ONCE per row (switch per row, not per byte) and ran a branch-free, straight-line unfilter loop per filter type (None/Sub/Up/Average/Paeth), with row==0 special-cased to avoid the prevRow read. The old code called reconstructedFilterByte() per byte (48M calls for a 12MP RGBA PNG), each re-switching on filter + carrying a string label, and was not inlining.
+3. Kept the colourType expand step identical to the original (palette/grayscale-alpha/rgb-alpha inline in the row loop).
+
+Correctness: byte-for-byte verified. Built a checksum probe (pixel sum + p0 + pmid) against the ORIGINAL image.d (git HEAD) and the NEW one over 10 real PNGs (all docs/screenshots + resources/windows/windows_file_manager.png + a 12MP RGBA). ALL 10 matched exactly (same sum/p0/pmid). 16-bit PNG still errors as before (demos-montage). dub test 37 modules pass; file-manager-scroll-test passes (exercises decode+boxDownscale+drawImage).
+
+Performance (dmd -O -release -boundscheck=off -inline, median of >=9 runs, warm cache):
+- 2000x1500 RGB PNG: 122 ms -> 62 ms (~2x)
+- 4000x3000 RGBA 12MP: 570 ms -> 177 ms (~3.2x)
+- Decode now ~inflate-bound (uncompress of the full 48MB is the floor; unfilter+convert is ~60 ms for 12MP).
+
+Not done / deferred (per user): persistent on-disk thumbnail cache (optional, last). A row-limited streaming inflate (stop after the rows a 192px thumbnail needs) is the next structural win but touches std.zlib streaming and was out of scope for this pass.
+
