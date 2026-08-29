@@ -8216,6 +8216,21 @@ override bool onMouseMove(ref Event event)
     {
         navigate(path, true, true);
     }
+    /// Stop background thumbnail decode workers so the process can exit promptly
+    /// on close. Called from main after run() returns; without it the non-daemon
+    /// worker threads keep the process alive (zombie) and the exe stays locked.
+    void shutdown()
+    {
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            stopThumbnailWorker();
+        }
+        version (Windows)
+            closeFolderChangeNotification();
+    }
 
     version (AuroraHeadless)
     {
@@ -8734,5 +8749,9 @@ int main(string[] args)
     const initial = args.length > 1 ? args[1] : "";
     auto root = new WindowsFileManagerRoot(window, initial);
     window.setRoot(root);
-    return window.run();
+    const code = window.run();
+    // Join background workers so the process exits promptly (otherwise non-daemon
+    // threads keep it alive and the rebuilt exe stays locked -> Access denied).
+    root.shutdown();
+    return code;
 }
