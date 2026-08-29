@@ -71,6 +71,9 @@ interface NativeWindowSink
     void onNativeScrollTarget(PointF position);
     bool onNativePaint();
     void onNativeTick(double deltaSeconds);
+    /** True while a pointer transform is actively captured (drag). Used by the
+     *  platform loop to decide whether to busy-yield for every frame vs pace. */
+    bool onNativeContinuousPointerFrames();
     bool onNativeCloseRequested();
     void onNativeShutdown();
 }

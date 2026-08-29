@@ -962,6 +962,12 @@ else version (Windows)
         private bool _needsPaint = true;
         private bool _wakePosted;
         private bool _painting;
+        // Per-frame interval in QPC ticks (the session's frame budget). Derived
+        // once from QPC frequency; used to pace the render loop to a steady frame
+        // rate so animations (smooth scroll) stay consistent instead of drifting.
+        private long _frameIntervalTicks;
+        private double _tickAccumulator;
+        private double _tickQuantumSeconds = 0.004;
         private bool _shown;
         private bool _visible = true;
         private bool _inSizeMove;
@@ -1149,7 +1155,20 @@ else version (Windows)
         {
             MSG message;
             WPARAM exitCode;
-            auto previousTick = GetTickCount();
+            // Use a high-resolution counter for animation deltas. GetTickCount has
+            // ~15.6 ms resolution, which quantizes smooth-scroll deltas to 0/16 ms
+            // and makes the animation step erratically (not a steady 60 fps).
+            LARGE_INTEGER perfFreq;
+            QueryPerformanceFrequency(&perfFreq);
+            // Pace the render loop to a nominal 60 fps frame budget using the
+            // high-resolution counter. A fixed 16 ms timer-wait drifts with timer
+            // quantization, so we instead wait the precise remainder until the
+            // next frame deadline. low-latency windows still busy-yield during a
+            // real pointer capture (continuous frames) but otherwise pace.
+            _frameIntervalTicks = cast(long) (perfFreq.QuadPart / 60);
+            LARGE_INTEGER previousPerf;
+            QueryPerformanceCounter(&previousPerf);
+            LARGE_INTEGER nextFrameDeadline = previousPerf;
             while (!_closed)
             {
                 uint dispatchedCount;
@@ -1190,20 +1209,41 @@ else version (Windows)
                 if (_closed) break;
 
                 // Tick first so animation state invalidated by the tick can be
-                // included in this same frame instead of the next iteration.
-                const now = GetTickCount();
-                double delta = cast(double) (now - previousTick) / 1000.0;
+                // included in this same frame instead of the next iteration. Use
+                // QueryPerformanceCounter so smooth scrolling gets an accurate
+                // per-frame delta (GetTickCount quantizes to ~15.6 ms and makes
+                // the animation jump in 0/16 ms steps).
+                LARGE_INTEGER perfNow;
+                QueryPerformanceCounter(&perfNow);
+                double delta = cast(double) (perfNow.QuadPart - previousPerf.QuadPart) /
+                    cast(double) perfFreq.QuadPart;
+                if (delta > 0.0) previousPerf = perfNow;
                 if (delta > 0.1) delta = 0.1;
-                if (delta > 0.0)
+                // Only advance the application tick when a real time quantum has
+                // accumulated (or input arrived this pass). The render loop can
+                // spin well past the refresh rate when frames are pending; calling
+                // onNativeTick on every micro-delta would run the animation/drain
+                // logic tens of thousands of times per second and burn the CPU,
+                // stealing time from the very work that must stay smooth.
+                _tickAccumulator += delta;
+                if (_tickAccumulator >= _tickQuantumSeconds || dispatchedCount > 0)
                 {
-                    previousTick = now;
-                    sink.onNativeTick(delta);
+                    const tickDelta = _tickAccumulator;
+                    _tickAccumulator = 0;
+                    sink.onNativeTick(tickDelta);
                 }
                 paintNow();
 
                 if (!_closed)
                 {
-                    if (_needsPaint && options.lowLatency)
+                    // Busy-yield only for a true pointer transform (drag) capture,
+                    // where every newest pointer frame matters and latency beats
+                    // CPU. Scroll/animations are NOT continuous-pointer frames: they
+                    // must pace. The window exposes this via onNativeContinuous-
+                    // PointerFrames(); busy-yielding for an animation repaint burns
+                    // the CPU (spins to 90%+) and makes scroll inconsistent.
+                    if (_needsPaint && options.lowLatency &&
+                        sink.onNativeContinuousPointerFrames())
                     {
                         // Do not put a present-limited drag behind a nominal
                         // one-millisecond Win32 timeout: timer quantization can
@@ -1216,11 +1256,40 @@ else version (Windows)
                             QS_ALLINPUT, MWMO_INPUTAVAILABLE);
                         SwitchToThread();
                     }
+                    else if (_frameIntervalTicks > 0)
+                    {
+                        // Steady-frame pacing: wait the precise remaining time to
+                        // the next 60 fps deadline (a fixed 16 ms wait drifts with
+                        // timer quantization, causing uneven scroll). A guaranteed
+                        // Sleep keeps the cadence even when messages are queued.
+                        nextFrameDeadline.QuadPart += _frameIntervalTicks;
+                        LARGE_INTEGER nowTicks;
+                        QueryPerformanceCounter(&nowTicks);
+                        if (nextFrameDeadline.QuadPart <= nowTicks.QuadPart)
+                        {
+                            // Fell behind (a long frame); re-anchor so we never
+                            // burst-catch-up and instead keep a steady cadence.
+                            nextFrameDeadline.QuadPart = nowTicks.QuadPart +
+                                _frameIntervalTicks;
+                        }
+                        const remainUs = (nextFrameDeadline.QuadPart - nowTicks.QuadPart) *
+                            1000 / cast(long) perfFreq.QuadPart;
+                        uint sleepMs = cast(uint) ((remainUs + 999) / 1000);
+                        if (sleepMs > 0)
+                        {
+                            if (sleepMs > 20) sleepMs = 20;
+                            Sleep(sleepMs);
+                        }
+                        // A short drain keeps input/resize responsive between
+                        // frames without letting the queue re-arm a spin.
+                        MsgWaitForMultipleObjectsEx(0, null, 0,
+                            QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    }
                     else
                     {
                         // Idle windows still sleep and wake immediately for
                         // native input or Aurora's private invalidation message.
-                        const waitMilliseconds = options.lowLatency ? 8u : 16u;
+                        const waitMilliseconds = 16u;
                         MsgWaitForMultipleObjectsEx(0, null, waitMilliseconds,
                             QS_ALLINPUT, MWMO_INPUTAVAILABLE);
                     }

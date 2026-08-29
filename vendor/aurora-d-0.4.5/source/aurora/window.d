@@ -708,6 +708,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         }
     }
 
+    override bool onNativeContinuousPointerFrames() const
+    {
+        return continuousPointerFrames();
+    }
+
     override bool onNativeCloseRequested()
     {
         return onCloseRequested is null ? true : onCloseRequested();

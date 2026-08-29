@@ -4,7 +4,7 @@ import aurora.types : Rect;
 import std.conv : text;
 import std.exception : enforce;
 import std.file : read;
-import std.zlib : uncompress;
+import std.zlib : uncompress, UnCompress;
 
 /** Immutable-size, revisioned straight-alpha RGBA8 image data. */
 final class RgbaImage
@@ -55,6 +55,13 @@ final class RgbaImage
 RgbaImage loadPngImage(string path)
 {
     return decodePngImage(cast(const(ubyte)[]) read(path), path);
+}
+
+/** Load a PNG and box-downscale it to `targetSide` (longer edge) in a single
+ * pass, never materializing the full-resolution RGBA buffer. */
+RgbaImage loadPngScaled(string path, int targetSide)
+{
+    return decodePngScaled(cast(const(ubyte)[]) read(path), path, targetSide);
 }
 
 /**
@@ -213,22 +220,31 @@ private RgbaImage decodeIcoBmp(const(ubyte)[] bytes, string label)
     return new RgbaImage(width, imageHeight, rgba);
 }
 
-RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
+/// Parsed PNG IHDR/chunk header shared by the full and scaled decoders.
+private struct PngHeader
+{
+    int width;
+    int height;
+    ubyte colorType;
+    ubyte[] idat;
+    ubyte[] palette;
+    ubyte[] transparency;
+}
+
+/// Parse the PNG signature + chunks, returning the header fields and the
+/// concatenated IDAT payload. All structural checks (bit depth, compression,
+/// filter, interlace, IHDR/IEND presence) are enforced here.
+private PngHeader parsePngHeader(const(ubyte)[] bytes, string label)
 {
     immutable ubyte[8] signature = [137, 80, 78, 71, 13, 10, 26, 10];
     enforce(bytes.length >= signature.length && bytes[0 .. signature.length] == signature[],
         label ~ " has an invalid PNG signature");
 
-    int width;
-    int height;
+    PngHeader header;
     ubyte bitDepth;
-    ubyte colorType;
     ubyte compressionMethod;
     ubyte filterMethod;
     ubyte interlaceMethod;
-    ubyte[] idat;
-    ubyte[] palette;
-    ubyte[] transparency;
 
     size_t offset = signature.length;
     bool sawHeader;
@@ -248,23 +264,23 @@ RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
         {
             case "IHDR":
                 enforce(length == 13, label ~ " has an invalid IHDR length");
-                width = cast(int) readU32(chunk, 0);
-                height = cast(int) readU32(chunk, 4);
+                header.width = cast(int) readU32(chunk, 0);
+                header.height = cast(int) readU32(chunk, 4);
                 bitDepth = chunk[8];
-                colorType = chunk[9];
+                header.colorType = chunk[9];
                 compressionMethod = chunk[10];
                 filterMethod = chunk[11];
                 interlaceMethod = chunk[12];
                 sawHeader = true;
                 break;
             case "PLTE":
-                palette = chunk.dup;
+                header.palette = chunk.dup;
                 break;
             case "IDAT":
-                idat ~= chunk;
+                header.idat ~= chunk;
                 break;
             case "tRNS":
-                transparency = chunk.dup;
+                header.transparency = chunk.dup;
                 break;
             case "IEND":
                 sawEnd = true;
@@ -277,17 +293,28 @@ RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
 
     enforce(sawHeader, label ~ " is missing IHDR");
     enforce(sawEnd, label ~ " is missing IEND");
-    enforce(width > 0 && height > 0, label ~ " has invalid dimensions");
+    enforce(header.width > 0 && header.height > 0, label ~ " has invalid dimensions");
     enforce(bitDepth == 8, label ~ " uses unsupported PNG bit depth " ~ text(bitDepth));
     enforce(compressionMethod == 0 && filterMethod == 0,
         label ~ " uses unsupported PNG compression or filter method");
     enforce(interlaceMethod == 0, label ~ " uses unsupported PNG interlacing");
-    enforce(idat.length > 0, label ~ " is missing IDAT data");
+    enforce(header.idat.length > 0, label ~ " is missing IDAT data");
+    return header;
+}
+
+RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
+{
+    PngHeader header = parsePngHeader(bytes, label);
+    const int width = header.width;
+    const int height = header.height;
+    const ubyte colorType = header.colorType;
+    const ubyte[] palette = header.palette;
+    const ubyte[] transparency = header.transparency;
 
     const channels = channelCount(colorType, label);
     const stride = cast(size_t) width * cast(size_t) channels;
     const expected = (stride + 1) * cast(size_t) height;
-    auto inflated = cast(ubyte[]) uncompress(idat);
+    auto inflated = cast(ubyte[]) uncompress(header.idat);
     enforce(inflated.length >= expected, label ~ " has truncated pixel data");
 
     // Fuse PNG unfilter + channel expansion into a single pass. Filters only
@@ -473,6 +500,261 @@ RgbaImage decodePngImage(const(ubyte)[] bytes, string label = "PNG")
         currRow = swap;
     }
     return new RgbaImage(width, height, rgba);
+}
+
+/**
+ * Decode a non-interlaced 8-bit PNG directly into a downscaled RGBA image whose
+ * longer side is `targetSide` (aspect preserved), without ever materializing the
+ * full-resolution RGBA pixel buffer. This is the thumbnail path: the full-height
+ * inflate is unavoidable, but we fuse unfilter + box-downscale into one pass over
+ * the unfiltered scanline rows, so only the small output buffer and a 1-row
+ * lookback are allocated instead of width*height*4 bytes.
+ */
+RgbaImage decodePngScaled(const(ubyte)[] bytes, string label,
+    int targetSide)
+{
+    enforce(targetSide > 0, "scaled PNG target side must be positive");
+    PngHeader header = parsePngHeader(bytes, label);
+    const int width = header.width;
+    const int height = header.height;
+    const ubyte colorType = header.colorType;
+    const ubyte[] palette = header.palette;
+    const ubyte[] transparency = header.transparency;
+
+    const channels = channelCount(colorType, label);
+    const stride = cast(size_t) width * cast(size_t) channels;
+
+    // Target dimensions, same aspect-preserving rule as boxDownscale:
+    // match `targetSide` on the longer edge.
+    int outWidth = targetSide;
+    int outHeight = cast(int) ((cast(long) targetSide * height + width / 2) / width);
+    if (outHeight > targetSide)
+    {
+        outHeight = targetSide;
+        outWidth = cast(int) ((cast(long) targetSide * width + height / 2) / height);
+    }
+    outWidth = outWidth < 1 ? 1 : outWidth;
+    outHeight = outHeight < 1 ? 1 : outHeight;
+
+    // Fully inflate the IDAT with a bounded, non-doubling stream buffer. zlib
+    // must consume the whole compressed stream; using UnCompress avoids the
+    // repeated realloc*2+grow pattern of uncompress().
+    ubyte[] inflated;
+    {
+        const idat = header.idat;
+        auto decomp = new UnCompress();
+        inflated.length = (stride + 1) * cast(size_t) height;
+        size_t filled = 0;
+        size_t pos = 0;
+        const size_t chunk = 64 * 1024;
+        while (pos < idat.length)
+        {
+            const end = pos + chunk < idat.length ? pos + chunk : idat.length;
+            auto piece = decomp.uncompress(idat[pos .. end]);
+            if (filled + piece.length > inflated.length)
+                inflated.length = filled + piece.length;
+            inflated[filled .. filled + piece.length] = cast(ubyte[]) piece;
+            filled += piece.length;
+            pos = end;
+        }
+        auto piece = decomp.flush();
+        if (filled + piece.length > inflated.length)
+            inflated.length = filled + piece.length;
+        inflated[filled .. filled + piece.length] = cast(ubyte[]) piece;
+        filled += piece.length;
+        inflated.length = filled;
+        enforce(filled >= (stride + 1) * cast(size_t) height,
+            label ~ " has truncated pixel data");
+    }
+
+    ubyte[] outPixels;
+    outPixels.length = cast(size_t) outWidth * cast(size_t) outHeight * 4;
+    ulong[] sums;
+    sums.length = cast(size_t) outWidth * 4;
+    uint[] counts;
+    counts.length = cast(size_t) outWidth;
+
+    // Map each source column to the box-downscale output column it belongs to.
+    // This reproduces the contiguous binning of boxDownscale exactly:
+    // outX covers source columns [outX*inW/outW, (outX+1)*inW/outW).
+    int[] colMap;
+    colMap.length = cast(size_t) width;
+    for (int outX = 0; outX < outWidth; ++outX)
+    {
+        const startX = cast(int) ((cast(long) outX * width) / outWidth);
+        const endX = cast(int) (((cast(long) (outX + 1) * width) / outWidth));
+        for (int x = startX; x < endX; ++x)
+            colMap[x] = outX;
+    }
+    for (int x = 0; x < width; ++x)
+        if (colMap[x] < 0 || colMap[x] >= outWidth) colMap[x] = outWidth - 1;
+
+    ubyte[] prevRow;
+    prevRow.length = stride;
+    ubyte[] currRow;
+    currRow.length = stride;
+
+    int outY = 0;
+    size_t src = 0;
+    foreach (row; 0 .. height)
+    {
+        const filter = inflated[src];
+        ++src;
+        switch (filter)
+        {
+            case 0:
+                foreach (index; 0 .. stride)
+                    currRow[index] = inflated[src + index];
+                break;
+            case 1:
+                foreach (index; 0 .. stride)
+                {
+                    const left = index >= channels ? currRow[index - channels] : 0;
+                    currRow[index] = cast(ubyte)
+                        ((cast(uint) inflated[src + index] + left) & 0xffu);
+                }
+                break;
+            case 2:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                        currRow[index] = inflated[src + index];
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const up = prevRow[index];
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + up) & 0xffu);
+                    }
+                }
+                break;
+            case 3:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + (left + 0) / 2) & 0xffu);
+                    }
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        const up = prevRow[index];
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + (left + up) / 2) & 0xffu);
+                    }
+                }
+                break;
+            case 4:
+                if (row == 0)
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + left) & 0xffu);
+                    }
+                }
+                else
+                {
+                    foreach (index; 0 .. stride)
+                    {
+                        const left = index >= channels ? currRow[index - channels] : 0;
+                        const up = prevRow[index];
+                        const ul = index >= channels ? prevRow[index - channels] : 0;
+                        const p = cast(int) left + cast(int) up - cast(int) ul;
+                        const pa = p - left; const pab = pa < 0 ? -pa : pa;
+                        const pb = p - up;   const pbb = pb < 0 ? -pb : pb;
+                        const pc = p - ul;   const pcb = pc < 0 ? -pc : pc;
+                        const recon = cast(uint)
+                            ((pab <= pbb && pab <= pcb) ? left :
+                             (pbb <= pcb ? up : ul));
+                        currRow[index] = cast(ubyte)
+                            ((cast(uint) inflated[src + index] + recon) & 0xffu);
+                    }
+                }
+                break;
+            default:
+                throw new Exception(label ~ " uses unsupported PNG row filter " ~ text(filter));
+        }
+        src += stride;
+
+        // Accumulate this source row's pixels into the box-downscaled output.
+        foreach (x; 0 .. cast(size_t) width)
+        {
+            const cs = x * channels;
+            const outX = colMap[x];
+            const so = outX * 4;
+            ubyte r, g, b, a;
+            switch (colorType)
+            {
+                case 0:
+                    r = currRow[cs]; g = r; b = r;
+                    a = grayscaleAlpha(r, transparency);
+                    break;
+                case 2:
+                    r = currRow[cs]; g = currRow[cs+1]; b = currRow[cs+2];
+                    a = rgbAlpha(r, g, b, transparency);
+                    break;
+                case 3:
+                    {
+                        const index = currRow[cs];
+                        const p = cast(size_t) index * 3;
+                        r = palette[p]; g = palette[p+1]; b = palette[p+2];
+                        a = index < transparency.length ? transparency[index] : 255;
+                    }
+                    break;
+                case 4:
+                    r = currRow[cs]; g = r; b = r; a = currRow[cs+1];
+                    break;
+                case 6:
+                    r = currRow[cs]; g = currRow[cs+1]; b = currRow[cs+2];
+                    a = currRow[cs+3];
+                    break;
+                default:
+                    throw new Exception(label ~ " uses unsupported PNG color type " ~ text(colorType));
+            }
+            sums[so] += r;
+            sums[so + 1] += g;
+            sums[so + 2] += b;
+            sums[so + 3] += a;
+            ++counts[outX];
+        }
+
+        // Finalize output row `outY` once `row` is the last source row that
+        // maps to it (the next source row belongs to the next output row).
+        const outEndY = cast(int) ((cast(long) (outY + 1) * height) / outHeight);
+        if (row + 1 >= outEndY)
+        {
+            const oy = outY;
+            foreach (ox; 0 .. cast(size_t) outWidth)
+            {
+                const c = counts[ox];
+                const so = ox * 4;
+                const cv = c ? cast(uint) c : 1;
+                const o = (cast(size_t) oy * outWidth + ox) * 4;
+                outPixels[o] = cast(ubyte)(sums[so] / cv);
+                outPixels[o+1] = cast(ubyte)(sums[so+1] / cv);
+                outPixels[o+2] = cast(ubyte)(sums[so+2] / cv);
+                outPixels[o+3] = cast(ubyte)(sums[so+3] / cv);
+            }
+            foreach (i; 0 .. sums.length) sums[i] = 0;
+            foreach (i; 0 .. counts.length) counts[i] = 0;
+            ++outY;
+            if (outY >= outHeight) break;
+        }
+
+        auto swap = prevRow;
+        prevRow = currRow;
+        currRow = swap;
+    }
+    return new RgbaImage(outWidth, outHeight, outPixels);
 }
 
 private int channelCount(ubyte colorType, string label)

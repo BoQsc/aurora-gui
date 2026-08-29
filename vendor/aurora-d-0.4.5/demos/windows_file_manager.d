@@ -971,6 +971,14 @@ private TextField _locateField;
         // items starting from the top of the viewport.
         private string[] _thumbVisibleOrder;
         private bool[string] _thumbVisible;
+        // Set while the list is actively (smooth-)scrolling so the drain path can
+        // keep repaint churn down: results for items that have already scrolled
+        // off-screen are dropped instead of invalidating every frame, and the
+        // worker pool is reserved for the current on-screen set.
+        private bool _thumbScrolling;
+        // Hard cap on the decode queue so a very fast scroll over a huge folder
+        // cannot enqueue thousands of items ahead of the on-screen top.
+        private enum maxThumbDecodeQueue = 96;
     }
 
     void delegate(string title) onTitleChanged;
@@ -6529,6 +6537,17 @@ override bool onMouseMove(ref Event event)
             updateRenameFieldBounds();
             invalidate();
         }
+
+        // Keep the thumbnail drain aware of whether the list is still moving, so
+        // it can avoid repainting for off-screen results mid-scroll. Smooth
+        // scrolling can stop this tick while the wheel target was reached.
+        version (AuroraHeadless)
+        {
+        }
+        else
+        {
+            _thumbScrolling = _listSmoothScrollActive;
+        }
     }
 
     private static int smoothScrollStep(int current, int target, double deltaSeconds)
@@ -6975,13 +6994,12 @@ override bool onMouseMove(ref Event event)
             // Tests are deterministic and single-threaded; decode inline.
             try
             {
-                auto image = loadPngImage(path);
-                if (image is null)
+                auto downscaled = loadPngScaled(path, thumbnailTargetSide);
+                if (downscaled is null)
                 {
                     _thumbnailFailed[path] = true;
                     return null;
                 }
-                auto downscaled = downscaleThumbnail(image, thumbnailTargetSide);
                 cacheThumbnail(path, downscaled);
                 return downscaled;
             }
@@ -7032,6 +7050,21 @@ override bool onMouseMove(ref Event event)
                 thumbnailWorkerLoop();
             });
             thread.start();
+            // Decode must never win the scheduler over the UI thread: run the
+            // worker at the LOWEST possible priority so scrolling always preempts
+            // decoding on a shared core. The UI (main) thread stays at normal
+            // priority, so it takes CPU whenever it has work; the workers fill in
+            // only during scheduler gaps. Priority must be set AFTER start (the
+            // OS rejects SetThreadPriority before the thread is running) and is
+            // guarded so a platform that refuses it can never crash the app.
+            try
+            {
+                thread.priority = Thread.PRIORITY_MIN;
+            }
+            catch (Exception)
+            {
+                // Priority is a best-effort hint; fall back to normal.
+            }
         }
     }
 
@@ -7063,11 +7096,12 @@ override bool onMouseMove(ref Event event)
             RgbaImage thumb;
             try
             {
-                auto image = loadPngImage(path);
-                if (image is null)
+                // Fused decode+downscale: never materializes the full-resolution
+                // RGBA buffer (halves per-thumbnail memory churn) and drops the
+                // separate box-downscale pass.
+                thumb = loadPngScaled(path, thumbnailTargetSide);
+                if (thumb is null)
                     failed = true;
-                else
-                    thumb = downscaleThumbnail(image, thumbnailTargetSide);
             }
             catch (Exception)
             {
@@ -7114,6 +7148,7 @@ override bool onMouseMove(ref Event event)
                 if (path in _thumbInFlight) continue;
                 if (path in _thumbFailedResults) continue;
                 if (path in _thumbnailFailed) continue;
+                if (_thumbPending.length >= maxThumbDecodeQueue) break;
                 _thumbPending ~= path;
                 _thumbPendingSet[path] = true;
             }
@@ -7145,7 +7180,12 @@ override bool onMouseMove(ref Event event)
         }
         if (_thumbThreads.length == 0 && _thumbPending.length > 0)
             ensureThumbnailWorker();
-        if (changed)
+        // While the list is actively smooth-scrolling, updateSmoothScrolling()
+        // already invalidates every step, so avoid the extra repaint from a
+        // freshly-decoded thumbnail: caching it (above) is enough, and the
+        // on-screen frame will pick it up on the next scroll repaint. This keeps
+        // thumbnail pop-in from competing with the scroll animation.
+        if (changed && !_thumbScrolling)
             invalidate();
     }
 

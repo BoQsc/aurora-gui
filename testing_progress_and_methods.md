@@ -5279,3 +5279,91 @@ Performance (dmd -O -release -boundscheck=off -inline, median of >=9 runs, warm 
 
 Not done / deferred (per user): persistent on-disk thumbnail cache (optional, last). A row-limited streaming inflate (stop after the rows a 192px thumbnail needs) is the next structural win but touches std.zlib streaming and was out of scope for this pass.
 
+=== IMPLEMENTATION 2026-08-29 (round 2): fused scaled thumbnail decode + REAL measured bottleneck ===
+
+User follow-up: 'It is better, but why we still have a laggines in a large screenshot folder with extra large view icons.' User guessed SSD or more work to do.
+
+Measured with real folder C:\Users\Windows10_new\Pictures\Screenshots (2258 PNGs, 3.3GB, mostly 1920x1080):
+- Per 1920x1080 screenshot, loadPngImage (fused full decode, release) = ~66-79 ms median.
+- SPLIT: stream-inflate ONLY = ~44 ms (60% of decode); unfilter+convert+new RgbaImage = ~26 ms; box-downscale (192px) = ~6 ms. So ~84 ms per thumbnail end-to-end with old path (full RGBA + separate downscale).
+- The inflate floor is ~40-44 ms REGARDLESS of chunk size (16K/64K/256K/1M all ~40 ms) and regardless of uncompress() vs streaming UnCompress (56 vs 44 ms). PNG zlib must decompress the whole IDAT; a full-image thumbnail cannot skip it. So the per-thumbnail CPU cost is inflate-bound and CANNOT be reduced by code alone for a full-image fit.
+
+The 200-entry in-memory LRU (maxThumbnailCacheSize=200) vs 2258 images means scrolling a large folder CONSTANTLY evicts and re-decodes; 4 physical cores (i5-7300HQ) cap the worker pool at 4. Throughput ~10 thumbs/sec -> every fresh row of extra-large icons (~32 visible) costs ~320 ms of decode. This is the perceived lag.
+
+WHAT WAS IMPLEMENTED (portable, pure-D, byte-identical):
+- source/aurora/image.d: refactored PNG chunk parsing into shared PngHeader + parsePngHeader(). Added decodePngScaled(bytes, label, targetSide) + public loadPngScaled(path, targetSide): streams the full inflate via std.zlib.UnCompress (fixed 64K buffer, avoids uncompress's repeated realloc*2 re-inflate), then FUSES unfilter(row-by-row, same per-filter loops) + box-downscale in ONE pass. Never materializes the width*height*4 RGBA buffer -> outputs only ~192px. Uses a colMap[] to exactly reproduce boxDownscale's contiguous column binning; row finalize uses (outY+1)*H/outH boundary.
+- demos/windows_file_manager.d: thumbnail worker now calls loadPngScaled(path, thumbnailTargetSide) directly (was loadPngImage + downscaleThumbnail); headless test path updated identically. downscaleThumbnail kept for testDownscale (scroll-test).
+
+Correctness: probe compared loadPngScaled(path,192) pixels against boxDownscale(loadPngImage(path),192) over 7 real images (3 real 1920x1080 screenshots + desktop-environment + notepad + windows_file_manager.png + 12MP). diffbytes=0 for ALL -> byte-identical. dub test 37 modules pass; file-manager-scroll-test passes.
+
+Measured results (dmd -O -release):
+- Throughput: old (loadPngImage+downscale) 68.4 ms vs new (loadPngScaled) 61.7 ms -> ~1.11x (inflate floor dominates).
+- MEMORY CHURN (the big real win): GC heap per decode iteration 35.3 MB -> 19.4 MB (full RGBA buffer eliminated) -> fewer GC pauses during scroll, smoother fill-in.
+
+The remaining lag is fundamentally throughput/cache-bound (~40 ms inflate floor x number of freshly-visible thumbnails each scroll, 200-entry cache against 2258 images). Further improvement requires the PERSISTENT on-disk thumbnail cache (user said optional/last) or accepting the inflate floor.
+
+=== IMPLEMENTATION 2026-08-29 (round 3): scrolling-aware thumbnail decode (don't block scroll) ===
+
+User: 'How about you don't block the scrolling and prioritize only what's on screen.' The decode already runs on min(totalCPUs,4) background worker threads and the paint loop is viewport-limited (firstViewportVisibleRowIndex() .. break at rowsRect.bottom()), so PNG decode never runs on the UI thread. The remaining GUI cost during a fast scroll was REPAINT CHURN: drainThumbnailResults() called invalidate() for every freshly-decoded thumbnail, competing with the scroll animation; and the pending queue could grow unbounded with items scrolled past mid-gesture.
+
+Changed demos/windows_file_manager.d:
+1. Added _thumbScrolling flag + maxThumbDecodeQueue = 96 cap.
+2. _thumbScrolling is set in updateSmoothScrolling() from _listSmoothScrollActive each tick (app builds only; headless no-op).
+3. drainThumbnailResults(): (a) caps _thumbPending at maxThumbDecodeQueue so a fast scroll over a huge folder cannot enqueue thousands ahead of the on-screen top; (b) suppresses invalidate() when _thumbScrolling is active (updateSmoothScrolling already invalidates each scroll step, so thumbnail pop-in no longer triggers a competing extra repaint). Results are still cached every frame so scrolling back reuses them.
+4. Thumbnail worker + headless path now use loadPngScaled(path, thumbnailTargetSide) (fused decode+downscale) instead of loadPngImage + downscaleThumbnail; downscaleThumbnail retained for testDownscale.
+
+Verified: scroll-test passes; dub test 37 modules pass; demo builds and launches, thumbnails render (detail view screenshot confirmed).
+
+=== IMPLEMENTATION 2026-08-29 (round 4): measured the REAL renderer — Vulkan, not software ===
+
+User: 'Why scrolling still being blocked and not smooth.' Needed to stop guessing and measure the ACTUAL renderer.
+
+KEY FINDING: the app runs on **Vulkan** (automatic renderer), NOT software. Proved by instrumenting the demo on launch to write rendererName() + rendererFallbackReason() to a file: 'Vulkan fallback='. (Vulkan smoke test also passes on this machine.)
+
+MISLEADING EARLIER MEASUREMENT: the first paint-timing probe (tests/paint_timing_probe.d) is compiled with AuroraHeadless, which FORCES the software renderer (render/select.d: version AuroraHeadless - returns new SoftwareRenderer). On software, scrolling shows ~10.5ms/frame paint (scene ~1.9ms + render ~7.9ms full-window redraw) + a 52ms stall max -> software scroll is genuinely slow. BUT the real app uses Vulkan, so software numbers do NOT apply to the user's experience.
+
+REAL VULKAN numbers (temporary AURORA_FMPROFILE=1 diagnostics in the demo onTick + window.d scene/render split, measured on the real running app):
+- scene_us ~3.5ms (layout + paint tree)
+- render_us ~0.45ms (Vulkan GPU submit)
+- fullRedraws=0, partialRedraws=0 even at rest -> dirty-region compositor works on Vulkan
+- geoUploads increments EVERY frame even at rest (~972, 984, ...) -> the base draw list revision changes every frame so base geometry is re-uploaded. This is the one suspicious constant cost but it is small on GPU.
+
+CONCLUSION: On Vulkan the paint+render is ~4ms/frame — well within the 16ms budget. Scrolling is NOT blocked by paint/render on Vulkan. Therefore the perceived 'blocking' is the **thumbnail decode worker threads saturating the 4 physical cores (i5-7300HQ)**, starving the UI thread which shares them (40ms/inflate per 1920x1080 image x 4 workers ≈ 100% CPU on all cores during a scroll that triggers fresh decodes). The round-2/scaled decode (halved memory, ~1.1x speed) + round-3 scrolling-aware drain (cap queue, no competing repaint) reduce the burden, but the fundamental CPU ceiling remains: on a 4-core box, decoding ~10 large thumbnails/sec cannot be hidden while the same cores must also drive the UI.
+
+Remaining true fix for the 'blocked scroll' on Vulkan: make thumbnail decode NOT contend with the UI thread. Options: (a) persistent on-disk thumbnail cache (user said optional/last) so scroll rarely decodes; (b) throttle worker decode rate while the user is actively scrolling; (c) accept that a 2258-image folder on 4 cores is CPU-bound. The paint/render path is NOT the bottleneck.
+
+=== IMPLEMENTATION 2026-08-29 (round 5): decode workers at IDLE priority -> scrolling always wins ===
+
+User: 'Why can't you make it async and prioritize scrolling first instead of anything else.' The decode ALREADY runs on dedicated worker thread(s) — the problem is they ran at THREAD_PRIORITY_NORMAL, the SAME priority as the UI thread. On the 4-core i5-7300HQ, 4 normal-priority decode workers (~40 ms/inflate each) fought the UI thread evenly, so scrolling did not reliably get the CPU.
+
+FIX (demos/windows_file_manager.d ensureThumbnailWorker): after starting each worker thread, set thread.priority = Thread.PRIORITY_MIN (= THREAD_PRIORITY_IDLE on Windows, -15). The UI thread stays at normal (0). On a shared core, the OS always schedules the normal-priority UI thread ahead of idle-priority workers, so scrolling preempts decode: decode only fills the scheduler gaps (when the UI is idle/input-waiting). This is the literal 'async + scrolling-first' behavior.
+
+CRITICAL GOTCHA (measured): D's Thread.priority setter THROWS 'Unable to set thread priority' if called BEFORE thread.start() (SetThreadPriority is rejected before the OS thread exists). Setting it AFTER start() succeeds (probe verified returns -15). So the priority must be set after start() and wrapped in try/catch (best-effort; a platform that refuses must not crash the app). A probe (tests/prio_probe.d) reproduced the pre-start throw, then confirmed the after-start set works.
+
+VERIFIED: thread-priority scan of the running app (CreateToolhelp32Snapshot + GetThreadPriority) shows 4 worker threads at basePrio=1 prio=-15 (THREAD_PRIORITY_IDLE) while the UI/main thread is basePrio=8 prio=0 (normal). Prior to the fix the app CRASHED after launch because priority was set pre-start and threw uncaught; after the start()/try-catch ordering it stays alive. dub test 37 modules pass; file-manager-scroll-test passes.
+
+=== IMPLEMENTATION 2026-08-29 (round 6): frame-loop pacing — the real 60fps scroll fix ===
+
+User: 'Why scrollbar scrolling still not always 60fps priority and not always responsive.' Measured, not guessed.
+
+BOTTLENECK FOUND (measured with a frame-gap profiler + per-process CPU):
+- IDLE CPU = 0.9% (app is fine at rest).
+- SCROLL CPU = 89% (!!!!) on the real 2258-image folder AND 79% even on an EMPTY folder -> the REnder LOOP itself spins during scroll, NOT the decode workers.
+- Root cause: the Win32 render loop's pacing. (1) It used GetTickCount (15.6ms resolution) to compute the animation delta, quantizing smooth-scroll deltas to 0/16ms (measured thousands of 4-6us painted-frame gaps + a few 16ms gaps -> not a steady cadence). (2) The low-latency busy-yield (window defaults lowLatency=true) spun MsgWait(0)+SwitchToThread whenever _needsPaint, so any animation repaint (scroll) busy-spun to ~90% CPU.
+
+FIX (source/aurora/platform/win32.d):
+- Replaced GetTickCount() delta with QueryPerformanceCounter for an accurate, high-resolution per-frame delta (no more 0/16ms quantization).
+- Added a frame-time limiter: _frameIntervalTicks = QPCfreq/60; after each paint, sleep the precise remainder to the next 60fps deadline (re-anchoring if we fell behind so we never burst-catch-up). A guaranteed Sleep paces even when messages are queued; a fixed 16ms MsgWait did NOT (MsgWait returns immediately on QS_ALLINPUT).
+- Busy-yield is now gated to ONLY a true pointer capture: added NativeWindowSink.onNativeContinuousPointerFrames() (implemented by GuiWindow -> continuousPointerFrames(), true only while _captured wants continuous pointer frames). Scroll/animations are NOT continuous-pointer frames, so they pace instead of busy-yield.
+- Gated onNativeTick() on a minimum time quantum (accumulate micro-deltas, tick only every _tickQuantumSeconds=4ms, or immediately on input). Before, onNativeTick was called on every micro-delta spin (tens of thousands/sec), running the animation/drain logic each time.
+- _frameIntervalTicks is now ALWAYS perfFreq/60 (was 0 when lowLatency=true, which disabled pacing entirely).
+
+MEASURED RESULT (per-process CPU over active scroll, 120 wheel notches):
+- Empty folder: 79% -> 33%.
+- Real 2258-image Screenshots folder: 89.4% -> 37.7%.
+- Idle CPU: 0.9% -> 0.3-0.9%.
+- Decode workers remain at idle (-15) priority so they never compete with the UI.
+The UI thread now renders at a steady ~60fps cadence instead of spinning, so scroll is consistent and responsive.
+
+VERIFIED: dub test 37 modules pass; file-manager-scroll-test passes; app launches and stays alive (idle ~0.9%); 7 idle-priority worker threads present.
+
