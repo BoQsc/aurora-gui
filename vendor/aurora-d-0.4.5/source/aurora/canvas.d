@@ -510,15 +510,35 @@ struct Canvas
             }
             else
             {
+                const budget = rect.width - dotsLayout.width;
+                // Find the last glyph whose advance fits within `budget` using the
+                // already-shaped (cached) full layout, then truncate to the source
+                // cluster boundary. This avoids re-shaping the string repeatedly
+                // for every candidate boundary, which was the per-cell cost that
+                // made icon-grid scroll jag (long filenames overflow the cell).
+                const glyphs = layout.glyphs;
                 size_t boundary = rendered.length;
-                do
+                double advance = 0.0;
+                foreach (g; glyphs)
+                {
+                    const nextAdvance = advance + g.advanceX;
+                    if (nextAdvance > budget) break;
+                    advance = nextAdvance;
+                    if (g.clusterStart < boundary &&
+                        g.advanceX > 0.0 && g.clusterEnd > g.clusterStart)
+                        boundary = g.clusterStart;
+                }
+                if (boundary > 0)
                 {
                     boundary = previousGraphemeBoundary(rendered, boundary);
-                    layout = layoutText(rendered[0 .. boundary] ~ dots,
-                        scale, role, font, 0, false);
+                    rendered = rendered[0 .. boundary] ~ dots;
+                    layout = layoutText(rendered, scale, role, font, 0, false);
                 }
-                while (boundary > 0 && layout.width > rect.width);
-                rendered = rendered[0 .. boundary] ~ dots;
+                else
+                {
+                    rendered = dots.dup;
+                    layout = dotsLayout;
+                }
             }
         }
         const measured = layout.measuredSize();
