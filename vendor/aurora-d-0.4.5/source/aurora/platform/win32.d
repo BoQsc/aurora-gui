@@ -1203,7 +1203,11 @@ else version (Windows)
 
                     // Repaint the newest pointer-driven state before an input
                     // stream can starve presentation of the frame it produced.
-                    if (options.lowLatency && latencySensitive && _needsPaint)
+                    // Only break for a real pointer capture (drag); a wheel scroll
+                    // is discrete and the paced loop presents it anyway, so we must
+                    // not bundle a burst of wheel events into a spin.
+                    if (options.lowLatency && latencySensitive && _needsPaint &&
+                        sink.onNativeContinuousPointerFrames())
                         break;
                 }
                 if (_closed) break;
@@ -1236,12 +1240,6 @@ else version (Windows)
 
                 if (!_closed)
                 {
-                    // Busy-yield only for a true pointer transform (drag) capture,
-                    // where every newest pointer frame matters and latency beats
-                    // CPU. Scroll/animations are NOT continuous-pointer frames: they
-                    // must pace. The window exposes this via onNativeContinuous-
-                    // PointerFrames(); busy-yielding for an animation repaint burns
-                    // the CPU (spins to 90%+) and makes scroll inconsistent.
                     if (_needsPaint && options.lowLatency &&
                         sink.onNativeContinuousPointerFrames())
                     {
