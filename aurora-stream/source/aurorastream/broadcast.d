@@ -2102,14 +2102,29 @@ final class BroadcastWorker
                 }
                 else if (videoFrameFrozenTicks >= liveVideoFrameDeadlineTicks)
                 {
+                    // Desktop Duplication can stall transiently (mode change,
+                    // alt-tab, UAC, lock) — treat like AcquireNextFrame loss:
+                    // mark recoverable so run() relaunches FFmpeg (up to 3x)
+                    // instead of killing the Twitch/YouTube stream with a
+                    // frozen black frame.
                     failureReason =
                         "Encoded video frame count stopped advancing for 12 " ~
                         "seconds while output time continued. Desktop capture " ~
-                        "or video encoding stalled, so Twitch may receive " ~
-                        "audio-only output with a frozen or black frame.";
-                    videoCaptureTermination = true;
-                    _videoCaptureFailed = true;
-                    _videoCaptureFailureReason = failureReason;
+                        "or video encoding stalled — attempting to reconnect " ~
+                        "capture.";
+                    _captureLossRecoverable = true;
+                    if (!_captureLossRecoverableDiagnosed)
+                    {
+                        _captureLossRecoverableDiagnosed = true;
+                        _status = "Desktop capture stalled — reconnecting…";
+                        appendDiagnostic(failureReason);
+                    }
+                    appendPersistentLog("VIDEO CAPTURE STALLED: " ~ failureReason);
+                    // Let the run() relaunch path handle it; do not set
+                    // _videoCaptureFailed/_failed here — that is only for
+                    // exhausted retries.
+                    // Fall through to captureLoss check below which exits
+                    // monitor so run() can relaunch.
                 }
                 else if (slowSpeedTicks >= slowSpeedDeadlineTicks)
                 {
