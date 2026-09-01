@@ -4748,3 +4748,13 @@ NOT ADDRESSED (verified infeasible now):
 
   [x] Multi-core thumbnail decoding: thread pool (min(totalCPUs,4)) shares the pending queue; PNG thumbnails decode in parallel.
 
+## 2026-09-01 — Aurora Stream: YouTube streaming stalls after ~66 seconds — REGRESSION, FIXED
+- [x] User: "Why am I unable to stream using aurora stream to youtube, everything is setup" — "it worked long time ago now after lots of changes no longer works"
+- [x] Diagnosis: RTMP connects + NVENC 129 fps (2.15x) + 87 Mbps up — all healthy. Stream ran 66 s then `out_time` stalled at 01:08.77 while `frame` climbed 4212→4420, speed 0.943x→0.795x, watchdog killed after 12 s below 0.95x. `git log -S drop_pkts_on_overflow` proved it: commit `fcfe059` removed `-drop_pkts_on_overflow 1` and grew `queue_size` 360→1200 + added the watchdog. The 20 s queue absorbs short stalls but any longer YouTube ingest stall fills it → backpressure → watchdog kill (worse than a freeze-then-resume).
+- [x] Was there a real reason? Yes — comment said "Twitch can buffer indefinitely after receiving a damaged stream" so queue must not drop. That concern is valid for a mid-GOP gap, but `restart_with_keyframe 1` already guarantees resume at a keyframe (no damaged GOP). Without dropping, stream dies and needs manual restart — worse UX.
+- [x] Proper fix (not a blind revert): keep 1200 queue + watchdog, re-add `-drop_pkts_on_overflow 1` with `-restart_with_keyframe 1`. Short stalls absorbed losslessly; long stalls drop stale packets, encoder stays full-speed, stream resumes near live at next keyframe (safe for Twitch+YouTube). Watchdog now fires only on true encoder/capture stalls.
+- [x] Changed `aurora-stream/source/aurorastream/broadcast.d:1020` (FIFO comment + flag), header `bounded non-dropping FIFO` → `bounded FIFO (drop stale on overflow, restart at keyframe)`, `tests/verify-audio-transport.py` assertion flipped to expect drop.
+- [x] Verified: `dub test` 40 modules (root), `dub test --config=application` 51 modules (aurora-stream), `python tests/verify-audio-transport.py` all pass.
+- [x] Diagnostic scripts created: TEST-RTMP-CONNECT.bat, TEST-UPLOAD-BANDWIDTH.bat, TEST-ENCODE-LOCAL.bat, TEST-SYSTEM-RESOURCES.bat in aurora-stream/.
+- [x] User workaround (until new build): RTMPS, lower bitrate, close background apps, Defender exclusion, wait 30 s between restarts — but the code fix now handles the stall gracefully.
+

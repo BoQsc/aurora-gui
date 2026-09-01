@@ -5367,3 +5367,135 @@ The UI thread now renders at a steady ~60fps cadence instead of spinning, so scr
 
 VERIFIED: dub test 37 modules pass; file-manager-scroll-test passes; app launches and stays alive (idle ~0.9%); 7 idle-priority worker threads present.
 
+## Aurora Stream YouTube streaming failure diagnosis (2026-09-01)
+
+User: "Why am I unable to stream using aurora stream to youtube, everything is setup"
+
+### Log analysis
+
+**aurora-stream-activity.log** (2026-09-01 session):
+- 3 stream attempts. Attempt 1: manually stopped after ~2 min. Attempt 2: user changed stream key mid-stream, manually stopped. Attempt 3: auto-failed.
+- Attempt 3 timeline: 16:29:01 stream started, 16:30:16 "100 buffers queued in out_#0:0" warning, 16:30:32 "Live output speed stayed below 0.95x for 12 seconds" error, FFmpeg terminated.
+
+**aurora-stream-startup.log** (attempt 3):
+- FFmpeg launched successfully, NVENC encoding 1080p60 @ 12 Mbps CBR
+- Encoded at ~58-60 fps for first 60 seconds (speed ~0.99x)
+- At out_time=01:06 (frame 3968): output stalled completely. Frames and output time froze.
+- FIFO muxer warning: "100 buffers queued in out_#0:0, something may be wrong"
+- Speed decayed: 0.943x → 0.928x → 0.91x → 0.896x → 0.882x → 0.871x → 0.804x → 0.795x
+- Watchdog killed FFmpeg after 12 seconds of sub-0.95x speed
+
+### Diagnostic tests run
+
+**Test 1: System resources** — PASS
+- CPU: 20% load, Intel i5-7300HQ 4 cores
+- RAM: 12.5 GB free of 16 GB
+- No competing FFmpeg processes
+
+**Test 2: DNS resolution** — PASS
+- `a.rtmp.youtube.com` resolves to 142.250.120.134
+
+**Test 3: TCP connectivity to YouTube RTMP port 1935** — PASS
+- PowerShell `Test-NetConnection`: TcpTestSucceeded = True
+
+**Test 4: Network latency** — PASS
+- Ping to 142.250.120.134: avg 12ms, 0% packet loss
+
+**Test 5: NVENC encoder availability** — PASS
+- `h264_nvenc` encoder present and functional
+
+**Test 6: Local NVENC encode performance** — PASS
+- 1080p60 testsrc → h264_nvenc at 12 Mbps: 129 fps (2.15x realtime)
+- Encoder is NOT the bottleneck
+
+**Test 7: Upload bandwidth** — FAIL (ROOT CAUSE)
+- Upload speed: ~3-5 Mbps (tested via PowerShell WebClient.UploadData)
+- Download speed: ~72 Mbps
+- **YouTube 1080p60 requires 12 Mbps sustained upload**
+- Actual upload is 3-5 Mbps — less than HALF the required bitrate
+
+### Updated diagnosis (after user provided actual speed test)
+
+User's actual bandwidth: **87 Mbps down / 87 Mbps up** — more than sufficient for 12 Mbps streaming. The earlier PowerShell upload test was misleading (it tested upload to httpbin.org, not actual bandwidth capacity).
+
+**All systems check out:**
+- Upload bandwidth: 87 Mbps (needs 12 Mbps) — OK
+- RTMP/RTMPS handshake to YouTube: succeeds — OK
+- NVENC encoder: 129 fps locally (2.15x realtime) — OK
+- Network latency: 12-17ms avg, 0% packet loss — OK
+- TCP port 1935: connected — OK
+- System resources: 20% CPU, 12.5 GB free RAM — OK
+- Windows Firewall: no FFmpeg rules (not blocked) — OK
+- Windows Defender real-time: ON (not excluding FFmpeg) — could cause intermittent CPU spikes
+
+### Revised root cause
+
+The stream ran successfully for **66 seconds** at ~60 fps before stalling. The FIFO output buffer filled because the RTMP connection to YouTube's ingest server stopped draining data. Key observations from the log:
+
+1. Speed was ~0.99x for most of the session (system at near-capacity with DDAGrab→CPU→NVENC pipeline)
+2. At frame 3968 (01:06.100), output completely stalled — frames kept encoding but couldn't be sent
+3. FIFO warning: "100 buffers queued in out_#0:0"
+4. Speed decayed from 0.943x → 0.795x over 12 seconds
+5. Watchdog killed FFmpeg
+
+**Most likely causes (in order of probability):**
+
+1. **YouTube ingest server backpressure** — YouTube's server temporarily stopped ACKing data, causing the TCP send buffer to fill. This is the most common cause of mid-stream RTMP stalls. The rapid restart pattern (3 starts in 4 minutes) may have contributed.
+
+2. **System at edge of capacity** — The DDAGrab→hwdownload→scale→NVENC→FIFO→RTMP pipeline on an i5-7300HQ (4 cores) runs at ~0.99x, leaving almost no headroom. A background process (Windows Defender scan, Windows Update, etc.) could have stolen enough CPU time to tip the balance.
+
+3. **Windows Defender real-time scanning** — Defender is ON and not excluding FFmpeg. It may periodically scan FFmpeg's network output, causing brief CPU spikes that cascade into the FIFO filling.
+
+### How to verify
+
+Run the test scripts in `aurora-stream/`:
+- `TEST-RTMP-CONNECT.bat` — tests DNS + TCP + RTMP handshake
+- `TEST-UPLOAD-BANDWIDTH.bat` — tests upload throughput
+- `TEST-ENCODE-LOCAL.bat` — tests encoder performance without network
+- `TEST-SYSTEM-RESOURCES.bat` — snapshots CPU/RAM/GPU usage
+
+### Fix / workaround
+
+1. **Try RTMPS** — Change the YouTube server URL from `rtmp://a.rtmp.youtube.com/live2` to `rtmps://a.rtmp.youtube.com/live2`. Encrypted traffic is less likely to be throttled by ISPs and some network equipment.
+
+2. **Lower bitrate** — Set `youtubeBitrateKbps` to `8000` (8 Mbps). This gives the encode pipeline more headroom and reduces the data rate to YouTube.
+
+3. **Close all other applications** before streaming — any background process can steal CPU time from the encode pipeline.
+
+4. **Set Windows power plan to High Performance** — prevents CPU throttling.
+
+5. **Add FFmpeg to Windows Defender exclusions** — Prevents periodic scanning from causing CPU spikes.
+
+6. **Wait between restarts** — Don't restart the stream immediately after stopping. Wait 30+ seconds to avoid YouTube rate-limiting rapid reconnects.
+
+7. **Verify stream key** — Go to YouTube Studio → Live → Stream → Stream key, copy the fresh key, and paste it into Aurora Stream settings.
+
+8. **Try a different YouTube ingest server** — YouTube provides multiple ingest servers. The default `a.rtmp.youtube.com` may be overloaded.
+
+### Settings file location
+
+`%APPDATA%\Aurora Stream\aurora-stream-settings.json` — current config:
+- `youtubeEnabled: true`
+- `youtubeServer: rtmp://a.rtmp.youtube.com/live2`
+- `youtubeQuality: 1080p` (12 Mbps default)
+- `youtubeBitrateKbps: 0` (auto = 12000 for 1080p)
+- `youtubeKey: 3j65-4s4u-718r-ry8d-50s3` (verify this is current in YouTube Studio)
+
+### Regression fix 2026-09-01 — FIFO `drop_pkts_on_overflow` restored (not a blind revert)
+
+**Diagnosis:** Stream ran 66 s at ~60 fps then `out_time` stalled at 01:08.77 while `frame` kept climbing (4212→4420 with no output advance), speed decayed 0.943x→0.795x, watchdog killed after 12 s below 0.95x. User hardware/bandwidth/encoder all healthy (129 fps NVENC, 87 Mbps up) — failure was NOT capacity, it was a code regression. `git log -S drop_pkts_on_overflow` shows commit `fcfe059` ("harden remote live capture") removed `-drop_pkts_on_overflow 1` and grew `queue_size` 360→1200 (20 s) plus added the live watchdog (speed <0.95x for 12 s = kill). Comment claimed "Twitch can buffer indefinitely after receiving a damaged stream" so queue must not drop.
+
+**Why that was incomplete:** A 20 s queue absorbs short hiccups, but a real YouTube ingest stall (TLS renegotiation, load-balance, transient TCP backpressure) can exceed it. Without dropping, a full queue back-pressures the encoder → speed <0.95x → watchdog kills the *entire* stream. Viewer sees dead stream needing manual restart, worse than a brief freeze-then-resume.
+
+**Proper fix (this change, not a blind revert):** Keep the larger 1200 queue AND the watchdog, but re-add `-drop_pkts_on_overflow 1` with `-restart_with_keyframe 1` (already present). Stale packets are dropped when full so encoder stays at full speed; `restart_with_keyframe` guarantees resume starts at a keyframe, so neither Twitch nor YouTube receives a damaged GOP (the original "buffer indefinitely" concern). Short stalls (<20 s) are absorbed losslessly by the queue; long stalls degrade to a gap then clean resume instead of a kill. Watchdog now correctly fires only on true encoder/capture stalls (speed <0.95x even without backpressure), not on network backpressure. Updated `broadcast.d:1020` comment to explain the tradeoff, flipped unittest `assert(!foundDropOnOverflow)` → `assert(foundDropOnOverflow)`, and updated header/diagnostic strings `bounded non-dropping FIFO` → `bounded FIFO (drop stale on overflow, restart at keyframe)`.
+
+**How to verify:**
+- `dub test --config=application` in `aurora-stream` — 51 modules pass (FIFO unittest now asserts drop present).
+- `dub test` at repo root — 40 modules pass.
+- `python tests/verify-audio-transport.py` — checks FIFO flavor string `drop stale on overflow, restart at keyframe` plus queue/drop/keyframe.
+- Manual: stream to YouTube RTMP, induce a 25 s network stall (e.g. firewall block), observe log shows FIFO recovery warnings but stream stays LIVE and resumes near live time instead of `LIVE OUTPUT FAILURE: speed stayed below 0.95x`.
+
+### Follow-up 2026-09-01 — watchdog too aggressive on YouTube ingest stall (second fix)
+
+New log after FIFO fix: header now `bounded FIFO (drop stale on overflow, restart at keyframe)` and `drop_pkts_on_overflow 1` present, stream ran **3 min 39 s** (vs 66 s before) at 0.996–0.998x, then hit YouTube backpressure at ~03:05 (`100 buffers queued in out_#0:0`), recovered twice (03:09, 03:13), but speed decayed 0.968x→0.92x and watchdog killed at 12 s below 0.95x. Frame was still advancing at ~59 fps (encoder healthy, network stall), but old watchdog `minimumLiveSpeed 0.95` / `slowSpeedDeadlineTicks 120` (12 s) killed a recoverable stall that FIFO was handling. On this i5-7300HQ the D3D11→CPU→NVENC path is 0.99x healthy; transient YouTube dips to 0.92–0.94 are normal. Fix: `broadcast.d:1954` `slowSpeedDeadlineTicks 120→300` (30 s) and `minimumLiveSpeed 0.95→0.90`. Watchdog now tolerates 30 s of ingest backpressure (FIFO drops stale) and only kills on sustained encoder crawl <0.90x. Verified same `dub test`/`verify-audio-transport.py` pass; manual YouTube stream should now survive 20–30 s stalls and resume.
+

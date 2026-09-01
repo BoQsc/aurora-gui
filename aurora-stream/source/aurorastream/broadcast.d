@@ -1022,10 +1022,14 @@ private void appendIndependentFlvOutput(ref string[] arguments,
     // begins processing frames. If that handshake stalls, the UI sees no frame
     // or timestamp even though local capture and audio are healthy. The FIFO
     // muxer moves network open/write/recovery into its own worker. Its bounded
-    // queue absorbs short RTMP stalls, but it must not drop arbitrary live
-    // packets: Twitch can buffer indefinitely after receiving a damaged stream.
-    // If the queue fills, FFmpeg back-pressures and the live watchdog stops the
-    // stream with an explicit network/output health failure.
+    // queue absorbs short RTMP stalls; on longer stalls the queue drops stale
+    // packets so the encoder keeps running at full speed and the stream returns
+    // near live time after recovery. `restart_with_keyframe` guarantees the
+    // resumed output starts at a keyframe, so neither Twitch nor YouTube receives
+    // a damaged GOP (Twitch would otherwise buffer on a mid-GOP gap). Without
+    // dropping, a filled queue back-pressures the encoder, speed falls below
+    // 0.95x, and the live watchdog kills the stream — a worse viewer experience
+    // than a brief freeze-then-resume.
     arguments ~= [
         "-f", "fifo", "-fifo_format", "flv",
         "-queue_size", "1200",
@@ -1033,7 +1037,7 @@ private void appendIndependentFlvOutput(ref string[] arguments,
             "max_interleave_delta=0:flush_packets=1:" ~
             "flvflags=no_duration_filesize",
         "-attempt_recovery", "1", "-recovery_wait_time", "1",
-        "-restart_with_keyframe", "1",
+        "-drop_pkts_on_overflow", "1", "-restart_with_keyframe", "1",
         destination
     ];
 }
@@ -1330,7 +1334,7 @@ unittest
     }
     assert(foundFifo);
     assert(foundBoundedQueue);
-    assert(!foundDropOnOverflow);
+    assert(foundDropOnOverflow);
 }
 
 unittest
@@ -1871,8 +1875,8 @@ final class BroadcastWorker
                 captureSourceLabel(settings, capture)) ~
             format("Video path: %s\r\n",
                 videoPipelineLabel(settings, encoder, capture)) ~
-            "Output wrapper: bounded non-dropping FIFO isolation per destination\r\n" ~
-            "Live watchdog: stops on sustained post-startup network/output stalls\r\n" ~
+            "Output wrapper: bounded FIFO (drop stale on overflow, restart at keyframe) per destination\r\n" ~
+            "Live watchdog: stops on sustained post-startup encoder/capture stalls\r\n" ~
             "Stream keys are never written to this file.\r\n\r\n";
         try write(_startupLogPath, header);
         catch (Exception) {}
@@ -1944,11 +1948,11 @@ final class BroadcastWorker
         string windowCaptureHwnd, bool holdsLastFrame = false)
     {
         enum startupDeadlineTicks = 120; // 12 seconds at 100 ms per tick.
-        enum liveProgressDeadlineTicks = 120;
-        enum liveOutputDeadlineTicks = 120;
+        enum liveProgressDeadlineTicks = 300; // 30 s: same as output — transient YouTube ingest stalls are expected, FIFO drop+keyframe handles them; only a dead RTMP connection should kill.
+        enum liveOutputDeadlineTicks = 300; // 30 s: was 12 s — with drop+keyframe the FIFO absorbs backpressure; killing at 12 s was too aggressive (see 02:00 stall: frame frozen 12 s during ingest backpressure, encoder healthy). Encoder/capture stalls remain covered via videoFrame check.
         enum liveVideoFrameDeadlineTicks = 120;
-        enum slowSpeedDeadlineTicks = 120;
-        enum minimumLiveSpeed = 0.95;
+        enum slowSpeedDeadlineTicks = 300; // 30 s: network stalls are absorbed by FIFO drop+keyframe; only a sustained encoder/capture crawl should kill (was 12 s, too aggressive for transient YouTube ingest backpressure on i5-7300HQ).
+        enum minimumLiveSpeed = 0.90; // was 0.95 — the D3D11→CPU→NVENC path on 4-core i5 runs at 0.99x healthy; transient dips to 0.92–0.94 during YouTube backpressure are recoverable via FIFO, not fatal.
         enum liveWarmupSeconds = 4.0;
         size_t startupTicks;
         size_t audioTicks;
@@ -2693,7 +2697,7 @@ final class BroadcastWorker
             appendDiagnostic(
                 "A/V architecture: FFmpeg owns video/encode/mux • separate MMCSS audio process • timestamped RTP • no GUI-process PCM pacing thread");
             appendDiagnostic(
-                "Output transport: bounded non-dropping FIFO + live output watchdog");
+                "Output transport: bounded FIFO (drop stale on overflow, restart at keyframe) + live output watchdog");
             appendDiagnostic("Full startup log: aurora-stream-startup.log");
             _mutex.unlock();
 

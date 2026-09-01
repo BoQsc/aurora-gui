@@ -232,9 +232,10 @@ require("CaptureSelection detectCaptureBackend(const EncoderSelection encoder)" 
 
 require('"-f", "fifo", "-fifo_format", "flv"' in BROADCAST and
         '"-queue_size", "1200"' in BROADCAST and
-        '"-drop_pkts_on_overflow"' not in BROADCAST and
-        "Live watchdog: stops on sustained post-startup network/output stalls" in BROADCAST,
-        "live RTMP output is not isolated behind a non-dropping FIFO plus watchdog")
+        '"-drop_pkts_on_overflow", "1"' in BROADCAST and
+        '"-restart_with_keyframe", "1"' in BROADCAST and
+        "Live watchdog: stops on sustained post-startup encoder/capture stalls" in BROADCAST,
+        "live RTMP output is not isolated behind a dropping FIFO (restart at keyframe) plus watchdog")
 require('"-f", "flv", outputPath' in diagnostic_args,
         "local file diagnostics must remain direct FLV")
 require("captureActive()" in BRIDGE and
