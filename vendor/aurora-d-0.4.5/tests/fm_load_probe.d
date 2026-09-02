@@ -7,7 +7,7 @@ import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : format;
 
-import demos.windows_file_manager : WindowsFileManagerRoot;
+import legacy_demos.windows_file_manager : WindowsFileManagerRoot;
 
 int main()
 {

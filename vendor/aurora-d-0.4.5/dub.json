@@ -54,7 +54,7 @@
       "name": "notepad",
       "targetType": "executable",
       "targetName": "aurora-notepad",
-      "mainSourceFile": "demos/notepad.d",
+      "mainSourceFile": "legacy_demos/notepad.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -83,7 +83,7 @@
       "name": "file-explorer",
       "targetType": "executable",
       "targetName": "aurora-file-explorer",
-      "mainSourceFile": "demos/file_explorer.d",
+      "mainSourceFile": "legacy_demos/file_explorer.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -112,7 +112,7 @@
       "name": "windows-file-manager",
       "targetType": "executable",
       "targetName": "aurora-windows-file-manager",
-      "mainSourceFile": "demos/windows_file_manager.d",
+      "mainSourceFile": "legacy_demos/windows_file_manager.d",
       "versions": [
         "AuroraWindowsFileManagerApp"
       ],
@@ -145,9 +145,9 @@
       "name": "desktop",
       "targetType": "executable",
       "targetName": "aurora-desktop",
-      "mainSourceFile": "demos/desktop_environment.d",
+      "mainSourceFile": "legacy_demos/desktop_environment.d",
       "sourceFiles": [
-        "demos/windows_file_manager.d"
+        "legacy_demos/windows_file_manager.d"
       ],
       "libs-linux": [
         "X11",
@@ -178,7 +178,7 @@
       "name": "taskbar",
       "targetType": "executable",
       "targetName": "aurora-taskbar",
-      "mainSourceFile": "demos/taskbar.d",
+      "mainSourceFile": "legacy_demos/taskbar.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -207,7 +207,7 @@
       "name": "titlebar",
       "targetType": "executable",
       "targetName": "aurora-titlebar",
-      "mainSourceFile": "demos/titlebar.d",
+      "mainSourceFile": "legacy_demos/titlebar.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -236,7 +236,7 @@
       "name": "font-gallery",
       "targetType": "executable",
       "targetName": "aurora-font-gallery",
-      "mainSourceFile": "demos/font_gallery.d",
+      "mainSourceFile": "legacy_demos/font_gallery.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -265,7 +265,7 @@
       "name": "font-capabilities",
       "targetType": "executable",
       "targetName": "aurora-font-capabilities",
-      "mainSourceFile": "demos/font_capabilities.d",
+      "mainSourceFile": "legacy_demos/font_capabilities.d",
       "libs-linux": [
         "X11",
         "dl"
@@ -380,7 +380,7 @@
       "targetName": "aurora-file-manager-scroll-test",
       "mainSourceFile": "tests/windows_file_manager_scroll.d",
       "sourceFiles": [
-        "demos/windows_file_manager.d"
+        "legacy_demos/windows_file_manager.d"
       ],
       "versions": [
         "AuroraHeadless"
@@ -406,7 +406,7 @@
       "targetName": "aurora-png-decode-probe",
       "mainSourceFile": "tests/png_decode_probe.d",
       "sourceFiles": [
-        "demos/windows_file_manager.d"
+        "legacy_demos/windows_file_manager.d"
       ],
       "versions": [
         "AuroraHeadless"
@@ -423,7 +423,7 @@
       "targetName": "aurora-fm-load-probe",
       "mainSourceFile": "tests/fm_load_probe.d",
       "sourceFiles": [
-        "demos/windows_file_manager.d"
+        "legacy_demos/windows_file_manager.d"
       ],
       "versions": [
         "AuroraHeadless"

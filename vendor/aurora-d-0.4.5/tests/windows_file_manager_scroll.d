@@ -7,7 +7,7 @@ import std.stdio : writeln;
 import std.string : format;
 import std.zlib : compress;
 
-import demos.windows_file_manager : WindowsFileManagerRoot;
+import legacy_demos.windows_file_manager : WindowsFileManagerRoot;
 
 /// CRC-32 (ITU V.42) used by the PNG chunk checksums.
 private uint crc32Of(const(ubyte)[] data)

@@ -510,7 +510,7 @@ def main() -> int:
         print(f"Asset verification failed: {error}", file=sys.stderr)
         return 1
 
-    d_files = [*root.glob("source/**/*.d"), *root.glob("demos/*.d"), *root.glob("tests/*.d")]
+    d_files = [*root.glob("source/**/*.d"), *root.glob("legacy_demos/*.d"), *root.glob("tests/*.d")]
     d_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in d_files)
     print(
         f"Asset verification passed for Aurora-D {version}: "

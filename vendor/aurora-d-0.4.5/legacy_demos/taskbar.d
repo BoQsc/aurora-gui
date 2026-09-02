@@ -1,4 +1,4 @@
-module demos.taskbar;
+module legacy_demos.taskbar;
 
 import aurora;
 import std.stdio : writeln;

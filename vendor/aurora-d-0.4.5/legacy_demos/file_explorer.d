@@ -1,4 +1,4 @@
-module demos.file_explorer;
+module legacy_demos.file_explorer;
 
 import aurora;
 import std.algorithm.sorting : sort;

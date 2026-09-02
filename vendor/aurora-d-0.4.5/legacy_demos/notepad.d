@@ -1,4 +1,4 @@
-module demos.notepad;
+module legacy_demos.notepad;
 
 import aurora;
 import std.file : exists, readText, write;

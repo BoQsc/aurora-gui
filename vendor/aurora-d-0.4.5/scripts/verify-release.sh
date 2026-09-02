@@ -30,11 +30,11 @@ mkdir -p "$work/host" "$work/cross"
 printf '%s\n' 'Compiling host graphs with warnings treated as errors'
 for source in \
   source/aurora/package.d \
-  demos/notepad.d \
-  demos/file_explorer.d \
-  demos/desktop_environment.d \
-  demos/taskbar.d \
-  demos/font_gallery.d \
+  legacy_demos/notepad.d \
+  legacy_demos/file_explorer.d \
+  legacy_demos/desktop_environment.d \
+  legacy_demos/taskbar.d \
+  legacy_demos/font_gallery.d \
   tests/vulkan_smoke.d
 do
   name=$(basename "$source" .d)
@@ -66,11 +66,11 @@ if "$compiler_path" --version | grep -q '^LDC'; then
     mkdir -p "$target_dir"
     for source in \
       source/aurora/package.d \
-      demos/notepad.d \
-      demos/file_explorer.d \
-      demos/desktop_environment.d \
-      demos/taskbar.d \
-      demos/font_gallery.d \
+      legacy_demos/notepad.d \
+      legacy_demos/file_explorer.d \
+      legacy_demos/desktop_environment.d \
+      legacy_demos/taskbar.d \
+      legacy_demos/font_gallery.d \
       tests/vulkan_smoke.d
     do
       name=$(basename "$source" .d)

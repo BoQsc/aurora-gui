@@ -1,4 +1,4 @@
-module demos.titlebar;
+module legacy_demos.titlebar;
 
 import aurora;
 import std.conv : to;

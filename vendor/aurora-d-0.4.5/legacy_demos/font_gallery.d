@@ -1,4 +1,4 @@
-module demos.font_gallery;
+module legacy_demos.font_gallery;
 
 import aurora;
 import std.path : baseName;

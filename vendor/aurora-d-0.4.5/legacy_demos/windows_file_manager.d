@@ -1,4 +1,4 @@
-module demos.windows_file_manager;
+module legacy_demos.windows_file_manager;
 
 import aurora;
 import std.algorithm.sorting : sort;

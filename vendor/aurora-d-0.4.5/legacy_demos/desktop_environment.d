@@ -1,7 +1,7 @@
-module demos.desktop_environment;
+module legacy_demos.desktop_environment;
 
 import aurora;
-import demos.windows_file_manager : WindowsFileManagerRoot;
+import legacy_demos.windows_file_manager : WindowsFileManagerRoot;
 import std.conv : to;
 import std.utf : toUTF8;
 

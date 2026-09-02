@@ -4,7 +4,7 @@ module font_capabilities_smoke;
 /// a software renderer and writes a PPM so we can verify the glyph paths.
 
 import aurora;
-import demos.font_capabilities : CapabilitiesRoot;
+import legacy_demos.font_capabilities : CapabilitiesRoot;
 import std.stdio : writeln;
 
 int main(string[] args)

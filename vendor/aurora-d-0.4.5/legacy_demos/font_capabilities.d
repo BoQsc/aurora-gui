@@ -1,4 +1,4 @@
-module demos.font_capabilities;
+module legacy_demos.font_capabilities;
 
 /**
  * Aurora font capabilities demo.

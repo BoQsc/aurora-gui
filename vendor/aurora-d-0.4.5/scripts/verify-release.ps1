@@ -29,11 +29,11 @@ try {
   Write-Host "Compiling host graphs with warnings treated as errors"
   $nativeSources = @(
     "source/aurora/package.d",
-    "demos/notepad.d",
-    "demos/file_explorer.d",
-    "demos/desktop_environment.d",
-    "demos/taskbar.d",
-    "demos/font_gallery.d",
+    "legacy_demos/notepad.d",
+    "legacy_demos/file_explorer.d",
+    "legacy_demos/desktop_environment.d",
+    "legacy_demos/taskbar.d",
+    "legacy_demos/font_gallery.d",
     "tests/vulkan_smoke.d"
   )
   foreach ($source in $nativeSources) {
