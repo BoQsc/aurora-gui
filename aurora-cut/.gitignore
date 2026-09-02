@@ -1,0 +1,12 @@
+/.dub/
+/build/
+/aurora-cut
+/aurora-cut.exe
+/aurora-cut-startup.log
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log
+/embedded/*
+!/embedded/.gitkeep

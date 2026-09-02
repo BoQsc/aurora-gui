@@ -11,7 +11,6 @@
 **/__pycache__/
 /aurora-cut/aurora-cut
 /aurora-cut/aurora-cut.exe
-/aurora-cut.exe
 *.o
 *.obj
 *.pdb
@@ -32,8 +31,6 @@
 *.aac
 
 *.auroracut
-/embedded/*
-!/embedded/.gitkeep
 /aurora-cut/embedded/*
 !/aurora-cut/embedded/.gitkeep
 *-test-application.exe
