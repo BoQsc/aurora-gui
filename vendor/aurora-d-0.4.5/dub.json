@@ -321,6 +321,15 @@
       ]
     },
     {
+      "name": "hinting-regression-probe",
+      "targetType": "executable",
+      "targetName": "aurora-hinting-regression-probe",
+      "mainSourceFile": "tests/hinting_regression_probe.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
       "name": "text-boundaries",
       "targetType": "executable",
       "targetName": "aurora-text-boundaries",

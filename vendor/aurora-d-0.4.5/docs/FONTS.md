@@ -163,10 +163,11 @@ For a requested glyph and pixel size Aurora:
 2. applies component/CFF transforms in font units;
 3. adaptively flattens curves to edges;
 4. computes pixel bounds and baseline bearings;
-5. evaluates a nonzero winding fill on a 4×4 sample grid;
+5. evaluates a nonzero winding fill on a bounded sample grid (8×8 for UI sizes,
+   4×4 for larger text);
 6. stores 0–255 A8 coverage.
 
-The deterministic supersampled path favors cross-platform consistency over TrueType grid fitting. Aurora 0.4.2 adds two coverage policies: `smooth` retains the raw samples, while `sharp` expands intermediate A8 contrast. At high DPI the glyph is rasterized at monitor-pixel size rather than enlarging a 96-DPI bitmap. Small text can still differ from a native hinted renderer because TrueType bytecode and LCD subpixel rendering are not executed.
+The deterministic supersampled path favors cross-platform consistency over TrueType grid fitting. UI-sized glyphs use 8×8 coverage samples to preserve thin stems and round joins; larger glyphs use 4×4 to bound cost. Aurora 0.4.2 adds two coverage policies: `smooth` retains the raw samples, while `sharp` expands intermediate A8 contrast. At high DPI the glyph is rasterized at monitor-pixel size rather than enlarging a 96-DPI bitmap. Small text can still differ from a native hinted renderer because TrueType bytecode and LCD subpixel rendering are not executed.
 
 ## Rasterization modes
 

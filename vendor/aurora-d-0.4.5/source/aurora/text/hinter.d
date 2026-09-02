@@ -633,7 +633,13 @@ final class TrueTypeHinter
     {
         prepare(input.unitsPerEm, input.pixelSize, input.fpgm, input.prep);
 
-        auto ctx = new Context(this, _cvt, _storage, input.unitsPerEm, input.pixelSize);
+        // CVT and storage are scaler state after fpgm/prep, not mutable state
+        // shared between glyph programs. A glyph instruction may write either
+        // array, so give every glyph a private working copy; otherwise a
+        // preceding glyph can change the next glyph's rounding decisions and
+        // make hinting order-dependent.
+        auto ctx = new Context(this, _cvt.dup, _storage.dup,
+            input.unitsPerEm, input.pixelSize);
         ctx.normalizedAxes = input.normalizedAxes.dup;
         ctx.fdefs[] = _fdefs[];
         ctx.idefs[] = _idefs[];
@@ -826,8 +832,11 @@ final class TrueTypeHinter
                     ctx.fdefs[f].active = true;
                     ctx.fdefs[f].body = ctx.code;
                     ctx.fdefs[f].start = ctx.ip;
-                    ctx.ip = skipToEndf(ctx.code, ctx.ip);
-                    ctx.fdefs[f].end = ctx.ip;
+                    // `end` is exclusive and must include ENDF so a CALL
+                    // executes the return opcode. The program scanner itself
+                    // then resumes after ENDF.
+                    ctx.fdefs[f].end = skipToEndf(ctx.code, ctx.ip) + 1;
+                    ctx.ip = ctx.fdefs[f].end;
                     continue;
                 }
                 case 0x89: // IDEF
@@ -838,8 +847,8 @@ final class TrueTypeHinter
                     ctx.idefs[op].active = true;
                     ctx.idefs[op].body = ctx.code;
                     ctx.idefs[op].start = ctx.ip;
-                    ctx.ip = skipToEndf(ctx.code, ctx.ip);
-                    ctx.idefs[op].end = ctx.ip;
+                    ctx.idefs[op].end = skipToEndf(ctx.code, ctx.ip) + 1;
+                    ctx.ip = ctx.idefs[op].end;
                     continue;
                 }
                 case 0x2B: // CALL
@@ -1703,10 +1712,10 @@ final class TrueTypeHinter
                 return 0;
             case 0xB0: case 0xB1: case 0xB2: case 0xB3:
             case 0xB4: case 0xB5: case 0xB6: case 0xB7:
-                return 1 + (opcode - 0xB0) + 1;
+                return (opcode - 0xB0) + 1;
             case 0xB8: case 0xB9: case 0xBA: case 0xBB:
             case 0xBC: case 0xBD: case 0xBE: case 0xBF:
-                return 1 + 2 * ((opcode - 0xB8) + 1);
+                return 2 * ((opcode - 0xB8) + 1);
             default:
                 return 0;
         }

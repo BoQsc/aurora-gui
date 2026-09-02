@@ -1,0 +1,23 @@
+{
+  "name": "aurora-simple-titlebar",
+  "description": "A small Aurora-rendered Windows 10-style titlebar reference component",
+  "authors": ["OpenAI"],
+  "copyright": "Copyright © 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-simple-titlebar",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "../aurora-d-0.4.5/source"
+  ],
+  "libs-windows": ["user32", "gdi32", "shell32"],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": ["releaseMode", "optimize", "inline"],
+      "dflags-windows-dmd": ["-mscrtlib=libcmt"],
+      "dflags-windows-ldc": ["-mscrtlib=libcmt"]
+    }
+  },
+  "lflags-windows": ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"]
+}

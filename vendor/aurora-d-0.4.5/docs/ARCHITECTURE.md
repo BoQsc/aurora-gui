@@ -183,7 +183,7 @@ The renderers only need `PositionedGlyph[]` and atlas entries. Widgets and the e
 
 ### Glyph rasterization and atlas
 
-`FontFace` accepts either TrueType `glyf` outlines or static CFF1 Type 2 outlines. Both become flattened edges filled with a nonzero winding rule and 4×4 supersampling.
+`FontFace` accepts either TrueType `glyf` outlines or static CFF1 Type 2 outlines. Both become flattened edges filled with a nonzero winding rule and bounded supersampling (8×8 for UI sizes, 4×4 for larger text).
 
 `GlyphAtlas` shelf-packs one-pixel-padded A8 bitmaps and grows while preserving coordinates. Its key includes face identity, glyph ID, pixel size, reserved rendering flags, and a reserved variation hash.
 

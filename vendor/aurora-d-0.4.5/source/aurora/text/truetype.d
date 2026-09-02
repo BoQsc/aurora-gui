@@ -14,10 +14,10 @@ import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
 import aurora.text.variations : FontVariations;
 import aurora.text.colr : ColrRenderer, ColorSurface, RgbaColor;
 import std.algorithm : min, max;
-import std.algorithm.sorting : sort;
 import std.exception : enforce;
 import std.file : read;
 import std.math : abs, ceil, floor, sqrt;
+import std.process : environment;
 
 private enum uint tag(string value) =
     (cast(uint) value[0] << 24) | (cast(uint) value[1] << 16) |
@@ -271,7 +271,13 @@ final class TrueTypeFace
                 input.fpgm = tableData(tag!"fpgm");
                 input.prep = tableData(tag!"prep");
                 input.normalizedAxes = variationsNormalizedAxes();
-                auto fitted = (cast() _hinter).hint(input);
+                // Keep the bytecode interpreter isolated per glyph. TrueType
+                // programs are allowed to mutate scaler state, and a shared
+                // interpreter makes malformed or stateful fonts order
+                // dependent. The safe baseline is a fresh interpreter with
+                // the same font tables for each glyph.
+                auto glyphHinter = new TrueTypeHinter(_data, _faceOffset);
+                auto fitted = glyphHinter.hint(input);
                 fitXs = fitted.xs;
                 fitYs = fitted.ys;
                 fitLsb = fitted.lsb;
@@ -336,76 +342,39 @@ final class TrueTypeFace
         if (edges.length == 0)
             return bitmap;
 
+        // Use deterministic area coverage. A single horizontal scanline per
+        // pixel row loses thin horizontal stems and curve extrema at caption
+        // sizes because it never samples the pixel's vertical extent. The
+        // bounded supersampled path is deliberately shared by every backend:
+        // it produces the same A8 coverage for software and Vulkan.
+        supersample = supersample < 1 ? 1 : (supersample > 8 ? 8 : supersample);
         bitmap.alpha.length = cast(size_t) bitmap.width * cast(size_t) bitmap.height;
-        // Analytic scanline coverage (the same technique FreeType/DirectWrite
-        // grayscale AA use). Each scanline samples the outline edge-crossings and
-        // accumulates non-zero winding to fill coverage exactly per pixel column,
-        // instead of box-averaging NxN subsamples (which softens edges). `scale`
-        // is only used for the caller's metrics; coverage here is in pixel space.
-        fillAnalyticCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height);
+        fillSupersampledCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
+            supersample);
         return bitmap;
     }
 
-    /** Overlap of pixel column [x, x+1] with the inactive span [xa, xb]. */
-    private static double columnCoverage(int x, double xa, double xb)
+    private static void fillSupersampledCoverage(const(Edge)[] edges, ref ubyte[] alpha,
+        int width, int height, int supersample)
     {
-        const left = x > xa ? x : xa;
-        const right = (x + 1) < xb ? (x + 1) : xb;
-        return right > left ? right - left : 0.0;
-    }
-
-    /** Analytic scanline rasterization of `edges` into a grayscale alpha buffer.
-     * For each scanline (pixel row + 0.5) the edge crossings are gathered and
-     * sorted by x; consecutive crossings bound an inside span (even-odd fill,
-     * equivalent to the non-zero rule for simple closed glyph contours). Each
-     * pixel column's coverage is its overlap with the spans it intersects. This
-     * produces sharper, platform-grade AA while conserving total ink. */
-    private static void fillAnalyticCoverage(const(Edge)[] edges, ubyte[] alpha,
-        int width, int height)
-    {
-        double[] xs;
-        xs.reserve(edges.length);
+        const samples = supersample * supersample;
         foreach (y; 0 .. height)
         {
-            const yc = y + 0.5;
-            xs.length = 0;
-            foreach (edge; edges)
+            foreach (x; 0 .. width)
             {
-                const y0 = edge.y0;
-                const y1 = edge.y1;
-                if (y0 == y1) continue; // horizontal edge contributes no crossing
-                const lo = y0 < y1 ? y0 : y1;
-                const hi = y0 < y1 ? y1 : y0;
-                if (yc < lo || yc >= hi) continue;
-                const t = (yc - y0) / (y1 - y0);
-                xs ~= edge.x0 + t * (edge.x1 - edge.x0);
-            }
-            if (xs.length < 2) continue;
-            xs.sort();
-
-            // Pair consecutive crossings as inside spans; fill every overlapping
-            // column. If the glyph is hollow (e.g. 'O'), crossings appear in pairs
-            // (enter, exit) per side, and even-odd pairing still yields the ring.
-            for (size_t i = 0; i + 1 < xs.length; i += 2)
-            {
-                const sa = xs[i];
-                const sb = xs[i + 1];
-                if (sb <= sa) continue;
-                const firstCell = sa < 0.0 ? 0 : cast(int) floor(sa);
-                const lastCell = sb >= width ? width - 1 : cast(int) ceil(sb) - 1;
-                if (lastCell < firstCell || lastCell < 0 || firstCell >= width) continue;
-                foreach (x; firstCell .. lastCell + 1)
+                int insideCount;
+                foreach (sy; 0 .. supersample)
                 {
-                    if (x < 0 || x >= width) continue;
-                    const frac = columnCoverage(x, sa, sb);
-                    if (frac > 0.0)
+                    const py = y + (cast(double) sy + 0.5) / supersample;
+                    foreach (sx; 0 .. supersample)
                     {
-                        const px = cast(size_t) y * width + x;
-                        const add = cast(int) (frac * 255.0 + 0.5);
-                        const cur = alpha[px];
-                        alpha[px] = add > cur ? cast(ubyte) add : cur;
+                        const px = x + (cast(double) sx + 0.5) / supersample;
+                        if (insideNonZero(edges, px, py))
+                            ++insideCount;
                     }
                 }
+                alpha[cast(size_t) y * cast(size_t) width + x] =
+                    cast(ubyte) ((insideCount * 255 + samples / 2) / samples);
             }
         }
     }
@@ -463,7 +432,6 @@ final class TrueTypeFace
             // collapse to a zero bbox, and the failure is order-dependent), so
             // the unhinted baseline is the reliable, readable state. Opt back
             // in for font debugging with AURORA_HINTING=1.
-            import std.process : environment;
             const enableHinting = environment.get("AURORA_HINTING", "0") == "1";
             if (enableHinting)
                 _hinter = new TrueTypeHinter(_data, _faceOffset);
@@ -1270,4 +1238,22 @@ unittest
 {
     // Parser behavior is exercised with a real font by the integration test.
     assert(tag!"glyf" == 0x676c7966);
+}
+
+unittest
+{
+    // Area coverage must include the pixel's vertical extent. A center-line
+    // implementation would report 50% for this 0.5 x 0.5 rectangle; 4x4 area
+    // sampling correctly reports 25%.
+    Edge[] rectangle = [
+        Edge(0.25, 0.25, 0.75, 0.25),
+        Edge(0.75, 0.25, 0.75, 0.75),
+        Edge(0.75, 0.75, 0.25, 0.75),
+        Edge(0.25, 0.75, 0.25, 0.25)
+    ];
+    ubyte[] alpha;
+    alpha.length = 1;
+    TrueTypeFace.fillSupersampledCoverage(rectangle, alpha, 1, 1, 4);
+    assert(alpha.length == 1);
+    assert(alpha[0] == 64);
 }

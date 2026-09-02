@@ -42,7 +42,8 @@ The Vulkan path does not upload a CPU-rendered window image. Widgets and `Canvas
 - Static CFF1 Type 2 charstrings, including local/global subroutines, cubic curves, name-keyed fonts, CID-keyed `FDArray`/`FDSelect` fonts, and common flex/arithmetic operators.
 - Unicode `cmap` formats 4 and 12.
 - Horizontal metrics from `hhea` and `hmtx`.
-- Deterministic nonzero-winding rasterization with 4×4 supersampled grayscale coverage.
+- Deterministic nonzero-winding rasterization with bounded supersampled grayscale
+  coverage (8×8 for UI sizes, 4×4 for larger text).
 - Monitor-pixel glyph rasterization and pixel-snapped atlas quads, avoiding post-rasterization enlargement.
 - Portable `sharp` and `smooth` grayscale modes; sharp is the default and increases edge contrast without LCD-order assumptions.
 - Growable A8 glyph atlas shared by Vulkan and software.

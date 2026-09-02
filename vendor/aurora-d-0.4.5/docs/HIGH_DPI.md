@@ -148,7 +148,8 @@ window.setFontRenderMode(FontRenderMode.smooth);
 
 - `sharp` keeps grayscale antialiasing while increasing intermediate coverage
   contrast;
-- `smooth` preserves the original 4×4 supersampled outline coverage.
+- `smooth` preserves the original bounded supersampled outline coverage (8×8
+  for UI sizes, 4×4 for larger text).
 
 Both modes rasterize glyphs at the monitor's physical pixel size and submit
 integer-aligned atlas quads. Vulkan and software use nearest-neighbor coverage

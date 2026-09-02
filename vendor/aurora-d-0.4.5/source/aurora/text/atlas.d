@@ -73,7 +73,11 @@ final class GlyphAtlas
         if (auto cached = key in _glyphs)
             return *cached;
 
-        auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, 4);
+        // Caption/body text is small enough that 4x4 coverage quantization is
+        // visible in stems and round joins. Keep a bounded, deterministic
+        // policy: 8x8 for UI sizes, 4x4 for larger text to control cost.
+        const coverageSamples = pixelSize <= 16 ? 8 : 4;
+        auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples);
         if (renderMode == FontRenderMode.sharp)
             increaseCoverageContrast(bitmap.alpha);
         auto result = insert(bitmap);
