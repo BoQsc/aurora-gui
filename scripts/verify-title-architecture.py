@@ -22,10 +22,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> int:
-    preview = read("source/auroracut/preview.d")
-    editor = read("source/auroracut/editor.d")
-    exporter = read("source/auroracut/exporter.d")
-    title_layer = read("source/auroracut/titlelayer.d")
+    preview = read("aurora-cut/source/auroracut/preview.d")
+    editor = read("aurora-cut/source/auroracut/editor.d")
+    exporter = read("aurora-cut/source/auroracut/exporter.d")
+    title_layer = read("aurora-cut/source/auroracut/titlelayer.d")
     text_editor = read(
         "vendor/aurora-d-0.4.5/source/aurora/widgets/texteditor.d"
     )

@@ -4,22 +4,22 @@ Aurora Cut is a lightweight multi-track MP4/MP3 editor written in D with the sup
 
 ## Windows quick start
 
-Extract the ZIP into a **new folder**. Do not merge it over an older Aurora Cut folder. Open Command Prompt in the inner folder containing `dub.json`, then run:
+Extract the ZIP into a **new folder**. Do not merge it over an older Aurora Cut folder. Open Command Prompt in the inner `aurora-cut` folder containing `dub.json`, then run:
 
 ```bat
-BUILD-WINDOWS.bat
+aurora-cut\BUILD-WINDOWS.bat
 ```
 
 Later launches:
 
 ```bat
-RUN-WINDOWS.bat
+aurora-cut\RUN-WINDOWS.bat
 ```
 
 Display-driver fallback:
 
 ```bat
-RUN-WINDOWS-SOFTWARE.bat
+aurora-cut\RUN-WINDOWS-SOFTWARE.bat
 ```
 
 Required commands:
@@ -69,7 +69,7 @@ linking a Windows release, verify its PE imports with:
 
 ```bat
 dub build --build=portable-release
-python scripts\verify-windows-portability.py aurora-cut.exe
+python scripts\verify-windows-portability.py aurora-cut/aurora-cut.exe
 ```
 
 The portable build requires the MSVC static libraries, but not the entire

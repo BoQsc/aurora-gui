@@ -11,7 +11,7 @@
   "mainSourceFile": "source/app.d",
   "sourcePaths": [
     "source",
-    "vendor/aurora-d-0.4.5/source"
+    "../vendor/aurora-d-0.4.5/source"
   ],
   "stringImportPaths": [
     "embedded",
@@ -33,7 +33,7 @@
     "/ENTRY:mainCRTStartup"
   ],
   "preBuildCommands-windows": [
-    "python scripts\\version.py sync --program aurora-cut"
+    "python ..\\scripts\\version.py sync --program aurora-cut"
   ],
   "buildTypes": {
     "portable-release": {

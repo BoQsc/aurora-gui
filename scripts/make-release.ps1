@@ -15,8 +15,10 @@ function Invoke-Git([string[]]$Arguments) {
 }
 
 # 1. Determine the version to release.
+$versionFile = Join-Path $RepoRoot "aurora-cut/VERSION.txt"
+if (-not (Test-Path -LiteralPath $versionFile)) { $versionFile = Join-Path $RepoRoot "VERSION.txt" }
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $current = (Get-Content -LiteralPath (Join-Path $RepoRoot "VERSION.txt") -TotalCount 1).Trim()
+    $current = (Get-Content -LiteralPath $versionFile -TotalCount 1).Trim()
     $parts = $current.Split(".")
     if ($parts.Length -lt 3) { throw "Cannot parse current version: $current" }
     $parts[2] = [int]$parts[2] + 1

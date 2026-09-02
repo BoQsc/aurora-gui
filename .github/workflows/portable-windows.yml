@@ -14,8 +14,8 @@ on:
       - scripts/verify-windows-portability.py
       - scripts/verify-windows-gui-subsystem.py
       - scripts/version.py
-      - source/**
-      - '!source/**/appversion.d'
+      - aurora-cut/source/**
+      - '!aurora-cut/source/**/appversion.d'
       - aurora-stream/source/**
       - '!aurora-stream/source/**/appversion.d'
       - aurora-stream/tests/verify_gfxcapture_runtime.py
@@ -98,9 +98,7 @@ jobs:
             Write-Error "ffmpeg.exe/ffprobe.exe not found under $root"
             exit 1
           }
-          # aurora-cut lives at the repo root, so its embedded/ is "embedded";
-          # aurora-stream keeps its own embedded/ folder.
-          foreach ($embedded in @("aurora-stream\embedded", "embedded")) {
+          foreach ($embedded in @("aurora-stream\embedded", "aurora-cut\embedded")) {
             New-Item -ItemType Directory -Force -Path $embedded | Out-Null
             Copy-Item $ffmpegExe.FullName (Join-Path $embedded "ffmpeg.exe") -Force
             Copy-Item $ffprobeExe.FullName (Join-Path $embedded "ffprobe.exe") -Force
@@ -118,7 +116,7 @@ jobs:
         with:
           name: aurora-windows-portable
           path: |
-            aurora-cut.exe
+            aurora-cut/aurora-cut.exe
             aurora-image-viewer/aurora-image-viewer.exe
             aurora-notepad/aurora-notepad.exe
             aurora-opencode/aurora-opencode.exe
@@ -131,9 +129,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          $v = (Get-Content VERSION.txt | Select-Object -First 1).Trim()
+          $v = (Get-Content aurora-cut/VERSION.txt | Select-Object -First 1).Trim()
           $streamVersion = (Get-Content aurora-stream/VERSION.txt | Select-Object -First 1).Trim()
-          Copy-Item aurora-cut.exe "aurora-cut-v$v.exe" -Force
+          Copy-Item aurora-cut/aurora-cut.exe "aurora-cut-v$v.exe" -Force
           Copy-Item aurora-stream/aurora-stream.exe "aurora-stream-v$streamVersion.exe" -Force
           Copy-Item aurora-image-viewer/aurora-image-viewer.exe "aurora-image-viewer-v$v.exe" -Force
           Copy-Item aurora-notepad/aurora-notepad.exe "aurora-notepad-v$v.exe" -Force

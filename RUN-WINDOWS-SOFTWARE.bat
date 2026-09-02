@@ -1,7 +1,4 @@
 @echo off
-echo Aurora Cut 0.60.0
-setlocal
-set "AURORA_RENDERER=software"
-echo Starting Aurora Cut with the software renderer...
-call "%~dp0RUN-WINDOWS.bat"
+REM Forward to aurora-cut subfolder (aurora-cut was moved from repo root)
+call "%~dp0aurora-cut\RUN-WINDOWS-SOFTWARE.bat" %*
 exit /b %errorlevel%

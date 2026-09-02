@@ -25,9 +25,9 @@ PROGRAMS = {
     # Programs without an appversion.d/VERSION.txt (None) only carry their
     # version in the DUB manifest; sync/check just report them.
     "aurora-cut": (
-        "dub.json",
-        "VERSION.txt",
-        "source/auroracut/appversion.d",
+        "aurora-cut/dub.json",
+        "aurora-cut/VERSION.txt",
+        "aurora-cut/source/auroracut/appversion.d",
         "Aurora Cut",
     ),
     "aurora-stream": (

@@ -9,7 +9,8 @@
 /build-validation/
 **/build-validation/
 **/__pycache__/
-/aurora-cut
+/aurora-cut/aurora-cut
+/aurora-cut/aurora-cut.exe
 /aurora-cut.exe
 *.o
 *.obj
@@ -33,6 +34,8 @@
 *.auroracut
 /embedded/*
 !/embedded/.gitkeep
+/aurora-cut/embedded/*
+!/aurora-cut/embedded/.gitkeep
 *-test-application.exe
 *-test-application.pdb
 aurora-browser/home.txt 

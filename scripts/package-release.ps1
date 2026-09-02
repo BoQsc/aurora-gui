@@ -106,7 +106,8 @@ function Test-ExcludedFile([string]$RelativePath) {
     return $false
 }
 
-$versionPath = Join-Path $RepoRoot "VERSION.txt"
+$versionPath = Join-Path $RepoRoot "aurora-cut/VERSION.txt"
+if (-not (Test-Path -LiteralPath $versionPath)) { $versionPath = Join-Path $RepoRoot "VERSION.txt" }
 $version = "dev"
 if (Test-Path -LiteralPath $versionPath) {
     $version = (Get-Content -LiteralPath $versionPath -TotalCount 1).Trim()
