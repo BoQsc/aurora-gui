@@ -1,5 +1,38 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Ellipsis collapsed dropdown/context-menu labels to "..." (2026-08-27)
+
+Bug: dropdown and context-menu items rendered as bare "..." when the label was
+only slightly wider than the box (the shared aurora-d `drawTextInRect`).
+
+**Root cause**: commit `7a9ee0b` optimized text ellipsis to a single glyph-
+advance walk, but the cut tracking was wrong. It set `boundary = g.clusterStart`
+whenever `clusterStart < boundary`. The FIRST glyph's `clusterStart` is 0, so
+`boundary` became 0 immediately; later glyphs (`clusterStart > 0`) never
+satisfied the `< boundary` test. Result: for any truncating width, `boundary ==
+0` → render only "..." .
+
+**Fix** (`vendor/aurora-d-0.4.5/source/aurora/canvas.d` `drawTextInRect`): the
+cut is now the **clusterEnd of the last glyph whose advance fits** within
+`budget`, snapped to a source grapheme boundary with `previousGraphemeBoundary`.
+Prefix grows with box width.
+
+**How to verify (repeatable)** — a headless render that counts dark pixels:
+```
+cd vendor\aurora-d-0.4.5
+dmd -i -Isource tests\ellipsis_repro.d -of=build\ellipsis_repro.exe
+build\ellipsis_repro.exe
+```
+The repro paints "Saved but unavailable" at Segoe UI scale 2 into label widths
+40/80/120/160/200/260 and reports dark pixels + maxDarkX. With the bug, widths
+40–200 render only the "..." dots (~12 dark px) — the symptom the user saw.
+With the fix, dark px grows 107→239→419→634→814→1146. Also keep the unit test
+in `canvas.d` (label widths 40/80/120/160 must paint > 40 dark px).
+
+**Why both apps**: aurora-cut and aurora-stream share the SAME vendored aurora-d,
+so this is a shared-component regression. Always check `vendor/aurora-d-0.4.5`
+when a text-rendering symptom appears in more than one app.
+
 ## Status-bar Cancel button + last-export persistence (2026-08-27)
 
 Two features in `editor.d` + `project.d`.

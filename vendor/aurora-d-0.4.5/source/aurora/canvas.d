@@ -11,6 +11,7 @@ import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
     clampInt, maxInt, minInt;
 import std.math : floor;
+import std.conv : to;
 
 /** Drawing context with translation/clipping and software or draw-list output. */
 struct Canvas
@@ -517,16 +518,19 @@ struct Canvas
                 // for every candidate boundary, which was the per-cell cost that
                 // made icon-grid scroll jag (long filenames overflow the cell).
                 const glyphs = layout.glyphs;
-                size_t boundary = rendered.length;
+                // Track the visual cut as the end of the last glyph whose advance
+                // still fits, then snap that end to its source cluster boundary.
+                // Advancing the cut to every fitting glyph's clusterEnd is what
+                // keeps the prefix growing: the old code pinned the cut at the
+                // first (zero-advance-cluster) glyph and collapsed to bare dots.
+                size_t boundary = 0;
                 double advance = 0.0;
                 foreach (g; glyphs)
                 {
                     const nextAdvance = advance + g.advanceX;
                     if (nextAdvance > budget) break;
                     advance = nextAdvance;
-                    if (g.clusterStart < boundary &&
-                        g.advanceX > 0.0 && g.clusterEnd > g.clusterStart)
-                        boundary = g.clusterStart;
+                    boundary = g.clusterEnd;
                 }
                 if (boundary > 0)
                 {
@@ -614,4 +618,29 @@ unittest
     foreach (pixel; surface.pixels())
         if (pixel != 0xffffffff) { changed = true; break; }
     assert(changed);
+}
+
+unittest
+{
+    // Ellipsis must keep a readable prefix, not collapse to bare "..." when the
+    // label is only slightly wider than the box. The 7a9ee0b optimization pinned
+    // the cut at the first (zero-advance-cluster) glyph, so every medium-width
+    // truncation rendered only the dots. Verify a truncated label still paints
+    // more ink than the "..." glyphs alone across a range of box widths.
+    auto font = FontSystem.sharedInstance().face(FontRole.ui);
+    foreach (labelWidth; [40, 80, 120, 160])
+    {
+        auto surf = new Surface(300, 22);
+        auto cv = Canvas(surf);
+        surf.fillRect(Rect(0, 0, 300, 22), Color.rgb(255, 255, 255),
+            Rect(0, 0, 300, 22));
+        cv.drawTextInRect(Rect(0, 0, labelWidth, 22),
+            "Saved but unavailable"d, Color.rgb(0, 0, 0), 2,
+            HorizontalAlign.left, VerticalAlign.middle, true, FontRole.ui, font);
+        int dark;
+        foreach (pixel; surf.pixels())
+            if (pixel != 0xffffffff) ++dark;
+        assert(dark > 40, "ellipsis must keep a prefix at width " ~
+            labelWidth.to!string ~ " (found " ~ dark.to!string ~ " px)");
+    }
 }

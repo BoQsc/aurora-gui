@@ -1,5 +1,60 @@
 # Aurora Cut todo / complaints log
 
+## 2026-08-27 - Ellipsis collapsed dropdown/context-menu labels to "..." (fixed)
+
+User: "Check why aurora-cut and also aurora-stream are affected by ... listed as
+items, for example I press open dropdown and it's first two items are '...'".
+
+KIND OF ITEM: "First two items are '...'". Reproduced (all evidence back-verified):
+
+- Cause: commit `7a9ee0b` "avoid repeated font re-shaping in text ellipsis"
+  (vendored `vendor/aurora-d-0.4.5/source/aurora/canvas.d` `drawTextInRect`)
+  replaced the iterative re-shape loop with a single-pass glyph-advance walk.
+  Bug in that walk: it initialized `boundary = rendered.length` and then set
+  `boundary = g.clusterStart` only when `g.clusterStart < boundary`. For a
+  normal label the FIRST glyph's `clusterStart == 0`, so `boundary` immediately
+  became 0; every later glyph's `clusterStart > 0` never satisfied
+  `< boundary` again. Net result: `boundary == 0` → the `else` branch rendered
+  **only the "..." glyphs** for every label that needed truncation, regardless
+  of width. That is exactly "items listed as '...'; first two items are '...'".
+- The pre-`7a9ee0b` loop advanced the cut correctly (it re-shaped `prefix~dots`
+  and repeated until it fit), which is why this is a regression, not a
+  pre-existing behavior.
+- Why BOTH apps: aurora-cut and aurora-stream share the SAME vendored
+  aurora-d. Any label drawn via `drawTextInRect` with ellipsis (context-menu
+  item labels, dropdown caption text, etc.) is affected. This is a shared-
+  component bug, not app-specific.
+
+Fix (`canvas.d` `drawTextInRect`): track the cut as the **end** of the last
+glyph whose advance fits within `budget`, snapping that end to its source
+cluster boundary with `previousGraphemeBoundary`. Now the prefix grows smoothly
+with box width instead of pinning at 0.
+
+Evidence (rendered label "Saved but unavailable" with Segoe UI, scale 2) —
+dark-pixel count (dots alone = 12):
+```
+width   before (7a9ee0b)   after (fix)
+40      12  (only "...")   107
+80      12  (only "...")   239
+120     12  (only "...")   419
+160     12  (only "...")   634
+200     12  (only "...")   814
+260     1146 (fits)        1146
+```
+So widths 40–200 ALL collapsed to just "..." before; now they render a growing
+prefix + "...". The single-shaping performance intent of `7a9ee0b` (no repeated
+re-shape for every candidate boundary) is preserved.
+
+Verification:
+- New unittest in `canvas.d`: for label widths 40/80/120/160, a truncated label
+  paints > 40 dark pixels (would have been ~12 with the bug).
+- `vendor/aurora-d-0.4.5`: `dub test --compiler=dmd` → 37 modules pass.
+- `aurora-cut`: `dub test --compiler=dmd` → 40 modules pass; `dub build` links.
+- `aurora-stream`: `dub build --compiler=dmd` → links clean.
+- Headless UI regression: `cascade_smoke`, `textfield_context_smoke`,
+  `fontpicker_smoke` → all pass (dropdowns/context menus still function).
+- Temp repro (`ellipsis_repro.d`) compiled, run, verified, then deleted.
+
 ## 2026-08-27 - Status-bar Cancel button + persist last export output (feature)
 
 User: "Add ability to cancel action like compression or export with a gui
