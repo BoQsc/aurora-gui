@@ -1,5 +1,24 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Start button highlighted on any hover (2026-09-06)
+
+Bug: hovering a non-start taskbar item/icon also highlighted the Start button.
+
+**Root cause:** in `Taskbar.onMouseMove` the primitive `-1` was overloaded as
+both the start-button hot code and the "no entry" result of `hitEntry()`. On
+empty taskbar space `hot` became `-1`, so the paint check `_hot == -1` lit the
+start button.
+
+**Fix:** when `hitEntry()` returns `-1` (empty space), map the hover to the
+true no-highlight sentinel `-2` instead. `hotRegion()` now returns `-2` for
+empty space, `-1` only for an actual start-button hover.
+
+**How to verify (repeatable):** a hover probe read `hotRegion()` after moving
+over each zone: tray icons `-6..-9`, an entry `0`, start `-1`, empty space
+`-2`. Regression added to `aurora-desktop/tests/headless_smoke.d`: hovering
+empty taskbar space asserts `hotRegion() == -2`. `dub test --force` 38/38;
+headless smoke ALL PASSED; release links.
+
 ## Dragged taskbar task stays on the bar instead of floating (2026-09-05)
 
 Complaint: the dragged task icon detached from the bar and floated, rather than

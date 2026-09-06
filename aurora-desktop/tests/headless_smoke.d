@@ -97,6 +97,15 @@ int main()
         "first task entry hover should be entry index 0, got " ~
         to!string(taskbar.hotRegion()));
 
+    // Empty taskbar space must NOT highlight the start button (or anything).
+    // hitEntry returns -1 for empty space, which is also the start code, so
+    // an empty hover used to light the start button. It must now be -2.
+    driver.moveTo(Point(400, 720));
+    driver.paint();
+    assert(taskbar.hotRegion() == -2,
+        "empty taskbar space should be no-highlight (-2), got " ~
+        to!string(taskbar.hotRegion()));
+
     // A live refresh must publish a valid tray snapshot without throwing.
     root.refreshTrayForTesting();
     const tray = taskbar.trayState();

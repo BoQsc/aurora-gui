@@ -1,5 +1,32 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - Start button highlighted while hovering any other taskbar item (fixed)
+
+User: "the start button gets highlighted while I hover any other item/icon on
+taskbar".
+
+Root cause in `vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d`
+`Taskbar.onMouseMove`: the code sentinel `-1` was overloaded as BOTH the
+start-button hot code and "no entry hit". `hitEntry()` returns `-1` for empty
+taskbar space; when no special rect matched, that `-1` fell through and the
+paint check `_hot == -1` lit the start button.
+
+Verified with a hover probe (then deleted): hovering each tray icon -> -6..-9,
+an entry -> 0, start -> -1, but empty taskbar space (x=400) -> **-1** (wrong,
+lit start). Fix: when `hitEntry` returns -1 (empty space), map it to the true
+"no hover" sentinel `-2` instead of leaving `-1`.
+
+After fix the same probe reports empty space -> **-2** (no highlight); start
+still -1; tray/entries unchanged. Other `hitEntry` call sites (right-click
+`>= 0` guard, mouse-down press) are unaffected because only the hover path
+feeds the highlight.
+
+Regression: added an assertion to `aurora-desktop/tests/headless_smoke.d` that
+hovering empty taskbar space yields `hotRegion() == -2` (and not -1/0).
+
+Verification: vendored `dub test --force` 38/38; headless smoke ALL PASSED
+(incl. the empty-space -2 assert); release build links.
+
 ## 2026-09-05 - Dragged task stayed decoupled/float instead of on the taskbar (fixed)
 
 User: "why the dragged icon is decoupled instead of staying on the taskbar."

@@ -2068,7 +2068,14 @@ class Taskbar : Widget
             // mistaken for a task-entry index (0..N); otherwise the first few
             // entries also highlight when the pointer is over a tray icon.
             hot = -6 - trayIconHit(event.position);
-        else hot = hitEntry(event.position);
+        else
+        {
+            // hitEntry returns -1 for empty space, which is ALSO the start
+            // button's code - so an empty hover lit the start button. Map it
+            // to the true "no hit" sentinel (-2) instead.
+            const entry = hitEntry(event.position);
+            hot = entry >= 0 ? entry : -2;
+        }
         if (_hot != hot)
         {
             _hot = hot;
