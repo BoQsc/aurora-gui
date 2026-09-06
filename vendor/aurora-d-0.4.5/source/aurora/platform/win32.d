@@ -971,6 +971,7 @@ else version (Windows)
         private bool _shown;
         private bool _visible = true;
         private bool _inSizeMove;
+        private bool _liveResizeMoveOnly;
         private bool _fullscreen;
         private bool _minimized;
         private bool _hasWindowedPlacement;
@@ -1678,6 +1679,11 @@ else version (Windows)
             return _framebufferSize;
         }
 
+        override bool liveResizeIsMove() const
+        {
+            return _liveResizeMoveOnly;
+        }
+
         override DisplayScale displayScale() const
         {
             return _displayScale;
@@ -1824,6 +1830,7 @@ else version (Windows)
             {
                 case WM_ENTERSIZEMOVE:
                     _inSizeMove = true;
+                    _liveResizeMoveOnly = true;
                     updateClientSize();
                     notifyResizeLifecycle(EventType.resizeStarted);
                     SetTimer(_hwnd, liveResizeTimerId, 16, null);
@@ -1831,6 +1838,7 @@ else version (Windows)
                 case WM_EXITSIZEMOVE:
                     KillTimer(_hwnd, liveResizeTimerId);
                     _inSizeMove = false;
+                    _liveResizeMoveOnly = false;
                     updateClientSize();
                     notifyResize();
                     notifyResizeLifecycle(EventType.resizeEnded);
@@ -1959,6 +1967,8 @@ else version (Windows)
                     }
                     updateClientSize(cast(int) unsignedLowWord(lParam),
                         cast(int) unsignedHighWord(lParam));
+                    // A real WM_SIZE (not a pure move) means this is a resize.
+                    _liveResizeMoveOnly = false;
                     if (!_inDpiChange)
                     {
                         notifyResize();
@@ -2243,6 +2253,12 @@ else version (Windows)
                 return;
             if (area.right > area.left && area.bottom > area.top)
                 FillRect(dc, &area, _startupBrush);
+            // A freshly erased/exposed region must be re-covered by the real
+            // scene, not left as the flat background. Mark paint pending so the
+            // neighboring paintNow() re-renders and presents the full surface in
+            // the same pass - otherwise the exposed sliver can stay the dark
+            // background for several frames while the window is dragged back in.
+            _needsPaint = true;
         }
 
         private void releaseStartupBrush() nothrow

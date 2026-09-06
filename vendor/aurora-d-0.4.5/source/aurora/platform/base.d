@@ -113,6 +113,18 @@ abstract class NativeWindow
         return false;
     }
     abstract void setTitle(string title);
+    /**
+     * True while the current native sizing/moving gesture is a PURE MOVE (the
+     * window is being dragged but its size is unchanged). During a move the
+     * WSI "stretch the last presented image" path must NOT be used: nothing
+     * needs stretching, and the repositioned window exposes previously
+     * off-screen regions that the stale image would leave black. A move must
+     * keep presenting the real scene. Defaults to false (resize).
+     */
+    bool liveResizeIsMove() const
+    {
+        return false;
+    }
     /** Re-apply the native frame colors when the app theme toggles dark/light. */
     void setFrameDark(bool dark)
     {

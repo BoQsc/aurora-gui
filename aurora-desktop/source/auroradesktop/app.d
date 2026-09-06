@@ -6,7 +6,8 @@ import auroradesktop.settings : DesktopSettings, loadDesktopSettings,
     saveDesktopSettings;
 import auroradesktop.system;
 import auroradesktop.tray;
-import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, queryWifi;
+import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
+    queryWifi;
 import std.conv : to;
 import std.utf : toUTF8;
 
@@ -370,6 +371,10 @@ final class DesktopRoot : Widget
 
     private void openWifiPanel()
     {
+        // Instant open: build the panel with a fast, non-blocking query so the
+        // button never freezes the UI. Then kick an active scan and poll it on
+        // the background tick so the surrounding networks appear without a
+        // synchronous sleep on the UI thread.
         auto panel = new WifiPanel(queryWifi());
         _wifiPanelContent = panel;
         panel.onOpenNetworkSettings = delegate()
@@ -386,27 +391,42 @@ final class DesktopRoot : Widget
         };
         panel.onConnect = delegate(string ssid, string profile, bool secured)
         {
-            if (profile.length == 0 && secured)
-            {
-                refreshWifiPanel("Saved profile required for " ~ ssid ~ ".");
-                return;
-            }
-            refreshWifiPanel("Connecting to " ~ ssid ~ "...");
-            if (connectWifiNetwork(ssid, profile, secured))
-                refreshWifiPanel("");
-            else
-                refreshWifiPanel("Could not connect to " ~ ssid ~ ".");
+            const result = connectWifiNetwork(ssid, profile, secured);
+            refreshWifiPanel(result.message);
         };
         showPanel(panel, _taskbar.trayIconGlobalBounds(0));
         _wifiPanel = _panelPopup;
+
+        kickWifiScan();
+        _wifiPollElapsed = 0.0;
+        _wifiPollActive = true;
+        _wifiPollMax = 1.2; // ~6 polls @ 200 ms
     }
 
+    // Pull the latest scan into the panel without blocking. Asks Windows to
+    // rescan when the list is still sparse, so the surrounding networks rotate
+    // in over the poll window.
     private void refreshWifiPanel(string feedback)
     {
         if (_wifiPanel is null || _wifiPanel.dismissed() ||
             _wifiPanelContent is null)
             return;
         _wifiPanelContent.refresh(queryWifi(), feedback);
+    }
+
+    private void pollWifiPanel(double deltaSeconds)
+    {
+        if (!_wifiPollActive) return;
+        _wifiPollElapsed += deltaSeconds;
+        if (_wifiPollElapsed < 0.2) return;
+        auto state = queryWifi();
+        if (_wifiPanelContent !is null && !_wifiPanel.dismissed())
+            _wifiPanelContent.refresh(state, "");
+        // Stop once the surrounding networks appear or the poll window runs out.
+        if (state.networks.length > 1 || _wifiPollElapsed >= _wifiPollMax)
+            _wifiPollActive = false;
+        else
+            _wifiPollElapsed = 0.0; // poll again next 0.2 s window
     }
 
     private void openHiddenIconsPanel()
@@ -481,9 +501,13 @@ final class DesktopRoot : Widget
             _clockAccumulator = 0.0;
             refreshTray();
         }
+        pollWifiPanel(deltaSeconds);
     }
 
     private double _clockAccumulator;
+    private double _wifiPollElapsed;
+    private double _wifiPollMax;
+    private bool _wifiPollActive;
 
     // Test-only accessors. Kept on the class (not free functions) so the
     // headless smoke can inspect shell state without a running window loop.

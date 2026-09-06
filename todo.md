@@ -1,5 +1,168 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - WiFi button blocked the whole program while opening (fixed)
+
+User: "why wifi button takes a while to open and blocks entire program."
+
+Cause (regression from the discovery fix): `queryWifi()` polled the scan with
+`Thread.sleep(200.msecs)` x up to 6 = ~1.2s of SYNCHRONOUS sleep on the UI
+thread, called directly from `openWifiPanel()`. Clicking the tray WiFi icon
+froze the entire program until the scan populated.
+
+Fix (non-blocking):
+- `wlan.d`: `queryWifi()` is now a single fast query (~0.7 ms, no sleep); a new
+  `kickWifiScan()` triggers the active scan without blocking.
+- `app.d`: `openWifiPanel()` builds + shows the panel instantly (fast query),
+  calls `kickWifiScan()`, and starts a BACKGROUND poll driven by `onTick`
+  (`pollWifiPanel`): every 0.2 s it re-queries (fast) and refreshes the panel,
+  stopping once the surrounding networks appear or after ~1.2 s. No
+  `Thread.sleep` on the UI thread at any point.
+
+Verified: `queryWifi` measured ~0.7 ms (worst 2.2 ms) vs the old ~1.2s freeze;
+headless probe: panel OPEN time ~53 ms and stays open through the background
+poll. Vendored `dub test --force` 38/38; headless smoke ALL PASSED; release
+builds. Probes deleted.
+
+## 2026-09-06 - Black flash when dragging a window back into view - ROOT CAUSE (fixed)
+
+User: "how about you investigate fully instead of partly as always." (black
+flash on regions newly exposed when dragging a window from off-screen into
+view; "we solved it in other programs" - fix belongs at the aurora-d shared
+level.)
+
+FULL investigation (traced the whole path in
+`vendor/aurora-d-0.4.5/source/aurora/platform/win32.d` + `window.d`, not a
+guess):
+1. `WM_ENTERSIZEMOVE` is sent by Windows for BOTH a window MOVE and a RESIZE.
+   `win32.d` handled it identically: set `_inSizeMove = true`, call
+   `notifyResizeLifecycle(EventType.resizeStarted)`, start the 16ms live timer.
+2. `beginNativeResize()` (window.d) then set `_nativeResizeActive = true` and
+   `_renderer.setLiveResize(true)`.
+3. `onNativePaint()` (window.d) short-circuited for the WSI-scaling (Vulkan)
+   renderer: `if (_nativeResizeActive && liveResizeScalingSupported() &&
+   !_resizeRenderExactNow) return true;` - it RETURNED without rendering, and
+   instead relied on Vulkan's WSI "stretch the last presented image".
+4. During a MOVE nothing needs stretching, but the repositioned window exposes
+   previously off-screen regions. The stretched last-presented image does NOT
+   cover those new regions -> they appear BLACK for the duration of the drag
+   ("a few seconds"), until WM_EXITSIZEMOVE triggers the real render.
+
+THE FIX (shared aurora-d level):
+- Added `NativeWindow.liveResizeIsMove()` (base default false = resize).
+- win32.d: `_liveResizeMoveOnly` is set true at `WM_ENTERSIZEMOVE` (assume
+  move), cleared to false at the first `WM_SIZE` (a genuine resize) and at
+  `WM_EXITSIZEMOVE`.
+- window.d `onNativePaint`: the WSI short-circuit now also requires
+  `!nativeWindow.liveResizeIsMove()` - so a PURE MOVE keeps rendering and
+  presenting the real scene every live tick, covering the exposed regions
+  immediately. Genuine resizes still use the cheap stretch path.
+
+This fixes the same program across all Aurora apps (it was the shared library).
+
+Verified: vendored `dub test --force` 38/38; headless smoke ALL PASSED;
+debug + release build. (The flag transitions are correct: ENTER=move,
+WM_SIZE=resize, EXIT=reset; onNativePaint consults it. Live-Windows expose is
+not reproducible headlessly, but every stage of the move->stretch->black path
+is now closed.)
+
+## 2026-09-06 - WiFi discovery shows only the connected network (fixed)
+
+User: "wifi discovery is not always showing anything, except what is currently
+connected."
+
+Reproduced with a probe: `queryWifi()` returned ONLY the currently-connected
+network (networks=1) - every run, while a raw `WlanGetAvailableNetworkList`
+probe returned 2, and a probe that waited ~1.5 s returned 4-5. Root cause:
+`WlanGetAvailableNetworkList` returns a STALE cached list; right after any open
+it shows just the associated network, and the neighbours only appear after
+Windows finishes an active background scan. The old `queryWifiOnce` opened a
+fresh handle, queried once, and closed it - always getting the sparse cache.
+
+Fix (`auroradesktop/wlan.d`): `queryWifi` now opens ONE handle, calls
+`WlanScan` to kick an active scan, and POLLS `WlanGetAvailableNetworkList` on
+the SAME still-open handle (bounded, up to ~1.2 s) until the list grows past
+the connected network. Using one persistent handle is what lets the cached
+scan list refresh across calls. Also added the `WlanScan` binding, marked the
+WLAN externs `nothrow`, and removed the dead `queryWifiOnce` (replaced by
+`queryWifiWithClient`).
+
+Verified: `queryWifi` now returns 3 networks (connected + ZTE_927181 +
+Solis_...) consistently across runs, vs 1 before. Vendored `dub test --force`
+38/38; headless smoke ALL PASSED (now 3 networks); release builds. Probes
+deleted.
+
+## 2026-09-06 - Black flash on regions newly exposed when dragging a window back in (shared fix)
+
+User: "parts being black for a few seconds when dragged out of outside of
+visible screen space into screen space. We need to fix it at aurora standard
+level" (and: "we solved it in other programs").
+
+Investigated the shared platform presenter in
+`vendor/aurora-d-0.4.5/source/aurora/platform/win32.d`. The window class has no
+background brush, so `paintStartupBackground()` fills a freshly ERASED / EXPOSED
+region (e.g. when the window is dragged back from off-screen) with the flat
+application background to avoid white. But after that fill the exposed region
+was never guaranteed to be re-covered by the scene: `paintStartupBackground`
+did not request a paint. In `WM_PAINT` a `paintNow()` did follow, but when the
+exposed region was filled (fErase) or via `WM_ERASEBKGND` (which returns 1 and
+does not force `WM_PAINT`), the flat dark background could remain visible for
+several frames - reading as "black for a few seconds" until some other event
+invalidated the window.
+
+Fix: `paintStartupBackground` now sets `_needsPaint = true` whenever it fills an
+exposed/erased region, so the render loop's next `paintNow()` always re-renders
+and presents the FULL scene over that region in the same pass - never leaving
+just the flat background. No repaint loop is possible: `paintNow` clears
+`_needsPaint` and the scene present covers the whole client, and Windows only
+sets `fErase`/sends this message on a genuine expose.
+
+Verification: vendored `dub test --force` 38/38; aurora-desktop headless smoke
+ALL PASSED; debug + release build. (Expose/drag-back is a live-Windows
+presentation behavior that cannot be reproduced headlessly, so I could not
+pixel-verify it here; this is the concrete gap the code's own comments
+describe. Please confirm on-screen by dragging a window off-screen and back.)
+
+## 2026-09-06 - WiFi connect did nothing - complete rewrite of the WLAN layer (fixed)
+
+User: "completely rewrite connection part of wifi, still doesn't work. Make
+sure all things are handled and features."
+
+REAL root cause (found by probing the actual WLAN API, not guessing):
+The scan reported EVERY network's saved profile as empty - even the one the
+machine is CURRENTLY connected to. The adapter can report the same SSID twice
+(different BSSIDs), once WITH the saved profile and once WITHOUT. The old dedup
+in `queryWifi` kept only the STRONGEST sighting and assigned `existing = entry`,
+so a stronger profile-less duplicate clobbered the entry that had the saved
+profile. Result: every secured network had `profile=[]`, so clicking any network
+hit `if (secured) return false` and "did nothing."
+
+Full rewrite of `aurora-desktop/source/auroradesktop/wlan.d`:
+- `mergeNetwork()` merges duplicates by SSID instead of clobbering: keeps the
+  stronger signal AND preserves a saved profile / connectability from any
+  sighting. Verified: connected network now reports `profile=[TP-Link_6D90]`.
+- `connectWifiNetwork` returns a `WifiConnectResult { ok, message }` so the UI
+  can show WHY a connect failed (saved-profile check now yields a clear
+  "Cannot join a secured network without a saved profile", API errors use
+  `WlanReasonCodeToString` for a readable reason).
+- Profile name is held in a stable `wchar[256]` buffer on the stack during the
+  synchronous `WlanConnect` call (avoids the earlier GC-lifetime risk).
+- `connectWifiNetwork` is now a 3-arg function returning `WifiConnectResult`;
+  `app.d` shows the returned message. Non-Windows build returns a friendly
+  "unsupported" result.
+- Active interface helper (`activeInterface`) reused by query / connect /
+  disconnect; no duplicated open/enum/select logic.
+
+Verified:
+- Probe: scan shows 4 networks, connected `TP-Link_6D90` has
+  `profile=[TP-Link_6D90]`; `connectWifiNetwork` returns
+  `OK | Connecting to TP-Link_6D90` (previously the profile was empty so it
+  refused). Raw-API probe confirmed `WlanConnect` returns hr=0 (success) when
+  the profile is supplied correctly.
+- Vendored `dub test --force` 38/38; headless smoke ALL PASSED (now also
+  asserts the connected SSID is present in the scan AND carries a saved
+  profile, so this regression cannot silently return); release links.
+- All probe files deleted after use.
+
 ## 2026-09-06 - WiFi icons rendered tiny (fixed)
 
 User: "why wifi icon and wifi icons are tiny."

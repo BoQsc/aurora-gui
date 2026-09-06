@@ -622,9 +622,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         // Surface-maintenance WSI stretches the current Vulkan image without
         // application work. Software and older Vulkan drivers use the cached
-        // native snapshot below for the same always-filled result.
+        // native snapshot below for the same always-filled result. A PURE MOVE
+        // must NOT take this path: nothing needs stretching, and the repositioned
+        // window exposes previously off-screen regions the stretched image would
+        // leave black. A move keeps presenting the real scene every tick.
         if (_nativeResizeActive && liveResizeScalingSupported() &&
-            !_resizeRenderExactNow)
+            !_resizeRenderExactNow && !_native.liveResizeIsMove())
             return true;
 
         if ((_nativeResizeActive || _resizeProxyOneShotActive) &&

@@ -136,8 +136,27 @@ int main()
             const state = queryWifi(); // Must never throw.
             assert(findButton(popup, "Refresh") !is null);
             if (state.available)
+            {
                 writeln("wifi: ", state.networks.length, " network(s), connected=",
                     state.connected);
+                // A connected interface MUST surface the network it is on with
+                // its saved profile, or clicking it can never reconnect.
+                if (state.connected)
+                {
+                    bool found;
+                    foreach (n; state.networks)
+                    {
+                        if (n.ssid == state.ssid)
+                        {
+                            found = true;
+                            assert(n.profile.length > 0,
+                                "connected network lost its saved profile: " ~ n.ssid);
+                        }
+                    }
+                    assert(found, "connected SSID not present in the scan: " ~
+                        state.ssid);
+                }
+            }
             else
                 writeln("wifi: adapter unavailable (graceful fallback)");
         }

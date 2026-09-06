@@ -1,17 +1,18 @@
 module auroradesktop.wlan;
 
-import core.sys.windows.windows : BOOL, DWORD, HANDLE, PVOID, WCHAR;
+import core.sys.windows.windows : BOOL, DWORD, HANDLE, PVOID, WCHAR, LPWSTR;
 
 /**
- * Minimal hand-written WLAN API (wlanapi.dll) bindings plus a safe query
- * layer for the desktop WiFi panel.
+ * Minimal hand-written WLAN API (wlanapi.dll) bindings plus a safe query /
+ * connect layer for the desktop WiFi panel.
  *
  * druntime ships no wlanapi bindings, so the exact C layouts from the Windows
  * SDK are re-declared here (64-bit). Every entry point is guarded: any API
- * failure degrades to `available == false` and the caller falls back to the
+ * failure degrades to a harmless empty result and the caller falls back to a
  * plain connected/disconnected indicator. Nothing here may throw out.
  */
 
+// ------------------------------------------------------------------ SDK types
 align(1) struct WlanGuid
 {
     uint Data1;
@@ -123,42 +124,51 @@ enum WlanConnectionMode : uint
     invalid = 5
 }
 
+// The real SDK struct: mode (4 bytes), then a 4-byte pad to align the
+// following pointers on x64, then three 8-byte pointers, then two 4-byte
+// values -> 40 bytes total. strProfile is an LPCWSTR (a pointer), NOT a
+// fixed array.
 align(1) struct WlanConnectionParameters
 {
     WlanConnectionMode wlanConnectionMode;
-    const(wchar)* strProfile;         // LPCWSTR - a POINTER to the profile name
+    const(wchar)* strProfile;
     const(Dot11Ssid)* pDot11Ssid;
     const(void)* pDesiredBssidList;
     Dot11BssType dot11BssType;
     DWORD dwFlags;
 }
-// Real C size (x64): 4 (mode) + 4 (align) + 8 + 8 + 8 + 4 (bssType) + 4 (flags) = 40.
 static assert(WlanConnectionParameters.sizeof == 40);
 
 enum WLAN_INTF_OPCODE_CURRENT_CONNECTION = 7;
 
 version (Windows)
 {
-    extern (Windows) DWORD WlanOpenHandle(DWORD dwClientVersion,
+    extern (Windows) nothrow DWORD WlanOpenHandle(DWORD dwClientVersion,
         PVOID pReserved, DWORD* pdwNegotiatedVersion, HANDLE* phClientHandle);
-    extern (Windows) DWORD WlanCloseHandle(HANDLE hClientHandle, PVOID pReserved);
-    extern (Windows) DWORD WlanEnumInterfaces(HANDLE hClientHandle,
+    extern (Windows) nothrow DWORD WlanCloseHandle(HANDLE hClientHandle, PVOID pReserved);
+    extern (Windows) nothrow DWORD WlanEnumInterfaces(HANDLE hClientHandle,
         PVOID pReserved, WlanInterfaceList** ppInterfaceList);
-    extern (Windows) DWORD WlanGetAvailableNetworkList(HANDLE hClientHandle,
+    extern (Windows) nothrow DWORD WlanGetAvailableNetworkList(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid, DWORD dwFlags, PVOID pReserved,
         WlanAvailableNetworkList** ppAvailableNetworkList);
-    extern (Windows) DWORD WlanQueryInterface(HANDLE hClientHandle,
+    extern (Windows) nothrow DWORD WlanQueryInterface(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid, int OpCode, PVOID pReserved,
         DWORD* pdwDataSize, void** ppData, void* pWlanOpcodeValueType);
-    extern (Windows) DWORD WlanConnect(HANDLE hClientHandle,
+    extern (Windows) nothrow DWORD WlanConnect(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid,
         const(WlanConnectionParameters)* pConnectionParameters, PVOID pReserved);
-    extern (Windows) DWORD WlanDisconnect(HANDLE hClientHandle,
+    extern (Windows) nothrow DWORD WlanScan(HANDLE hClientHandle,
+        const(WlanGuid)* pInterfaceGuid, const(Dot11Ssid)* pDot11Ssid,
+        PVOID pReserved);
+    extern (Windows) nothrow DWORD WlanDisconnect(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid, PVOID pReserved);
-    extern (Windows) void WlanFreeMemory(PVOID pMemory);
+    extern (Windows) nothrow void WlanFreeMemory(PVOID pMemory);
+    extern (Windows) nothrow DWORD WlanReasonCodeToString(DWORD wlanReasonCode,
+        LPWSTR buffer, DWORD bufferSize);
 }
 
-/** One visible network with its live signal quality. */
+// -------------------------------------------------------------------- model
+/** One visible network with its live signal quality and (optional) profile. */
 struct WifiNetwork
 {
     string ssid;
@@ -180,6 +190,14 @@ struct WifiState
     WifiNetwork[] networks;
 }
 
+/** Outcome of a connect attempt, so the panel can say WHY it failed. */
+struct WifiConnectResult
+{
+    bool ok;
+    string message;
+}
+
+// ------------------------------------------------------------------ helpers
 private string ssidToString(const(ubyte)[] bytes) nothrow
 {
     try
@@ -218,55 +236,85 @@ private string wcharToString(const(WCHAR)[] value) nothrow
 
 version (Windows)
 {
-    WifiState queryWifi() nothrow
+    // Return the active (connected, else first) interface, or null.
+    private WlanInterfaceInfo* activeInterface(WlanInterfaceList* list)
+        @trusted nothrow
     {
-        WifiState state;
-        // The first WLAN scan after the radio wakes can legitimately return
-        // zero networks (beacons not yet heard). Retry once after a short
-        // pause so the panel reliably shows the surrounding networks.
-        foreach (attempt; 0 .. 2)
+        if (list is null || list.dwNumberOfItems == 0) return null;
+        WlanInterfaceInfo* fallback;
+        foreach (i; 0 .. list.dwNumberOfItems)
         {
-            state = queryWifiOnce();
-            if (state.networks.length > 0 || attempt == 1) break;
-            import core.thread : Thread;
-            import core.time : msecs;
-            Thread.sleep(60.msecs);
+            auto candidate = cast(WlanInterfaceInfo*) (cast(ubyte*) list +
+                WlanInterfaceList.InterfaceInfo.offsetof +
+                i * WlanInterfaceInfo.sizeof);
+            if (fallback is null) fallback = candidate;
+            if (candidate.isState == WlanInterfaceState.connected)
+                return candidate;
         }
-        return state;
+        return fallback;
     }
 
-    private WifiState queryWifiOnce() nothrow
+    WifiState queryWifi() nothrow
+    {
+        // Must be FAST and never block the UI thread. WlanGetAvailableNetworkList
+        // returns a cached list (which right after an open shows only the
+        // connected network), but the caller does the "wait for the scan to
+        // populate" work via a background timer - see DesktopRoot.refreshWifiPanel
+        // which re-queries on ticks. A single non-blocking query here keeps the
+        // tray button instant to open.
+        HANDLE client;
+        DWORD negotiated;
+        if (WlanOpenHandle(2, null, &negotiated, &client) != 0)
+            return WifiState.init;
+        scope (exit) WlanCloseHandle(client, null);
+
+        WlanInterfaceList* list;
+        if (WlanEnumInterfaces(client, null, &list) != 0 || list is null)
+            return WifiState.init;
+        scope (exit) WlanFreeMemory(list);
+        auto iface = activeInterface(list);
+        if (iface is null) return WifiState.init;
+
+        return queryWifiWithClient(client, iface);
+    }
+
+    /**
+     * Kick an active WLAN scan (non-blocking) so the cached available-network
+     * list populates with the surrounding networks. The caller re-queries
+     * `queryWifi()` on a background timer; this just triggers Windows to scan.
+     * Returns false if the scan could not even be requested.
+     */
+    bool kickWifiScan() nothrow
+    {
+        HANDLE client;
+        DWORD negotiated;
+        if (WlanOpenHandle(2, null, &negotiated, &client) != 0)
+            return false;
+        scope (exit) WlanCloseHandle(client, null);
+
+        WlanInterfaceList* list;
+        if (WlanEnumInterfaces(client, null, &list) != 0 || list is null)
+            return false;
+        scope (exit) WlanFreeMemory(list);
+        auto iface = activeInterface(list);
+        if (iface is null) return false;
+
+        // Passing a null SSID scans all channels; the returned code is best
+        // effort (some drivers return ERROR_INVALID_PARAMETER yet still scan).
+        WlanScan(client, &iface.InterfaceGuid, null, null);
+        return true;
+    }
+
+    // Query the connected state + available network list on a caller-owned,
+    // still-open client handle (the native handle is what lets the cached
+    // scan list refresh across calls). The extern WLAN calls may throw, so
+    // keep them inside a try/catch and never propagate.
+    private WifiState queryWifiWithClient(HANDLE client,
+        WlanInterfaceInfo* iface) nothrow
     {
         WifiState state;
         try
         {
-            HANDLE client;
-            DWORD negotiated;
-            if (WlanOpenHandle(2, null, &negotiated, &client) != 0)
-                return state;
-            scope (exit) WlanCloseHandle(client, null);
-
-            WlanInterfaceList* list;
-            if (WlanEnumInterfaces(client, null, &list) != 0 || list is null)
-                return state;
-            scope (exit) WlanFreeMemory(list);
-            if (list.dwNumberOfItems == 0)
-                return state;
-
-            // Prefer a connected interface, else the first one.
-            WlanInterfaceInfo* iface;
-            foreach (i; 0 .. list.dwNumberOfItems)
-            {
-                auto candidate = cast(WlanInterfaceInfo*) (cast(ubyte*) list +
-                    WlanInterfaceList.InterfaceInfo.offsetof +
-                    i * WlanInterfaceInfo.sizeof);
-                if (iface is null) iface = candidate;
-                if (candidate.isState == WlanInterfaceState.connected)
-                {
-                    iface = candidate;
-                    break;
-                }
-            }
             state.available = true;
             state.interfaceDescription =
                 wcharToString(iface.strInterfaceDescription[]);
@@ -281,8 +329,7 @@ version (Windows)
                 auto attrs = cast(WlanConnectionAttributes*) data;
                 state.connected =
                     attrs.isState == WlanInterfaceState.connected;
-                state.profile =
-                    wcharToString(attrs.strProfileName[]);
+                state.profile = wcharToString(attrs.strProfileName[]);
                 immutable ssidLen =
                     attrs.wlanAssociationAttributes.dot11Ssid.uSSIDLength;
                 if (ssidLen <= 32)
@@ -315,20 +362,7 @@ version (Windows)
                         net.wlanSignalQuality;
                     entry.secured = net.bSecurityEnabled != 0;
                     entry.connectable = net.bNetworkConnectable != 0;
-                    // Keep the strongest sighting of each SSID.
-                    bool merged;
-                    foreach (ref existing; state.networks)
-                    {
-                        if (existing.ssid == entry.ssid)
-                        {
-                            if (entry.signal > existing.signal)
-                                existing = entry;
-                            merged = true;
-                            break;
-                        }
-                    }
-                    if (!merged)
-                        state.networks ~= entry;
+                    mergeNetwork(state.networks, entry);
                 }
                 // Strongest first, like the Windows flyout.
                 import std.algorithm : sort;
@@ -341,47 +375,76 @@ version (Windows)
         }
         return state;
     }
+    /**
+     * Merge a scanned network sighting into the list. The same SSID can be
+     * reported multiple times (different BSSIDs, some with a saved profile and
+     * some without), so we must NOT let a profile-less high-signal duplicate
+     * clobber an entry that has a saved profile - otherwise connecting would
+     * fail. Keep the stronger signal and the presence of a profile / saved-ness.
+     */
+    private void mergeNetwork(ref WifiNetwork[] networks, ref WifiNetwork entry)
+    {
+        foreach (ref existing; networks)
+        {
+            if (existing.ssid != entry.ssid) continue;
+            if (entry.signal > existing.signal)
+                existing.signal = entry.signal;
+            // A profile (for secured/connectable networks) is what lets us
+            // reconnect; prefer it over a blank sighting.
+            if (existing.profile.length == 0 && entry.profile.length > 0)
+                existing.profile = entry.profile;
+            if (entry.connectable)
+                existing.connectable = true;
+            existing.secured = existing.secured && entry.secured;
+            return;
+        }
+        networks ~= entry;
+    }
 
     /**
-     * Connects to a visible network. Uses the saved profile when one exists;
-     * open networks connect directly by SSID. Secured networks without a
-     * saved profile cannot be joined from here (Windows needs credentials).
+     * Connect to a visible network. Prefers a saved profile (works for secured
+     * networks that Windows already knows); open networks connect directly by
+     * SSID. Returns a human-readable message so the panel can explain a refusal.
      */
-    bool connectWifiNetwork(string ssid, string profile, bool secured) nothrow
+    WifiConnectResult connectWifiNetwork(string ssid, string profile, bool secured)
+        nothrow
     {
         try
         {
             HANDLE client;
             DWORD negotiated;
-            if (WlanOpenHandle(2, null, &negotiated, &client) != 0)
-                return false;
+            auto hr = WlanOpenHandle(2, null, &negotiated, &client);
+            if (hr != 0)
+                return WifiConnectResult(false, "WLAN service unavailable");
             scope (exit) WlanCloseHandle(client, null);
 
             WlanInterfaceList* list;
             if (WlanEnumInterfaces(client, null, &list) != 0 || list is null)
-                return false;
+                return WifiConnectResult(false, "No wireless interface");
             scope (exit) WlanFreeMemory(list);
-            if (list.dwNumberOfItems == 0)
-                return false;
-            auto iface = cast(WlanInterfaceInfo*) (cast(ubyte*) list +
-                WlanInterfaceList.InterfaceInfo.offsetof);
+
+            auto iface = activeInterface(list);
+            if (iface is null)
+                return WifiConnectResult(false, "No wireless interface");
 
             WlanConnectionParameters params = WlanConnectionParameters.init;
-            // Profile-mode connect if a saved profile exists; otherwise only a
-            // non-secured (open) network can be joined directly by SSID.
+            wchar[256] profileBuf;   // stable storage for the profile name
             if (profile.length > 0)
             {
                 params.wlanConnectionMode = WlanConnectionMode.profile;
-                params.strProfile = toNullTerminatedWide(profile);
+                immutable count = profile.length < 255 ? profile.length : 255;
+                foreach (i; 0 .. count)
+                    profileBuf[i] = cast(wchar) profile[i];
+                profileBuf[count] = 0;
+                params.strProfile = profileBuf.ptr;
             }
             else
             {
                 if (secured)
-                    return false;
-                params.wlanConnectionMode =
-                    WlanConnectionMode.temporaryProfile;
+                    return WifiConnectResult(false,
+                        "Cannot join a secured network without a saved profile");
+                params.wlanConnectionMode = WlanConnectionMode.temporaryProfile;
                 params.dot11BssType = Dot11BssType.infrastructure;
-                // SSID bytes are ASCII-printable here (panel-built strings).
                 Dot11Ssid dot11;
                 immutable count = ssid.length < 32 ? ssid.length : 32;
                 dot11.uSSIDLength = cast(uint) count;
@@ -389,22 +452,16 @@ version (Windows)
                     dot11.ucSSID[i] = cast(ubyte) ssid[i];
                 params.pDot11Ssid = &dot11;
             }
-            return WlanConnect(client, &iface.InterfaceGuid, &params,
-                null) == 0;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
 
-    // Build a heap-allocated, null-terminated UTF-16 copy of the profile name.
-    // The returned pointer stays valid until the caller's next call (the WLAN
-    // API uses it synchronously inside WlanConnect).
-    private static const(wchar)* toNullTerminatedWide(string value)
-    {
-        import std.utf : toUTF16z;
-        return toUTF16z(value);
+            hr = WlanConnect(client, &iface.InterfaceGuid, &params, null);
+            if (hr == 0)
+                return WifiConnectResult(true, "Connecting to " ~ ssid);
+            return WifiConnectResult(false, wlanErrorText(hr));
+        }
+        catch (Exception e)
+        {
+            return WifiConnectResult(false, e.msg);
+        }
     }
 
     bool disconnectWifi() nothrow
@@ -421,10 +478,9 @@ version (Windows)
             if (WlanEnumInterfaces(client, null, &list) != 0 || list is null)
                 return false;
             scope (exit) WlanFreeMemory(list);
-            if (list.dwNumberOfItems == 0)
-                return false;
-            auto iface = cast(WlanInterfaceInfo*) (cast(ubyte*) list +
-                WlanInterfaceList.InterfaceInfo.offsetof);
+
+            auto iface = activeInterface(list);
+            if (iface is null) return false;
             return WlanDisconnect(client, &iface.InterfaceGuid, null) == 0;
         }
         catch (Exception)
@@ -432,13 +488,35 @@ version (Windows)
             return false;
         }
     }
+
+    // Human-readable text for a WLAN error code (ERROR_* / WLAN error).
+    private string wlanErrorText(DWORD code) nothrow
+    {
+        if (code == 0) return "OK";
+        try
+        {
+            wchar[256] buffer;
+            if (WlanReasonCodeToString(code, buffer.ptr,
+                    cast(DWORD) buffer.length) == 0)
+                return wcharToString(buffer[]);
+            // Fall back to a generic message with the code.
+            import std.conv : to;
+            return "WLAN error " ~ code.to!string;
+        }
+        catch (Exception)
+        {
+            return "WLAN error";
+        }
+    }
 }
 else
 {
     WifiState queryWifi() nothrow { return WifiState.init; }
-    bool connectWifiNetwork(string ssid, string profile, bool secured) nothrow
+    bool kickWifiScan() nothrow { return false; }
+    WifiConnectResult connectWifiNetwork(string ssid, string profile,
+        bool secured) nothrow
     {
-        return false;
+        return WifiConnectResult(false, "Wi-Fi unsupported on this platform");
     }
     bool disconnectWifi() nothrow { return false; }
 }
