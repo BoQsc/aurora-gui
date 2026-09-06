@@ -1,5 +1,37 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - WiFi panel: poor/inconsistent icon, inconsistent scan, click doesn't connect (fixed)
+
+User: "wifi seems to have poor inconsistent large icon, it does not always show
+scanned wifi networks, clicking a wifi network does not do connection."
+
+#1 - Clicking a network did nothing (root cause, proven with a probe):
+`wlan.d` `WlanConnectionParameters` was declared with
+`WCHAR[256] strProfileName` (544 bytes, `align(1)`), but the real Windows SDK
+`WLAN_CONNECTION_PARAMETERS` uses `LPCWSTR strProfile` (a POINTER) with layout
+mode(4)+pad(4)+strProfile(8)+pDot11Ssid(8)+pDesiredBssidList(8)+bssType(4)+
+flags(4) = 40 bytes. The misaligned/oversized struct made `WlanConnect` fail
+(E_INVALIDARG-style), so even a network with a saved profile returned
+`false`. Fixed the struct to the correct 40-byte layout and set
+`params.strProfile = toUTF16z(profile)`; connected-network probe now returns
+`true`.
+
+#2 - Poor/inconsistent icon: the `IconKind.wifi` glyph drew three full
+concentric `strokeCircle` rings (a radar bullseye), not a Wi-Fi fan. Rewrote it
+to draw a filled station dot plus three upward arcs (circles stroked with their
+center dropped, clipped to the band above the dot). Also the connected network
+row used `setAccent(true)` (a full-width blue pill with an oversized icon),
+which made the panel look inconsistent; replaced with a uniform row + a leading
+"OK " marker and `setIconSize(14)`.
+
+#3 - Inconsistent scan: verified the scan itself is fast (~0.6 ms, 3/3 runs
+returned the same 3 networks); the display was consistent. Hardened
+`queryWifi` to retry once after 60 ms when a scan returns zero networks (the
+first scan after the radio wakes can be sparse).
+
+Verification: `dub test --force` 38/38; headless smoke ALL PASSED
+(wifi query non-throwing + connect via saved profile); release links.
+
 ## 2026-09-06 - Start button highlighted while hovering any other taskbar item (fixed)
 
 User: "the start button gets highlighted while I hover any other item/icon on

@@ -1,5 +1,33 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## WiFi panel: connect, icon, scan consistency (2026-09-06)
+
+Complaints: clicking a wifi network did nothing; the wifi icon looked poor /
+inconsistent; scanned networks sometimes didn't show.
+
+**Root causes:**
+1. **Connect broken** — `wlan.d` `WlanConnectionParameters` used the wrong
+   SDK layout (`WCHAR[256] strProfileName`, 544 bytes) instead of
+   `LPCWSTR strProfile` (pointer, 40 bytes). `WlanConnect` failed, so even a
+   saved-profile network returned `false`. Fixed the struct + set the profile
+   pointer; the connected-network probe now returns `true`.
+2. **Icon** — the wifi glyph drew full concentric rings (bullseye). Rewrote it
+   as a station dot + three upward arcs. Removed the full-width accent on the
+   connected row in favor of a uniform row + "OK " marker + 14 px icon.
+3. **Scan** — measured consistent (~0.6 ms, same 3 networks each run), so the
+   sparse display was transient. `queryWifi` now retries once after 60 ms when
+   a scan returns zero networks.
+
+**How to verify (repeatable):**
+- `cd aurora-desktop && dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source
+  tests\wifiprobe.d -of=build\wifiprobe.exe -Luser32.lib -Lgdi32.lib
+  -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib
+  -Lpowrprof.lib`, then run it 3x: it reports the same connected SSID + 3
+  networks each time. `wificonnect.exe "<ssid>" "<profile>" 1` returns `true`
+  for a saved-profile network (was `false` before the struct fix).
+- Vendor `dub test --force` 38/38; headless smoke ALL PASSED; release links.
+- Probes deleted after use.
+
 ## Start button highlighted on any hover (2026-09-06)
 
 Bug: hovering a non-start taskbar item/icon also highlighted the Start button.

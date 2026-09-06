@@ -126,14 +126,14 @@ enum WlanConnectionMode : uint
 align(1) struct WlanConnectionParameters
 {
     WlanConnectionMode wlanConnectionMode;
-    WCHAR[256] strProfileName;
+    const(wchar)* strProfile;         // LPCWSTR - a POINTER to the profile name
     const(Dot11Ssid)* pDot11Ssid;
     const(void)* pDesiredBssidList;
     Dot11BssType dot11BssType;
     DWORD dwFlags;
 }
-// Real C size: 4 + 512 + 4 pad + 8 + 8 + 4 + 4 = 544 (pointers 8-aligned).
-static assert(WlanConnectionParameters.sizeof == 544);
+// Real C size (x64): 4 (mode) + 4 (align) + 8 + 8 + 8 + 4 (bssType) + 4 (flags) = 40.
+static assert(WlanConnectionParameters.sizeof == 40);
 
 enum WLAN_INTF_OPCODE_CURRENT_CONNECTION = 7;
 
@@ -219,6 +219,23 @@ private string wcharToString(const(WCHAR)[] value) nothrow
 version (Windows)
 {
     WifiState queryWifi() nothrow
+    {
+        WifiState state;
+        // The first WLAN scan after the radio wakes can legitimately return
+        // zero networks (beacons not yet heard). Retry once after a short
+        // pause so the panel reliably shows the surrounding networks.
+        foreach (attempt; 0 .. 2)
+        {
+            state = queryWifiOnce();
+            if (state.networks.length > 0 || attempt == 1) break;
+            import core.thread : Thread;
+            import core.time : msecs;
+            Thread.sleep(60.msecs);
+        }
+        return state;
+    }
+
+    private WifiState queryWifiOnce() nothrow
     {
         WifiState state;
         try
@@ -349,14 +366,13 @@ version (Windows)
             auto iface = cast(WlanInterfaceInfo*) (cast(ubyte*) list +
                 WlanInterfaceList.InterfaceInfo.offsetof);
 
-            WlanConnectionParameters params;
+            WlanConnectionParameters params = WlanConnectionParameters.init;
+            // Profile-mode connect if a saved profile exists; otherwise only a
+            // non-secured (open) network can be joined directly by SSID.
             if (profile.length > 0)
             {
                 params.wlanConnectionMode = WlanConnectionMode.profile;
-                immutable count = profile.length < 255 ? profile.length : 255;
-                foreach (i; 0 .. count)
-                    params.strProfileName[i] = profile[i];
-                params.strProfileName[count] = 0;
+                params.strProfile = toNullTerminatedWide(profile);
             }
             else
             {
@@ -372,8 +388,6 @@ version (Windows)
                 foreach (i; 0 .. count)
                     dot11.ucSSID[i] = cast(ubyte) ssid[i];
                 params.pDot11Ssid = &dot11;
-                return WlanConnect(client, &iface.InterfaceGuid, &params,
-                    null) == 0;
             }
             return WlanConnect(client, &iface.InterfaceGuid, &params,
                 null) == 0;
@@ -382,6 +396,15 @@ version (Windows)
         {
             return false;
         }
+    }
+
+    // Build a heap-allocated, null-terminated UTF-16 copy of the profile name.
+    // The returned pointer stays valid until the caller's next call (the WLAN
+    // API uses it synchronously inside WlanConnect).
+    private static const(wchar)* toNullTerminatedWide(string value)
+    {
+        import std.utf : toUTF16z;
+        return toUTF16z(value);
     }
 
     bool disconnectWifi() nothrow

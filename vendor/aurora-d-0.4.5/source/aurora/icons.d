@@ -207,16 +207,29 @@ void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
             canvas.drawLine(Point(cx, cy - 3 * scale), Point(cx + 6 * scale, cy + 3 * scale), foreground, scale * 2);
             break;
         case IconKind.wifi:
-            // Three concentric broadcast rings centered slightly below center.
+        {
+            // A Wi-Fi broadcast: three upward arcs of increasing radius plus a
+            // filled station dot. The arcs come from stroking full circles
+            // whose center sits far below center, then clipping to the band
+            // above the horizon so only the top arc segment is visible.
+            const dotY = cy + 7 * scale;
+            canvas.fillCircle(Point(cx, dotY), maxInt(2 * scale, 2), foreground);
+            // Clip to the band above the station dot so the circles show only
+            // their top arc (the broadcast fan). Each arc's circle center is
+            // pushed down so its top lands progressively higher.
+            auto fan = canvas.clipped(Rect(cx - 10 * scale, cy - 9 * scale,
+                20 * scale, maxInt(1, dotY - (cy - 9 * scale))));
             foreach (arc; 0 .. 3)
             {
-                const radius = cast(int) ((arc + 1) * 5.0 * scale);
-                canvas.strokeCircle(Point(cx, cy + 6 * scale), radius,
-                    foreground.withAlpha(255 - cast(int) (arc * 30)), maxInt(scale, 1));
+                // Radius grows per ring; the circle center drops with it so the
+                // visible top arc sits just above the station dot.
+                const radius = (arc + 1) * 5 * scale;
+                const centerY = dotY + radius - 1;   // top of arc near dotY-1
+                fan.strokeCircle(Point(cx, centerY), radius,
+                    foreground, maxInt(scale, 1));
             }
-            canvas.fillCircle(Point(cx, cy + 7 * scale), maxInt(2 * scale, 2),
-                foreground);
             break;
+        }
         case IconKind.volume:
         case IconKind.volumeMuted:
         {

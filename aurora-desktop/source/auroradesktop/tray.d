@@ -194,13 +194,16 @@ final class WifiPanel : Widget
             const profile = network.profile;
             const secured = network.secured;
             const active = _state.connected && ssid == _state.ssid;
+            // Uniform rows; the connected one is marked with a leading check
+            // instead of a full-width accent block (which made the panel look
+            // inconsistent and oversized the icon).
             auto row = _networkList.add(new Button(
-                (active ? "> " : "    ") ~ ssid ~ "  " ~
+                (active ? "OK  " : "    ") ~ ssid ~ "  " ~
                 format("%d%%", network.signal) ~
                 (secured ? " (secured)" : ""),
                 IconKind.wifi));
             row.layoutHints().preferredHeight = 30;
-            row.setAccent(active);
+            row.setIconSize(14);
             row.onClick = delegate()
             {
                 if (onConnect !is null) onConnect(ssid, profile, secured);
