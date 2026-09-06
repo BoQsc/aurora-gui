@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - WiFi icons rendered tiny (fixed)
+
+User: "why wifi icon and wifi icons are tiny."
+
+NOTE: my first attempt changed the GLOBAL `drawIcon` scale to a round-to-
+nearest formula and accidentally doubled every icon at 18 px. That was wrong
+(the user: "you increased all icons to incorrect sizes and nothing got fixed")
+and has been REVERTED - base scale is back to `maxInt(1, rect.width / 18)`, so
+every non-wifi icon renders exactly as before.
+
+Actual fix in `vendor/aurora-d-0.4.5/source/aurora/icons.d`:
+- The wifi panel network rows used `setIconSize(14)` - genuinely tiny. Changed
+  to `setIconSize(18)` (the tray wifi is also 18 px, so they now match).
+- The `IconKind.wifi` glyph was squat (18x12, ~26% fill) and did NOT scale up:
+  it used the integer base `scale`, so a 26 px box still drew the 18 px design.
+  Rewrote the wifi case to scale CONTINUOUSLY off the box (`k = rect.width/18.0`),
+  so it fills the box: ink 18x12 @18 px -> 26x17 @26 px (it now grows with the
+  box). Its geometry is also denser (dot + three bold nested arcs).
+
+Verified with a pixel probe on a transparent surface: wifi ink goes 18x12
+@18 px -> 26x17 @26 px (px 87 -> 178), while volume/battery are unchanged at
+17x15 / 18x13 @18 px (base scale untouched). Vendored `dub test --force`
+38/38; headless smoke ALL PASSED; release links; probe deleted.
+
 ## 2026-09-06 - WiFi panel: poor/inconsistent icon, inconsistent scan, click doesn't connect (fixed)
 
 User: "wifi seems to have poor inconsistent large icon, it does not always show

@@ -1,5 +1,26 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## WiFi icons tiny (2026-09-06)
+
+Complaint: wifi icons rendered too small.
+
+**Correction:** my first attempt altered the GLOBAL `drawIcon` scale
+(round-to-nearest) which accidentally doubled the base size of every icon at
+18 px - that was wrong (user: "increased all icons to incorrect sizes") and has
+been REVERTED. Base scale remains `maxInt(1, rect.width/18)`; non-wifi icons
+are untouched.
+
+**Actual fixes:** the wifi panel rows used `setIconSize(14)` (tiny) -> `18`;
+and the `IconKind.wifi` glyph now scales continuously off the box
+(`k = rect.width/18.0`) instead of the integer base scale, so it grows and
+fills. Measured wifi ink: 18x12 @18 px -> 26x17 @26 px; volume/battery
+unchanged (base scale untouched).
+
+**How to verify (repeatable):** render `IconKind.wifi` to a transparent
+`Surface` at 18 and 26 px via `drawIcon`, count alpha>=160: ink 18x12 @18 ->
+26x17 @26 (it grows; was stuck at 18x12). `dub test --force` 38/38; headless
+smoke ALL PASSED; release links.
+
 ## WiFi panel: connect, icon, scan consistency (2026-09-06)
 
 Complaints: clicking a wifi network did nothing; the wifi icon looked poor /

@@ -203,7 +203,7 @@ final class WifiPanel : Widget
                 (secured ? " (secured)" : ""),
                 IconKind.wifi));
             row.layoutHints().preferredHeight = 30;
-            row.setIconSize(14);
+            row.setIconSize(18);
             row.onClick = delegate()
             {
                 if (onConnect !is null) onConnect(ssid, profile, secured);

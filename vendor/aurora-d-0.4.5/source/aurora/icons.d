@@ -208,25 +208,25 @@ void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
             break;
         case IconKind.wifi:
         {
-            // A Wi-Fi broadcast: three upward arcs of increasing radius plus a
-            // filled station dot. The arcs come from stroking full circles
-            // whose center sits far below center, then clipping to the band
-            // above the horizon so only the top arc segment is visible.
-            const dotY = cy + 7 * scale;
-            canvas.fillCircle(Point(cx, dotY), maxInt(2 * scale, 2), foreground);
-            // Clip to the band above the station dot so the circles show only
-            // their top arc (the broadcast fan). Each arc's circle center is
-            // pushed down so its top lands progressively higher.
-            auto fan = canvas.clipped(Rect(cx - 10 * scale, cy - 9 * scale,
-                20 * scale, maxInt(1, dotY - (cy - 9 * scale))));
+            // Wi-Fi broadcast: a bold station dot at the bottom and three nested
+            // upward arcs. Geometry scales continuously with the box so the
+            // glyph fills it (a coarse integer scale left it squat at 18x12).
+            const k = rect.width / 18.0;               // 1.0 at the 18 px design
+            const dotY = cy + cast(int) (6 * k + 0.5);
+            const dotR = maxInt(2, cast(int) (2 * k + 0.5));
+            canvas.fillCircle(Point(cx, dotY), dotR, foreground);
+            const bandTop = cy - cast(int) (9 * k + 0.5);
+            const bandBottom = dotY - cast(int) (2 * k + 0.5);
+            auto fan = canvas.clipped(Rect(cx - cast(int) (9 * k + 0.5),
+                bandTop, cast(int) (18 * k + 0.5),
+                maxInt(1, bandBottom - bandTop)));
             foreach (arc; 0 .. 3)
             {
-                // Radius grows per ring; the circle center drops with it so the
-                // visible top arc sits just above the station dot.
-                const radius = (arc + 1) * 5 * scale;
-                const centerY = dotY + radius - 1;   // top of arc near dotY-1
+                const radius = cast(int) ((arc + 1) * 5 * k + 0.5);
+                const centerY = dotY + radius -
+                    cast(int) ((arc + 1) * 3 * k + 0.5);
                 fan.strokeCircle(Point(cx, centerY), radius,
-                    foreground, maxInt(scale, 1));
+                    foreground, maxInt(1, cast(int) (2 * k + 0.5)));
             }
             break;
         }
