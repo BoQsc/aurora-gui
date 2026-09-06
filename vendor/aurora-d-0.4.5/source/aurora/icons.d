@@ -30,7 +30,14 @@ enum IconKind : ubyte
     music,
     drive,
     chevronRight,
-    chevronDown
+    chevronDown,
+    chevronUp,
+    wifi,
+    volume,
+    volumeMuted,
+    battery,
+    batteryCharging,
+    power
 }
 
 void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
@@ -195,5 +202,80 @@ void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
             canvas.drawLine(Point(cx - 6 * scale, cy - 3 * scale), Point(cx, cy + 3 * scale), foreground, scale * 2);
             canvas.drawLine(Point(cx, cy + 3 * scale), Point(cx + 6 * scale, cy - 3 * scale), foreground, scale * 2);
             break;
+        case IconKind.chevronUp:
+            canvas.drawLine(Point(cx - 6 * scale, cy + 3 * scale), Point(cx, cy - 3 * scale), foreground, scale * 2);
+            canvas.drawLine(Point(cx, cy - 3 * scale), Point(cx + 6 * scale, cy + 3 * scale), foreground, scale * 2);
+            break;
+        case IconKind.wifi:
+            // Three concentric broadcast rings centered slightly below center.
+            foreach (arc; 0 .. 3)
+            {
+                const radius = cast(int) ((arc + 1) * 5.0 * scale);
+                canvas.strokeCircle(Point(cx, cy + 6 * scale), radius,
+                    foreground.withAlpha(255 - cast(int) (arc * 30)), maxInt(scale, 1));
+            }
+            canvas.fillCircle(Point(cx, cy + 7 * scale), maxInt(2 * scale, 2),
+                foreground);
+            break;
+        case IconKind.volume:
+        case IconKind.volumeMuted:
+        {
+            // Speaker body.
+            canvas.fillRoundedRect(Rect(cx - 8 * scale, cy - 4 * scale,
+                3 * scale, 9 * scale), scale, foreground);
+            // Cone.
+            canvas.drawLine(Point(cx - 5 * scale, cy - 4 * scale),
+                Point(cx - 1 * scale, cy - 7 * scale), foreground, scale);
+            canvas.drawLine(Point(cx - 5 * scale, cy + 4 * scale),
+                Point(cx - 1 * scale, cy + 7 * scale), foreground, scale);
+            canvas.drawLine(Point(cx - 1 * scale, cy - 7 * scale),
+                Point(cx - 1 * scale, cy + 7 * scale), foreground, scale);
+            if (icon == IconKind.volume)
+            {
+                // Sound wave arcs.
+                canvas.strokeCircle(Point(cx + 2 * scale, cy), 3 * scale,
+                    foreground, scale);
+                canvas.strokeCircle(Point(cx + 2 * scale, cy), 6 * scale,
+                    foreground.withAlpha(170), scale);
+            }
+            else
+            {
+                // Mute cross.
+                canvas.drawLine(Point(cx + 3 * scale, cy - 3 * scale),
+                    Point(cx + 9 * scale, cy + 3 * scale), Color.fromHex(0xff6b6b), scale * 2);
+                canvas.drawLine(Point(cx + 9 * scale, cy - 3 * scale),
+                    Point(cx + 3 * scale, cy + 3 * scale), Color.fromHex(0xff6b6b), scale * 2);
+            }
+            break;
+        }
+        case IconKind.battery:
+        case IconKind.batteryCharging:
+        {
+            // Battery body with terminal cap.
+            canvas.drawRoundedRect(Rect(cx - 9 * scale, cy - 6 * scale,
+                16 * scale, 13 * scale), 2 * scale, foreground.withAlpha(35), foreground, scale);
+            canvas.fillRect(Rect(cx + 7 * scale, cy - 2 * scale, 2 * scale, 5 * scale),
+                foreground);
+            const fillWidth = cast(int) ((icon == IconKind.batteryCharging ? 10.0 : 9.0) * scale);
+            canvas.fillRoundedRect(Rect(cx - 7 * scale, cy - 4 * scale,
+                maxInt(scale, fillWidth), 9 * scale), scale, accent);
+            if (icon == IconKind.batteryCharging)
+            {
+                canvas.drawLine(Point(cx + 1 * scale, cy - 1 * scale),
+                    Point(cx - 2 * scale, cy + 4 * scale), Color.rgb(255, 255, 255), scale);
+                canvas.drawLine(Point(cx - 2 * scale, cy + 4 * scale),
+                    Point(cx + 3 * scale, cy + 2 * scale), Color.rgb(255, 255, 255), scale);
+            }
+            break;
+        }
+        case IconKind.power:
+        {
+            // A broken circle (power symbol) with a vertical stroke.
+            canvas.strokeCircle(Point(cx, cy + 1 * scale), 7 * scale,
+                foreground, maxInt(scale, 1));
+            canvas.drawLine(Point(cx, cy - 8 * scale), Point(cx, cy - 2 * scale),
+                foreground, scale * 2);
+            break;
+        }
     }
 }

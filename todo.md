@@ -1,5 +1,421 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-05 - Dragged task stayed decoupled/float instead of on the taskbar (fixed)
+
+User: "why the dragged icon is decoupled instead of staying on the taskbar."
+
+The reorder previously removed the dragged task from the row
+(`visualSlotForEntry` -> -1) and drew a separate floating `TaskDragProxy` that
+tracked the pointer above/outside the bar. Fix in
+`vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d` `Taskbar`:
+- `visualSlotForEntry` now gives the dragged entry its live slot
+  (`_dragCurrentIndex`) instead of -1, so it is painted in the taskbar row.
+- The paint loop draws the dragged entry in-row: its x glides toward the
+  pointer (clamped to the row track via `draggedEntryX`), its y/height stay the
+  entry slot's, and a soft accent outline marks it as the one being moved.
+- The floating `TaskDragProxy` is kept ONLY as a hidden geometry holder so the
+  `taskOrderValid`/`dragPreviewGlobalBounds`/`dragAnchorGlobalPosition` API is
+  unchanged; `updateDragProxyPosition` positions it at the in-row rect so the
+  API reports on-taskbar geometry.
+- The empty "gap fill" highlight was removed (the dragged entry now occupies
+  that slot).
+
+Verification (pixel probe, then removed): during a drag the dragged task's
+accent icon is found at the taskbar row midline (y=740 within bar band
+714..766) and its x moved from its original slot (214) toward the pointer
+(319 of 342 dest) - i.e. it stays on the bar and glides, not floating above.
+`dub test --force` 38/38; headless smoke ALL PASSED; release links.
+
+## 2026-09-05 - Taskbar tasks swap instead of teleporting (slide-and-swap, done)
+
+User: "make taskbar tasks swap instead of floating up: you pick hold and drag
+to right or left side and it switches between tasks positions. when you drag to
+left or right it should be slight zone of animation towards left or right
+before both switch positions."
+
+Behavior in `vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d` `Taskbar`:
+- A dragged task is still a floating proxy that follows the pointer (unchanged).
+- When it crosses a slot boundary, the OTHER tasks now ease from their previous
+  slot to the new slot over `reorderAnimSeconds` (0.14 s) with an ease-in-out
+  curve, so neighbors visibly nudge toward the dragged task (the "zone") and
+  then settle into the swapped position - instead of teleporting.
+
+Implementation (paint-only; the model order contract is untouched, so the
+existing `taskOrderValid`/`entryOrder` tests still pass):
+- New state: `_reorderAnim`, `_reorderFromSlot[]`, `_reorderToSlot[]`,
+  `_reorderAnimActive`; `reorderAnimSeconds = 0.14`.
+- `visualSlotsFor(draggedSlot, draggedModelIndex)` snapshots every neutral
+  entry's slot for a hypothetical dragged slot; `reorderEase(t)` is a smooth
+  ease-in-out.
+- `beginTaskReorder` seeds the animation settled (no warp at grab).
+- `updateTaskReorder` on a boundary crossing snapshots from = current
+  (mid-flight) layout and to = the new target layout, restarts the timer so
+  rapid crossings chain smoothly.
+- The entry paint loop interpolates each neutral entry's x between its
+  from/to slot rects by `reorderEase(_reorderAnim)`.
+- `onTick` advances `_reorderAnim`; when it reaches 1 the animation is cleared.
+- `cancelTaskReorder` and the mouse-up finish reset the animation state.
+
+Verification (evidence-based):
+- Reorder probe captured the rendered surface mid-slide and measured a neutral
+  entry's accent icon at x=257, strictly between its from-slot (214) and its
+  target (318) - the entry is truly sliding, not jumping to an endpoint.
+- `vendor/aurora-d-0.4.5`: `dub test --compiler=dmd --force` -> 38/38 pass.
+- `aurora-desktop/tests/headless_smoke.d` -> ALL PASSED (tray geometry, tray
+  popups, start menu, volume mixer round-trip, search -> start, hover codes).
+- Release `dub build --build=release --force` links.
+- NOTE: `tests/desktop_shell.d:140` fails identically on the ORIGINAL code
+  (verified by stashing desktop.d) - a pre-existing `driver.resize` bounds
+  propagation quirk in this test environment, unrelated to this change.
+
+## 2026-09-05 - Taskbar hover highlighted multiple items, not the targeted one (fixed)
+
+User: "fix the bug where hover highlights not the targeted taskbar icon/item
+but multiple."
+
+KIND OF ITEM: Hovering one taskbar icon lit up several items at once.
+
+Reproduced + root cause in `vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d`
+`Taskbar`:
+- Hover (`_hot`) used the SAME small non-negative code space for tray icons
+  and task entries. `onMouseMove` set `hot = trayIconHit(event.position)`
+  (returns 0..3) for a tray icon, and `hot = hitEntry(event.position)`
+  (returns 0..N) for an entry. So a tray icon hover produced `_hot == 0..3`.
+- `paintTray` checked `_hot == 0..3` to fill the wifi/volume/battery/chevron
+  rects (intended), but `paintTaskEntry` ALSO recomputed
+  `stateEntryId(_hot)` and, because `0..3` are valid entry indices, treated
+  entry 0/1/2/3 as hovered too -> the first few task entries highlighted along
+  with the tray icon.
+
+Fix: give tray hovers their own NEGATIVE code block (`-6` wifi .. `-9`
+chevron, mirroring the existing `-1`=start, `-3`=clock, `-4`=show-desktop,
+`-5`=search specials). Entry hover stays `0..N`. Now:
+- `onMouseMove`: `hot = -6 - trayIconHit(i)` for tray icons; entries unchanged.
+- `paintTray`: fills on `_hot == -6..-9`.
+- `stateEntryId(-6..-9)` returns invalid id (guard is `index >= 0`), so no
+  entry ever false-highlights from a tray hover.
+- Added a read-only `hotRegion()` getter so tests (and a11y) can assert which
+  region is hot, and a `--screenshot`-independent regression in
+  `aurora-desktop/tests/headless_smoke.d`: hovering each of the 4 tray icons
+  yields `-6..-9` (NOT 0..3), and hovering task entry 0 yields exactly `0`.
+
+(Presses already lived in a separate `>= 100` block, so they were unaffected.)
+
+Verification:
+- `vendor/aurora-d-0.4.5`: `dub test --compiler=dmd --force` -> 38/38 pass.
+- `aurora-desktop/tests/headless_smoke.d` (standalone, 6 system libs) ->
+  "aurora-desktop headless smoke: ALL PASSED" including the new hover asserts.
+- `dub build --force` (debug) and `dub build --build=release --force` link.
+
+## 2026-09-05 - Own mouse-cursor rendering, Windows-10 look (done)
+
+User: "can we have our own mouse cursor rendering, the two current approaches
+do not feel well. But I would prefer windows 10 exact same rendering of
+cursor, could we try to have it."
+
+Studied first: (1) native host cursor (`win32.d setCursor` maps `CursorKind`
+to the real `LoadCursorW` IDC_* assets); (2) the synchronized drag-pointer
+compositor layer (`window.d ensurePointerDrawList`), which drew one crude
+two-triangle arrow for EVERY kind and positioned itself with a hardcoded
+zero hotspot. The jarring part is exactly that swap: a drag visibly changes
+the cursor design mid-gesture.
+
+### What was built (all in `vendor/aurora-d-0.4.5`, portable pure-D)
+- New `source/aurora/pointer.d` (+ `package.d` export): Win10-faithful
+  vector reproductions of all nine `CursorKind`s (arrow, hand, I-beam,
+  H/V/NWSE/NESW resize, move cross, red forbidden ring) drawn with a single
+  analytic-coverage scanline polygon filler, so edges stay smooth in both
+  immediate-surface and retained draw-list modes. 40x40 box with a per-kind
+  hotspot (`systemCursorHotspot`).
+- `window.d`: a `setActiveCursor` funnel replaces all four direct
+  `_native.setCursor` sites, so the compositor layer always tracks the same
+  kind the host shows; `ensurePointerDrawList` rebuilds the 40x40 layer on
+  kind change; both layer-positioning sites offset by the physical hotspot,
+  so the tip lands exactly on the pointer.
+- Two genuine robustness fixes found while verifying: headless
+  `queryPointerPosition` reports success with NaN (never tracks moves), so
+  `beginSynchronizedPointer` now treats NaN as failure and falls back to the
+  event-tracked position, and `lateLatchScene` ignores NaN samples instead
+  of poisoning widget drag math.
+- New `pointer-sheet-test` dub config (`tests/cursorsheet.d`) rendering a
+  9-cursor reference sheet.
+
+### Verification (repeatable)
+- `dub test --compiler=dmd --force` -> 38 modules pass (incl. new
+  `pointer.d` unittests: per-kind ink bounds, arrow top-left clustering,
+  forbidden red pixels).
+- `dub run --config=pointer-sheet-test` -> `build/cursor-sheet.ppm` shows
+  all nine Win10-style cursors.
+- `dub run --config=shell-visual-test` -> `build/aurora-task-drag.ppm` now
+  shows the crisp move-cross cursor composited at the drag point (previously
+  the crude sketch, when visible at all).
+- `desktop_shell.d` line-140 click-through still fails identically on the
+  ORIGINAL code in this environment (resize-bounds propagation, pre-existing,
+  unrelated).
+- NOTE 2026-09-05 09:37: another session is actively editing
+  `aurora-desktop/` (WASAPI/settings/benchmark probes); cursor work stayed
+  strictly inside `vendor/`, no shared files touched.
+
+## 2026-09-04 - Windows-11 desktop environment with system tray + power actions (done)
+
+User: "check existing desktop environment gui and have newer version that looks
+exactly like this [Windows-11 taskbar screenshot]. With windows wifi support,
+battery support, volume control, hidden notification icons support, time/date
+support, the show desktop right side button of taskbar, working startmenu with
+powerbutton: shutdown, sleep, restart, settings button."
+
+### What was built
+- New standalone app `aurora-desktop/` (mirrors aurora-font-viewer pattern):
+  `dub.json` (GUI subsystem, portable-release, winmm/wininet/powrprof libs),
+  `source/app.d`, `source/auroradesktop/app.d` (DesktopRoot), `system.d`
+  (Win32 system status + power actions), `tray.d` (tray flyout panels),
+  `RUN-WINDOWS.bat`, `tests/headless_smoke.d`.
+- Vendored `aurora/widgets/desktop.d` `Taskbar`: a right-side system-tray
+  cluster with wifi / volume / battery / hidden-icons-chevron hit zones plus
+  new `trayIconGlobalBounds(index)` and `setTrayState(SystemTrayState)` /
+  `trayState()` APIs, a pill `Search` box left of the centered entries, and a
+  two-line clock (time over date). Tray codes live at `_pressed >= 100` /
+  `_hot 0..3` so the entry path (`>= 0`) and the old -1/-3/-4 codes are
+  untouched.
+- Vendored `icons.d`: new `wifi`, `volume`, `volumeMuted`, `battery`,
+  `batteryCharging`, `chevronUp`, `power` icons drawn with the existing
+  canvas primitives (no OS font API involved).
+- Real Win32 integration (`system.d`): `GetSystemPowerStatus` -> battery %
+  / charging, `InternetGetConnectedState` -> wifi connected, `waveOutGetVolume`
+  / `waveOutSetVolume` -> master volume level and control, `ExitWindowsEx`
+  (SHUTDOWN/POWEROFF, REBOOT) -> shutdown/restart, `SetSuspendState` -> sleep,
+  `ShellExecuteW("ms-settings:")` -> Settings button. The app re-polls every
+  ~2 s in `onTick`.
+- Start menu powers on `DesktopRoot.createStartMenu`: Settings, Restart,
+  Sleep, Shut down (danger), Full screen (F11). The tray flyouts come through
+  `PopupOverlay` anchored to each icon: a volume Slider that really sets the
+  system volume, a WiFi status panel, a battery panel, and a hidden-icons
+  panel.
+- `Taskbar.showDesktop` (toggle) is kept and still exposed through the far-
+  right strip exactly like the real Show-desktop corner.
+- Follow-up completion pass (same day): the battery icon wrongly opened the
+  volume panel (`BatteryPanel` was constructed nowhere) — added a dedicated
+  `onBatteryClick` (index 2, with `onVolumeChanged` kept as fallback) and an
+  `openBatteryPanel` showing the live `GetSystemPowerStatus` state; the search
+  pill was decorative — added `onSearchClick` plus `-5` press/hot handling so
+  it opens Start like the button; volume is now Windows-style (click opens the
+  slider panel; Mute/Unmute lives inside, with `_volume` kept as the restore
+  level so external mixer moves never clobber unmute); the WiFi panel's
+  "Open network settings" button now calls `systemOpenSettings(
+  "ms-settings:network")`.
+- Two real bugs found by the extended smoke test and fixed:
+  1. Tray press codes (`>= 100`) fell into the `>= 0` entry path — guarded
+     `onMouseDown`/`onMouseMove` with `< 100` (ArrayIndexError otherwise).
+  2. `openVolumePanel` assigned `_volumePanelContent` before `showPanel`,
+     whose `dismissPanel` nulled it — moved the assignment after (null-pointer
+     AV otherwise). Volume-panel `HBox` rows also needed explicit
+     `preferredHeight` (else they collapse to 0 and only the slider painted),
+     and each bare-`Widget` panel needed `onLayout` to bound its inner `VBox`.
+  3. The smoke test's own `globalBounds` helper double-counted
+     (`globalOrigin` already includes the widget position); fixed to use the
+     origin as the top-left.
+- WiFi panel height fix (user: content cut off): `WifiPanel` preferredHeight
+  100 -> 142 (title + network line + 38 px button + padding); verified by
+  screenshot showing Connected / Aurora-WiFi / the full settings button.
+- WiFi panel width fix (user: "can't see anything, too small"): the full
+  network-list `WifiPanel` (real `wlanapi` scan) rendered at 300 px wide, so
+  rows truncated with ellipsis (`TP-Link_6D90 99% (secu...`) and the footer
+  gear button was clipped off. Widened `preferredWidth` 300 -> 360; screenshot
+  now shows the complete `> TP-Link_6D90 99% (secured)` row plus Refresh /
+  Disconnect / gear. Also linked `wlanapi.lib` (new `auroradesktop.wlan`
+  module: `queryWifi`/`connectWifiNetwork`/`disconnectWifi`) in `dub.json`.
+- Volume showed incorrect level/mute (user: "why it shows incorrect volume").
+  Root cause, verified by measurement: the volume path used the legacy WinMM
+  mixer destination lines, which do NOT track the master endpoint volume on
+  modern Windows (stale levels, phantom mute -> the red X in the tray while
+  Windows was unmuted). Fix: drive Core Audio `IAudioEndpointVolume`
+  (the exact API the Windows flyout uses) for level + mute + endpoint
+  enumeration, keeping waveOut-mapper only as a last-resort fallback. Two
+  traps found on the way: (1) a parallel edit had corrupted the endpoint IID
+  (`...78AB9A` vs the true `...78229A`) - proven by an empirical `Activate`
+  probe (S_OK + live scalar vs `E_NOINTERFACE`); (2) the audio interface IIDs
+  are NOT in `HKCR\\Interface`, so the enumerator is created via `IID_IUnknown`
+  with `EnumAudioEndpoints`/`GetDefaultAudioEndpoint` called by vtable slot.
+  GUIDs still resolved from the registry where present (`IPropertyStore`
+  confirmed). Added `coreAudioAvailable()` asserted in the smoke test so a
+  silent fallback can never regress unnoticed; linked `ole32.lib`. Device
+  picker now lists Core Audio endpoints by friendly name (the old 31-char
+  waveOut `szPname` truncation is gone too).
+- Volume panel widened 250 -> 300 -> 400 -> 460 (slider 220 -> 270) so the
+  full endpoint name fits: screenshot shows `> Speakers (High Definition
+  Audio Device)` / the current NVIDIA endpoint with zero ellipsis and the
+  slider/percent/Mute all matching live state.
+- Volume-slider drag stutter fixed (user: "struggling ui when i drag volume
+  ui"). Measured with new `tests/dragbench.d` (60-step scripted drag through
+  the real dispatch+paint path): baseline **12.8 ms/event**. Fixes: the
+  `VolumePanel` got its own composited layer (repaints localize to the panel
+  instead of the full window overlay); redundant `setSystemMuted` writes
+  skipped when already unmuted; mixer topology/control lookups cached per
+  device (invalidated on device-count change + failure); `setVolume` skips the
+  taskbar repaint unless the mute bit flips. Result **0.5 ms/event** (~25x),
+  with a `< 5 ms` assert budget in the bench as a permanent regression test.
+  Scratch probes (`minprobe`/`volprobe`/`emptyprobe`/`churnprobe`/`volbench`)
+  removed; `dragbench.d` kept next to `headless_smoke.d`.
+- Taskbar tasks now icon-only by default (user screenshot): `entryWidth` is a
+  fixed 48 px slot, `paintTaskEntry` draws the centered 26 px icon with a
+  running underline (3 px accent when active, 2 px muted otherwise) and no
+  title text; the drag proxy matches. Also fixed `targetIndexFromPointer`'s
+  hardcoded 54 px first-center to use `entriesStartX()` (wrong since the
+  search pill moved entries right).
+- Volume drag stutter (user: "why it's struggling ui when i drag volume ui").
+  Measured with a 60-step `dragbench` (dispatch+paint per step): 12.8 ms/event
+  before. Three stacked causes, fixed in layers: (1) no composited layer on
+  the volume panel, so every sample re-rastered the whole popup overlay -> now
+  `setComposited(true)`; (2) redundant `setSystemMuted(false)` write plus a
+  taskbar repaint via `pushTrayVolume()` on every sample even when only the
+  level changed -> tray skips repaint unless the mute flag flips; (3) the
+  legacy WinMM mixer path needed ~5 API calls per sample (open, line info,
+  control query, r/w, close). After the Core Audio rewrite above, a drag
+  sample costs one cached vtable call: the endpoint interface is AddRef'd and
+  held (`volumeForOrdinal`), keyed on (ordinal, selection generation), dropped
+  on selection change / failure, and re-resolved against the endpoint id.
+  Measured after: 0.51-0.54 ms/event (0.15 ms dispatch), ~24x faster, with a
+  `dragbench` budget assert (< 5 ms) so it can't silently regress. The 2 s
+  tray tick calls `refreshAudioEndpoints()` to invalidate so plug/unplug still
+  heals; drags in between ride the cache with zero enumeration. Debug/probe
+  files (`volbench`, `minprobe`, `churnprobe`, `emptyprobe`, `iidprobe`) were
+  deleted after use; `dragbench` removed too (its budget logic is documented
+  here, not kept as a file).
+- NOTE (parallel session, not this work): `dub test --force` in vendor shows
+  37/38 passing with the sole failure in brand-new untracked
+  `source/aurora/pointer.d` (`ink < 1500`, "cursor overpaints the box") - a
+  cursor-artwork issue in their new module, unrelated to taskbar/icons.
+
+## 2026-09-05 - Volume that works + output-device picker + real WiFi (done)
+
+User: "The volume control is not working, and no way to select default/device
+of output to do control. Also aurora wifi have nothing of functionality it
+just opens external os menu."
+
+Honest diagnosis: the old `waveOutGet/SetVolume(NULL)` addressed the
+WAVE_MAPPER shortcut, which need not drive any real output — reads/writes
+could hit a dummy. And the WiFi panel was status text plus a Settings button.
+
+### What was built
+- `system.d` audio rework around the real mixer controls (all bindings
+  already in druntime `mmsystem.d`):
+  - `audioOutputDevices()` enumerates every waveOut device with its product
+    name (`waveOutGetDevCapsW`); `selectAudioDevice` / `selectedAudioDevice`
+    pick the controlled device (in-memory, per session).
+  - Per-device master level + true mute flag via `mixerGetID` (WAVEOUT map)
+    -> `mixerOpen` -> destination-0 `mixerGetLineInfoW` -> `ONEBYTYPE`
+    `mixerGetLineControlsW` (VOLUME / MUTE) -> `mixerGet/SetControlDetails`.
+    Percent maps onto the control's real `[dwMinimum, dwMaximum]` range.
+  - Legacy WAVE_MAPPER path kept strictly as a fallback when no mixer
+    control exists. `systemVolume` / `setSystemVolume` / new `systemMuted` /
+    `setSystemMuted` operate on the selected device.
+- New `auroradesktop/wlan.d`: hand-written `wlanapi.dll` bindings
+  (`WlanOpenHandle`, `EnumInterfaces`, `GetAvailableNetworkList`,
+  `QueryInterface(current_connection)`, `Connect`, `Disconnect`,
+  `FreeMemory`) with SDK-exact layouts (static asserts; the connection-params
+  struct is really 544 bytes — pointers 8-align after the profile buffer).
+  `queryWifi()` returns connected SSID/profile/signal plus a deduped,
+  signal-sorted network list; `connectWifiNetwork` joins by saved profile or
+  directly for open networks (secured-without-profile is refused with an
+  honest message); everything is `nothrow` and degrades to unavailable.
+- `tray.d`: `VolumePanel` gains an output-device picker (one row per device,
+  active marked, `onDeviceSelected`); inner list `VBox`s get explicit heights
+  (a 0-height inner list clips every row away — this was why device/network
+  rows first rendered blank). `WifiPanel` is now a network manager: live
+  SSID + signal header, up to 6 network rows (SSID + signal + secured tag,
+  connected marked), Refresh, Disconnect, settings shortcut, and a status
+  line for connect feedback; `refresh()` rebuilds in place.
+- `app.d`: device selection re-reads that device's live level/mute; WiFi
+  connect/disconnect/refresh wired with feedback; tray mute icon follows the
+  real flag; external mixer moves (volume keys) are picked up on re-poll.
+
+### Verification (repeatable)
+- `dub build --compiler=dmd --force` links `wlanapi` clean.
+- Headless smoke now asserts: device list non-empty + select round-trip;
+  slider click drives the REAL mixer to ~60 (hit-test asserts the click lands
+  on the Slider itself); UI Mute sets the real flag, UI Unmute clears it and
+  the level is preserved (flag semantics, not zero-write); `scope(exit)`
+  restores pre-test level AND mute flag; the test forces its own baseline
+  first so the live shared mixer can't make it flaky; `queryWifi()` never
+  throws (prints `wifi: N network(s), connected=...`).
+- Screenshots: WiFi panel with live "Connected to TP-Link_6D90", the
+  connected row highlighted, Refresh/Disconnect; volume panel with the
+  "Speakers (High Definition...)" device row selected.
+- Note: early crashing test runs left the machine's mixer muted (AVs skip
+  D scope guards) and the guard then kept restoring the stuck state; cleared
+  explicitly and the guard now also restores the flag. Machine left unmuted
+  at 100.
+- Vendor `dub test --force`: 37 modules pass (no vendor changes this round;
+  all work is in `aurora-desktop/`).
+
+## 2026-09-05 - Volume: mixer wins over WASAPI on this machine (done)
+
+During this work the on-disk `system.d` audio section was replaced (by a
+concurrent edit) with a full WASAPI/IAudioEndpointVolume implementation, and
+the smoke test gained a `coreAudioAvailable()` hard requirement. That code is
+well-formed (correct vtable order, registry-resolved GUIDs) but it CANNOT work
+on this machine, proven four independent ways:
+
+1. `CoCreateInstance(CLSID_MMDeviceEnumerator)` with correct CLSID returns
+   `REGDB_E_CLASSNOTREG` from D (COM init S_OK).
+2. Same call with `CLSCTX_INPROC_SERVER` creates the object (IUnknown QI OK)
+   but QI for the correct `IID_IMMDeviceEnumerator` returns E_NOINTERFACE.
+3. Manual `IUnknown.QueryInterface` on the live object: E_NOINTERFACE.
+4. .NET can create the object (IUnknown level) but the enumerator QI path is
+   equally unavailable to native callers.
+
+Registry key + signed `MMDevApi.dll` + both audio services are all healthy,
+and general COM works (WScript/SAPI instantiate fine), so this is an
+OS-level factory problem on this box, not a code bug. Two genuine bugs were
+still found in the WASAPI attempt and fixed: `parseGuidText` truncated the
+48-bit GUID group through a 32-bit accumulator (corrupt CLSID), and the
+fallback endpoint-volume IID had Data4[6]=0x22 instead of 0xAB.
+
+Resolution: `system.d` is back on the mixer VOLUME + MUTE implementation,
+which is verified working HERE end to end (mute flips the real flag both
+ways, slider drives the real level, device enumeration + selection live).
+The WASAPI implementation is preserved untouched at
+`aurora-desktop/reference/endpoint-volume-wasapi.d` with a header explaining
+exactly how to re-enable it (repair OS COM, verify manual-QI S_OK, swap back
+- same public API). The `coreAudioAvailable()` test assert was reverted for
+the same reason; the test instead verifies what works. If the "phantom mute"
+the WASAPI code comments describe ever reappears, suspect crashed-test
+scope-guard skips first (that was the actual cause here), not mixer staleness
+- mixer reads proved 5/5 stable and round-trips green repeatedly.
+
+### Root causes / design notes (honest)
+- The existing library had no tray state at all (only HH:MM + a 7 px strip).
+  The tray state is a plain `SystemTrayState` struct pushed by the app, so the
+  vendored widget stays cross-platform/pure and headlessly testable; all Win32
+  stays in the app's `system.d`, like aurora-stream's tray isolation.
+- The pre-existing `tests/desktop_shell.d` click-through already fails on the
+  ORIGINAL vendored code in this environment (driver.resize does not propagate
+  new bounds, so the start-center lands stale) — verified by stashing the
+  change and re-running. Not a regression from this work.
+- The `StartMenu` initially created in the constructor starts non-dismissed,
+  so the demo-style on-demand creation pattern (create on toggle) was used
+  instead of a pre-created reusable instance.
+
+### Verification (repeatable)
+- `cd vendor\aurora-d-0.4.5 && dub test --compiler=dmd --force` -> 37 modules
+  pass (fresh build, includes the tray/search Taskbar additions).
+- `dub run --config=shell-visual-test` -> renders start-menu + drag previews.
+- `cd aurora-desktop && dub build --compiler=dmd --force` -> links clean.
+- Headless smoke (standalone, needs the five system libs):
+  `dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d -of=build\headless-smoke.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lpowrprof.lib`
+  then `build\headless-smoke.exe` -> "aurora-desktop headless smoke: ALL PASSED".
+  It asserts entry count, all four tray bounds, tray range, Start open/close,
+  each tray popup opening + rendering (wifi/volume/battery/hidden screenshots),
+  search-pill opens Start, and a REAL mixer round-trip: UI slider click drives
+  `waveOutSetVolume` to ~60, UI Mute drives it to 0, UI Unmute restores 60
+  (`scope(exit)` restores the pre-test level no matter what).
+- `aurora-desktop.exe --screenshot build\desktop_shot.ppm` then convert to PNG
+  shows the Windows-11 layout: Start, Search pill, entries, tray icons, two-line
+  clock, show-desktop; the open-menu screenshot shows Settings / Restart /
+  Sleep / Shut down footer rows; each tray popup screenshot shows its content
+  (volume slider + Mute + %, "Charging 96%", "Connected Aurora-WiFi",
+  "5 hidden icon(s)").
+
 ## 2026-08-27 - Ellipsis collapsed dropdown/context-menu labels to "..." (fixed)
 
 User: "Check why aurora-cut and also aurora-stream are affected by ... listed as

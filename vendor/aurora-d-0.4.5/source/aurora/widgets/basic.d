@@ -3,8 +3,8 @@ module aurora.widgets.basic;
 import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, Key, MouseButton;
-import aurora.types : CursorKind, HorizontalAlign, Orientation, Point, Rect, VerticalAlign,
-    clampDouble, clampInt, maxInt;
+import aurora.types : CursorKind, HorizontalAlign, Orientation, Point, PointF, Rect,
+    VerticalAlign, clampDouble, clampInt, maxInt;
 import aurora.widget : Widget;
 import std.utf : toUTF32;
 
@@ -261,8 +261,36 @@ class Slider : Widget
         const next = clampDouble(value, _minimum, _maximum);
         if (next == _value) return;
         _value = next;
-        invalidate();
+        // Invalidate only this slider's own layer while dragging: a full
+        // invalidate() would mark the base plus every retained layer dirty
+        // and queue a whole-window rebuild per pointer sample, so the thumb
+        // visibly freezes until the drag ends.
+        if (_dragging && host() !is null)
+            host().invalidateWidget(this);
+        else
+            invalidate();
         if (notify && onChanged !is null) onChanged(_value);
+    }
+
+    override bool wantsContinuousPointerFrames() const @safe pure nothrow @nogc
+    {
+        // Keep frames flowing while the thumb is captured: otherwise the
+        // queued repaints above sit unpresented until mouse-up and the thumb
+        // appears frozen while its value keeps changing underneath.
+        return _dragging;
+    }
+
+    override bool onPointerLatch(PointF globalPosition)
+    {
+        if (!_dragging) return false;
+        updateFromPoint(globalToLocal(globalPosition.rounded()));
+        return true;
+    }
+
+    private Point globalToLocal(Point global) const
+    {
+        const origin = globalOrigin();
+        return Point(global.x - origin.x, global.y - origin.y);
     }
 
     private double normalized() const @safe pure nothrow @nogc

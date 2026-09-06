@@ -488,16 +488,26 @@ abstract class Widget
     }
 
 
-    /** Nearest independently retained layer containing this widget. */
+    /**
+     * The independently retained compositor layer that actually contains this
+     * widget. This is the TOPMOST composited ancestor, matching what
+     * `collectComposited` registers: since that traversal stops at the first
+     * composited widget, a composited descendant of another composited widget
+     * is never its own layer. Resolving to the nearest instead would mark a
+     * layer that is never rebuilt, so nested composited controls (e.g. the
+     * volume slider inside a composited popup panel) would appear frozen while
+     * their model changes.
+     */
     Widget compositorRoot() @safe pure nothrow @nogc
     {
+        Widget result;
         Widget current = this;
         while (current !is null)
         {
-            if (current._composited) return current;
+            if (current._composited) result = current;
             current = current._parent;
         }
-        return null;
+        return result;
     }
 
     bool containsLocal(Point point) const @safe pure nothrow @nogc

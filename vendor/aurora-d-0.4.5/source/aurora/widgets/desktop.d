@@ -8,7 +8,7 @@ import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Vertical
     clampDouble, clampInt, maxInt, minInt;
 import aurora.widget : Widget;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
-import core.stdc.time : localtime, time, time_t;
+import core.stdc.time : localtime, time, time_t, tm;
 import std.format : format;
 import std.utf : toUTF32;
 
@@ -902,6 +902,24 @@ private struct TaskEntry
 private enum int taskDragProxyMargin = 6;
 
 /**
+ * Immutable snapshot of the Windows system status shown in the taskbar tray.
+ *
+ * The taskbar only renders from this state and forwards clicks; the desktop
+ * application owns querying the live Win32 battery / volume / network APIs and
+ * publishing changes here (so a headless test can also drive a fake snapshot).
+ */
+struct SystemTrayState
+{
+    bool wifiConnected;
+    bool hasBattery;
+    bool batteryCharging;
+    int batteryPercent = -1;
+    int volumePercent = 50;
+    bool volumeMuted;
+    size_t hiddenIconCount = 5;
+}
+
+/**
  * Independently retained visual for the task currently being reordered.
  *
  * The proxy is attached as a root-level compositor layer. Its content is built
@@ -957,17 +975,17 @@ private final class TaskDragProxy : Widget
         canvas.fillRoundedRect(panel, 6, palette.taskbarHover);
         canvas.drawRoundedRect(panel.inset(1), 6, Color.rgba(0, 0, 0, 0),
             palette.accent, 2);
-        if (_running)
-            canvas.fillRect(Rect(panel.x + 8, panel.bottom() - 3,
-                maxInt(1, panel.width - 16), _active ? 3 : 2),
-                _active ? palette.accent : palette.textMuted);
+        // Icon-only, matching the taskbar buttons (no title text).
+        enum int iconSize = 26;
         drawIcon(canvas, _icon,
-            Rect(panel.x + 8, panel.y + 7, 24, 24),
+            Rect(panel.x + (panel.width - iconSize) / 2,
+                panel.y + (panel.height - iconSize) / 2 - 2,
+                iconSize, iconSize),
             Color.rgb(245, 248, 252), palette.accent);
-        canvas.drawTextInRect(Rect(panel.x + 38, panel.y,
-                maxInt(0, panel.width - 44), panel.height), _title,
-            Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
-            VerticalAlign.middle, true);
+        if (_running)
+            canvas.fillRect(Rect(panel.x + (panel.width - 16) / 2,
+                panel.bottom() - 4, 16, _active ? 3 : 2),
+                _active ? palette.accent : palette.textMuted);
     }
 }
 
@@ -983,6 +1001,16 @@ class Taskbar : Widget
     private int _dragOriginIndex = -1;
     private int _dragCurrentIndex = -1;
     private bool _reordering;
+    // Reorder slide-and-swap animation. When the target slot changes the
+    // non-dragged entries ease from their previous slot to the new one instead
+    // of jumping, so a dragged task visibly pushes neighbors toward it before
+    // they settle into the swapped position. The model order is unchanged by
+    // this; it only affects where each neutral task is painted mid-drag.
+    private double _reorderAnim;             // 0..1 within the current slide
+    private int[] _reorderFromSlot;          // per model index, slot at prev boundary
+    private int[] _reorderToSlot;            // per model index, slot at current boundary
+    private bool _reorderAnimActive;
+    private enum double reorderAnimSeconds = 0.14;
     private PointF _pressPointer;
     private PointF _dragGrabOffset;
     private PointF _dragPointerPosition;
@@ -992,15 +1020,34 @@ class Taskbar : Widget
     private FloatingWindow _activeWindow;
     private FloatingWindow[] _showDesktopWindows;
     private dstring _clock;
+    private dstring _date;
     private double _clockAccumulator = 0.0;
     private int _clockHour = -1;
     private int _clockMinute = -1;
+    private int _clockDay = -1;
+    private int _clockMonth = -1;
+    private int _clockYear = -1;
+    private SystemTrayState _tray;
+    /**
+     * Windows-shell look (search pill, tray cluster, two-line clock) versus
+     * the previous classic look (entries from x=54, single-line clock, thin
+     * show-desktop strip). Defaults to the new shell; the desktop app exposes
+     * this through System Settings and persists the choice.
+     */
+    private bool _modernShell = true;
 
     void delegate() onStart;
     void delegate() onShowDesktop;
     void delegate() onTaskbarSettings;
     void delegate() onDateTimeSettings;
     void delegate() onToggleFullscreen;
+    void delegate() onVolumeToggle;
+    void delegate() onVolumeChanged;
+    void delegate() onVolumeClick;
+    void delegate() onBatteryClick;
+    void delegate() onWifiClick;
+    void delegate() onHiddenIconsClick;
+    void delegate() onSearchClick;
     void delegate(int from, int to) onEntryMoved;
     void delegate(int index) onEntryRemoved;
     /** Stable-ID snapshot emitted after every completed order mutation. */
@@ -1120,6 +1167,35 @@ class Taskbar : Widget
         invalidate();
     }
 
+    bool modernShell() const @safe pure nothrow @nogc { return _modernShell; }
+
+    void setModernShell(bool value)
+    {
+        if (_modernShell == value) return;
+        _modernShell = value;
+        invalidate();
+    }
+
+    const(SystemTrayState) trayState() const @safe pure nothrow @nogc
+    {
+        return _tray;
+    }
+
+    void setTrayState(const(SystemTrayState) value)
+    {
+        if (_tray.wifiConnected != value.wifiConnected ||
+            _tray.hasBattery != value.hasBattery ||
+            _tray.batteryCharging != value.batteryCharging ||
+            _tray.batteryPercent != value.batteryPercent ||
+            _tray.volumePercent != value.volumePercent ||
+            _tray.volumeMuted != value.volumeMuted ||
+            _tray.hiddenIconCount != value.hiddenIconCount)
+        {
+            _tray = value;
+            invalidate();
+        }
+    }
+
     Rect startButtonBounds() const @safe pure nothrow @nogc
     {
         return startRect();
@@ -1130,6 +1206,27 @@ class Taskbar : Widget
         const origin = globalOrigin();
         const local = startRect();
         return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
+    }
+
+    /** Global bounds of one system-tray icon (0=wifi, 1=volume, 2=battery, 3=hidden). */
+    Rect trayIconGlobalBounds(int index) const @safe pure nothrow @nogc
+    {
+        if (index < 0 || index >= 4) return Rect.init;
+        const origin = globalOrigin();
+        const local = trayIconRect(index);
+        return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
+    }
+
+    /**
+     * The currently hovered taskbar region as a signed code, for tests and
+     * accessibility: -1 start, -3 clock, -4 show-desktop, -5 search,
+     * -6..-9 tray icons (wifi/volume/battery/chevron), >= 0 a task entry index,
+     * -2 none. Tray hovers use the negative block so they can never collide
+     * with a task-entry index.
+     */
+    int hotRegion() const @safe pure nothrow @nogc
+    {
+        return _hot;
     }
 
     Rect entryBounds(size_t index) const @safe pure nothrow @nogc
@@ -1384,29 +1481,117 @@ class Taskbar : Widget
         return Rect(6, 6, 42, maxInt(1, bounds().height - 12));
     }
 
-    private Rect clockRect() const @safe pure nothrow @nogc
+    private enum int searchBoxWidth = 150;
+    private enum int searchBoxGap = 8;
+
+    private Rect searchRect() const @safe pure nothrow @nogc
     {
-        return Rect(maxInt(54, bounds().width - 94), 0, 84, bounds().height);
+        if (!_modernShell) return Rect.init;
+        return Rect(startRect().right() + searchBoxGap, 6, searchBoxWidth,
+            maxInt(1, bounds().height - 12));
     }
+
+    private int entriesStartX() const @safe pure nothrow @nogc
+    {
+        if (!_modernShell) return 54;
+        return searchRect().right() + searchBoxGap;
+    }
+
+    // Right-side reserved region, laid out from the right edge leftward:
+    // show-desktop strip, two-line clock, then the tray icon cluster.
+    // The classic shell keeps the previous compact geometry instead.
+    private enum int showDesktopWidth = 16;
+    private enum int clockWidth = 90;
+    private enum int trayIconWidth = 34;
+    private enum int trayIconGap = 4;
 
     private Rect showDesktopRect() const @safe pure nothrow @nogc
     {
-        return Rect(maxInt(0, bounds().width - 7), 0, 7, bounds().height);
+        if (!_modernShell)
+            return Rect(maxInt(0, bounds().width - 7), 0, 7, bounds().height);
+        return Rect(maxInt(0, bounds().width - showDesktopWidth), 0,
+            showDesktopWidth, bounds().height);
     }
+
+    private Rect clockRect() const @safe pure nothrow @nogc
+    {
+        if (!_modernShell)
+            return Rect(maxInt(54, bounds().width - 94), 0, 84, bounds().height);
+        const right = showDesktopRect().x;
+        return Rect(maxInt(0, right - clockWidth), 0, clockWidth, bounds().height);
+    }
+
+    private int trayLeftX() const @safe pure nothrow @nogc
+    {
+        if (!_modernShell) return clockRect().x;
+        const trayCount = 4; // wifi, volume, battery, hidden icons chevron
+        return maxInt(0, clockRect().x -
+            (trayCount * trayIconWidth + (trayCount - 1) * trayIconGap));
+    }
+
+    private Rect trayRect() const @safe pure nothrow @nogc
+    {
+        return Rect(trayLeftX(), 0, maxInt(0, clockRect().x - trayLeftX()),
+            bounds().height);
+    }
+
+    private Rect trayIconRect(int index) const @safe pure nothrow @nogc
+    {
+        const x = trayLeftX() + index * (trayIconWidth + trayIconGap);
+        return Rect(x, 0, trayIconWidth, bounds().height);
+    }
+
+    private int trayIconHit(Point point) const @safe pure nothrow @nogc
+    {
+        if (!_modernShell) return -1;
+        foreach (index; 0 .. 4)
+            if (trayIconRect(index).contains(point)) return index;
+        return -1;
+    }
+
+    private Rect entriesRect() const @safe pure nothrow @nogc
+    {
+        return Rect(entriesStartX(), 0,
+            maxInt(0, trayLeftX() - entriesStartX()), bounds().height);
+    }
+
+    // Icon-only task buttons (Windows-11 style): a fixed centered slot per
+    // entry. Titles live in the model only (entryTitle) for accessibility and
+    // tests; the bar itself never paints text.
+    private enum int taskIconSlotWidth = 48;
+    private enum int taskIconSize = 26;
 
     private int entryWidth() const @safe pure nothrow @nogc
     {
-        const available = maxInt(1, bounds().width - 158);
         if (_entries.length == 0) return 0;
-        return clampInt((available - maxInt(0, cast(int) _entries.length - 1) * 4) /
-            cast(int) _entries.length, 90, 180);
+        if (!_modernShell)
+        {
+            const available = maxInt(1, bounds().width - 158);
+            return clampInt((available - maxInt(0, cast(int) _entries.length - 1) * 4) /
+                cast(int) _entries.length, 90, 180);
+        }
+        return taskIconSlotWidth;
     }
 
     private Rect entryRect(int index) const @safe pure nothrow @nogc
     {
         const width = entryWidth();
-        return Rect(54 + index * (width + 4), 6, width,
+        return Rect(entriesStartX() + index * (width + 4), 6, width,
             maxInt(1, bounds().height - 12));
+    }
+
+    // The dragged entry's in-row x: horizontal position follows the pointer
+    // (offset by the original grab) but stays clamped to the taskbar's entry
+    // track, so the icon never leaves the bar.
+    private int draggedEntryX(Rect base) const @safe pure nothrow @nogc
+    {
+        const origin = preciseGlobalOrigin();
+        double x = _dragPointerPosition.x - origin.x - _dragGrabOffset.x;
+        const left = cast(double) entriesStartX();
+        const right = cast(double) trayLeftX() - base.width;
+        if (x < left) x = left;
+        if (x > right) x = right;
+        return cast(int) (x + 0.5);
     }
 
     private int hitEntry(Point point) const @safe pure nothrow @nogc
@@ -1457,6 +1642,11 @@ class Taskbar : Widget
         _dragEntryId = _pressedEntryId;
         _dragOriginIndex = modelIndex;
         _dragCurrentIndex = modelIndex;
+        // Start settled (no slide) so the entry under the grab doesn't warp.
+        _reorderFromSlot = visualSlotsFor(modelIndex, modelIndex);
+        _reorderToSlot = visualSlotsFor(modelIndex, modelIndex);
+        _reorderAnim = 1.0;
+        _reorderAnimActive = false;
         _dragGrabOffset = PointF(
             clampDouble(_pressPointer.x - origin.x - rect.x, 0.0, rect.width),
             clampDouble(_pressPointer.y - origin.y - rect.y, 0.0, rect.height));
@@ -1464,8 +1654,12 @@ class Taskbar : Widget
         const entry = _entries[cast(size_t) modelIndex];
         const running = entry.window !is null && entry.window.visible();
         const active = running && entry.window is _activeWindow;
+        // Keep the proxy object for the drag API/taskOrderValid contract, but
+        // hide it: the dragged task is now repainted in the taskbar row itself,
+        // so the floating copy is never shown.
         _dragProxy = new TaskDragProxy(entry.title, entry.icon, running, active,
             rect.width, rect.height);
+        _dragProxy.setVisible(false);
         auto root = rootWidget();
         root.add(_dragProxy);
         root.bringChildToFront(_dragProxy);
@@ -1483,12 +1677,22 @@ class Taskbar : Widget
 
     private bool updateDragProxyPosition(PointF pointer, bool requestFrame)
     {
+        // The visible dragged task is painted in-row; the proxy is only a
+        // hidden geometry holder. Position it at the dragged entry's in-row
+        // rect so dragPreviewGlobalBounds reports a sane (on-taskbar) rect.
         if (_dragProxy is null || _dragProxy.parent() is null) return false;
         _dragPointerPosition = pointer;
+        const draggedModelIndex = indexOfEntry(_dragEntryId);
+        const rect = draggedModelIndex >= 0 ? entryRect(_dragCurrentIndex) :
+            Rect(0, 0, _dragProxy.contentRect().width,
+                _dragProxy.contentRect().height);
         const parentOrigin = _dragProxy.parent().preciseGlobalOrigin();
+        const x = draggedModelIndex >= 0 ? draggedEntryX(rect) : rect.x;
+        // The proxy includes taskDragProxyMargin padding around its content;
+        // place it so the content sits on the in-row rect.
         return _dragProxy.setPrecisePosition(PointF(
-            pointer.x - parentOrigin.x - _dragGrabOffset.x - taskDragProxyMargin,
-            pointer.y - parentOrigin.y - _dragGrabOffset.y - taskDragProxyMargin),
+            parentOrigin.x + x - taskDragProxyMargin,
+            parentOrigin.y + rect.y - taskDragProxyMargin),
             requestFrame);
     }
 
@@ -1503,7 +1707,8 @@ class Taskbar : Widget
         const origin = preciseGlobalOrigin();
         const proxyCenter = pointer.x - origin.x - _dragGrabOffset.x +
             cast(double) width * 0.5;
-        const firstCenter = 54.0 + cast(double) width * 0.5;
+        const firstCenter = cast(double) entriesStartX() +
+            cast(double) width * 0.5;
         int target = clampInt(_dragCurrentIndex, 0,
             cast(int) _entries.length - 1);
         enum double hysteresis = 3.0;
@@ -1530,7 +1735,16 @@ class Taskbar : Widget
         const target = targetIndexFromPointer(pointer);
         if (target >= 0 && target != _dragCurrentIndex)
         {
+            const draggedModelIndex = indexOfEntry(_dragEntryId);
+            // Restart the slide from the CURRENT (possibly mid-flight) layout
+            // rather than the original, so rapid crossings chain smoothly.
+            if (draggedModelIndex >= 0)
+                _reorderFromSlot = visualSlotsFor(_dragCurrentIndex, draggedModelIndex);
             _dragCurrentIndex = target;
+            if (draggedModelIndex >= 0)
+                _reorderToSlot = visualSlotsFor(target, draggedModelIndex);
+            _reorderAnim = 0.0;
+            _reorderAnimActive = true;
             // Only a slot-boundary crossing rebuilds taskbar content. Every
             // in-slot pointer sample is a transform-only proxy update.
             invalidate();
@@ -1544,9 +1758,50 @@ class Taskbar : Widget
     {
         if (!_reordering) return modelIndex;
         const draggedIndex = indexOfEntry(_dragEntryId);
-        if (draggedIndex < 0 || modelIndex == draggedIndex) return -1;
+        if (draggedIndex < 0) return modelIndex;
+        if (modelIndex == draggedIndex) return _dragCurrentIndex;
         const reduced = modelIndex < draggedIndex ? modelIndex : modelIndex - 1;
         return reduced >= _dragCurrentIndex ? reduced + 1 : reduced;
+    }
+
+    // Visual slot for every non-dragged model index under a hypothetical
+    // dragged slot. Used to snapshot the "from"/"to" layouts for the reorder
+    // slide animation. -1 means the dragged entry (never painted in the row).
+    private int[] visualSlotsFor(int draggedSlot, int draggedModelIndex) const
+    {
+        int[] slots;
+        slots.length = _entries.length;
+        foreach (modelIndex, _; _entries)
+        {
+            if (cast(int) modelIndex == draggedModelIndex)
+            {
+                slots[modelIndex] = -1;
+                continue;
+            }
+            const reduced = modelIndex < draggedModelIndex ?
+                cast(int) modelIndex : cast(int) modelIndex - 1;
+            slots[modelIndex] = reduced >= draggedSlot ? reduced + 1 : reduced;
+        }
+        return slots;
+    }
+
+    private static double reorderEase(double t) @safe pure nothrow @nogc
+    {
+        // Ease-in-out so the neighbors first nudge toward the dragged task
+        // (the "zone") then settle into the swapped slot.
+        if (t <= 0.0) return 0.0;
+        if (t >= 1.0) return 1.0;
+        return t < 0.5 ? 2.0 * t * t : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 2.0;
+    }
+
+    // Begin (or restart) the slide animation between the current
+    // _dragCurrentIndex layout and `target`, snapshotting the from/to slots.
+    private void beginReorderSlide(int target, int draggedModelIndex)
+    {
+        _reorderFromSlot = visualSlotsFor(_dragCurrentIndex, draggedModelIndex);
+        _reorderToSlot = visualSlotsFor(target, draggedModelIndex);
+        _reorderAnim = 0.0;
+        _reorderAnimActive = true;
     }
 
     private void destroyDragProxy()
@@ -1570,16 +1825,32 @@ class Taskbar : Widget
         if (highlighted)
             canvas.fillRoundedRect(rect, 5, active ? palette.taskbarHover :
                 palette.taskbarHover.withAlpha(180));
-        if (entry.window !is null && entry.window.visible())
-            canvas.fillRect(Rect(rect.x + 8, rect.bottom() - 3,
-                maxInt(1, rect.width - 16), active ? 3 : 2),
-                active ? palette.accent : palette.textMuted);
-        drawIcon(canvas, entry.icon, Rect(rect.x + 8, rect.y + 7, 24, 24),
+        // Centered icon; the running indicator is a short underline.
+        const iconX = rect.x + (rect.width - taskIconSize) / 2;
+        const iconY = rect.y + (rect.height - taskIconSize) / 2 - 2;
+        if (!_modernShell)
+        {
+            // Previous labeled look: icon at the left, title text, and a
+            // full-width running indicator.
+            drawIcon(canvas, entry.icon, Rect(rect.x + 8, rect.y + 7, 24, 24),
+                Color.rgb(245, 248, 252), palette.accent);
+            canvas.drawTextInRect(Rect(rect.x + 38, rect.y,
+                    maxInt(0, rect.width - 44), rect.height), entry.title,
+                Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
+                VerticalAlign.middle, true);
+            if (entry.window !is null && entry.window.visible())
+                canvas.fillRect(Rect(rect.x + 8, rect.bottom() - 3,
+                    maxInt(1, rect.width - 16), active ? 3 : 2),
+                    active ? palette.accent : palette.textMuted);
+            return;
+        }
+        drawIcon(canvas, entry.icon,
+            Rect(iconX, iconY, taskIconSize, taskIconSize),
             Color.rgb(245, 248, 252), palette.accent);
-        canvas.drawTextInRect(Rect(rect.x + 38, rect.y,
-                maxInt(0, rect.width - 44), rect.height), entry.title,
-            Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
-            VerticalAlign.middle, true);
+        if (entry.window !is null && entry.window.visible())
+            canvas.fillRect(Rect(rect.x + (rect.width - 16) / 2,
+                rect.bottom() - 4, 16, active ? 3 : 2),
+                active ? palette.accent : palette.textMuted);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -1595,31 +1866,134 @@ class Taskbar : Widget
         drawIcon(canvas, IconKind.start, start.inset(8), Color.rgb(245, 248, 252),
             palette.accent);
 
-        if (_reordering && _dragCurrentIndex >= 0)
-        {
-            const gap = entryRect(_dragCurrentIndex);
-            canvas.fillRoundedRect(gap, 5, palette.taskbarHover.withAlpha(72));
-            canvas.drawRoundedRect(gap.inset(1), 5, Color.rgba(0, 0, 0, 0),
-                palette.accent.withAlpha(205), 1);
-        }
+        if (_modernShell)
+            paintSearchBox(canvas);
 
+        // The dragged task stays on the taskbar: it is painted in-row at its
+        // live slot. For every entry we ease from the previous boundary slot to
+        // the current one; the dragged entry additionally glides toward the
+        // pointer's x so it visibly pushes neighbors before they swap in place.
         foreach (index, entry; _entries)
         {
             const visualSlot = visualSlotForEntry(cast(int) index);
             if (visualSlot < 0) continue;
-            paintTaskEntry(canvas, entry, entryRect(visualSlot));
+            const draggedModelIndex = indexOfEntry(_dragEntryId);
+            const isDragged = _reordering && cast(int) index == draggedModelIndex;
+            Rect rect = entryRect(visualSlot);
+            // Slide-and-swap: during a reorder boundary transition, ease the
+            // entries from their previous slot to the current one.
+            if (_reorderAnimActive && _reorderFromSlot.length == _entries.length &&
+                _reorderToSlot.length == _entries.length &&
+                cast(size_t) index < _reorderFromSlot.length &&
+                _reorderFromSlot[index] >= 0 && _reorderToSlot[index] >= 0)
+            {
+                const from = entryRect(_reorderFromSlot[index]);
+                const to = entryRect(_reorderToSlot[index]);
+                const t = reorderEase(_reorderAnim);
+                const x = from.x + cast(int) ((to.x - from.x) * t + 0.5);
+                rect.x = x;
+            }
+            if (isDragged)
+            {
+                // In-row lift: follow the pointer's x (clamped to the row),
+                // never floating above the bar. A soft outline marks it as the
+                // one being moved.
+                rect.x = draggedEntryX(rect);
+                rect.y = 6;
+            }
+            paintTaskEntry(canvas, entry, rect);
+            if (isDragged)
+                canvas.drawRoundedRect(rect.inset(1), 5, Color.rgba(0, 0, 0, 0),
+                    palette.accent.withAlpha(210), 2);
         }
+
+        if (_modernShell)
+            paintTray(canvas);
 
         const clock = clockRect();
         if (_hot == -3) canvas.fillRect(clock, palette.taskbarHover.withAlpha(160));
-        canvas.drawTextInRect(clock, _clock, Color.rgb(245, 248, 252), 1,
-            HorizontalAlign.center, VerticalAlign.middle, true);
+        if (!_modernShell)
+        {
+            // Previous single-line clock, centered.
+            canvas.drawTextInRect(clock, _clock, Color.rgb(245, 248, 252), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true);
+        }
+        else
+        {
+            // Two-line clock: time on the top line, date below.
+            const clockInset = Rect(clock.x, clock.y + 4, clock.width,
+                maxInt(1, clock.height - 8));
+            canvas.drawTextInRect(Rect(clockInset.x, clockInset.y, clockInset.width,
+                clockInset.height / 2), _clock, Color.rgb(245, 248, 252), 1,
+                HorizontalAlign.right, VerticalAlign.middle, true);
+            canvas.drawTextInRect(Rect(clockInset.x, clockInset.y + clockInset.height / 2,
+                clockInset.width, clockInset.height / 2), _date,
+                Color.rgb(245, 248, 252), 1, HorizontalAlign.right,
+                VerticalAlign.middle, true);
+        }
+
         const show = showDesktopRect();
         if (_hot == -4 || _showDesktopWindows.length > 0)
             canvas.fillRect(show, palette.accent.withAlpha(150));
         else
             canvas.fillRect(Rect(show.x, 5, 1, maxInt(0, show.height - 10)),
                 Color.rgba(255, 255, 255, 90));
+    }
+
+    private void paintSearchBox(ref Canvas canvas)
+    {
+        const palette = theme();
+        const search = searchRect();
+        // The Windows-11 pill-style search box at the left of the centered apps.
+        if (_pressed == -5 || _hot == -5)
+            canvas.fillRoundedRect(search, 17, palette.taskbarHover);
+        else
+            canvas.fillRoundedRect(search, 17, palette.fieldBackground);
+        const centerY = search.y + search.height / 2;
+        drawIcon(canvas, IconKind.search,
+            Rect(search.x + 10, centerY - 9, 18, 18), palette.textMuted, palette.accent);
+        canvas.drawTextInRect(Rect(search.x + 36, search.y,
+                maxInt(0, search.width - 42), search.height), "Search"d,
+            palette.textMuted, 1, HorizontalAlign.left, VerticalAlign.middle, true);
+    }
+
+    private void paintTray(ref Canvas canvas)
+    {
+        const palette = theme();
+        const trayLeft = trayLeftX();
+        const iconSize = 18;
+        const iconRect = Rect(trayLeft + (trayIconWidth - iconSize) / 2,
+            (bounds().height - iconSize) / 2, iconSize, iconSize);
+
+        // 0: wifi, 1: volume, 2: battery, 3: hidden-icons chevron.
+        // Hover codes are -6..-9 (see onMouseMove) so they never collide with
+        // the 0..N task-entry index range.
+        const wifiRect = trayIconRect(0);
+        if (_hot == -6) canvas.fillRoundedRect(wifiRect, 5, palette.taskbarHover);
+        drawIcon(canvas, IconKind.wifi, iconRect.translated(0, 0),
+            Color.rgb(245, 248, 252), palette.accent);
+
+        const volumeRect = trayIconRect(1);
+        if (_hot == -7) canvas.fillRoundedRect(volumeRect, 5, palette.taskbarHover);
+        drawIcon(canvas, _tray.volumeMuted ? IconKind.volumeMuted : IconKind.volume,
+            iconRect.translated(trayIconWidth + trayIconGap, 0),
+            Color.rgb(245, 248, 252), palette.accent);
+
+        const batteryRect = trayIconRect(2);
+        if (_hot == -8) canvas.fillRoundedRect(batteryRect, 5, palette.taskbarHover);
+        if (_tray.hasBattery)
+        {
+            drawIcon(canvas,
+                _tray.batteryCharging ? IconKind.batteryCharging : IconKind.battery,
+                iconRect.translated((trayIconWidth + trayIconGap) * 2, 0),
+                Color.rgb(245, 248, 252), palette.accent);
+        }
+
+        const hiddenRect = trayIconRect(3);
+        if (_hot == -9) canvas.fillRoundedRect(hiddenRect, 5, palette.taskbarHover);
+        drawIcon(canvas, IconKind.chevronUp,
+            iconRect.translated((trayIconWidth + trayIconGap) * 3, 0),
+            Color.rgb(245, 248, 252), palette.accent);
     }
 
     override bool onMouseDown(ref Event event)
@@ -1651,9 +2025,13 @@ class Taskbar : Widget
         if (startRect().contains(event.position)) _pressed = -1;
         else if (showDesktopRect().contains(event.position)) _pressed = -4;
         else if (clockRect().contains(event.position)) _pressed = -3;
+        else if (searchRect().contains(event.position)) _pressed = -5;
+        else if (trayIconHit(event.position) >= 0) _pressed = 100 + trayIconHit(event.position);
         else _pressed = hitEntry(event.position);
-        if (_pressed >= 0) _pressedEntryId = _entries[cast(size_t) _pressed].id;
-        if (_pressed >= -1 || _pressed == -3 || _pressed == -4)
+        if (_pressed >= 0 && _pressed < 100)
+            _pressedEntryId = _entries[cast(size_t) _pressed].id;
+        if (_pressed >= -1 || _pressed == -3 || _pressed == -4 ||
+            _pressed == -5 || _pressed >= 100)
         {
             captureMouse();
             invalidate();
@@ -1664,7 +2042,7 @@ class Taskbar : Widget
 
     override bool onMouseMove(ref Event event)
     {
-        if (_pressed >= 0)
+        if (_pressed >= 0 && _pressed < 100)
         {
             const pointer = pointerPosition(event);
             if (!_reordering)
@@ -1677,11 +2055,19 @@ class Taskbar : Widget
             if (_reordering) updateTaskReorder(pointer, true);
             return true;
         }
-        if (_pressed == -1 || _pressed == -3 || _pressed == -4) return true;
+        if (_pressed == -1 || _pressed == -3 || _pressed == -4 ||
+            _pressed == -5 || _pressed >= 100)
+            return true;
         int hot;
         if (startRect().contains(event.position)) hot = -1;
         else if (showDesktopRect().contains(event.position)) hot = -4;
         else if (clockRect().contains(event.position)) hot = -3;
+        else if (searchRect().contains(event.position)) hot = -5;
+        else if (trayIconHit(event.position) >= 0)
+            // Distinct negative codes (-6..-9) so a tray hover can never be
+            // mistaken for a task-entry index (0..N); otherwise the first few
+            // entries also highlight when the pointer is over a tray icon.
+            hot = -6 - trayIconHit(event.position);
         else hot = hitEntry(event.position);
         if (_hot != hot)
         {
@@ -1731,6 +2117,10 @@ class Taskbar : Widget
         _dragEntryId = invalidTaskEntryId;
         _dragOriginIndex = -1;
         _dragCurrentIndex = -1;
+        _reorderAnim = 1.0;
+        _reorderAnimActive = false;
+        _reorderFromSlot.length = 0;
+        _reorderToSlot.length = 0;
         _dragGrabOffset = PointF.init;
         _dragPointerPosition = PointF.init;
         releaseMouse();
@@ -1764,6 +2154,10 @@ class Taskbar : Widget
         _dragEntryId = invalidTaskEntryId;
         _dragOriginIndex = -1;
         _dragCurrentIndex = -1;
+        _reorderAnim = 1.0;
+        _reorderAnimActive = false;
+        _reorderFromSlot.length = 0;
+        _reorderToSlot.length = 0;
         _dragGrabOffset = PointF.init;
         _dragPointerPosition = PointF.init;
         releaseMouse();
@@ -1793,6 +2187,39 @@ class Taskbar : Widget
         {
             if (clockRect().contains(event.position) && onDateTimeSettings !is null)
                 onDateTimeSettings();
+            return true;
+        }
+        if (pressed == -5)
+        {
+            if (searchRect().contains(event.position) && onSearchClick !is null)
+                onSearchClick();
+            return true;
+        }
+        if (pressed >= 100)
+        {
+            const trayIcon = pressed - 100;
+            if (trayIconHit(event.position) == trayIcon)
+            {
+                switch (trayIcon)
+                {
+                    case 0:
+                        if (onWifiClick !is null) onWifiClick();
+                        break;
+                    case 1:
+                        if (onVolumeClick !is null) onVolumeClick();
+                        else if (onVolumeToggle !is null) onVolumeToggle();
+                        break;
+                    case 2:
+                        if (onBatteryClick !is null) onBatteryClick();
+                        else if (onVolumeChanged !is null) onVolumeChanged();
+                        break;
+                    case 3:
+                        if (onHiddenIconsClick !is null) onHiddenIconsClick();
+                        break;
+                    default:
+                        break;
+                }
+            }
             return true;
         }
         if (pressed >= 0)
@@ -1996,6 +2423,18 @@ class Taskbar : Widget
             _clockAccumulator = 0.0;
             updateClock();
         }
+        if (_reorderAnimActive)
+        {
+            _reorderAnim += deltaSeconds / reorderAnimSeconds;
+            if (_reorderAnim >= 1.0)
+            {
+                _reorderAnim = 1.0;
+                _reorderAnimActive = false;
+                _reorderFromSlot.length = 0;
+                _reorderToSlot.length = 0;
+            }
+            invalidate();
+        }
     }
 
     private void updateClock()
@@ -2005,19 +2444,40 @@ class Taskbar : Widget
         auto info = localtime(&raw);
         if (info !is null)
         {
-            if (_clockHour == info.tm_hour && _clockMinute == info.tm_min) return;
+            if (_clockHour == info.tm_hour && _clockMinute == info.tm_min &&
+                _clockDay == info.tm_mday && _clockMonth == info.tm_mon &&
+                _clockYear == info.tm_year)
+            {
+                return;
+            }
             _clockHour = info.tm_hour;
             _clockMinute = info.tm_min;
+            _clockDay = info.tm_mday;
+            _clockMonth = info.tm_mon;
+            _clockYear = info.tm_year;
             _clock = toUTF32(format("%02d:%02d", info.tm_hour, info.tm_min));
+            _date = formatDate(info);
         }
         else
         {
             if (_clock == "--:--"d) return;
             _clockHour = -1;
             _clockMinute = -1;
+            _clockDay = -1;
+            _clockMonth = -1;
+            _clockYear = -1;
             _clock = "--:--"d;
+            _date = "--"d;
         }
         invalidate();
+    }
+
+    // Produces a Windows-11 style "M/D/YYYY" date line from a localtime struct.
+    private static dstring formatDate(const tm* info) @safe
+    {
+        // tm_mon is 0-based; tm_year is years since 1900.
+        return toUTF32(format("%d/%d/%d", info.tm_mon + 1, info.tm_mday,
+            info.tm_year + 1900));
     }
 
     private static PointF pointerPosition(ref Event event)

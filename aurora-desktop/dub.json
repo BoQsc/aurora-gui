@@ -1,0 +1,61 @@
+{
+  "name": "aurora-desktop",
+  "description": "A Windows-11-style Aurora desktop environment: wallpaper, draggable windows, a start menu with power/session actions, and a live system tray with WiFi, battery, volume, hidden-notification icons, date/time and Show Desktop.",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-desktop",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "..\\vendor\\aurora-d-0.4.5\\source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "winmm",
+    "wininet",
+    "wlanapi",
+    "ole32",
+    "powrprof"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "version": "0.66.8"
+}
