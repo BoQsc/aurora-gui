@@ -1,5 +1,64 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## WiFi panel opened showing only the connected network (2026-09-06)
+
+Complaint: the panel showed only the currently-connected network, with more
+appearing a few seconds later. User: "you are not doing the scanning before we
+click the wifi button."
+
+**Cause:** the scan was kicked only after the panel opened, so the panel first
+showed the stale connected-only cache.
+
+**Fix:** maintain a warm scan - `refreshTray()` (startup + every 2 s) now calls
+`kickWifiScan()`, so the available-network cache is refreshed before the panel
+opens.
+
+**How to verify:** a probe that lets the app tick ~3 s (driving the 2 s
+refresh->kickWifiScan) then opens the panel: it shows 6 buttons (3 network rows
++ footer) on open, vs the connected-only row before. `dub test --force` 38/38;
+headless smoke ALL PASSED ("wifi: 3 network(s)"); release builds.
+
+## WiFi listing stops at 2 networks, not complete (2026-09-06)
+
+Complaint: the WiFi panel still didn't list all networks like the Windows flyout.
+
+**Cause:** `pollWifiPanel` stopped polling the moment `networks.length > 1`, but
+the active scan reports the connected network first and then grows (2 -> 3 -> 4)
+as Windows finishes. Stopping at ">1" froze the list early.
+
+**Fix:** poll until the count stops growing (track `_wifiLastCount`) or the
+~2 s window runs out. Also raised the panel's row cap 6 -> 12.
+
+**How to verify:** a probe that kicks a scan and polls every 0.2 s shows the
+count grow 1 -> 3 then stop (stable set matching the flyout). `dub test --force`
+38/38; headless smoke ALL PASSED ("wifi: 3 network(s)"); release builds.
+
+## Compile-time build badge in the title (2026-09-06)
+
+Feature: the aurora-desktop window title now includes the D compile-time
+`__TIMESTAMP__`, e.g. `... — Sun Sep 6 16:34:07 2026`, so the binary's build
+date/time is visible. Verified by building and inspecting `MainWindowTitle`.
+
+## WiFi listing inconsistent / mostly connected only (2026-09-06)
+
+Complaint: the WiFi panel listing is inconsistent and mostly shows only the
+connected network.
+
+**Root cause (verified against wlanapi.h):** the `WlanScan` binding used FOUR
+parameters but the real signature has FIVE (`..., const PWLAN_RAW_DATA pIeData,
+PVOID pReserved`). The ABI-misaligned call returned ERROR_INVALID_PARAMETER
+(87), so the active scan never ran and `WlanGetAvailableNetworkList` kept
+returning the stale cached list (often just the connected network).
+
+**Fix:** correct the `WlanScan` binding (add `pIeData`) and pass `null,null,null`
+from `kickWifiScan()`. Now `WlanScan` returns hr=0 and the scan runs.
+
+**How to verify:** a probe calling the 5-arg `WlanScan` on one open handle
+returns hr=0 and the polled network count grows (observed 2 → 3 → 4) as the
+scan completes; `queryWifi()+kickWifiScan()` returns 3 networks consistently.
+`dub test --force` 38/38; headless smoke ALL PASSED ("wifi: 3 network(s)");
+release builds. Probes deleted.
+
 ## WiFi button blocked the program while opening (2026-09-06)
 
 Complaint: clicking the WiFi tray icon took a while and froze the whole app.

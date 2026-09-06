@@ -1,5 +1,86 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - WiFi panel showed only the connected network; scan not pre-warmed (fixed)
+
+User: "still one listed wifi that we are already connected to. Only later after
+few seconds some more appeared, maybe you are not doing the scanning before we
+click the wifi button."
+
+User was right. The scan was only kicked AFTER the panel opened
+(`openWifiPanel` -> `kickWifiScan()`), so the panel first showed the stale
+connected-only cache and populated a few seconds later. Fix: keep the WLAN scan
+WARM in the background so the list is already populated when the button is
+clicked.
+
+- `refreshTray()` (runs on the 2 s tick AND at startup) now calls
+  `kickWifiScan()`, so Windows keeps refreshing the available-network cache.
+- The WiFi panel then opens showing the already-fresh list.
+
+Verified (probe): with the app warmed ~3 s of ticks before opening, the panel
+shows 6 buttons = 3 network rows + footer (fully populated) on open; before it
+showed only the connected network. Vendored `dub test --force` 38/38; headless
+smoke ALL PASSED ("wifi: 3 network(s)"); release builds. Probe deleted.
+
+## 2026-09-06 - WiFi listing still not complete: poll stopped too early (fixed)
+
+User: "I still see same bug not all listed like in original wifi, don't know
+why deeply investigate."
+
+Deep investigation + two fixes:
+
+1. `pollWifiPanel` (app.d) stopped polling the instant `networks.length > 1`.
+   The active scan reports the connected network first, then grows (observed
+   2 -> 3 -> 4) as Windows finishes scanning. Stopping at ">1" froze the list
+   at 2 networks. Fix: poll until the count STOPPED GROWING or the window
+   (~2 s) ran out; tracks `_wifiLastCount`.
+
+2. The panel capped the list at 6 rows (`shown >= 6`); raised to 12 so a busy
+   environment isn't truncated.
+
+Verified (probe): kick + poll every 0.2 s shows the count grow 1 -> 3 and then
+stop (stable 3: connected + ZTE_927181 + a newly-found Samsung Fridge AP) -
+the same set the real Windows flyout returns from the same scan cache.
+`dub test --force` 38/38; headless smoke ALL PASSED ("wifi: 3 network(s)");
+release builds. Probe deleted.
+
+## 2026-09-06 - Compile-time build badge in the window title (feature)
+
+User: "Add date and minutes to the title of program so we know when it was
+last compiled binary."
+
+`aurora-desktop` window title now appends the D compile-time `__TIMESTAMP__`
+(`enum string _buildTime = __TIMESTAMP__`), e.g.
+`Aurora Desktop — Vulkan — Sun Sep  6 16:34:07 2026`, so the running binary's
+build date+time (to the minute/second) is always visible.
+
+## 2026-09-06 - WiFi listing inconsistent / mostly connected only - real cause (fixed)
+
+User: "inconsistent wifi listing, always shows main connected most of the
+time" and "maybe original windows is simply caching list for some time."
+
+ROOT CAUSE (found by verifying the actual wlanapi.h header, not guessing):
+`WlanScan`'s real signature is FIVE parameters:
+```c
+DWORD WlanScan(HANDLE, const GUID*, const PDOT11_SSID,
+    const PWLAN_RAW_DATA pIeData, PVOID pReserved);
+```
+The binding declared only FOUR, so the call was ABI-misaligned and returned
+ERROR_INVALID_PARAMETER (87) - the active scan was NEVER actually triggered.
+`WlanGetAvailableNetworkList` therefore returned only the stale cached list
+(often just the connected network), which is exactly the inconsistency the
+user saw (Windows only refreshes that cache when a scan runs).
+
+Fix: `WlanScan` binding now takes the missing `pIeData` arg; `kickWifiScan()`
+passes `null, null, null`. With the correct signature `WlanScan` returns
+hr=0 (SUCCESS) and Windows performs a real scan, so the background poll
+(`pollWifiPanel`) picks up a fresh, complete list.
+
+Verified: a corrected 5-arg `WlanScan` returned hr=0 and the polled count grew
+2 -> 3 -> 4 as the scan completed (before the fix it was stuck, hr=87).
+`queryWifi` + `kickWifiScan` now returns 3 networks consistently across polls
+(connected + ZTE_927181 + Solis_...). Vendored `dub test --force` 38/38;
+headless smoke ALL PASSED; release builds. Probes deleted.
+
 ## 2026-09-06 - WiFi button blocked the whole program while opening (fixed)
 
 User: "why wifi button takes a while to open and blocks entire program."

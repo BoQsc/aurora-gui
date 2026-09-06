@@ -320,6 +320,11 @@ final class DesktopRoot : Widget
         // Re-resolve the endpoint selection on the slow 2 s cadence so a
         // plug/unplug heals; the drag path in between rides the cache.
         refreshAudioEndpoints();
+        // Keep the WLAN scan cache warm in the background so that when the
+        // tray WiFi button is clicked the surrounding networks are already
+        // present (Windows only populates the available-network cache when a
+        // scan runs). This is a cheap non-blocking request.
+        kickWifiScan();
         const live = systemVolume();
         const liveMuted = systemMuted();
         // Track external mixer moves (Windows volume keys, another mixer app).
@@ -400,7 +405,8 @@ final class DesktopRoot : Widget
         kickWifiScan();
         _wifiPollElapsed = 0.0;
         _wifiPollActive = true;
-        _wifiPollMax = 1.2; // ~6 polls @ 200 ms
+        _wifiPollMax = 2.0;   // ~10 polls @ 0.2 s; let the scan finish
+        _wifiLastCount = -1;  // force the first poll to count as growth
     }
 
     // Pull the latest scan into the panel without blocking. Asks Windows to
@@ -422,11 +428,20 @@ final class DesktopRoot : Widget
         auto state = queryWifi();
         if (_wifiPanelContent !is null && !_wifiPanel.dismissed())
             _wifiPanelContent.refresh(state, "");
-        // Stop once the surrounding networks appear or the poll window runs out.
-        if (state.networks.length > 1 || _wifiPollElapsed >= _wifiPollMax)
+        // Keep polling the WHOLE window so the active scan can finish adding
+        // every network (it grows 2 -> 3 -> 5 over ~1s). Stopping at ">1"
+        // froze the list too early. Stop only when the count stops growing or
+        // the poll window runs out.
+        if (cast(int) state.networks.length <= _wifiLastCount ||
+            _wifiPollElapsed >= _wifiPollMax)
+        {
             _wifiPollActive = false;
+        }
         else
-            _wifiPollElapsed = 0.0; // poll again next 0.2 s window
+        {
+            _wifiLastCount = cast(int) state.networks.length;
+            _wifiPollElapsed = 0.0;
+        }
     }
 
     private void openHiddenIconsPanel()
@@ -508,6 +523,7 @@ final class DesktopRoot : Widget
     private double _wifiPollElapsed;
     private double _wifiPollMax;
     private bool _wifiPollActive;
+    private int _wifiLastCount;
 
     // Test-only accessors. Kept on the class (not free functions) so the
     // headless smoke can inspect shell state without a running window loop.
@@ -520,6 +536,10 @@ final class DesktopRoot : Widget
 }
 
 /// The taskbar exposes a public tray-icon geometry accessor for app popups.
+// __TIMESTAMP__ is the date+time (to the minute) this source was compiled; it
+// is baked into the binary so the title always shows when this build was made.
+enum string _buildTime = __TIMESTAMP__;
+
 int run(string[] args)
 {
     WindowOptions options;
@@ -541,7 +561,8 @@ int run(string[] args)
     auto root = new DesktopRoot();
     root.onToggleFullscreen = delegate() { window.toggleFullscreen(); };
     window.setRoot(root);
-    window.setTitle(options.title ~ " — " ~ window.rendererName());
+    window.setTitle(options.title ~ " — " ~ window.rendererName() ~
+        " — built " ~ _buildTime);
 
     if (screenshot)
     {

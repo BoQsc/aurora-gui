@@ -159,7 +159,7 @@ version (Windows)
         const(WlanConnectionParameters)* pConnectionParameters, PVOID pReserved);
     extern (Windows) nothrow DWORD WlanScan(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid, const(Dot11Ssid)* pDot11Ssid,
-        PVOID pReserved);
+        const(void)* pIeData, PVOID pReserved);
     extern (Windows) nothrow DWORD WlanDisconnect(HANDLE hClientHandle,
         const(WlanGuid)* pInterfaceGuid, PVOID pReserved);
     extern (Windows) nothrow void WlanFreeMemory(PVOID pMemory);
@@ -299,9 +299,9 @@ version (Windows)
         auto iface = activeInterface(list);
         if (iface is null) return false;
 
-        // Passing a null SSID scans all channels; the returned code is best
-        // effort (some drivers return ERROR_INVALID_PARAMETER yet still scan).
-        WlanScan(client, &iface.InterfaceGuid, null, null);
+        // Passing a null SSID + null IeData scans all channels; the returned
+        // code is best effort (some drivers still scan).
+        WlanScan(client, &iface.InterfaceGuid, null, null, null);
         return true;
     }
 

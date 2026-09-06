@@ -189,7 +189,7 @@ final class WifiPanel : Widget
         size_t shown;
         foreach (network; _state.networks)
         {
-            if (shown >= 6) break;
+            if (shown >= 12) break;
             const ssid = network.ssid;
             const profile = network.profile;
             const secured = network.secured;
