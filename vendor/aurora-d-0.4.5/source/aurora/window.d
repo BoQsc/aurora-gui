@@ -6,6 +6,8 @@ import aurora.dragdrop : DragAction, DragActions, DragPayload, preferredDragActi
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.font : FontFace, FontRenderMode, FontRole;
 import aurora.image : RgbaImage;
+import aurora.pointer : drawSystemCursor, systemCursorHotspot,
+    systemCursorSize;
 import aurora.platform.select : NativeWindow, NativeWindowSink, PlatformWindow, WindowOptions;
 import aurora.render.base : RenderBackend, RendererPreference, RendererStats;
 import aurora.render.drawlist : DrawList;
@@ -19,6 +21,7 @@ import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size, maxIn
 import aurora.widget : PopupSurface, Widget, WidgetHost;
 import core.time : MonoTime;
 import std.conv : to;
+import std.math : isNaN;
 import std.process : environment;
 
 private enum ulong synchronizedPointerLayerId = ulong.max;
@@ -75,6 +78,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private ulong _pointerRevision;
     private ulong _resizeProxyRevision;
     private Size _pointerFramebufferSize;
+    private CursorKind _pointerCursor = CursorKind.arrow;
+    private Point _pointerHotspot;
     private PointF _pointerPosition;
     private PointF _lastPointerPosition;
     private bool _hasLastPointerPosition;
@@ -491,9 +496,15 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _native is null || !_native.setPointerVisible(false))
             return;
         _synchronizedPointerActive = true;
-        if (!_native.queryPointerPosition(_pointerPosition))
-            _pointerPosition = _hasLastPointerPosition ? _lastPointerPosition :
+        PointF queried;
+        // A backend may report success with a meaningless position (headless
+        // returns NaN until a test pins it). Fall back to the last position
+        // seen on the event stream so the layer never sits at NaN.
+        if (!_native.queryPointerPosition(queried) || queried.x.isNaN ||
+            queried.y.isNaN)
+            queried = _hasLastPointerPosition ? _lastPointerPosition :
                 _captured.preciseGlobalOrigin();
+        _pointerPosition = queried;
         _lastPointerPosition = _pointerPosition;
         _hasLastPointerPosition = true;
         requestFrame();
@@ -515,7 +526,23 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override void updateCursor(CursorKind cursor)
     {
-        _native.setCursor(cursor);
+        setActiveCursor(cursor);
+    }
+
+    /**
+     * Single funnel for every cursor change. The native host cursor and the
+     * Aurora-rendered synchronized pointer show the same kind, so a drag
+     * never visibly swaps cursor styles mid-gesture.
+     */
+    private void setActiveCursor(CursorKind cursor)
+    {
+        if (_native !is null) _native.setCursor(cursor);
+        if (_pointerCursor != cursor)
+        {
+            _pointerCursor = cursor;
+            // Force the pointer layer to rebuild with the new artwork.
+            _pointerLayerBuilt = false;
+        }
     }
 
     override void bringToFront(Widget widget)
@@ -578,7 +605,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         {
             if (_hovered !is null) _hovered.setHoveredInternal(false);
             _hovered = null;
-            if (_native !is null) _native.setCursor(CursorKind.arrow);
+            setActiveCursor(CursorKind.arrow);
         }
         if (subtree.containsWidget(_dragTarget))
             _dragTarget = null;
@@ -1165,7 +1192,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             pointerLayer.revision = _pointerRevision;
             pointerLayer.drawList = _pointerDrawList;
             const pointerDevice = _displayScale.logicalToPhysical(_pointerPosition);
-            pointerLayer.deviceBounds = Rect(pointerDevice.x, pointerDevice.y,
+            const hotDevice = _displayScale.logicalToPhysical(_pointerHotspot);
+            pointerLayer.deviceBounds = Rect(pointerDevice.x - hotDevice.x,
+                pointerDevice.y - hotDevice.y,
                 _pointerFramebufferSize.width, _pointerFramebufferSize.height);
             pointerLayer.visible = _synchronizedPointerActive;
             _scene.addLayer(pointerLayer);
@@ -1187,6 +1216,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_captured is null || _native is null) return;
         PointF latest;
         if (!_native.queryPointerPosition(latest)) return;
+        if (latest.x.isNaN || latest.y.isNaN) return;
         _lastPointerPosition = latest;
         _hasLastPointerPosition = true;
         ++_compositorStats.lateLatchSamples;
@@ -1220,11 +1250,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_pointerLayerBuilt)
         {
             const device = _displayScale.logicalToPhysical(_pointerPosition);
+            const hot = _displayScale.logicalToPhysical(_pointerHotspot);
             foreach (ref rendered; _scene.layers)
             {
                 if (rendered.id != synchronizedPointerLayerId) continue;
-                rendered.deviceBounds.x = device.x;
-                rendered.deviceBounds.y = device.y;
+                rendered.deviceBounds.x = device.x - hot.x;
+                rendered.deviceBounds.y = device.y - hot.y;
                 rendered.visible = _synchronizedPointerActive;
                 break;
             }
@@ -1233,26 +1264,21 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void ensurePointerDrawList()
     {
-        enum pointerWidth = 20;
-        enum pointerHeight = 28;
-        const logicalSize = Size(pointerWidth, pointerHeight);
+        // Aurora-rendered Windows-10-style cursor. Drawing it as an Aurora
+        // layer keeps the visible cursor and dragged window in the same
+        // submitted frame, removing the apparent trail behind a hardware
+        // cursor — and the artwork now matches the native cursor style, so a
+        // drag no longer visibly swaps cursor designs mid-gesture.
+        const logicalSize = systemCursorSize;
         const physicalSize = _displayScale.logicalToPhysical(logicalSize);
         if (_pointerLayerBuilt && _pointerFramebufferSize == physicalSize) return;
         _pointerFramebufferSize = physicalSize;
         _pointerDrawList.reset(logicalSize, physicalSize, _displayScale,
             Color.rgba(0, 0, 0, 0));
-        const clip = Rect(0, 0, pointerWidth, pointerHeight);
-        auto canvas = Canvas(_pointerDrawList, pointerWidth, pointerHeight);
-
-        // A compact vector cursor with a zero/zero hotspot. Drawing it as an
-        // Aurora layer keeps the visible cursor and dragged window in the same
-        // submitted frame, removing the apparent trail behind a hardware cursor.
-        canvas.drawLine(Point(7, 14), Point(13, 27), Color.rgba(0, 0, 0, 230), 5);
-        canvas.drawLine(Point(7, 14), Point(13, 27), Color.rgb(255, 255, 255), 2);
-        _pointerDrawList.addSolidTriangle(Point(0, 0), Point(1, 22), Point(18, 16),
-            Color.rgba(0, 0, 0, 235), clip);
-        _pointerDrawList.addSolidTriangle(Point(2, 3), Point(3, 17), Point(14, 14),
-            Color.rgb(255, 255, 255), clip);
+        auto canvas = Canvas(_pointerDrawList, logicalSize.width,
+            logicalSize.height);
+        drawSystemCursor(canvas, _pointerCursor);
+        _pointerHotspot = systemCursorHotspot(_pointerCursor);
         _pointerLayerBuilt = true;
         ++_pointerRevision;
         if (_pointerRevision == 0) ++_pointerRevision;
@@ -1309,11 +1335,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_hovered !is null)
         {
             _hovered.setHoveredInternal(true);
-            _native.setCursor(_hovered.cursor());
+            setActiveCursor(_hovered.cursor());
         }
         else
         {
-            _native.setCursor(CursorKind.arrow);
+            setActiveCursor(CursorKind.arrow);
         }
     }
 

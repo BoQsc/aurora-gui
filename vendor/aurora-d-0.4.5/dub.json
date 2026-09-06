@@ -465,6 +465,15 @@
       ]
     },
     {
+      "name": "pointer-sheet-test",
+      "targetType": "executable",
+      "targetName": "aurora-pointer-sheet-test",
+      "mainSourceFile": "tests/cursorsheet.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
       "name": "vulkan-smoke",
       "targetType": "executable",
       "targetName": "aurora-vulkan-smoke",

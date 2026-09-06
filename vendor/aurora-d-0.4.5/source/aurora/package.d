@@ -14,6 +14,7 @@ public import aurora.font;
 public import aurora.image;
 public import aurora.icons;
 public import aurora.layout;
+public import aurora.pointer;
 public import aurora.platform.base : WindowOptions;
 public import aurora.render.base : RendererPreference, RendererStats;
 public import aurora.render.drawlist;
