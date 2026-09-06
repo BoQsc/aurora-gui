@@ -1,5 +1,24 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Taskbar: minimized indicator, clock padding, tooltips (2026-09-06)
+
+Three feature requests, all in `vendor/.../widgets/desktop.d`:
+
+1. **Dimmed minimized indicator:** the running underline is now drawn for any
+   window task: active = 3px accent, running-unfocused = 2px muted, minimized =
+   dimmed 2px `textMuted.withAlpha(90)` (was none, because the indicator was
+   gated on `visible()`).
+2. **Clock padding:** `clockRect()` now insets its right edge `clockRightPadding`
+   (8 px) from the show-desktop strip (verified gap = 8 px via `clockBounds` /
+   `showDesktopBounds`).
+3. **Tooltips:** a root-level `TaskbarTooltip` appears after 0.6 s of hover on
+   Start / Search / clock / show-desktop / tray icons / task entries; hides on
+   hover change, mouse-leave, mouse-down, and focus-loss.
+
+**How to verify:** headless smoke asserts a tooltip appears after hovering the
+wifi tray icon and hides when moving to empty space; asserts clock/show-desktop
+gap >= 4 px. Vendored `dub test --force` 38/38; headless smoke ALL PASSED.
+
 ## WiFi panel opened showing only the connected network (2026-09-06)
 
 Complaint: the panel showed only the currently-connected network, with more

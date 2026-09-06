@@ -14,6 +14,28 @@ private Point center(Rect value)
     return Point(value.x + value.width / 2, value.y + value.height / 2);
 }
 
+// Drive the taskbar tick enough times to cross the tooltip delay (0.6 s).
+private void placeTooltipForTest(GuiWindow window)
+{
+    foreach (_; 0 .. 6)
+    {
+        window.onNativeTick(0.2);
+    }
+}
+
+// Count root-level taskbar tooltip widgets (root children whose class name
+// contains "Tooltip").
+private int countTooltipWidgets(Widget root)
+{
+    int count;
+    foreach (child; root.children())
+    {
+        const name = child.classinfo.name;
+        if (canFind(name, "Tooltip")) ++count;
+    }
+    return count;
+}
+
 private Rect globalBounds(Widget widget)
 {
     // NB: globalOrigin already includes the widget's own position, so only
@@ -110,6 +132,29 @@ int main()
     root.refreshTrayForTesting();
     const tray = taskbar.trayState();
     assert(tray.volumePercent >= 0 && tray.volumePercent <= 100);
+
+    // Clock must be padded from the show-desktop button (gap >= 4 px).
+    const clockB = taskbar.clockBounds();
+    const showB = taskbar.showDesktopBounds();
+    const clockGap = showB.x - (clockB.x + clockB.width);
+    assert(clockGap >= 4, "date/time merged with show-desktop: gap " ~ clockGap.to!string);
+
+    // Hovering a tray icon for just past the delay shows a tooltip overlay.
+    driver.moveTo(center(taskbar.trayIconGlobalBounds(0)));
+    driver.paint();
+    writeln("hovering wifi, ticking...");
+    placeTooltipForTest(window);  // drive the tooltip timer via a tick
+    driver.paint();
+    const tooltipCount = countTooltipWidgets(root);
+    writeln("tooltip widgets after wifi hover = ", tooltipCount);
+    assert(tooltipCount == 1, "expected a tooltip for the wifi tray icon");
+    // Moving to empty space hides it.
+    driver.moveTo(Point(400, 720));
+    driver.paint();
+    window.onNativeTick(0.2);
+    driver.paint();
+    assert(countTooltipWidgets(root) == 0,
+        "tooltip should hide when the pointer leaves the taskbar region");
 
     // The Start button opens the start menu; closing restores state.
     driver.click(center(taskbar.startButtonGlobalBounds()));

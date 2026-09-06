@@ -1,5 +1,38 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - Taskbar: dimmed minimized indicator, clock padding, tooltips (done)
+
+User: "Why minimized tasks does not have dimmed indication color. Also could you
+add padding to the right of date/time on taskbar so it does not merge with the
+'show desktop' button. Also could you add tooltips for all the things, so if you
+hover for some time a tooltip would show up."
+
+Three changes in `vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d`:
+
+1. Dimmed minimized indicator: `paintTaskEntry` now draws a running underline
+   for ANY window task with three tiers - active (focused+visible) = solid 3px
+   accent; running-but-unfocused = 2px muted; MINIMIZED (window exists, not
+   visible) = a dimmed 2px `textMuted.withAlpha(90)`. Previously minimized tasks
+   had NO underline because the indicator was gated on `window.visible()`.
+
+2. Clock <-> show-desktop padding: added `clockRightPadding = 8`, and
+   `clockRect()` insets its right edge from the show-desktop strip by that gap,
+   so the date/time no longer visually merges with the show-desktop button.
+   Verified: clock right edge 1256, show-desktop left 1264 => 8 px gap.
+
+3. Tooltips: a new root-level `TaskbarTooltip` widget (auto-sized rounded panel,
+   composited, like the drag proxy). The Taskbar tracks hover
+   (`_tooltipRegion`, `_tooltipHoverSeconds`, `tooltipDelaySeconds = 0.6`), and
+   `onTick` -> `advanceTooltip` shows the tooltip above the hovered region after
+   0.6 s, hiding on hover change / mouse-leave / mouse-down / focus-loss. It
+   covers Start, Search, clock, show-desktop, the four tray icons, and task
+   entries (with click/restore/focus hints). Added `clockBounds()` /
+   `showDesktopBounds()` test accessors.
+
+Verification: vendored `dub test --force` 38/38; headless smoke ALL PASSED
+(with new asserts: tooltip appears after hovering the wifi tray icon and hides
+on empty hover; clock/show-desktop gap >= 4 px). Release builds; running.
+
 ## 2026-09-06 - WiFi panel showed only the connected network; scan not pre-warmed (fixed)
 
 User: "still one listed wifi that we are already connected to. Only later after

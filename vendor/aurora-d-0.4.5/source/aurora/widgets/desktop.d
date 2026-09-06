@@ -4,7 +4,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, Key, MouseButton;
 import aurora.icons : IconKind, drawIcon;
-import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, VerticalAlign,
+import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Size, VerticalAlign,
     clampDouble, clampInt, maxInt, minInt;
 import aurora.widget : Widget;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
@@ -989,6 +989,87 @@ private final class TaskDragProxy : Widget
     }
 }
 
+/**
+ * A small root-level hover tooltip for the taskbar. Shows a single line of text
+ * in a rounded panel just above the hovered taskbar region; it is owned by the
+ * Taskbar (added to the root like the drag proxy) and auto-sizes to its text.
+ */
+private final class TaskbarTooltip : Widget
+{
+    private dstring _text;
+    private Size _textSize;
+
+    this(string text)
+    {
+        _text = toUTF32(text);
+        _textSize = measureTooltipText(_text);
+        setComposited(true);
+        setEnabled(false);
+        layoutHints().excludeFromLayout = true;
+        layoutHints().allowOverflow = true;
+        setBounds(Rect(0, 0, _textSize.width + 20,
+            maxInt(1, _textSize.height + 12)));
+    }
+
+    this(dstring text)
+    {
+        _text = text;
+        _textSize = measureTooltipText(_text);
+        setComposited(true);
+        setEnabled(false);
+        layoutHints().excludeFromLayout = true;
+        layoutHints().allowOverflow = true;
+        setBounds(Rect(0, 0, _textSize.width + 20,
+            maxInt(1, _textSize.height + 12)));
+    }
+
+    // Measure a single-line label with the caption tier so the panel hugs it.
+    private Size measureTooltipText(const(dchar)[] text)
+    {
+        import aurora.text.layout : TextLayoutOptions;
+        import aurora.font : FontRole, fontPixelSize;
+        const palette = theme();
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast() palette.uiFont;
+        options.pixelSize = fontPixelSize(1);
+        options.wrap = false;
+        return fontSystem().textEngine.layout(text, options).measuredSize();
+    }
+
+    void setText(string value)
+    {
+        _text = toUTF32(value);
+        _textSize = measureTooltipText(_text);
+        setBounds(Rect(0, 0, _textSize.width + 20,
+            maxInt(1, _textSize.height + 12)));
+        invalidate();
+    }
+
+    void setText(dstring value)
+    {
+        _text = value;
+        _textSize = measureTooltipText(_text);
+        setBounds(Rect(0, 0, _textSize.width + 20,
+            maxInt(1, _textSize.height + 12)));
+        invalidate();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        canvas.fillRoundedRect(full.translated(1, 2), 6,
+            Color.rgba(0, 0, 0, 95));
+        canvas.fillRoundedRect(full, 6, palette.panelElevated);
+        canvas.drawRoundedRect(full.inset(1), 6, Color.rgba(0, 0, 0, 0),
+            palette.border.withAlpha(160), 1);
+        canvas.drawTextInRect(Rect(10, 6, maxInt(0, bounds().width - 20),
+            maxInt(0, bounds().height - 12)), _text, palette.text, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+}
+
 /** Full Aurora taskbar with activation, reordering, menus, and Show Desktop. */
 class Taskbar : Widget
 {
@@ -1019,6 +1100,10 @@ class Taskbar : Widget
     private bool _startMenuOpen;
     private FloatingWindow _activeWindow;
     private FloatingWindow[] _showDesktopWindows;
+    private TaskbarTooltip _tooltip;
+    private double _tooltipHoverSeconds;
+    private int _tooltipRegion = -2;   // the _hot code the tooltip is for
+    private enum double tooltipDelaySeconds = 0.6;
     private dstring _clock;
     private dstring _date;
     private double _clockAccumulator = 0.0;
@@ -1232,6 +1317,22 @@ class Taskbar : Widget
     Rect entryBounds(size_t index) const @safe pure nothrow @nogc
     {
         return index < _entries.length ? entryRect(cast(int) index) : Rect.init;
+    }
+
+    // Read-only geometry for tests (clock and show-desktop are private). Padded
+    // so the date/time never visually merges with the show-desktop button.
+    Rect clockBounds() const @safe pure nothrow @nogc
+    {
+        const origin = globalOrigin();
+        const local = clockRect();
+        return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
+    }
+
+    Rect showDesktopBounds() const @safe pure nothrow @nogc
+    {
+        const origin = globalOrigin();
+        const local = showDesktopRect();
+        return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
     }
 
     private TaskEntryId allocateEntryId()
@@ -1498,9 +1599,10 @@ class Taskbar : Widget
     }
 
     // Right-side reserved region, laid out from the right edge leftward:
-    // show-desktop strip, two-line clock, then the tray icon cluster.
+    // show-desktop strip, a padding gap, two-line clock, then the tray cluster.
     // The classic shell keeps the previous compact geometry instead.
     private enum int showDesktopWidth = 16;
+    private enum int clockRightPadding = 8; // gap between date/time and show-desktop
     private enum int clockWidth = 90;
     private enum int trayIconWidth = 34;
     private enum int trayIconGap = 4;
@@ -1517,7 +1619,9 @@ class Taskbar : Widget
     {
         if (!_modernShell)
             return Rect(maxInt(54, bounds().width - 94), 0, 84, bounds().height);
-        const right = showDesktopRect().x;
+        // Inset the clock's right edge from the show-desktop strip so the date
+        // and time do not visually merge with the show-desktop button.
+        const right = showDesktopRect().x - clockRightPadding;
         return Rect(maxInt(0, right - clockWidth), 0, clockWidth, bounds().height);
     }
 
@@ -1847,10 +1951,25 @@ class Taskbar : Widget
         drawIcon(canvas, entry.icon,
             Rect(iconX, iconY, taskIconSize, taskIconSize),
             Color.rgb(245, 248, 252), palette.accent);
-        if (entry.window !is null && entry.window.visible())
-            canvas.fillRect(Rect(rect.x + (rect.width - 16) / 2,
-                rect.bottom() - 4, 16, active ? 3 : 2),
-                active ? palette.accent : palette.textMuted);
+        if (entry.window !is null)
+        {
+            // Running indicator under the icon, with three tiers:
+            //  - active (focused + visible): solid accent
+            //  - running but unfocused: muted
+            //  - minimized (window exists, not visible): dimmed/dotted
+            const minimized = !entry.window.visible();
+            const underlineWidth = 16;
+            const underlineX = rect.x + (rect.width - underlineWidth) / 2;
+            if (active)
+                canvas.fillRect(Rect(underlineX, rect.bottom() - 4,
+                    underlineWidth, 3), palette.accent);
+            else if (minimized)
+                canvas.fillRect(Rect(underlineX, rect.bottom() - 4,
+                    underlineWidth, 2), palette.textMuted.withAlpha(90));
+            else
+                canvas.fillRect(Rect(underlineX, rect.bottom() - 4,
+                    underlineWidth, 2), palette.textMuted);
+        }
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -1996,8 +2115,133 @@ class Taskbar : Widget
             Color.rgb(245, 248, 252), palette.accent);
     }
 
+    // --- Tooltip --------------------------------------------------------
+    // Hovering a taskbar region for `tooltipDelaySeconds` shows a small label
+    // above that region. The tooltip is a root-level composited widget (like
+    // the drag proxy), so it can float above the taskbar without layout impact.
+
+    private dstring tooltipForRegion(int code) const
+    {
+        if (code == -1) return "Start"d;
+        if (code == -3) return "Date and time"d;
+        if (code == -4) return _showDesktopWindows.length == 0 ?
+            "Show desktop"d : "Restore windows"d;
+        if (code == -5) return "Search"d;
+        if (code >= -9 && code <= -6)
+        {
+            const tray = -6 - code; // 0 wifi, 1 volume, 2 battery, 3 hidden
+            if (tray == 0) return "Wi-Fi"d;
+            if (tray == 1) return "Volume"d;
+            if (tray == 2) return "Battery"d;
+            if (tray == 3) return "Hidden icons"d;
+        }
+        if (code >= 0 && code < cast(int) _entries.length)
+        {
+            const entry = _entries[cast(size_t) code];
+            if (entry.window !is null)
+                return entry.window.visible() ?
+                    (entry.window is _activeWindow ?
+                        "Close window or click to minimize"d :
+                        toUTF32("Click to focus " ~ titleEntry(entry))) :
+                    toUTF32("Click to restore " ~ titleEntry(entry));
+            return toUTF32(titleEntry(entry));
+        }
+        return null;
+    }
+
+    private static string titleEntry(const ref TaskEntry entry)
+    {
+        // Keep a plain UTF-8 label for the tooltip (entry.title is a dstring).
+        import std.utf : toUTF8;
+        return toUTF8(entry.title);
+    }
+
+    private Rect tooltipAnchorForRegion(int code) const
+    {
+        if (code == -1) return startRect();
+        if (code == -3) return clockRect();
+        if (code == -4) return showDesktopRect();
+        if (code == -5) return searchRect();
+        if (code >= -9 && code <= -6) return trayIconRect(-6 - code);
+        if (code >= 0 && code < cast(int) _entries.length)
+            return entryRect(code);
+        return Rect.init;
+    }
+
+    private void updateTooltip(int code)
+    {
+        // If the hovered region changed, reset the hover-timer. If it is a
+        // region with no tooltip, clear any shown tooltip.
+        if (code != _tooltipRegion)
+        {
+            _tooltipRegion = code;
+            _tooltipHoverSeconds = 0.0;
+            _tooltip = destroyTooltip();
+            // No further action: the timer accumulates while the pointer stays.
+        }
+    }
+
+    private TaskbarTooltip destroyTooltip()
+    {
+        auto tip = _tooltip;
+        _tooltip = null;
+        if (tip !is null && tip.parent() !is null)
+            tip.parent().remove(tip);
+        return null;
+    }
+
+    private void advanceTooltip(double deltaSeconds)
+    {
+        if (_tooltipRegion == -2) return;
+        _tooltipHoverSeconds += deltaSeconds;
+        const text = tooltipForRegion(_tooltipRegion);
+        if (text is null || text.length == 0)
+        {
+            _tooltipHoverSeconds = 0.0;
+            _tooltip = destroyTooltip();
+            return;
+        }
+        if (_tooltipHoverSeconds < tooltipDelaySeconds) return;
+
+        if (_tooltip is null)
+        {
+            _tooltip = new TaskbarTooltip(text);
+            auto root = rootWidget();
+            root.add(_tooltip);
+            root.bringChildToFront(_tooltip);
+        }
+        else
+            _tooltip.setText(text);
+
+        // Position above the anchored region, centered horizontally, clamped to
+        // the root so it never goes off the top/left/right.
+        auto anchor = tooltipAnchorForRegion(_tooltipRegion);
+        const origin = preciseGlobalOrigin();
+        anchor = Rect(cast(int) (origin.x + anchor.x),
+            cast(int) (origin.y + anchor.y), anchor.width, anchor.height);
+        const root = rootWidget();
+        const rootRect = Rect(0, 0, root.bounds().width, root.bounds().height);
+        const tip = _tooltip.bounds();
+        int x = anchor.x + (anchor.width - tip.width) / 2;
+        int y = anchor.y - tip.height - 6;
+        x = clampInt(x, 4, maxInt(4, rootRect.width - tip.width - 4));
+        if (y < 4) y = anchor.bottom() + 6;
+        const taskbarRootOrigin = root.preciseGlobalOrigin();
+        _tooltip.setPrecisePosition(PointF(
+            x - taskbarRootOrigin.x, y - taskbarRootOrigin.y), true);
+    }
+
+    // Hide the tooltip when the pointer leaves the taskbar or a gesture begins.
+    private void hideTooltip()
+    {
+        _tooltip = destroyTooltip();
+        _tooltipRegion = -2;
+        _tooltipHoverSeconds = 0.0;
+    }
+
     override bool onMouseDown(ref Event event)
     {
+        hideTooltip();
         if (event.button == MouseButton.right)
         {
             requestFocus();
@@ -2081,6 +2325,7 @@ class Taskbar : Widget
             _hot = hot;
             invalidate();
         }
+        updateTooltip(hot);
         return true;
     }
 
@@ -2091,17 +2336,23 @@ class Taskbar : Widget
             _hot = -2;
             invalidate();
         }
+        hideTooltip();
     }
 
     protected override void onHostFocusChanged(bool focused)
     {
-        if (!focused && (_reordering || _pressed != -2))
-            cancelTaskReorder();
+        if (!focused)
+        {
+            if (_reordering || _pressed != -2)
+                cancelTaskReorder();
+            hideTooltip();
+        }
     }
 
     protected override void onBoundsChanged()
     {
         if (_reordering) cancelTaskReorder();
+        hideTooltip();
     }
 
     override bool onPointerLatch(PointF globalPosition)
@@ -2442,6 +2693,7 @@ class Taskbar : Widget
             }
             invalidate();
         }
+        advanceTooltip(deltaSeconds);
     }
 
     private void updateClock()
