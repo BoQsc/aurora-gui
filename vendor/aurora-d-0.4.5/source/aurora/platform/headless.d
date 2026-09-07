@@ -13,6 +13,12 @@ final class PlatformWindow : NativeWindow
     private PointF _pointerPosition;
     private PointF _screenPointerPosition;
     private bool _screenPointerSet;
+
+    /// No OS HWND exists in the headless platform.
+    ulong hwnd() const @safe pure nothrow @nogc
+    {
+        return 0;
+    }
     private Rect _workArea;
     private bool _workAreaSet;
     private Rect _lastWindowBounds;

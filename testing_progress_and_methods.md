@@ -1,5 +1,141 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Text-glyph AA regression: reproducible A/B harness (2026-09-06)
+
+Method to prove glyph quality against the authoritative Windows renderer (do
+NOT eyeball a dark-UI screenshot — zoom a light-background glyph render and
+compare edge energy / mean-abs-diff):
+
+1. Build the reference renderer (GDI+ grid-fit): `dotnet build -c Release
+   build\refrender\refrender.csproj`, then
+   `build\refrender\bin\Release\net9.0-windows\refrender.exe build\fontref
+   "<word>" "Segoe UI" <px> "<word>"`.
+2. Build the pure-D string renderer:
+   `dmd -i -Isource tests\dtextrender.d -of=build\dtextrender.exe`.
+3. Render pure-D: `build\dtextrender.exe C:\Windows\Fonts\segoeui.ttf <px>
+   build\fontref\d.pgm "<word>"`.
+4. Compare: `python build\fontref\compare.py build\fontref\d.pgm
+   build\fontref\ref_gridfit_Segoe_UI_<px>_<word>.png build\fontref\out`
+   → reads mean_abs_diff, d_edges, ref_edges, bbox. Target: `d_edges` within
+   ~±1.5 of `ref_edges` (analytic AA matches; supersampled + S-curve under/over
+   shoots). Horizontal-stem text `"ETFLIZ-T=+"` verifies stems are not lost.
+
+Verified after the fix (Segoe UI "Open the document" 13px): analytic edge
+63.64 vs ref 63.33 (Δ0.31). Current supersampled+S-curve was 61.79 (under).
+
+## State persistence + task preview probe (`stateprobe`) (2026-09-06)
+
+**Purpose:** verify `desktop_state.json` round-trips and that hovering a task
+entry shows a `TaskPreview` thumbnail.
+
+**Build/probe cmd (from `aurora-desktop/`):**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\stateprobe.d -of=build\stateprobe.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\stateprobe.exe
+```
+
+**Key findings / gotchas:**
+- `JSONValue.emptyArray` does NOT accept `~=` appends; it throws
+  "JSONValue is not an array". Build arrays as `JSONValue[] arr; arr ~= v;
+  root["k"] = JSONValue(arr);`.
+- The store's `saveDesktopState` is `nothrow` and swallows errors; if a save
+  silently fails, write the caught message to `desktop_state.err` to debug.
+- `FloatingWindow` is `setComposited(true)`; rendering a preview with
+  `paintTreeSkippingComposited` produces an EMPTY thumbnail because the whole
+  window is skipped. Use `content.paintTree(canvas)` (the non-skipping variant)
+  AND call `content.layoutTree()` + `content.setVisible(true)` so a minimized
+  window still paints. Only the window `content` (its VBox) is painted, not the
+  FloatingWindow chrome.
+- Anchor: `taskbar.entryGlobalBounds(index)` (global, not the local
+  `entryBounds`). Entry 0 was `Rect(214, 714, 48, 40)` with taskbar origin y=708.
+
+**Observed:** `loaded windows=1 icons=1 tasks=1 hideCursor=false`; hover entry 0
+opened a `TaskPreview` popup and a `state-probe-hover.png` showed the scaled
+Notepad thumbnail with an X button.
+
+## OS tray-icon enumeration probe (trayprobe) — RESULT: impossible on Win11 (2026-09-06)
+
+**Purpose:** determine whether real Explorer notification-area icons can be
+enumerated so the taskbar can show/click them.
+
+**Method (D, `-Luser32.lib -Lshell32.lib`):** find `Shell_TrayWnd`, enumerate
+children for `TrayNotifyWnd`/`ToolbarWindow32`, then send `TB_BUTTONSTRUCTSIZE`
+(+`TBBUTTON.sizeof`), `TB_GETBUTTONCOUNT`, `TB_GETBUTTON`, `TB_GETBUTTONTEXTW`,
+and `TB_GETBUTTONINFOW` (via `TBBUTTONINFOW` from druntime, which has a
+`lParam` DWORD_PTR field — a hand-rolled struct omitted it and returned garbage).
+
+**Gotcha:** Win32 `EnumChildWindows`/`EnumWindows` callbacks must be `nothrow`,
+so accumulate output into a `__gshared string g_out` and `write()` it after the
+enum; never `writeln` from inside the callback (std.format throws → not nothrow).
+
+**Result — NOT possible on this machine (Windows 11 XAML shell):**
+- `Shell_TrayWnd` has NO `TrayNotifyWnd`; the tree is XAML
+  (`TrayDummySearchControl`/`DynamicContent1`/`Button`/`Static`).
+- The only `NotifyIconOverflowWindow` toolbar reports `BUTTON COUNT = 5` but
+  EVERY `TBBUTTON` field is 0 (idCommand=0, iBitmap=0, iString=0, fsStyle=0,
+  fsState=0) and the text is empty. `TB_GETBUTTONINFOW` returns 0 for
+  idCommand/iImage/fsStyle. There is no real icon metadata to read.
+- Conclusion: the shell owns the notification icons; a live OS scan via the
+  classic `SysTray`/`TrayNotifyWnd` API is a dead end here. Any future effort
+  must use the WinRT/XAML surface (IVirtualDesktopManager-style), NOT the
+  toolbar message protocol.
+
+## Notification cluster + hidden grid probe (`notifprobe`) (2026-09-06)
+
+**Purpose:** verify the shell-owned notification cluster draws and that hiding
+icons populates the hidden 3x3 grid.
+
+**Method:** `taskbar.notifications().length` should be 3; each visible icon's
+`notificationIconGlobalBounds(i)` non-empty; `taskbar.setNotificationHidden(id,true)`
+raises `trayState().hiddenIconCount`; clicking the chevron
+(`trayIconGlobalBounds(3)`) opens a `PopupOverlay` whose content is the
+`HiddenIconsPanel`. Save `build/notif-hidden.ppm`, convert with
+`python -c "from PIL import Image; ..."`.
+
+**Observed:** cluster at (908,946,984); after hiding two, count=2 and the grid
+shows OneDrive + Antivirus cells above the chevron. Note the HiddenIconsPanel
+is a descendant of a `PopupOverlay`, NOT a direct root child.
+
+## Calendar slide-animation probe `calpos` (2026-09-06)
+
+**Purpose:** verify the `CalendarPopup` slides from below the clock up to its
+resting (above-clock) position, instead of being stuck at the start Y.
+
+**Build/probe cmd (from `aurora-desktop/`):**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\calpos.d -of=build\calpos.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\calpos.exe
+```
+
+**Expected output:**
+```
+clock global bounds = const(Rect)(1166, 708, 90, 52) screen size = 1280x760
+calendar panelRect(start) = Rect(932, 702, 340, 360)
+calendar panelRect(rest) = Rect(932, 342, 340, 360)
+DONE
+```
+- start Y 702 = clock top 708 − 6 (the `_gap`)
+- rest Y 342 = above the clock (clock top 708 − panel height 360 − gap 6)
+
+**Gotcha:** do NOT leave a debug `writeln` inside `CalendarPopup.onTick` — the
+probe's stdout interleaves with the renderer's own output and produces garbled,
+unusable console text that looks like a crash. Always flush and remove it after
+diagnosis.
+
+## Calendar flyout + centered clock + task-name tooltips (2026-09-06)
+
+Three changes:
+1. **Centered clock:** the two-line time/date is now centered (was right).
+2. **Task tooltips lead with the real name:** e.g. "Notepad — click to focus".
+3. **Calendar:** clicking the clock opens a `CalendarPopup` (TransientPopup)
+   that renders a month grid and SLIDES UP from below the clock (~0.2 s ease-out
+   in `onTick`), with prev/next navigation and today highlighted. Dismisses on
+   Escape / click-away.
+
+**How to verify:** vendored `dub test --force` 38/38; headless smoke asserts
+clock click opens the calendar, Escape closes it, tooltip appears on hover, and
+clock/show-desktop gap >= 4 px. Release builds.
+
 ## Taskbar: minimized indicator, clock padding, tooltips (2026-09-06)
 
 Three feature requests, all in `vendor/.../widgets/desktop.d`:

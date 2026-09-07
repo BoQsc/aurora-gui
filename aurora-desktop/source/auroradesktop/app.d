@@ -1,15 +1,23 @@
 module auroradesktop.app;
 
 import aurora;
-import aurora.widgets.desktop : SystemTrayState;
+import aurora.widgets.desktop : SystemTrayState, NotificationIcon, TaskEntryId;
+import auroradesktop.calendar : CalendarPopup;
+import auroradesktop.search : SearchPopup;
 import auroradesktop.settings : DesktopSettings, loadDesktopSettings,
     saveDesktopSettings;
+import auroradesktop.store : DesktopState, IconState, TaskState, WindowState,
+    iconKindFromName, iconKindName, loadDesktopState, saveDesktopState;
+import auroradesktop.taskpreview : TaskPreview;
+import auroradesktop.tasks : ExternalTask, activateExternalTask, captureExternalThumbnail,
+    closeExternalTask, enumerateExternalTasks, excludeWindow, externalTaskAlive,
+    externalTaskFocused, externalTaskMinimized, externalTaskSize, minimizeExternalTask;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
     queryWifi;
 import std.conv : to;
-import std.utf : toUTF8;
+import std.utf : toUTF8, toUTF32;
 
 /**
  * A Windows-11-style Aurora desktop environment session: wallpaper with
@@ -31,6 +39,26 @@ final class DesktopRoot : Widget
     private int _volume;
     private bool _muted;
     private DesktopSettings _settings;
+    private bool _hideSystemCursor = true;
+    private DesktopState _state;
+    private TaskPreview _preview;
+
+    /// Called once the host GuiWindow is known (see run()); applies the system
+    /// cursor visibility so startup honors a persisted "hide cursor" choice.
+    void setShellWindow(GuiWindow window)
+    {
+        _window = window;
+        _window.setSystemCursorVisible(!_hideSystemCursor);
+        version (Windows)
+        {
+            import aurora.platform.select : PlatformWindow;
+            auto native = cast(PlatformWindow) window.nativeWindow();
+            if (native !is null && native.hwnd() != 0)
+                excludeWindow(native.hwnd());
+        }
+    }
+
+    private GuiWindow _window;
 
     void delegate() onToggleFullscreen;
 
@@ -43,11 +71,20 @@ final class DesktopRoot : Widget
         // previous classic taskbar). Defaults to the new shell.
         _settings = loadDesktopSettings();
         _taskbar.setModernShell(_settings.modernShell);
+        // Load the full session state (window bounds, icon positions, pinned
+        // task order). The settings file is separate and kept small.
+        _state = loadDesktopState();
+        if (_state.windows.length == 0)
+            _state = defaultState();
+        // Hide the Aurora-rendered system cursor per the persisted preference.
+        // The DesktopRoot has no direct window reference until run(); the app
+        // re-applies this in setShellWindow (see below).
+        _hideSystemCursor = _settings.hideSystemCursor;
 
         // The Start menu is created on demand (see toggleStartMenu/showStartMenu).
         _startMenu = null;
 
-        // Populate shortcuts and system windows.
+        // Populate shortcuts and system windows (positions restored where saved).
         auto notepadIcon = _desktop.addIcon("Notepad", IconKind.notepad,
             delegate() { showWindow(_notepadWindow); });
         auto computerIcon = _desktop.addIcon("Computer", IconKind.computer,
@@ -67,6 +104,8 @@ final class DesktopRoot : Widget
 
         buildNotepadWindow();
         buildSystemWindow();
+        restoreWindowState();
+        restoreIconPositions();
 
         _taskbar.onStart = delegate() { toggleStartMenu(); };
         _taskbar.onShowDesktop = delegate() { };
@@ -80,13 +119,41 @@ final class DesktopRoot : Widget
         };
         _taskbar.onDateTimeSettings = delegate()
         {
-            showMessage("Date and time settings requested.");
+            openCalendar();
         };
         _taskbar.onVolumeClick = delegate() { openVolumePanel(); };
         _taskbar.onBatteryClick = delegate() { openBatteryPanel(); };
         _taskbar.onWifiClick = delegate() { openWifiPanel(); };
         _taskbar.onHiddenIconsClick = delegate() { openHiddenIconsPanel(); };
-        _taskbar.onSearchClick = delegate() { toggleStartMenu(); };
+        _taskbar.onSearchClick = delegate() { openSearch(); };
+        _taskbar.onTaskHover = delegate(int index) { showTaskPreview(index); };
+        _taskbar.onTaskHoverLeave = delegate() { hideTaskPreview(); };
+        _taskbar.onEntryOrderChanged = delegate(TaskEntryId[] order)
+        {
+            persistState();
+        };
+        // External OS window tasks live in the taskbar. Activation/minimize and
+        // live visibility/focus are routed to the OS on the app's behalf.
+        _taskbar.onExternalActivate = delegate(ulong hwnd, bool minimized)
+        {
+            activateExternalTask(hwnd);
+        };
+        _taskbar.onExternalMinimize = delegate(ulong hwnd)
+        {
+            minimizeExternalTask(hwnd);
+        };
+        _taskbar.onExternalClose = delegate(ulong hwnd)
+        {
+            closeExternalTask(hwnd);
+        };
+        _taskbar.onExternalVisible = delegate(ulong hwnd)
+        {
+            return externalTaskVisibleNow(hwnd);
+        };
+        _taskbar.onExternalFocused = delegate(ulong hwnd)
+        {
+            return externalTaskFocused(hwnd);
+        };
 
         _taskbar.addWindow(_notepadWindow, "Notepad", IconKind.notepad);
         _taskbar.addWindow(_systemWindow, "System", IconKind.computer);
@@ -94,11 +161,41 @@ final class DesktopRoot : Widget
         {
             if (onToggleFullscreen !is null) onToggleFullscreen();
         });
+        restorePinnedTasks();
         _taskbar.setActiveWindow(_notepadWindow);
 
         _volume = systemVolume();
 
         refreshTray();
+        registerNotifications();
+        syncExternalTasks();
+    }
+
+    /// Shell-owned notification icons for the tray cluster. Windows 11's XAML
+    /// taskbar no longer exposes the classic Explorer overflow toolbar with real
+    /// icon metadata (proven zero returns), so these are the shell's own.
+    private void registerNotifications()
+    {
+        NotificationIcon icon;
+        icon.id = 1;
+        icon.label = toUTF32("OneDrive");
+        icon.icon = IconKind.drive;
+        icon.action = delegate() { showMessage("OneDrive is up to date."); };
+        _taskbar.addNotification(icon);
+
+        icon = NotificationIcon.init;
+        icon.id = 2;
+        icon.label = toUTF32("Antivirus");
+        icon.icon = IconKind.computer;
+        icon.action = delegate() { showMessage("Protection is on."); };
+        _taskbar.addNotification(icon);
+
+        icon = NotificationIcon.init;
+        icon.id = 3;
+        icon.label = toUTF32("Messenger");
+        icon.icon = IconKind.terminal;
+        icon.action = delegate() { showMessage("No new messages."); };
+        _taskbar.addNotification(icon);
     }
 
     private void buildNotepadWindow()
@@ -149,6 +246,16 @@ final class DesktopRoot : Widget
             _settings.modernShell = checked;
             saveDesktopSettings(_settings);
         };
+        auto cursorToggle = content.add(new CheckBox(
+            "Hide system cursor",
+            _hideSystemCursor));
+        cursorToggle.onChanged = delegate(bool checked)
+        {
+            _hideSystemCursor = checked;
+            _settings.hideSystemCursor = checked;
+            if (_window !is null) _window.setSystemCursorVisible(!checked);
+            saveDesktopSettings(_settings);
+        };
         content.add(new Spacer());
 
         _systemWindow = _desktop.addWindow(
@@ -157,6 +264,241 @@ final class DesktopRoot : Widget
         _systemWindow.minimize();
         connectWindow(_systemWindow);
     }
+
+    // --- persistent session state ---------------------------------------
+    // Windows, desktop icons, and pinned taskbar tasks are saved to
+    // desktop_state.json so the shell resumes exactly where it left off.
+
+    private static DesktopState defaultState()
+    {
+        DesktopState state;
+        state.schema = 1;
+        state.taskbarModernShell = true;
+        state.hideSystemCursor = true;
+        WindowState notepad;
+        notepad.title = "Notepad";
+        notepad.x = 120; notepad.y = 60;
+        notepad.width = 460; notepad.height = 380;
+        notepad.contentId = "notepad";
+        state.windows ~= notepad;
+        WindowState system;
+        system.title = "System Settings";
+        system.x = 560; system.y = 120;
+        system.width = 340; system.height = 320;
+        system.minimized = true;
+        system.contentId = "system";
+        state.windows ~= system;
+        IconState ni; ni.label = "Notepad"; ni.x = 24; ni.y = 24; state.icons ~= ni;
+        IconState ci; ci.label = "Computer"; ci.x = 24; ci.y = 96; state.icons ~= ci;
+        IconState ti; ti.label = "Trash"; ti.x = 24; ti.y = 168; state.icons ~= ti;
+        TaskState notepadTask; notepadTask.title = "Notepad";
+        notepadTask.iconName = "notepad"; notepadTask.kind = "window";
+        state.pinnedTasks ~= notepadTask;
+        TaskState systemTask; systemTask.title = "System";
+        systemTask.iconName = "computer"; systemTask.kind = "window";
+        state.pinnedTasks ~= systemTask;
+        TaskState fsTask; fsTask.title = "Full screen";
+        fsTask.iconName = "maximize"; fsTask.kind = "command";
+        state.pinnedTasks ~= fsTask;
+        return state;
+    }
+
+    // Apply saved bounds/minimized state to the app-owned windows.
+    private void restoreWindowState()
+    {
+        foreach (w; _state.windows)
+        {
+            if (w.contentId == "notepad" && _notepadWindow !is null)
+            {
+                if (w.width > 0 && w.height > 0)
+                    _notepadWindow.setBounds(Rect(w.x, w.y, w.width, w.height));
+                if (w.minimized) _notepadWindow.minimize();
+                if (w.maximized) _notepadWindow.toggleMaximize();
+            }
+            else if (w.contentId == "system" && _systemWindow !is null)
+            {
+                if (w.width > 0 && w.height > 0)
+                    _systemWindow.setBounds(Rect(w.x, w.y, w.width, w.height));
+                if (w.minimized) _systemWindow.minimize();
+                if (w.maximized) _systemWindow.toggleMaximize();
+            }
+        }
+    }
+
+    // Restore desktop icon positions by matching the stored label.
+    private void restoreIconPositions()
+    {
+        foreach (saved; _state.icons)
+        {
+            for (size_t i = 0; i < _desktop.iconCount(); ++i)
+            {
+                auto icon = _desktop.iconAt(i);
+                if (icon !is null && toUTF8(icon.text()) == saved.label)
+                {
+                    icon.setPosition(Point(saved.x, saved.y));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Add the persisted pinned tasks after the built-in windows/commands. The
+    // stored order (minus any task already present) is restored via setEntryOrder.
+    private void restorePinnedTasks()
+    {
+        // Duplicates the built-in window titles; skip those.
+        void[][string] seen;
+        foreach (i; 0 .. _taskbar.entryCount())
+            seen[toUTF8(_taskbar.entryTitle(i))] = null;
+        foreach (t; _state.pinnedTasks)
+        {
+            if (t.title in seen) continue;
+            if (t.kind == "command")
+            {
+                _taskbar.addCommand(t.title, iconKindFromName(t.iconName),
+                    delegate() { if (onToggleFullscreen !is null) onToggleFullscreen(); });
+                seen[t.title] = null;
+            }
+            else if (t.kind == "window")
+            {
+                // Not one of our built-in windows; add a draggable placeholder
+                // command so the pin arrangement is visible.
+                _taskbar.addCommand(t.title, iconKindFromName(t.iconName),
+                    delegate() { showMessage(t.title ~ " is pinned."); });
+                seen[t.title] = null;
+            }
+        }
+    }
+
+    // Capture the current session state and persist it.
+    private void persistState()
+    {
+        DesktopState next;
+        next.schema = 1;
+        next.taskbarModernShell = _taskbar.modernShell();
+        next.hideSystemCursor = _hideSystemCursor;
+        next.windows = captureWindows();
+        next.icons = captureIcons();
+        next.pinnedTasks = capturePinnedTasks();
+        next.pinnedTasks = canonicalPinnedOrder(next.pinnedTasks);
+        _state = next;
+        saveDesktopState(next);
+    }
+
+    private WindowState[] captureWindows()
+    {
+        WindowState[] result;
+        foreach (name; ["notepad", "system"])
+        {
+            FloatingWindow window = name == "notepad" ? _notepadWindow :
+                _systemWindow;
+            if (window is null) continue;
+            WindowState w;
+            w.title = toUTF8(window.title());
+            w.contentId = name;
+            const b = window.bounds();
+            w.x = b.x; w.y = b.y; w.width = b.width; w.height = b.height;
+            w.maximized = window.maximized();
+            w.minimized = !window.visible();
+            result ~= w;
+        }
+        return result;
+    }
+
+    private IconState[] captureIcons()
+    {
+        IconState[] result;
+        for (size_t i = 0; i < _desktop.iconCount(); ++i)
+        {
+            auto icon = _desktop.iconAt(i);
+            if (icon is null) continue;
+            IconState s;
+            s.label = toUTF8(icon.text());
+            const b = icon.bounds();
+            s.x = b.x; s.y = b.y;
+            result ~= s;
+        }
+        return result;
+    }
+
+    private TaskState[] capturePinnedTasks()
+    {
+        TaskState[] result;
+        foreach (i; 0 .. _taskbar.entryCount())
+        {
+            TaskState t;
+            t.title = toUTF8(_taskbar.entryTitle(i));
+            t.iconName = iconKindName(_taskbar.entryIcon(i));
+            t.kind = _taskbar.entryWindow(i) !is null ? "window" : "command";
+            result ~= t;
+        }
+        return result;
+    }
+
+    // Reorder pinned tasks to a canonical, deduplicated form before saving so a
+    // window entry that maps to a built-in window is recorded as a window task.
+    private TaskState[] canonicalPinnedOrder(TaskState[] input)
+    {
+        TaskState[] result;
+        bool[][string] seen;
+        foreach (t; input)
+        {
+            const key = t.title;
+            if (key in seen) continue;
+            seen[key] = null;
+            result ~= t;
+        }
+        return result;
+    }
+
+    private void showTaskPreview(int index)
+    {
+        if (index < 0 || index >= cast(int) _taskbar.entryCount()) return;
+        const hwnd = _taskbar.entryHostHwnd(cast(size_t) index);
+        string title = toUTF8(_taskbar.entryTitle(cast(size_t) index));
+        const entryIcon = _taskbar.entryIcon(cast(size_t) index);
+        hideTaskPreview();
+        if (hwnd != 0)
+        {
+            // External OS window: capture a real thumbnail with PrintWindow.
+            version (Windows)
+            {
+                auto size = externalTaskSize(hwnd);
+                auto image = captureExternalThumbnail(hwnd, size.width, size.height);
+                if (image is null)
+                {
+                    // Fall back to an icon-only preview (no thumbnail).
+                    return;
+                }
+                auto preview = new TaskPreview(title, image);
+                preview.onCloseRequested = delegate()
+                {
+                    closeExternalTask(hwnd);
+                };
+                preview.onActivate = delegate() { activateExternalTask(hwnd); };
+                if (preview.show(_taskbar,
+                        _taskbar.entryGlobalBounds(cast(size_t) index)))
+                    _preview = preview;
+            }
+            return;
+        }
+        auto window = _taskbar.entryWindow(cast(size_t) index);
+        if (window is null) return;
+        auto preview = new TaskPreview(window, window.content(),
+            title, entryIcon);
+        preview.onCloseRequested = delegate() { window.closeWindow(); };
+        preview.onActivate = delegate() { showWindow(window); };
+        if (preview.show(_taskbar, _taskbar.entryGlobalBounds(cast(size_t) index)))
+            _preview = preview;
+    }
+
+    private void hideTaskPreview()
+    {
+        if (_preview !is null && !_preview.dismissed())
+            _preview.dismiss();
+        _preview = null;
+    }
+
 
     private void configureDesktopIcon(DesktopIcon icon, bool removable = true)
     {
@@ -191,14 +533,18 @@ final class DesktopRoot : Widget
         {
             if (_taskbar.activeWindow() is minimized)
                 _taskbar.setActiveWindow(null);
+            persistState();
         };
         window.onRestored = delegate(FloatingWindow restored)
         {
             _taskbar.setActiveWindow(restored);
+            persistState();
         };
         window.onClosed = delegate(FloatingWindow closed)
         {
             _taskbar.removeWindow(closed);
+            hideTaskPreview();
+            persistState();
         };
     }
 
@@ -334,6 +680,9 @@ final class DesktopRoot : Widget
             _muted = liveMuted;
         next.volumePercent = _volume;
         next.volumeMuted = _muted;
+        // Preserve the live hidden-icon count (the fresh snapshot's default of 5
+        // would otherwise reset it on every 2s refresh).
+        next.hiddenIconCount = hiddenCount();
         _tray = next;
         _taskbar.setTrayState(next);
         if (_volumePanel !is null && !_volumePanel.dismissed())
@@ -358,7 +707,7 @@ final class DesktopRoot : Widget
             _volumePanelContent.updateDevices(audioOutputDevices(),
                 selectedAudioDevice());
         };
-        showPanel(panel, _taskbar.trayIconGlobalBounds(1));
+        showPanel(PanelKind.volume, panel, _taskbar.trayIconGlobalBounds(1));
         // Assigned after showPanel: it dismisses any previous popup first,
         // which clears this tracking.
         _volumePanel = _panelPopup;
@@ -371,7 +720,7 @@ final class DesktopRoot : Widget
         refreshSystemStatus(snapshot);
         auto panel = new BatteryPanel(snapshot.hasBattery,
             snapshot.batteryCharging, snapshot.batteryPercent);
-        showPanel(panel, _taskbar.trayIconGlobalBounds(2));
+        showPanel(PanelKind.battery, panel, _taskbar.trayIconGlobalBounds(2));
     }
 
     private void openWifiPanel()
@@ -399,7 +748,7 @@ final class DesktopRoot : Widget
             const result = connectWifiNetwork(ssid, profile, secured);
             refreshWifiPanel(result.message);
         };
-        showPanel(panel, _taskbar.trayIconGlobalBounds(0));
+        showPanel(PanelKind.wifi, panel, _taskbar.trayIconGlobalBounds(0));
         _wifiPanel = _panelPopup;
 
         kickWifiScan();
@@ -446,8 +795,78 @@ final class DesktopRoot : Widget
 
     private void openHiddenIconsPanel()
     {
-        auto panel = new HiddenIconsPanel(_tray.hiddenIconCount);
-        showPanel(panel, _taskbar.trayIconGlobalBounds(3));
+        // Collect the hidden notification icons and render a 3x3 grid overlay.
+        NotificationIcon[] hidden;
+        foreach (icon; _taskbar.notifications())
+            if (icon.hidden) hidden ~= icon;
+        auto panel = new HiddenIconsPanel(hidden);
+        panel.onIconActivated = delegate(size_t id, string label)
+        {
+            showMessage(label ~ " (notification)");
+        };
+        panel.onIconHidden = delegate(size_t id, bool hidden)
+        {
+            _taskbar.setNotificationHidden(id, hidden);
+            _tray.hiddenIconCount = hiddenCount();
+            _taskbar.setTrayState(_tray);
+        };
+        showPanel(PanelKind.hidden, panel, _taskbar.trayIconGlobalBounds(3));
+    }
+
+    private size_t hiddenCount()
+    {
+        size_t count;
+        foreach (icon; _taskbar.notifications())
+            if (icon.hidden) ++count;
+        return count;
+    }
+
+    /// Live visibility of an external OS window (true = not minimized).
+    private bool externalTaskVisibleNow(ulong hwnd)
+    {
+        if (!externalTaskAlive(hwnd)) return false;
+        return !externalTaskMinimized(hwnd);
+    }
+
+    // hwnds currently shown as external taskbar entries, for the poll diff.
+    private ulong[] _externalHwnds;
+
+    /// Diff the live OS task list against the taskbar: add new windows, remove
+    /// closed ones. Existing external entries are kept in their pinned slot.
+    private void syncExternalTasks()
+    {
+        version (Windows)
+        {
+            const tasks = enumerateExternalTasks();
+            bool[ulong] live;
+            foreach (t; tasks)
+            {
+                live[t.hwnd] = true;
+                if (_taskbar.indexOfExternal(t.hwnd) < 0)
+                    _taskbar.addExternalTask(t.hwnd, cleanTaskTitle(t.title));
+            }
+            // Remove entries whose window is gone.
+            foreach (hwnd; _externalHwnds)
+            {
+                if (hwnd in live) continue;
+                _taskbar.removeExternal(hwnd);
+            }
+            _externalHwnds.length = 0;
+            foreach (t; tasks)
+            {
+                if (_taskbar.indexOfExternal(t.hwnd) >= 0)
+                    _externalHwnds ~= t.hwnd;
+            }
+        }
+    }
+
+    private static string cleanTaskTitle(string title)
+    {
+        // Drop the leading full path for console windows so the task shows a
+        // friendly label, and truncate ridiculous window titles.
+        string result = title;
+        if (result.length > 80) result = result[0 .. 80];
+        return result;
     }
 
     private PopupOverlay _panelPopup;
@@ -455,13 +874,25 @@ final class DesktopRoot : Widget
     private VolumePanel _volumePanelContent;
     private PopupOverlay _wifiPanel;
     private WifiPanel _wifiPanelContent;
+    // Identifies which tray popup is open so re-clicking its taskbar icon
+    // toggles it closed instead of re-opening (Windows tray behavior).
+    private enum PanelKind : ubyte { none, volume, battery, wifi, hidden }
+    private PanelKind _panelKind = PanelKind.none;
 
-    private void showPanel(Widget content, Rect anchor)
+    private void showPanel(PanelKind kind, Widget content, Rect anchor)
     {
+        // Toggle: re-clicking the same tray icon closes its open panel.
+        if (_panelKind == kind && _panelPopup !is null &&
+            !_panelPopup.dismissed())
+        {
+            dismissPanel();
+            return;
+        }
         dismissPanel();
         auto popup = showPopup(_taskbar, anchor, content,
             PopupPlacement.above);
         _panelPopup = popup;
+        _panelKind = kind;
     }
 
     private void dismissPanel()
@@ -473,6 +904,51 @@ final class DesktopRoot : Widget
         _volumePanelContent = null;
         _wifiPanel = null;
         _wifiPanelContent = null;
+        _panelKind = PanelKind.none;
+    }
+
+    private void openCalendar()
+    {
+        dismissPanel();
+        dismissStartMenu();
+        auto calendar = new CalendarPopup();
+        calendar.show(_taskbar, _taskbar.clockBounds());
+    }
+
+    private SearchPopup _searchPopup;
+
+    private void openSearch()
+    {
+        if (_searchPopup !is null && !_searchPopup.dismissed())
+        {
+            _searchPopup.dismiss();
+            _searchPopup = null;
+            return;
+        }
+        dismissPanel();
+        dismissStartMenu();
+        auto search = new SearchPopup();
+        search.add("Notepad", IconKind.notepad,
+            delegate() { showWindow(_notepadWindow); }, "Text editor");
+        search.add("System Settings", IconKind.settings,
+            delegate() { showWindow(_systemWindow); }, "Display and preferences");
+        search.add("Open Windows Settings", IconKind.settings,
+            delegate() { systemOpenSettings(); }, "Settings");
+        search.add("Restart", IconKind.power,
+            delegate() { systemRestart(); }, "Restart this computer");
+        search.add("Sleep", IconKind.power,
+            delegate() { systemSleep(); }, "Put this computer to sleep");
+        search.add("Shut down", IconKind.power,
+            delegate() { systemShutdown(); }, "Shut down this computer");
+        search.add("Full screen", IconKind.maximize,
+            delegate()
+            {
+                if (onToggleFullscreen !is null) onToggleFullscreen();
+            }, "Use the entire display");
+        if (search.show(_taskbar, _taskbar.searchButtonGlobalBounds()))
+            _searchPopup = search;
+        else
+            _searchPopup = null;
     }
 
     private void showMessage(string message)
@@ -517,8 +993,24 @@ final class DesktopRoot : Widget
             refreshTray();
         }
         pollWifiPanel(deltaSeconds);
+        _stateSaveAccumulator += deltaSeconds;
+        if (_stateSaveAccumulator >= 10.0)
+        {
+            _stateSaveAccumulator = 0.0;
+            persistState();
+        }
+        // Sync live external OS tasks into the taskbar every second.
+        _externalTaskAccumulator += deltaSeconds;
+        if (_externalTaskAccumulator >= 1.0)
+        {
+            _externalTaskAccumulator = 0.0;
+            syncExternalTasks();
+        }
     }
 
+    private double _externalTaskAccumulator;
+
+    private double _stateSaveAccumulator;
     private double _clockAccumulator;
     private double _wifiPollElapsed;
     private double _wifiPollMax;
@@ -561,6 +1053,7 @@ int run(string[] args)
     auto root = new DesktopRoot();
     root.onToggleFullscreen = delegate() { window.toggleFullscreen(); };
     window.setRoot(root);
+    root.setShellWindow(window);
     window.setTitle(options.title ~ " — " ~ window.rendererName() ~
         " — built " ~ _buildTime);
 

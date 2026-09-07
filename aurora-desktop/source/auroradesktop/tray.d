@@ -1,10 +1,11 @@
 module auroradesktop.tray;
 
 import aurora;
-import aurora.widgets.desktop : SystemTrayState;
+import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
 import auroradesktop.system : AudioDevice;
 import auroradesktop.wlan : WifiState;
 import std.format : format;
+import std.utf : toUTF8, toUTF32;
 
 /**
  * Small floating panels opened from the taskbar tray icons (volume, WiFi,
@@ -322,26 +323,120 @@ final class BatteryPanel : Widget
 
 final class HiddenIconsPanel : Widget
 {
-    private VBox _column;
+    private const(NotificationIcon)[] _icons;
+    private int _cell = 44;
+    private int _gap = 8;
+    private int _padding = 14;
+    private int _maxColumns = 3;
+    private int _hover = -1;
+    private int _rows;
 
-    this(size_t count)
+    /// Called when the user clicks a hidden icon (id, label).
+    void delegate(size_t id, string label) onIconActivated;
+    /// Called to hide/unhide an icon by id.
+    void delegate(size_t id, bool hidden) onIconHidden;
+
+    this(const(NotificationIcon)[] icons)
     {
-        auto column = new VBox(10, Insets(14));
-        _column = column;
-        add(column);
-        auto title = column.add(new Label("Hidden icons"));
-        title.setScale(2);
-        title.setAlignment(HorizontalAlign.left, VerticalAlign.middle);
-        auto detail = column.add(new Label(count == 0 ?
-            "No hidden icons" : format("%d hidden icon(s)", count)));
-        detail.setColor(theme().textMuted);
-        layoutHints().preferredWidth = 220;
-        layoutHints().preferredHeight = 90;
+        _icons = icons.dup;
+        setComposited(true);
+        updateGridMetrics();
+        layoutHints().preferredWidth = _maxColumns * (_cell + _gap) + _gap +
+            _padding * 2;
+        layoutHints().preferredHeight = _rows * (_cell + _gap) + _gap +
+            _padding * 2;
+    }
+
+    private void updateGridMetrics()
+    {
+        const count = cast(int) _icons.length;
+        _rows = (count + _maxColumns - 1) / _maxColumns;
+        if (_rows == 0) _rows = 1;
+    }
+
+    private Rect cellRect(int index) const
+    {
+        const row = index / _maxColumns;
+        const col = index % _maxColumns;
+        return Rect(_padding + col * (_cell + _gap),
+            _padding + row * (_cell + _gap), _cell, _cell);
+    }
+
+    private int cellAt(Point point) const
+    {
+        foreach (index; 0 .. cast(int) _icons.length)
+            if (cellRect(index).contains(point)) return index;
+        return -1;
+    }
+
+    const(NotificationIcon)[] icons() const @safe pure nothrow @nogc
+    {
+        return _icons;
+    }
+
+    void refresh(const(NotificationIcon)[] icons)
+    {
+        _icons = icons.dup;
+        updateGridMetrics();
+        layoutHints().preferredHeight = _rows * (_cell + _gap) + _gap +
+            _padding * 2;
+        invalidate();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        canvas.drawRoundedRect(full, 9, palette.panelElevated,
+            palette.border.withAlpha(230), 1);
+        const rows = _rows;
+        // Painted rows / day grid.
+        foreach (index; 0 .. cast(int) _icons.length)
+        {
+            const cell = cellRect(index);
+            if (index == _hover)
+                canvas.fillRoundedRect(cell, 7, palette.buttonHover);
+            drawIcon(canvas, _icons[cast(size_t) index].icon,
+                cell.inset(12), palette.text, palette.accent);
+            canvas.drawTextInRect(Rect(cell.x, cell.bottom() - 16, cell.width, 14),
+                toUTF32(shortLabel(_icons[cast(size_t) index].label)),
+                palette.textMuted, 1, HorizontalAlign.center, VerticalAlign.bottom,
+                true);
+        }
+        if (_icons.length == 0)
+            canvas.drawTextInRect(full, "No hidden icons"d, palette.textMuted,
+                1, HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    private static string shortLabel(dstring label)
+    {
+        const s = toUTF8(label);
+        return s.length > 4 ? s[0 .. 4] : s;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const cell = cellAt(event.position);
+        if (cell != _hover)
+        {
+            _hover = cell;
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return true;
+        const cell = cellAt(event.position);
+        if (cell >= 0 && onIconActivated !is null)
+            onIconActivated(_icons[cast(size_t) cell].id,
+                toUTF8(_icons[cast(size_t) cell].label));
+        return true;
     }
 
     protected override void onLayout()
     {
-        if (_column !is null)
-            _column.setBounds(Rect(0, 0, bounds().width, bounds().height));
+        // Layout is static; the grid is sized by preferred dimensions.
     }
 }

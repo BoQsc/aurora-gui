@@ -39,3 +39,7 @@ aurora-browser/home.txt
 
 # aurora-desktop runtime settings output (written by System Settings)
 /aurora-desktop/aurora-desktop.ini
+/aurora-desktop/desktop_state.json
+/aurora-desktop/desktop_state.json.bak
+/aurora-desktop/desktop_state.json.tmp
+/aurora-desktop/desktop_state.err

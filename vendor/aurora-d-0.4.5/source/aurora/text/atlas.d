@@ -73,13 +73,15 @@ final class GlyphAtlas
         if (auto cached = key in _glyphs)
             return *cached;
 
-        // Caption/body text is small enough that 4x4 coverage quantization is
+        // Caption/body text is small enough that a coarse supersample is
         // visible in stems and round joins. Keep a bounded, deterministic
-        // policy: 8x8 for UI sizes, 4x4 for larger text to control cost.
+        // policy: 8x8 for UI sizes, 4x4 for larger text to control cost. The
+        // analytic rasterizer already produces coverage-space AA whose weight
+        // matches the authoritative platform grid-fit, so no extra contrast
+        // shaping is applied (the old sharp S-curve over-boosted edges and
+        // made small text look glowing).
         const coverageSamples = pixelSize <= 16 ? 8 : 4;
         auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples);
-        if (renderMode == FontRenderMode.sharp)
-            increaseCoverageContrast(bitmap.alpha);
         auto result = insert(bitmap);
         _glyphs[key] = result;
         return result;
@@ -157,27 +159,6 @@ final class GlyphAtlas
         _width = newWidth;
         _height = newHeight;
         ++_revision;
-    }
-
-    /**
-     * Increase grayscale edge contrast without discarding antialiasing. This is
-     * deliberately a coverage-only operation, so it behaves identically in the
-     * software and Vulkan renderers and does not depend on LCD subpixel order.
-     */
-    private static void increaseCoverageContrast(ubyte[] alpha)
-        @safe pure nothrow @nogc
-    {
-        foreach (ref value; alpha)
-        {
-            if (value == 0 || value == 255) continue;
-            // Expand coverage around the midpoint by 35 percent. Integer math
-            // keeps the atlas deterministic across compilers and platforms.
-            const centered = cast(int) value - 128;
-            int adjusted = 128 + (centered * 135 + (centered >= 0 ? 50 : -50)) / 100;
-            if (adjusted < 0) adjusted = 0;
-            else if (adjusted > 255) adjusted = 255;
-            value = cast(ubyte) adjusted;
-        }
     }
 }
 

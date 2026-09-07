@@ -4,13 +4,14 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.event : Event, Key, MouseButton;
 import aurora.icons : IconKind, drawIcon;
+import aurora.image : RgbaImage;
 import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Size, VerticalAlign,
     clampDouble, clampInt, maxInt, minInt;
 import aurora.widget : Widget;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
 import core.stdc.time : localtime, time, time_t, tm;
 import std.format : format;
-import std.utf : toUTF32;
+import std.utf : toUTF32, toUTF8;
 
 /** Aurora-rendered desktop shortcut with selection, drag/drop, and context actions. */
 class DesktopIcon : Widget
@@ -897,6 +898,12 @@ private struct TaskEntry
     dstring title;
     IconKind icon;
     void delegate() command;
+    /// Non-zero when this entry maps to an external OS top-level window rather
+    /// than an in-shell FloatingWindow. When set, window is null and clicks are
+    /// routed to the OS (activate/minimize) via the taskbar's host callbacks.
+    ulong hostHwnd;
+    /// Real raster icon for an external OS window (null = fall back to `icon`).
+    RgbaImage iconImage;
 }
 
 private enum int taskDragProxyMargin = 6;
@@ -917,6 +924,23 @@ struct SystemTrayState
     int volumePercent = 50;
     bool volumeMuted;
     size_t hiddenIconCount = 5;
+}
+
+/**
+ * One application notification icon shown in the taskbar notification cluster.
+ * The taskbar owns the model and paints visible icons; the desktop app registers
+ * them and renders the hidden-icon grid. On Windows 11's XAML taskbar the
+ * real Explorer overflow toolbar returns zero metadata (proven with a probe),
+ * so these are shell-owned notifications rather than a live OS scan.
+ */
+struct NotificationIcon
+{
+    size_t id;
+    dstring label;
+    IconKind icon = IconKind.none;
+    bool hidden;
+    void delegate() action;
+    void delegate() showMenu; // right-click context (opened by the app/web)
 }
 
 /**
@@ -1074,6 +1098,7 @@ private final class TaskbarTooltip : Widget
 class Taskbar : Widget
 {
     private TaskEntry[] _entries;
+    private NotificationIcon[] _notifications;
     private int _pressed = -2;
     private int _hot = -2;
     private int _keyboardIndex = -1;
@@ -1137,6 +1162,18 @@ class Taskbar : Widget
     void delegate(int index) onEntryRemoved;
     /** Stable-ID snapshot emitted after every completed order mutation. */
     void delegate(TaskEntryId[] order) onEntryOrderChanged;
+    /** Fired when the hot entry changes to a window/command task (index >= 0). */
+    void delegate(int index) onTaskHover;
+    /** Fired when the pointer leaves a hovered task entry. */
+    void delegate() onTaskHoverLeave;
+    /** Activate/minimize/focus an external OS window task (hostHwnd). */
+    void delegate(ulong hwnd, bool minimized) onExternalActivate;
+    void delegate(ulong hwnd) onExternalMinimize;
+    void delegate(ulong hwnd) onExternalClose;
+    /** Live visibility of an external window (true = visible, not minimized). */
+    bool delegate(ulong hwnd) onExternalVisible;
+    /** Live foreground/focus state of an external window. */
+    bool delegate(ulong hwnd) onExternalFocused;
 
     this()
     {
@@ -1266,6 +1303,56 @@ class Taskbar : Widget
         return _tray;
     }
 
+    const(NotificationIcon)[] notifications() const @safe pure nothrow @nogc
+    {
+        return _notifications;
+    }
+
+    void addNotification(NotificationIcon icon)
+    {
+        _notifications ~= icon;
+        invalidate();
+    }
+
+    void clearNotifications()
+    {
+        _notifications.length = 0;
+        invalidate();
+    }
+
+    void setNotificationHidden(size_t id, bool hidden)
+    {
+        foreach (ref icon; _notifications)
+        {
+            if (icon.id == id)
+            {
+                icon.hidden = hidden;
+                _tray.hiddenIconCount = hiddenNotificationCount();
+                invalidate();
+                return;
+            }
+        }
+        _tray.hiddenIconCount = hiddenNotificationCount();
+    }
+
+    private size_t hiddenNotificationCount() const
+    {
+        size_t hidden;
+        foreach (icon; _notifications)
+            if (icon.hidden) ++hidden;
+        return hidden;
+    }
+
+    /** Global bounds of the notification cluster j-th visible icon. */
+    Rect notificationIconGlobalBounds(size_t index) const @safe pure nothrow @nogc
+    {
+        const origin = globalOrigin();
+        const local = notificationIconRect(index);
+        return local.empty() ? Rect.init :
+            Rect(origin.x + local.x, origin.y + local.y,
+                local.width, local.height);
+    }
+
     void setTrayState(const(SystemTrayState) value)
     {
         if (_tray.wifiConnected != value.wifiConnected ||
@@ -1319,6 +1406,16 @@ class Taskbar : Widget
         return index < _entries.length ? entryRect(cast(int) index) : Rect.init;
     }
 
+    /** Global bounds of a task entry (for popups/previews anchored above it). */
+    Rect entryGlobalBounds(size_t index) const @safe pure nothrow @nogc
+    {
+        if (index >= _entries.length) return Rect.init;
+        const origin = globalOrigin();
+        const local = entryRect(cast(int) index);
+        return Rect(origin.x + local.x, origin.y + local.y,
+            local.width, local.height);
+    }
+
     // Read-only geometry for tests (clock and show-desktop are private). Padded
     // so the date/time never visually merges with the show-desktop button.
     Rect clockBounds() const @safe pure nothrow @nogc
@@ -1332,6 +1429,15 @@ class Taskbar : Widget
     {
         const origin = globalOrigin();
         const local = showDesktopRect();
+        return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
+    }
+
+    /** Global bounds of the search pill (Rect.init when the classic shell). */
+    Rect searchButtonGlobalBounds() const @safe pure nothrow @nogc
+    {
+        if (!_modernShell) return Rect.init;
+        const origin = globalOrigin();
+        const local = searchRect();
         return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
     }
 
@@ -1353,7 +1459,7 @@ class Taskbar : Widget
             invalidate();
             return;
         }
-        _entries ~= TaskEntry(allocateEntryId(), window, toUTF32(title), icon, null);
+        _entries ~= TaskEntry(allocateEntryId(), window, toUTF32(title), icon, null, 0);
         if (_activeWindow is null && window !is null && window.visible())
             _activeWindow = window;
         debug assert(taskOrderValid());
@@ -1364,10 +1470,53 @@ class Taskbar : Widget
     void addCommand(string title, IconKind icon, void delegate() command)
     {
         if (_reordering) cancelTaskReorder();
-        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, command);
+        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, command, 0);
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
+    }
+
+    /// Add (or update) an external OS top-level window task. The entry is keyed
+    /// by hostHwnd; repeated calls refresh its title without duplicating.
+    void addExternalTask(ulong hostHwnd, string title, IconKind icon = IconKind.none)
+    {
+        if (_reordering) cancelTaskReorder();
+        foreach (ref entry; _entries)
+        {
+            if (entry.hostHwnd == hostHwnd)
+            {
+                if (toUTF32(title) != entry.title)
+                {
+                    entry.title = toUTF32(title);
+                    invalidate();
+                    notifyEntryOrderChanged();
+                }
+                return;
+            }
+        }
+        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, null,
+            hostHwnd);
+        debug assert(taskOrderValid());
+        invalidate();
+        notifyEntryOrderChanged();
+    }
+
+    int indexOfExternal(ulong hostHwnd) const @safe pure nothrow @nogc
+    {
+        foreach (index, entry; _entries)
+            if (entry.hostHwnd == hostHwnd) return cast(int) index;
+        return -1;
+    }
+
+    ulong entryHostHwnd(size_t index) const @safe pure nothrow @nogc
+    {
+        return index < _entries.length ? _entries[index].hostHwnd : 0;
+    }
+
+    bool removeExternal(ulong hostHwnd)
+    {
+        const index = indexOfExternal(hostHwnd);
+        return index >= 0 && removeEntry(index);
     }
 
     int indexOfWindow(FloatingWindow window) const @safe pure nothrow @nogc
@@ -1606,6 +1755,49 @@ class Taskbar : Widget
     private enum int clockWidth = 90;
     private enum int trayIconWidth = 34;
     private enum int trayIconGap = 4;
+    private enum int fixedTrayCount = 4; // wifi, volume, battery, hidden chevron
+
+    // Right edge of the fixed glyph block (start packing notifications left).
+    private int fixedTrayLeftX() const @safe pure nothrow @nogc
+    {
+        return maxInt(0, clockRect().x -
+            (fixedTrayCount * trayIconWidth +
+                (fixedTrayCount - 1) * trayIconGap));
+    }
+
+    private int visibleNotificationCount() const @safe pure nothrow @nogc
+    {
+        int count;
+        foreach (icon; _notifications)
+            if (!icon.hidden) ++count;
+        return count;
+    }
+
+    private int visibleNotificationWidth() const @safe pure nothrow @nogc
+    {
+        const count = visibleNotificationCount();
+        return count == 0 ? 0 : count * trayIconWidth +
+            (cast(int) count - 1) * trayIconGap;
+    }
+
+    /** One visible notification icon's local rect by visible-order index. */
+    private Rect notificationIconRect(size_t visibleOrder) const
+        @safe pure nothrow @nogc
+    {
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (cast(size_t) seen == visibleOrder)
+            {
+                const x = fixedTrayLeftX() - visibleNotificationWidth() +
+                    seen * (trayIconWidth + trayIconGap);
+                return Rect(x, 0, trayIconWidth, bounds().height);
+            }
+            ++seen;
+        }
+        return Rect.init;
+    }
 
     private Rect showDesktopRect() const @safe pure nothrow @nogc
     {
@@ -1628,9 +1820,7 @@ class Taskbar : Widget
     private int trayLeftX() const @safe pure nothrow @nogc
     {
         if (!_modernShell) return clockRect().x;
-        const trayCount = 4; // wifi, volume, battery, hidden icons chevron
-        return maxInt(0, clockRect().x -
-            (trayCount * trayIconWidth + (trayCount - 1) * trayIconGap));
+        return fixedTrayLeftX() - visibleNotificationWidth();
     }
 
     private Rect trayRect() const @safe pure nothrow @nogc
@@ -1641,7 +1831,7 @@ class Taskbar : Widget
 
     private Rect trayIconRect(int index) const @safe pure nothrow @nogc
     {
-        const x = trayLeftX() + index * (trayIconWidth + trayIconGap);
+        const x = fixedTrayLeftX() + index * (trayIconWidth + trayIconGap);
         return Rect(x, 0, trayIconWidth, bounds().height);
     }
 
@@ -1651,6 +1841,43 @@ class Taskbar : Widget
         foreach (index; 0 .. 4)
             if (trayIconRect(index).contains(point)) return index;
         return -1;
+    }
+
+    /** Visible-order index of a notification icon at the point, or -1. */
+    private int notificationHit(Point point) const @safe pure nothrow @nogc
+    {
+        if (!_modernShell) return -1;
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (notificationIconRect(cast(size_t) seen).contains(point))
+                return seen;
+            ++seen;
+        }
+        return -1;
+    }
+
+    /// How far (px) a notification must be dragged left before it hides.
+    private enum int notificationDragHideDistance = 70;
+
+    private void hideNotification(int visibleOrder)
+    {
+        int seen;
+        foreach (ref icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (seen == visibleOrder)
+            {
+                icon.hidden = true;
+                _tray.hiddenIconCount = hiddenNotificationCount();
+                _pressed = -2;
+                releaseMouse();
+                invalidate();
+                return;
+            }
+            ++seen;
+        }
     }
 
     private Rect entriesRect() const @safe pure nothrow @nogc
@@ -1723,9 +1950,41 @@ class Taskbar : Widget
             }
             invalidate();
         }
+        else if (entry.hostHwnd != 0)
+        {
+            // External OS window task: toggle via the host (activate+restore or
+            // minimize). The host reports the window's visibility.
+            const visible = onExternalVisible is null ? true :
+                onExternalVisible(entry.hostHwnd);
+            if (visible)
+            {
+                if (onExternalMinimize !is null)
+                    onExternalMinimize(entry.hostHwnd);
+                _activeWindow = null;
+            }
+            else
+            {
+                if (onExternalActivate !is null)
+                    onExternalActivate(entry.hostHwnd, false);
+                _activeWindow = null;
+            }
+        }
         else if (entry.command !is null)
         {
             entry.command();
+        }
+    }
+
+    /// Activate the visible notification at the given visible-order index.
+    private void activateNotification(int visibleOrder)
+    {
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (seen == visibleOrder && icon.action !is null)
+                icon.action();
+            ++seen;
         }
     }
 
@@ -1919,7 +2178,14 @@ class Taskbar : Widget
     private void paintTaskEntry(ref Canvas canvas, TaskEntry entry, Rect rect)
     {
         const palette = theme();
-        const active = entry.window !is null && entry.window is _activeWindow &&
+        // For external OS windows the live state comes from the host; for
+        // in-shell windows it is the FloatingWindow's visibility + focus.
+        bool externalVisible;
+        if (entry.hostHwnd != 0 && onExternalVisible !is null)
+            externalVisible = onExternalVisible(entry.hostHwnd);
+        const active = entry.hostHwnd != 0 ?
+            externalTaskFocusedState(entry.hostHwnd) :
+            entry.window !is null && entry.window is _activeWindow &&
             entry.window.visible();
         const pressedId = stateEntryId(_pressed);
         const hotId = stateEntryId(_hot);
@@ -1942,7 +2208,9 @@ class Taskbar : Widget
                     maxInt(0, rect.width - 44), rect.height), entry.title,
                 Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
                 VerticalAlign.middle, true);
-            if (entry.window !is null && entry.window.visible())
+            const classicVisible = entry.hostHwnd != 0 ? externalVisible :
+                entry.window !is null && entry.window.visible();
+            if (classicVisible)
                 canvas.fillRect(Rect(rect.x + 8, rect.bottom() - 3,
                     maxInt(1, rect.width - 16), active ? 3 : 2),
                     active ? palette.accent : palette.textMuted);
@@ -1951,13 +2219,15 @@ class Taskbar : Widget
         drawIcon(canvas, entry.icon,
             Rect(iconX, iconY, taskIconSize, taskIconSize),
             Color.rgb(245, 248, 252), palette.accent);
-        if (entry.window !is null)
+        const hasWindow = entry.window !is null || entry.hostHwnd != 0;
+        if (hasWindow)
         {
             // Running indicator under the icon, with three tiers:
             //  - active (focused + visible): solid accent
             //  - running but unfocused: muted
             //  - minimized (window exists, not visible): dimmed/dotted
-            const minimized = !entry.window.visible();
+            const minimized = entry.hostHwnd != 0 ? !externalVisible :
+                !entry.window.visible();
             const underlineWidth = 16;
             const underlineX = rect.x + (rect.width - underlineWidth) / 2;
             if (active)
@@ -1970,6 +2240,12 @@ class Taskbar : Widget
                 canvas.fillRect(Rect(underlineX, rect.bottom() - 4,
                     underlineWidth, 2), palette.textMuted);
         }
+    }
+
+    /// Whether an external OS window is the focused/foreground window.
+    private bool externalTaskFocusedState(ulong hwnd) const
+    {
+        return onExternalFocused !is null && onExternalFocused(hwnd);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -2039,15 +2315,15 @@ class Taskbar : Widget
         }
         else
         {
-            // Two-line clock: time on the top line, date below.
+            // Two-line clock: time on the top line, date below, both centered.
             const clockInset = Rect(clock.x, clock.y + 4, clock.width,
                 maxInt(1, clock.height - 8));
             canvas.drawTextInRect(Rect(clockInset.x, clockInset.y, clockInset.width,
                 clockInset.height / 2), _clock, Color.rgb(245, 248, 252), 1,
-                HorizontalAlign.right, VerticalAlign.middle, true);
+                HorizontalAlign.center, VerticalAlign.middle, true);
             canvas.drawTextInRect(Rect(clockInset.x, clockInset.y + clockInset.height / 2,
                 clockInset.width, clockInset.height / 2), _date,
-                Color.rgb(245, 248, 252), 1, HorizontalAlign.right,
+                Color.rgb(245, 248, 252), 1, HorizontalAlign.center,
                 VerticalAlign.middle, true);
         }
 
@@ -2079,10 +2355,26 @@ class Taskbar : Widget
     private void paintTray(ref Canvas canvas)
     {
         const palette = theme();
-        const trayLeft = trayLeftX();
+        const trayLeft = fixedTrayLeftX();
         const iconSize = 18;
         const iconRect = Rect(trayLeft + (trayIconWidth - iconSize) / 2,
             (bounds().height - iconSize) / 2, iconSize, iconSize);
+
+        // Visible notification cluster (left of the fixed glyphs).
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            const notifRect = notificationIconRect(cast(size_t) seen);
+            // Hover code for notifications: -10.. (see onMouseMove).
+            if (_hot == -(10 + seen))
+                canvas.fillRoundedRect(notifRect, 5, palette.taskbarHover);
+            const nicon = Rect(notifRect.x + (trayIconWidth - iconSize) / 2,
+                (bounds().height - iconSize) / 2, iconSize, iconSize);
+            drawIcon(canvas, icon.icon, nicon,
+                Color.rgb(245, 248, 252), palette.accent);
+            ++seen;
+        }
 
         // 0: wifi, 1: volume, 2: battery, 3: hidden-icons chevron.
         // Hover codes are -6..-9 (see onMouseMove) so they never collide with
@@ -2135,16 +2427,35 @@ class Taskbar : Widget
             if (tray == 2) return "Battery"d;
             if (tray == 3) return "Hidden icons"d;
         }
+        if (code <= -10)
+        {
+            const order = -10 - code;
+            if (order >= 0 && order < notificationCountForTooltip())
+                return notificationLabelForTooltip(order);
+        }
         if (code >= 0 && code < cast(int) _entries.length)
         {
             const entry = _entries[cast(size_t) code];
+            // Lead with the real task name, then a short action hint.
+            const name = toUTF32(titleEntry(entry));
+            if (entry.hostHwnd != 0)
+            {
+                const visible = onExternalVisible is null ? true :
+                    onExternalVisible(entry.hostHwnd);
+                return visible ? name ~ " — click to focus"d :
+                    name ~ " — click to restore"d;
+            }
             if (entry.window !is null)
-                return entry.window.visible() ?
-                    (entry.window is _activeWindow ?
-                        "Close window or click to minimize"d :
-                        toUTF32("Click to focus " ~ titleEntry(entry))) :
-                    toUTF32("Click to restore " ~ titleEntry(entry));
-            return toUTF32(titleEntry(entry));
+            {
+                if (entry.window.visible())
+                {
+                    if (entry.window is _activeWindow)
+                        return name ~ " — click to minimize"d;
+                    return toUTF32(titleEntry(entry) ~ " — click to focus");
+                }
+                return toUTF32(titleEntry(entry) ~ " — click to restore");
+            }
+            return name;
         }
         return null;
     }
@@ -2163,9 +2474,35 @@ class Taskbar : Widget
         if (code == -4) return showDesktopRect();
         if (code == -5) return searchRect();
         if (code >= -9 && code <= -6) return trayIconRect(-6 - code);
+        if (code <= -10)
+        {
+            const order = -10 - code;
+            if (order >= 0 && order < notificationCountForTooltip())
+                return notificationIconRect(cast(size_t) order);
+        }
         if (code >= 0 && code < cast(int) _entries.length)
             return entryRect(code);
         return Rect.init;
+    }
+
+    private int notificationCountForTooltip() const nothrow @nogc
+    {
+        int seen;
+        foreach (icon; _notifications)
+            if (!icon.hidden) ++seen;
+        return seen;
+    }
+
+    private dstring notificationLabelForTooltip(int visibleOrder) const
+    {
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (seen == visibleOrder) return icon.label;
+            ++seen;
+        }
+        return null;
     }
 
     private void updateTooltip(int code)
@@ -2174,6 +2511,22 @@ class Taskbar : Widget
         // region with no tooltip, clear any shown tooltip.
         if (code != _tooltipRegion)
         {
+            const oldTask = _tooltipRegion >= 0;
+            const newTask = code >= 0;
+            if (oldTask && !newTask)
+            {
+                if (onTaskHoverLeave !is null) onTaskHoverLeave();
+            }
+            else if (newTask && !oldTask)
+            {
+                if (onTaskHover !is null) onTaskHover(code);
+            }
+            else if (newTask && oldTask)
+            {
+                // Moved directly from one task entry to another.
+                if (onTaskHoverLeave !is null) onTaskHoverLeave();
+                if (onTaskHover !is null) onTaskHover(code);
+            }
             _tooltipRegion = code;
             _tooltipHoverSeconds = 0.0;
             _tooltip = destroyTooltip();
@@ -2234,6 +2587,10 @@ class Taskbar : Widget
     // Hide the tooltip when the pointer leaves the taskbar or a gesture begins.
     private void hideTooltip()
     {
+        if (_tooltipRegion >= 0)
+        {
+            if (onTaskHoverLeave !is null) onTaskHoverLeave();
+        }
         _tooltip = destroyTooltip();
         _tooltipRegion = -2;
         _tooltipHoverSeconds = 0.0;
@@ -2245,6 +2602,12 @@ class Taskbar : Widget
         if (event.button == MouseButton.right)
         {
             requestFocus();
+            const notif = notificationHit(event.position);
+            if (notif >= 0)
+            {
+                showNotificationContextMenu(notif, event.globalPosition);
+                return true;
+            }
             const entry = hitEntry(event.position);
             if (entry >= 0) showEntryContextMenu(entry, event.globalPosition);
             else if (startRect().contains(event.position))
@@ -2271,6 +2634,7 @@ class Taskbar : Widget
         else if (clockRect().contains(event.position)) _pressed = -3;
         else if (searchRect().contains(event.position)) _pressed = -5;
         else if (trayIconHit(event.position) >= 0) _pressed = 100 + trayIconHit(event.position);
+        else if (notificationHit(event.position) >= 0) _pressed = 200 + notificationHit(event.position);
         else _pressed = hitEntry(event.position);
         if (_pressed >= 0 && _pressed < 100)
             _pressedEntryId = _entries[cast(size_t) _pressed].id;
@@ -2286,6 +2650,18 @@ class Taskbar : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_pressed >= 200)
+        {
+            // Drag a visible notification far enough and it moves into the
+            // overflow (hides). Windows lets you drag a tray icon away from the
+            // cluster; we hide it past the entry area.
+            const pointer = pointerPosition(event);
+            const dx = pointer.x - _pressPointer.x;
+            const pressedNotif = _pressed - 200;
+            if (dx <= -notificationDragHideDistance)
+                hideNotification(pressedNotif);
+            return true;
+        }
         if (_pressed >= 0 && _pressed < 100)
         {
             const pointer = pointerPosition(event);
@@ -2307,6 +2683,8 @@ class Taskbar : Widget
         else if (showDesktopRect().contains(event.position)) hot = -4;
         else if (clockRect().contains(event.position)) hot = -3;
         else if (searchRect().contains(event.position)) hot = -5;
+        else if (notificationHit(event.position) >= 0)
+            hot = -(10 + notificationHit(event.position));
         else if (trayIconHit(event.position) >= 0)
             // Distinct negative codes (-6..-9) so a tray hover can never be
             // mistaken for a task-entry index (0..N); otherwise the first few
@@ -2453,6 +2831,13 @@ class Taskbar : Widget
                 onSearchClick();
             return true;
         }
+        if (pressed >= 200)
+        {
+            const notifOrder = pressed - 200;
+            if (notificationHit(event.position) == notifOrder)
+                activateNotification(notifOrder);
+            return true;
+        }
         if (pressed >= 100)
         {
             const trayIcon = pressed - 100;
@@ -2565,13 +2950,67 @@ class Taskbar : Widget
         }
     }
 
+    /// Right-click a visible notification icon: open it / hide it. The app
+    /// provides per-icon custom menus via `showMenu` when present.
+    private void showNotificationContextMenu(int visibleOrder, Point globalPosition)
+    {
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (seen == visibleOrder)
+            {
+                if (icon.showMenu !is null)
+                {
+                    icon.showMenu();
+                    return;
+                }
+                ContextMenuItem[] items;
+                items ~= ContextMenuItem.command(toUTF8(icon.label.length > 0 ?
+                    icon.label : "Open"), icon.icon, delegate() { activateNotification(visibleOrder); });
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Hide icon", IconKind.minimize,
+                    delegate() { setNotificationHidden(icon.id, true); });
+                showContextMenu(this, globalPosition, items);
+                return;
+            }
+            ++seen;
+        }
+    }
+
     private void showEntryContextMenu(int index, Point globalPosition)
     {
         if (index < 0 || index >= cast(int) _entries.length) return;
         const id = _entries[cast(size_t) index].id;
         auto entry = _entries[cast(size_t) index];
         ContextMenuItem[] items;
-        if (entry.window !is null)
+        if (entry.hostHwnd != 0)
+        {
+            // External OS window: route actions to the host (activate/minimize/
+            // close). The host reports live visibility.
+            const hwnd = entry.hostHwnd;
+            const visible = onExternalVisible is null ? true :
+                onExternalVisible(hwnd);
+            items ~= ContextMenuItem.command("Open", IconKind.open,
+                delegate()
+                {
+                    if (onExternalActivate !is null)
+                        onExternalActivate(hwnd, false);
+                });
+            items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
+                delegate()
+                {
+                    if (onExternalMinimize !is null)
+                        onExternalMinimize(hwnd);
+                }, "", visible);
+            items ~= ContextMenuItem.separatorItem();
+            items ~= ContextMenuItem.command("Close window", IconKind.close,
+                delegate()
+                {
+                    if (onExternalClose !is null) onExternalClose(hwnd);
+                }, "Alt+F4");
+        }
+        else if (entry.window !is null)
         {
             auto window = entry.window;
             items ~= ContextMenuItem.command("Restore", IconKind.open,
@@ -2619,7 +3058,7 @@ class Taskbar : Widget
                 if (current >= 0 && current + 1 < cast(int) _entries.length)
                     moveEntryInternal(current, current + 1, true);
             }, "", index + 1 < cast(int) _entries.length);
-        if (entry.window is null)
+        if (entry.window is null && entry.hostHwnd == 0)
         {
             items ~= ContextMenuItem.separatorItem();
             items ~= ContextMenuItem.command("Remove from taskbar", IconKind.close,

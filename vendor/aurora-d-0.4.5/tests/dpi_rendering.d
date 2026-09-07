@@ -9,22 +9,7 @@ module tests.dpi_rendering;
  */
 
 import aurora;
-import std.math : abs;
 import std.stdio : writefln, writeln;
-
-private ulong contrastEnergy(const(ubyte)[] pixels, int atlasWidth, Rect region)
-    @safe pure nothrow @nogc
-{
-    ulong result;
-    foreach (y; region.y .. region.bottom())
-        foreach (x; region.x .. region.right())
-        {
-            const value = cast(int) pixels[cast(size_t) y * cast(size_t) atlasWidth +
-                cast(size_t) x];
-            result += cast(ulong) abs(value - 128);
-        }
-    return result;
-}
 
 private bool hasIntermediateCoverage(const(ubyte)[] pixels, int atlasWidth, Rect region)
     @safe pure nothrow @nogc
@@ -122,14 +107,18 @@ int main()
         FontRenderMode.sharp);
     assert(smooth.region.width == sharp.region.width);
     assert(smooth.region.height == sharp.region.height);
-    const smoothEnergy = contrastEnergy(smoothAtlas.pixels(), smoothAtlas.width(),
-        smooth.region);
-    const sharpEnergy = contrastEnergy(sharpAtlas.pixels(), sharpAtlas.width(),
-        sharp.region);
-    assert(sharpEnergy >= smoothEnergy);
-    if (face.isOpenType() && hasIntermediateCoverage(
-        smoothAtlas.pixels(), smoothAtlas.width(), smooth.region))
-        assert(sharpEnergy > smoothEnergy);
+    // The analytic rasterizer produces coverage-space AA whose weight matches
+    // the authoritative platform grid-fit, so sharp and smooth now share the
+    // same coverage — no S-curve over-boost is applied. Both must retain
+    // intermediate (true grayscale) alpha at glyph edges, and neither may
+    // collapse to binary coverage.
+    if (face.isOpenType())
+    {
+        assert(hasIntermediateCoverage(smoothAtlas.pixels(), smoothAtlas.width(),
+            smooth.region));
+        assert(hasIntermediateCoverage(sharpAtlas.pixels(), sharpAtlas.width(),
+            sharp.region));
+    }
 
     writeln("High-DPI geometry, physical glyphs, and sharp grayscale mode passed.");
     return 0;

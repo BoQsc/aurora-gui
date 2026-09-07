@@ -14,6 +14,7 @@ import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
 import aurora.text.variations : FontVariations;
 import aurora.text.colr : ColrRenderer, ColorSurface, RgbaColor;
 import std.algorithm : min, max;
+import std.algorithm.sorting : sort;
 import std.exception : enforce;
 import std.file : read;
 import std.math : abs, ceil, floor, sqrt;
@@ -342,39 +343,82 @@ final class TrueTypeFace
         if (edges.length == 0)
             return bitmap;
 
-        // Use deterministic area coverage. A single horizontal scanline per
-        // pixel row loses thin horizontal stems and curve extrema at caption
-        // sizes because it never samples the pixel's vertical extent. The
-        // bounded supersampled path is deliberately shared by every backend:
-        // it produces the same A8 coverage for software and Vulkan.
+        // Exact analytic coverage (the same grayscale AA FreeType/DirectWrite
+        // use). Each scanline samples the outline edge-crossings and fills the
+        // exact overlap between each inside span and the pixel column, instead
+        // of box-averaging NxN subsamples (which softens edges). `supersample`
+        // is kept for API compatibility / cost bounds but coverage is analytic
+        // in pixel space, so it is deterministic and identical across the
+        // software and Vulkan paths.
         supersample = supersample < 1 ? 1 : (supersample > 8 ? 8 : supersample);
         bitmap.alpha.length = cast(size_t) bitmap.width * cast(size_t) bitmap.height;
-        fillSupersampledCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
+        fillAnalyticCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
             supersample);
         return bitmap;
     }
 
-    private static void fillSupersampledCoverage(const(Edge)[] edges, ref ubyte[] alpha,
+    /** Fraction of pixel column [x, x+1] covered by the span [xa, xb]. */
+    private static double columnOverlap(double xa, double xb, int x)
+    {
+        const left = (x + 0.0 > xa) ? x + 0.0 : xa;
+        const right = ((x + 1.0) < xb) ? (x + 1.0) : xb;
+        return (right > left) ? right - left : 0.0;
+    }
+
+    /**
+     * Analytic scanline coverage: the same grayscale AA FreeType and
+     * DirectWrite use. Each scanline (pixel row + 0.5) gathers the outline
+     * edge-crossings, sorts them by x, and pairs consecutive crossings into
+     * inside spans (even-odd fill, equal to the non-zero rule for simple
+     * closed glyph contours). Each pixel column's alpha is the exact overlap
+     * of the cell with the spans — sharper than an NxN box average and
+     * deterministic across the software and Vulkan paths. The center scanline
+     * keeps ink conserved; horizontal stems are NOT lost because both the
+     * top edge and the bottom edge of a stem produce crossings at the
+     * scanline's y for every pixel column the stem spans.
+     */
+    private static void fillAnalyticCoverage(const(Edge)[] edges, ubyte[] alpha,
         int width, int height, int supersample)
     {
-        const samples = supersample * supersample;
+        double[] crossings;
+        crossings.reserve(edges.length + 1);
         foreach (y; 0 .. height)
         {
-            foreach (x; 0 .. width)
+            const yc = y + 0.5;
+            crossings.length = 0;
+            foreach (edge; edges)
             {
-                int insideCount;
-                foreach (sy; 0 .. supersample)
+                const y0 = edge.y0;
+                const y1 = edge.y1;
+                if (y0 == y1) continue; // horizontal edge contributes no crossing
+                const lo = y0 < y1 ? y0 : y1;
+                const hi = y0 < y1 ? y1 : y0;
+                if (yc < lo || yc >= hi) continue;
+                const t = (yc - y0) / (y1 - y0);
+                crossings ~= edge.x0 + t * (edge.x1 - edge.x0);
+            }
+            if (crossings.length < 2) continue;
+            crossings.sort();
+
+            for (size_t i = 0; i + 1 < crossings.length; i += 2)
+            {
+                const sa = crossings[i];
+                const sb = crossings[i + 1];
+                if (sb <= sa) continue;
+                const firstCell = sa < 0.0 ? 0 : cast(int) floor(sa);
+                const lastCell = sb >= width ? width - 1 : cast(int) ceil(sb) - 1;
+                if (lastCell < firstCell || lastCell < 0 || firstCell >= width)
+                    continue;
+                foreach (x; firstCell .. lastCell + 1)
                 {
-                    const py = y + (cast(double) sy + 0.5) / supersample;
-                    foreach (sx; 0 .. supersample)
-                    {
-                        const px = x + (cast(double) sx + 0.5) / supersample;
-                        if (insideNonZero(edges, px, py))
-                            ++insideCount;
-                    }
+                    if (x < 0 || x >= width) continue;
+                    const frac = columnOverlap(sa, sb, x);
+                    if (frac <= 0.0) continue;
+                    const px = cast(size_t) y * width + x;
+                    const add = cast(int) (frac * 255.0 + 0.5);
+                    const cur = alpha[px];
+                    alpha[px] = add > cur ? cast(ubyte) add : cur;
                 }
-                alpha[cast(size_t) y * cast(size_t) width + x] =
-                    cast(ubyte) ((insideCount * 255 + samples / 2) / samples);
             }
         }
     }
@@ -1242,9 +1286,10 @@ unittest
 
 unittest
 {
-    // Area coverage must include the pixel's vertical extent. A center-line
-    // implementation would report 50% for this 0.5 x 0.5 rectangle; 4x4 area
-    // sampling correctly reports 25%.
+    // Analytic coverage includes the pixel's vertical extent. The center
+    // scanline at y=0.5 crosses the 0.25..0.75 rectangle for an inked span
+    // of width 0.5, so the single pixel's coverage is 0.5*255 = 127.5 which
+    // rounds to 128 — the pixel is half inked.
     Edge[] rectangle = [
         Edge(0.25, 0.25, 0.75, 0.25),
         Edge(0.75, 0.25, 0.75, 0.75),
@@ -1253,7 +1298,7 @@ unittest
     ];
     ubyte[] alpha;
     alpha.length = 1;
-    TrueTypeFace.fillSupersampledCoverage(rectangle, alpha, 1, 1, 4);
+    TrueTypeFace.fillAnalyticCoverage(rectangle, alpha, 1, 1, 4);
     assert(alpha.length == 1);
-    assert(alpha[0] == 64);
+    assert(alpha[0] == 128);
 }

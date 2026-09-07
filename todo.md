@@ -1,5 +1,198 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-06 - Text rendering soft/glowy: analytic AA rasterizer fixed from the ground up (fixed)
+
+User: "don't know what happened to the text rendering but programs like
+windows_file_manager.d no longer feel decent render of font or text, you really
+need to check and resolve."
+
+### Root cause (measured, not guessed)
+Commit `4264e0d` replaced the **analytic-scanline AA** rasterizer (commit
+`47f5528`, which matched Windows GDI+ grid-fit almost exactly) with an
+**8x8 supersampled box-average** + a **35% contrast S-curve** in
+`vendor/aurora-d-0.4.5/source/aurora/text/atlas.d`
+(`increaseCoverageContrast`) and `text/truetype.d` (`fillSupersampledCoverage`).
+That path over/under-shoots edge energy so small text reads soft/glowy instead
+of crisp.
+
+### Evidence (built the fontref A/B harness again)
+Rendered "Open the document" (Segoe UI 13px) and compared against the
+authoritative GDI+ grid-fit reference (`build/refrender`, `build/fontref`):
+
+| Path | edge energy | ref edge | verdict |
+|------|-------------|----------|---------|
+| current supersampled + S-curve | 61.79 | 63.33 | under-sharp / soft |
+| analytic smooth (no S-curve) | 63.64 | 63.33 | near-perfect (Δ0.31) |
+| analytic sharp (S-curve) | 66.37 | 63.33 | over-boosted |
+
+Horizontal-stem test "ETFLIZ-T=+" 13px: analytic MAD 7.22, edge 69.94 vs ref
+68.50 — **thin horizontal stems are fully preserved**, disproving the 4264e0d
+comment ("loses thin horizontal stems"). 22px: MAD 6.37, edge 50.35 vs 49.20.
+
+### Fix (forward, ground-up)
+- `text/truetype.d`: replaced `fillSupersampledCoverage` with
+  `fillAnalyticCoverage` (+ `columnOverlap`) — exact overlap between each
+  inside span and the pixel column, per scanline (the FreeType/DirectWrite
+  technique). Deterministic and identical across software + Vulkan.
+- `text/atlas.d`: removed the `increaseCoverageContrast` sharp S-curve (the
+  analytic rasterizer already produces coverage-space AA at the correct
+  weight; the S-curve was a compensation hack that caused the glow). The
+  `coverageSamples` 8x8/4x4 policy is retained for cost bounds but the
+  rasterizer no longer box-averages.
+- `tests/dpi_rendering.d`: updated the sharp-vs-smooth assertion — sharp and
+  smooth now share the same correct analytic coverage (both keep true
+  intermediate grayscale alpha); removed the now-meaningless
+  `sharpEnergy > smoothEnergy` check.
+
+### Verification
+- `dub test`: **38 modules pass** (`vendor/aurora-d-0.4.5`).
+- `aurora-dpi-rendering-test`: pass (96/120/144/192 DPI).
+- `aurora-text-system-test`: 23 checks, 0 failures.
+- `aurora-hinting-regression-probe`: blanks=0.
+- `aurora-file-manager-scroll-test`: pass.
+- `aurora-shell-visual-test`: pass.
+- `aurora-windows-file-manager` exe builds; headless screenshot at 96 + 144
+  DPI renders crisp text (no glow).
+
+## 2026-09-06 - JSON state persistence + task thumbnail preview (done)
+
+User: "Save the states of the desktop into json. Populate the taskbar with real
+tasks that are active and the real arrangement of tasks that were pinned. We
+will probably want windows-like support of realtime window preview rectangle
+that appears on hover of tasks, it also have X button in the top right corner."
+
+Two large features:
+
+### 1. Desktop state persisted to JSON (`desktop_state.json`)
+New `auroradesktop/store.d`: `DesktopState` struct + atomic load/save via
+Phobos `std.json` (written to `.tmp`, renamed over with `.bak` backup).
+Persists:
+- Window bounds + minimized/maximized + title + `contentId` (`captureWindows`).
+- Desktop icon labels + grid positions (`captureIcons`).
+- Taskbar pinned tasks in display order (title / icon name / kind)
+  (`capturePinnedTasks`).
+- `taskbarModernShell` + `hideSystemCursor`.
+On startup `DesktopRoot` loads state; if no saved windows it uses a
+`defaultState()`. `restoreWindowState/restoreIconPositions/restorePinnedTasks`
+re-apply it. State is saved on window open/restore/close, on taskbar order
+change (`onEntryOrderChanged`), and every ~10 s in `onTick`.
+`IconKind <-> name` mapping helpers live in store.d (the ubyte enum has no
+string codec). NOTE: `JSONValue.emptyArray` does NOT support `~=`; build arrays
+with `JSONValue[] arr; arr ~= v; root["k"] = JSONValue(arr);` (else
+"JSONValue is not an array" throws).
+
+### 2. Realtime window thumbnail preview on task hover
+New `auroradesktop/taskpreview.d` `TaskPreview` (a `TransientPopup`): a compact
+224x168 preview anchored above the hovered task entry. It rasterizes the
+window's content subtree into a scaled RgbaImage (via a CPU `Surface` +
+`Canvas` + `paintTree`), draws a title bar + an X (close) button in the
+top-right, and the thumbnail body. Clicking X closes the window; clicking the
+body focuses the window. Dismisses on click-away/Escape/pointer-leave.
+
+Taskbar additions (vendor `desktop.d`): `onTaskHover(int index)` and
+`onTaskHoverLeave()` fire when the hot entry changes (wired into
+`updateTooltip`/`hideTooltip`), and `entryGlobalBounds(index)` gives the global
+anchor rect. `app.d` shows/hides the preview via these callbacks.
+
+IMPORTANT renderer note for the thumbnail: `FloatingWindow` is `setComposited`,
+so `paintTreeSkippingComposited` skips it entirely (empty preview). Use
+`paintTree` (not the skipping variant) AND call `content.layoutTree()` and
+`content.setVisible(true)` first so a minimized window still renders. Only the
+window `content` (VBox/TextArea) is painted, not the FloatingWindow chrome.
+
+Verified: vendored `dub test --force` 38/38; debug+release build; headless
+smoke ALL PASSED incl. new asserts (task hover opens a TaskPreview, pointer
+leave dismisses it; hide-cursor toggle hides/shows). `stateprobe` confirmed a
+full JSON round-trip (save 1 window/icon/task -> load them back) and a real
+thumbnail screenshot (Notepad content shown scaled above the task entry).
+
+### Remaining / not done
+- OS-level "real active tasks": the app is its own desktop with only 2 app
+  windows (Notepad + System) plus a Full-screen command. There is no OS task
+  enumeration (no way to see external processes); pinned tasks are the shell's
+  own. Restored persisted pin order is respected.
+- Unhide-by-drag from the 3x3 grid to the taskbar (nice-to-have).
+
+## 2026-09-06 - Search flyout, hide-cursor, notification cluster + 3x3 hidden grid (in progress)
+
+New `auroradesktop/search.d` `SearchPopup`: a Windows-11-style search flyout
+anchored below the taskbar search pill. It has a query field and live-filtered
+results (applications + commands). Clicking the pill (`onSearchClick`) now opens
+it instead of toggling the Start menu. `Taskbar.searchButtonGlobalBounds()`
+added (Rect.init in the classic shell). Verified: `searchprobe` showed the
+popup at panelRect `Rect(8, 250, 520, 458)` and live filtering typed "sett"
+narrowed 7 → 2 results (System Settings, Open Windows Settings). Screenshot
+confirmed the styling.
+
+Hide-system-cursor (default ON): `GuiWindow.setSystemCursorVisible/setSystemCursorVisible`
+gates the Aurora-rendered pointer layer (`window.d`). Persisted as
+`hideSystemCursor=1|0` in `aurora-desktop.ini` (`settings.d`), applied at
+startup via `DesktopRoot.setShellWindow(window)`, toggled from System Settings
+(`cursorToggle` checkbox). Smoke asserts default = hidden, toggle shows.
+
+Notification cluster + 3x3 hidden grid: `Taskbar` now owns a notification-icon
+model (`NotificationIcon` struct + `addNotification`/`clearNotifications`/
+`setNotificationHidden`/`notifications()`/`notificationIconGlobalBounds`).
+Visible icons render in a cluster left of the fixed wifi/volume/battery/chevron
+glyphs; hover codes use the -10.. block; clicks dispatch an `action`; right-click
+shows a context menu (Hide icon). `HiddenIconsPanel` now renders the hidden
+notifications as a 3x3 grid, anchored above the chevron. `app.d` registers
+three shell notifications (OneDrive/Antivirus/Messenger) and `refreshTray`
+preserves the live hidden count. Verified via `notifprobe`: cluster at
+(908,946,984); hiding two moved them into the grid (screenshot).
+
+IMPORTANT DIAGNOSTIC (root-cause): real OS system-tray icon enumeration is
+IMPOSSIBLE on this Windows 11 shell. Six probes (trayprobe1..6) proved: (a)
+`Shell_TrayWnd` has NO `TrayNotifyWnd` child (the tree is the XAML shell —
+`TrayDummySearchControl`/`DynamicContent1`); (b) the only `NotifyIconOverflowWindow`
+toolbar reports 5 buttons but `TBBUTTON`/`TB_GETBUTTONINFO` return ALL-ZERO
+metadata (idCommand=0, fsStyle=0, iString=0, text empty), so there is no
+real icon data to read. Therefore the notification icons are shell-owned
+(the app registers them), not a live Explorer scan. Any future OS-scan effort
+must target the XAML COM/WinRT surface, not the classic toolbar API.
+
+Verified today: vendored `dub test --force` 38/38; `dub build --force` links;
+headless smoke ALL PASSED (notification hover codes -10.., hidden-count update,
+search filter, hide-cursor default off, calendar, tooltips).
+
+### Remaining (nice-to-have, not yet implemented)
+1. Drag a hidden icon from the 3x3 grid BACK onto the taskbar to unhide it. The
+   grid currently supports activate-on-click and the taskbar supports
+   drag-to-hide; unhide-by-drag would need cross-popup drag handling (grid →
+   taskbar cluster). Currently unhide is not exposed (hide is one-way via right
+   click "Hide icon" and drag-left).
+2. Document the OS-scan path as experimental (done in diagnostics; no code).
+
+## 2026-09-06 - Calendar slide animation fixed + pending features (in progress)
+
+## 2026-09-06 - Calendar flyout + centered clock + task-name tooltips (done)
+
+User: "the date/time should be centered text and tasks should have tooltips
+after their real task name. Also implement the calendar, where you click
+date/time and calendar and it slides upwards, similar to how windows 10 is."
+
+Three changes:
+
+1. Date/time text is now CENTERED (was right-aligned) in the two-line clock
+   (`HorizontalAlign.center` for both the time and the date lines).
+
+2. Task entry tooltips now LEAD WITH the real task name and then an action hint:
+   "Notepad — click to focus" / " — click to restore" / " — click to minimize"
+   (was an action phrase that didn't show the name first). New
+   `auroradesktop/calendar.d` provides a Windows-10-style `CalendarPopup`.
+
+3. Calendar: `CalendarPopup` is a `TransientPopup` shown by clicking the clock
+   (`app.openCalendar` on `onDateTimeSettings`). It renders a month grid
+   (header + prev/next chevrons, day-of-week labels, day cells, today
+   highlighted in an accent circle), anchored above the clock, and SLIDES UP
+   from just below the clock over ~0.2 s (ease-out) via `onTick`. It dismisses
+   on Escape / click-away / clicking the anchor (clock).
+
+Verification: vendored `dub test --force` 38/38; headless smoke ALL PASSED
+with new asserts (clock click opens the calendar; Escape closes it; tooltip
+appears on hover; clock/show-desktop gap; minimized indicator). Release
+builds; running.
+
 ## 2026-09-06 - Taskbar: dimmed minimized indicator, clock padding, tooltips (done)
 
 User: "Why minimized tasks does not have dimmed indication color. Also could you

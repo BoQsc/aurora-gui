@@ -1109,6 +1109,12 @@ else version (Windows)
             setCursor(CursorKind.arrow);
         }
 
+        /// The raw native HWND for this platform window (0 when not created).
+        ulong hwnd() const @safe pure nothrow @nogc
+        {
+            return _hwnd is null ? 0 : cast(ulong) _hwnd;
+        }
+
         override bool prepareFirstFrame(Color background)
         {
             setStartupBackground(background);

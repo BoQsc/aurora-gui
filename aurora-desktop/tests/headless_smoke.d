@@ -1,9 +1,10 @@
 module tests.headless_smoke;
 
 import aurora;
-import aurora.widgets.desktop : SystemTrayState;
+import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
 import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
+import auroradesktop.search : SearchPopup;
 import std.stdio : writeln, stdout;
 import std.algorithm : canFind;
 import std.conv : to;
@@ -34,6 +35,16 @@ private int countTooltipWidgets(Widget root)
         if (canFind(name, "Tooltip")) ++count;
     }
     return count;
+}
+
+// True if a CalendarPopup is currently attached to the root.
+private bool calendarOpen(Widget root)
+{
+    foreach (child; root.children())
+    {
+        if (canFind(child.classinfo.name, "CalendarPopup")) return true;
+    }
+    return false;
 }
 
 private Rect globalBounds(Widget widget)
@@ -79,9 +90,21 @@ int main()
     auto window = new GuiWindow(options, Theme.dark());
     auto root = new DesktopRoot();
     window.setRoot(root);
+    root.setShellWindow(window);
     auto driver = new UiTestDriver(window);
     driver.resize(Size(1280, 760));
     driver.paint();
+
+    // Hide-cursor preference: the toggle must hide/show the Aurora system
+    // cursor regardless of any persisted on-disk value (which can flip between
+    // environments). Start visible, hide, then restore.
+    window.setSystemCursorVisible(true);
+    assert(window.systemCursorVisible() == true,
+        "system cursor should be shown when enabled");
+    window.setSystemCursorVisible(false);
+    assert(window.systemCursorVisible() == false,
+        "system cursor should be hidden when disabled");
+    window.setSystemCursorVisible(true);
 
     // The taskbar must expose its start button, entries, and tray state.
     auto taskbar = root.taskbarForTesting();
@@ -92,6 +115,54 @@ int main()
     // Taskbar icon geometry must be non-empty (0=wifi, 1=volume, 2=battery, 3=hidden).
     foreach (index; 0 .. 4)
         assert(!taskbar.trayIconGlobalBounds(index).empty());
+
+    // The shell registers three notification icons; each visible icon has
+    // global bounds and a hover code in the -10.. block (never a task index).
+    assert(taskbar.notifications().length >= 3,
+        "shell notifications were not registered");
+    int notifSeen;
+    foreach (i, icon; taskbar.notifications())
+    {
+        if (icon.hidden) continue;
+        const nB = taskbar.notificationIconGlobalBounds(i);
+        assert(!nB.empty(), "visible notification has no bounds");
+        driver.moveTo(center(nB));
+        driver.paint();
+        const nHot = taskbar.hotRegion();
+        assert(nHot == -(10 + notifSeen),
+            "notification hover code was " ~ to!string(nHot) ~
+            ", expected " ~ to!string(-(10 + notifSeen)));
+        ++notifSeen;
+    }
+    // Hiding a notification moves it into the overflow and updates the tray.
+    const firstNotif = taskbar.notifications()[0];
+    taskbar.setNotificationHidden(firstNotif.id, true);
+    assert(taskbar.trayState().hiddenIconCount >= 1,
+        "hiding a notification did not update hiddenIconCount");
+
+    // Drag-triggered hide: dragging a visible notification far left hides it.
+    // Find a currently visible notification and drag it left by 80 px.
+    NotificationIcon dragTarget;
+    bool haveTarget;
+    foreach (icon; taskbar.notifications())
+    {
+        if (!icon.hidden)
+        {
+            dragTarget = icon;
+            haveTarget = true;
+            break;
+        }
+    }
+    if (haveTarget)
+    {
+        const before = taskbar.trayState().hiddenIconCount;
+        driver.drag(center(taskbar.notificationIconGlobalBounds(0)),
+            Point(center(taskbar.notificationIconGlobalBounds(0)).x - 80,
+                center(taskbar.notificationIconGlobalBounds(0)).y), 8);
+        driver.paint();
+        assert(taskbar.trayState().hiddenIconCount == before + 1,
+            "dragging a notification left did not hide it");
+    }
 
     // Hover must highlight ONLY the targeted item: a tray hover returns a
     // negative tray code (-6..-9), never a task-entry index (>= 0). Prior to
@@ -138,6 +209,16 @@ int main()
     const showB = taskbar.showDesktopBounds();
     const clockGap = showB.x - (clockB.x + clockB.width);
     assert(clockGap >= 4, "date/time merged with show-desktop: gap " ~ clockGap.to!string);
+
+    // Clicking the clock opens the calendar flyout; Escape/click-away closes it.
+    driver.click(center(clockB));
+    driver.paint();
+    assert(calendarOpen(root), "clock click did not open the calendar");
+    // Slide animation runs on ticks; then Escape dismisses.
+    foreach (_; 0 .. 4) { window.onNativeTick(0.1); }
+    driver.pressKey(Key.escape);
+    driver.paint();
+    assert(!calendarOpen(root), "escape did not close the calendar");
 
     // Hovering a tray icon for just past the delay shows a tooltip overlay.
     driver.moveTo(center(taskbar.trayIconGlobalBounds(0)));
@@ -285,15 +366,54 @@ int main()
         assert(currentTransientPopup(root) is null);
     }
 
-    // The search pill opens the Start menu exactly like the Start button.
-    // (searchRect sits 8 px right of the start button and is 150 px wide.)
-    assert(!taskbar.startMenuOpen());
-    const startBounds = taskbar.startButtonGlobalBounds();
-    driver.click(Point(startBounds.right() + 8 + 75,
-        startBounds.y + startBounds.height / 2));
-    assert(taskbar.startMenuOpen());
+    // The search pill opens the dedicated SearchPopup (a Windows-11-style
+    // search flyout), NOT the Start menu. It anchors below the pill and
+    // filters results live as the user types.
+    const searchGlobal = taskbar.searchButtonGlobalBounds();
+    assert(!searchGlobal.empty(), "search pill has no bounds in modern shell");
+    driver.click(center(searchGlobal));
+    driver.paint();
+    auto searchPopup = currentTransientPopup(root);
+    assert(searchPopup !is null, "search pill did not open a popup");
+    assert(canFind(searchPopup.classinfo.name, "SearchPopup"),
+        "search pill opened the wrong popup: " ~ searchPopup.classinfo.name);
+    // All 7 registered results are shown before any typing.
+    auto search = cast(SearchPopup) searchPopup;
+    assert(search !is null, "search popup cast failed");
+    assert(search.resultCount() == 7, "search popup did not list all results");
+
+    // Live filtering: typing "sett" narrows to the two Settings entries.
+    driver.text("sett");
+    driver.paint();
+    assert(search.resultCount() == 2,
+        "search did not filter to Settings (count=" ~
+        to!string(search.resultCount()) ~ ")");
+    assert(to!string(search.query()) == "sett", "search query not captured");
+
     driver.pressKey(Key.escape);
-    assert(!taskbar.startMenuOpen());
+    driver.paint();
+    assert(currentTransientPopup(root) is null,
+        "escape did not close the search popup");
+
+    // Task thumbnail preview: hovering a window task entry opens a TaskPreview
+    // popup anchored above it; moving away dismisses it.
+    assert(taskbar.entryCount() >= 1);
+    const entry0 = taskbar.entryGlobalBounds(0);
+    assert(!entry0.empty(), "task entry has no global bounds");
+    auto hoverWindow = taskbar.entryWindow(0);
+    if (hoverWindow !is null) hoverWindow.restore();
+    driver.paint();
+    driver.moveTo(center(entry0));
+    driver.paint();
+    auto preview = currentTransientPopup(root);
+    assert(preview !is null, "task hover did not open a preview");
+    assert(canFind(preview.classinfo.name, "TaskPreview"),
+        "task hover opened the wrong popup: " ~ preview.classinfo.name);
+    // Moving to empty taskbar space dismisses the preview.
+    driver.moveTo(Point(400, 30));
+    driver.paint();
+    assert(currentTransientPopup(root) is null,
+        "task preview did not dismiss when pointer left the entry");
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");

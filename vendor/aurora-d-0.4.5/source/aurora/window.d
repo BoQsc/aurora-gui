@@ -85,6 +85,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private bool _hasLastPointerPosition;
     private bool _pointerLayerBuilt;
     private bool _synchronizedPointerActive;
+    /** When false the Aurora-rendered system cursor is not composed. */
+    private bool _systemCursorVisible = true;
     private LayerCache[Widget] _layerCaches;
     private LayerCache[] _orderedLayers;
     private Widget[] _layerScratch;
@@ -527,6 +529,19 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     override void updateCursor(CursorKind cursor)
     {
         setActiveCursor(cursor);
+    }
+
+    /** Show/hide the Aurora-rendered system cursor overlay. */
+    void setSystemCursorVisible(bool value)
+    {
+        if (_systemCursorVisible == value) return;
+        _systemCursorVisible = value;
+        requestFrame();
+    }
+
+    bool systemCursorVisible() const @safe pure nothrow @nogc
+    {
+        return _systemCursorVisible;
     }
 
     /**
@@ -1187,7 +1202,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             _scene.addLayer(rendered);
         }
 
-        if (_synchronizedPointerActive || _pointerLayerBuilt)
+        if ((_synchronizedPointerActive || _pointerLayerBuilt) &&
+            _systemCursorVisible)
         {
             ensurePointerDrawList();
             RenderLayer pointerLayer;
