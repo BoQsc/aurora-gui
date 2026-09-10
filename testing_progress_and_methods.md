@@ -1,6 +1,55 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
-## Minimal shared libav: attempted then ABANDONED (2026-09-10)
+## Minimal shared libav: SHIPPED via CI (2026-09-10) — 2.93 MB, exe 17.1 MB
+
+Follow-up to the abandoned attempt. With repo logs readable (Actions job logs
+need admin; a temporary read-only token was used and then deleted) the real
+failures were found and fixed, and the shared decode-only libav now builds and
+is embedded.
+
+**CI build fixes (real errors, not guesses):**
+1. `Unknown option "--disable-postproc"` — FFmpeg master removed it. Removed.
+2. The combined artifact changed its internal root, so the `windows-runtime`
+   job's hard-coded `build/wgc-runtime/ffmpeg/ffmpeg.exe` was missing; it now
+   finds `ffmpeg.exe` recursively.
+3. `gh workflow run` dispatch returned `HTTP 403 Resource not accessible by
+   integration` because `portable-windows.yml` requested only `actions: read`;
+   changed to `actions: write`.
+
+**Artifact:** `ffmpeg-minimal-libav-win64` -> now folded into the existing
+`ffmpeg-minimal-win64` artifact (built by `minimal-ffmpeg.yml`, same job).
+Contents:
+- avcodec-63.dll 5,670,400
+- swscale-10.dll 958,976
+- avutil-61.dll 689,152
+- avformat-63.dll 515,584
+- libwinpthread-1.dll 324,451
+- **total 8,158,563 bytes (7.78 MB) uncompressed; 2.93 MB zipped.**
+
+**Embedding (`ffmpegbundle.d`):** `BundledFfmpeg` builds import
+`embedded/libav.zip`; on first run the members are expanded into
+`<bundleDir>/libav/` (`ensureLibavExtracted`, using `std.zip.ZipArchive` and
+writing each member — this Phobos has no directory `expand`). `libavdecode.d`
+already looks in `bundledFfmpegDirectory()/libav`, and its loader now preloads
+shipped mingw runtimes (`libwinpthread-1.dll`) so the winpthreads build resolves.
+`_extractedDirectory` is now set even when the s16le fallback uses the system
+ffmpeg, so libav is still discoverable. `build-portable-windows.py` gained
+`stage_libav_zip()` (zips `<app>/libav/*.dll`, or an empty archive).
+
+**Verified (CI, run 34517044492, commit d378fd4):** `minimal-ffmpeg` build job
+(static ffmpeg + shared libav) success; `portable-windows` success.
+Portable artifact `aurora-windows-portable` = 30.40 MB; inside it
+**`aurora-cut/aurora-cut.exe` = 17,940,800 bytes (17.11 MB)** — under the 30 MB
+budget, and it embeds BOTH the s16le-capable minimal ffmpeg (audio) and the
+minimal libav (instant in-process scrub). Locally, random-access decode from the
+minimal libav averaged ~5 ms; the single-exe path reported
+`libavAvailable=true` with no env var.
+
+**Local test binary:** `aurora-cut/aurora-cut-single-test.exe`
+(17,940,800 bytes, MD5 `29261dc7f44f951d6fdea3d5cdee15e2`), extracted from the CI
+artifact.
+
+## Minimal shared libav: attempted then ABANDONED (2026-09-10) [superseded]
 
 User: "121 MB of DLLs, is insanity", then "gcc is out of topic here".
 

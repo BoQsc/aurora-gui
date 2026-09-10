@@ -1,6 +1,27 @@
 # Aurora Cut todo / complaints log
 
-## 2026-09-10 - Minimal shared libav: ABANDONED (reassessed)
+## 2026-09-10 - Minimal shared libav: SHIPPED via CI (done)
+
+- [x] Fixed the real CI failures (from readable job logs): FFmpeg master removed
+      `--disable-postproc`; the combined artifact's root changed so the
+      windows-runtime job missed ffmpeg.exe (now found recursively); the token
+      needed `actions: write` to dispatch minimal-ffmpeg (was 403).
+- [x] Folded the shared decode-only libav into the existing `minimal-ffmpeg`
+      artifact (no second workflow): 7.78 MB uncompressed / 2.93 MB zipped.
+- [x] Embed `libav.zip` in the single exe; expand to `<bundle>/libav` on first
+      run (std.zip member loop); libavdecode preloads libwepthread; bundle dir is
+      recorded even when the s16le fallback uses system ffmpeg.
+- [x] **Verified on CI (run 34517044492):** `aurora-cut.exe` = 17,940,800 bytes
+      (17.11 MB) -- under 30 MB -- with the s16le-capable ffmpeg AND the minimal
+      libav embedded. Random-access decode ~5 ms.
+- [x] Test binary saved: `aurora-cut/aurora-cut-single-test.exe` (MD5
+      29261dc7f44f951d6fdea3d5cdee15e2). WARNING: this fixes BOTH the no-sound
+      issue and instant scrubbing in one file; please test, then cut a release.
+- [ ] Confirm the release tag (`MAKE-RELEASE.bat`) after testing. Note the tree
+      still has other contributors' uncommitted font/vendor changes, which the
+      release script requires to be clean.
+
+## 2026-09-10 - Minimal shared libav: ABANDONED (reassessed) [superseded]
 
 User: "121 MB of DLLs, is insanity" then "gcc is out of topic here".
 
