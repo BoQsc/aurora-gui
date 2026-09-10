@@ -1,22 +1,27 @@
 # Aurora Cut todo / complaints log
 
-## 2026-09-10 - Minimal shared libav (kill the 121 MB) (in progress)
+## 2026-09-10 - Minimal shared libav: ABANDONED (reassessed)
 
-User: "121 MB of DLLs, is insanity."
+User: "121 MB of DLLs, is insanity" then "gcc is out of topic here".
 
 - [x] Confirmed the 121.6 MB is BtbN's full/master GPL shared build (~94 MB
-      avcodec with everything). Wrong artifact for our decode-only need.
-- [x] Added `scripts/build-minimal-ffmpeg-libav-win64.sh`: shared
-      avcodec/avformat/avutil/swscale, decode-only, no encoders/filters/devices/
-      CLI, win32-threads so no libwinpthread dependency.
-- [x] Added separate, non-release-critical workflow
-      `.github/workflows/minimal-libav-ffmpeg.yml` producing
-      `ffmpeg-minimal-libav-win64`.
-- [x] `libavdecode.d` loader now tolerates different major-versioned DLL names
-      instead of hard-coding 63/61/10.
-- [ ] Trigger the libav workflow and record the real DLL sizes; if small enough,
-      wire it as an optional `libav/` download in the release and (optionally)
-      enable-by-default. If still large, reassess.
+      avcodec with everything). Too big to ship.
+- [x] Tried a decode-only shared build (`--disable-everything`, no encoders/
+      filters/devices/CLI) with a dedicated workflow. It failed to build in CI
+      twice; raw job logs need repo admin to download, so diagnosis was blind.
+- [x] **Decision: abandoned.** Cross-compiling FFmpeg in CI is out of scope for
+      this app fix. Removed `scripts/build-minimal-ffmpeg-libav-win64.sh` and
+      `.github/workflows/minimal-libav-ffmpeg.yml`.
+- [x] Kept the `libavdecode.d` accelerator + its tolerant loader (it is fully
+      optional: it activates only when a `libav/` folder or `AURORA_LIBAV_DIR`
+      is present, and falls back to spawning ffmpeg otherwise).
+- [ ] No further work on shipping libav unless a small prebuilt shared decode
+      library becomes available off the shelf.
+
+**Honest constraint:** without an in-process decoder, each arbitrary/backward
+scrub still spawns `ffmpeg.exe` (~80-110 ms), so "instant scrub anywhere" is not
+achievable with the current bundled ffmpeg alone. Forward scrub is served by the
+persistent prewarm decoder; that is the extent of it.
 
 ## 2026-09-10 - No sound in local single-test exe (diagnosed, guarded)
 
