@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - No sound in local single-test exe (diagnosed, guarded)
+
+User: "why i can not hear sound in aurora-cut/aurora-cut-single-test.exe".
+
+- [x] Root cause: the locally staged `embedded/ffmpeg.exe` (13,479,936 bytes,
+      2026-08-19) is the PRE-FIX minimal build lacking the `s16le` output format
+      (`Requested output format 's16le' is not known`). Preview audio uses
+      `-f s16le pipe:1`, so no PCM -> no sound. Same bug as v0.66.4/v0.66.5.
+- [x] The full `C:\ffmpeg\bin\ffmpeg.exe` works (valid PCM), which is why
+      dev builds have sound.
+- [x] A GitHub release is correct: CI stages the fixed minimal ffmpeg
+      (`--enable-muxer=pcm_s16le`).
+- [x] Added a hard guard: `build-portable-windows.py verify_cut_ffmpeg_audio()`
+      does a real `-f s16le` encode and fails the build if the staged ffmpeg
+      cannot produce PCM. Verified it rejects the stale binary and accepts the
+      full one.
+- [ ] Local audio test needs the fixed minimal ffmpeg copied into
+      `aurora-cut/embedded/` (from CI); cannot be regenerated here (no Linux/mingw).
+
 ## 2026-09-10 - Single exe back under 30 MB (done)
 
 User: "hope the final single binary will not be large or above 30mb."

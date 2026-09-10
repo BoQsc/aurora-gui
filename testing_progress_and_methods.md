@@ -1,5 +1,44 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## No sound in the local single-test exe — stale embedded ffmpeg (2026-09-10)
+
+User: "why i can not hear sound in aurora-cut/aurora-cut-single-test.exe".
+
+**Diagnosed (not guessed):** the locally staged `embedded/ffmpeg.exe`
+(13,479,936 bytes, built 2026-08-19, config
+`--enable-muxer='mp4,mp3,image2,rawvideo,s16le,...'`) is the **pre-fix minimal
+build** with the bug already documented for v0.66.4/v0.66.5: FFmpeg's output
+format `s16le` needs the `pcm_s16le_muxer`; configure `--enable-muxer=s16le`
+builds the glob `s16le_muxer` which does not match it. Proof:
+```
+embedded\ffmpeg.exe -f lavfi -i sine=... -t 0.1 -f s16le -y out.raw
+-> [AVFormatContext] Requested output format 's16le' is not known.
+```
+Aurora Cut decodes preview audio with `-f s16le pipe:1` (`PcmAudioPlayer`), so
+the stale bundle yields no PCM -> no audio clock -> muted / "Waiting for audio".
+The full `C:\ffmpeg\bin\ffmpeg.exe` produces valid PCM (9,600 bytes for 0.1 s),
+which is why dev/`dub run` builds have sound.
+
+**Conclusion:** the local `aurora-cut-single-test.exe` (which embedded the stale
+file) is not representative. A GitHub release is correct because
+`portable-windows.yml` downloads the `ffmpeg-minimal-win64` artifact built by
+`scripts/build-minimal-ffmpeg-win64.sh`, which already uses
+`--enable-muxer=...pcm_s16le...` (fixed). Both local `embedded/ffmpeg.exe` files
+(aurora-cut and aurora-stream) are stale; the local test exe can only have sound
+after the embedded file is regenerated from CI (no local Linux/mingw toolchain).
+
+**Hardening added (`scripts/build-portable-windows.py`):**
+`verify_cut_ffmpeg_audio()` runs a real `-f s16le` encode from the staged ffmpeg
+before the single-exe link and `raise SystemExit(1)` if it produces no bytes,
+mirroring the existing `verify_stream_ffmpeg_inventory()`. So a stale/broken
+embedded ffmpeg can never again silently ship a silent single exe.
+- Verified: the guard FAILS on the stale `embedded/ffmpeg.exe` and PASSES on the
+  full `C:\ffmpeg\bin\ffmpeg.exe`.
+
+**To get a working local audio test:** obtain the fixed minimal ffmpeg (the CI
+artifact, or run `minimal-ffmpeg.yml`), copy it to `aurora-cut/embedded/`, then
+`python scripts/build-portable-windows.py --app aurora-cut --single-exe`.
+
 ## Single-exe size cut ~53% (compressed embedded FFmpeg) (2026-09-10)
 
 User: "hope the final single binary will not be large or above 30mb."

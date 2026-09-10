@@ -142,6 +142,40 @@ def stage_compressed_embedded(package_root: Path) -> None:
         )
 
 
+def verify_cut_ffmpeg_audio(ffmpeg: Path) -> None:
+    """Refuse a release payload whose embedded ffmpeg cannot produce raw s16le
+    PCM. Aurora Cut decodes preview audio with `-f s16le pipe:1`
+    (PcmAudioPlayer); an ffmpeg configured with `--enable-muxer=s16le` instead of
+    `pcm_s16le` silently lacks that output format, so audio produces no clock and
+    the app sits on "Waiting for audio output" / plays muted. This bit v0.66.4
+    and v0.66.5."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "probe.raw"
+        command = [
+            str(ffmpeg), "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-t", "0.1", "-f", "s16le", "-y", str(out),
+        ]
+        result = subprocess.run(
+            command, cwd=ffmpeg.parent, capture_output=True, text=True,
+            errors="replace",
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        sized = out.stat().st_size if out.is_file() else 0
+        if result.returncode != 0 or sized == 0:
+            print(
+                f"::error::{ffmpeg} cannot produce s16le PCM (exit "
+                f"{result.returncode}, {sized} bytes); preview audio would be "
+                f"silent. Rebuild the minimal ffmpeg with "
+                f"--enable-muxer=pcm_s16le. Output: {output.strip()[:300]}",
+                flush=True,
+            )
+            raise SystemExit(1)
+    print(f"Aurora Cut ffmpeg s16le audio check passed: {ffmpeg}", flush=True)
+
+
 def verify_stream_ffmpeg_inventory(ffmpeg: Path) -> None:
     """Refuse a release payload that lacks Aurora Stream's capture filters.
 
@@ -240,6 +274,8 @@ def main() -> int:
             if not ico.is_file():
                 print(f"::error::missing icon {ico}", flush=True)
                 raise SystemExit(1)
+            if name == "aurora-cut":
+                verify_cut_ffmpeg_audio(embedded / "ffmpeg.exe")
             if name == "aurora-stream":
                 verify_stream_ffmpeg_inventory(embedded / "ffmpeg.exe")
                 build_game_capture_hook(repo_root, args.compiler)
