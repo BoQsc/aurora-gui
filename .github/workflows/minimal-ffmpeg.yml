@@ -81,4 +81,10 @@ jobs:
           path: build/wgc-runtime/ffmpeg
 
       - name: Capture a background HWND without activation
-        run: python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --allow-no-d3d11 --ffmpeg build/wgc-runtime/ffmpeg/ffmpeg.exe
+        shell: pwsh
+        run: |
+          # The artifact also contains the shared libav DLLs, so locate ffmpeg
+          # recursively rather than assuming it is at the archive root.
+          $ffmpeg = Get-ChildItem -Path build/wgc-runtime/ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpeg) { Write-Error "ffmpeg.exe not found in the artifact"; exit 1 }
+          python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --allow-no-d3d11 --ffmpeg $ffmpeg.FullName

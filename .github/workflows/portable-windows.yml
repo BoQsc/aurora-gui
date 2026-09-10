@@ -11,6 +11,7 @@ on:
       - .github/workflows/minimal-ffmpeg.yml
       - scripts/build-portable-windows.py
       - scripts/build-minimal-ffmpeg-win64.sh
+      - scripts/build-minimal-ffmpeg-libav-win64.sh
       - scripts/verify-windows-portability.py
       - scripts/verify-windows-gui-subsystem.py
       - scripts/version.py
@@ -23,7 +24,10 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  # "write" so the "Ensure minimal ffmpeg" step can dispatch minimal-ffmpeg.yml
+  # as a fallback when no artifact exists yet for this commit (the default
+  # read-only token returns HTTP 403 on workflow dispatch).
+  actions: write
 
 jobs:
   build:
