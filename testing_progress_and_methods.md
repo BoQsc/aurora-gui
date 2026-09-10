@@ -53,8 +53,10 @@ build\headless-smoke\paused-scrub-stream-smoke.exe ..\build\media\base-av.mp4
 
 **Remaining:** backward / far jumps still restart the decoder (~54-72 ms); true
 "instant anywhere" needs in-process libav* (option 1). Fresh exe staged as
-`aurora-cut/aurora-cut-opt2.exe` (MD5 `4d5bda3b58b48eccc3731148bae53f31`);
-root exe was locked by the running app (PID 28204).
+`aurora-cut/aurora-cut-opt2.exe` (MD5 `e4e144e8d5e67c88a77d1e18e851d953`);
+root exe was locked by the running app (PID 28204). A follow-up commit
+(`132e881`) also syncs retained title layers when the warm decoder serves a
+paused frame.
 
 ## Why per-frame scrub is not instant: measured cost breakdown (2026-09-10)
 
