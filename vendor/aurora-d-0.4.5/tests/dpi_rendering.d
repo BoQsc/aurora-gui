@@ -9,6 +9,7 @@ module tests.dpi_rendering;
  */
 
 import aurora;
+import aurora.text.atlas : glyphOriginX;
 import std.stdio : writefln, writeln;
 
 private bool hasIntermediateCoverage(const(ubyte)[] pixels, int atlasWidth, Rect region)
@@ -59,6 +60,20 @@ private void verifyScale(FontSystem fonts, uint dpi)
     assert(list.vertices[firstTextVertex + 3].y - list.vertices[firstTextVertex].y ==
         cast(float) physicalGlyph.region.height);
 
+    size_t vertex = firstTextVertex;
+    foreach (positioned; layout.glyphs)
+    {
+        const origin = glyphOriginX((20.0 + positioned.x) * scale.x(),
+            positioned.font.isOpenType(), physicalPixelSize);
+        const cached = fonts.atlas.glyphByIndex(positioned.font, positioned.glyphIndex,
+            physicalPixelSize, FontRenderMode.sharp, origin.phase);
+        if (!cached.hasPixels()) continue;
+        assert(list.vertices[vertex].x == origin.pixel + cached.bearingX,
+            "DPI scaling must preserve the selected fractional coverage phase");
+        assert(list.vertices[vertex + 1].x - list.vertices[vertex].x == cached.region.width);
+        vertex += 4;
+    }
+
     auto target = new Surface(1, 1);
     SoftwareRenderer.renderInto(list, target);
     assert(target.size == physical);
@@ -106,10 +121,9 @@ int main()
     const sharp = sharpAtlas.glyphByIndex(face, glyphIndex, 15,
         FontRenderMode.sharp);
     assert(smooth.region.width == sharp.region.width);
-    assert(smooth.region.height == sharp.region.height);
-    // The analytic rasterizer produces coverage-space AA whose weight matches
-    // the authoritative platform grid-fit, so sharp and smooth now share the
-    // same coverage — no S-curve over-boost is applied. Both must retain
+    assert(smooth.advance == sharp.advance);
+    // Sharp mode can align font-authored vertical zones at small sizes.
+    // Neither mode applies an additional contrast curve. Both must retain
     // intermediate (true grayscale) alpha at glyph edges, and neither may
     // collapse to binary coverage.
     if (face.isOpenType())

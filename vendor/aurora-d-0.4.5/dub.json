@@ -348,6 +348,15 @@
       ]
     },
     {
+      "name": "font-quality-test",
+      "targetType": "executable",
+      "targetName": "aurora-font-quality-test",
+      "mainSourceFile": "tests/font_quality_regression.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
       "name": "dpi-rendering-test",
       "targetType": "executable",
       "targetName": "aurora-dpi-rendering-test",

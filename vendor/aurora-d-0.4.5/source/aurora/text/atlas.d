@@ -5,6 +5,28 @@ import aurora.text.glyph : GlyphBitmap;
 import aurora.text.fontcollection : FontCollection;
 import aurora.text.layout : TextLayoutEngine;
 import aurora.types : Rect, maxInt;
+import std.math : floor;
+
+enum GlyphHorizontalPhases = 8;
+
+struct GlyphOrigin
+{
+    int pixel;
+    ubyte phase;
+}
+
+/// Small text uses eighth pixels below 20px, quarters at larger sizes.
+/// Phase indices always represent eighths; larger text uses only even indices.
+GlyphOrigin glyphOriginX(double x, bool outline = true, int pixelSize = 13)
+    @safe pure nothrow @nogc
+{
+    if (!outline) return GlyphOrigin(cast(int) floor(x + 0.5), 0);
+    const phases = pixelSize < 20 ? GlyphHorizontalPhases : GlyphHorizontalPhases / 2;
+    const quantized = floor(x * phases + 0.5);
+    const pixel = cast(int) floor(quantized / phases);
+    return GlyphOrigin(pixel, cast(ubyte) ((quantized - cast(double) pixel * phases) *
+        (GlyphHorizontalPhases / phases)));
+}
 
 struct AtlasGlyph
 {
@@ -25,7 +47,7 @@ private struct GlyphKey
     ulong faceIdentity;
     uint glyphIndex;
     ushort pixelSize;
-    ushort renderFlags;   // Reserved for hinting/subpixel modes.
+    ushort renderFlags;   // Render mode plus horizontal coverage phase.
     uint variationHash;   // Reserved for future variable-font instances.
 }
 
@@ -63,25 +85,25 @@ final class GlyphAtlas
 
     /** Rasterize/cache a glyph already selected by the shaping engine. */
     AtlasGlyph glyphByIndex(const(FontFace) face, uint glyphIndex, int pixelSize,
-        FontRenderMode renderMode = FontRenderMode.sharp)
+        FontRenderMode renderMode = FontRenderMode.sharp, ubyte phaseX = 0)
     {
+        assert(phaseX < GlyphHorizontalPhases);
         auto selected = face is null ? cast(const(FontFace)) SystemFonts.sans() : face;
         pixelSize = maxInt(1, pixelSize);
         if (pixelSize > ushort.max) pixelSize = ushort.max;
         const key = GlyphKey(selected.identity(), glyphIndex, cast(ushort) pixelSize,
-            cast(ushort) renderMode, selected.variationHash());
+            cast(ushort) (cast(ushort) renderMode | (cast(ushort) phaseX << 8)),
+            selected.variationHash());
         if (auto cached = key in _glyphs)
             return *cached;
 
-        // Caption/body text is small enough that a coarse supersample is
-        // visible in stems and round joins. Keep a bounded, deterministic
-        // policy: 8x8 for UI sizes, 4x4 for larger text to control cost. The
-        // analytic rasterizer already produces coverage-space AA whose weight
-        // matches the authoritative platform grid-fit, so no extra contrast
-        // shaping is applied (the old sharp S-curve over-boosted edges and
-        // made small text look glowing).
+        // Use 16 vertical samples per row at small UI sizes and 8 for larger
+        // text, with exact horizontal span coverage in both outline formats.
+        // Sharp mode also aligns font-authored vertical zones where available;
+        // smooth mode preserves the outline. Neither boosts alpha contrast.
         const coverageSamples = pixelSize <= 16 ? 8 : 4;
-        auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples);
+        auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples,
+            cast(double) phaseX / GlyphHorizontalPhases, renderMode == FontRenderMode.sharp);
         auto result = insert(bitmap);
         _glyphs[key] = result;
         return result;
@@ -255,6 +277,16 @@ final class FontSystem
 
 unittest
 {
+    assert(glyphOriginX(3.06) == GlyphOrigin(3, 0));
+    assert(glyphOriginX(3.07) == GlyphOrigin(3, 1));
+    assert(glyphOriginX(3.94) == GlyphOrigin(4, 0));
+    assert(glyphOriginX(-0.25) == GlyphOrigin(-1, 6));
+    assert(glyphOriginX(-0.1) == GlyphOrigin(-1, 7));
+    assert(glyphOriginX(-0.05) == GlyphOrigin(0, 0));
+    assert(glyphOriginX(3.12, true, 20) == GlyphOrigin(3, 0));
+    assert(glyphOriginX(3.13, true, 20) == GlyphOrigin(3, 2));
+    assert(glyphOriginX(3.88, true, 20) == GlyphOrigin(4, 0));
+    assert(glyphOriginX(3.75, false) == GlyphOrigin(4, 0));
     auto system = new FontSystem();
     auto glyph = system.atlas.glyph(system.uiFace, 'A', 18, system.renderMode);
     assert(glyph.advance > 0);

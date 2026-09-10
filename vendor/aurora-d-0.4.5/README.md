@@ -22,6 +22,20 @@ The Vulkan path does not upload a CPU-rendered window image. Widgets and `Canvas
 
 ### Unicode and text
 
+TrueType and static CFF outlines share a pure-D non-zero-winding grayscale
+rasterizer. It integrates horizontal spans and samples vertically, splitting
+at outline endpoints to preserve thin horizontal strokes. Overlapping contours
+stay filled, counters stay open, and disjoint ink spans within one pixel add
+together. Small UI glyphs use 16 vertical samples per row; larger glyphs use 8.
+Coverage is cached in the shared A8 atlas at physical DPI for software and
+Vulkan rendering. No native font rasterizer or RGB subpixel layout is required.
+
+Run the font-independent coverage regressions from the repository root with:
+
+```sh
+dmd -unittest -main -run vendor/aurora-d-0.4.5/source/aurora/text/rasterizer.d
+```
+
 - Official Unicode 17.0 property data generated into compact D tables.
 - Extended grapheme clusters from UAX #29, including emoji ZWJ sequences, regional-indicator flags, and Indic conjunct boundaries.
 - Unicode Bidirectional Algorithm from UAX #9 through visual reordering, including embeddings, overrides, isolates, bracket pairing, weak/neutral resolution, mirrored characters, and dual visual carets at bidi boundaries.

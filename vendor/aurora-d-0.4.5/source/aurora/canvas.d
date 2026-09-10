@@ -5,7 +5,7 @@ import aurora.font : FontFace, FontMetrics, FontRole, fontPixelSize;
 import aurora.image : RgbaImage;
 import aurora.render.drawlist : DrawList;
 import aurora.surface : Surface;
-import aurora.text.atlas : AtlasGlyph, FontSystem;
+import aurora.text.atlas : AtlasGlyph, FontSystem, glyphOriginX;
 import aurora.text.layout : PositionedGlyph, TextLayout, TextLayoutOptions;
 import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
@@ -355,7 +355,7 @@ struct Canvas
             if (_drawList !is null)
             {
                 // Layout remains in 96-DPI logical units. Rasterize at the
-                // monitor's physical size, snap the baseline to a device pixel,
+                // monitor's physical size, snap the vertical baseline,
                 // and submit the atlas bitmap 1:1 so it is never enlarged by
                 // the renderer or by Windows DPI virtualization.
                 const pixelSize = maxInt(1,
@@ -366,11 +366,12 @@ struct Canvas
                     drawColorGlyph(positioned, position, pixelSize);
                     continue;
                 }
+                const origin = glyphOriginX((position.x + _offsetX + positioned.x) *
+                    _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize);
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, pixelSize, _fonts.renderMode);
+                    positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase);
                 if (!glyph.hasPixels()) continue;
-                const x = _drawList.logicalToDeviceX(
-                    position.x + _offsetX + positioned.x) + glyph.bearingX;
+                const x = origin.pixel + glyph.bearingX;
                 const y = _drawList.logicalToDeviceY(
                     position.y + _offsetY + positioned.y) - glyph.bearingY;
                 const destination = Rect(x, y, glyph.region.width, glyph.region.height);
@@ -385,10 +386,12 @@ struct Canvas
                     drawColorGlyph(positioned, position, layout.pixelSize);
                     continue;
                 }
+                const origin = glyphOriginX(position.x + positioned.x,
+                    positioned.font.isOpenType(), layout.pixelSize);
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, layout.pixelSize, _fonts.renderMode);
+                    positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase);
                 if (!glyph.hasPixels()) continue;
-                const x = position.x + cast(int) floor(positioned.x + 0.5) + glyph.bearingX;
+                const x = origin.pixel + glyph.bearingX;
                 const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;
                 drawGlyphImmediate(toSurface(Rect(x, y,
                     glyph.region.width, glyph.region.height)), glyph, color);

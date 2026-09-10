@@ -1,11 +1,11 @@
 module aurora.text.hinter;
 
 /**
- * Complete TrueType bytecode hinting interpreter (pure D, dependency-free).
+ * Experimental TrueType bytecode hinting interpreter (pure D, dependency-free).
  *
- * Implements the full TrueType instruction set per OpenType 1.9, following the
- * reference semantics of FreeType's `ttinterp.c` for ambiguous stack orders
- * and edge cases:
+ * Contains handlers for the TrueType instruction set. Conformance is not yet
+ * established; this is not a native-compatible hinter and is off by default.
+ * The implemented instruction families include:
  *
  *   - Font program (`fpgm`), CVT program (`prep`), per-glyph programs.
  *   - Full opcode set: DELTAP/C, SROUND/S45ROUND, GETINFO, INSTCTRL/SCANCTRL,
@@ -16,8 +16,8 @@ module aurora.text.hinter;
  *   - Twilight-zone semantics: points moved in zone 0 re-base their `org`.
  *   - Graphics-state defaults from `tt_default_graphics_state`.
  *
- * Consumes design units; produces grid-fitted units so the rasterizer is
- * unchanged. All internal math is F26Dot6. Any malformed stream aborts with
+ * Consumes design units; returns F26Dot6 pixel coordinates alongside legacy
+ * integer pixel coordinates. All internal math is F26Dot6. Malformed streams abort with
  * `HintAbort`; callers fall back to the unhinted outline so bad fonts can
  * never blank glyphs.
  */
@@ -70,6 +70,15 @@ private long mulDiv(long a, long b, long c) @safe pure nothrow @nogc
     return cast(int) (cast(long) a * b / c);
 }
 
+/// Scale design units directly to F26Dot6 without truncating the scale first.
+private long scaleDesignUnits(long value, int pixelSize, int unitsPerEm)
+    @safe pure nothrow @nogc
+{
+    const denominator = unitsPerEm > 0 ? unitsPerEm : 1;
+    const product = value * pixelSize * 64;
+    return (product + (product >= 0 ? denominator / 2 : -denominator / 2)) / denominator;
+}
+
 private long mulFix(long a, long b) @safe pure nothrow @nogc
 {
     const long product = cast(long) a * b;
@@ -101,11 +110,14 @@ struct HintInput
     int[] normalizedAxes;  /// Variation coordinates (2.14) for GETVARIATION.
 }
 
-/// Grid-fitted result in design units.
+/// Grid-fitted result. Integer pixel coordinates remain for compatibility;
+/// rasterizers must use xs26Dot6/ys26Dot6 to retain fractional outline detail.
 struct HintedGlyph
 {
     int[] xs;
     int[] ys;
+    long[] xs26Dot6;
+    long[] ys26Dot6;
     bool[] onCurve;
     int[] contours;
     int xMin;
@@ -169,28 +181,38 @@ private static long roundNone(long distance, long compensation) @safe pure nothr
 
 private static long roundToGrid(long distance, long compensation) @safe pure nothrow @nogc
 {
-    return (distance + 32) & ~63;
+    return roundGridMagnitude(distance, compensation, 64, 32, 0);
 }
 
 private static long roundToHalfGrid(long distance, long compensation) @safe pure nothrow @nogc
 {
-    const grid = (distance + 32) & ~63;
-    return distance >= 0 ? grid + 32 : grid - 32;
+    return roundGridMagnitude(distance, compensation, 64, 0, 32);
 }
 
 private static long roundToDoubleGrid(long distance, long compensation) @safe pure nothrow @nogc
 {
-    return (distance + 32) & ~63;
+    return roundGridMagnitude(distance, compensation, 32, 16, 0);
 }
 
 private static long roundDownToGrid(long distance, long compensation) @safe pure nothrow @nogc
 {
-    return distance & ~63;
+    return roundGridMagnitude(distance, compensation, 64, 0, 0);
 }
 
 private static long roundUpToGrid(long distance, long compensation) @safe pure nothrow @nogc
 {
-    return (distance + 63) & ~63;
+    return roundGridMagnitude(distance, compensation, 64, 63, 0);
+}
+
+// TrueType rounds the magnitude and restores the sign. Half-grid ties and
+// negative distances must use the same lattice as their positive counterparts.
+private static long roundGridMagnitude(long distance, long compensation,
+    long period, long bias, long phase) @safe pure nothrow @nogc
+{
+    const magnitude = distance < 0 ? -distance : distance;
+    long rounded = ((magnitude + compensation + bias) & ~(period - 1)) + phase;
+    if (rounded < 0) rounded = phase;
+    return distance < 0 ? -rounded : rounded;
 }
 
 private static long roundSuperGrid(long distance, long compensation, long period,
@@ -222,7 +244,6 @@ private final class Context
     long[] storage;
     int unitsPerEm;
     int pixelSize;
-    int scale;      // pixelSize*64/unitsPerEm
 
     const(ubyte)[] code;
     size_t codeSize;
@@ -248,6 +269,8 @@ private final class Context
     long scanControl;
     int scanType;
     int period, phase, threshold;
+    bool naturalGrid;
+    bool glyphProgram;
     
     Zone zone0;
     Zone zone1;
@@ -268,13 +291,26 @@ private final class Context
         this.storage = storage;
         this.unitsPerEm = unitsPerEm;
         this.pixelSize = pixelSize;
-        this.scale = cast(int) mulDiv(pixelSize, 64, maxInt(1, unitsPerEm));
+        naturalGrid = owner !is null && owner._naturalGrid;
         fdefs = new FuncDef[256];
         idefs = new FuncDef[256];
         roundState = 1;
     }
 
     void push(long value) { stack ~= value; }
+
+    void jumpRelative(int offset)
+    {
+        const target = cast(long) ip - 1 + offset;
+        if (target < 0 || target > codeSize)
+            throw new HintAbort("Relative jump outside program");
+        ip = cast(size_t) target;
+    }
+
+    long scaleDesign(long value) const @safe pure nothrow @nogc
+    {
+        return scaleDesignUnits(value, pixelSize, unitsPerEm);
+    }
 
     long pop()
     {
@@ -316,8 +352,8 @@ private final class Context
         }
         else
         {
-            moveX = cast(int) (cast(long) freeVectorX * 0x10000 / fDotP);
-            moveY = cast(int) (cast(long) freeVectorY * 0x10000 / fDotP);
+            moveX = cast(int) (cast(long) freeVectorX * 0x4000 / fDotP);
+            moveY = cast(int) (cast(long) freeVectorY * 0x4000 / fDotP);
         }
     }
 
@@ -325,6 +361,7 @@ private final class Context
     {
         if (axis == 1) { projVectorX = 0x4000; projVectorY = 0; }
         else { projVectorX = 0; projVectorY = 0x4000; }
+        dualVectorX = projVectorX; dualVectorY = projVectorY;
         computeMoveVector();
     }
 
@@ -339,6 +376,7 @@ private final class Context
     {
         if (axis == 1) { projVectorX = 0x4000; projVectorY = 0; freeVectorX = 0x4000; freeVectorY = 0; }
         else { projVectorX = 0; projVectorY = 0x4000; freeVectorX = 0; freeVectorY = 0x4000; }
+        dualVectorX = projVectorX; dualVectorY = projVectorY;
         computeMoveVector();
     }
 
@@ -347,6 +385,7 @@ private final class Context
         const length = sqrt(cast(double) x * x + cast(double) y * y);
         if (length < 1e-6) { projVectorX = 0x4000; projVectorY = 0; }
         else { projVectorX = cast(int) (x * 0x4000 / length); projVectorY = cast(int) (y * 0x4000 / length); }
+        dualVectorX = projVectorX; dualVectorY = projVectorY;
         computeMoveVector();
     }
 
@@ -388,6 +427,26 @@ private final class Context
     /// Round a distance per the current round state (dispatch method).
     long roundDistance(long distance, long compensation) const @safe pure nothrow @nogc
     {
+        // Asymmetric supersampling changes rounding, not the outline's aspect
+        // ratio. ROUND in the size program still uses the physical pixel grid.
+        const finerGrid = naturalGrid && glyphProgram && projVectorY == 0;
+        if (finerGrid)
+            return roundPhysicalDistance(distance * 16, compensation * 16) / 16;
+        return roundPhysicalDistance(distance, compensation);
+    }
+
+    int effectiveMinimumDistance() const @safe pure nothrow @nogc
+    {
+        return naturalGrid && projVectorY == 0 ? minimumDistance / 2 : minimumDistance;
+    }
+
+    int effectiveCutIn() const @safe pure nothrow @nogc
+    {
+        return naturalGrid && projVectorY == 0 ? controlValueCutIn / 16 : controlValueCutIn;
+    }
+
+    private long roundPhysicalDistance(long distance, long compensation) const @safe pure nothrow @nogc
+    {
         switch (roundState)
         {
             case 0: return roundToHalfGrid(distance, compensation);
@@ -416,12 +475,12 @@ private final class Context
         }
         if (freeVectorX != 0)
         {
-            zone.points[point].curX += mulFix(distance, freeVectorX);
+            zone.points[point].curX += mulFix(distance, moveX);
             zone.points[point].touchX = true;
         }
         if (freeVectorY != 0)
         {
-            zone.points[point].curY += mulFix(distance, freeVectorY);
+            zone.points[point].curY += mulFix(distance, moveY);
             zone.points[point].touchY = true;
         }
     }
@@ -457,7 +516,7 @@ private final class Context
         auto zone = zone1Ref();
         ensurePoint(zone, point);
         const orgDist = dualProject2(zone.points[point].orgX, zone.points[point].orgY,
-            zone0.points[rp0].orgX, zone0.points[rp0].orgY);
+            zone0Ref().points[rp0].orgX, zone0Ref().points[rp0].orgY);
 
         long distance = orgDist;
         if (singleWidthCutIn > 0 &&
@@ -474,12 +533,12 @@ private final class Context
 
         if ((opcode & 8) != 0)
         {
-            if (orgDist >= 0) { if (distance < minimumDistance) distance = minimumDistance; }
-            else { if (distance > -minimumDistance) distance = -minimumDistance; }
+            if (orgDist >= 0) { if (distance < effectiveMinimumDistance()) distance = effectiveMinimumDistance(); }
+            else { if (distance > -effectiveMinimumDistance()) distance = -effectiveMinimumDistance(); }
         }
 
         const curDist = project(zone.points[point].curX, zone.points[point].curY) -
-            project(zone0.points[rp0].curX, zone0.points[rp0].curY);
+            project(zone0Ref().points[rp0].curX, zone0Ref().points[rp0].curY);
         movePoint(zone1Ref(), point, distance - curDist);
 
         rp1 = rp0;
@@ -489,8 +548,8 @@ private final class Context
 
     void mirp(int opcode)
     {
-        const point = cast(int) pop();
         const cvtEntry = cast(int) pop() + 1;
+        const point = cast(int) pop();
         auto zone = zone1Ref();
         ensurePoint(zone, point);
         long cvtDist = cvtEntry > 0 && cast(size_t) cvtEntry - 1 < cvt.length ? cvt[cvtEntry - 1] : 0;
@@ -502,16 +561,16 @@ private final class Context
 
         if (zoneSelect1 == 0)
         {
-            zone.points[point].orgX = zone0.points[rp0].orgX + mulFix(cvtDist, freeVectorX);
-            zone.points[point].orgY = zone0.points[rp0].orgY + mulFix(cvtDist, freeVectorY);
+            zone.points[point].orgX = zone0Ref().points[rp0].orgX + mulFix(cvtDist, freeVectorX);
+            zone.points[point].orgY = zone0Ref().points[rp0].orgY + mulFix(cvtDist, freeVectorY);
             zone.points[point].curX = zone.points[point].orgX;
             zone.points[point].curY = zone.points[point].orgY;
         }
 
         const orgDist = dualProject2(zone.points[point].orgX, zone.points[point].orgY,
-            zone0.points[rp0].orgX, zone0.points[rp0].orgY);
+            zone0Ref().points[rp0].orgX, zone0Ref().points[rp0].orgY);
         const curDist = project(zone.points[point].curX, zone.points[point].curY) -
-            project(zone0.points[rp0].curX, zone0.points[rp0].curY);
+            project(zone0Ref().points[rp0].curX, zone0Ref().points[rp0].curY);
 
         if (autoFlip && (orgDist ^ cvtDist) < 0)
             cvtDist = -cvtDist;
@@ -523,7 +582,7 @@ private final class Context
             {
                 delta = cvtDist - orgDist;
                 if (delta < 0) delta = -delta;
-                if (delta > controlValueCutIn)
+                if (delta > effectiveCutIn())
                     cvtDist = orgDist;
             }
             distance = roundDistance(cvtDist, 0);
@@ -533,8 +592,8 @@ private final class Context
 
         if ((opcode & 8) != 0)
         {
-            if (orgDist >= 0) { if (distance < minimumDistance) distance = minimumDistance; }
-            else { if (distance > -minimumDistance) distance = -minimumDistance; }
+            if (orgDist >= 0) { if (distance < effectiveMinimumDistance()) distance = effectiveMinimumDistance(); }
+            else { if (distance > -effectiveMinimumDistance()) distance = -effectiveMinimumDistance(); }
         }
 
         movePoint(zone1Ref(), point, distance - curDist);
@@ -547,9 +606,8 @@ private final class Context
     void deltaP(int opcode)
     {
         long nump = cast(int) pop();
-        if (nump < 0) return;
-        if (nump > cast(int) (stack.length / 2)) nump = cast(int) (stack.length / 2);
-        stack.length = stack.length - 2 * nump;
+        if (nump < 0 || nump > cast(int) (stack.length / 2))
+            throw new HintAbort("Invalid delta argument count");
         int P = pixelSize - deltaBase;
         switch (opcode)
         {
@@ -558,14 +616,14 @@ private final class Context
             case 0x72: P -= 32; break;
             default: break;
         }
-        if ((P & ~0xF) != 0) return;
+        const activeSize = (P & ~0xF) == 0;
         P <<= 4;
         const F = 1L << (6 - deltaShift);
         while (nump-- > 0)
         {
             const point = cast(int) pop();
             const arg = cast(int) pop();
-            if ((arg & 0xF0) == P && point >= 0 && point < zone0.points.length)
+            if (activeSize && (arg & 0xF0) == P && point >= 0 && point < zone0Ref().points.length)
             {
                 long b = (arg & 0xF) - 8;
                 if (b >= 0) b++;
@@ -578,9 +636,8 @@ private final class Context
     void deltaC(int opcode)
     {
         long nump = cast(int) pop();
-        if (nump < 0) return;
-        if (nump > cast(int) (stack.length / 2)) nump = cast(int) (stack.length / 2);
-        stack.length = stack.length - 2 * nump;
+        if (nump < 0 || nump > cast(int) (stack.length / 2))
+            throw new HintAbort("Invalid delta argument count");
         int P = pixelSize - deltaBase;
         switch (opcode)
         {
@@ -589,14 +646,14 @@ private final class Context
             case 0x75: P -= 32; break;
             default: break;
         }
-        if ((P & ~0xF) != 0) return;
+        const activeSize = (P & ~0xF) == 0;
         P <<= 4;
         const F = 1L << (6 - deltaShift);
         while (nump-- > 0)
         {
             const index = cast(int) pop();
             const arg = cast(int) pop();
-            if ((arg & 0xF0) == P && index >= 0 && cast(size_t) index < cvt.length)
+            if (activeSize && (arg & 0xF0) == P && index >= 0 && cast(size_t) index < cvt.length)
             {
                 long b = (arg & 0xF) - 8;
                 if (b >= 0) b++;
@@ -622,11 +679,14 @@ final class TrueTypeHinter
     private FuncDef[256] _idefs;
     private int _preparedForUnits;
     private int _preparedForSize;
+    private Context _preparedState;
+    private bool _naturalGrid;
 
-    this(const(ubyte)[] data, size_t faceOffset = 0)
+    this(const(ubyte)[] data, size_t faceOffset = 0, bool naturalGrid = false)
     {
         _data = data;
         _faceOffset = faceOffset;
+        _naturalGrid = naturalGrid;
     }
 
     HintedGlyph hint(HintInput input)
@@ -640,6 +700,25 @@ final class TrueTypeHinter
         // make hinting order-dependent.
         auto ctx = new Context(this, _cvt.dup, _storage.dup,
             input.unitsPerEm, input.pixelSize);
+        // Size-program graphics state survives into glyph programs. Vector,
+        // reference-point, zone-pointer and loop fields start at their defaults.
+        if (_preparedState !is null)
+        {
+            ctx.roundState = _preparedState.roundState;
+            ctx.minimumDistance = _preparedState.minimumDistance;
+            ctx.controlValueCutIn = _preparedState.controlValueCutIn;
+            ctx.singleWidthCutIn = _preparedState.singleWidthCutIn;
+            ctx.singleWidthValue = _preparedState.singleWidthValue;
+            ctx.deltaBase = _preparedState.deltaBase;
+            ctx.deltaShift = _preparedState.deltaShift;
+            ctx.autoFlip = _preparedState.autoFlip;
+            ctx.instructControl = _preparedState.instructControl;
+            ctx.scanControl = _preparedState.scanControl;
+            ctx.scanType = _preparedState.scanType;
+            ctx.period = _preparedState.period;
+            ctx.phase = _preparedState.phase;
+            ctx.threshold = _preparedState.threshold;
+        }
         ctx.normalizedAxes = input.normalizedAxes.dup;
         ctx.fdefs[] = _fdefs[];
         ctx.idefs[] = _idefs[];
@@ -647,8 +726,9 @@ final class TrueTypeHinter
         // Build the glyph zone.
         const n = input.xs.length;
         ctx.zone0.points.length = n + 4;
-        ctx.zone1.points.length = n + 4;
-        ctx.zone2.points.length = n + 4;
+        // ZP0/ZP1/ZP2 address one glyph zone, not three independent copies.
+        ctx.zone1.points = ctx.zone0.points;
+        ctx.zone2.points = ctx.zone0.points;
         ctx.zone0.contours = input.contours.dup;
         ctx.zone1.contours = input.contours.dup;
         ctx.zone2.contours = input.contours.dup;
@@ -656,8 +736,8 @@ final class TrueTypeHinter
         int xMin = int.max, yMax = int.min;
         foreach (i; 0 .. n)
         {
-            const x = mulDiv(input.xs[i], ctx.scale, 64);
-            const y = mulDiv(input.ys[i], ctx.scale, 64);
+            const x = ctx.scaleDesign(input.xs[i]);
+            const y = ctx.scaleDesign(input.ys[i]);
             ctx.zone0.points[i] = Pt(x, y, x, y, x, y, false, false, input.onCurve[i]);
             ctx.zone1.points[i] = ctx.zone0.points[i];
             ctx.zone2.points[i] = ctx.zone0.points[i];
@@ -666,10 +746,10 @@ final class TrueTypeHinter
         }
         if (n == 0) { xMin = 0; yMax = 0; }
 
-        int pp1x = cast(int) mulDiv(xMin - input.lsb, ctx.scale, 64);
-        int pp2x = cast(int) mulDiv(xMin - input.lsb + input.advance, ctx.scale, 64);
-        int pp3y = cast(int) mulDiv(yMax + input.tsb, ctx.scale, 64);
-        int pp4y = cast(int) mulDiv(yMax + input.tsb - input.vadvance, ctx.scale, 64);
+        int pp1x = cast(int) ctx.scaleDesign(xMin - input.lsb);
+        int pp2x = cast(int) ctx.scaleDesign(xMin - input.lsb + input.advance);
+        int pp3y = cast(int) ctx.scaleDesign(yMax + input.tsb);
+        int pp4y = cast(int) ctx.scaleDesign(yMax + input.tsb - input.vadvance);
         pp1x = (pp1x + 32) & ~63;
         pp2x = (pp2x + 32) & ~63;
         pp3y = (pp3y + 32) & ~63;
@@ -683,31 +763,36 @@ final class TrueTypeHinter
         ctx.zone0.points[n + 1] = phantom2;
         ctx.zone0.points[n + 2] = phantom3;
         ctx.zone0.points[n + 3] = phantom4;
-        ctx.zone1.points[n .. $] = ctx.zone0.points[n .. $];
-        ctx.zone2.points[n .. $] = ctx.zone0.points[n .. $];
 
         // Twilight zone: reserve maxTwilightPoints + 4 (from maxp) so the
         // fpgm/prep/glyph programs can reference twilight points by index.
         int twilightCount = 4;
         const maxp = tableData(tag!"maxp");
-        if (maxp !is null && maxp.length >= 16)
-            twilightCount += be16(maxp, 14); // maxTwilightPoints
+        if (maxp !is null && maxp.length >= 18)
+            twilightCount += be16(maxp, 16); // maxTwilightPoints
         ctx.twilight.points.length = twilightCount;
         foreach (ref pt; ctx.twilight.points)
             pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
 
-        if (input.instructions.length > 0)
+        if (input.instructions.length > 0 && (ctx.instructControl & 1) == 0)
+        {
+            ctx.glyphProgram = true;
             runProgram(ctx, input.instructions);
+        }
 
         HintedGlyph result;
         result.xs.length = n;
         result.ys.length = n;
+        result.xs26Dot6.length = n;
+        result.ys26Dot6.length = n;
         result.onCurve.length = n;
         result.contours = input.contours.dup;
         result.xMin = int.max; result.xMax = int.min;
         result.yMin = int.max; result.yMax = int.min;
         foreach (i; 0 .. n)
         {
+            result.xs26Dot6[i] = ctx.zone2.points[i].curX;
+            result.ys26Dot6[i] = ctx.zone2.points[i].curY;
             result.xs[i] = cast(int) (ctx.zone2.points[i].curX >> 6);
             result.ys[i] = cast(int) (ctx.zone2.points[i].curY >> 6);
             result.onCurve[i] = input.onCurve[i];
@@ -731,20 +816,17 @@ final class TrueTypeHinter
     {
         if (_preparedForUnits == unitsPerEm && _preparedForSize == pixelSize)
             return;
-        _preparedForUnits = unitsPerEm;
-        _preparedForSize = pixelSize;
 
         const cvtTable = tableData(tag!"cvt ");
-        const cvtCount = cvtTable.length / 4;
+        const cvtCount = cvtTable.length / 2;
         _cvt.length = cvtCount;
-        const scale = mulDiv(pixelSize, 64, maxInt(1, unitsPerEm));
         foreach (i; 0 .. cvtCount)
-            _cvt[i] = mulDiv(beS32(cvtTable, i * 4), scale, 64);
+            _cvt[i] = scaleDesignUnits(beS16(cvtTable, i * 2), pixelSize, unitsPerEm);
 
         const maxp = tableData(tag!"maxp");
         int storageSize;
-        if (maxp.length >= 6)
-            storageSize = be16(maxp, 4);
+        if (maxp.length >= 20)
+            storageSize = be16(maxp, 18);
         _storage.length = storageSize;
         _storage[] = 0;
 
@@ -755,8 +837,8 @@ final class TrueTypeHinter
         // During fpgm/prep there are no glyph points; route all zones to the
         // reserved twilight array so point accesses are in bounds.
         int twilightCount = 4;
-        if (maxp.length >= 16)
-            twilightCount += be16(maxp, 14); // maxTwilightPoints
+        if (maxp.length >= 18)
+            twilightCount += be16(maxp, 16); // maxTwilightPoints
         ctx.twilight.points.length = twilightCount;
         foreach (ref pt; ctx.twilight.points)
             pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
@@ -777,6 +859,9 @@ final class TrueTypeHinter
 
         _fdefs[] = ctx.fdefs[];
         _idefs[] = ctx.idefs[];
+        _preparedState = ctx;
+        _preparedForUnits = unitsPerEm;
+        _preparedForSize = pixelSize;
     }
 
     private const(ubyte)[] tableData(uint tableTag)
@@ -821,6 +906,14 @@ final class TrueTypeHinter
                 throw new HintAbort("Hinting instruction limit exceeded");
             const opcode = ctx.code[ctx.ip];
             ctx.ip++;
+            version (AuroraHintTrace)
+            {
+                import std.stdio : stderr;
+                stderr.writefln("ip=%s op=%02X stack=%s zones=%s,%s,%s rp=%s,%s,%s",
+                    ctx.ip - 1, opcode, ctx.stack.length > 8 ? ctx.stack[$ - 8 .. $] : ctx.stack,
+                    ctx.zoneSelect0, ctx.zoneSelect1,
+                    ctx.zoneSelect2, ctx.rp0, ctx.rp1, ctx.rp2);
+            }
 
             switch (opcode)
             {
@@ -855,7 +948,7 @@ final class TrueTypeHinter
                 {
                     const f = cast(int) ctx.pop();
                     if (f < 0 || f >= ctx.fdefs.length || !ctx.fdefs[f].active)
-                        throw new HintAbort("CALL to undefined function");
+                        throw new HintAbort(format("CALL to undefined function %s at byte %s", f, ctx.ip - 1));
                     ctx.callStack ~= CallRec(ctx.ip, ctx.code, ctx.codeSize, 1, ctx.fdefs[f]);
                     ctx.code = ctx.fdefs[f].body;
                     ctx.codeSize = ctx.fdefs[f].end;
@@ -864,8 +957,8 @@ final class TrueTypeHinter
                 }
                 case 0x2A: // LOOPCALL
                 {
-                    const count = cast(int) ctx.pop();
                     const f = cast(int) ctx.pop();
+                    const count = cast(int) ctx.pop();
                     if (f < 0 || f >= ctx.fdefs.length || !ctx.fdefs[f].active)
                         throw new HintAbort("LOOPCALL to undefined function");
                     if (count > 0)
@@ -941,7 +1034,7 @@ final class TrueTypeHinter
                 {
                     const condition = ctx.pop();
                     if (condition == 0)
-                        ctx.ip = skipToElseOrEndIf(ctx.code, ctx.ip);
+                        ctx.ip = skipToElseOrEndIf(ctx.code, ctx.ip) + 1;
                     continue;
                 }
                 case 0x1B: // ELSE
@@ -952,23 +1045,23 @@ final class TrueTypeHinter
                 case 0x1C: // JMPR
                 {
                     const offset = cast(int) ctx.pop();
-                    ctx.ip = cast(size_t) (cast(ptrdiff_t) ctx.ip + offset);
+                    ctx.jumpRelative(offset);
                     continue;
                 }
                 case 0x78: // JROT
                 {
-                    const offset = cast(int) ctx.pop();
                     const condition = ctx.pop();
+                    const offset = cast(int) ctx.pop();
                     if (condition != 0)
-                        ctx.ip = cast(size_t) (cast(ptrdiff_t) ctx.ip + offset);
+                        ctx.jumpRelative(offset);
                     continue;
                 }
                 case 0x79: // JROF
                 {
-                    const offset = cast(int) ctx.pop();
                     const condition = ctx.pop();
+                    const offset = cast(int) ctx.pop();
                     if (condition == 0)
-                        ctx.ip = cast(size_t) (cast(ptrdiff_t) ctx.ip + offset);
+                        ctx.jumpRelative(offset);
                     continue;
                 }
                 default:
@@ -989,10 +1082,10 @@ final class TrueTypeHinter
             {
                 const p1 = cast(int) ctx.pop();
                 const p2 = cast(int) ctx.pop();
-                const p1x = ctx.zone2.points[p1].orgX;
-                const p1y = ctx.zone2.points[p1].orgY;
-                const p2x = ctx.zone1.points[p2].orgX;
-                const p2y = ctx.zone1.points[p2].orgY;
+                const p1x = ctx.zone2Ref().points[p1].orgX;
+                const p1y = ctx.zone2Ref().points[p1].orgY;
+                const p2x = ctx.zone1Ref().points[p2].orgX;
+                const p2y = ctx.zone1Ref().points[p2].orgY;
                 const dx = cast(double) p2x - p1x;
                 const dy = cast(double) p2y - p1y;
                 const length = sqrt(dx * dx + dy * dy);
@@ -1014,10 +1107,10 @@ final class TrueTypeHinter
             {
                 const p1 = cast(int) ctx.pop();
                 const p2 = cast(int) ctx.pop();
-                const p1x = ctx.zone2.points[p1].orusX;
-                const p1y = ctx.zone2.points[p1].orusY;
-                const p2x = ctx.zone1.points[p2].orusX;
-                const p2y = ctx.zone1.points[p2].orusY;
+                const p1x = ctx.zone2Ref().points[p1].orusX;
+                const p1y = ctx.zone2Ref().points[p1].orusY;
+                const p2x = ctx.zone1Ref().points[p2].orusX;
+                const p2y = ctx.zone1Ref().points[p2].orusY;
                 const dx = cast(double) p2x - p1x;
                 const dy = cast(double) p2y - p1y;
                 const length = sqrt(dx * dx + dy * dy);
@@ -1047,7 +1140,7 @@ final class TrueTypeHinter
             case 0x1A: ctx.minimumDistance = cast(int) ctx.pop(); return;
             case 0x1D: ctx.controlValueCutIn = cast(int) ctx.pop(); return;
             case 0x1E: ctx.singleWidthCutIn = cast(int) ctx.pop(); return;
-            case 0x1F: ctx.singleWidthValue = cast(int) mulFix(ctx.pop(), ctx.scale); return;
+            case 0x1F: ctx.singleWidthValue = cast(int) ctx.scaleDesign(ctx.pop()); return;
             case 0x5E: ctx.deltaBase = cast(int) ctx.pop(); return;
             case 0x5F: ctx.deltaShift = cast(int) ctx.pop(); return;
             case 0x4D: ctx.autoFlip = true; return;
@@ -1056,10 +1149,10 @@ final class TrueTypeHinter
             case 0x8D: ctx.scanType = cast(int) ctx.pop(); return;
             case 0x8E: { const s = cast(int) ctx.pop(); const v = cast(int) ctx.pop(); if (s == 1) ctx.instructControl = v & 1; return; }
             case 0x17: ctx.loop = cast(int) ctx.pop(); if (ctx.loop < 0) ctx.loop = 0; return;
-            case 0x42: { const loc = cast(int) ctx.pop(); const val = ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.storage.length) ctx.storage[loc] = val; return; }
+            case 0x42: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.storage.length) ctx.storage[loc] = val; return; }
             case 0x43: { const loc = cast(int) ctx.pop(); ctx.push(loc >= 0 && cast(size_t) loc < ctx.storage.length ? ctx.storage[loc] : 0); return; }
-            case 0x44: { const loc = cast(int) ctx.pop(); const val = ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = val; return; }
-            case 0x70: { const loc = cast(int) ctx.pop(); const val = ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = mulFix(val, ctx.scale); return; }
+            case 0x44: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = val; return; }
+            case 0x70: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = ctx.scaleDesign(val); return; }
             case 0x45: { const loc = cast(int) ctx.pop(); ctx.push(loc >= 0 && cast(size_t) loc < ctx.cvt.length ? ctx.cvt[loc] : 0); return; }
             case 0x4B: ctx.push(ctx.pixelSize); return;
             case 0x4C: ctx.push(ctx.pixelSize * 64); return;
@@ -1095,8 +1188,8 @@ final class TrueTypeHinter
             case 0x5C: { const e = ctx.pop(); ctx.push(e == 0 ? 1 : 0); return; }
             case 0x60: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n1 + n2); return; }
             case 0x61: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n2 - n1); return; }
-            case 0x62: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n1 == 0 ? 0 : n2 / n1); return; }
-            case 0x63: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n1 * n2); return; }
+            case 0x62: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n1 == 0 ? 0 : n2 * 64 / n1); return; }
+            case 0x63: { const n1 = ctx.pop(); const n2 = ctx.pop(); ctx.push(n1 * n2 / 64); return; }
             case 0x64: { const n = ctx.pop(); ctx.push(n < 0 ? -n : n); return; }
             case 0x65: { const n = ctx.pop(); ctx.push(-n); return; }
             case 0x66: { const n = ctx.pop(); ctx.push(n & ~63L); return; }
@@ -1126,8 +1219,8 @@ final class TrueTypeHinter
             }
             case 0x3E: case 0x3F:
             {
-                const point = cast(int) ctx.pop();
                 const cvtEntry = cast(int) ctx.pop();
+                const point = cast(int) ctx.pop();
                 auto zone = ctx.zone0Ref();
                 ctx.ensurePoint(zone, point);
                 long distance = cvtEntry >= 0 && cast(size_t) cvtEntry < ctx.cvt.length ? ctx.cvt[cvtEntry] : 0;
@@ -1144,7 +1237,7 @@ final class TrueTypeHinter
                 {
                     long delta = distance - orgDist;
                     if (delta < 0) delta = -delta;
-                    if (delta > ctx.controlValueCutIn)
+                    if (delta > ctx.effectiveCutIn())
                         distance = orgDist;
                     distance = ctx.roundDistance(cast(int) distance, 0);
                 }
@@ -1163,8 +1256,8 @@ final class TrueTypeHinter
                     auto zone = ctx.zone1Ref();
                     const cur = ctx.project(cast(int) zone.points[point].curX,
                         cast(int) zone.points[point].curY);
-                    const rpProj = ctx.project(cast(int) ctx.zone0.points[ctx.rp0].curX,
-                        cast(int) ctx.zone0.points[ctx.rp0].curY);
+                    const rpProj = ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp0].curX,
+                        cast(int) ctx.zone0Ref().points[ctx.rp0].curY);
                     ctx.movePoint(ctx.zone1Ref(), point, rpProj - cur);
                 }
                 return;
@@ -1177,8 +1270,8 @@ final class TrueTypeHinter
                 ctx.ensurePoint(zone, point);
                 if (ctx.zoneSelect1 == 0)
                 {
-                    zone.points[point].orgX = ctx.zone0.points[ctx.rp0].orgX;
-                    zone.points[point].orgY = ctx.zone0.points[ctx.rp0].orgY;
+                    zone.points[point].orgX = ctx.zone0Ref().points[ctx.rp0].orgX;
+                    zone.points[point].orgY = ctx.zone0Ref().points[ctx.rp0].orgY;
                     zone.points[point].curX = zone.points[point].orgX + mulFix(distance, ctx.freeVectorX);
                     zone.points[point].curY = zone.points[point].orgY + mulFix(distance, ctx.freeVectorY);
                 }
@@ -1186,8 +1279,8 @@ final class TrueTypeHinter
                 {
                     const cur = ctx.project(cast(int) zone.points[point].curX,
                         cast(int) zone.points[point].curY);
-                    const rpProj = ctx.project(cast(int) ctx.zone0.points[ctx.rp0].curX,
-                        cast(int) ctx.zone0.points[ctx.rp0].curY);
+                    const rpProj = ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp0].curX,
+                        cast(int) ctx.zone0Ref().points[ctx.rp0].curY);
                     ctx.movePoint(ctx.zone1Ref(), point, distance - (cur - rpProj));
                 }
                 ctx.rp1 = ctx.rp0;
@@ -1202,17 +1295,17 @@ final class TrueTypeHinter
                 long distance;
                 if ((opcode & 1) != 0)
                 {
-                    distance = ctx.project(cast(int) ctx.zone0.points[p2].curX,
-                        cast(int) ctx.zone0.points[p2].curY) -
-                        ctx.project(cast(int) ctx.zone1.points[p1].curX,
-                            cast(int) ctx.zone1.points[p1].curY);
+                    distance = ctx.project(cast(int) ctx.zone0Ref().points[p2].curX,
+                        cast(int) ctx.zone0Ref().points[p2].curY) -
+                        ctx.project(cast(int) ctx.zone1Ref().points[p1].curX,
+                            cast(int) ctx.zone1Ref().points[p1].curY);
                 }
                 else
                 {
-                    distance = ctx.dualProject2(cast(int) ctx.zone0.points[p2].orgX,
-                        cast(int) ctx.zone0.points[p2].orgY,
-                        cast(int) ctx.zone1.points[p1].orgX,
-                        cast(int) ctx.zone1.points[p1].orgY);
+                    distance = ctx.dualProject2(cast(int) ctx.zone0Ref().points[p2].orgX,
+                        cast(int) ctx.zone0Ref().points[p2].orgY,
+                        cast(int) ctx.zone1Ref().points[p1].orgX,
+                        cast(int) ctx.zone1Ref().points[p1].orgY);
                 }
                 ctx.push(distance);
                 return;
@@ -1250,8 +1343,8 @@ final class TrueTypeHinter
                 foreach (_; 0 .. count)
                 {
                     const point = cast(int) ctx.pop();
-                    if (point >= 0 && point < ctx.zone0.points.length)
-                        ctx.zone0.points[point].onCurve = !ctx.zone0.points[point].onCurve;
+                    if (point >= 0 && point < ctx.zone0Ref().points.length)
+                        ctx.zone0Ref().points[point].onCurve = !ctx.zone0Ref().points[point].onCurve;
                 }
                 return;
             }
@@ -1260,7 +1353,7 @@ final class TrueTypeHinter
                 const low = cast(int) ctx.pop();
                 const high = cast(int) ctx.pop();
                 foreach (i; low .. high + 1)
-                    if (i >= 0 && i < ctx.zone0.points.length) ctx.zone0.points[i].onCurve = true;
+                    if (i >= 0 && i < ctx.zone0Ref().points.length) ctx.zone0Ref().points[i].onCurve = true;
                 return;
             }
             case 0x82:
@@ -1268,17 +1361,17 @@ final class TrueTypeHinter
                 const low = cast(int) ctx.pop();
                 const high = cast(int) ctx.pop();
                 foreach (i; low .. high + 1)
-                    if (i >= 0 && i < ctx.zone0.points.length) ctx.zone0.points[i].onCurve = false;
+                    if (i >= 0 && i < ctx.zone0Ref().points.length) ctx.zone0Ref().points[i].onCurve = false;
                 return;
             }
             case 0x27:
             {
                 const p1 = cast(int) ctx.pop();
                 const p2 = cast(int) ctx.pop();
-                const d = (ctx.project(cast(int) ctx.zone0.points[p2].curX,
-                    cast(int) ctx.zone0.points[p2].curY) -
-                    ctx.project(cast(int) ctx.zone1.points[p1].curX,
-                        cast(int) ctx.zone1.points[p1].curY)) / 2;
+                const d = (ctx.project(cast(int) ctx.zone0Ref().points[p2].curX,
+                    cast(int) ctx.zone0Ref().points[p2].curY) -
+                    ctx.project(cast(int) ctx.zone1Ref().points[p1].curX,
+                        cast(int) ctx.zone1Ref().points[p1].curY)) / 2;
                 ctx.movePoint(ctx.zone1Ref(), p1, d);
                 ctx.movePoint(ctx.zone0Ref(), p2, -d);
                 return;
@@ -1286,10 +1379,10 @@ final class TrueTypeHinter
             case 0x29:
             {
                 const point = cast(int) ctx.pop();
-                if (point >= 0 && point < ctx.zone0.points.length)
+                if (point >= 0 && point < ctx.zone0Ref().points.length)
                 {
-                    ctx.zone0.points[point].touchX = false;
-                    ctx.zone0.points[point].touchY = false;
+                    ctx.zone0Ref().points[point].touchX = false;
+                    ctx.zone0Ref().points[point].touchY = false;
                 }
                 return;
             }
@@ -1302,12 +1395,12 @@ final class TrueTypeHinter
                 const b1 = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
                 ctx.ensurePoint(zone, point);
-                const bdx = ctx.zone0.points[b1].curX - ctx.zone0.points[b0].curX;
-                const bdy = ctx.zone0.points[b1].curY - ctx.zone0.points[b0].curY;
-                const adx = ctx.zone1.points[a1].curX - ctx.zone1.points[a0].curX;
-                const ady = ctx.zone1.points[a1].curY - ctx.zone1.points[a0].curY;
-                const dx = ctx.zone0.points[b0].curX - ctx.zone1.points[a0].curX;
-                const dy = ctx.zone0.points[b0].curY - ctx.zone1.points[a0].curY;
+                const bdx = ctx.zone0Ref().points[b1].curX - ctx.zone0Ref().points[b0].curX;
+                const bdy = ctx.zone0Ref().points[b1].curY - ctx.zone0Ref().points[b0].curY;
+                const adx = ctx.zone1Ref().points[a1].curX - ctx.zone1Ref().points[a0].curX;
+                const ady = ctx.zone1Ref().points[a1].curY - ctx.zone1Ref().points[a0].curY;
+                const dx = ctx.zone0Ref().points[b0].curX - ctx.zone1Ref().points[a0].curX;
+                const dy = ctx.zone0Ref().points[b0].curY - ctx.zone1Ref().points[a0].curY;
                 const discriminant = mulDiv(cast(int) adx, cast(int) -bdy, 64) +
                     mulDiv(cast(int) ady, cast(int) bdx, 64);
                 const dot = mulDiv(cast(int) adx, cast(int) bdx, 64) +
@@ -1319,17 +1412,17 @@ final class TrueTypeHinter
                         mulDiv(cast(int) dy, cast(int) bdx, 64);
                     const rx = mulDiv(val, cast(int) adx, discriminant);
                     const ry = mulDiv(val, cast(int) ady, discriminant);
-                    zone.points[point].curX = ctx.zone1.points[a0].curX + rx;
-                    zone.points[point].curY = ctx.zone1.points[a0].curY + ry;
+                    zone.points[point].curX = ctx.zone1Ref().points[a0].curX + rx;
+                    zone.points[point].curY = ctx.zone1Ref().points[a0].curY + ry;
                 }
                 else
                 {
-                    zone.points[point].curX = (ctx.zone1.points[a0].curX +
-                        ctx.zone1.points[a1].curX + ctx.zone0.points[b0].curX +
-                        ctx.zone0.points[b1].curX) / 4;
-                    zone.points[point].curY = (ctx.zone1.points[a0].curY +
-                        ctx.zone1.points[a1].curY + ctx.zone0.points[b0].curY +
-                        ctx.zone0.points[b1].curY) / 4;
+                    zone.points[point].curX = (ctx.zone1Ref().points[a0].curX +
+                        ctx.zone1Ref().points[a1].curX + ctx.zone0Ref().points[b0].curX +
+                        ctx.zone0Ref().points[b1].curX) / 4;
+                    zone.points[point].curY = (ctx.zone1Ref().points[a0].curY +
+                        ctx.zone1Ref().points[a1].curY + ctx.zone0Ref().points[b0].curY +
+                        ctx.zone0Ref().points[b1].curY) / 4;
                 }
                 zone.points[point].touchX = true;
                 zone.points[point].touchY = true;
@@ -1353,17 +1446,17 @@ final class TrueTypeHinter
                 foreach (_; 0 .. count)
                 {
                     const point = cast(int) ctx.pop();
-                    if (point >= 0 && point < ctx.zone2.points.length)
+                    if (point >= 0 && point < ctx.zone2Ref().points.length)
                     {
                         if (ctx.freeVectorX != 0)
                         {
-                            ctx.zone2.points[point].curX += dx;
-                            ctx.zone2.points[point].touchX = true;
+                            ctx.zone2Ref().points[point].curX += dx;
+                            ctx.zone2Ref().points[point].touchX = true;
                         }
                         if (ctx.freeVectorY != 0)
                         {
-                            ctx.zone2.points[point].curY += dy;
-                            ctx.zone2.points[point].touchY = true;
+                            ctx.zone2Ref().points[point].curY += dy;
+                            ctx.zone2Ref().points[point].touchY = true;
                         }
                     }
                 }
@@ -1387,8 +1480,8 @@ final class TrueTypeHinter
                     foreach (i; first .. last + 1)
                     {
                         if (i == refPt) continue;
-                        if (ctx.freeVectorX != 0) ctx.zone2.points[i].curX += dx;
-                        if (ctx.freeVectorY != 0) ctx.zone2.points[i].curY += dy;
+                        if (ctx.freeVectorX != 0) ctx.zone2Ref().points[i].curX += dx;
+                        if (ctx.freeVectorY != 0) ctx.zone2Ref().points[i].curY += dy;
                     }
                 }
                 return;
@@ -1415,12 +1508,12 @@ final class TrueTypeHinter
                 }
                 else
                 {
-                    const limit = ctx.zone1.points.length > 4 ? ctx.zone1.points.length - 4 : 0;
+                    const limit = ctx.zone1Ref().points.length > 4 ? ctx.zone1Ref().points.length - 4 : 0;
                     foreach (i; 0 .. limit)
                     {
                         if (i == refPt) continue;
-                        ctx.zone1.points[i].curX += dx;
-                        ctx.zone1.points[i].curY += dy;
+                        ctx.zone1Ref().points[i].curX += dx;
+                        ctx.zone1Ref().points[i].curY += dy;
                     }
                 }
                 return;
@@ -1435,17 +1528,17 @@ final class TrueTypeHinter
                 foreach (_; 0 .. count)
                 {
                     const point = cast(int) ctx.pop();
-                    if (point >= 0 && point < ctx.zone2.points.length)
+                    if (point >= 0 && point < ctx.zone2Ref().points.length)
                     {
                         if (ctx.freeVectorX != 0)
                         {
-                            ctx.zone2.points[point].curX += dx;
-                            ctx.zone2.points[point].touchX = true;
+                            ctx.zone2Ref().points[point].curX += dx;
+                            ctx.zone2Ref().points[point].touchX = true;
                         }
                         if (ctx.freeVectorY != 0)
                         {
-                            ctx.zone2.points[point].curY += dy;
-                            ctx.zone2.points[point].touchY = true;
+                            ctx.zone2Ref().points[point].curY += dy;
+                            ctx.zone2Ref().points[point].touchY = true;
                         }
                     }
                 }
@@ -1457,42 +1550,42 @@ final class TrueTypeHinter
                 ctx.loop = 1;
                 const twilight = ctx.zoneSelect0 == 0 || ctx.zoneSelect1 == 0 || ctx.zoneSelect2 == 0;
                 long oldRange = 0, curRange = 0;
-                const rp2ok = ctx.rp2 >= 0 && ctx.rp2 < ctx.zone1.points.length;
+                const rp2ok = ctx.rp2 >= 0 && ctx.rp2 < ctx.zone1Ref().points.length;
                 if (rp2ok)
                 {
                     oldRange = twilight
-                        ? ctx.dualProject2(cast(int) ctx.zone1.points[ctx.rp2].orgX,
-                            cast(int) ctx.zone1.points[ctx.rp2].orgY,
-                            cast(int) ctx.zone0.points[ctx.rp1].orgX,
-                            cast(int) ctx.zone0.points[ctx.rp1].orgY)
-                        : ctx.dualProject2(cast(int) ctx.zone1.points[ctx.rp2].orusX,
-                            cast(int) ctx.zone1.points[ctx.rp2].orusY,
-                            cast(int) ctx.zone0.points[ctx.rp1].orusX,
-                            cast(int) ctx.zone0.points[ctx.rp1].orusY);
-                    curRange = ctx.project(cast(int) ctx.zone1.points[ctx.rp2].curX,
-                        cast(int) ctx.zone1.points[ctx.rp2].curY) -
-                        ctx.project(cast(int) ctx.zone0.points[ctx.rp1].curX,
-                            cast(int) ctx.zone0.points[ctx.rp1].curY);
+                        ? ctx.dualProject2(cast(int) ctx.zone1Ref().points[ctx.rp2].orgX,
+                            cast(int) ctx.zone1Ref().points[ctx.rp2].orgY,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgY)
+                        : ctx.dualProject2(cast(int) ctx.zone1Ref().points[ctx.rp2].orusX,
+                            cast(int) ctx.zone1Ref().points[ctx.rp2].orusY,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusY);
+                    curRange = ctx.project(cast(int) ctx.zone1Ref().points[ctx.rp2].curX,
+                        cast(int) ctx.zone1Ref().points[ctx.rp2].curY) -
+                        ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp1].curX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].curY);
                 }
                 foreach (_; 0 .. count)
                 {
                     const point = cast(int) ctx.pop();
-                    if (point < 0 || point >= ctx.zone2.points.length ||
-                        ctx.rp1 < 0 || ctx.rp1 >= ctx.zone0.points.length)
+                    if (point < 0 || point >= ctx.zone2Ref().points.length ||
+                        ctx.rp1 < 0 || ctx.rp1 >= ctx.zone0Ref().points.length)
                         continue;
                     const orgDist = twilight
-                        ? ctx.dualProject2(cast(int) ctx.zone2.points[point].orgX,
-                            cast(int) ctx.zone2.points[point].orgY,
-                            cast(int) ctx.zone0.points[ctx.rp1].orgX,
-                            cast(int) ctx.zone0.points[ctx.rp1].orgY)
-                        : ctx.dualProject2(cast(int) ctx.zone2.points[point].orusX,
-                            cast(int) ctx.zone2.points[point].orusY,
-                            cast(int) ctx.zone0.points[ctx.rp1].orusX,
-                            cast(int) ctx.zone0.points[ctx.rp1].orusY);
-                    const curDist = ctx.project(cast(int) ctx.zone2.points[point].curX,
-                        cast(int) ctx.zone2.points[point].curY) -
-                        ctx.project(cast(int) ctx.zone0.points[ctx.rp1].curX,
-                            cast(int) ctx.zone0.points[ctx.rp1].curY);
+                        ? ctx.dualProject2(cast(int) ctx.zone2Ref().points[point].orgX,
+                            cast(int) ctx.zone2Ref().points[point].orgY,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgY)
+                        : ctx.dualProject2(cast(int) ctx.zone2Ref().points[point].orusX,
+                            cast(int) ctx.zone2Ref().points[point].orusY,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusY);
+                    const curDist = ctx.project(cast(int) ctx.zone2Ref().points[point].curX,
+                        cast(int) ctx.zone2Ref().points[point].curY) -
+                        ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp1].curX,
+                            cast(int) ctx.zone0Ref().points[ctx.rp1].curY);
                     long newDist;
                     if (orgDist != 0)
                         newDist = oldRange != 0 ? mulDiv(orgDist, curRange, oldRange) : orgDist;
@@ -1533,15 +1626,19 @@ final class TrueTypeHinter
                 const selector = cast(int) ctx.pop();
                 int result;
                 if ((selector & 1) != 0)
-                    result = 40;
-                if ((selector & 8) != 0)
-                    result |= 1 << 10;
-                if ((selector & 32) != 0)
+                    result = ctx.naturalGrid ? 40 : 35;
+                if ((selector & 32) != 0 && !ctx.naturalGrid)
                     result |= 1 << 12;
-                if ((selector & 64) != 0)
-                    result |= 1 << 13;
-                if ((selector & 0x400) != 0)
-                    result |= 1 << 17;
+                if (ctx.naturalGrid)
+                {
+                    if ((selector & 64) != 0) result |= 1 << 13;
+                    if ((selector & 0x400) != 0) result |= 1 << 17;
+                    if ((selector & 0x800) != 0) result |= 1 << 18;
+                    if ((selector & 0x1000) != 0) result |= 1 << 19;
+                }
+                // The natural-grid experiment selects the subpixel font
+                // branches; full native compatibility is not yet established.
+                // Neither mode advertises variation-interpreter support.
                 ctx.push(result);
                 return;
             }
@@ -1724,6 +1821,102 @@ final class TrueTypeHinter
 
 unittest
 {
+    auto engine = new TrueTypeHinter(null, 0, true);
+    auto ctx = new Context(engine, null, null, 2048, 13);
+    assert(ctx.roundDistance(45, 0) == 64, "Size-program ROUND uses the physical grid");
+    ctx.glyphProgram = true;
+    assert(ctx.roundDistance(45, 0) == 44 && ctx.roundDistance(-45, 0) == -44);
+    assert(ctx.effectiveMinimumDistance() == 32 && ctx.effectiveCutIn() == 4);
+    ctx.setVectors(0);
+    assert(ctx.roundDistance(45, 0) == 64);
+    assert(ctx.effectiveMinimumDistance() == 64 && ctx.effectiveCutIn() == 68);
+}
+
+unittest
+{
+    assert(roundToGrid(32, 0) == 64 && roundToGrid(-32, 0) == -64);
+    assert(roundToHalfGrid(48, 0) == 32 && roundToHalfGrid(-48, 0) == -32);
+    assert(roundToHalfGrid(64, 0) == 96 && roundToHalfGrid(-64, 0) == -96);
+    assert(roundToDoubleGrid(40, 0) == 32 && roundToDoubleGrid(-40, 0) == -32);
+    assert(roundDownToGrid(-95, 0) == -64);
+    assert(roundUpToGrid(-65, 0) == -128);
+    assert(roundToGrid(20, 16) == 64 && roundToGrid(-20, 16) == -64);
+    assert(roundToGrid(10, -50) == 0);
+    foreach (distance; 1 .. 256)
+    {
+        assert(roundToGrid(-distance, 0) == -roundToGrid(distance, 0));
+        assert(roundToHalfGrid(-distance, 0) == -roundToHalfGrid(distance, 0));
+        assert(roundToDoubleGrid(-distance, 0) == -roundToDoubleGrid(distance, 0));
+    }
+}
+
+unittest
+{
+    auto engine = new TrueTypeHinter(null);
+    auto ctx = new Context(engine, [0L, 0L], [0L, 0L], 1024, 13);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB8, 0x1f, 0xff, 0x88]);
+    assert(ctx.stack == [35L | (1L << 12)],
+        "Grayscale hinting must not advertise ClearType capabilities");
+    // A false branch must execute its ELSE body, including nested branches.
+    engine.runProgram(ctx, cast(ubyte[]) [0xB0, 0, 0x58, 0xB0, 11,
+        0x1B, 0xB0, 0, 0x58, 0xB0, 22, 0x1B, 0xB0, 33, 0x59, 0x59]);
+    assert(ctx.stack == [33L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB0, 1, 0x58, 0xB0, 11,
+        0x1B, 0xB0, 22, 0x59]);
+    assert(ctx.stack == [11L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB0, 3, 0x1C, 0xB0, 11, 0xB0, 22]);
+    assert(ctx.stack == [22L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 3, 1, 0x78, 0xB0, 11, 0xB0, 22]);
+    assert(ctx.stack == [22L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 3, 0, 0x79, 0xB0, 11, 0xB0, 22]);
+    assert(ctx.stack == [22L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 3, 0, 0x78, 0xB0, 11, 0xB0, 22]);
+    assert(ctx.stack == [11L, 22L]);
+    // Function 7 pushes 42. LOOPCALL consumes the function before the count.
+    engine.runProgram(ctx, cast(ubyte[]) [0xB0, 7, 0x2C, 0xB0, 42, 0x2D,
+        0xB1, 3, 7, 0x2A]);
+    assert(ctx.stack == [42L, 42L, 42L]);
+    // Store and CVT writes consume value before location.
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 99, 0x42, 0xB0, 1, 0x43]);
+    assert(ctx.storage[1] == 99 && ctx.stack == [99L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 96, 0x44, 0xB0, 1, 0x45]);
+    assert(ctx.cvt[1] == 96 && ctx.stack == [96L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 128, 0x70]);
+    assert(ctx.cvt[1] == 104);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 96, 128, 0x63]);
+    assert(ctx.stack == [192L]);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 192, 128, 0x62]);
+    assert(ctx.stack == [96L]);
+    // DELTA consumes each pair exactly once, including inactive ppem cases.
+    engine.runProgram(ctx, cast(ubyte[]) [0xB3, 77, 0x48, 1, 1, 0x73]);
+    assert(ctx.stack == [77L] && ctx.cvt[1] == 112);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB3, 77, 0x58, 1, 1, 0x73]);
+    assert(ctx.stack == [77L] && ctx.cvt[1] == 112);
+    ctx.pixelSize = 40;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB3, 77, 0x48, 1, 1, 0x73]);
+    assert(ctx.stack == [77L] && ctx.cvt[1] == 112);
+    // The original-distance vector follows an axis change as well.
+    ctx.setVectors(0);
+    assert(ctx.dualProject2(64, 128, 0, 0) == 128);
+    ctx.setProjection(1);
+    assert(ctx.dualProject2(64, 128, 0, 0) == 64);
+    // Moving along a diagonal freedom vector still achieves the requested
+    // distance along the horizontal projection vector.
+    ctx.setFreedomVector(1, 1);
+    ctx.zone0.points.length = 1;
+    ctx.movePoint(ctx.zone0, 0, 64);
+    assert(ctx.zone0.points[0].curX == 64 && ctx.zone0.points[0].curY == 64);
+    ctx.setVectors(1);
+    ctx.cvt[1] = 192;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 0, 1, 0x3E]);
+    assert(ctx.zone0.points[0].curX == 192, "MIAP must read CVT index before point");
+    ctx.pixelSize = 13;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB3, 77, 0x48, 0, 1, 0x5D]);
+    assert(ctx.stack == [77L] && ctx.zone0.points[0].curX == 200);
+}
+
+unittest
+{
     // Garbage instructions must abort hinting cleanly.
     auto hinter = new TrueTypeHinter(cast(immutable(ubyte)[]) []);
     HintInput input;
@@ -1756,10 +1949,37 @@ unittest
         input.instructions = null;
         auto result = hinter.hint(input);
         assert(result.xs.length == 4, "hinted outline keeps point count");
+        assert(result.xs26Dot6[2] == 250 && result.ys26Dot6[1] == 350,
+            "Scaling must retain F26Dot6 coordinates at small sizes");
     }
     catch (Exception)
     {
         threw = true;
     }
     assert(!threw, "unhinted pass-through must succeed");
+
+    // MDAP moves through ZP0; ZP2 must observe that same glyph point.
+    input.instructions = cast(ubyte[]) [0xB0, 2, 0x2F];
+    auto rounded = hinter.hint(input);
+    assert(rounded.xs26Dot6[2] == 256, "Zone pointers must share glyph points");
+    input.prep = cast(ubyte[]) [0x7A]; // ROFF in the size program.
+    auto prepared = new TrueTypeHinter(null);
+    assert(prepared.hint(input).xs26Dot6[2] == 250,
+        "Glyphs inherit the size program's rounding state");
+    input.prep = null;
+
+    // A two-entry CVT contains signed 16-bit FWORDs, not one 32-bit value.
+    ubyte[] font = new ubyte[32];
+    font[5] = 1;
+    font[12 .. 16] = cast(ubyte[]) ['c', 'v', 't', ' '];
+    font[23] = 28;
+    font[27] = 4;
+    font[28 .. 32] = cast(ubyte[]) [0xff, 0x80, 0x01, 0x00];
+    auto cvtHinter = new TrueTypeHinter(font.idup);
+    input.unitsPerEm = 1024;
+    input.instructions = null;
+    cvtHinter.hint(input);
+    assert(cvtHinter._cvt == [-128L, 256L]);
+    assert(scaleDesignUnits(1024, 13, 2048) == 416);
+    assert(scaleDesignUnits(-1024, 13, 2048) == -416);
 }

@@ -30,7 +30,7 @@ private FamilyEntry[] enumerateFamilies()
             {
                 ++entry.memberCount;
                 if (font.weight == FontWeight.normal && !font.italic &&
-                    entry.best.familyName.length == 0)
+                    (entry.best.weight != FontWeight.normal || entry.best.italic))
                     entry.best = font;
                 found = true;
                 break;
@@ -253,7 +253,18 @@ int run(string[] args)
             try
                 index = strip(args[3]).to!int;
             catch (Exception)
-                index = 0;
+            {
+                // Accept an exact family name for reproducible font captures.
+                bool found;
+                foreach (i, family; enumerateFamilies())
+                    if (family.familyName == strip(args[3]))
+                    {
+                        index = cast(int) i;
+                        found = true;
+                        break;
+                    }
+                if (!found) return 2;
+            }
         }
         return runScreenshot(args[2], index);
     }

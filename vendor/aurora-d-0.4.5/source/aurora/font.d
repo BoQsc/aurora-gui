@@ -67,9 +67,9 @@ enum FontRole : ubyte
 /**
  * Portable grayscale glyph-rasterization policy.
  *
- * `sharp` retains antialiasing but increases edge contrast for small UI text.
- * It is Aurora's default. `smooth` preserves the unmodified supersampled
- * coverage produced by the outline rasterizer.
+ * `sharp` aligns font-authored lowercase/capital heights at small sizes.
+ * `smooth` preserves the unmodified outline. Both use grayscale area
+ * coverage without an additional contrast curve or LCD subpixel filtering.
  */
 enum FontRenderMode : ubyte
 {
@@ -324,15 +324,29 @@ final class FontFace
         return GlyphAdvance * bitmapScale(pixelSize);
     }
 
+    /// Fractional advance used by layout, avoiding cumulative pixel rounding.
+    double advanceGlyphPrecise(uint glyph, int pixelSize) const
+    {
+        return _trueType is null ? advanceGlyph(glyph, pixelSize) :
+            _trueType.advancePrecise(glyph, pixelSize);
+    }
+
+    double kerningPrecise(uint leftGlyph, uint rightGlyph, int pixelSize) const
+    {
+        return _trueType is null ? 0.0 :
+            _trueType.kerningPrecise(leftGlyph, rightGlyph, pixelSize);
+    }
+
     int kerning(uint leftGlyph, uint rightGlyph, int pixelSize) const
     {
         return _trueType is null ? 0 : _trueType.kerning(leftGlyph, rightGlyph, pixelSize);
     }
 
-    GlyphBitmap rasterizeGlyph(uint glyph, int pixelSize, int supersample = 4) const
+    GlyphBitmap rasterizeGlyph(uint glyph, int pixelSize, int supersample = 4,
+        double shiftX = 0.0, bool fitVertical = false) const
     {
         if (_trueType !is null)
-            return _trueType.rasterize(glyph, pixelSize, supersample);
+            return _trueType.rasterize(glyph, pixelSize, supersample, shiftX, fitVertical);
 
         GlyphBitmap result;
         result.glyphIndex = glyph;

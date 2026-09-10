@@ -157,35 +157,53 @@ A layout contains positioned glyphs, visual runs, lines, visual clusters, caret 
 
 ## Rasterization
 
-For a requested glyph and pixel size Aurora:
+For a requested glyph and physical pixel size Aurora decodes the outline,
+applies its font transforms, flattens curves, and integrates non-zero-winding
+coverage. Horizontal span overlap is exact; vertical integration uses 16 samples
+per row for small UI glyphs and 8 for larger glyphs, split at outline endpoints
+so thin horizontal strokes survive. Both TrueType and CFF use this pure-D path.
 
-1. decodes a quadratic or cubic outline;
-2. applies component/CFF transforms in font units;
-3. adaptively flattens curves to edges;
-4. computes pixel bounds and baseline bearings;
-5. evaluates a nonzero winding fill on a bounded sample grid (8×8 for UI sizes,
-   4×4 for larger text);
-6. stores 0–255 A8 coverage.
-
-The deterministic supersampled path favors cross-platform consistency over TrueType grid fitting. UI-sized glyphs use 8×8 coverage samples to preserve thin stems and round joins; larger glyphs use 4×4 to bound cost. Aurora 0.4.2 adds two coverage policies: `smooth` retains the raw samples, while `sharp` expands intermediate A8 contrast. At high DPI the glyph is rasterized at monitor-pixel size rather than enlarging a 96-DPI bitmap. Small text can still differ from a native hinted renderer because TrueType bytecode and LCD subpixel rendering are not executed.
+Shaping retains fractional advances and legacy kerning. Painting quantizes the
+horizontal origin to the nearest eighth pixel below 20px (quarter pixel at larger
+sizes), rasterizes that phase directly,
+and submits an integer-positioned bitmap at 1:1 scale. Vertical baselines remain
+pixel-aligned. The old integer metric methods remain available for compatibility;
+layout uses dvanceGlyphPrecise and kerningPrecise.
 
 ## Rasterization modes
 
-`WindowOptions.fontRenderMode` defaults to `FontRenderMode.sharp`. The mode can be changed with `GuiWindow.setFontRenderMode`, which clears size/mode-dependent atlas entries and invalidates the window. `AURORA_FONT_RENDER_MODE=sharp|smooth` provides a process-level override.
+WindowOptions.fontRenderMode defaults to FontRenderMode.sharp. The mode can
+be changed with GuiWindow.setFontRenderMode or the process-level
+AURORA_FONT_RENDER_MODE=sharp|smooth override.
 
-Sharp mode changes only intermediate coverage values; zero and 255 remain exact. It remains grayscale, deterministic, and renderer-independent. It is not an implementation of TrueType bytecode hinting or DirectWrite/ClearType.
+- smooth preserves the unmodified outline and grayscale area coverage.
+- sharp additionally aligns lowercase and capital heights from OS/2 version 2
+  metadata at sizes up to 24 physical pixels. The continuous monotonic vertical
+  map preserves baseline, counters, and stroke ordering. Capital alignment uses
+  a quarter-pixel upward rounding bias. Fonts without usable alignment metadata
+  and larger sizes retain unmodified outlines. Optional bytecode-hinted outlines
+  are not aligned a second time.
+
+Neither mode applies an alpha contrast curve or RGB LCD filtering. The default
+path does not depend on a native font rasterizer. The experimental bytecode
+interpreter is still opt-in via AURORA_HINTING=1.
 
 ## Glyph atlas
 
-`GlyphAtlas` starts at 512×512, shelf-packs one-pixel-padded glyphs, and grows while preserving existing coordinates up to 4096×4096. Its cache key contains:
+The shared A8 atlas grows from 512x512 to at most 4096x4096. Its key contains face
+identity, glyph index, physical size, render mode, horizontal phase, and variation
+hash. At most eight horizontal phase entries are needed for a glyph/size/mode;
+normal painting at 20px and larger requests only four of them;
+only requested phases are allocated. Software and Vulkan consume the same
+coverage bytes with 1:1 bitmap quads and nearest sampling.
 
-```text
-face identity + glyph index + pixel size + render flags + variation hash
-```
+## Validation against Windows
 
-The render-flags field distinguishes `FontRenderMode.smooth` and `FontRenderMode.sharp`. The variation hash remains reserved for future variable-font instances.
-
-Vulkan stores the atlas as `VK_FORMAT_R8_UNORM`. Vulkan and software sample the physical-size, pixel-snapped glyph quad with nearest filtering so the rasterizer's coverage bytes are not blurred a second time.
+See [the Segoe UI validation report](FONT_QUALITY_VALIDATION.md) for captures,
+measured differences, commands, and remaining limitations. The Windows-only
+comparison script uses DirectWrite solely to produce reference images, never in
+Aurora's production renderer. Identical glyph IDs and origins isolate
+rasterization differences; this does not establish native shaping parity.
 
 ## Current font boundaries
 

@@ -14,7 +14,8 @@ import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
 import aurora.text.variations : FontVariations;
 import aurora.text.colr : ColrRenderer, ColorSurface, RgbaColor;
 import std.algorithm : min, max;
-import std.algorithm.sorting : sort;
+import aurora.text.rasterizer : Edge = OutlineEdge, rasterizeCoverage,
+    VerticalAlignment, alignVertically;
 import std.exception : enforce;
 import std.file : read;
 import std.math : abs, ceil, floor, sqrt;
@@ -67,13 +68,6 @@ private struct OutlinePoint
     bool onCurve;
 }
 
-private struct Edge
-{
-    double x0;
-    double y0;
-    double x1;
-    double y1;
-}
 
 /** Parsed TrueType face. The source bytes remain owned by this object. */
 final class TrueTypeFace
@@ -166,6 +160,12 @@ final class TrueTypeFace
         return max(0, scaleUnits(cast(int) advanceUnits(glyph), pixelSize));
     }
 
+    /// Unrounded design advance for shaping; round only at the paint boundary.
+    double advancePrecise(uint glyph, int pixelSize) const
+    {
+        return advanceUnits(glyph) * scaleFor(pixelSize);
+    }
+
     int scaleUnits(int value, int pixelSize) const @safe pure nothrow @nogc
     {
         const scaled = cast(double) value * scaleFor(pixelSize);
@@ -174,22 +174,30 @@ final class TrueTypeFace
 
     int kerning(uint leftGlyph, uint rightGlyph, int pixelSize) const
     {
-        const key = (cast(ulong) leftGlyph << 32) | rightGlyph;
-        const found = key in _kernPairs;
-        if (found is null) return 0;
-        const scaled = cast(double) *found * scaleFor(pixelSize);
+        const scaled = kerningPrecise(leftGlyph, rightGlyph, pixelSize);
         return cast(int) (scaled >= 0.0 ? floor(scaled + 0.5) : ceil(scaled - 0.5));
     }
 
-    GlyphBitmap rasterize(uint glyph, int pixelSize, int supersample = 4) const
+    double kerningPrecise(uint leftGlyph, uint rightGlyph, int pixelSize) const
     {
+        const key = (cast(ulong) leftGlyph << 32) | rightGlyph;
+        const found = key in _kernPairs;
+        if (found is null) return 0;
+        return cast(double) *found * scaleFor(pixelSize);
+    }
+
+    GlyphBitmap rasterize(uint glyph, int pixelSize, int supersample = 4,
+        double shiftX = 0.0, bool fitVertical = false) const
+    {
+        assert(shiftX >= 0.0 && shiftX < 1.0);
         GlyphBitmap bitmap;
         bitmap.glyphIndex = glyph;
         bitmap.advance = advance(glyph, pixelSize);
         if (glyph >= _numGlyphs || pixelSize <= 0)
             return bitmap;
         if (_cff !is null)
-            return _cff.rasterize(glyph, pixelSize, bitmap.advance, supersample);
+            return _cff.rasterize(glyph, pixelSize, bitmap.advance, supersample,
+                shiftX, fitVertical ? verticalAlignment(pixelSize) : VerticalAlignment.init);
         OutlinePoint[][] contours;
         loadGlyphContours(glyph, contours, 0);
         if (contours.length == 0)
@@ -232,10 +240,15 @@ final class TrueTypeFace
             }
         }
 
-        // Hint the outline (design units in, design units out). Any hinting
+        // Hint the outline (design units in, fractional pixel coordinates out). Any hinting
         // failure falls back to the raw outline so glyphs never blank.
-        int[] fitXs = deltasXs;
-        int[] fitYs = deltasYs;
+        double[] fitXs = new double[deltasXs.length];
+        double[] fitYs = new double[deltasYs.length];
+        foreach (i; 0 .. fitXs.length)
+        {
+            fitXs[i] = deltasXs[i];
+            fitYs[i] = deltasYs[i];
+        }
         int fitLsb = advanceUnits(glyph);
         int fitAdvance = advanceUnits(glyph);
         // The TrueType hinter returns PIXEL-space coordinates (it folds the
@@ -277,18 +290,28 @@ final class TrueTypeFace
                 // interpreter makes malformed or stateful fonts order
                 // dependent. The safe baseline is a fresh interpreter with
                 // the same font tables for each glyph.
-                auto glyphHinter = new TrueTypeHinter(_data, _faceOffset);
+                auto glyphHinter = new TrueTypeHinter(_data, _faceOffset,
+                    environment.get("AURORA_HINTING", "0") == "natural");
                 auto fitted = glyphHinter.hint(input);
-                fitXs = fitted.xs;
-                fitYs = fitted.ys;
+                foreach (i; 0 .. fitXs.length)
+                {
+                    fitXs[i] = fitted.xs26Dot6[i] / 64.0;
+                    fitYs[i] = fitted.ys26Dot6[i] / 64.0;
+                }
                 fitLsb = fitted.lsb;
                 fitAdvance = fitted.advance;
                 hintedCoords = true;
                 bitmap.advance = max(0, fitAdvance);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 // Fall through to the unhinted outline.
+                if (environment.get("AURORA_HINT_DIAGNOSTICS", "0") == "1")
+                {
+                    import std.stdio : stderr;
+                    stderr.writefln("Hint fallback: glyph=%s size=%s: %s",
+                        glyph, pixelSize, error.msg);
+                }
             }
         }
 
@@ -309,9 +332,9 @@ final class TrueTypeFace
         if (minX == double.infinity)
             return bitmap;
 
-        bitmap.bearingX = cast(int) floor(minX);
+        bitmap.bearingX = cast(int) floor(minX + shiftX);
         bitmap.bearingY = cast(int) ceil(maxY);
-        const right = cast(int) ceil(maxX);
+        const right = cast(int) ceil(maxX + shiftX);
         const bottom = cast(int) floor(minY);
         bitmap.width = max(0, right - bitmap.bearingX);
         bitmap.height = max(0, bitmap.bearingY - bottom);
@@ -343,89 +366,41 @@ final class TrueTypeFace
         if (edges.length == 0)
             return bitmap;
 
-        // Exact analytic coverage (the same grayscale AA FreeType/DirectWrite
-        // use). Each scanline samples the outline edge-crossings and fills the
-        // exact overlap between each inside span and the pixel column, instead
-        // of box-averaging NxN subsamples (which softens edges). `supersample`
-        // is kept for API compatibility / cost bounds but coverage is analytic
-        // in pixel space, so it is deterministic and identical across the
-        // software and Vulkan paths.
-        supersample = supersample < 1 ? 1 : (supersample > 8 ? 8 : supersample);
-        bitmap.alpha.length = cast(size_t) bitmap.width * cast(size_t) bitmap.height;
-        fillAnalyticCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
-            supersample);
-        return bitmap;
-    }
-
-    /** Fraction of pixel column [x, x+1] covered by the span [xa, xb]. */
-    private static double columnOverlap(double xa, double xb, int x)
-    {
-        const left = (x + 0.0 > xa) ? x + 0.0 : xa;
-        const right = ((x + 1.0) < xb) ? (x + 1.0) : xb;
-        return (right > left) ? right - left : 0.0;
-    }
-
-    /**
-     * Analytic scanline coverage: the same grayscale AA FreeType and
-     * DirectWrite use. Each scanline (pixel row + 0.5) gathers the outline
-     * edge-crossings, sorts them by x, and pairs consecutive crossings into
-     * inside spans (even-odd fill, equal to the non-zero rule for simple
-     * closed glyph contours). Each pixel column's alpha is the exact overlap
-     * of the cell with the spans — sharper than an NxN box average and
-     * deterministic across the software and Vulkan paths. The center scanline
-     * keeps ink conserved; horizontal stems are NOT lost because both the
-     * top edge and the bottom edge of a stem produce crossings at the
-     * scanline's y for every pixel column the stem spans.
-     */
-    private static void fillAnalyticCoverage(const(Edge)[] edges, ubyte[] alpha,
-        int width, int height, int supersample)
-    {
-        double[] crossings;
-        crossings.reserve(edges.length + 1);
-        foreach (y; 0 .. height)
+        foreach (ref edge; edges)
         {
-            const yc = y + 0.5;
-            crossings.length = 0;
-            foreach (edge; edges)
-            {
-                const y0 = edge.y0;
-                const y1 = edge.y1;
-                if (y0 == y1) continue; // horizontal edge contributes no crossing
-                const lo = y0 < y1 ? y0 : y1;
-                const hi = y0 < y1 ? y1 : y0;
-                if (yc < lo || yc >= hi) continue;
-                const t = (yc - y0) / (y1 - y0);
-                crossings ~= edge.x0 + t * (edge.x1 - edge.x0);
-            }
-            if (crossings.length < 2) continue;
-            crossings.sort();
-
-            for (size_t i = 0; i + 1 < crossings.length; i += 2)
-            {
-                const sa = crossings[i];
-                const sb = crossings[i + 1];
-                if (sb <= sa) continue;
-                const firstCell = sa < 0.0 ? 0 : cast(int) floor(sa);
-                const lastCell = sb >= width ? width - 1 : cast(int) ceil(sb) - 1;
-                if (lastCell < firstCell || lastCell < 0 || firstCell >= width)
-                    continue;
-                foreach (x; firstCell .. lastCell + 1)
-                {
-                    if (x < 0 || x >= width) continue;
-                    const frac = columnOverlap(sa, sb, x);
-                    if (frac <= 0.0) continue;
-                    const px = cast(size_t) y * width + x;
-                    const add = cast(int) (frac * 255.0 + 0.5);
-                    const cur = alpha[px];
-                    alpha[px] = add > cur ? cast(ubyte) add : cur;
-                }
-            }
+            edge.x0 += shiftX;
+            edge.x1 += shiftX;
         }
+        if (fitVertical && !hintedCoords)
+            alignVertically(edges, bitmap.bearingY, bitmap.height, verticalAlignment(pixelSize));
+
+        // Shared grayscale area coverage for TrueType and CFF outlines.
+        bitmap.alpha.length = cast(size_t) bitmap.width * cast(size_t) bitmap.height;
+        if (environment.get("AURORA_HINTING", "0") == "natural")
+        {
+            import aurora.text.rasterizer : rasterizeSampledCoverage;
+            rasterizeSampledCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
+                pixelSize < 20 ? 8 : 4, pixelSize < 20 ? 1 : 4);
+        }
+        else
+            rasterizeCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height, supersample);
+        return bitmap;
     }
 
     private double scaleFor(int pixelSize) const @safe pure nothrow @nogc
     {
         return cast(double) max(1, pixelSize) / max(1, cast(int) _unitsPerEm);
+    }
+
+    private VerticalAlignment verticalAlignment(int pixelSize) const
+    {
+        // OS/2 version 2 introduced explicit font-authored alignment heights.
+        // Leave fonts without those metrics and display sizes unmodified.
+        if (pixelSize > 24) return VerticalAlignment.init;
+        const os2 = tableData(tag!"OS/2");
+        if (os2.length < 90 || be16(os2, 0) < 2) return VerticalAlignment.init;
+        return VerticalAlignment(beS16(os2, 86) * scaleFor(pixelSize),
+            beS16(os2, 88) * scaleFor(pixelSize));
     }
 
     private void parse(uint faceIndex)
@@ -476,7 +451,8 @@ final class TrueTypeFace
             // collapse to a zero bbox, and the failure is order-dependent), so
             // the unhinted baseline is the reliable, readable state. Opt back
             // in for font debugging with AURORA_HINTING=1.
-            const enableHinting = environment.get("AURORA_HINTING", "0") == "1";
+            const hintingMode = environment.get("AURORA_HINTING", "0");
+            const enableHinting = hintingMode == "1" || hintingMode == "natural";
             if (enableHinting)
                 _hinter = new TrueTypeHinter(_data, _faceOffset);
         }
@@ -1256,49 +1232,10 @@ final class TrueTypeFace
         appendLine(current, start, scale, bearingX, bearingY, edges);
     }
 
-    private static bool insideNonZero(const(Edge)[] edges, double x, double y)
-    {
-        int winding;
-        foreach (edge; edges)
-        {
-            if (edge.y0 <= y)
-            {
-                if (edge.y1 > y && isLeft(edge, x, y) > 0.0) ++winding;
-            }
-            else if (edge.y1 <= y && isLeft(edge, x, y) < 0.0)
-                --winding;
-        }
-        return winding != 0;
-    }
-
-    private static double isLeft(Edge edge, double x, double y)
-    {
-        return (edge.x1 - edge.x0) * (y - edge.y0) -
-            (x - edge.x0) * (edge.y1 - edge.y0);
-    }
 }
 
 unittest
 {
     // Parser behavior is exercised with a real font by the integration test.
     assert(tag!"glyf" == 0x676c7966);
-}
-
-unittest
-{
-    // Analytic coverage includes the pixel's vertical extent. The center
-    // scanline at y=0.5 crosses the 0.25..0.75 rectangle for an inked span
-    // of width 0.5, so the single pixel's coverage is 0.5*255 = 127.5 which
-    // rounds to 128 — the pixel is half inked.
-    Edge[] rectangle = [
-        Edge(0.25, 0.25, 0.75, 0.25),
-        Edge(0.75, 0.25, 0.75, 0.75),
-        Edge(0.75, 0.75, 0.25, 0.75),
-        Edge(0.25, 0.75, 0.25, 0.25)
-    ];
-    ubyte[] alpha;
-    alpha.length = 1;
-    TrueTypeFace.fillAnalyticCoverage(rectangle, alpha, 1, 1, 4);
-    assert(alpha.length == 1);
-    assert(alpha[0] == 128);
 }

@@ -8,6 +8,8 @@ module aurora.text.cff;
  * operators, cubic Bézier flattening, and non-zero-winding A8 rasterization.
  */
 
+import aurora.text.rasterizer : Edge = OutlineEdge, rasterizeCoverage,
+    VerticalAlignment, alignVertically;
 import aurora.text.glyph : GlyphBitmap;
 import std.algorithm : max, min;
 import std.exception : enforce;
@@ -251,13 +253,6 @@ private struct Contour
     Segment[] segments;
 }
 
-private struct Edge
-{
-    double x0;
-    double y0;
-    double x1;
-    double y1;
-}
 
 private struct CharStringState
 {
@@ -341,8 +336,10 @@ final class CffFace
     int glyphCount() const @safe pure nothrow @nogc { return _glyphCount; }
 
     GlyphBitmap rasterize(uint glyph, int pixelSize, int advance,
-        int supersample = 4) const
+        int supersample = 4, double shiftX = 0.0,
+        VerticalAlignment alignment = VerticalAlignment.init) const
     {
+        assert(shiftX >= 0.0 && shiftX < 1.0);
         GlyphBitmap result;
         result.glyphIndex = glyph;
         result.advance = advance;
@@ -383,9 +380,9 @@ final class CffFace
             }
         }
         if (minX == double.infinity) return result;
-        result.bearingX = cast(int) floor(minX);
+        result.bearingX = cast(int) floor(minX + shiftX);
         result.bearingY = cast(int) ceil(maxY);
-        const right = cast(int) ceil(maxX);
+        const right = cast(int) ceil(maxX + shiftX);
         const bottom = cast(int) floor(minY);
         result.width = max(0, right - result.bearingX);
         result.height = max(0, result.bearingY - bottom);
@@ -396,27 +393,15 @@ final class CffFace
             flattenContour(contour, scale, result.bearingX, result.bearingY, edges);
         if (edges.length == 0) return result;
 
-        supersample = max(1, min(8, supersample));
-        const sampleCount = supersample * supersample;
-        result.alpha.length = cast(size_t) result.width * result.height;
-        foreach (y; 0 .. result.height)
+        foreach (ref edge; edges)
         {
-            foreach (x; 0 .. result.width)
-            {
-                int insideCount;
-                foreach (sy; 0 .. supersample)
-                {
-                    const py = y + (cast(double) sy + 0.5) / supersample;
-                    foreach (sx; 0 .. supersample)
-                    {
-                        const px = x + (cast(double) sx + 0.5) / supersample;
-                        if (insideNonZero(edges, px, py)) ++insideCount;
-                    }
-                }
-                result.alpha[cast(size_t) y * result.width + x] =
-                    cast(ubyte) ((insideCount * 255 + sampleCount / 2) / sampleCount);
-            }
+            edge.x0 += shiftX;
+            edge.x1 += shiftX;
         }
+        alignVertically(edges, result.bearingY, result.height, alignment);
+
+        result.alpha.length = cast(size_t) result.width * result.height;
+        rasterizeCoverage(edges, result.alpha, result.width, result.height, supersample);
         return result;
     }
 
@@ -1046,26 +1031,4 @@ final class CffFace
             edges, depth + 1);
     }
 
-    private static bool insideNonZero(const(Edge)[] edges, double x, double y)
-        @safe pure nothrow @nogc
-    {
-        int winding;
-        foreach (edge; edges)
-        {
-            if (edge.y0 <= y)
-            {
-                if (edge.y1 > y && isLeft(edge, x, y) > 0) ++winding;
-            }
-            else if (edge.y1 <= y && isLeft(edge, x, y) < 0)
-                --winding;
-        }
-        return winding != 0;
-    }
-
-    private static double isLeft(Edge edge, double x, double y)
-        @safe pure nothrow @nogc
-    {
-        return (edge.x1 - edge.x0) * (y - edge.y0) -
-            (x - edge.x0) * (edge.y1 - edge.y0);
-    }
 }

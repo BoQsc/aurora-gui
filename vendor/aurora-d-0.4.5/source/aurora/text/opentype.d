@@ -527,7 +527,7 @@ final class OpenTypeShaper
         foreach (ref glyph; glyphs)
         {
             glyph.advanceX = glyph.hidden ? 0.0 :
-                cast(double) face.advanceGlyph(glyph.glyphIndex, options.pixelSize);
+                face.advanceGlyphPrecise(glyph.glyphIndex, options.pixelSize);
             glyph.advanceY = 0;
             glyph.offsetX = glyph.offsetY = 0;
         }
@@ -1975,7 +1975,7 @@ final class OpenTypeShaper
             if (glyphs[i].hidden) continue;
             if (previousPosition >= 0)
                 glyphs[cast(size_t) previousPosition].advanceX +=
-                    face.kerning(previous, glyphs[i].glyphIndex, pixelSize);
+                    face.kerningPrecise(previous, glyphs[i].glyphIndex, pixelSize);
             previous = glyphs[i].glyphIndex;
             previousPosition = cast(ptrdiff_t) i;
         }
