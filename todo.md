@@ -1,5 +1,26 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Play start still waits a few seconds (partly fixed)
+
+User: "clicking and waiting for it to start playing, takes a few seconds instead
+of instant."
+
+- [x] Measured on the real project: Play ~1558 ms when clicked before the
+      prewarm produced its first frame, **~7.7 ms when the prewarm is warm**
+      (adopted decoder, 0 new processes). Cause is the live composite's
+      time-to-first-frame (1.3-3.9 s), not the audio clock.
+- [x] Fix: live preview (`enablePlaybackDecode=true`) now uses the H.264
+      playback proxies; export still uses originals. Prewarm first frame
+      2-3.9 s -> **1.0-1.6 s** once proxies exist.
+- [x] libavdecode.d is now `version (Windows)`-guarded (stubs elsewhere) so it
+      cannot break non-Windows builds.
+- [ ] STILL OPEN: ~1-1.5 s is FFmpeg process + multi-input graph init that
+      proxies cannot remove. Needs a persistent/kept-warm live compositor (graph
+      stays up across playhead moves and Play) or in-process compositing.
+- [ ] Note: proxies are generated in the background; until a heavy source's
+      proxy exists, its original is still decoded. Consider pre-generating/awaiting
+      the proxy for the source under the playhead before Play.
+
 ## 2026-09-10 - Option 1: in-process libav decoder (implemented)
 
 User: "yes" to in-process libav for instant random-access scrub.

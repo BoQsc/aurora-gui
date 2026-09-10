@@ -1029,6 +1029,7 @@ final class EditorRoot : VBox
     void syncMediaListForTesting() { syncMediaList(); }
     bool playbackRunningForTesting() const { return _playbackRunning; }
     bool playbackAwaitingFirstFrameForTesting() const { return _playbackAwaitingFirstFrame; }
+    bool playbackAwaitingAudioClockForTesting() const { return _playbackAwaitingAudioClock; }
     bool sequencePlaybackForTesting() const
     {
         return _playbackKind == PlaybackKind.sequence && _playbackRunning;
@@ -8658,7 +8659,14 @@ final class EditorRoot : VBox
                 }
                 const asset = _model.assetForClip(clip);
                 if (asset is null) continue;
-                request.video ~= exportClip(asset, clip, lane, track);
+                // Live preview decoding may use the H.264 playback proxy (far
+                // faster to first frame and smoother). Export requests pass
+                // enablePlaybackDecode=false, so the original source remains the
+                // export authority.
+                MediaAsset clipAsset = cast(MediaAsset) asset;
+                if (enablePlaybackDecode)
+                    clipAsset = playbackAssetForPreview(clipAsset);
+                request.video ~= exportClip(clipAsset, clip, lane, track);
             }
         }
         foreach (lane; 0 .. _model.trackCount(TrackKind.audio))

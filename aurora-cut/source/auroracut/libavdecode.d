@@ -21,13 +21,20 @@ module auroracut.libavdecode;
 import auroracut.ffmpegbundle : bundledFfmpegDirectory;
 import auroracut.util : clampValue;
 import core.sync.mutex : Mutex;
-import core.sys.windows.windows : HMODULE, LoadLibraryExW, GetProcAddress;
 import core.time : MonoTime;
 import std.conv : to;
 import std.file : exists, thisExePath;
 import std.path : buildPath, dirName;
 import std.process : environment;
 import std.utf : toUTF16z;
+
+version (Windows) { import core.sys.windows.windows : HMODULE, LoadLibraryExW, GetProcAddress; }
+else {}
+
+// The whole accelerator is Windows-only. On any other platform the public
+// functions below degrade to "unavailable" so callers keep the ffmpeg path.
+version (Windows)
+{
 
 private enum uint LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
 
@@ -577,4 +584,15 @@ void shutdownLibavDecoders()
     scope (exit) _decoderMutex.unlock();
     foreach (decoder; _decoders) decoder.close();
     _decoders = null;
+}
+
+} // version (Windows)
+
+else
+{
+    void setLibavDecodeEnabledForTesting(bool) {}
+    bool libavDecodeAvailable() { return false; }
+    string libavDecodeUnavailableReason() { return "not supported on this platform"; }
+    bool decodeLibavRgbFrame(string, double, int, int, ubyte[]) { return false; }
+    void shutdownLibavDecoders() {}
 }

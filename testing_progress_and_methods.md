@@ -1,5 +1,41 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Play start latency: live-composite first frame (2026-09-10)
+
+User: "still have problem of clicking and waiting for it to start playing, takes
+a few seconds instead of instant."
+
+**Measured with a temporary probe on the real project** (`heavenly delusion
+marry on a cross.auroracut`, 181 s, 1080p h264 + mp3 + normalized mp4):
+- Press Play immediately after a playhead move: **~1558 ms**, cause
+  `_playbackAwaitingFirstFrame` (the audio-clock gate was NOT involved).
+- Press Play after the prewarm has produced its first frame: **~7.7 ms**, and
+  `videoProcsDelta = 0` (the warm decoder was adopted).
+
+So the "few seconds" is the **live composition's time-to-first-frame**, not the
+audio clock. Measured prewarm first-frame by playhead target: 1.3–3.9 s.
+
+**Why:** the live compositor is one FFmpeg process whose filter graph opens every
+video input; the first overlaid frame cannot be produced until the graph is
+built and the inputs have decoded. Decoding the original 1080p sources dominates.
+
+**Change (`editor.d` `buildExportRequest`):** live preview requests
+(`enablePlaybackDecode = true`) now substitute the per-asset **H.264 playback
+proxy** (`playbackAssetForPreview`) for video clips. Export requests pass
+`enablePlaybackDecode = false`, so the original source remains the export
+authority. Measured with proxies generated: prewarm first frame dropped from
+2–3.9 s to **1.0–1.6 s**.
+
+**Remaining bottleneck (documented, not fixed):** ~1–1.5 s is FFmpeg process +
+multi-input graph init, which proxies cannot remove. The real fix is a
+**persistent live compositor** (keep the process/graph warm across playhead moves
+and Play, like the option-2 source decoder but for the overlay graph), or
+in-process compositing. Also, proxies only help once `startIdlePlaybackProxy`
+has generated them (queued on project open; a 1080p source takes a few seconds).
+
+**Verify:** `dub test` 42 modules; synced-preroll, seek-resilience,
+static-sequence, export-smoke, composition-prefetch, paused-scrub all pass.
+
 ## Option 1 packaging readiness — app side (2026-09-10)
 
 Follow-up: make the single-exe release able to ship the libav accelerator.
@@ -28,6 +64,21 @@ size/deps materially:
 The current `minimal-ffmpeg` build is `--enable-static --disable-shared`, so the
 existing artifact cannot supply DLLs. Until one of the above lands, the
 accelerator is dev/opt-in only and releases use the spawn path unchanged.
+
+**Release workflow posture (why it needs little/no change):**
+- `portable-windows.yml` triggers on `aurora-cut/source/**`, which already
+  covers `libavdecode.d`; it uploads only the `.exe` files, so the staged
+  `aurora-cut/libav/` DLLs (git-ignored, ~127 MB) never enter the artifact.
+- The single exe keeps its **<30 MB** size because nothing new is embedded;
+  `libavDecodeAvailable()` is simply false in releases and the ffmpeg path runs.
+- `libavdecode.d` is `version (Windows)`-guarded and has no link-time libav
+  dependency, so the release build cannot fail from it.
+- To actually ship the accelerator later WITHOUT bloating the single exe,
+  prefer a **separate optional download** (a small `libav/` zip) over embedding:
+  drop it next to the exe and discovery picks it up. Embedding needs a minimal
+  shared build (<30 MB target) — unverified; do not assume it fits.
+- `libcmt.lib` single-exe link is a CI-only toolchain step (local hosts without
+  MSVC libs fail at that link; the compile itself succeeds).
 
 ## Option 1 implemented: in-process libav decoder (instant random-access scrub) (2026-09-10)
 
