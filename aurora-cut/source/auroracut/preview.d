@@ -428,9 +428,12 @@ final class PreviewService
         if (request.kind != PreviewRequestKind.asset) return false;
         if (request.asset is null || !request.asset.hasVideo ||
             request.asset.isStillImage()) return false;
-        // Step batches and centered prefetch decode a neighborhood; those stay
-        // on the existing ffmpeg path so arrow-key stepping keeps its cache.
-        if (request.centeredStepBatch || request.stepDirection != 0) return false;
+        // The centered batch is a background neighborhood prefetch (publish
+        // false); it stays on the ffmpeg path. Published arrow-key steps
+        // (stepDirection != 0) DO use libav: a random-access decode is ~5 ms,
+        // far cheaper than the ffmpeg neighborhood batch, so stepping no longer
+        // spawns a process per key press.
+        if (request.centeredStepBatch) return false;
         if (!libavDecodeAvailable()) return false;
 
         const frameBytes = cast(size_t) request.width *
