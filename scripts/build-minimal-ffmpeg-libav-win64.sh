@@ -28,6 +28,31 @@ jobs="$(nproc 2>/dev/null || echo 4)"
 
 mkdir -p "$src" "$deps" "$dist"
 
+# Mirror all output to a log and, on any unexpected failure, surface the tail as
+# a GitHub `::error::` ANNOTATION. Raw job logs need repo admin to download, but
+# annotations are readable unauthenticated, so this is how a CI failure here can
+# actually be diagnosed from outside the Actions UI.
+work_log="$work/build.log"
+: > "$work_log" 2>/dev/null || true
+exec > >(tee "$work_log") 2>&1
+
+emit_build_error() {
+  local encoded
+  encoded="$(python3 - "$work_log" <<'PY' 2>/dev/null || true
+import sys, urllib.parse
+try:
+    data = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+except Exception:
+    data = "no build log"
+sys.stdout.write(urllib.parse.quote(data[-3500:]))
+PY
+)"
+  echo "::error title=minimal-libav build failed::${encoded:-no build log}"
+  sync || true
+  sleep 1
+}
+trap emit_build_error ERR
+
 fetch() { # fetch <dir> <url> [<rev>]
   local dir="$1" url="$2" rev="${3:-}"
   if [ -d "$dir" ]; then return 0; fi
