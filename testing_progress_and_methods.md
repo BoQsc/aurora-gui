@@ -1,5 +1,25 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Persistent paused-scrub decoder (option 2) — INDEPENDENT VERIFICATION + latency numbers (2026-09-10)
+
+Re-verified the option-2 work independently in the current tree (a fresh
+`dub test` = 42 modules; `paused_scrub_stream_smoke` 3x, `synced_playback_preroll`,
+`composition_prefetch`, `playback_seek_resilience`, `playback_stress`,
+`pcm_audio_clock` all pass). Root `aurora-cut.exe`, the staged `aurora-cut-opt2.exe`
+and the dub-cache exe all hash `e4e144e8d5e67c88a77d1e18e851d953`, so the running
+app is the option-2 build.
+
+**Measured with a temporary probe (`moveTo` = setPlayhead -> preview shows
+target), base-av.mp4, 720p preview:**
+- cold first still (no prewarm yet): ~119 ms
+- warm forward step (served by the persistent decoder): **0.19–0.49 ms** (instant)
+- forward jump inside the buffered window (~0.9 s): ~0.18 ms
+- backward jump: ~91 ms (forward-only decoder -> still renderer)
+
+So option 2 makes **forward** scrub effectively free. The only remaining
+non-instant path is backward / random jumps that the forward-only decoder cannot
+serve; each still spawns one `ffmpeg.exe` (~54 ms) plus decode/pipe.
+
 ## Persistent paused-scrub decoder (option 2) — IMPLEMENTED (2026-09-10)
 
 Follow-up to "why per-frame scrub is not instant": the user said "do it" for
