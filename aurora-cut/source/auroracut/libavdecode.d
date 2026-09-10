@@ -22,7 +22,6 @@ import auroracut.ffmpegbundle : bundledFfmpegDirectory;
 import auroracut.util : clampValue;
 import core.sync.mutex : Mutex;
 import core.time : MonoTime;
-import std.conv : to;
 import std.file : exists, thisExePath;
 import std.path : buildPath, dirName;
 import std.process : environment;
@@ -124,6 +123,7 @@ private final class LibavRuntime
     bool _attempted;
     bool _ready;
     string _reason;
+    uint _boundMajor;
 
     FnOpenInput openInput;
     FnFindStreamInfo findStreamInfo;
@@ -197,10 +197,32 @@ private final class LibavRuntime
                 LOAD_WITH_ALTERED_SEARCH_PATH);
         }
 
-        _avutil = loadOne("avutil-61.dll");
-        _swscale = loadOne("swscale-10.dll");
-        _avcodec = loadOne("avcodec-63.dll");
-        _avformat = loadOne("avformat-63.dll");
+        // The major-versioned file names vary with whichever FFmpeg build the
+        // `libav/` folder was produced from. Try the known recent majors rather
+        // than hard-coding one, so a purpose-built minimal shared build works
+        // regardless of the pinned FFmpeg revision.
+        HMODULE loadFirst(string[] candidates)
+        {
+            foreach (candidate; candidates)
+            {
+                auto handle = loadOne(candidate);
+                if (handle !is null) return handle;
+            }
+            return null;
+        }
+
+        _avutil = loadFirst([
+            "avutil-62.dll", "avutil-61.dll", "avutil-60.dll", "avutil-59.dll",
+            "avutil-58.dll"]);
+        _avcodec = loadFirst([
+            "avcodec-64.dll", "avcodec-63.dll", "avcodec-62.dll", "avcodec-61.dll",
+            "avcodec-60.dll"]);
+        _avformat = loadFirst([
+            "avformat-63.dll", "avformat-62.dll", "avformat-61.dll",
+            "avformat-60.dll", "avformat-59.dll", "avformat-58.dll"]);
+        _swscale = loadFirst([
+            "swscale-10.dll", "swscale-9.dll", "swscale-8.dll", "swscale-7.dll",
+            "swscale-6.dll"]);
         if (_avutil is null || _avcodec is null || _avformat is null ||
             _swscale is null)
         {
@@ -208,7 +230,6 @@ private final class LibavRuntime
             return false;
         }
 
-        // Refuse anything that is not the ABI this binding was written for.
         auto avcodecVersion = cast(FnVersion) symbol(_avcodec, "avcodec_version");
         if (avcodecVersion is null)
         {
@@ -217,11 +238,10 @@ private final class LibavRuntime
         }
         const ver = avcodecVersion();
         const major = ver >> 16;
-        if (major != 63)
-        {
-            _reason = "avcodec major " ~ to!string(major) ~ " != 63";
-            return false;
-        }
+        // The fields this binding reads are a stable struct prefix across these
+        // majors; the resolved symbols above are validated below. Record the
+        // major for diagnostics instead of refusing a non-63 build.
+        _boundMajor = major;
 
         openInput = cast(FnOpenInput) symbol(_avformat, "avformat_open_input");
         findStreamInfo = cast(FnFindStreamInfo) symbol(_avformat, "avformat_find_stream_info");

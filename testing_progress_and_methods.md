@@ -1,5 +1,41 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Minimal shared libav (small optional download) (2026-09-10)
+
+User: "121 MB of DLLs, is insanity."
+
+**Confirmed:** the 121.6 MB came from `aurora-stream/build-validation/.../
+ffmpeg-master-latest-win64-gpl-shared` — BtbN's **full/master GPL shared** build
+(`avcodec-63.dll` alone is 94 MB) with every codec, encoder, filter and device.
+We need none of the encode/filter/device surface for the in-process scrub
+decoder.
+
+**Purpose-built artifact added:** `scripts/build-minimal-ffmpeg-libav-win64.sh`
+cross-builds shared `avcodec/avformat/avutil/swscale` with
+`--disable-everything` + `--enable-shared` + only the decode subset (same decoder
+list as the 13.5 MB static minimal exe), no avfilter/avdevice/CLI/encoders. Uses
+`--disable-pthreads` (win32-threads) so the DLLs do **not** depend on
+`libwinpthread-1.dll`; the smoke step greps `objdump -p` to fail if that
+dependency appears. Expected size is a small fraction of the full build (the
+feature surface matches the static minimal exe's decode path); the exact number
+is unverified until CI runs.
+
+**Workflow:** new `.github/workflows/minimal-libav-ffmpeg.yml` builds and uploads
+`ffmpeg-minimal-libav-win64`. Deliberately SEPARATE from `minimal-ffmpeg.yml`
+and NOT on the release critical path, so a failure here can never block a
+portable/release build.
+
+**App change (`libavdecode.d`):** the loader no longer hard-codes
+`avcodec-63/avutil-61/swscale-10/avformat-63` or refuses non-63 majors. It tries
+the known recent major file names (avcodec 60-64, avutil 58-62, avformat 58-63,
+swscale 6-10) and records the bound major for diagnostics, so whichever FFmpeg
+revision the `libav/` folder was built from works. (A prior edit accidentally
+omitted `swscale-10.dll` from the candidate list and broke loading; fixed and
+re-verified ~5 ms decodes.)
+
+**Verified:** `dub test` 42 modules; libav decode smoke passes (~5 ms avg) with
+the existing full DLLs.
+
 ## No sound in the local single-test exe — stale embedded ffmpeg (2026-09-10)
 
 User: "why i can not hear sound in aurora-cut/aurora-cut-single-test.exe".

@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Minimal shared libav (kill the 121 MB) (in progress)
+
+User: "121 MB of DLLs, is insanity."
+
+- [x] Confirmed the 121.6 MB is BtbN's full/master GPL shared build (~94 MB
+      avcodec with everything). Wrong artifact for our decode-only need.
+- [x] Added `scripts/build-minimal-ffmpeg-libav-win64.sh`: shared
+      avcodec/avformat/avutil/swscale, decode-only, no encoders/filters/devices/
+      CLI, win32-threads so no libwinpthread dependency.
+- [x] Added separate, non-release-critical workflow
+      `.github/workflows/minimal-libav-ffmpeg.yml` producing
+      `ffmpeg-minimal-libav-win64`.
+- [x] `libavdecode.d` loader now tolerates different major-versioned DLL names
+      instead of hard-coding 63/61/10.
+- [ ] Trigger the libav workflow and record the real DLL sizes; if small enough,
+      wire it as an optional `libav/` download in the release and (optionally)
+      enable-by-default. If still large, reassess.
+
 ## 2026-09-10 - No sound in local single-test exe (diagnosed, guarded)
 
 User: "why i can not hear sound in aurora-cut/aurora-cut-single-test.exe".
