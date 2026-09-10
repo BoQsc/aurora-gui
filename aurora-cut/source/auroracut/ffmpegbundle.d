@@ -5,6 +5,16 @@ import std.path : buildPath;
 import std.process : environment;
 import std.conv : to;
 
+/** The directory the bundled FFmpeg was last extracted into, or "" when this
+ * build has no embedded copy. Used by the optional in-process libav decoder to
+ * look for a `libav/` folder shipped inside the same bundle. */
+private string _extractedDirectory;
+
+string bundledFfmpegDirectory()
+{
+    return _extractedDirectory;
+}
+
 version (BundledFfmpeg)
 {
     private immutable ubyte[] _ffmpegBytes = cast(ubyte[]) import("ffmpeg.exe");
@@ -88,6 +98,7 @@ bool enableBundledFfmpeg()
 {
     const dir = extractBundledFfmpeg();
     if (dir.length == 0) return false;
+    _extractedDirectory = dir;
     auto path = environment.get("PATH");
     environment["PATH"] = path.length == 0 ? dir : dir ~ ";" ~ path;
     return true;

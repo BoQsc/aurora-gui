@@ -18,6 +18,7 @@ module auroracut.libavdecode;
  *    reported avcodec major and refuses to bind rather than corrupt memory.
  */
 
+import auroracut.ffmpegbundle : bundledFfmpegDirectory;
 import auroracut.util : clampValue;
 import core.sync.mutex : Mutex;
 import core.sys.windows.windows : HMODULE, LoadLibraryExW, GetProcAddress;
@@ -153,6 +154,14 @@ private final class LibavRuntime
             if (exists(beside)) return beside;
         }
         catch (Exception) {}
+        // ... or a `libav/` folder extracted alongside the bundled FFmpeg, so a
+        // single-exe release can ship the shared libraries with them.
+        const bundled = bundledFfmpegDirectory();
+        if (bundled.length > 0)
+        {
+            const inBundle = buildPath(bundled, "libav");
+            if (exists(inBundle)) return inBundle;
+        }
         return "";
     }
 

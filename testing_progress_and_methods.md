@@ -1,5 +1,34 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Option 1 packaging readiness — app side (2026-09-10)
+
+Follow-up: make the single-exe release able to ship the libav accelerator.
+
+- `ffmpegbundle.d` now records the directory the bundled FFmpeg was extracted
+  into and exposes `bundledFfmpegDirectory()`.
+- `libavdecode.d` discovery order is now: `AURORA_LIBAV_DIR` -> `libav/` beside
+  the exe -> `libav/` inside the bundled-FFmpeg extraction directory. So a
+  single-exe release only needs to place `libav/*.dll` next to the extracted
+  `ffmpeg.exe`; no further code change. (Deliberately still NOT the cwd.)
+- Verified: `dub test` 42 modules; libav decode ~4 ms; libav scrub 0 processes.
+  Fresh exe staged as `aurora-cut/aurora-cut-libav.exe` (MD5
+  `ba19f9a34cacecf05ac7c264c7bfdbf3`).
+
+**Still an open RELEASE decision (not an engineering blocker):** how to ship the
+shared DLLs. Two concrete choices, neither done yet because both change release
+size/deps materially:
+1. Fetch a pinned **stable shared** Windows build (e.g. BtbN
+   `ffmpeg-nX.Y-win64-gpl-shared`) in the portable workflow, stage the DLLs into
+   `aurora-cut/libav/`, and extend `build-portable-windows.py --single-exe` +
+   `embedded/` handling to embed/extract them. Re-verify the `avcodec major ==
+   63` guard and struct offsets against the pinned version.
+2. Add `--enable-shared` to `build-minimal-ffmpeg-win64.sh` (a second, larger
+   artifact) and ship that. Keeps full control of codecs/filters; ~90 min CI.
+
+The current `minimal-ffmpeg` build is `--enable-static --disable-shared`, so the
+existing artifact cannot supply DLLs. Until one of the above lands, the
+accelerator is dev/opt-in only and releases use the spawn path unchanged.
+
 ## Option 1 implemented: in-process libav decoder (instant random-access scrub) (2026-09-10)
 
 User: "yes" to option 1 (in-process libav). Goal: random-access scrub frame in
