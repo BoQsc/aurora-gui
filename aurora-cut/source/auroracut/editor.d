@@ -1073,6 +1073,7 @@ final class EditorRoot : VBox
     PlaybackWorkerStats videoStatsForTesting() { return _videoStream.stats(); }
     PlaybackWorkerStats audioStatsForTesting() { return _audioPlayer.stats(); }
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
+    bool previewBusyForTesting() { return _previewService.busy(); }
     bool videoStreamFinishedForTesting() { return _videoStream.finished(); }
     bool videoStreamHasReadyFramesForTesting() { return _videoStream.hasReadyFrames(); }
     bool playbackReadyForTesting() const { return playbackReady(); }
@@ -9830,8 +9831,12 @@ final class EditorRoot : VBox
                 auto request = buildFrameRequest(_pendingPreviewTime,
                     previewCompositionPreset(renderHeight));
                 scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+                // Cache the neighboring frames only when the pointer has
+                // settled (a click, key step, or drag release). During a drag
+                // the debounce keeps coalescing and a neighbor process per
+                // pixel would compete with the frame the user is waiting for.
                 _previewService.requestComposition(request, _pendingPreviewTime,
-                    decode.width, decode.height);
+                    decode.width, decode.height, !_seekGesture);
                 break;
         }
         _pendingPreviewKind = PendingPreviewKind.none;

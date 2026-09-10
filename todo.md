@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Composition neighbor-frame prefetch (done)
+
+User: "well if done and pushes yeah let's do it" (approving the held-back idea).
+
+- [x] `preview.d`: composition frames now cache their immediate neighbors
+      (`prefetchCompositionNeighborhood`, `time ± 1/fps`, publish=false).
+- [x] Never competes with the user's frame: skipped while another request is
+      queued, killed by the next enqueue, and only requested on settled changes
+      (editor passes `!_seekGesture`).
+- [x] `tryPublishCachedComposition` honours publish=false so a warm request can
+      never replace the displayed frame; added `hasCachedCompositionFrame`.
+- [x] New `tests/composition_prefetch_smoke.d` (forward and backward one-frame
+      steps are cache hits with no new FFmpeg process).
+- [x] Verified: composition-prefetch (5x), `dub test` 42 modules, synced-preroll,
+      seek-resilience, audio-clock, playback-stress pass; editor-smoke and
+      static-sequence compile. Fresh exe staged as
+      `aurora-cut/aurora-cut-prewarm.exe` (root exe still locked).
+
 ## 2026-09-10 - More instant feeling on playhead settle (done)
 
 User: "any way we could get more instant feeling?"

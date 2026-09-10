@@ -65,6 +65,10 @@ private struct PreviewRequest
     int stepDirection;
     bool centeredStepBatch;
     bool publish = true;
+    // Composition-only: after a settled frame is published, cache its immediate
+    // neighbors so back-and-forth scrubbing over an overlay/text composition is
+    // a memory hit. Never set for drags or a paused playback still.
+    bool prefetchNeighbors;
 }
 
 struct PreviewServiceStats
@@ -208,7 +212,7 @@ final class PreviewService
     }
 
     void requestComposition(ExportRequest request, double sequenceTime,
-        int width, int height)
+        int width, int height, bool prefetchNeighbors = false)
     {
         normalizeSize(width, height);
         if (request.preset.width <= 0) request.preset.width = width;
@@ -222,6 +226,7 @@ final class PreviewService
         pending.width = width;
         pending.height = height;
         pending.publish = true;
+        pending.prefetchNeighbors = prefetchNeighbors;
         enqueue(pending);
     }
 
@@ -661,6 +666,9 @@ final class PreviewService
             else
                 prefetchCenteredAssetCache(request);
         }
+        if (acceptedFrame && request.kind == PreviewRequestKind.composition &&
+            request.publish)
+            prefetchCompositionNeighborhood(request);
     }
 
     /** Publish as soon as the requested frame bytes arrive. FFmpeg may continue
@@ -885,6 +893,13 @@ final class PreviewService
             }
         }
         if (found < 0) return false;
+        // A non-publishing request (a neighbor prefetch) must only warm the
+        // cache; it must never replace the frame the UI is showing.
+        if (!request.publish)
+        {
+            ++_stats.cacheHits;
+            return true;
+        }
 
         const frameBytes = cast(size_t) request.width *
             cast(size_t) request.height * 3;
@@ -960,6 +975,63 @@ final class PreviewService
             foreach (index; oldest .. _compositionCache.length - 1)
                 _compositionCache[index] = _compositionCache[index + 1];
             _compositionCache.length = _compositionCache.length - 1;
+        }
+    }
+
+    private bool hasCachedCompositionFrame(const PreviewRequest request,
+        double sequenceTime) const
+    {
+        const key = request.composition.cacheKey;
+        if (key == 0) return false;
+        const fps = request.composition.preset.fps > 0 ?
+            request.composition.preset.fps : 30;
+        const frameIndex = cast(long) (sequenceTime * fps + 0.5);
+        foreach (const ref entry; _compositionCache)
+            if (entry.modelKey == key && entry.frameIndex == frameIndex &&
+                entry.width == request.width && entry.height == request.height)
+                return true;
+        return false;
+    }
+
+    /** Cache the frame immediately before and after a settled composition frame
+     * so scrubbing back and forth over an overlay/text composition is a memory
+     * hit instead of a fresh FFmpeg graph. Gated in the caller so drags never
+     * set `prefetchNeighbors`; it also bails while another request is already
+     * queued (the user is still moving) and the running prefetch process is
+     * killed by the next enqueue. */
+    private void prefetchCompositionNeighborhood(PreviewRequest request)
+    {
+        if (!request.prefetchNeighbors ||
+            request.kind != PreviewRequestKind.composition ||
+            request.composition.cacheKey == 0) return;
+
+        _mutex.lock();
+        // Do not spend a process on a neighborhood the user is already leaving:
+        // a queued request means the primary frame was superseded, so the
+        // neighbors would be stale too.
+        const current = request.generation == _generation && !_shutdown &&
+            !_hasPending;
+        _mutex.unlock();
+        if (!current) return;
+
+        const fps = request.composition.preset.fps > 0 ?
+            request.composition.preset.fps : 30.0;
+        const step = 1.0 / fps;
+        const duration = request.composition.sequenceDuration();
+        foreach (delta; [-step, step])
+        {
+            const neighbor = request.time + delta;
+            if (neighbor < 0.0 || (duration > 0.0 && neighbor > duration)) continue;
+            if (hasCachedCompositionFrame(request, neighbor)) continue;
+            _mutex.lock();
+            const stillCurrent = request.generation == _generation && !_shutdown;
+            _mutex.unlock();
+            if (!stillCurrent) return;
+            PreviewRequest warm = request;
+            warm.publish = false;
+            warm.prefetchNeighbors = false;
+            warm.time = neighbor;
+            renderRequest(warm);
         }
     }
 

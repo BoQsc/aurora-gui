@@ -1,5 +1,49 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Composition neighbor-frame prefetch on playhead settle (2026-09-10)
+
+User: "any way we could get more instant feeling?" -> chose the held-back idea:
+prefetch neighboring composition frames so back-and-forth scrubbing over an
+overlay/text composition is a composition-LRU hit instead of a fresh FFmpeg
+graph. The plain-footage path already batch-prefetches neighbours
+(`prefetchCenteredAssetCache` / `extendDirectionalAssetCache`); the composition
+path did not.
+
+**Change (`aurora-cut/source/auroracut/preview.d`):**
+- `PreviewRequest.prefetchNeighbors` (composition-only).
+- `requestComposition(..., bool prefetchNeighbors = false)`.
+- At the end of `renderRequest`, a published composition frame calls
+  `prefetchCompositionNeighborhood`, which renders the frame at `time ± 1/fps`
+  with `publish = false` (cache-warm only). It bails if another request is
+  already queued (`_hasPending`), so the user's next frame is never delayed, and
+  the running prefetch process is killed by the next `enqueue`.
+- `tryPublishCachedComposition` now honours `!request.publish` (count a cache
+  hit, return) so a warm request can never replace the displayed frame.
+- `hasCachedCompositionFrame` avoids re-spawning for an already-cached neighbor.
+
+**Gating (`aurora-cut/source/auroracut/editor.d`):**
+- `dispatchPendingPreview` passes `!_seekGesture`: drags do NOT prefetch (the
+  debounce coalesces them); clicks, key steps, and drag releases do.
+- `requestPlaybackStill` keeps the default `false` (it must not compete with the
+  prewarm).
+
+**Regression:** new `tests/composition_prefetch_smoke.d`.
+
+**How to run (Windows, from `aurora-cut/`):**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\composition_prefetch_smoke.d ^
+  -of=build\headless-smoke\composition-prefetch-smoke.exe ^
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib
+build\headless-smoke\composition-prefetch-smoke.exe ..\build\media\base-av.mp4
+```
+
+**Verified (2026-09-10):** composition-prefetch passes (5x);
+`dub test` 42 modules; synced-preroll, seek-resilience, audio-clock,
+playback-stress pass; editor-smoke and static-sequence compile. Fresh exe staged
+at `aurora-cut/aurora-cut-prewarm.exe` (MD5
+`648c153236d5b4d5c07626c2c703d710`); root exe still locked by the running app.
+
 ## Instant paused stills on playhead settle (2026-09-10)
 
 User: "any way we could get more instant feeling?" after the prewarm change.
