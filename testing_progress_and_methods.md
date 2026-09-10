@@ -1,5 +1,38 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Instant paused stills on playhead settle (2026-09-10)
+
+User: "any way we could get more instant feeling?" after the prewarm change.
+
+**Diagnosis (no guessing):** the paused (`PlaybackKind.none`) still-frame path
+went `playheadChanged` -> `scheduleTimelineFrame` -> 60 ms coalescing delay in
+`onTick` -> only then spawn FFmpeg (`dispatchPendingPreview`). So every discrete
+move waited a fixed 60 ms *before* any work started. The warm prewarm stream was
+only consumed when `_playbackKind == sequence` (`tryStepSequenceFromPrewarm`),
+so before the first Play a warm stream could not serve the still.
+
+**Change (`aurora-cut/source/auroracut/editor.d`):**
+- `playheadChanged` (`PlaybackKind.none`): after `scheduleTimelineFrame()`, if
+  `!_seekGesture` it calls `dispatchPendingPreviewNow()` so a discrete change
+  (ruler-click release, Home/End, programmatic move) starts the still render
+  immediately. During a drag the debounce is kept, so a scrub never spawns one
+  FFmpeg per pixel.
+- `endSeekGesture` (`PlaybackKind.none`, no pending seek): also dispatches the
+  settled still immediately, so releasing the ruler/scrubber is attached to the
+  cursor rather than a beat behind it (in addition to arming the prewarm).
+
+**Regression:** `tests/synced_playback_preroll_smoke.d` asserts a move during an
+active drag does NOT dispatch a still, and releasing the drag DOES. The prewarm
+activation is still proven by the existing paused warm-step block (so the test
+does not depend on the fragile "audio request counter grew on Play" timing).
+
+**Verified (2026-09-10):** `dub test` 42 modules pass; synced-preroll (run 4x),
+playback-seek-resilience, PCM-audio-clock, playback-stress all pass;
+`static_sequence_playback_smoke` and `editor_smoke` compile. The fresh debug exe
+is staged at `aurora-cut/aurora-cut-prewarm.exe` (MD5
+`123a4a3efc5aa850e05b153c7f1a2648`); the root `aurora-cut.exe` is still locked by
+the running app.
+
 ## Auto-start composition prewarm on playhead change (2026-09-10)
 
 User: "Could you make it automatically start to prepare timeline composition

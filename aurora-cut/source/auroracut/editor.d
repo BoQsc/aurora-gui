@@ -6141,6 +6141,12 @@ final class EditorRoot : VBox
             // the composition for that position on the next tick instead of
             // waiting out the settle debounce, so Play stays instant.
             _playbackPrewarmPrompt = true;
+            // The pointer stopped moving, so the pending still is final: render
+            // it now rather than waiting out the 60 ms coalescing delay. This is
+            // the difference between a ruler click feeling attached to the
+            // cursor and feeling a beat behind it.
+            if (_pendingPreviewKind != PendingPreviewKind.none)
+                dispatchPendingPreviewNow();
         }
     }
 
@@ -6170,7 +6176,17 @@ final class EditorRoot : VBox
             seekPlayback(value);
         }
         else if (_playbackKind == PlaybackKind.none)
+        {
             scheduleTimelineFrame();
+            // A discrete playhead change (ruler click release, Home/End,
+            // programmatic move) has a final target, so start the still render
+            // immediately instead of waiting out the 60 ms coalescing delay.
+            // While a drag is in progress the debounce is kept so the frame
+            // follows the pointer without one FFmpeg process per pixel; the
+            // release is handled in endSeekGesture.
+            if (!_seekGesture)
+                dispatchPendingPreviewNow();
+        }
     }
 
     /** Serve a paused sequence frame step from the warm prewarm stream when the

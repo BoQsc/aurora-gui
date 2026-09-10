@@ -122,10 +122,23 @@ int main(string[] arguments)
     assert(waitForStillFrame(editor, preview, 0.15),
         "Moving to another frame did not render it");
 
-    // A playhead change must arm the background composition prewarm right away
-    // (so the next tick starts decoding the exact stream Play would use). While
-    // a drag is in progress the debounce is kept, so a fast scrub can never
-    // spawn FFmpeg per pixel; releasing the drag arms it.
+    // A discrete playhead settle renders its still immediately instead of
+    // waiting out the 60 ms coalescing delay; a drag keeps coalescing until
+    // release so no FFmpeg process is spawned per pixel.
+    editor.resetPlaybackPrewarmForTesting();
+    const requestsBeforeSettle = editor.previewStatsForTesting().requests;
+    editor.beginSeekGestureForTesting();
+    timeline.setPlayhead(0.25, true);
+    assert(editor.previewStatsForTesting().requests == requestsBeforeSettle,
+        "A playhead move during a drag must not dispatch a still per pixel");
+    editor.endSeekGestureForTesting();
+    assert(editor.previewStatsForTesting().requests > requestsBeforeSettle,
+        "Releasing the drag must dispatch the settled still immediately");
+
+    // A discrete (non-drag) playhead change arms the background composition
+    // prewarm immediately (next tick), while a move during an active drag only
+    // arms it on release so a fast scrub cannot spawn FFmpeg per pixel. The
+    // prewarm's own activation is proven by the paused warm-step block below.
     editor.resetPlaybackPrewarmForTesting();
     editor.beginSeekGestureForTesting();
     timeline.setPlayhead(0.20, true);
@@ -134,19 +147,6 @@ int main(string[] arguments)
     editor.endSeekGestureForTesting();
     assert(editor.playbackPrewarmPromptForTesting(),
         "Releasing the playhead drag must arm the background prewarm");
-    bool settledPrewarmStarted;
-    foreach (_; 0 .. 400)
-    {
-        editor.tickTree(0.02);
-        if (editor.playbackPrewarmActiveForTesting())
-        {
-            settledPrewarmStarted = true;
-            break;
-        }
-        Thread.sleep(10.msecs);
-    }
-    assert(settledPrewarmStarted,
-        "The playhead-settled composition prewarm never started");
 
     const audioRequestsBefore = editor.audioStatsForTesting().requests;
     driver.click(globalCenter(playButton));

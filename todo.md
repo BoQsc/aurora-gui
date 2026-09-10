@@ -1,5 +1,27 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - More instant feeling on playhead settle (done)
+
+User: "any way we could get more instant feeling?"
+
+- [x] Diagnosed: paused stills waited a fixed 60 ms coalescing delay before
+      FFmpeg even started; the warm prewarm stream was only usable in the
+      paused-`sequence` path, not before the first Play.
+- [x] `playheadChanged` (`PlaybackKind.none`) now dispatches the settled still
+      immediately for non-drag changes; drags stay debounced.
+- [x] `endSeekGesture` (`PlaybackKind.none`) dispatches the settled still on
+      release (and arms the prewarm).
+- [x] Regression in `tests/synced_playback_preroll_smoke.d` (drag does not
+      dispatch per pixel; release dispatches).
+- [x] Verified: `dub test` 42 modules; synced-preroll (4x), seek-resilience,
+      audio-clock, playback-stress pass. Fresh exe staged as
+      `aurora-cut/aurora-cut-prewarm.exe` (root exe still locked by PID 7380).
+- [ ] Remaining idea (not done, needs a call): prefetch composition neighbor
+      frames into the composition LRU (the asset path already batching-prefetches
+      neighbours; the composition path does not) so back-and-forth scrubbing over
+      an ornate composition is a cache hit. Cost is extra background FFmpeg
+      spawns that compete with the prewarm, so it was held back.
+
 ## 2026-09-10 - Auto-prepare timeline composition on playhead change (done)
 
 User: "Could you make it automatically start to prepare timeline composition
