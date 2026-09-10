@@ -104,6 +104,18 @@ jobs:
             Copy-Item $ffprobeExe.FullName (Join-Path $embedded "ffprobe.exe") -Force
             Get-ChildItem $embedded | Select-Object FullName, Length | Format-Table -AutoSize
           }
+          # Optional minimal shared libav for aurora-cut's in-process scrub
+          # decoder (built above). build-portable-windows.py zips it into the exe.
+          $libavDlls = Get-ChildItem -Path $root -Recurse -Filter "avcodec-*.dll" | Select-Object -First 1
+          if ($libavDlls) {
+            $libavSrc = $libavDlls.Directory.FullName
+            $libavDest = "aurora-cut\libav"
+            New-Item -ItemType Directory -Force -Path $libavDest | Out-Null
+            Copy-Item (Join-Path $libavSrc "*.dll") $libavDest -Force
+            Get-ChildItem $libavDest | Select-Object FullName, Length | Format-Table -AutoSize
+          } else {
+            Write-Warning "no minimal libav DLLs found in the artifact; building without in-process scrubbing"
+          }
 
       - name: Verify Windows Graphics Capture runtime
         run: python -X utf8 aurora-stream/tests/verify_gfxcapture_runtime.py --allow-no-d3d11 --ffmpeg aurora-stream/embedded/ffmpeg.exe

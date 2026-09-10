@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - scripts/build-minimal-ffmpeg-win64.sh
+      - scripts/build-minimal-ffmpeg-libav-win64.sh
       - .github/workflows/minimal-ffmpeg.yml
       - aurora-stream/tests/verify_gfxcapture_runtime.py
 
@@ -32,6 +33,12 @@ jobs:
       - name: Build minimal static ffmpeg/ffprobe
         run: bash scripts/build-minimal-ffmpeg-win64.sh
 
+      # Decode-only shared libav (avcodec/avformat/avutil/swscale) for Aurora
+      # Cut's optional in-process scrub decoder. Shipped in the same artifact so
+      # the portable build stages it without a second workflow wait.
+      - name: Build minimal shared libav
+        run: bash scripts/build-minimal-ffmpeg-libav-win64.sh
+
       - name: Verify encoder/decoder/filter inventory
         run: |
           export WINEDEBUG=-all
@@ -53,6 +60,7 @@ jobs:
           path: |
             build/ffmpeg-minimal/dist/bin/ffmpeg.exe
             build/ffmpeg-minimal/dist/bin/ffprobe.exe
+            build/ffmpeg-minimal-libav/dist/bin/*.dll
           if-no-files-found: error
           retention-days: 14
 

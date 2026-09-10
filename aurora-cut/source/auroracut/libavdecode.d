@@ -211,6 +211,13 @@ private final class LibavRuntime
             return null;
         }
 
+        // Preload any mingw runtime DLLs shipped alongside the libav DLLs so
+        // their dependencies resolve even when the folder is not on PATH (the
+        // minimal winpthreads build imports libwinpthread-1.dll).
+        foreach (runtime; [
+            "libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll"])
+            loadOne(runtime);
+
         _avutil = loadFirst([
             "avutil-62.dll", "avutil-61.dll", "avutil-60.dll", "avutil-59.dll",
             "avutil-58.dll"]);

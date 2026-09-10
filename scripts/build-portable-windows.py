@@ -7,6 +7,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -142,6 +143,28 @@ def stage_compressed_embedded(package_root: Path) -> None:
         )
 
 
+def stage_libav_zip(package_root: Path) -> None:
+    """Bundle the optional minimal shared libav DLLs into embedded/libav.zip.
+
+    The single exe inflates this on first run so the in-process scrub decoder
+    works out of the box. If `<app>/libav/` has no DLLs (e.g. the artifact was
+    not downloaded) an empty archive is written so the embedded import still
+    compiles and the app simply falls back to spawning ffmpeg.
+    """
+    embedded = package_root / "embedded"
+    embedded.mkdir(parents=True, exist_ok=True)
+    libav = package_root / "libav"
+    target = embedded / "libav.zip"
+    dlls = sorted(libav.glob("*.dll")) if libav.is_dir() else []
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for dll in dlls:
+            z.write(dll, dll.name)
+    if dlls:
+        print(f"staged {target} with {len(dlls)} DLLs ({target.stat().st_size} bytes)", flush=True)
+    else:
+        print(f"staged empty {target} (no libav/*.dll present)", flush=True)
+
+
 def verify_cut_ffmpeg_audio(ffmpeg: Path) -> None:
     """Refuse a release payload whose embedded ffmpeg cannot produce raw s16le
     PCM. Aurora Cut decodes preview audio with `-f s16le pipe:1`
@@ -270,6 +293,8 @@ def main() -> int:
                     )
                     raise SystemExit(1)
             stage_compressed_embedded(package_root)
+            if name == "aurora-cut":
+                stage_libav_zip(package_root)
             ico = package_root / "assets" / f"{name}.ico"
             if not ico.is_file():
                 print(f"::error::missing icon {ico}", flush=True)

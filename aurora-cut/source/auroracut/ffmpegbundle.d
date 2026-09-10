@@ -6,6 +6,7 @@ import std.file : exists, getSize, mkdirRecurse, tempDir, write;
 import std.path : buildPath;
 import std.process : Config, Redirect, environment, pipeProcess, wait;
 import std.string : split;
+import std.zip : ZipArchive;
 import std.zlib : uncompress;
 
 /** The directory the bundled FFmpeg was last extracted into, or "" when this
@@ -26,6 +27,11 @@ version (BundledFfmpeg)
     // inflated on first run.
     private immutable ubyte[] _ffmpegCompressed = cast(ubyte[]) import("ffmpeg.exe.z");
     private immutable ubyte[] _ffprobeCompressed = cast(ubyte[]) import("ffprobe.exe.z");
+    // Optional: the minimal shared libav DLLs (a small zip, ~3 MB) that power
+    // instant in-process scrubbing. Staged by build-portable-windows.py; when
+    // absent the archive is empty and the app simply falls back to spawning
+    // ffmpeg for stills. Not every BundledFfmpeg build has one.
+    private immutable ubyte[] _libavZip = cast(ubyte[]) import("libav.zip");
 
     private ubyte[] inflate(const(ubyte)[] compressed)
     {
@@ -33,6 +39,44 @@ version (BundledFfmpeg)
             return cast(ubyte[]) uncompress(compressed);
         catch (Exception)
             return null;
+    }
+}
+
+/** True once the embedded libav zip has been expanded (or a previous run
+ * already expanded it) into `dir/libav`. */
+private bool ensureLibavExtracted(string dir)
+{
+    version (BundledFfmpeg)
+    {
+        const libavDir = buildPath(dir, "libav");
+        const marker = buildPath(libavDir, ".extracted");
+        if (exists(marker)) return true;
+        if (_libavZip.length == 0) return false;
+        try
+        {
+            if (!exists(libavDir)) mkdirRecurse(libavDir);
+            auto archive = new ZipArchive(cast(void[]) _libavZip);
+            foreach (name, ref member; archive.directory)
+            {
+                // Flat archive of DLLs; skip any directory entries.
+                if (name.length == 0 || name[$ - 1] == '/' || name[$ - 1] == '\\')
+                    continue;
+                auto data = archive.expand(member);
+                if (data.length == 0) continue;
+                write(buildPath(libavDir, name), data);
+            }
+            write(marker, "1");
+            return true;
+        }
+        catch (Exception error)
+        {
+            appLog("Bundled libav extraction failed: " ~ error.msg);
+            return false;
+        }
+    }
+    else
+    {
+        return false;
     }
 }
 
@@ -51,7 +95,8 @@ private string bundleDirectory()
     {
         return buildPath(bundleRoot(),
             "ffmpeg-" ~ to!string(_ffmpegCompressed.length) ~ "-" ~
-            to!string(_ffprobeCompressed.length));
+            to!string(_ffprobeCompressed.length) ~ "-" ~
+            to!string(_libavZip.length));
     }
     else
     {
@@ -83,6 +128,7 @@ string extractBundledFfmpeg()
             // already correct on disk, so a failed write is simply ignored.
             writeIfDifferent(buildPath(dir, "ffmpeg.exe"), ffmpegBytes);
             writeIfDifferent(buildPath(dir, "ffprobe.exe"), ffprobeBytes);
+            ensureLibavExtracted(dir);
             return dir;
         }
         catch (Exception)
@@ -94,6 +140,7 @@ string extractBundledFfmpeg()
                 if (!exists(fallback)) mkdirRecurse(fallback);
                 writeIfDifferent(buildPath(fallback, "ffmpeg.exe"), ffmpegBytes);
                 writeIfDifferent(buildPath(fallback, "ffprobe.exe"), ffprobeBytes);
+                ensureLibavExtracted(fallback);
                 return fallback;
             }
             catch (Exception)
@@ -124,20 +171,23 @@ bool enableBundledFfmpeg()
     const dir = extractBundledFfmpeg();
     if (dir.length == 0) return false;
 
+    // Record the extracted directory unconditionally: the optional in-process
+    // libav decoder lives in `<dir>/libav` and must be discoverable even when
+    // the ffmpeg/ffprobe copy below is skipped for the system ffmpeg.
+    _extractedDirectory = dir;
+
     if (!bundledFfmpegEmitsS16le(dir))
     {
         if (ffmpegOnPath())
         {
             appLog("Bundled ffmpeg cannot emit s16le PCM; using the system " ~
                 "ffmpeg so preview audio works.");
-            _extractedDirectory = "";
             return false;
         }
         appLog("Bundled ffmpeg cannot emit s16le PCM and no system ffmpeg " ~
             "was found; preview audio may be silent.");
     }
 
-    _extractedDirectory = dir;
     auto path = environment.get("PATH");
     environment["PATH"] = path.length == 0 ? dir : dir ~ ";" ~ path;
     return true;
