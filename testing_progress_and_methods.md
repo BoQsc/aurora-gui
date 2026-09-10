@@ -35,8 +35,22 @@ embedded ffmpeg can never again silently ship a silent single exe.
 - Verified: the guard FAILS on the stale `embedded/ffmpeg.exe` and PASSES on the
   full `C:\ffmpeg\bin\ffmpeg.exe`.
 
-**To get a working local audio test:** obtain the fixed minimal ffmpeg (the CI
-artifact, or run `minimal-ffmpeg.yml`), copy it to `aurora-cut/embedded/`, then
+**Runtime fallback added (`aurora-cut/source/auroracut/ffmpegbundle.d`):**
+`enableBundledFfmpeg()` now probes the extracted bundle once (cached as
+`.s16le-ok` / `.s16le-unsupported` in the content-keyed bundle dir) with a real
+`ffmpeg -f lavfi -i sine -t 0.05 -f s16le pipe:1`. If the bundle cannot emit PCM
+AND a system `ffmpeg.exe` exists on PATH, the bundle is NOT prepended, so the
+system ffmpeg is used and preview audio works. If no system ffmpeg exists the
+bundle is still used (video/export keep working; only audio stays degraded).
+- Verified: with the stale bundle present + system ffmpeg on PATH,
+  `enableBundledFfmpeg()` returned false and logged "Bundled ffmpeg cannot emit
+  s16le PCM; using the system ffmpeg so preview audio works."
+- This makes the rebuilt `aurora-cut-single-test.exe` (14,632,448 bytes) play
+  audio here despite embedding the stale bundle, and protects any future bundle.
+
+**To get a working local audio test with the bundle itself:** obtain the fixed
+minimal ffmpeg (the CI artifact, or run `minimal-ffmpeg.yml`), copy it to
+`aurora-cut/embedded/`, then
 `python scripts/build-portable-windows.py --app aurora-cut --single-exe`.
 
 ## Single-exe size cut ~53% (compressed embedded FFmpeg) (2026-09-10)

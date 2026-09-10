@@ -16,8 +16,14 @@ User: "why i can not hear sound in aurora-cut/aurora-cut-single-test.exe".
       does a real `-f s16le` encode and fails the build if the staged ffmpeg
       cannot produce PCM. Verified it rejects the stale binary and accepts the
       full one.
-- [ ] Local audio test needs the fixed minimal ffmpeg copied into
-      `aurora-cut/embedded/` (from CI); cannot be regenerated here (no Linux/mingw).
+- [x] Runtime fallback (`ffmpegbundle.d`): a one-time cached probe detects a
+      bundle that cannot emit s16le PCM and, when a system ffmpeg exists, keeps
+      the system ffmpeg instead. Verified (log line + `enableBundledFfmpeg()`
+      returned false with the stale bundle). Rebuilt `aurora-cut-single-test.exe`
+      (14,632,448 bytes) so it plays audio here.
+- [ ] Get the fixed minimal ffmpeg into `aurora-cut/embedded/` (CI artifact) for
+      a bundle that is correct without relying on a system ffmpeg; cannot be
+      regenerated here (no Linux/mingw).
 
 ## 2026-09-10 - Single exe back under 30 MB (done)
 
