@@ -1,5 +1,80 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Auto-start composition prewarm on playhead change (2026-09-10)
+
+User: "Could you make it automatically start to prepare timeline composition
+when playback head changes."
+
+**Already existed:** the 2026-08-13 "background playback prewarm on playhead
+changes" feature (`editor.d` `notePlaybackPrewarmDirty` ->
+`updatePlaybackPrewarm` -> `startPlaybackPrewarm`) decodes the exact stream
+Play would start (direct source / static visual / live composition) while
+paused, and Play adopts it (no FFmpeg spawn). What was missing: it only started
+after the 0.06 s settle debounce, even for a single discrete change.
+
+**Change (`aurora-cut/source/auroracut/editor.d`):**
+- `notePlaybackPrewarmDirty`: any playhead change now arms
+  `_playbackPrewarmPrompt = true` (starts next tick) UNLESS a scrub drag is in
+  progress (`_seekGesture`), so a fast drag still debounces and never spawns
+  one FFmpeg per pixel.
+- `endSeekGesture`: when a paused `PlaybackKind.none` drag ends (and there is no
+  pending seek to commit), it arms `_playbackPrewarmPrompt` so releasing the
+  playhead/scrubber prepares the composition immediately.
+- Testing hooks: `playbackPrewarmPromptForTesting()` and
+  `resetPlaybackPrewarmForTesting()`.
+
+**Regression:** `tests/synced_playback_preroll_smoke.d` now asserts a move
+during an active drag does NOT arm the prewarm, releasing the drag DOES, and the
+armed prewarm then activates.
+
+**How to run (Windows, from `aurora-cut/`):**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\synced_playback_preroll_smoke.d ^
+  -of=build\headless-smoke\synced-preroll-smoke.exe ^
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib
+build\headless-smoke\synced-preroll-smoke.exe ..\build\media\base-av.mp4
+```
+
+**Verified (2026-09-10):** `dub test` 42 modules pass;
+synced-preroll, playback-seek-resilience, PCM-audio-clock, playback-stress all
+pass. NOTE: `editor_smoke.d` still stops at its pre-existing,
+unrelated fit-view assert (`editor_smoke.d:1315`), so its prewarm block does not
+run in this tree. The debug exe linked to the dub cache
+(MD5 `208f3a734c1e4ceda4c6921af81929bf`); the root `aurora-cut.exe` could NOT be
+replaced because the app was running (PID 7380) — a fresh copy was staged as
+`aurora-cut/aurora-cut-prewarm.exe`. Close the app and re-run
+`dub build` to update the canonical root exe.
+
+## Clean compile of aurora-cut — METHOD (2026-09-10)
+
+**Prereqs:** `dub` + `dmd` on PATH (`C:\D\dmd2\windows\bin64`); `ffmpeg` at
+`C:\ffmpeg\bin`. `ffprobe`/`ffplay` are NOT needed to compile (only the runtime
+`BUILD-WINDOWS.bat` requirement check wants them). `python` on PATH for the
+`preBuildCommands` (`scripts\version.py sync`).
+
+**Method (from `aurora-cut/`):**
+```
+rmdir /s /q "%LOCALAPPDATA%\dub\cache\aurora-cut\0.66.7\build"
+dub build
+```
+
+**Gotchas / how to verify a REAL compile:**
+- `dub build` prints only `Linking aurora-cut` (no per-file `Compiling ...`
+  lines). To prove the sources were actually recompiled, delete the cache build
+  dir above first, then check the `.obj` timestamp under
+  `%LOCALAPPDATA%\dub\cache\aurora-cut\<version>\build\application-*`.
+- The root `aurora-cut\aurora-cut.exe` keeps a STALE mtime after dub copies the
+  fresh binary over it — timestamp alone is misleading. Compare hashes:
+  `certutil -hashfile aurora-cut.exe MD5` vs the cache copy.
+- `dub clean` only clears the cache, not the running-exe lock; if
+  `aurora-cut.exe` is running, delete/link/copy fails (close it first).
+- `dub build` does NOT launch the app. Use `BUILD-WINDOWS.bat` (`dub run`) or
+  `RUN-WINDOWS.bat` to start the editor.
+
+**Result (2026-09-10):** debug `dub build` linked clean; exe 5,028,352 bytes;
+MD5 `b9e23f21e9345878cbca79409fa73685` identical for root and cache copies.
+
 ## Text-glyph AA regression: reproducible A/B harness (2026-09-06)
 
 Method to prove glyph quality against the authoritative Windows renderer (do

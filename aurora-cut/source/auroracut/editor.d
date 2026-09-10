@@ -1132,6 +1132,14 @@ final class EditorRoot : VBox
         return nextTimelineAudioStart(value);
     }
     bool playbackPrewarmActiveForTesting() const { return _playbackPrewarmActive; }
+    bool playbackPrewarmPromptForTesting() const { return _playbackPrewarmPrompt; }
+    void resetPlaybackPrewarmForTesting()
+    {
+        cancelPlaybackPrewarm();
+        _playbackPrewarmActive = false;
+        _playbackPrewarmPrompt = false;
+        _playbackPrewarmDelay = 0.0;
+    }
     string playbackPrewarmModeForTesting() const { return _playbackPrewarmMode; }
     double playbackPrewarmPositionForTesting() const { return _playbackPrewarmPosition; }
     void seekForTesting(double value) { seekPlayback(value); }
@@ -6125,7 +6133,15 @@ final class EditorRoot : VBox
     private void endSeekGesture()
     {
         _seekGesture = false;
-        if (_seekPending) commitPendingSeek();
+        if (_seekPending)
+            commitPendingSeek();
+        else if (_playbackKind == PlaybackKind.none)
+        {
+            // Releasing the scrub / ruler drag settles the playhead. Prepare
+            // the composition for that position on the next tick instead of
+            // waiting out the settle debounce, so Play stays instant.
+            _playbackPrewarmPrompt = true;
+        }
     }
 
     private void scrubChanged(double value)
@@ -6686,6 +6702,12 @@ final class EditorRoot : VBox
         _playbackPrewarmDelay = 0.0;
         _playbackPrewarmIdle = 0.0;
         _playbackPrewarmFailures = 0;
+        // A discrete playhead change (ruler click, keyboard step, programmatic
+        // move) must start preparing the timeline composition on the next tick
+        // rather than waiting out the settle debounce. While a drag is in
+        // progress the debounce is kept so a fast scrub never spawns FFmpeg per
+        // pixel; endSeekGesture sets the prompt when the gesture ends.
+        if (!_seekGesture) _playbackPrewarmPrompt = true;
     }
 
     /** Whether a paused playhead position is covered by the active prewarm's

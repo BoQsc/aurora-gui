@@ -122,6 +122,32 @@ int main(string[] arguments)
     assert(waitForStillFrame(editor, preview, 0.15),
         "Moving to another frame did not render it");
 
+    // A playhead change must arm the background composition prewarm right away
+    // (so the next tick starts decoding the exact stream Play would use). While
+    // a drag is in progress the debounce is kept, so a fast scrub can never
+    // spawn FFmpeg per pixel; releasing the drag arms it.
+    editor.resetPlaybackPrewarmForTesting();
+    editor.beginSeekGestureForTesting();
+    timeline.setPlayhead(0.20, true);
+    assert(!editor.playbackPrewarmPromptForTesting(),
+        "A playhead move during an active drag must not arm the prewarm");
+    editor.endSeekGestureForTesting();
+    assert(editor.playbackPrewarmPromptForTesting(),
+        "Releasing the playhead drag must arm the background prewarm");
+    bool settledPrewarmStarted;
+    foreach (_; 0 .. 400)
+    {
+        editor.tickTree(0.02);
+        if (editor.playbackPrewarmActiveForTesting())
+        {
+            settledPrewarmStarted = true;
+            break;
+        }
+        Thread.sleep(10.msecs);
+    }
+    assert(settledPrewarmStarted,
+        "The playhead-settled composition prewarm never started");
+
     const audioRequestsBefore = editor.audioStatsForTesting().requests;
     driver.click(globalCenter(playButton));
     assert(editor.directSequencePlaybackForTesting(),

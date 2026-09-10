@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Auto-prepare timeline composition on playhead change (done)
+
+User: "Could you make it automatically start to prepare timeline composition
+when playback head changes."
+
+- [x] Diagnosed: the background playback prewarm (2026-08-13) already decodes
+      the exact stream Play would start on playhead changes, but only after the
+      0.06 s settle debounce.
+- [x] `notePlaybackPrewarmDirty` now arms `_playbackPrewarmPrompt` for discrete
+      playhead changes (next-tick start); during an active scrub drag the
+      debounce is kept (no per-pixel FFmpeg spawn). `endSeekGesture` arms the
+      prompt for a paused `PlaybackKind.none` drag release.
+- [x] Added `playbackPrewarmPromptForTesting()` /
+      `resetPlaybackPrewarmForTesting()` hooks.
+- [x] Regression added to `tests/synced_playback_preroll_smoke.d`.
+- [x] Verified: `dub test` 42 modules; synced-preroll, seek-resilience,
+      audio-clock, playback-stress all pass. Fresh exe staged as
+      `aurora-cut/aurora-cut-prewarm.exe` (root exe was locked by the running
+      PID 7380).
+- [ ] Not confirmed with the user whether they actually meant the full
+      composition proxy render instead of the existing stream prewarm (the
+      clarifying question was left unanswered). If so, revisit.
+
 ## 2026-09-06 - Text rendering soft/glowy: analytic AA rasterizer fixed from the ground up (fixed)
 
 User: "don't know what happened to the text rendering but programs like
