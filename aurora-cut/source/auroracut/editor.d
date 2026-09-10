@@ -6214,6 +6214,9 @@ final class EditorRoot : VBox
             // stream exists.
             if (pausedScrubCanServe(value))
             {
+                // The still path would have synced the retained title layers;
+                // keep them in step with the warm-decoder frame.
+                syncPreviewTitleLayers(value);
                 _pausedScrubAwaitingStream = true;
                 _pendingPreviewKind = PendingPreviewKind.none;
                 _pendingPreviewDelay = 0.0;
