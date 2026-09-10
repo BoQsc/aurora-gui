@@ -1,9 +1,10 @@
 module auroracut.ffmpegbundle;
 
+import std.conv : to;
 import std.file : exists, getSize, mkdirRecurse, tempDir, write;
 import std.path : buildPath;
 import std.process : environment;
-import std.conv : to;
+import std.zlib : uncompress;
 
 /** The directory the bundled FFmpeg was last extracted into, or "" when this
  * build has no embedded copy. Used by the optional in-process libav decoder to
@@ -17,8 +18,20 @@ string bundledFfmpegDirectory()
 
 version (BundledFfmpeg)
 {
-    private immutable ubyte[] _ffmpegBytes = cast(ubyte[]) import("ffmpeg.exe");
-    private immutable ubyte[] _ffprobeBytes = cast(ubyte[]) import("ffprobe.exe");
+    // zlib-compressed payloads so the single exe stays small (26.8 MB of
+    // ffmpeg/ffprobe compress to ~10.4 MB). scripts/build-portable-windows.py
+    // writes these `embedded/*.z` files before the single-exe link; they are
+    // inflated on first run.
+    private immutable ubyte[] _ffmpegCompressed = cast(ubyte[]) import("ffmpeg.exe.z");
+    private immutable ubyte[] _ffprobeCompressed = cast(ubyte[]) import("ffprobe.exe.z");
+
+    private ubyte[] inflate(const(ubyte)[] compressed)
+    {
+        try
+            return cast(ubyte[]) uncompress(compressed);
+        catch (Exception)
+            return null;
+    }
 }
 
 private string bundleRoot()
@@ -26,17 +39,17 @@ private string bundleRoot()
     return buildPath(tempDir(), "Aurora-Cut-ffmpeg");
 }
 
-/** Directory keyed by the embedded payload sizes so a newer release never
- * reuses (or conflicts with) an older build's extracted files: each distinct
- * bundle gets its own subdirectory, and concurrent app instances writing the
- * same release are byte-identical and idempotent. */
+/** Directory keyed by the embedded (compressed) payload sizes so a newer
+ * release never reuses (or conflicts with) an older build's extracted files:
+ * each distinct bundle gets its own subdirectory, and concurrent app instances
+ * writing the same release are byte-identical and idempotent. */
 private string bundleDirectory()
 {
     version (BundledFfmpeg)
     {
         return buildPath(bundleRoot(),
-            "ffmpeg-" ~ to!string(_ffmpegBytes.length) ~ "-" ~
-            to!string(_ffprobeBytes.length));
+            "ffmpeg-" ~ to!string(_ffmpegCompressed.length) ~ "-" ~
+            to!string(_ffprobeCompressed.length));
     }
     else
     {
@@ -54,6 +67,10 @@ string extractBundledFfmpeg()
 {
     version (BundledFfmpeg)
     {
+        const ffmpegBytes = inflate(_ffmpegCompressed);
+        const ffprobeBytes = inflate(_ffprobeCompressed);
+        if (ffmpegBytes is null || ffprobeBytes is null) return "";
+
         const dir = bundleDirectory();
         try
         {
@@ -62,8 +79,8 @@ string extractBundledFfmpeg()
             // locked file from a concurrent instance must never block this
             // instance: because the directory is content-keyed, the bytes are
             // already correct on disk, so a failed write is simply ignored.
-            writeIfDifferent(buildPath(dir, "ffmpeg.exe"), _ffmpegBytes);
-            writeIfDifferent(buildPath(dir, "ffprobe.exe"), _ffprobeBytes);
+            writeIfDifferent(buildPath(dir, "ffmpeg.exe"), ffmpegBytes);
+            writeIfDifferent(buildPath(dir, "ffprobe.exe"), ffprobeBytes);
             return dir;
         }
         catch (Exception)
@@ -73,8 +90,8 @@ string extractBundledFfmpeg()
             {
                 const fallback = bundleRoot();
                 if (!exists(fallback)) mkdirRecurse(fallback);
-                writeIfDifferent(buildPath(fallback, "ffmpeg.exe"), _ffmpegBytes);
-                writeIfDifferent(buildPath(fallback, "ffprobe.exe"), _ffprobeBytes);
+                writeIfDifferent(buildPath(fallback, "ffmpeg.exe"), ffmpegBytes);
+                writeIfDifferent(buildPath(fallback, "ffprobe.exe"), ffprobeBytes);
                 return fallback;
             }
             catch (Exception)

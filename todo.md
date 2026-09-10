@@ -1,5 +1,21 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Single exe back under 30 MB (done)
+
+User: "hope the final single binary will not be large or above 30mb."
+
+- [x] Measured the single exe: 31,056,896 bytes (embedded raw ffmpeg+ffprobe =
+      26.8 MB). Predates our work.
+- [x] Embed the tools zlib-compressed (`ffmpeg.exe.z`/`ffprobe.exe.z`) and
+      inflate on first run, in both aurora-cut and aurora-stream
+      `ffmpegbundle.d`. `build-portable-windows.py` stages the `.z` files; no
+      workflow YAML change required.
+- [x] Verified end-to-end: new single exe = **14,627,840 bytes (13.95 MiB)**;
+      extraction produced SHA-256-identical ffmpeg/ffprobe.
+- [x] `dub test` 42 modules pass; default/release builds unaffected.
+- [ ] OPEN: optional libav accelerator still not shipped (121.6 MB unzipped).
+      Needs a minimal shared FFmpeg build to be worth shipping.
+
 ## 2026-09-10 - Play start still waits a few seconds (partly fixed)
 
 User: "clicking and waiting for it to start playing, takes a few seconds instead

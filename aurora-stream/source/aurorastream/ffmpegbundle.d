@@ -4,11 +4,22 @@ import std.conv : to;
 import std.file : exists, mkdirRecurse, read, tempDir, write;
 import std.path : buildPath;
 import std.process : environment;
+import std.zlib : uncompress;
 
 version (BundledFfmpeg)
 {
-    private immutable ubyte[] _ffmpegBytes = cast(ubyte[]) import("ffmpeg.exe");
-    private immutable ubyte[] _ffprobeBytes = cast(ubyte[]) import("ffprobe.exe");
+    // zlib-compressed payloads so the single exe stays small; inflated on first
+    // run. scripts/build-portable-windows.py writes these `embedded/*.z` files.
+    private immutable ubyte[] _ffmpegCompressed = cast(ubyte[]) import("ffmpeg.exe.z");
+    private immutable ubyte[] _ffprobeCompressed = cast(ubyte[]) import("ffprobe.exe.z");
+}
+
+private ubyte[] inflate(const(ubyte)[] compressed)
+{
+    try
+        return cast(ubyte[]) uncompress(compressed);
+    catch (Exception)
+        return null;
 }
 
 private string bundleDirectory()
@@ -20,8 +31,8 @@ private string bundleDirectory()
         // also permits upgrades while a previous FFmpeg process still holds
         // its extracted image open.
         return buildPath(tempDir(), "Aurora-Stream-ffmpeg-" ~
-            bundleHash(_ffmpegBytes).to!string ~ "-" ~
-            bundleHash(_ffprobeBytes).to!string);
+            bundleHash(_ffmpegCompressed).to!string ~ "-" ~
+            bundleHash(_ffprobeCompressed).to!string);
     }
     else
     {
@@ -66,14 +77,18 @@ string extractBundledFfmpeg()
 {
     version (BundledFfmpeg)
     {
+        const ffmpegBytes = inflate(_ffmpegCompressed);
+        const ffprobeBytes = inflate(_ffprobeCompressed);
+        if (ffmpegBytes is null || ffprobeBytes is null) return "";
+
         const dir = bundleDirectory();
         try
         {
             if (!exists(dir)) mkdirRecurse(dir);
             const ffmpegOk = writeAndVerify(
-                buildPath(dir, "ffmpeg.exe"), _ffmpegBytes);
+                buildPath(dir, "ffmpeg.exe"), ffmpegBytes);
             const ffprobeOk = writeAndVerify(
-                buildPath(dir, "ffprobe.exe"), _ffprobeBytes);
+                buildPath(dir, "ffprobe.exe"), ffprobeBytes);
             return ffmpegOk && ffprobeOk ? dir : "";
         }
         catch (Exception)

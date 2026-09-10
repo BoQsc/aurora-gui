@@ -7,6 +7,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 
@@ -123,6 +124,24 @@ def build_game_capture_hook(repo_root: Path, compiler: str) -> None:
         raise SystemExit(1)
 
 
+def stage_compressed_embedded(package_root: Path) -> None:
+    """zlib-compress the staged ffmpeg/ffprobe so the embedded payloads (and the
+    single exe) stay small. `<app>/source/.../ffmpegbundle.d` imports the `.z`
+    files and inflates them on first run."""
+    embedded = package_root / "embedded"
+    for tool in ("ffmpeg.exe", "ffprobe.exe"):
+        raw = embedded / tool
+        if not raw.is_file():
+            continue
+        compressed = zlib.compress(raw.read_bytes(), 9)
+        target = embedded / (tool + ".z")
+        target.write_bytes(compressed)
+        print(
+            f"staged {target} ({raw.stat().st_size} -> {len(compressed)} bytes)",
+            flush=True,
+        )
+
+
 def verify_stream_ffmpeg_inventory(ffmpeg: Path) -> None:
     """Refuse a release payload that lacks Aurora Stream's capture filters.
 
@@ -216,6 +235,7 @@ def main() -> int:
                         flush=True,
                     )
                     raise SystemExit(1)
+            stage_compressed_embedded(package_root)
             ico = package_root / "assets" / f"{name}.ico"
             if not ico.is_file():
                 print(f"::error::missing icon {ico}", flush=True)

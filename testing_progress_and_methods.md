@@ -1,5 +1,45 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Single-exe size cut ~53% (compressed embedded FFmpeg) (2026-09-10)
+
+User: "hope the final single binary will not be large or above 30mb."
+
+**Measured:** the single exe embedded `ffmpeg.exe` (13,479,936) + `ffprobe.exe`
+(13,322,752) raw, so it was **31,056,896 bytes (29.6 MiB / 31.1 MB decimal)** —
+right at/over the 30 MB line (and this predates our changes; our code added only
+~127 KB).
+
+**Change:** embed the tools zlib-compressed and inflate on first run.
+- `aurora-cut/source/auroracut/ffmpegbundle.d` and
+  `aurora-stream/source/aurorastream/ffmpegbundle.d`: `import("ffmpeg.exe.z")` /
+  `import("ffprobe.exe.z")`, `std.zlib.uncompress` at extraction, null-guard on
+  failure. Directory/cache key uses the compressed sizes (aurora-stream still
+  content-hashes, now over the compressed bytes).
+- `scripts/build-portable-windows.py`: new `stage_compressed_embedded()` writes
+  `embedded/ffmpeg.exe.z` / `ffprobe.exe.z` (zlib level 9) before the
+  `--single-exe` link. **No workflow YAML change needed** — the script already
+  runs `--single-exe` in `portable-windows.yml`, and the `.z` files are
+  git-ignored under `/embedded/*`.
+- Compression sizes: aurora-cut ffmpeg 13,479,936 -> 5,229,639, ffprobe
+  13,322,752 -> 5,142,977. aurora-stream similar (~5.1 / 5.0 MB).
+
+**Measured after:** single exe = **14,627,840 bytes (13.95 MiB / 14.6 MB)**.
+
+**Verified end-to-end (local, `local-single-exe-measure` build type, then
+removed):** ran the 14.6 MB exe with `--version`; it extracted to
+`%TEMP%\Aurora-Cut-ffmpeg\ffmpeg-5229639-5142977\` and the extracted
+`ffmpeg.exe`/`ffprobe.exe` were **SHA-256 identical** to the originals
+(`0f77c6ad…`, `aaf2171e…`). `std.zlib.uncompress` was first proven against
+Python `zlib.compress(...,9)` output (byte-exact, checksum + length match).
+
+**Notes:**
+- `dub build --build=portable-single-exe` now REQUIRES `embedded/*.z` (created
+  by the script). The default/`portable-release` builds are unaffected (no
+  `BundledFfmpeg`).
+- The optional libav accelerator is deliberately NOT embedded/shipped: its DLLs
+  are 121.6 MB (94 MB avcodec), far larger than the exe. Keep it opt-in until a
+  minimal shared build exists.
+
 ## Play start latency: live-composite first frame (2026-09-10)
 
 User: "still have problem of clicking and waiting for it to start playing, takes
