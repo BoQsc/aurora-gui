@@ -1,5 +1,61 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Persistent paused-scrub decoder (option 2) — IMPLEMENTED (2026-09-10)
+
+Follow-up to "why per-frame scrub is not instant": the user said "do it" for
+option 2 (persistent decoder window).
+
+**What was implemented (`aurora-cut/source/auroracut/editor.d`):** the paused
+prewarm's `_videoStream` (already a persistent, asynchronous FFmpeg decoder,
+`playback.d`) now also serves a paused, never-played scrub. Instead of the
+`playheadChanged` -> still-renderer spawn path:
+
+- `pausedScrubStreamServing()` — true while paused (`PlaybackKind.none`), no
+  pending seek, the prewarm is active with a video stream, and it is running or
+  holds ready frames.
+- `pausedScrubCanServe(value)` — the decoder is forward-only; a target before
+  `_playbackPrewarmPosition` (advanced as frames are served) must fall back to
+  the still renderer, so a backward move still renders correctly.
+- `playheadChanged` (`none`): if `pausedScrubCanServe`, skip the still renderer
+  and set `_pausedScrubAwaitingStream`; otherwise use the still path as before.
+- `onTick`: while serving, drain
+  `_videoStream.takeReadyAtOrBefore(targetSource)` (source time is
+  `sequence + _playbackPrewarmDirectOffset` for direct, `sequence` for the live
+  composite) and display the newest frame; advance `_playbackPrewarmPosition`
+  (and, for direct, `_playbackPrewarmVideoPosition`) so the keep-alive window and
+  a later Play adoption follow the scrub.
+- Failure/finished fallbacks: if the stream dies before serving an awaited
+  frame, the still renderer takes over (`_pausedScrubAwaitingStream`).
+- `_playbackPrewarmDirectOffset` is set in both direct prewarm branches.
+- Test-only `setPlaybackPrewarmEnabledForTesting(false)` disables the prewarm so
+  the classic still path (and its composition neighbor prefetch) can be tested
+  deterministically.
+
+**Measured (temporary probes, since deleted):** a 24-step forward paused scrub
+on a 30 s test clip: `scrubServing=true`, **still-FFmpeg processes delta = 0**
+(before, one spawn per frame at ~70 ms), and the preview frame advanced with the
+playhead. Works for both direct source and live composition.
+
+**Tests:** new `tests/paused_scrub_stream_smoke.d` (forward scrub served with no
+still spawns; backward move still renders via the still path) passes 4x;
+`synced_playback_preroll_smoke`, `composition_prefetch_smoke` (prewarm disabled),
+`playback_seek_resilience`, `playback_stress`, `pcm_audio_clock`,
+`static_sequence_playback` all pass; `dub test` 42 modules.
+
+**How to run the new test (Windows, from `aurora-cut/`):**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\paused_scrub_stream_smoke.d ^
+  -of=build\headless-smoke\paused-scrub-stream-smoke.exe ^
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib
+build\headless-smoke\paused-scrub-stream-smoke.exe ..\build\media\base-av.mp4
+```
+
+**Remaining:** backward / far jumps still restart the decoder (~54-72 ms); true
+"instant anywhere" needs in-process libav* (option 1). Fresh exe staged as
+`aurora-cut/aurora-cut-opt2.exe` (MD5 `4d5bda3b58b48eccc3731148bae53f31`);
+root exe was locked by the running app (PID 28204).
+
 ## Why per-frame scrub is not instant: measured cost breakdown (2026-09-10)
 
 User: "why other video editors able to get instant playback per frame no matter

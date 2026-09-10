@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Persistent paused-scrub decoder (option 2) (done)
+
+User: "do it" (after the diagnosis of why per-frame scrub is not instant).
+
+- [x] The paused prewarm's persistent `_videoStream` now also serves a paused,
+      never-played scrub: `pausedScrubStreamServing` / `pausedScrubCanServe`,
+      a `playheadChanged` fast path that skips the still renderer, and an onTick
+      consumer that drains the newest buffered frame at/before the playhead.
+- [x] Forward-only: a backward move falls back to the still renderer; a
+      dying/finished stream also falls back (`_pausedScrubAwaitingStream`).
+- [x] Direct media-time mapping via `_playbackPrewarmDirectOffset`; advancing
+      `_playbackPrewarmPosition`/`_playbackPrewarmVideoPosition` keeps the window
+      and a later Play adoption following the scrub.
+- [x] New `tests/paused_scrub_stream_smoke.d`; `setPlaybackPrewarmEnabledForTesting`
+      lets the composition-prefetch smoke exercise the still path deterministically.
+- [x] Verified: measured 0 still-FFmpeg spawns during a 24-step forward paused
+      scrub (was ~70 ms/frame); paused-scrub (4x), synced-preroll,
+      composition-prefetch, seek-resilience, playback-stress, audio-clock,
+      static-sequence pass; `dub test` 42 modules. Fresh exe staged as
+      `aurora-cut/aurora-cut-opt2.exe` (root exe locked by PID 28204).
+- [ ] Still not done (option 1, the only true "instant anywhere"): in-process
+      libav* bindings. Backward/far jumps remain ~54-72 ms.
+
 ## 2026-09-10 - Why per-frame scrub is not instant (diagnosis done, fix not)
 
 User: "why other video editors able to get instant playback per frame no matter

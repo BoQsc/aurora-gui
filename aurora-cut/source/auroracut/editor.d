@@ -818,6 +818,17 @@ final class EditorRoot : VBox
     private string _playbackPrewarmAudioSignature;
     private bool _playbackPrewarmHasVideoStream;
     private double _playbackPrewarmPosition = -1.0;
+    // Sequence-time -> media-time offset of the prewarmed direct stream
+    // (media = sequence + offset). A never-played paused scrub maps its target
+    // through this to consume the warm decoder instead of spawning a still.
+    private double _playbackPrewarmDirectOffset = 0.0;
+    // Set when a paused scrub skipped the per-still renderer because the warm
+    // decoder was expected to serve the frame. If that decoder dies before it
+    // does, the next tick falls back to one still renderer request.
+    private bool _pausedScrubAwaitingStream;
+    // Allows tests/diagnostics to disable the background prewarm so the classic
+    // still-frame path can be exercised deterministically.
+    private bool _playbackPrewarmEnabled = true;
     // Direct-mode prewarm launch geometry (media source time and remaining
     // duration), kept separately from the identity key so a playhead moved
     // inside the buffered window still adopts the warm streams.
@@ -1080,6 +1091,7 @@ final class EditorRoot : VBox
     PreviewServiceStats previewStatsForTesting() { return _previewService.stats(); }
     bool previewBusyForTesting() { return _previewService.busy(); }
     bool videoStreamFinishedForTesting() { return _videoStream.finished(); }
+    bool videoStreamRunningForTesting() { return _videoStream.running(); }
     bool videoStreamHasReadyFramesForTesting() { return _videoStream.hasReadyFrames(); }
     bool playbackReadyForTesting() const { return playbackReady(); }
     double playbackPrewarmForwardWindowForTesting() const
@@ -1139,6 +1151,17 @@ final class EditorRoot : VBox
     }
     bool playbackPrewarmActiveForTesting() const { return _playbackPrewarmActive; }
     bool playbackPrewarmPromptForTesting() const { return _playbackPrewarmPrompt; }
+    bool pausedScrubStreamServingForTesting() { return pausedScrubStreamServing(); }
+    bool pausedScrubAwaitingStreamForTesting() const { return _pausedScrubAwaitingStream; }
+    void setPlaybackPrewarmEnabledForTesting(bool value)
+    {
+        _playbackPrewarmEnabled = value;
+        if (!value) cancelPlaybackPrewarm();
+    }
+    double previewFrameTimeForTesting() const
+    {
+        return _preview is null ? -1.0 : _preview.frameTime();
+    }
     void resetPlaybackPrewarmForTesting()
     {
         cancelPlaybackPrewarm();
@@ -6185,6 +6208,17 @@ final class EditorRoot : VBox
         }
         else if (_playbackKind == PlaybackKind.none)
         {
+            // A warm decoder that is already running serves the paused frame
+            // itself (consumed each tick). Spawning the still renderer as well
+            // would defeat the point, so only fall back to it when no such
+            // stream exists.
+            if (pausedScrubCanServe(value))
+            {
+                _pausedScrubAwaitingStream = true;
+                _pendingPreviewKind = PendingPreviewKind.none;
+                _pendingPreviewDelay = 0.0;
+                return;
+            }
             scheduleTimelineFrame();
             // A discrete playhead change (ruler click release, Home/End,
             // programmatic move) has a final target, so start the still render
@@ -6195,6 +6229,27 @@ final class EditorRoot : VBox
             if (!_seekGesture)
                 dispatchPendingPreviewNow();
         }
+    }
+
+    /** True while a paused, never-played scrub can be served from the warm
+     * decoder stream instead of spawning a fresh FFmpeg still per frame. */
+    private bool pausedScrubStreamServing()
+    {
+        return _playbackKind == PlaybackKind.none && !_seekPending &&
+            _playbackPrewarmActive && _playbackPrewarmHasVideoStream &&
+            (_videoStream.running() || _videoStream.hasReadyFrames());
+    }
+
+    /** Whether the paused scrub stream can supply (not just follow) a frame for
+     * `value`. The decoder is forward-only, so a target behind the newest served
+     * frame must use the still renderer instead. */
+    private bool pausedScrubCanServe(double value)
+    {
+        if (!pausedScrubStreamServing()) return false;
+        // The decoder is forward-only and started at `_playbackPrewarmPosition`
+        // (advanced as frames are served). A target before the current decoder
+        // position cannot be reached and must use the still renderer instead.
+        return value >= _playbackPrewarmPosition - 0.001;
     }
 
     /** Serve a paused sequence frame step from the warm prewarm stream when the
@@ -6791,7 +6846,8 @@ final class EditorRoot : VBox
      * match so the first frame appears immediately. */
     private void startPlaybackPrewarm()
     {
-        if (_playbackPrewarmActive || !_tools.ffmpeg) return;
+        if (_playbackPrewarmActive || !_tools.ffmpeg ||
+            !_playbackPrewarmEnabled) return;
         const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
             _compositionWidth, _compositionHeight);
         const fps = livePlaybackFps(decode);
@@ -6884,6 +6940,7 @@ final class EditorRoot : VBox
                     else
                         _playbackPrewarmAudioSignature = "";
                     _playbackPrewarmMode = "direct";
+                    _playbackPrewarmDirectOffset = _playbackMediaOffset;
                 }
                 _playbackPrewarmPosition = _playbackPosition;
             }
@@ -6950,6 +7007,7 @@ final class EditorRoot : VBox
                     else
                         _playbackPrewarmAudioSignature = "";
                     _playbackPrewarmMode = "direct";
+                    _playbackPrewarmDirectOffset = mediaOffset;
                 }
                 else if (resolveStaticSequenceVisual())
                 {
@@ -7013,6 +7071,12 @@ final class EditorRoot : VBox
             (_playbackKind != PlaybackKind.none &&
              _playbackKind != PlaybackKind.sequence))
             return;
+        if (!_playbackPrewarmEnabled)
+        {
+            if (_playbackPrewarmActive) cancelPlaybackPrewarm();
+            _playbackPrewarmDelay = 0.0;
+            return;
+        }
         if (!_tools.ffmpeg || _model.sequenceDuration() <= 0.0 ||
             _exportJob.state().running || _importService.busy() ||
             _downloadService.busy())
@@ -10183,6 +10247,59 @@ final class EditorRoot : VBox
                     _lastPreviewClockPaint = _playbackPosition;
                     _preview.setPlaybackTime(_playbackPosition);
                 }
+            }
+        }
+
+        // Persistent paused scrub: while the warm decoder runs, display the
+        // newest already-decoded frame at or before the playhead instead of
+        // spawning a fresh ffmpeg per position. This is what makes a paused
+        // scrub advance frame-by-frame without a process launch each step.
+        if (pausedScrubStreamServing())
+        {
+            const target = _timeline.playhead();
+            const direct = _playbackPrewarmMode == "direct";
+            const targetSource = direct ?
+                target + _playbackPrewarmDirectOffset : target;
+            PreviewFrame frame;
+            PreviewFrame latest;
+            bool served;
+            while (_videoStream.takeReadyAtOrBefore(targetSource, frame))
+            {
+                latest = frame;
+                served = true;
+            }
+            if (served)
+            {
+                _preview.setFrame(latest);
+                _preview.setPlaying(false);
+                _pendingPreviewKind = PendingPreviewKind.none;
+                _pendingPreviewDelay = 0.0;
+                _pausedScrubAwaitingStream = false;
+                // Follow the progress so the keep-alive window stays centered on
+                // the advancing playhead rather than the original launch point,
+                // and so a Play right after the scrub still adopts this decoder.
+                _playbackPrewarmPosition = direct ?
+                    latest.sourceTime - _playbackPrewarmDirectOffset :
+                    latest.sourceTime;
+                if (direct) _playbackPrewarmVideoPosition = latest.sourceTime;
+            }
+            else if (_pausedScrubAwaitingStream && _playbackPrewarmFailures > 0)
+            {
+                // The warm decoder was expected to serve but never did (it is
+                // failing); fall back to one still renderer request.
+                _pausedScrubAwaitingStream = false;
+                scheduleTimelineFrame();
+            }
+        }
+        else if (_pausedScrubAwaitingStream)
+        {
+            // The stream disappeared (finished/failed) before serving the
+            // awaited frame; recover with the still renderer.
+            _pausedScrubAwaitingStream = false;
+            if (_playbackKind == PlaybackKind.none)
+            {
+                scheduleTimelineFrame();
+                if (!_seekGesture) dispatchPendingPreviewNow();
             }
         }
 

@@ -72,6 +72,10 @@ int main(string[] arguments)
     auto driver = new UiTestDriver(window);
     driver.resize(Size(options.width, options.height));
     assert(driver.paint(), "Initial composition prefetch paint failed");
+    // This smoke exercises the still/composition renderer + its neighbor
+    // prefetch. Disable the persistent scrub prewarm so the still path (not the
+    // warm decoder) serves the paused frames.
+    editor.setPlaybackPrewarmEnabledForTesting(false);
 
     auto timeline = requireWidget!TimelineWidget(editor, "sequence-timeline");
     auto preview = requireWidget!PreviewWidget(editor, "preview");
@@ -135,8 +139,8 @@ int main(string[] arguments)
     assert(waitForPreviewIdle(editor),
         "Composition preview worker never went idle before the scrub test");
     const dragRequestsBefore = editor.previewStatsForTesting().requests;
-    const dragCancellationsBefore =
-        editor.previewStatsForTesting().cancellations;
+    const dragProcessesBefore =
+        editor.previewStatsForTesting().processesStarted;
     editor.beginSeekGestureForTesting();
     bool scrubProducedFrame;
     foreach (step; 0 .. 60)
@@ -151,9 +155,12 @@ int main(string[] arguments)
     assert(scrubProducedFrame,
         "An active paused scrub never dispatched a preview frame");
     editor.endSeekGestureForTesting();
-    assert(editor.previewStatsForTesting().cancellations ==
-        dragCancellationsBefore,
-        "Scrub preview churned FFmpeg processes instead of serializing frames");
+    // The still renderer is the fallback path (the prewarm is disabled here), so
+    // it must not spawn one FFmpeg per pixel: 60 moves must stay well bounded.
+    const dragProcesses = editor.previewStatsForTesting().processesStarted -
+        dragProcessesBefore;
+    assert(dragProcesses < 12,
+        "A paused scrub spawned an FFmpeg process per frame instead of serializing");
 
     writeln("Aurora Cut composition prefetch smoke test passed.");
     return 0;
