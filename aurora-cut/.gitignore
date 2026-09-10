@@ -10,3 +10,6 @@
 *.log
 /embedded/*
 !/embedded/.gitkeep
+# Optional in-process libav*.dll accelerator; shipped/staged locally, huge.
+/libav/*
+!/libav/.gitkeep

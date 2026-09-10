@@ -1,5 +1,74 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Option 1 implemented: in-process libav decoder (instant random-access scrub) (2026-09-10)
+
+User: "yes" to option 1 (in-process libav). Goal: random-access scrub frame in
+~ms instead of the ~54 ms `ffmpeg.exe` spawn floor.
+
+**Feasibility scoping (measured, not assumed):**
+- No C compiler on this host (`tcc` is a broken symlink; no gcc/clang/cl), so a
+  C shim was out. No libav DLLs in the app runtime.
+- The repo DOES contain a full shared FFmpeg build at
+  `aurora-stream/build-validation/ffmpeg-master/extracted/ffmpeg-master-latest-win64-gpl-shared/`
+  (headers + DLLs + import libs), FFmpeg master, avcodec major **63**.
+- Proved a runtime-loaded D binding works (standalone probe): random
+  seek+decode+swscale to RGB24 in **0.22-0.35 ms**.
+
+**Implementation:**
+- New `source/auroracut/libavdecode.d`: loads `avutil-61.dll`,
+  `swscale-10.dll`, `avcodec-63.dll`, `avformat-63.dll` with
+  `LoadLibraryExW(..., LOAD_WITH_ALTERED_SEARCH_PATH)`, resolves ~25 symbols,
+  and keeps an LRU of persistent per-path decoders. ABI struct prefixes
+  (`AVFormatContext` streams@48, `AVStream` codecpar@16/time_base@32,
+  `AVFrame` data/linesize/width/height/format, `AVPacket` stream_index@36,
+  pts@8) were read from the shipped headers. The binding refuses to bind unless
+  `avcodec_version() >> 16 == 63`.
+- Decode is `av_seek_frame(BACKWARD)` + `avcodec_flush_buffers` + read until the
+  packet pts >= target; `sws_scale` fits the frame and letterboxes to match the
+  existing ffmpeg `scale=...:force_original_aspect_ratio=decrease,pad=...` filter.
+- `preview.d` `PreviewService.renderRequest` now tries `tryLibavAssetFrame()`
+  for plain source stills (asset kind, has video, not still image, not a step
+  batch / centered prefetch). On success it publishes the slot and never counts
+  a process; on ANY failure it falls through to the ffmpeg spawn path.
+- Discovery: `AURORA_LIBAV_DIR` env, or a `libav/` folder beside the exe.
+  NOT the current directory (so a stray folder cannot silently change preview
+  behaviour or test results). Absent libs => accelerator off, classic path used.
+- `setLibavDecodeEnabledForTesting(bool)` forces it off for deterministic tests.
+
+**Measured in the app (debug build, base-av.mp4, 720p):**
+- `libav_decode_smoke` random access: ~4-6 ms average (first call ~12-19 ms
+  includes decoder open; release build will be lower). Previously ~90 ms.
+- `libav_scrub_smoke` (EditorRoot random playhead jumps, prewarm disabled):
+  every target rendered, **still-ffmpeg process delta = 0**, worst ~15.7 ms.
+
+**Packaging / production notes (IMPORTANT):**
+- The DLLs total ~127 MB (`avcodec-63.dll` alone is 99 MB). They are staged
+  locally in `aurora-cut/libav/` (git-ignored via `aurora-cut/.gitignore`), NOT
+  committed. Shipping them (or a smaller minimal shared build) is a release
+  decision — the single portable exe currently only embeds `ffmpeg.exe`/`ffprobe.exe`.
+- The DLLs here are FFmpeg **master** (unstable). For a release, pin a stable
+  shared build, then re-verify the struct offsets and the `== 63` guard.
+- Until libs are shipped, the accelerator benefits dev/opt-in machines only;
+  the release still uses the spawn path (correct, just slower on random access).
+
+**How to run the new tests (Windows, from `aurora-cut/`):**
+```
+dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\libav_decode_smoke.d ^
+  -of=build\headless-smoke\libav-decode-smoke.exe user32.lib
+set AURORA_LIBAV_DIR=<...>\ffmpeg-master-latest-win64-gpl-shared\bin
+build\headless-smoke\libav-decode-smoke.exe ..\build\media\base-av.mp4
+
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\libav_scrub_smoke.d -of=build\headless-smoke\libav-scrub-smoke.exe ^
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib
+build\headless-smoke\libav-scrub-smoke.exe ..\build\media\base-av.mp4
+```
+Both skip (exit 0) when the libs are unavailable, so they are safe in CI.
+
+**Regression:** `dub test` 42 modules; synced-preroll, composition-prefetch,
+paused-scrub-stream, playback-seek-resilience, playback-stress all pass with the
+accelerator OFF (default), proving the fallback is unchanged.
+
 ## Persistent paused-scrub decoder (option 2) — INDEPENDENT VERIFICATION + latency numbers (2026-09-10)
 
 Re-verified the option-2 work independently in the current tree (a fresh

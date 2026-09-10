@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Option 1: in-process libav decoder (implemented)
+
+User: "yes" to in-process libav for instant random-access scrub.
+
+- [x] Scoped: no C compiler, no libav in runtime, but a full shared FFmpeg build
+      exists in `aurora-stream/build-validation/...` (avcodec 63). Proved a
+      runtime-loaded D binding decodes random seek+RGB in ~0.3 ms.
+- [x] New `source/auroracut/libavdecode.d` (runtime-loaded, version-guarded,
+      persistent decoder LRU, letterboxed RGB) + `tryLibavAssetFrame` in
+      `preview.d`. Fully optional: falls back to the ffmpeg spawn path on any
+      failure or when libs are absent.
+- [x] Tests: `tests/libav_decode_smoke.d`, `tests/libav_scrub_smoke.d` (skip
+      when libs unavailable). Measured random access ~4-6 ms and
+      **0 ffmpeg processes** in the app.
+- [x] No regressions: `dub test` 42 modules; synced-preroll, composition-prefetch,
+      paused-scrub-stream, seek-resilience, playback-stress pass with the
+      accelerator OFF.
+- [x] Discovery: `AURORA_LIBAV_DIR` or `libav/` beside the exe (not cwd). DLLs
+      staged in `aurora-cut/libav/`, git-ignored. Fresh exe staged as
+      `aurora-cut/aurora-cut-libav.exe` (root exe locked by PID 18588).
+- [ ] OPEN (release decision): ship the ~127 MB DLLs (or a minimal shared
+      build) to give end users the speedup; currently dev/opt-in only. Also pin
+      a stable shared FFmpeg instead of the master build.
+
 ## 2026-09-10 - Persistent paused-scrub decoder (option 2) (done)
 
 User: "do it" (after the diagnosis of why per-frame scrub is not instant).

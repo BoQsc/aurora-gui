@@ -2,6 +2,7 @@ module auroracut.preview;
 
 import aurora;
 import auroracut.exporter : ExportRequest, compositeFrameArguments;
+import auroracut.libavdecode : decodeLibavRgbFrame, libavDecodeAvailable;
 import auroracut.model : MediaAsset, TextAlignment;
 import auroracut.titlelayer : TitleVisual, loadTitleFace, titlePaintStyle,
     titleRasterScale;
@@ -419,6 +420,56 @@ final class PreviewService
         }
     }
 
+    /** In-process decode of one plain source frame. Returns false to fall back
+     * to the ffmpeg spawn path (unavailable libav, step batches, still images,
+     * decode failure). Never counts as a spawned process. */
+    private bool tryLibavAssetFrame(PreviewRequest request)
+    {
+        if (request.kind != PreviewRequestKind.asset) return false;
+        if (request.asset is null || !request.asset.hasVideo ||
+            request.asset.isStillImage()) return false;
+        // Step batches and centered prefetch decode a neighborhood; those stay
+        // on the existing ffmpeg path so arrow-key stepping keeps its cache.
+        if (request.centeredStepBatch || request.stepDirection != 0) return false;
+        if (!libavDecodeAvailable()) return false;
+
+        const frameBytes = cast(size_t) request.width *
+            cast(size_t) request.height * 3;
+        const slot = acquireWriteSlot(request.generation, frameBytes);
+        if (slot < 0) return false;
+        if (!decodeLibavRgbFrame(request.asset.path, request.time, request.width,
+            request.height, _slots[slot]))
+        {
+            releaseWriteSlot(slot);
+            return false;
+        }
+
+        bool current;
+        _mutex.lock();
+        if (_writingSlot == slot) _writingSlot = -1;
+        current = request.generation == _generation && !_shutdown;
+        if (current)
+        {
+            if (request.publish)
+            {
+                _readySlot = slot;
+                _ready = PreviewFrame.init;
+                _ready.width = request.width;
+                _ready.height = request.height;
+                _ready.title = request.asset.name;
+                _ready.sourceTime = request.time;
+            }
+            ++_stats.framesRendered;
+        }
+        else
+            ++_stats.staleFrames;
+        _mutex.unlock();
+
+        if (current)
+            storeAssetCache(request, request.time, _slots[slot]);
+        return true;
+    }
+
     private void renderRequest(PreviewRequest request)
     {
         if (request.kind == PreviewRequestKind.asset &&
@@ -427,6 +478,10 @@ final class PreviewService
             return;
         if (request.kind == PreviewRequestKind.composition &&
             tryPublishCachedComposition(request)) return;
+        // Optional in-process decoder: a plain source-frame still is decoded and
+        // converted on the worker thread (~5 ms) instead of spawning ffmpeg
+        // (~54 ms). Any failure falls through to the ffmpeg path below.
+        if (tryLibavAssetFrame(request)) return;
 
         string[] arguments;
         string title;
