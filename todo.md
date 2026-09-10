@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Live monitor follow during paused scrub (done)
+
+User: "i sense still non-instant feel while using timeline and playback head.
+don't know if anything can be done more."
+
+- [x] Measured with a temporary probe: a 40-move paused ruler drag produced ZERO
+      composition frames until release (the 60 ms coalescing delay is reset by
+      every pointer move). A single frame costs ~110 ms and is independent of
+      preview resolution (process startup dominates).
+- [x] Fix: while a paused scrub is active, dispatch the newest position as soon
+      as the preview worker is free, paced by an independent scrub timer
+      (`_scrubPreviewElapsed`, 0.05 s). Serialized -> no FFmpeg kill/restart per
+      pixel; monitor now follows the cursor (~9 fps on a composition).
+- [x] Regression in `tests/composition_prefetch_smoke.d` (scrub dispatches;
+      cancellations stay flat).
+- [x] Verified: composition-prefetch (4x), synced-preroll, seek-resilience,
+      playback-stress, audio-clock pass; `dub test` 42 modules. Root exe
+      updated.
+
 ## 2026-09-10 - Composition neighbor-frame prefetch (done)
 
 User: "well if done and pushes yeah let's do it" (approving the held-back idea).

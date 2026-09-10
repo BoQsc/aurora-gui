@@ -737,6 +737,11 @@ final class EditorRoot : VBox
     private int _pendingPreviewStepDirection;
     private size_t _pendingAssetIndex;
     private double _pendingPreviewTime = 0.0;
+    // Independent of _pendingPreviewDelay (which every pointer move resets):
+    // time since the last scrub preview dispatch. Lets a paused drag keep the
+    // monitor following the cursor at the rate frames can actually render.
+    private double _scrubPreviewElapsed = 0.0;
+    private enum double scrubPreviewMinimumInterval = 0.05;
 
     // FFprobe never runs on the event thread. These paths/counters are owned
     // by the UI and summarize one or more overlapping import/drop batches.
@@ -6129,11 +6134,13 @@ final class EditorRoot : VBox
     private void beginSeekGesture()
     {
         _seekGesture = true;
+        _scrubPreviewElapsed = 0.0;
     }
 
     private void endSeekGesture()
     {
         _seekGesture = false;
+        _scrubPreviewElapsed = 0.0;
         if (_seekPending)
             commitPendingSeek();
         else if (_playbackKind == PlaybackKind.none)
@@ -10183,8 +10190,22 @@ final class EditorRoot : VBox
             _playbackKind == PlaybackKind.none)
         {
             _pendingPreviewDelay += deltaSeconds;
-            if (_pendingPreviewDelay >= 0.06)
+            // A settled change uses the normal coalescing delay, but an active
+            // ruler/scrub drag must not freeze the monitor until release: the
+            // coalescing delay is reset by every pointer move, so the picture
+            // would never follow the cursor. While dragging, dispatch the newest
+            // position as soon as the worker is free, paced by an independent
+            // scrub timer (a composition frame takes ~0.1 s, so this yields a
+            // live preview at the rate frames can actually be produced instead
+            // of one FFmpeg kill/restart per pixel).
+            _scrubPreviewElapsed += deltaSeconds;
+            const dragFrameReady = _seekGesture && !_previewService.busy() &&
+                _scrubPreviewElapsed >= scrubPreviewMinimumInterval;
+            if (_pendingPreviewDelay >= 0.06 || dragFrameReady)
+            {
+                if (dragFrameReady) _scrubPreviewElapsed = 0.0;
                 dispatchPendingPreview();
+            }
         }
 
         PreviewFrame staticFrame;

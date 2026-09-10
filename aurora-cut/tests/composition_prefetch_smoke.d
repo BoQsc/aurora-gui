@@ -127,6 +127,34 @@ int main(string[] arguments)
     assert(editor.previewStatsForTesting().cacheHits > hitsAfterForward,
         "Backward neighbor was not prefetched into the composition cache");
 
+    // An active paused scrub must keep the monitor following the cursor instead
+    // of freezing until release. The coalescing delay is reset by every pointer
+    // move, so the drag path uses an independent cadence and only dispatches
+    // when the worker is free (no kill/restart per pixel: cancellations stay
+    // flat while several frames render during the gesture).
+    assert(waitForPreviewIdle(editor),
+        "Composition preview worker never went idle before the scrub test");
+    const dragRequestsBefore = editor.previewStatsForTesting().requests;
+    const dragCancellationsBefore =
+        editor.previewStatsForTesting().cancellations;
+    editor.beginSeekGestureForTesting();
+    bool scrubProducedFrame;
+    foreach (step; 0 .. 60)
+    {
+        const t = baseTime + frameStep * 2.0 * (step + 1);
+        timeline.setPlayhead(t, true);
+        editor.tickTree(0.02);
+        if (editor.previewStatsForTesting().requests > dragRequestsBefore)
+            scrubProducedFrame = true;
+        Thread.sleep(5.msecs);
+    }
+    assert(scrubProducedFrame,
+        "An active paused scrub never dispatched a preview frame");
+    editor.endSeekGestureForTesting();
+    assert(editor.previewStatsForTesting().cancellations ==
+        dragCancellationsBefore,
+        "Scrub preview churned FFmpeg processes instead of serializing frames");
+
     writeln("Aurora Cut composition prefetch smoke test passed.");
     return 0;
 }

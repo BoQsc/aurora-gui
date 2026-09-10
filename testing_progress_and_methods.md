@@ -1,5 +1,45 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Live monitor follow during paused scrub (2026-09-10)
+
+User still felt "non-instant ... while using timeline and playback head".
+
+**Measured first (probe, not guessed).** A headless probe (`build/
+probe_scrub_latency.d`, deleted after use) simulated a 40-move paused ruler drag
+on a transformed clip (forces the composition path) and reported:
+- Before: `requests delta=1` for the whole 620 ms drag — the monitor was FROZEN
+  until release, then the frame arrived ~110 ms later. Root cause: every pointer
+  move calls `scheduleTimelineFrame`, which resets `_pendingPreviewDelay = 0`,
+  so the 60 ms coalescing debounce never elapses during a continuous drag.
+- A single composition frame takes ~110 ms regardless of preview quality
+  (360p 138 ms, 540p 108 ms, 720p 106 ms): FFmpeg process startup + filter-graph
+  init dominates, NOT resolution (so lowering the drag resolution would not
+  help).
+
+**Fix (`aurora-cut/source/auroracut/editor.d`):**
+- New `_scrubPreviewElapsed` timer (NOT reset by playhead moves) plus
+  `scrubPreviewMinimumInterval = 0.05`.
+- `onTick` paused-pending block: while `_seekGesture`, if the worker is idle and
+  the scrub timer elapsed, `dispatchPendingPreview()` the newest position. This
+  serializes frames (only enqueue when NOT busy) so there is no FFmpeg
+  kill/restart per pixel, yet the monitor follows the cursor at the ~9 fps a
+  composition can actually produce.
+- `beginSeekGesture`/`endSeekGesture` reset the timer; discrete settles still
+  dispatch immediately (previous change).
+
+**Measured after:** same drag -> `requests delta=4`, `processes delta=6`,
+`cancellations delta=0`, `framesRendered delta=6`; `releaseToFinalFrameMs`
+~76-110 ms. The monitor now updates ~6 times during the drag instead of 0, with
+no churn.
+
+**Regression:** `tests/composition_prefetch_smoke.d` now asserts an active
+paused scrub dispatches at least one frame and that `cancellations` stays flat
+(serialized, no kill/restart churn).
+
+**Verified (2026-09-10):** composition-prefetch (4x), synced-preroll,
+seek-resilience, playback-stress, PCM-audio-clock pass; `dub test` 42 modules.
+Root exe updated (app was closed) MD5 `b6bc1ac928cefff49b0a51e59b2c2c4a`.
+
 ## Composition neighbor-frame prefetch on playhead settle (2026-09-10)
 
 User: "any way we could get more instant feeling?" -> chose the held-back idea:
