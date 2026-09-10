@@ -1,5 +1,59 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Why per-frame scrub is not instant: measured cost breakdown (2026-09-10)
+
+User: "why other video editors able to get instant playback per frame no matter
+where u click or scrub, per frame scrubbing is also instant."
+
+**Measured (temporary D probes, since deleted; all averages, this host):**
+
+| Operation | avg |
+|---|---|
+| `cmd /c exit` via D `pipeProcess` (pure OS spawn) | 35.3 ms |
+| `ffmpeg -version` via `pipeProcess` | 54.2 ms |
+| 1 frame, `-f null` (spawn + decode, no RGB pipe) | 57.9 ms |
+| 1 frame, rawvideo 1280x720 pipe (scale+pad+rgb24) | 72.4 ms |
+| 1 frame, rawvideo 640x360 pipe | 61.6 ms |
+| 1 frame, rawvideo 1280x720 no scale | 57.7 ms |
+| PreviewService request->frame, idle | ~70 ms |
+| PreviewService request->frame, during rapid scrub | ~77 ms |
+| App discrete jump, plain clip | 78-101 ms |
+| App discrete jump, composition clip | 106-138 ms |
+
+**Breakdown of one still (~72 ms):** ~35 ms OS process creation + ~19 ms ffmpeg
+process init (54-35) + ~18 ms decode/scale/RGB/2.7 MB pipe copy. The source used
+(`base-av.mp4`) is only **320x180**, so essentially none of this is source
+decode — it is fixed per-`ffmpeg.exe` overhead.
+
+**Root cause:** Aurora Cut has NO in-process decoding. Every still/scrub frame
+spawns a fresh `ffmpeg.exe` (`preview.d` `renderRequest` ->
+`pipeProcess(...)`), reads raw RGB24 off a pipe, and discards the process. The
+only place a process is reused is playback (`playback.d` `VideoFrameStream`, one
+spawn per play) and the paused prewarm. So the floor while spawning is ~35 ms
+(OS) + ~19 ms (ffmpeg) = ~54 ms before any decode happens.
+
+**Why other editors are instant:** they link **libavformat/libavcodec** in-
+process and keep a **persistent decoder** (often hardware/GPU) plus a **frame
+cache**. A scrub frame is then a seek + decode on an already-open context, with
+no process creation, no per-frame filter-graph init, and no CPU RGB pipe copy —
+single-digit milliseconds. This is an architecture difference, not a tuning gap.
+
+**Options (ranked by impact):**
+1. **In-process libav*** (bind avformat/avcodec/swscale, persistent decoder +
+   seek + frame cache). Removes the ~54 ms fixed cost; scrub becomes ~5-15 ms.
+   Largest effort, only true fix.
+2. **Persistent scrub decoder window**: keep one FFmpeg/decoder alive and consume
+   frames; restart only when the target leaves the buffered window or moves
+   backward. Forward scrub becomes ~1 spawn per window; backward/far jumps stay
+   ~54-72 ms.
+3. **Deeper frame cache / wider prefetch**: revisits instant; first visit
+   unchanged (still ~72 ms).
+4. **Smaller RGB pipe for scrub (e.g. 480p)** and/or fewer filter inputs: shaves
+   ~10-15 ms, not the ~54 ms spawn.
+
+**No production change made for this note** (analysis only). The 2026-09-10
+scrub-follow fix already removes the previous "frozen until release" behavior.
+
 ## Live monitor follow during paused scrub (2026-09-10)
 
 User still felt "non-instant ... while using timeline and playback head".

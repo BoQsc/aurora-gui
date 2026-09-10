@@ -1,5 +1,21 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Why per-frame scrub is not instant (diagnosis done, fix not)
+
+User: "why other video editors able to get instant playback per frame no matter
+where u click or scrub, per frame scrubbing is also instant."
+
+- [x] Measured the cost of one still: ~35 ms OS process creation + ~19 ms ffmpeg
+      init + ~18 ms decode/scale/RGB(720p)/2.7 MB pipe = ~72 ms. The source is
+      only 320x180, so this is nearly all fixed per-`ffmpeg.exe` overhead.
+- [x] Root cause: no in-process decoding. Every scrub frame spawns a fresh
+      ffmpeg.exe (`preview.d` `renderRequest` -> `pipeProcess`). Other editors
+      link libavcodec in-process + persistent decoder + frame cache -> ms-level.
+- [ ] NOT started (needs a decision / large work): in-process libav* bindings or a
+      persistent scrub decoder. Ranked options recorded in
+      `testing_progress_and_methods.md` ("Why per-frame scrub is not instant").
+      Options 2/3/4 are smaller but do not remove the ~54 ms spawn floor.
+
 ## 2026-09-10 - Live monitor follow during paused scrub (done)
 
 User: "i sense still non-instant feel while using timeline and playback head.
