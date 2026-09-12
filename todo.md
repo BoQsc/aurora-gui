@@ -1,5 +1,19 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-10 - Selection marquee from outside the tracks (done)
+
+User: "could you allow selection ribbon start outside the tracks of timeline.
+Without needing to create new tracks."
+
+- [x] Root cause: `onMouseDown` gated `marqueeSelect` on `overTrack && index < 0`,
+      so empty-space drags below the tracks scrubbed the playhead instead.
+- [x] `timeline.d`: marquee now starts anywhere with the Selection tool
+      (`x >= labelWidth()` and, when over a track, `index < 0`). Ruler/Cut/Text
+      unchanged; empty click still deselects.
+- [x] Added `belowTracksPointForTesting` + regression in
+      `tests/timeline_multiselect_smoke.d` (drag from below tracks selects clips,
+      playhead stays). `dub test` 42 modules; `dub build` links.
+
 ## 2026-09-10 - Minimal shared libav: SHIPPED via CI (done)
 
 - [x] Fixed the real CI failures (from readable job logs): FFmpeg master removed

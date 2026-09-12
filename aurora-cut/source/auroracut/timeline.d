@@ -946,6 +946,14 @@ final class TimelineWidget : Widget
         return localToGlobal(Point(xForTime(time), rect.y + rect.height / 2));
     }
 
+    /** Global point in the empty area below the last track, at sequence `time`.
+     * Used to prove a marquee can start outside the tracks. */
+    Point belowTracksPointForTesting(double time) const
+    {
+        const y = bounds().height > 12 ? bounds().height - 6 : 6;
+        return localToGlobal(Point(xForTime(time), y));
+    }
+
 
     /** Locate a keyframe marker near a global pointer position. */
     bool keyframeAtGlobalPoint(TrackAddress address, int index, Point globalPosition,
@@ -2380,11 +2388,15 @@ final class TimelineWidget : Widget
         }
 
         // With the Selection tool, dragging across empty sequence space draws a
-        // marquee and selects every clip the rectangle touches. The playhead is
-        // scrubbed from the ruler (and from Cut/Text tool drags) instead, so the
+        // marquee and selects every clip the rectangle touches. This includes
+        // the empty area below the last track: the ribbon can start outside the
+        // tracks (and drag up onto them) without first creating a throwaway
+        // track to anchor the drag. The playhead is still scrubbed from the
+        // ruler, and Cut/Text tool drags keep their own behavior, so the
         // Selection tool always selects rather than hijacking the playhead.
-        if (_activeTool == TimelineTool.selection && overTrack && index < 0 &&
-            event.position.x >= labelWidth())
+        if (_activeTool == TimelineTool.selection &&
+            event.position.x >= labelWidth() &&
+            (overTrack ? index < 0 : true))
         {
             _pointerMode = PointerMode.marqueeSelect;
             _marqueeOrigin = event.position;

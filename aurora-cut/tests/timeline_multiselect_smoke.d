@@ -84,6 +84,24 @@ int main()
             "Selection tool drag moved the playhead instead of selecting");
     }
 
+    // The marquee may START outside the tracks (in the empty area below the
+    // last track) and drag up onto them, selecting clips without first creating
+    // a throwaway track. Regression: the ribbon used to require starting inside
+    // a track; empty-space drags scrubbed the playhead instead.
+    {
+        auto driver = new UiTestDriver(window);
+        timeline.selectSingle(v1, 0, false);
+        assert(timeline.selectedCountForTesting() == 1);
+        const beforePlayhead = timeline.playhead();
+        const below = timeline.belowTracksPointForTesting(8.0);
+        const ontoClip = timeline.pointForTrackTime(v1, 2.5);
+        driver.drag(below, ontoClip, 10);
+        assert(timeline.selectedCountForTesting() >= 1,
+            "Marquee started below the tracks did not select any clips");
+        assert(timeline.playhead() == beforePlayhead,
+            "Marquee started below the tracks scrubbed the playhead");
+    }
+
     // A plain click on empty space must DESELECT (clear the current selection),
     // not scrub or do nothing.
     {

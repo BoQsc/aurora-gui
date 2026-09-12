@@ -1,5 +1,39 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Selection marquee can start outside the tracks (2026-09-10)
+
+User: "could you allow selection ribbon start outside the tracks of timeline.
+Without needing to create new tracks."
+
+**Cause:** `TimelineWidget.onMouseDown` only entered `PointerMode.marqueeSelect`
+when the press was inside a track over empty space
+(`_activeTool == selection && overTrack && index < 0`). A drag in the empty area
+below the last track fell through to the playhead-scrub branch.
+
+**Change (`timeline.d`):** the marquee now starts anywhere in the sequence area
+with the Selection tool: `event.position.x >= labelWidth()` and
+`(overTrack ? index < 0 : true)`. So the ribbon can begin below (or beside) the
+tracks and drag up onto them, no throwaway track needed. The ruler still scrubs
+the playhead; Cut/Text tools are unchanged; a click without movement in the empty
+area still clears the selection (existing mouse-up path).
+
+**Testing accessor:** `TimelineWidget.belowTracksPointForTesting(time)` returns a
+global point in the empty area below the last track.
+
+**Regression:** `tests/timeline_multiselect_smoke.d` — drag from
+`belowTracksPointForTesting(8.0)` up onto `v1` selects ≥1 clip and does NOT move
+the playhead.
+
+**Verify:**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\timeline_multiselect_smoke.d ^
+  -of=build\headless-smoke\timeline-multiselect-smoke.exe ^
+  user32.lib gdi32.lib shell32.lib winmm.lib wininet.lib
+build\headless-smoke\timeline-multiselect-smoke.exe
+```
+Passed; `dub test` 42 modules; `dub build` links.
+
 ## Minimal shared libav: SHIPPED via CI (2026-09-10) — 2.93 MB, exe 17.1 MB
 
 Follow-up to the abandoned attempt. With repo logs readable (Actions job logs
