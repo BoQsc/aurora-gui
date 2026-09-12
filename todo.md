@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Inspector sidebar is overwhelming (done)
+
+User: the ITEM EFFECTS / KEYFRAMES sidebar has too much and feels overwhelming;
+make it concise while keeping it fully functional and instant.
+
+- [x] Collapsible `InspectorSection` groups (chevron header + remembered state +
+      `N keys` suffix). Style Effects / Edge Fades start collapsed.
+- [x] Compact rows: `[◇/◆][Label][value][↺]`; removed the per-row "Reset" and
+      "◇ Key" text buttons (new fixed-footprint `GlyphButton`).
+- [x] Removed duplicate in-section hint text; one short footer line.
+- [x] Instant scrub: skip `syncInspector` on playhead moves when the selected clip
+      has no keyframes.
+- [x] Root cause of a broken first attempt: Aurora `Box.onLayout` reads child
+      `preferredHeight` (not measured size), so nested section/body needed an
+      explicit height (`finishLayout()`); otherwise height 0 and clicks miss.
+- [x] New regression `tests/inspector_sections_smoke.d` (all passed); `dub test`
+      42 modules; `dub build` links; screenshot `inspector-sections.ppm` verified
+      non-blank. `editor_smoke.d:1409` updated to the `"◇"` glyph.
+- [x] Follow-up: keyframe/reset glyphs looked empty. `Button.onPaint` uses
+      8px side padding; `GlyphButton` forced width 24 → 8px slot → clipped.
+      Now width = max(floor, measured+24). Pixel regression added (bright glyph
+      span must exceed the old 8px clip).
+
 ## 2026-09-10 - Selection marquee from outside the tracks (done)
 
 User: "could you allow selection ribbon start outside the tracks of timeline.

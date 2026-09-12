@@ -610,6 +610,149 @@ private final class PlaybackScrubber : Slider
     }
 }
 
+/**
+ * A flat, fixed-height glyph button (keyframe diamond, reset arrow) for compact
+ * Inspector rows. The width follows the glyph's measured width (never below the
+ * requested floor): Button.onPaint reserves 8px on each side, so forcing a tiny
+ * width clips the glyph into an almost invisible sliver.
+ */
+private final class GlyphButton : Button
+{
+    private int _minWidth;
+    private int _height;
+
+    this(string glyph, int minWidth, int height)
+    {
+        super("");
+        _minWidth = minWidth;
+        _height = height;
+        setFlat(true);
+        setText(glyph);
+    }
+
+    override void setText(string value)
+    {
+        super.setText(value);
+        applyCompactSize();
+    }
+
+    private void applyCompactSize()
+    {
+        // super.setText already stored measured + chrome (8px per side + slack);
+        // keep it so the glyph always fits, but never shrink below the floor.
+        const natural = layoutHints().preferredWidth;
+        const width = maxInt(_minWidth, natural);
+        layoutHints().minWidth = width;
+        layoutHints().preferredWidth = width;
+        layoutHints().minHeight = _height;
+        layoutHints().preferredHeight = _height;
+    }
+}
+
+/**
+ * Collapsible Inspector group: a flat, full-width header (chevron + title +
+ * optional right-hand annotation) over a body that holds the property rows.
+ * Collapsing hides the body and removes it from layout so the Inspector stays
+ * short: only the groups the user needs are expanded.
+ */
+private final class InspectorSection : VBox
+{
+    private enum int headerHeight = 28;
+
+    private Button _header;
+    private VBox _body;
+    private string _title;
+    private string _suffix;
+    private bool _expanded;
+    private int _bodyHeight;
+
+    this(string title, bool expanded)
+    {
+        super(5);
+        _title = title;
+        _expanded = expanded;
+        _header = add(new Button(""));
+        _header.setFlat(true);
+        _header.setId("inspector-header-" ~ title);
+        _header.onClick = delegate() { setExpanded(!_expanded); };
+        _body = add(new VBox(5));
+        _body.setId("inspector-body-" ~ title);
+        applyExpanded();
+        refreshHeader();
+        updateSectionHeight();
+    }
+
+    VBox body() @safe pure nothrow @nogc { return _body; }
+    bool expanded() const @safe pure nothrow @nogc { return _expanded; }
+
+    void setExpanded(bool value)
+    {
+        if (_expanded == value) return;
+        _expanded = value;
+        applyExpanded();
+        refreshHeader();
+        updateSectionHeight();
+    }
+
+    /** Optional short annotation shown to the right, e.g. "2 keys". */
+    void setSuffix(string value)
+    {
+        if (_suffix == value) return;
+        _suffix = value;
+        refreshHeader();
+    }
+
+    /**
+     * Recompute the explicit sizes the parent VBox layout reads. Aurora's Box
+     * layout sizes children from their layout hints (not their measured size),
+     * so a nested container such as this section and its body must publish a
+     * preferred height once its rows exist. Call after populating the body.
+     */
+    void finishLayout()
+    {
+        int bodyHeight;
+        bool first = true;
+        foreach (child; _body.children())
+        {
+            if (!child.visible() || child.layoutHints().excludeFromLayout) continue;
+            const hints = child.layoutHints();
+            const preferred = hints.preferredHeight >= 0 ? hints.preferredHeight : 0;
+            const height = maxInt(hints.minHeight, preferred);
+            if (!first) bodyHeight += _body.spacing();
+            bodyHeight += height;
+            first = false;
+        }
+        _bodyHeight = bodyHeight;
+        _body.layoutHints().minHeight = bodyHeight;
+        _body.layoutHints().preferredHeight = bodyHeight;
+        updateSectionHeight();
+    }
+
+    private void applyExpanded()
+    {
+        _body.setVisible(_expanded);
+        _body.layoutHints().excludeFromLayout = !_expanded;
+    }
+
+    private void refreshHeader()
+    {
+        _header.setText((_expanded ? "▾  " : "▸  ") ~ _title ~
+            (_suffix.length > 0 ? "        " ~ _suffix : ""));
+        _header.layoutHints().minHeight = headerHeight;
+        _header.layoutHints().preferredHeight = headerHeight;
+        invalidate();
+    }
+
+    private void updateSectionHeight()
+    {
+        int total = headerHeight;
+        if (_expanded) total += spacing() + _bodyHeight;
+        layoutHints().minHeight = total;
+        layoutHints().preferredHeight = total;
+        invalidate();
+    }
+}
+
 final class EditorRoot : VBox
 {
     private GuiWindow _window;
@@ -696,11 +839,11 @@ final class EditorRoot : VBox
     private Button[EffectProperty.max + 1] _keyframeButtons;
     private VBox _inspectorSelectionSummary;
     private VBox _inspectorSourceSection;
-    private VBox _inspectorAudioSection;
-    private VBox _inspectorTransformSection;
-    private VBox _inspectorLayerSection;
-    private VBox _inspectorFadeSection;
-    private VBox _inspectorTextSection;
+    private InspectorSection _inspectorAudioSection;
+    private InspectorSection _inspectorTransformSection;
+    private InspectorSection _inspectorLayerSection;
+    private InspectorSection _inspectorFadeSection;
+    private InspectorSection _inspectorTextSection;
     private Button _resetAllPropertiesButton;
     private CheckBox _mute;
     private CheckBox _audioProxyVisible;
@@ -1946,23 +2089,18 @@ final class EditorRoot : VBox
         addTrimButton(trimOutRow, "+0.1", false, 0.1);
         addTrimButton(trimOutRow, "+1", false, 1.0);
 
-        _inspectorAudioSection = panel.add(new VBox(5));
+        _inspectorAudioSection = panel.add(new InspectorSection("AUDIO", true));
         _inspectorAudioSection.setId("inspector-audio-section");
-        _inspectorAudioSection.layoutHints().preferredHeight = 92;
-        _inspectorAudioSection.add(new Separator());
-        auto audioTitle = _inspectorAudioSection.add(new Label("AUDIO • ITEM"));
-        audioTitle.setScale(1);
-        audioTitle.setColor(Color.fromHex(0xb8c1cc));
-        audioTitle.layoutHints().preferredHeight = 20;
-        _volume = addInspectorValue(_inspectorAudioSection, "Gain", _volumeValue,
+        auto audioBody = _inspectorAudioSection.body();
+        _volume = addInspectorValue(audioBody, "Gain", _volumeValue,
             -60.0, 12.0, 0.0, "Change selected-item gain",
             delegate(double value) { volumeChanged(value); },
             EffectProperty.volume, true);
         _volume.setId("clip-volume-db");
-        _mute = _inspectorAudioSection.add(new CheckBox("Mute selected item audio", false));
+        _mute = audioBody.add(new CheckBox("Mute item audio", false));
         _mute.setId("clip-mute");
         _mute.onChanged = delegate(bool value) { muteChanged(value); };
-        _audioProxyVisible = _inspectorAudioSection.add(new CheckBox(
+        _audioProxyVisible = audioBody.add(new CheckBox(
             "Show embedded audio on matching A track", false));
         _audioProxyVisible.setId("clip-audio-proxy");
         // This per-item display option lives in the timeline context menu.
@@ -1973,109 +2111,87 @@ final class EditorRoot : VBox
         _audioProxyVisible.onChanged = delegate(bool value) {
             audioProxyVisibilityChanged(value);
         };
+        _inspectorAudioSection.finishLayout();
 
-        _inspectorTransformSection = panel.add(new VBox(5));
+        _inspectorTransformSection = panel.add(
+            new InspectorSection("TRANSFORM", true));
         _inspectorTransformSection.setId("inspector-transform-section");
-        _inspectorTransformSection.layoutHints().preferredHeight = 190;
-        _inspectorTransformSection.add(new Separator());
-        auto transformTitle = _inspectorTransformSection.add(
-            new Label("TRANSFORM • ITEM"));
-        transformTitle.setScale(1);
-        transformTitle.setColor(Color.fromHex(0xb8c1cc));
-        transformTitle.layoutHints().preferredHeight = 20;
-        auto transformHint = _inspectorTransformSection.add(
-            new Label("◇ add/remove key at the playhead"));
-        transformHint.setScale(1);
-        transformHint.setColor(Color.fromHex(0x87919c));
-        transformHint.layoutHints().preferredHeight = 18;
-        _scale = addInspectorValue(_inspectorTransformSection, "Scale", _scaleValue,
+        auto transformBody = _inspectorTransformSection.body();
+        _scale = addInspectorValue(transformBody, "Scale", _scaleValue,
             0.1, 4.0, 1.0, "Change selected-item scale",
             delegate(double value) { scaleChanged(value); },
             EffectProperty.scale, true);
         _scale.setId("clip-scale");
-        _positionX = addInspectorValue(_inspectorTransformSection, "Position X",
+        _positionX = addInspectorValue(transformBody, "Position X",
             _positionXValue, -2.0, 2.0, 0.0, "Change selected-item X position",
             delegate(double value) { positionXChanged(value); },
             EffectProperty.positionX, true);
         _positionX.setId("clip-position-x");
-        _positionY = addInspectorValue(_inspectorTransformSection, "Position Y",
+        _positionY = addInspectorValue(transformBody, "Position Y",
             _positionYValue, -2.0, 2.0, 0.0, "Change selected-item Y position",
             delegate(double value) { positionYChanged(value); },
             EffectProperty.positionY, true);
         _positionY.setId("clip-position-y");
-        _opacity = addInspectorValue(_inspectorTransformSection, "Layer opacity",
+        _opacity = addInspectorValue(transformBody, "Opacity",
             _opacityValue, 0.0, 1.0, 1.0, "Change selected-item layer opacity",
             delegate(double value) { opacityChanged(value); },
             EffectProperty.opacity, true);
         _opacity.setId("clip-opacity");
-        _rotation = addInspectorValue(_inspectorTransformSection, "Rotation",
+        _rotation = addInspectorValue(transformBody, "Rotation",
             _rotationValue, -180.0, 180.0, 0.0, "Change selected-item rotation",
             delegate(double value) { rotationChanged(value); },
             EffectProperty.rotation, true);
         _rotation.setId("clip-rotation");
+        _inspectorTransformSection.finishLayout();
 
-        _inspectorLayerSection = panel.add(new VBox(5));
+        _inspectorLayerSection = panel.add(
+            new InspectorSection("STYLE EFFECTS", false));
         _inspectorLayerSection.setId("inspector-layer-section");
-        _inspectorLayerSection.layoutHints().preferredHeight = 360;
-        _inspectorLayerSection.add(new Separator());
-        auto layerEffectsTitle = _inspectorLayerSection.add(
-            new Label("STYLE EFFECTS • ITEM"));
-        layerEffectsTitle.setScale(1);
-        layerEffectsTitle.setColor(Color.fromHex(0xb8c1cc));
-        layerEffectsTitle.layoutHints().preferredHeight = 20;
-        auto styleHint = _inspectorLayerSection.add(
-            new Label("Per-item styling • ◇ means animated"));
-        styleHint.setScale(1);
-        styleHint.setColor(Color.fromHex(0x87919c));
-        styleHint.layoutHints().preferredHeight = 18;
-        _blur = addInspectorValue(_inspectorLayerSection, "Blur", _blurValue,
+        auto layerBody = _inspectorLayerSection.body();
+        _blur = addInspectorValue(layerBody, "Blur", _blurValue,
             0.0, 40.0, 0.0, "Change selected-item blur",
             delegate(double value) { blurChanged(value); });
         _blur.setId("clip-blur");
-        _strokeWidth = addInspectorValue(_inspectorLayerSection, "Stroke width",
+        _strokeWidth = addInspectorValue(layerBody, "Stroke width",
             _strokeWidthValue, 0.0, 40.0, 0.0, "Change selected-item stroke",
             delegate(double value) { strokeWidthChanged(value); });
         _strokeWidth.setId("clip-stroke-width");
-        addSmallPropertyLabel(_inspectorLayerSection, "Stroke color");
-        _strokeColorField = _inspectorLayerSection.add(
+        addSmallPropertyLabel(layerBody, "Stroke color");
+        _strokeColorField = layerBody.add(
             new InspectorTextField("Stroke color: #RRGGBB"));
         _strokeColorField.setId("clip-stroke-color");
         configureInspectorTextField(_strokeColorField,
             "Change selected-item stroke color");
         _strokeColorField.onChanged = delegate() { strokeColorFieldChanged(); };
 
-        _shadowOpacity = addInspectorValue(_inspectorLayerSection, "Shadow opacity",
+        _shadowOpacity = addInspectorValue(layerBody, "Shadow opacity",
             _shadowOpacityValue, 0.0, 1.0, 0.0, "Change selected-item shadow opacity",
             delegate(double value) { shadowOpacityChanged(value); });
-        _shadowBlur = addInspectorValue(_inspectorLayerSection, "Shadow blur",
+        _shadowBlur = addInspectorValue(layerBody, "Shadow blur",
             _shadowBlurValue, 0.0, 40.0, 12.0, "Change selected-item shadow blur",
             delegate(double value) { shadowBlurChanged(value); });
-        _shadowOffsetX = addInspectorValue(_inspectorLayerSection, "Shadow X",
+        _shadowOffsetX = addInspectorValue(layerBody, "Shadow X",
             _shadowOffsetXValue, -200.0, 200.0, 12.0,
             "Change selected-item shadow X",
             delegate(double value) { shadowOffsetXChanged(value); });
-        _shadowOffsetY = addInspectorValue(_inspectorLayerSection, "Shadow Y",
+        _shadowOffsetY = addInspectorValue(layerBody, "Shadow Y",
             _shadowOffsetYValue, -200.0, 200.0, 12.0,
             "Change selected-item shadow Y",
             delegate(double value) { shadowOffsetYChanged(value); });
-        addSmallPropertyLabel(_inspectorLayerSection, "Shadow color");
-        _shadowColorField = _inspectorLayerSection.add(
+        addSmallPropertyLabel(layerBody, "Shadow color");
+        _shadowColorField = layerBody.add(
             new InspectorTextField("Shadow color: #RRGGBB"));
         _shadowColorField.setId("clip-shadow-color");
         configureInspectorTextField(_shadowColorField,
             "Change selected-item shadow color");
         _shadowColorField.onChanged = delegate() { shadowColorFieldChanged(); };
+        _inspectorLayerSection.finishLayout();
 
-        _inspectorFadeSection = panel.add(new VBox(5));
+        _inspectorFadeSection = panel.add(
+            new InspectorSection("EDGE FADES", false));
         _inspectorFadeSection.setId("inspector-fade-section");
-        _inspectorFadeSection.layoutHints().preferredHeight = 126;
-        _inspectorFadeSection.add(new Separator());
-        auto fadeTitle = _inspectorFadeSection.add(
-            new Label("EDGE FADES • ITEM"));
-        fadeTitle.setScale(1);
-        fadeTitle.setColor(Color.fromHex(0xb8c1cc));
-        fadeTitle.layoutHints().preferredHeight = 20;
-        _addTransitionsButton = _inspectorFadeSection.add(
+        auto fadeBody = _inspectorFadeSection.body();
+        _addTransitionsButton = fadeBody.add(
             new Button("Add start/end transition"));
         _addTransitionsButton.setId("clip-add-transitions");
         _addTransitionsButton.layoutHints().preferredHeight = 26;
@@ -2083,27 +2199,23 @@ final class EditorRoot : VBox
             addDefaultTransitionsToSelectedClip();
         };
         _clipControls ~= _addTransitionsButton;
-        _fadeIn = addInspectorValue(_inspectorFadeSection, "Fade in", _fadeInValue,
+        _fadeIn = addInspectorValue(fadeBody, "Fade in", _fadeInValue,
             0.0, 10.0, 0.0, "Change selected-item fade in",
             delegate(double value) { fadeInChanged(value); });
         _fadeIn.setId("clip-fade-in");
-        _fadeOut = addInspectorValue(_inspectorFadeSection, "Fade out", _fadeOutValue,
+        _fadeOut = addInspectorValue(fadeBody, "Fade out", _fadeOutValue,
             0.0, 10.0, 0.0, "Change selected-item fade out",
             delegate(double value) { fadeOutChanged(value); });
         _fadeOut.setId("clip-fade-out");
+        _inspectorFadeSection.finishLayout();
 
-        _inspectorTextSection = panel.add(new VBox(5));
+        _inspectorTextSection = panel.add(
+            new InspectorSection("TEXT / SHAPE", true));
         _inspectorTextSection.setId("inspector-text-section");
-        _inspectorTextSection.layoutHints().preferredHeight = 230;
-        _inspectorTextSection.add(new Separator());
-        auto textTitle = _inspectorTextSection.add(
-            new Label("TEXT ITEM / SHAPE STYLE"));
-        textTitle.setScale(1);
-        textTitle.setColor(Color.fromHex(0xb8c1cc));
-        textTitle.layoutHints().preferredHeight = 20;
-        auto textContentLabel = addSmallPropertyLabel(_inspectorTextSection, "Text content");
+        auto textBody = _inspectorTextSection.body();
+        auto textContentLabel = addSmallPropertyLabel(textBody, "Text content");
         textContentLabel.setVisible(false);
-        _textField = _inspectorTextSection.add(new InspectorTextField("Title"));
+        _textField = textBody.add(new InspectorTextField("Title"));
         _textField.setVisible(false);
         _textField.setId("clip-text");
         configureInspectorTextField(_textField, "Edit selected text item");
@@ -2111,14 +2223,14 @@ final class EditorRoot : VBox
             if (_timeline !is null) _timeline.activateSelectionTool();
         };
         _textField.onChanged = delegate() { textFieldChanged(); };
-        _textSize = addInspectorValue(_inspectorTextSection, "Text size",
+        _textSize = addInspectorValue(textBody, "Text size",
             _textSizeValue, 8.0, 220.0, 96.0, "Change selected text size",
             delegate(double value) { textSizeChanged(value); },
             EffectProperty.textSize, true);
         _textSize.setId("clip-text-size");
 
-        addSmallPropertyLabel(_inspectorTextSection, "Text alignment");
-        auto alignmentRow = _inspectorTextSection.add(new HBox(5));
+        addSmallPropertyLabel(textBody, "Text alignment");
+        auto alignmentRow = textBody.add(new HBox(5));
         alignmentRow.layoutHints().preferredHeight = 28;
         _textAlignLeft = alignmentRow.add(new Button("Left"));
         _textAlignLeft.setId("clip-text-align-left");
@@ -2142,8 +2254,8 @@ final class EditorRoot : VBox
             textAlignmentChanged(TextAlignment.right);
         };
 
-        addSmallPropertyLabel(_inspectorTextSection, "Font family");
-        auto fontRow = _inspectorTextSection.add(new HBox(5));
+        addSmallPropertyLabel(textBody, "Font family");
+        auto fontRow = textBody.add(new HBox(5));
         fontRow.layoutHints().preferredHeight = 28;
         _fontField = fontRow.add(new InspectorTextField("Font family"));
         _fontField.setId("clip-font-family");
@@ -2159,15 +2271,16 @@ final class EditorRoot : VBox
                 Point(0, _fontPresetButton.bounds().height + 2)));
         };
 
-        addSmallPropertyLabel(_inspectorTextSection, "Text color");
-        _textColorField = _inspectorTextSection.add(
+        addSmallPropertyLabel(textBody, "Text color");
+        _textColorField = textBody.add(
             new InspectorTextField("Text color: #RRGGBB"));
         _textColorField.setId("clip-text-color");
         configureInspectorTextField(_textColorField, "Change selected text color");
         _textColorField.onChanged = delegate() { textColorFieldChanged(); };
-        _textBox = _inspectorTextSection.add(new CheckBox("Background box", false));
+        _textBox = textBody.add(new CheckBox("Background box", false));
         _textBox.setId("clip-text-box");
         _textBox.onChanged = delegate(bool value) { textBoxChanged(value); };
+        _inspectorTextSection.finishLayout();
 
         _resetAllPropertiesButton = panel.add(
             new Button("Reset selected item to defaults"));
@@ -2176,10 +2289,10 @@ final class EditorRoot : VBox
         _clipControls ~= _resetAllPropertiesButton;
 
         auto inspectorHint = panel.add(new Label(
-            "◆ means a key exists at this playhead. Right-click its timeline marker to remove it or change interpolation."));
+            "Double-click a value to reset it. ◇/◆ toggles a key at the playhead."));
         inspectorHint.setScale(1);
         inspectorHint.setColor(Color.fromHex(0x87919c));
-        inspectorHint.layoutHints().preferredHeight = 38;
+        inspectorHint.layoutHints().preferredHeight = 20;
 
         _inspectorScroll = new ScrollView(panel);
         _inspectorScroll.setId("clip-inspector-scroll");
@@ -2200,10 +2313,19 @@ final class EditorRoot : VBox
         double initial, string historyLabel, void delegate(double value) changed,
         EffectProperty keyProperty = EffectProperty.volume, bool keyable = false)
     {
-        auto header = panel.add(new HBox(5));
+        auto header = panel.add(new HBox(4));
         header.setId("inspector-row-" ~ title);
         header.layoutHints().preferredHeight = 26;
         header.layoutHints().minHeight = 24;
+
+        if (keyable)
+        {
+            auto keyButton = header.add(new GlyphButton("◇", 24, 22));
+            keyButton.setId("inspector-key-" ~ title);
+            keyButton.onClick = delegate() { toggleEffectKeyframe(keyProperty); };
+            _keyframeButtons[cast(size_t) keyProperty] = keyButton;
+        }
+
         auto label = header.add(new Label(title));
         label.setId("inspector-label-" ~ title);
         label.setScale(1);
@@ -2216,10 +2338,8 @@ final class EditorRoot : VBox
         valueField.onEditEnded = delegate() { _model.endContinuousEdit(); };
         valueField.onValueChanged = changed;
 
-        auto resetButton = header.add(new Button("Reset"));
-        resetButton.layoutHints().minWidth = 60;
-        resetButton.layoutHints().preferredWidth = 60;
-        resetButton.layoutHints().preferredHeight = 22;
+        auto resetButton = header.add(new GlyphButton("↺", 24, 22));
+        resetButton.setId("inspector-reset-" ~ title);
         resetButton.onClick = delegate() {
             beginScalarEdit("Reset " ~ title);
             valueField.setValue(initial, true);
@@ -2227,15 +2347,6 @@ final class EditorRoot : VBox
             setStatus(title ~ " reset to its default value.");
         };
         _clipControls ~= resetButton;
-        if (keyable)
-        {
-            auto keyButton = header.add(new Button("◇ Key"));
-            keyButton.setId("inspector-key-" ~ title);
-            keyButton.layoutHints().preferredWidth = 54;
-            keyButton.layoutHints().preferredHeight = 24;
-            keyButton.onClick = delegate() { toggleEffectKeyframe(keyProperty); };
-            _keyframeButtons[cast(size_t) keyProperty] = keyButton;
-        }
         return valueField;
     }
 
@@ -5542,7 +5653,7 @@ final class EditorRoot : VBox
                 track, clip, asset);
             button.setEnabled(enabled);
             button.setText(enabled && clip.hasKeyframe(property, localTime, 0.02)
-                ? "◆ Key" : "◇ Key");
+                ? "◆" : "◇");
         }
     }
 
@@ -5959,6 +6070,44 @@ final class EditorRoot : VBox
             clampValue(gainToDb(clip.volume) + delta, -60.0, 12.0));
     }
 
+    private static int countKeyframes(const TimelineClip clip,
+        EffectProperty[] properties)
+    {
+        int count;
+        foreach (keyframe; clip.keyframes)
+        {
+            foreach (property; properties)
+            {
+                if (keyframe.property == property)
+                {
+                    count++;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+
+    private static string keySuffix(int count)
+    {
+        if (count <= 0) return "";
+        return format("%d %s", count, count == 1 ? "key" : "keys");
+    }
+
+    /**
+     * True when the selected clip owns at least one keyframe. A clip without
+     * keys evaluates to a constant value, so playhead moves cannot change the
+     * Inspector; skipping the resync keeps scrubbing instant.
+     */
+    private bool selectedClipAnimated()
+    {
+        TrackAddress track;
+        int index;
+        TimelineClip clip;
+        MediaAsset asset;
+        return selectedClip(track, index, clip, asset) && clip.keyframes.length > 0;
+    }
+
     private void syncInspector()
     {
         _syncingInspector = true;
@@ -5983,6 +6132,26 @@ final class EditorRoot : VBox
         _inspectorFadeSection.setVisible(valid);
         _inspectorTextSection.setVisible(textEnabled);
         _resetAllPropertiesButton.setVisible(valid);
+
+        // Compact per-section key counts so the headers convey animation at a
+        // glance without adding another row of chrome.
+        if (valid)
+        {
+            _inspectorTransformSection.setSuffix(keySuffix(countKeyframes(clip, [
+                EffectProperty.scale, EffectProperty.positionX,
+                EffectProperty.positionY, EffectProperty.opacity,
+                EffectProperty.rotation])));
+            _inspectorAudioSection.setSuffix(
+                keySuffix(countKeyframes(clip, [EffectProperty.volume])));
+            _inspectorTextSection.setSuffix(
+                keySuffix(countKeyframes(clip, [EffectProperty.textSize])));
+        }
+        else
+        {
+            _inspectorTransformSection.setSuffix("");
+            _inspectorAudioSection.setSuffix("");
+            _inspectorTextSection.setSuffix("");
+        }
 
         foreach (button; _clipControls) button.setEnabled(valid);
         _volume.setEnabled(hasAudio);
@@ -6199,7 +6368,7 @@ final class EditorRoot : VBox
         notePlaybackPrewarmDirty(value);
         _scrub.setValue(value, false);
         updateTimeLabel();
-        if (_timeline.selectedIndex() >= 0) syncInspector();
+        if (_timeline.selectedIndex() >= 0 && selectedClipAnimated()) syncInspector();
         if (_playbackKind == PlaybackKind.sequence)
         {
             // While paused, a step into the warm prewarm window is served from
@@ -7827,7 +7996,7 @@ final class EditorRoot : VBox
         {
             _timeline.setPlayhead(_playbackPosition, false);
             syncPreviewTitleLayers(_playbackPosition);
-            if (_timeline.selectedIndex() >= 0) syncInspector();
+            if (_timeline.selectedIndex() >= 0 && selectedClipAnimated()) syncInspector();
         }
         _scrub.setValue(_playbackPosition, false);
         updatePlaybackButtons();
@@ -8040,7 +8209,7 @@ final class EditorRoot : VBox
         if (_playbackKind == PlaybackKind.sequence)
         {
             _timeline.setPlayhead(_playbackPosition, false);
-            if (_timeline.selectedIndex() >= 0) syncInspector();
+            if (_timeline.selectedIndex() >= 0 && selectedClipAnimated()) syncInspector();
         }
         updatePlaybackButtons();
         updateTimeLabel();
@@ -8215,7 +8384,7 @@ final class EditorRoot : VBox
             _timeline.setPlayhead(_playbackEnd, false);
             syncPreviewTitleLayers(_playbackEnd);
             _scrub.setValue(_playbackPosition, false);
-            if (_timeline.selectedIndex() >= 0) syncInspector();
+            if (_timeline.selectedIndex() >= 0 && selectedClipAnimated()) syncInspector();
             setStatus("Composition preview finished.");
         }
         else

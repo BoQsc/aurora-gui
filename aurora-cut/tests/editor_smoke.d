@@ -1406,7 +1406,7 @@ int main(string[] arguments)
     assert(driver.paint());
     assert(gainLabel.visible() && gainLabel.bounds().height >= 20,
         "Inspector property names collapsed to zero height");
-    assert(gainKey.visible() && gainKey.text() == "◇ Key"d,
+    assert(gainKey.visible() && gainKey.text() == "◇"d,
         "Per-item keyframe control is not visibly labeled");
     enum double directTrimIn = 0.35;
     assert(editor.modelForTesting().setTrimIn(v1, 0, directTrimIn),

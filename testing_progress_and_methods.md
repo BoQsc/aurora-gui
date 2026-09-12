@@ -1,5 +1,71 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Inspector sidebar: collapsible, concise sections (2026-09-13)
+
+User: the ITEM EFFECTS / KEYFRAMES sidebar is overwhelming; make it concise but
+keep every control instantly reachable.
+
+**Change (`editor.d`):**
+- New `InspectorSection : VBox` — flat full-width header button
+  (`▾/▸ + TITLE + optional "N keys"`), collapsible body. Style Effects and Edge
+  Fades default to collapsed; Audio/Transform/Text default expanded. Toggle state
+  is remembered per selection (never reset by `syncInspector`).
+- `addInspectorValue` rows are now `[◇/◆ key glyph][Label flex][value field][↺ reset]`.
+  The old 60 px "Reset" and 54 px "◇ Key" text buttons are gone. New
+  `GlyphButton : Button` keeps a fixed 24×22 footprint despite `setText`
+  re-measuring a plain `Button`.
+- Duplicate per-section hints removed; one compact footer line explains
+  double-click-to-reset and the diamond.
+- Section headers show `N keys` (Transform/Audio/Text) via `countKeyframes`.
+- Instant scrub: `syncInspector()` is skipped on playhead moves when the selected
+  clip has no keyframes (`selectedClipAnimated()` guard on the 4 playhead/seek
+  callers). A clip with no keys evaluates to a constant, so nothing can change.
+
+**Follow-up fix (2026-09-13): the glyph buttons looked empty.** `Button.onPaint`
+draws text inside `bounds().width - 16` (8px padding each side). `GlyphButton`
+forced width 24, leaving an 8px slot, so `◇`/`↺` were clipped to an almost
+invisible sliver. Now `GlyphButton` treats the requested width as a floor and
+keeps the Button-measured width (`measured + 24`), so the glyph always fits. The
+smoke test adds a pixel regression: it reads `window.surface()` and requires the
+bright glyph span inside each button to exceed 8px (the old clip width).
+
+**Aurora layout gotcha (important):** `Box.onLayout` sizes children from
+`layoutHints().preferredHeight`, NOT from their measured size. A nested
+container (the new section and its `body`) must publish an explicit
+preferred height after its rows exist, or it collapses to 0 and even becomes
+un-clickable (`hitTest` uses the same bounds). `InspectorSection.finishLayout()`
+does this and is called once per section in `buildInspector()`. This was the
+root cause of the first failing click test: the section had height 0, so
+`localToGlobal` reported a point the hit-test could not resolve.
+
+**Test-coupled ids preserved:** `clip-inspector-scroll`, `inspector-source-section`,
+`inspector-transform/audio/layer/fade/text-section`, `clip-scale`, `clip-mute`,
+`inspector-label-Gain`, `inspector-key-Gain`, `clip-text-align-right`, `clip-text`,
+`clip-add-transitions`. `inspector-key-Gain` now has text `"◇"` (was `"◇ Key"`);
+`tests/editor_smoke.d:1409` was updated to match.
+
+**New regression:** `tests/inspector_sections_smoke.d` (drops `base-av.mp4` on V1,
+no other fixture). Asserts: all sections exist/visible per clip type, compact
+diamond + reset glyphs, Style Effects starts collapsed, clicking the Transform
+header collapses then expands its body, and the header reports `1 key` after
+keying Scale. It also writes `build/headless-smoke/inspector-sections.ppm`.
+
+**Verify:**
+```
+cd aurora-cut
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\inspector_sections_smoke.d ^
+  -of=build\headless-smoke\inspector-sections-smoke.exe ^
+  -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 ^
+  -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet
+set AURORA_RENDERER=software&& set SDL_AUDIODRIVER=dummy&& ^
+  build\headless-smoke\inspector-sections-smoke.exe build\headless-smoke\media\base-av.mp4
+```
+Passed (`ALL PASSED`); `dub test` 42 modules; `dub build` links.
+
+Note: `editor_smoke.d` still stops at its pre-existing fit-view assert
+(`editor_smoke.d:1315`), so it does not reach the inspector block.
+
 ## Selection marquee can start outside the tracks (2026-09-10)
 
 User: "could you allow selection ribbon start outside the tracks of timeline.
