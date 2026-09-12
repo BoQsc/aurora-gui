@@ -2309,7 +2309,7 @@ final class TimelineWidget : Widget
 
     private void restoreToolCursor()
     {
-        if (_activeTool == TimelineTool.cut) setCursor(CursorKind.resizeDiagonalNESW);
+        if (_activeTool == TimelineTool.cut) setCursor(CursorKind.crosshair);
         else if (_activeTool == TimelineTool.text) setCursor(CursorKind.text);
         else setCursor(CursorKind.arrow);
     }

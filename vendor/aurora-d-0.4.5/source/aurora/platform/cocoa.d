@@ -683,6 +683,7 @@ else version (OSX)
                 case CursorKind.resizeDiagonalNESW: value = sendId(cursorClass, "closedHandCursor"); break;
                 case CursorKind.move: value = sendId(cursorClass, "openHandCursor"); break;
                 case CursorKind.forbidden: value = sendId(cursorClass, "operationNotAllowedCursor"); break;
+                case CursorKind.crosshair: value = sendId(cursorClass, "crosshairCursor"); break;
             }
             if (value !is null) sendVoid(value, "set");
         }

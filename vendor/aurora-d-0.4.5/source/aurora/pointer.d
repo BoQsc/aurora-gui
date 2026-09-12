@@ -43,6 +43,7 @@ Point systemCursorHotspot(CursorKind kind) @safe pure nothrow @nogc
         case CursorKind.resizeDiagonalNESW:
         case CursorKind.move:
         case CursorKind.forbidden:
+        case CursorKind.crosshair:
             return Point(20, 20);
     }
 }
@@ -305,6 +306,19 @@ private void drawCursorAt(ref Canvas canvas, CursorKind kind, Point hot)
             fillPoly(canvas, bar, danger);
             break;
         }
+        case CursorKind.crosshair:
+        {
+            // Precision crosshair: full-length vertical and horizontal arms
+            // through the hotspot, dark outline with a light core, like the
+            // classic razor/cut cursor.
+            canvas.fillRect(Rect(cast(int) hx - 1, cast(int) hy - 14, 3, 28),
+                outline);
+            canvas.fillRect(Rect(cast(int) hx, cast(int) hy - 13, 1, 26), fill);
+            canvas.fillRect(Rect(cast(int) hx - 14, cast(int) hy - 1, 28, 3),
+                outline);
+            canvas.fillRect(Rect(cast(int) hx - 13, cast(int) hy, 26, 1), fill);
+            break;
+        }
     }
 }
 
@@ -417,7 +431,7 @@ unittest
     foreach (kind; [CursorKind.arrow, CursorKind.hand, CursorKind.text,
         CursorKind.resizeHorizontal, CursorKind.resizeVertical,
         CursorKind.resizeDiagonalNWSE, CursorKind.resizeDiagonalNESW,
-        CursorKind.move, CursorKind.forbidden])
+        CursorKind.move, CursorKind.forbidden, CursorKind.crosshair])
     {
         auto surface = new Surface(40, 40);
         surface.clear(Color.rgba(0, 0, 0, 0));

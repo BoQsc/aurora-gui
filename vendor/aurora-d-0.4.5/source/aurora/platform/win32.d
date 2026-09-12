@@ -92,6 +92,7 @@ else version (Windows)
     {
         cursorArrow = 32512,
         cursorIBeam = 32513,
+        cursorCross = 32515,
         cursorSizeNWSE = 32642,
         cursorSizeNESW = 32643,
         cursorSizeWE = 32644,
@@ -2540,6 +2541,7 @@ else version (Windows)
                 case CursorKind.resizeDiagonalNESW: return cursorSizeNESW;
                 case CursorKind.move: return cursorSizeAll;
                 case CursorKind.forbidden: return cursorNo;
+                case CursorKind.crosshair: return cursorCross;
             }
         }
 

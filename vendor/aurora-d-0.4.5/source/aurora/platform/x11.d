@@ -948,6 +948,7 @@ else version (linux)
                 case CursorKind.resizeDiagonalNESW: return 12;
                 case CursorKind.move: return 52;
                 case CursorKind.forbidden: return 88;
+                case CursorKind.crosshair: return 34; // XC_crosshair
             }
         }
 

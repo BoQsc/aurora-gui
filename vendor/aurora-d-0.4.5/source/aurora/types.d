@@ -296,7 +296,9 @@ enum CursorKind : ubyte
     resizeDiagonalNWSE,
     resizeDiagonalNESW,
     move,
-    forbidden
+    forbidden,
+    // Precision crosshair, used by razor/cut tools.
+    crosshair
 }
 
 int minInt(int a, int b) @safe pure nothrow @nogc
