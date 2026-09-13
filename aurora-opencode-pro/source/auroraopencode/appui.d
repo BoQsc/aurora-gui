@@ -1211,6 +1211,79 @@ public final class SessionListView : ListView
     void delegate(int index, Point globalPosition) onContextMenuRequested;
     void delegate(int index) onDeleteRequested;
 
+    private int _hoverRow = -1;
+
+    // Single-line conversation rows: a highlighted capsule for the active chat,
+    // the title, and a right-aligned last-activity time. No repeated model name,
+    // message count, or per-row icon (every row shared the same one).
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+        const rowHeight = rowHeight();
+        if (rowHeight <= 0) return;
+
+        auto content = canvas.clipped(Rect(0, 0, width, height));
+        const offset = scrollOffset();
+        const selected = selectedIndex();
+        const count = cast(int) items().length;
+        const first = offset / rowHeight;
+        const last = clampInt((offset + height) / rowHeight + 1, 0, count);
+
+        foreach (index; first .. last)
+        {
+            const item = items()[cast(size_t) index];
+            const y = index * rowHeight - offset;
+            const row = Rect(2, y + 1, maxInt(0, width - 4), rowHeight - 2);
+
+            if (index == selected)
+            {
+                content.fillRoundedRect(row, 6, opencodeSelection);
+                content.fillRect(Rect(2, y + 1, 3, rowHeight - 2), opencodeAccent);
+            }
+            else if (index == _hoverRow)
+                content.fillRoundedRect(row, 6, opencodePressed);
+
+            int trailWidth = 0;
+            if (item.secondary.length > 0)
+            {
+                trailWidth = content.measureText(item.secondary, 1).width;
+                content.drawTextInRect(
+                    Rect(width - trailWidth - 12, y, trailWidth, rowHeight),
+                    item.secondary, opencodeMuted, 1,
+                    HorizontalAlign.right, VerticalAlign.middle, true);
+            }
+
+            const titleColor = item.disabled || item.dimmed ? opencodeMuted
+                : (index == selected ? opencodeText : opencodeText.withAlpha(230));
+            const textLeft = 14;
+            const textWidth = maxInt(0, width - textLeft -
+                (trailWidth > 0 ? trailWidth + 22 : 12));
+            content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
+                item.text, titleColor, theme().fontScale,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        setCursor(CursorKind.arrow);
+        const next = indexAt(event.position);
+        if (next != _hoverRow)
+        {
+            _hoverRow = next;
+            invalidate();
+        }
+        return true;
+    }
+
+    override void onMouseLeave()
+    {
+        _hoverRow = -1;
+        setCursor(CursorKind.arrow);
+    }
+
     override bool onMouseDown(ref Event event)
     {
         if (event.button == MouseButton.right)
@@ -1379,13 +1452,15 @@ public final class OpenCodeRoot : VBox
         auto body = add(new HBox(0));
         body.layoutHints().flex = 1.0;
 
-        auto sidebar = new VBox(4, Insets(6));
+        auto sidebar = new VBox(2, Insets(8));
         sidebar.layoutHints().preferredWidth = 200;
+        sidebar.setBackground(opencodePanel);
         auto sidebarHeader = sidebar.add(new Label("Conversations"));
         sidebarHeader.setScale(1);
         sidebarHeader.setColor(opencodeMuted);
         _filterField = sidebar.add(new TextField(""));
         _filterField.setId("oc-filter");
+        _filterField.setPlaceholder("Search chats");
         _filterField.layoutHints().preferredHeight = 24;
         _filterField.onChanged = delegate()
         {
@@ -1395,7 +1470,7 @@ public final class OpenCodeRoot : VBox
         _sessionList = sidebar.add(new SessionListView());
         _sessionList.setId("oc-sessions");
         _sessionList.layoutHints().flex = 1.0;
-        _sessionList.setRowHeight(34);
+        _sessionList.setRowHeight(30);
         _sessionList.onSelectionChanged = delegate(int index)
         {
             selectSessionByRow(index);
@@ -2454,9 +2529,9 @@ public final class OpenCodeRoot : VBox
                 continue;
             indices ~= cast(int) index;
             const secondary = session.messages.length == 0
-                ? session.model
-                : session.model ~ " • " ~ to!string(session.messages.length) ~ " msgs";
-            items ~= ListItem(title, IconKind.terminal, secondary);
+                ? ""
+                : session.messages[$ - 1].time;
+            items ~= ListItem(title, IconKind.none, secondary);
         }
         _sessionIndices = indices;
         _sessionList.setItems(items);

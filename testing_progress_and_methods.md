@@ -94,6 +94,49 @@ has a dangling assistant `tool_calls`, so the next send 400s with
 `An assistant message with 'tool_calls' must be followed by tool messages
 responding to each 'tool_call_id'.` Use a brand-new isolated `%APPDATA%`.
 
+## Conversations sidebar redesign (2026-09-13)
+
+User: "we clearly need to redesign the conversations sidebar, it's awfully bad,
+lots of repeating unnecessary things."
+
+**What was wrong:** every row drew the shared `IconKind.terminal` icon plus
+`session.model ~ " • " ~ N ~ " msgs"` as a second line. The model id
+(`deepseek/deepseek-v4.1-flash`) is identical for every conversation, so it
+repeated down the whole list and truncated to noise. The list also painted its
+own bordered `fieldBackground` box inside the sidebar, and the filter field was
+an empty unlabeled input.
+
+**New row design** (custom `onPaint` on a `SessionListView : ListView` subclass;
+the vendor `ListView.onPaint` is untouched so other lists keep the old look):
+- Single line per conversation: title left, last-activity `HH:MM` right-aligned.
+- Active row = `opencodeSelection` rounded capsule + 3 px `opencodeAccent` left
+  bar; hover = `opencodePressed`. No per-row icon, no model, no message count.
+- No list border/background — rows sit on the sidebar panel.
+
+**Wiring:**
+- Pro `SessionListView` (already existed for right-click/Delete) gained the
+  custom `onPaint`, own `_hoverRow` tracking (`onMouseMove`/`onMouseLeave`), and
+  keeps its context-menu/Delete-key overrides. Baseline gained a small
+  `SessionListView` class with just the paint + hover.
+- `updateSessionList` in both: `secondary = messages.length ? messages[$-1].time : ""`
+  and `ListItem(title, IconKind.none, secondary)`.
+- Sidebar `VBox(2, Insets(8))`, `setBackground(opencodePanel)`, row height 30.
+- Pro filter got `setPlaceholder("Search chats")`.
+- Baseline had **no message timestamps at all**, so it could not show a time.
+  Added `currentTimestamp()` (copy of Pro's), set `message.time` on user +
+  assistant messages, persist it (`messageJson["time"]`) and restore it
+  (`if (auto f = "time" ...)`), and call `updateSessionList()` after the user
+  message is appended (the title-update call happens before the append, so the
+  row would otherwise stay blank until the next change).
+
+**Verification:**
+- Both apps rebuilt; baseline `headless_smoke.exe` → `EXIT=0`; Pro
+  `headless_pro_smoke.exe` passes every step.
+- Pro real history `%TEMP%\aui-pro-sidebar.png` → single-line rows with times
+  (11:40, 11:42, …), active row highlighted, `Search chats` placeholder.
+- Baseline fresh `--screenshot-chat` `%TEMP%\aui-base-sidebar-chat2.png` →
+  row `Say exactly: …  10:14`; real history `%TEMP%\aui-base-sidebar.png`.
+
 ## Aurora OpenCode moved to CommandCode + DeepSeek V4.1 Flash (2026-09-13)
 
 User: "update api key user_22Gj… and also we now use command code deep seek 4.1
