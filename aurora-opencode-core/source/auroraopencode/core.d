@@ -198,11 +198,12 @@ public enum int opencodeControlHeight = 28;
 public enum int opencodeSessionRowHeight = 32;
 /// Height of the merged titlebar/toolbar band.
 public enum int opencodeTitleBarHeight = 40;
-/// Maximum width of the centered conversation/composer column. Mirrors the
-/// upstream opencode `--container-3xl` token (48rem = 768 px), so the message
-/// list and the prompt read as one centered column instead of stretching edge
-/// to edge on a wide window.
-public enum int opencodeContentMaxWidth = 768;
+/// Maximum width of the centered conversation/composer column. Wider than the
+/// upstream opencode `--container-3xl` token (48rem = 768 px): the message list
+/// and the prompt read as one centered column, but a little more room is given
+/// so long lines and tool output fit before stretching edge to edge on a wide
+/// window.
+public enum int opencodeContentMaxWidth = 1024;
 /// Height of the chat composer panel: roughly twice the old single-row input,
 /// leaving room for a multi-line prompt with the send button pinned below.
 public enum int opencodeComposerHeight = 116;

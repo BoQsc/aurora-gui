@@ -8341,4 +8341,39 @@ ffmpeg -y -i build\layout.ppm build\layout.png   REM PPM -> PNG for inspection
 `build\layout.png` shows the centered column and the 116 px composer with the
 up-arrow send button bottom-right.
 
+## Aurora OpenCode Pro: wider centered column (2026-09-13)
+
+User: increase the width of the main part (messages + input).
+
+**Change:** `aurora-opencode-core/source/auroraopencode/core.d` —
+`opencodeContentMaxWidth` raised from `768` (upstream `container-3xl`, 48rem) to
+`1024` (64rem). Both `CenteredColumn` users in
+`aurora-opencode-pro/source/auroraopencode/appui.d` (message list at
+`oc-message-center`, composer at `oc-composer-center`) read the same constant, so
+the message list and the prompt widen together and stay aligned. On panes
+narrower than the cap the column still fills the pane; the cap only matters on
+wide windows.
+
+**How to verify (from `aurora-opencode-pro/`):**
+```
+dub build --compiler=dmd --force
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+  user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+  -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+Smoke step `Chat column is centered; composer is 116 px tall with a bottom-right
+send` reads the same constant, so it still asserts
+`column width == min(pane, opencodeContentMaxWidth)`. Visual: with the running
+app closed, `set APPDATA=%TEMP%\oc-width-shot` then
+`aurora-opencode-pro.exe --screenshot %TEMP%\oc-width.ppm`, convert with
+`powershell -File %TEMP%\ppm2png.ps1`, and confirm the composer spans the chat
+pane (a ~1200 px window had ~88 px side gaps at 768, now only the 8 px inset).
+
+**Result (2026-09-13):** rebuilt with `dub build --compiler=dmd --force`; Pro
+headless smoke passes all steps; screenshot confirms the composer/messages column
+now fills the chat pane; app relaunched (exactly one
+`aurora-opencode-pro.exe`).
+
 
