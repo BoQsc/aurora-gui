@@ -121,6 +121,33 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(sessions.items().length == 3, "Clearing the filter did not restore rows");
 
+    // The sidebar sizes its nested header/search VBox from a manual
+    // preferredHeight (Box.onLayout lays children out from hints and ignores a
+    // child's measured size). That height once hardcoded a stale gap total, so
+    // the column came out 6 px short and clipped the search field's bottom
+    // border. Assert every header row fits inside the column's bounds so a
+    // spacing/row change can never silently clip it again.
+    auto headerColumn = requireWidget!Widget(root, "oc-header-column");
+    const headerBounds = headerColumn.bounds();
+    int headerRows = 0;
+    foreach (child; headerColumn.children())
+    {
+        if (!child.visible()) continue;
+        const childBounds = child.bounds();
+        assert(childBounds.bottom() <= headerBounds.height,
+            "Header row overflows vertically: bottom " ~
+            to!string(childBounds.bottom()) ~ " > column height " ~
+            to!string(headerBounds.height));
+        assert(childBounds.right() <= headerBounds.width,
+            "Header row overflows horizontally: right " ~
+            to!string(childBounds.right()) ~ " > column width " ~
+            to!string(headerBounds.width));
+        ++headerRows;
+    }
+    assert(headerRows == 4, "Expected 4 header rows, got " ~ to!string(headerRows));
+    writeln("Header rows fit inside the search column: ", headerRows,
+        " rows, ", headerBounds.height, " px");
+
     // Rename via the sidebar context menu.
     sessions.onContextMenuRequested(1, Point(10, 10));
     root.tickTree(0.02);
@@ -503,6 +530,27 @@ int main(string[] args)
         "Send button should sit in the lower half of the composer");
     writeln("Chat column is centered; composer is ",
         root.composerHeightForTesting(), " px tall with a bottom-right send");
+
+    // The model selector, context meter, thinking and tools toggles live in the
+    // composer footer under the prompt input, not in the title band.
+    auto composerControls = requireWidget!Widget(root, "oc-composer-controls");
+    auto promptInput = requireWidget!Widget(root, "oc-input");
+    const controlsOrigin = composerControls.localToGlobal(Point(0, 0));
+    const promptOrigin = promptInput.localToGlobal(Point(0, 0));
+    assert(controlsOrigin.y >= promptOrigin.y + promptInput.bounds().height,
+        "Composer controls should sit below the prompt input");
+    const controlsBottom = controlsOrigin.y + composerControls.bounds().height;
+    assert(controlsBottom <= composerOrigin.y + composer.bounds().height,
+        "Composer controls should sit inside the composer panel");
+    foreach (controlId; ["oc-model", "oc-usage", "oc-thinking", "oc-tools"])
+    {
+        auto control = requireWidget!Widget(root, controlId);
+        const controlOrigin = control.localToGlobal(Point(0, 0));
+        assert(controlOrigin.y >= controlsOrigin.y &&
+            controlOrigin.y + control.bounds().height <= controlsBottom,
+            "Control " ~ controlId ~ " should sit in the composer footer row");
+    }
+    writeln("Model/context/thinking/tools controls sit in the composer footer");
 
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);

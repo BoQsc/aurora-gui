@@ -1,5 +1,107 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: model/context/thinking/tools in the composer footer (2026-09-13)
+
+User: "Let's move model selector, context usage, thinking and tools under the main
+input box."
+
+### Change
+- `appui.d buildUi()`: the model button (`oc-model`), `ContextUsageBadge`
+  (`oc-usage`), and the Thinking/Tools `CheckBox`es (`oc-thinking`, `oc-tools`)
+  are added to a new `HBox` with id `oc-composer-controls` instead of the
+  title-bar toolbar. The title band keeps `Spacer` + Export + Settings + Key.
+- `ChatComposer` gained an optional third child (`controls`) laid out at
+  `bottomY = height - pad - buttonHeight` with width
+  `width - pad*2 - buttonWidth - gap`, i.e. the same bottom row as the send
+  button. The textarea height is unchanged (`height - pad*2 - buttonHeight -
+  gap`), so the 116 px composer still fits: textarea 64 px, 6 px gap, 30 px
+  footer, 8 px padding.
+- `showModelPicker()` now uses `PopupPlacement.above`: the button is at the
+  window bottom, so "below" was clamped by `PopupOverlay.onLayout` and covered
+  the conversation.
+- `headless_pro_smoke.d`: after the composer assertions, asserts
+  `oc-composer-controls` sits below `oc-input` and inside `oc-composer`, and that
+  all four controls lie within the footer row.
+
+### How to re-test
+1. Rebuild + smoke: kill the exe, `dub build --compiler=dmd --force`, then
+   `build\headless-pro-smoke.exe` — expect
+   `Model/context/thinking/tools controls sit in the composer footer` and EXIT=0.
+2. Layout screenshot: `aurora-opencode-pro.exe --screenshot
+   %TEMP%\composer-footer.ppm` (Start-Process -Wait; `&` returns early), convert
+   with `%TEMP%\ppm2png.ps1`, then zoom the composer (`370 670 780 105` at scale
+   2). Expect model pill + `N%` + Thinking + Tools on the left of the send button.
+3. Picker direction: temporary harness `%TEMP%\oc-focuscheck\pickercheck.d`
+   (build like `focuscheck.d`, click the centre of `oc-model`, paint, save
+   `picker.ppm`). The list must open *above* the model button, not clamped over
+   the conversation.
+
+## Pro: composer focus highlight + clipped "Search chats" (2026-09-13)
+
+Two complaints:
+1. "Let's not do input ui highlight for message send input."
+2. "search chat input again is cut at the bottom, this starts to repeat too often
+   what's the root cause, resolve."
+
+### Root causes (diagnosed, not guessed)
+- **Composer highlight**: `ChatInput : TextArea` is borderless + transparent
+  (`appui.d`: `setShowBorder(false)`, `setTransparentBackground(true)`), so
+  `TextEditor.onPaint` (`vendor/.../widgets/texteditor.d:1118-1129`) takes the
+  `_transparentBackground` branch. When focused it calls
+  `canvas.drawRoundedRect(full.inset(1), palette.cornerRadius,
+  palette.fieldBackground.withAlpha(18), palette.accent.withAlpha(190), 1)`.
+  `Canvas.drawRoundedRect` (`canvas.d:323`) fills the **whole** rect with its 4th
+  arg ("border") and then the inset with its 3rd arg ("fill") — so the focused
+  input became a ~75%-opacity accent slab every time the composer had focus. Fix:
+  `_input.setFocusDecoration(false)` in `appui.d` (vendor setter exists at
+  `texteditor.d:334`); caret and selection still work.
+- **Clipped search field**: `updateSessionsHeaderHeight()` computed the nested
+  header column's `preferredHeight` by summing its children plus a **hardcoded**
+  gap total of `18` ("three 6px gaps"). But the column is `new VBox(8, ...)` with
+  4 children → 3×8 = 24 px of gaps. So the column was published 6 px short; the
+  outer sidebar sized it to 112 px while its rows needed 118 px, and the last row
+  (the search field) overflowed and was clipped — its bottom rounded border
+  vanished. Nested `Box.onLayout` (`layout.d:127-194`) positions children from
+  their hints only and ignores a child's measured size (`Box.onMeasure`), so the
+  explicit publish is required, but it must be **derived**: the function now walks
+  `box.children()` (skipping hidden/excluded), sums
+  `maxInt(minHeight, preferredHeight >= 0 ? preferredHeight : minHeight)`, and
+  adds `box.spacing() * (count - 1)` + `padding.top + padding.bottom`.
+
+### Regression guard
+`appui.d` sets `headerColumn.setId("oc-header-column")`. `headless_pro_smoke.d`
+adds a step (right after the filter test) that walks the column's children and
+asserts each row's `bottom() <= column.height` and `right() <= column.width`, and
+that there are 4 rows. Proven by a temporary 6 px shortfall: it aborts with
+`Header row overflows vertically: bottom 118 > column height 112`; with the fix it
+prints `Header rows fit inside the search column: 4 rows, 118 px`.
+
+### How to re-test
+1. Rebuild + smoke (Pro): kill the exe first, then
+   `dub build --compiler=dmd --force` and
+   `build\headless-pro-smoke.exe` — expect `4 rows, 118 px` and the final
+   "passed" line, EXIT=0.
+2. Negative test (optional): temporarily set the published height to
+   `height - 6`, recompile only the smoke (`dmd -version=AuroraHeadless -i
+   -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source
+   tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib
+   winmm.lib -of=build\headless-pro-smoke-native.exe`), run, confirm the header
+   assertion fires, then revert.
+3. Focused-input screenshot (the default `--screenshot` never focuses the input,
+   so it cannot show the ring). Temporary harness `%TEMP%\oc-focuscheck\focuscheck.d`
+   builds an `OpenCodeRoot`, `driver.click()`s the centre of `oc-input`, paints,
+   and calls `window.saveScreenshot("composer-focused.ppm")`. Build from repo root:
+   `dmd -version=AuroraHeadless -i -Iaurora-opencode-pro\source
+   -Iaurora-opencode-core\source -Ivendor\aurora-d-0.4.5\source
+   "%TEMP%\oc-focuscheck\focuscheck.d" user32.lib gdi32.lib shell32.lib
+   wininet.lib winmm.lib -of="%TEMP%\oc-focuscheck\focuscheck.exe"`, run from that
+   temp dir, convert with `%TEMP%\ppm2png.ps1`, zoom with `%TEMP%\zoom-text.ps1`.
+   `setFocusDecoration(true)` → solid accent slab; `false` → neutral composer fill.
+4. Search field: `aurora-opencode-pro.exe --screenshot %TEMP%\search-fix.ppm`
+   (Start-Process -Wait; `&` returns before the GUI app finishes), convert, then
+   zoom the sidebar header (`0 0 372 210` at scale 3) and confirm the field's
+   bottom rounded border is complete with a gap before the first row.
+
 ## Native-style glyph coverage contrast (2026-09-13)
 
 User: "i see no great improvements in font text rendering, smaller text looks

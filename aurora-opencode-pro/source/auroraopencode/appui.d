@@ -1278,13 +1278,16 @@ private final class ChatComposer : Widget
 
     private Widget _field;
     private Widget _send;
+    private Widget _controls;
 
-    this(Widget field, Widget send)
+    this(Widget field, Widget send, Widget controls = null)
     {
         _field = field;
         _send = send;
+        _controls = controls;
         add(field);
         add(send);
+        if (controls !is null) add(controls);
     }
 
     protected override Size onMeasure(Size available)
@@ -1304,9 +1307,14 @@ private final class ChatComposer : Widget
         const fieldHeight = maxInt(0, height - pad * 2 - buttonHeight - gap);
         _field.setBounds(Rect(pad, pad, maxInt(0, width - pad * 2),
             fieldHeight));
-        _send.setBounds(Rect(maxInt(pad, width - pad - buttonWidth),
-            maxInt(pad, height - pad - buttonHeight), buttonWidth,
-            buttonHeight));
+        const bottomY = maxInt(pad, height - pad - buttonHeight);
+        _send.setBounds(Rect(maxInt(pad, width - pad - buttonWidth), bottomY,
+            buttonWidth, buttonHeight));
+        // Model/context/thinking/tools controls live under the text area, left
+        // of the send button (upstream opencode's composer footer).
+        if (_controls !is null)
+            _controls.setBounds(Rect(pad, bottomY,
+                maxInt(0, width - pad * 2 - buttonWidth - gap), buttonHeight));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -1722,11 +1730,17 @@ public final class OpenCodeRoot : VBox
 
         auto toolbar = new HBox(8, Insets(10, 4));
 
-        _modelButton = toolbar.add(new Button(_settings.model));
+        // The model selector, context meter, thinking and tools toggles live in
+        // the composer footer under the prompt input (upstream opencode keeps
+        // them there). The title band only holds the window-level actions.
+        auto composerControls = new HBox(8);
+        composerControls.setId("oc-composer-controls");
+
+        _modelButton = composerControls.add(new Button(_settings.model));
         _modelButton.setId("oc-model");
         _modelButton.onClick = delegate() { showModelPicker(); };
 
-        _usageBadge = toolbar.add(new ContextUsageBadge());
+        _usageBadge = composerControls.add(new ContextUsageBadge());
         _usageBadge.setId("oc-usage");
         _usageBadge.setModel(_settings.model);
         _usageBadge.onHoverChanged = delegate(bool open)
@@ -1734,7 +1748,7 @@ public final class OpenCodeRoot : VBox
             setContextUsageTooltipOpen(open);
         };
 
-        _thinkingBox = toolbar.add(new CheckBox("Thinking"));
+        _thinkingBox = composerControls.add(new CheckBox("Thinking"));
         _thinkingBox.setId("oc-thinking");
         _thinkingBox.setChecked(_settings.thinking, false);
         _thinkingBox.onChanged = delegate(bool value)
@@ -1744,7 +1758,7 @@ public final class OpenCodeRoot : VBox
             saveSettingsNow();
         };
 
-        _toolsBox = toolbar.add(new CheckBox("Tools"));
+        _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
         _toolsBox.setChecked(_settings.toolsEnabled, false);
         _toolsBox.onChanged = delegate(bool value)
@@ -1823,6 +1837,7 @@ public final class OpenCodeRoot : VBox
         // read as a matched pair (they once sat 2 px apart with mismatched
         // heights).
         auto headerColumn = new VBox(8, headerPadding);
+        headerColumn.setId("oc-header-column");
         _sessionsHeaderColumn = headerColumn;
         _sessionsHeader = headerColumn.add(new Label("Sandbox"));
         _sessionsHeader.setId("oc-project-title");
@@ -1886,6 +1901,7 @@ public final class OpenCodeRoot : VBox
         _input.setId("oc-input");
         _input.setShowBorder(false);
         _input.setTransparentBackground(true);
+        _input.setFocusDecoration(false);
         _input.setPadding(6);
         _input.setWordWrap(true);
         _input.setPlaceholder("Ask anything...");
@@ -1894,7 +1910,7 @@ public final class OpenCodeRoot : VBox
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate() { sendMessage(); };
 
-        auto composer = new ChatComposer(_input, _sendButton);
+        auto composer = new ChatComposer(_input, _sendButton, composerControls);
         composer.setId("oc-composer");
         _composer = composer;
         auto composerCenter = new CenteredColumn(composer,
@@ -2103,23 +2119,29 @@ public final class OpenCodeRoot : VBox
     }
 
     // The header/search block is a nested VBox, so the outer sidebar sizes it
-    // from an explicit preferredHeight (VBox ignores a child's measured size on
-    // layout). Recompute it whenever the labels' text changes.
+    // from an explicit preferredHeight (VBox.onLayout lays children out from
+    // their hints only and never uses a child's measured size). Derive the
+    // height from the box's own spacing/padding and its laid-out children so it
+    // can never drift again: a hardcoded gap total (e.g. "18" for three 6px
+    // gaps) silently went stale when the spacing changed to 8 and clipped the
+    // search field's bottom border. Recompute whenever the labels' text changes.
     private void updateSessionsHeaderHeight()
     {
-        if (_sessionsHeaderColumn is null) return;
-        int height = 18; // three 6px gaps between the four rows
-        foreach (child; [
-            cast(Widget) _sessionsHeader,
-            cast(Widget) _sessionsPath,
-            cast(Widget) _newChatButton,
-            cast(Widget) _filterField])
+        auto box = _sessionsHeaderColumn;
+        if (box is null) return;
+        const padding = box.padding();
+        int height = padding.top + padding.bottom;
+        int count = 0;
+        foreach (child; box.children())
         {
-            if (child is null) continue;
+            if (!child.visible() || child.layoutHints().excludeFromLayout) continue;
             const hints = child.layoutHints();
-            height += maxInt(hints.minHeight, maxInt(0, hints.preferredHeight));
+            height += maxInt(hints.minHeight,
+                hints.preferredHeight >= 0 ? hints.preferredHeight : hints.minHeight);
+            ++count;
         }
-        _sessionsHeaderColumn.layoutHints().preferredHeight = height;
+        if (count > 1) height += box.spacing() * (count - 1);
+        box.layoutHints().preferredHeight = height;
     }
 
     private void selectProject(int index)
@@ -3001,8 +3023,11 @@ public final class OpenCodeRoot : VBox
 
         auto popup = new PopupOverlay(content, _modelButton);
         const origin = _modelButton.globalOrigin();
+        // The model button sits in the composer footer at the window bottom, so
+        // the picker opens upward (a "below" placement would land off-screen and
+        // be clamped over the conversation).
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
-            _modelButton.size().height), PopupPlacement.below);
+            _modelButton.size().height), PopupPlacement.above);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);

@@ -1,5 +1,56 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: model/context/thinking/tools moved under the prompt input (done)
+
+User: "Let's move model selector, context usage, thinking and tools under the
+main input box."
+
+- [x] Removed the four controls from the title-bar toolbar; the title band now
+      keeps only Export / Settings / Key (plus the window buttons).
+- [x] New `oc-composer-controls` `HBox` (model `Button`, `ContextUsageBadge`,
+      Thinking + Tools `CheckBox`es) is a child of `ChatComposer` and is laid out
+      in the composer's bottom row, left of the send button (upstream opencode's
+      composer footer). `ChatComposer.onLayout` reserves
+      `pad*2 + buttonHeight + gap` so the footer row never overlaps the textarea.
+- [x] Model picker now opens `PopupPlacement.above` the button: it sits at the
+      window bottom now, and the old `below` anchor got clamped so the 352 px list
+      covered the conversation.
+- [x] Smoke guard: `oc-composer-controls` plus each of `oc-model`/`oc-usage`/
+      `oc-thinking`/`oc-tools` must sit below `oc-input` and inside `oc-composer`.
+- [x] Verified: Pro `dub build --compiler=dmd --force`; `headless-pro-smoke.exe`
+      EXIT=0; screenshots `%TEMP%\composer-footer.png` (footer row) and
+      `%TEMP%\oc-focuscheck\picker.png` (picker opens upward).
+
+## 2026-09-13 - Pro: message-input focus highlight + "Search chats" clipped (done)
+
+User (1): "Let's not do input ui highlight for message send input"
+User (2): "search chat input again is cut at the bottom, this starts to repeat too
+often what's the root cause, resolve."
+
+- [x] **Message input highlight** (`oc-input`): a borderless transparent
+      `TextEditor` hit vendor `texteditor.d:1127` — `_focusDecoration && focused()`
+      calls `drawRoundedRect(full.inset(1), r, fieldBackground.withAlpha(18),
+      accent.withAlpha(190), 1)`. `Canvas.drawRoundedRect` fills the whole rect
+      with the *border* colour first, so the focused input was a ~75%-opacity
+      accent slab (not a thin ring). Fixed with `_input.setFocusDecoration(false)`
+      in `appui.d`; the composer keeps only its neutral border + caret.
+- [x] **"Search chats" bottom clipped** — root cause `updateSessionsHeaderHeight()`:
+      it hardcoded the gap total `18` ("three 6px gaps") while `headerColumn`'s
+      `VBox(8, headerPadding)` actually has 3×8 = 24 px of gaps, so the column
+      published a `preferredHeight` 6 px too small and the last child (the search
+      field) overflowed its parent and was clipped. Nested `VBox.onLayout` sizes
+      children from hints only (never a child's measured size), so publishing a
+      height is required — but it must be *derived*, not hardcoded. It now sums
+      the box's real `spacing()`/`padding()` over its laid-out children (fixes
+      the whole class of recurrence, not just this 6 px).
+- [x] Added a regression guard: `oc-header-column` id + a smoke step asserting
+      every header row fits inside its column. Proved it fails on the old bug
+      (`Header row overflows vertically: bottom 118 > column height 112`) and
+      passes now (`4 rows, 118 px`).
+- [x] Verified: Pro `dub build --compiler=dmd --force`; `build\headless-pro-smoke.exe`
+      EXIT=0; focused-input screenshots before (solid accent) vs after (neutral);
+      `--screenshot` shows the search field's full rounded bottom border.
+
 ## 2026-09-13 - Small text still looked awful: native-style coverage contrast (done)
 
 User: "i see no great improvements in font text rendering, smaller text looks
