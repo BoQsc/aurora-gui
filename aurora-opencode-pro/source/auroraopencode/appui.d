@@ -1436,6 +1436,7 @@ public final class OpenCodeRoot : VBox
     private Label _sessionsHeader;
     private Label _sessionsPath;
     private VBox _sessionsHeaderColumn;
+    private Button _newChatButton;
     private bool _sessionsRatioDirty;
 
     private SessionListView _sessionList;
@@ -1527,10 +1528,6 @@ public final class OpenCodeRoot : VBox
         _titleBar.onSnapPreview = &updateSnapPreview;
 
         auto toolbar = new HBox(6, Insets(8, 4));
-
-        auto newChatButton = toolbar.add(new Button("New chat", IconKind.newDocument));
-        newChatButton.setId("oc-new");
-        newChatButton.onClick = delegate() { newChat(); };
 
         _modelButton = toolbar.add(new Button(_settings.model));
         _modelButton.setId("oc-model");
@@ -1629,7 +1626,9 @@ public final class OpenCodeRoot : VBox
         // scrollable conversation list is flush with the divider.
         Insets headerPadding;
         headerPadding.right = 8;
-        auto headerColumn = new VBox(2, headerPadding);
+        // 6 px between rows so the New chat button and the Search chats field
+        // do not collide (they used to sit 2 px apart with mismatched heights).
+        auto headerColumn = new VBox(6, headerPadding);
         _sessionsHeaderColumn = headerColumn;
         _sessionsHeader = headerColumn.add(new Label("Sandbox"));
         _sessionsHeader.setId("oc-project-title");
@@ -1639,10 +1638,15 @@ public final class OpenCodeRoot : VBox
         _sessionsPath.setId("oc-project-path");
         _sessionsPath.setScale(1);
         _sessionsPath.setColor(opencodeMuted);
+        _newChatButton = headerColumn.add(new Button("New chat", IconKind.newDocument));
+        _newChatButton.setId("oc-new");
+        // Match the search field's height so the two controls read as a pair.
+        _newChatButton.layoutHints().preferredHeight = 30;
+        _newChatButton.onClick = delegate() { newChat(); };
         _filterField = headerColumn.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
-        _filterField.layoutHints().preferredHeight = 24;
+        _filterField.layoutHints().preferredHeight = 30;
         _filterField.onChanged = delegate()
         {
             _filterText = _filterField.textUtf8().strip();
@@ -1893,11 +1897,13 @@ public final class OpenCodeRoot : VBox
     private void updateSessionsHeaderHeight()
     {
         if (_sessionsHeaderColumn is null) return;
-        int height = 4; // two 2px gaps between the three rows
+        int height = 18; // three 6px gaps between the four rows
         if (_sessionsHeader !is null)
             height += maxInt(0, _sessionsHeader.layoutHints().preferredHeight);
         if (_sessionsPath !is null)
             height += maxInt(0, _sessionsPath.layoutHints().preferredHeight);
+        if (_newChatButton !is null)
+            height += maxInt(0, _newChatButton.layoutHints().preferredHeight);
         if (_filterField !is null)
             height += maxInt(0, _filterField.layoutHints().preferredHeight);
         _sessionsHeaderColumn.layoutHints().preferredHeight = height;

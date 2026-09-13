@@ -1,5 +1,66 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Move "New chat" button above the search field (2026-09-13)
+
+User: "Let's move new chat button to the above the search chats."
+
+- Removed the toolbar `Button("New chat", IconKind.newDocument)` (`oc-new`)
+  from the merged titlebar content; the toolbar now starts with the model button.
+- Added the same button to the sessions sidebar's nested header `VBox`, between
+  the project path label and the "Search chats" `TextField`.
+- First attempt put them 2 px apart with a 38 px button over a 24 px field and
+  the rounded corners visibly collided ("fighting for UI space"). Fixed by
+  giving the header `VBox` 6 px spacing and setting both the button and the
+  search field to `preferredHeight = 30`, so they read as a matched pair.
+  Measured on `%TEMP%\aui-pro-newchat2.png` at x=238: button y=104-133 (30 px),
+  6 px gap y=134-139, search y=140-169 (30 px).
+- Because the header `VBox` is sized from `layoutHints().preferredHeight`,
+  `updateSessionsHeaderHeight()` counts four rows with three 6 px gaps
+  (`int height = 18` plus the header/path/button/filter heights).
+- Verified with screenshots `%TEMP%\aui-pro-newchat.png` (before) and
+  `%TEMP%\aui-pro-newchat2.png` (after, `%TEMP%\aui-newchat2-top.png` zoom):
+  full-width "New chat" button above "Search chats", no collision; toolbar has
+  no New chat. Pro smoke passes; live relaunch PID 31724, `errors.log` clean.
+
+## Remove gap between sessions scrollbar and split divider (2026-09-13)
+
+User: "why there is such huge gap between scrollbar of chat conversations
+listing and width adjustment ui. that's weird could you completely remove the
+gap."
+
+**Diagnosis (measured, not guessed)**
+- Sampled `%TEMP%\aui-pro-realdflt.png` with `System.Drawing` along y=400:
+  - scrollbar track x=234-235, thumb x=236-243, track x=244-245;
+  - `22,22,27` panel background x=246-256 (**11 px gap**);
+  - `51,51,61` divider x=257-263; chat background x=264+.
+- 11 px = 8 px sidebar right padding (`VBox(2, Insets(8))`) + 3 px `ListView`
+  scrollbar inset (`bounds().width - _scrollbarWidth - 3` in
+  `vendor/.../widgets/listview.d:synchronizeScrollbar`).
+
+**Fix**
+- `vendor/aurora-d-0.4.5/source/aurora/widgets/listview.d`: added
+  `private int _scrollbarInset = 3;` plus `setScrollbarInset(int)`;
+  `synchronizeScrollbar()` and `contentWidth` now use `_scrollbarInset`. Default
+  behaviour is unchanged for every other list.
+- Pro `SessionListView` constructor: `setScrollbarInset(0)`.
+- Pro `buildUi`: sessions sidebar right padding → 0 (list flush to the divider).
+  Header/path/search moved into a nested `VBox` with 8 px right padding so the
+  search field keeps its margin; the nested box gets an explicit
+  `preferredHeight` (`updateSessionsHeaderHeight()`) because a `VBox` sizes
+  children from `layoutHints().preferredHeight`, and it is recomputed whenever
+  the project header text changes.
+
+**Verification**
+- Re-sampled `%TEMP%\aui-pro-gapfix3.png` at y=400: scrollbar track x=242-243,
+  thumb x=244-251, track x=252-253, divider x=254-260 → **gap 0** (scrollbar
+  right edge abuts the divider). At y=112 the search field still ends x=245 with
+  8 px of panel before the divider, i.e. only the list is flush.
+- Zoom crop `%TEMP%\aui-gapfix3-seam.png` (x=225-285, y=60-220, 6x) confirms no
+  panel band between the scrollbar and the divider.
+- Pro smoke: `build\headless-pro-smoke.exe` → all steps pass. Baseline
+  `dub build --compiler=dmd --force` + `headless-smoke.exe` EXIT=0.
+- Live relaunch of `aurora-opencode-pro.exe` (PID 14312), `errors.log` clean.
+
 ## Ship the user's tuned UI as the project defaults (2026-09-13)
 
 User: "Could we make current adjustments of ui by user the default for entire

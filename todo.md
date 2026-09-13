@@ -1,5 +1,41 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Move "New chat" button above the search field (done)
+
+User: "Let's move new chat button to the above the search chats."
+
+- [x] Removed the "New chat" button (`oc-new`) from the merged titlebar/toolbar.
+- [x] Added a full-width "New chat" button in the sessions sidebar between the
+      project path and the "Search chats" field; it lives in the nested header
+      `VBox` and is included in `updateSessionsHeaderHeight()`.
+- [x] Fixed the two controls colliding (2 px gap, 38 px button vs 24 px field):
+      header `VBox` spacing -> 6 px and both the button and search field -> 30 px
+      so they read as a matched pair.
+- [x] Verified: Pro smoke pass; screenshot `%TEMP%\aui-pro-newchat2.png`; live
+      relaunch PID 31724, `errors.log` clean.
+
+## 2026-09-13 - Remove gap between sessions scrollbar and split divider (done)
+
+User: "why there is such huge gap between scrollbar of chat conversations
+listing and width adjustment ui. that's weird could you completely remove the
+gap."
+
+- [x] Measured the seam pixel-exactly (not guessed): scrollbar widget x=234-245,
+      then 11 px of panel background, then the 7 px divider at x=257-263. The
+      11 px = 8 px sidebar right padding + 3 px `ListView` scrollbar inset.
+- [x] Vendor `listview.d`: added `_scrollbarInset` (default 3) +
+      `setScrollbarInset()`; Pro `SessionListView` sets it to 0 so the scrollbar
+      runs flush to the list's right edge.
+- [x] Pro sessions sidebar right padding -> 0 so the list (and its scrollbar)
+      butts against the divider; header/path/search wrapped in a nested `VBox`
+      with 8 px right padding so only the list is flush (explicit
+      `preferredHeight` because a nested `VBox` is sized from
+      `layoutHints().preferredHeight`, recomputed on project change).
+- [x] Verified: scrollbar right edge x=253 abuts divider x=254 (gap 0); Pro
+      smoke pass; baseline smoke EXIT=0; screenshots `%TEMP%\aui-pro-gapfix3.png`
+      + zoom `%TEMP%\aui-gapfix3-seam.png`; live relaunch PID 14312,
+      `errors.log` clean.
+
 ## 2026-09-13 - Ship the user's tuned UI as project defaults (done)
 
 User: "Could we make current adjustments of ui by user the default for entire
