@@ -37,6 +37,10 @@ class ListView : Widget
     private int _rowHeight = 44;
     private bool _showBorder = true;
     private int _scrollbarWidth = 12;
+    // Gap kept between the scrollbar and the widget's right edge. Lists that
+    // butt up against a split-pane divider set this to 0 so no panel band is
+    // visible between the scrollbar and the divider.
+    private int _scrollbarInset = 3;
     private Scrollbar _verticalScrollbar;
     // Focus reached by a mouse click, not keyboard Tab navigation. The focus
     // ring is suppressed for pointer focus so a clicked list does not keep a
@@ -136,6 +140,13 @@ class ListView : Widget
         invalidate();
     }
 
+    void setScrollbarInset(int value)
+    {
+        _scrollbarInset = maxInt(0, value);
+        synchronizeScrollbar();
+        invalidate();
+    }
+
     int contentHeight() const @safe pure nothrow @nogc
     {
         return cast(int) _items.length * _rowHeight;
@@ -232,7 +243,7 @@ class ListView : Widget
         // silently scroll every row out of view.
         if (_scrollOffset > maximum) applyScrollOffset(maximum);
         _verticalScrollbar.setBounds(Rect(
-            maxInt(0, bounds().width - _scrollbarWidth - 3), 4,
+            maxInt(0, bounds().width - _scrollbarWidth - _scrollbarInset), 4,
             _scrollbarWidth, maxInt(1, bounds().height - 8)));
         _verticalScrollbar.setLineStep(_rowHeight);
         _verticalScrollbar.setPageStep(maxInt(_rowHeight,
@@ -257,7 +268,7 @@ class ListView : Widget
         const last = clampInt((_scrollOffset + bounds().height) / _rowHeight + 1,
             0, cast(int) _items.length);
         const contentWidth = maxInt(0, bounds().width -
-            (showScrollbar() ? _scrollbarWidth + 3 : 0));
+            (showScrollbar() ? _scrollbarWidth + _scrollbarInset : 0));
 
         foreach (index; first .. last)
         {

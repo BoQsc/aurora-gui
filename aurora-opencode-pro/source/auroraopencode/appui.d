@@ -1214,6 +1214,14 @@ public final class SessionListView : ListView
 
     private int _hoverRow = -1;
 
+    this()
+    {
+        super();
+        // Butt the scrollbar against the split-pane divider so no panel band
+        // shows between the conversation list and the width handle.
+        setScrollbarInset(0);
+    }
+
     // Single-line conversation rows: a highlighted capsule for the active chat,
     // the title, and a right-aligned last-activity time. No repeated model name,
     // message count, or per-row icon (every row shared the same one).
@@ -1427,6 +1435,7 @@ public final class OpenCodeRoot : VBox
     private SplitPane _sessionsSplit;
     private Label _sessionsHeader;
     private Label _sessionsPath;
+    private VBox _sessionsHeaderColumn;
     private bool _sessionsRatioDirty;
 
     private SessionListView _sessionList;
@@ -1608,19 +1617,29 @@ public final class OpenCodeRoot : VBox
         _newProjectButton.setId("oc-new-project");
         _newProjectButton.onClick = delegate() { showNewProjectDialog(); };
 
-        auto sidebar = new VBox(2, Insets(8));
+        Insets sidebarPadding = Insets(8);
+        // No right padding: the conversation list (and its scrollbar) must run
+        // flush to the split-pane divider on the right.
+        sidebarPadding.right = 0;
+        auto sidebar = new VBox(2, sidebarPadding);
         sidebar.layoutHints().minWidth = 190;
         sidebar.layoutHints().preferredWidth = 300;
         sidebar.setBackground(opencodePanel);
-        _sessionsHeader = sidebar.add(new Label("Sandbox"));
+        // Header labels and the search field keep their right margin; only the
+        // scrollable conversation list is flush with the divider.
+        Insets headerPadding;
+        headerPadding.right = 8;
+        auto headerColumn = new VBox(2, headerPadding);
+        _sessionsHeaderColumn = headerColumn;
+        _sessionsHeader = headerColumn.add(new Label("Sandbox"));
         _sessionsHeader.setId("oc-project-title");
         _sessionsHeader.setScale(1);
         _sessionsHeader.setColor(opencodeText);
-        _sessionsPath = sidebar.add(new Label(""));
+        _sessionsPath = headerColumn.add(new Label(""));
         _sessionsPath.setId("oc-project-path");
         _sessionsPath.setScale(1);
         _sessionsPath.setColor(opencodeMuted);
-        _filterField = sidebar.add(new TextField(""));
+        _filterField = headerColumn.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
         _filterField.layoutHints().preferredHeight = 24;
@@ -1629,6 +1648,8 @@ public final class OpenCodeRoot : VBox
             _filterText = _filterField.textUtf8().strip();
             updateSessionList();
         };
+        sidebar.add(headerColumn);
+        updateSessionsHeaderHeight();
         _sessionList = sidebar.add(new SessionListView());
         _sessionList.setId("oc-sessions");
         _sessionList.layoutHints().flex = 1.0;
@@ -1863,6 +1884,23 @@ public final class OpenCodeRoot : VBox
         _sessionsHeader.setText(project is null ? "Sandbox" : project.name);
         if (_sessionsPath !is null)
             _sessionsPath.setText(project is null ? "" : project.path);
+        updateSessionsHeaderHeight();
+    }
+
+    // The header/search block is a nested VBox, so the outer sidebar sizes it
+    // from an explicit preferredHeight (VBox ignores a child's measured size on
+    // layout). Recompute it whenever the labels' text changes.
+    private void updateSessionsHeaderHeight()
+    {
+        if (_sessionsHeaderColumn is null) return;
+        int height = 4; // two 2px gaps between the three rows
+        if (_sessionsHeader !is null)
+            height += maxInt(0, _sessionsHeader.layoutHints().preferredHeight);
+        if (_sessionsPath !is null)
+            height += maxInt(0, _sessionsPath.layoutHints().preferredHeight);
+        if (_filterField !is null)
+            height += maxInt(0, _filterField.layoutHints().preferredHeight);
+        _sessionsHeaderColumn.layoutHints().preferredHeight = height;
     }
 
     private void selectProject(int index)
