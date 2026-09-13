@@ -263,7 +263,10 @@ public struct ProjectState
 {
     Project[] projects;
     string activeId;
-    double sessionsRatio = 0.3;  // sessions-column share of the split
+    // Sessions-column share of the sessions/chat split. Default is the tuned
+    // value the app ships with (a compact conversation list, ~207 px at the
+    // default 1200 px window).
+    double sessionsRatio = 0.18;
     // The project rail starts as a narrow strip of icon tiles; the user can
     // expand it to show the project names and the New project button.
     bool projectsCollapsed = true;

@@ -1,5 +1,25 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Ship the user's tuned UI as the project defaults (2026-09-13)
+
+User: "Could we make current adjustments of ui by user the default for entire
+project. I feel like i've made it good."
+
+- Diffed the live `%APPDATA%\Aurora OpenCode\{projects,settings}.json` against
+  the code defaults. The only runtime-tuned UI value was the sessions/chat
+  `SplitPane` ratio: `0.182692307692307682` (dragged) vs the old code default
+  `0.3`. Everything else already matched (`projectsCollapsed: true`; model
+  `deepseek/deepseek-v4.1-flash`; `thinking: false`; `toolsEnabled: true`;
+  `legacyTools: false`; empty `workspace`).
+- `core.d` `ProjectState.sessionsRatio` default is now `0.18` (the tuned value
+  rounded; ~207 px sessions column at the default 1200 px window). Fresh
+  installs / deleted state now reproduce the user's look; existing
+  `projects.json` keeps its own value.
+- Verified: Pro smoke passes; baseline build links; screenshot of a fresh state
+  (`projects.json` deleted) shows the ~207 px sessions column
+  (`%TEMP%\aui-pro-default-ratio.png`); live relaunch PID 33844, `errors.log`
+  clean.
+
 ## Projects rail collapse + merged custom titlebar (2026-09-13)
 
 User: "By default collapse the projects sidebar to icon width, and merge the

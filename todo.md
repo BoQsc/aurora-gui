@@ -1,5 +1,17 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Ship the user's tuned UI as project defaults (done)
+
+User: "Could we make current adjustments of ui by user the default for entire
+project. I feel like i've made it good."
+
+- [x] Compared live `projects.json`/`settings.json` to code defaults; only the
+      sessions/chat split ratio differed (tuned `0.18` vs `0.3`).
+- [x] `core.d` `ProjectState.sessionsRatio` default → `0.18`, so a fresh state
+      reproduces the user's layout. Rail already defaults collapsed.
+- [x] Pro smoke pass; baseline links; fresh-state screenshot
+      `%TEMP%\aui-pro-default-ratio.png`; live relaunch PID 33844.
+
 ## 2026-09-13 - Aurora OpenCode Pro: collapse project rail + merge titlebar/toolbar (done)
 
 User: "By default collapse the projects sidebar to icon width, and merge the
