@@ -1,6 +1,9 @@
 module auroraopencode_pro_headless_smoke;
 
 import aurora;
+import aurora.render.drawlist : DrawList;
+import aurora.render.software : SoftwareRenderer;
+import aurora.surface : Surface;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     OpenCodeToolCall,
@@ -9,6 +12,7 @@ import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     setOpencodeStateDirectoryForTesting, siblingMessages;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
+import auroraopencode.markdown : composeMarkdown, paintMarkdown, parseMarkdown;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
@@ -17,8 +21,98 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.conv : to;
 import std.path : buildPath;
 import std.stdio : writeln;
+import std.process : environment;
 import std.string : indexOf;
 import std.utf : toUTF32;
+
+/// Guard against the experimental TrueType `natural` hinter, whose grid
+/// fitting rewrote real glyph outlines (Consolas `X` lost its lower-left arm
+/// at 17px). The app must render with hinting off plus the contrast curve.
+private void verifyNativeTextGlyphs()
+{
+    import auroraopencode.core : enableNativeTextRendering;
+    enableNativeTextRendering();
+    const mode = environment.get("AURORA_HINTING", "");
+    assert(mode != "natural" && mode != "1",
+        "Native text rendering must not enable the experimental hinter");
+    auto fonts = new FontSystem();
+    auto face = fonts.monospaceFace;
+    auto atlas = new GlyphAtlas(2048, 1024);
+    const px = 17;
+    const glyph = atlas.glyphByIndex(face, face.glyphIndex('X'), px,
+        FontRenderMode.sharp, 0);
+    bool[4] quadrants;
+    foreach (row; 0 .. glyph.region.height)
+        foreach (col; 0 .. glyph.region.width)
+        {
+            const coverage = atlas.pixels()[
+                (glyph.region.y + row) * atlas.width +
+                (glyph.region.x + col)];
+            if (coverage <= 40) continue;
+            const right = col >= glyph.region.width / 2;
+            const bottom = row >= glyph.region.height / 2;
+            quadrants[(bottom ? 2 : 0) + (right ? 1 : 0)] = true;
+        }
+    assert(quadrants[0] && quadrants[1] && quadrants[2] && quadrants[3],
+        "Mono 'X' is missing a stroke (broken glyph rasterization)");
+    writeln("Native text: mono X keeps all four strokes, hinting=",
+        mode.length == 0 ? "off" : mode);
+}
+
+/// Regression: an inline-code run is split into several pill segments whose
+/// padded backgrounds overlap. Backgrounds must be painted before any glyph,
+/// otherwise a later segment's 3px left overhang erases the right side of the
+/// previous segment's last glyph (the `X` in `SYNTAX` rendered as `>`).
+private void verifyInlineCodePillGlyphs()
+{
+    auto fonts = FontSystem.sharedInstance();
+    auto blocks = parseMarkdown("- `SYNTAX OK (27874 chars of JS)` OK\n"d);
+    auto composition = composeMarkdown(blocks, 700, false);
+    auto list = new DrawList(fonts);
+    list.reset(Size(420, 40), Color(18, 20, 24, 255));
+    auto canvas = Canvas(list, 420, 40);
+    paintMarkdown(canvas, composition, 4, 6);
+    auto surface = new Surface(420, 40);
+    SoftwareRenderer.renderInto(list, surface);
+
+    foreach (item; composition.items)
+    {
+        if (!item.codePill || item.layout is null) continue;
+        auto text = item.layout.text();
+        foreach (glyph; item.layout.glyphs)
+        {
+            if (glyph.clusterStart >= text.length ||
+                text[glyph.clusterStart] != 'X')
+                continue;
+            const cellX = 4 + cast(int) (item.x + glyph.x);
+            const cellY = 6 + cast(int) item.y;
+            const advance = maxInt(1, cast(int) (glyph.advanceX + 0.5));
+            bool leftInk;
+            bool rightInk;
+            foreach (row; 0 .. 14)
+                foreach (col; 0 .. advance)
+                {
+                    const x = cellX + col;
+                    const y = cellY + row;
+                    if (x < 0 || y < 0 || x >= surface.width() ||
+                        y >= surface.height())
+                        continue;
+                    const pixel = surface.pixels()[cast(size_t) y *
+                        cast(size_t) surface.width() + cast(size_t) x];
+                    const lum = ((pixel >> 16) & 0xff) +
+                        ((pixel >> 8) & 0xff) + (pixel & 0xff);
+                    if (lum <= 200) continue;
+                    if (col >= advance / 2) rightInk = true;
+                    else leftInk = true;
+                }
+            assert(leftInk && rightInk,
+                "Inline-code 'X' lost a stroke to an overlapping pill background");
+            writeln("Inline code pill: X keeps both strokes");
+            return;
+        }
+    }
+    assert(false, "Inline-code pill 'X' not found in the composition");
+}
 
 private Widget findById(Widget widget, string requestedId)
 {
@@ -87,6 +181,8 @@ int main(string[] args)
     mkdirRecurse(stateDir);
     writeStartupState(stateDir);
     setOpencodeStateDirectoryForTesting(stateDir);
+    verifyNativeTextGlyphs();
+    verifyInlineCodePillGlyphs();
 
     WindowOptions options;
     options.title = "Aurora OpenCode Pro headless";
@@ -728,6 +824,16 @@ int main(string[] args)
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),
         "The merged custom titlebar should own the top band");
+    assert(root.titleBarTitleForTesting() == "Aurora OpenCode",
+        "The titlebar should show 'Aurora OpenCode' at its left, got '" ~
+        root.titleBarTitleForTesting() ~ "'");
+    // The title region is a compact fixed strip, not the default 2/5 of the
+    // band, so the merged toolbar keeps its room.
+    assert(root.titleBarTitleWidthForTesting() > 0 &&
+        root.titleBarTitleWidthForTesting() <= 200,
+        "The title region should be a compact fixed width, got " ~
+        to!string(root.titleBarTitleWidthForTesting()));
+    writeln("Titlebar left title: ", root.titleBarTitleForTesting());
     assert(root.projectsRailCollapsedForTesting(),
         "Project rail should start collapsed");
     assert(root.projectsRailWidthForTesting() <= 48,
@@ -893,6 +999,22 @@ int main(string[] args)
             "Control " ~ controlId ~ " should sit in the composer footer row");
     }
     writeln("Model/context/thinking/tools controls sit in the composer footer");
+
+    // Regression: the stock CheckBox reserves 34 + 12*len px, so "Thinking"
+    // claimed 130 px and left a ~70 px dead gap before Tools (which looked
+    // detached). Both toggles must now hug their labels and sit as a tight pair.
+    auto thinkingToggle = requireWidget!Widget(root, "oc-thinking");
+    auto toolsToggle = requireWidget!Widget(root, "oc-tools");
+    assert(thinkingToggle.bounds().width < 34 + "Thinking".length * 12,
+        "Thinking toggle should hug its label instead of reserving 130 px");
+    assert(toolsToggle.bounds().width < 34 + "Tools".length * 12,
+        "Tools toggle should hug its label instead of reserving 94 px");
+    const toggleGap = toolsToggle.localToGlobal(Point(0, 0)).x -
+        (thinkingToggle.localToGlobal(Point(0, 0)).x +
+         thinkingToggle.bounds().width);
+    assert(toggleGap <= 12,
+        "Tools toggle should sit right next to the Thinking toggle");
+    writeln("Thinking/Tools toggles hug their labels (gap ", toggleGap, " px)");
 
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);

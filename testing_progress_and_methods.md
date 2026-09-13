@@ -1,4 +1,185 @@
-﻿# Testing Progress and Methods (Aurora Cut)
+# Testing Progress and Methods (Aurora Cut)
+
+## Pro: inline-code "X" drawn as ">" - background overdraw (2026-09-13)
+
+### Symptom
+Live Pro showed `SYNTAX` inside a green inline-code chip as `SYNTA)` - the `X`
+lost its upper-right and lower-right arms and looked like `>`. It reproduced in
+the software `--screenshot` render too (so not Vulkan, not DPI, not hinting -
+`AURORA_HINTING` was confirmed unset in the running process).
+
+### Root cause (diagnosis method)
+A throwaway probe (`%TEMP%\opencode\paintprobe.d`) shapes `parseMarkdown(...)`,
+paints with `paintMarkdown` into a `DrawList`, renders with
+`SoftwareRenderer.renderInto`, and dumps both the glyph atlas region and the
+final surface as ASCII/PPM. It showed:
+
+- The atlas region the quad samples is a perfect `X` (all four arms).
+- The rasterizer samples exactly that region with `du = dv = 1`.
+- The final surface had the `X`'s right half replaced by the pill background.
+
+`composeMarkdown` splits an inline-code run into several `codePill` `MdItem`
+segments (e.g. `SYNTAX`, the space, `OK`, ...). Each segment's background is
+`Rect(item.x - 3, item.y, item.w + 6, item.h)` (`markdown.d paintMarkdown`).
+Because the loop painted a segment's background immediately before its glyphs,
+the space segment's background (which starts 3 px to the LEFT of its own x, i.e.
+inside the previous segment's last glyph cell) was painted after `SYNTAX`'s
+glyphs and erased the right side of the `X`.
+
+### Fix
+`aurora-opencode-core/source/auroraopencode/markdown.d`: split `paintMarkdown`
+into two passes - pass 1 paints every background (code pill, panel, quote bar,
+rule), pass 2 paints every text layout/underline. Segment pills still overlap
+into one continuous band, but can no longer overdraw glyphs.
+
+### How to test
+1. Pro smoke (from `aurora-opencode-pro`):
+   ```
+   dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+       -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+       user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+       -of=build\headless-pro-smoke.exe
+   build\headless-pro-smoke.exe
+   ```
+   Pass = `Inline code pill: X keeps both strokes` and the final
+   `Aurora OpenCode Pro headless smoke test passed.` The guard finds the `X`
+   glyph in the shaped layout, maps its cell to the rendered surface, and
+   asserts bright ink in both the left and right half of the cell.
+2. Baseline smoke (from `aurora-opencode`, uses the shared `markdown.d`):
+   ```
+   dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+       -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d ^
+       user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+       -of=build\headless-smoke.exe
+   build\headless-smoke.exe
+   ```
+3. Ad-hoc visual: `paintprobe.exe` writes `paint_code.ppm`; convert and zoom -
+   `SYNTAX OK (27874 chars of JS)` must show a full `X` inside one pill band.
+
+### Note on the misleading earlier diagnosis
+The earlier "hinting" entry is still valid for the separate case it described,
+but this `>` shape was NOT hinting: the atlas glyph was correct. Do not re-enable
+`AURORA_HINTING` to "fix" this.
+
+## Pro: titlebar left title "Aurora OpenCode" (2026-09-13)
+
+User: "Add to the titlebar left title 'Aurora OpenCode'".
+
+### Change
+- `aurora-opencode-pro/source/auroraopencode/titlebar.d` (`OpenCodeTitleBar`
+  constructor): the merged titlebar band previously had no title
+  (`setTitle("")`) so the toolbar filled the whole strip. It now sets
+  `setTitle("Aurora OpenCode")` and pins the title region with
+  `setTitleWidth(150)` so the vendored `TitleBar` does NOT take its default
+  2/5 of the band and crush the toolbar. The title is left-aligned with the
+  terminal icon; the merged toolbar still fills the rest of the band.
+- `aurora-opencode-pro/source/auroraopencode/appui.d`: added
+  `titleBarTitleForTesting()` and `titleBarTitleWidthForTesting()` (title +
+  `titleRect().width`) test hooks.
+
+### How to test
+1. Smoke (from `aurora-opencode-pro`):
+   ```
+   dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+       -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+       user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+       -of=build\headless-pro-smoke.exe
+   build\headless-pro-smoke.exe
+   ```
+   Pass = `Aurora OpenCode Pro headless smoke test passed.` plus
+   `Titlebar left title: Aurora OpenCode`. The new guard asserts the title
+   string and that the reserved title region is <= 200 px (catches the
+   regression where an unset title width would allocate 2/5 of the band).
+2. Visual (real GUI): `aurora-opencode-pro.exe --screenshot build\titlebar-check.ppm`,
+   then `ffmpeg -y -i build\titlebar-check.ppm build\titlebar-check.png`. The
+   PNG shows "Aurora OpenCode" at the top-left next to the terminal icon.
+
+### Result
+Smoke EXIT=0; Pro rebuilt and one instance relaunched. Evidence:
+`aurora-opencode-pro/build/titlebar-check.png`.
+
+## Pro: move Tools toggle closer to Thinking (2026-09-13)
+
+User: "let's move the tools toggle closer to thinking toggle" — the composer
+footer (model button, context meter, `Thinking`, `Tools`) had a large gap
+between the two toggles.
+
+### Diagnosis (measured, not guessed)
+- Captured the live window (`%TEMP%\opencode\pro_window.png`) and zoomed the
+  footer: order was already model, context meter, Thinking, Tools, but ~70 px of
+  empty space followed the "Thinking" label.
+- Root cause: stock `CheckBox` sizes itself as `34 + 12*len` px
+  (`vendor/aurora-d-0.4.5/source/aurora/widgets/basic.d:57`). "Thinking" = 130 px
+  and "Tools" = 94 px, far wider than the drawn labels; the dead space is inside
+  the Thinking widget, so the widgets still *look* 8 px apart but the labels are
+  ~70 px apart.
+
+### Change
+- `aurora-opencode-pro/source/auroraopencode/appui.d`: new `hugCheckBoxLabel()`
+  measures the label via `fontSystem().textEngine.layout(...)` (the same
+  mechanism Button/Label use) and sets `preferredWidth`/`minWidth` to
+  `max(32, 28 + textWidth + 8)` (28 px = CheckBox indicator + gutter). Called for
+  both `_thinkingBox` and `_toolsBox`.
+
+### How to test
+1. Smoke (from `aurora-opencode-pro`):
+   ```
+   dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+       -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+       user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+       -of=build\headless-pro-smoke.exe
+   build\headless-pro-smoke.exe
+   ```
+   Pass = `Aurora OpenCode Pro headless smoke test passed.` plus
+   `Thinking/Tools toggles hug their labels (gap 8 px)`.
+   The new guard asserts each toggle's width is below the old reservation
+   (`34 + len*12`) and the inter-toggle gap is <= 12 px; it fails on the
+   pre-fix code because the Thinking widget would be 130 px wide.
+2. Visual (real GUI): rebuild `dub build --compiler=dmd --force`, relaunch one
+   instance, and screenshot the composer footer. Widget gap is 8 px and the
+   visible label gap drops from ~70 px to ~34 px.
+
+### Result
+Smoke EXIT=0; Pro rebuilt and one instance relaunched. Evidence:
+`%TEMP%\opencode\pro_window.png`, `pro_footer_zoom4.png`.
+
+## Pro: broken/hollow letters "from time to time" (2026-09-13)
+
+Symptom (user): intermittent broken glyphs — a screenshot showed "SYNTAX" with a
+mangled `X` (a stroke missing).
+
+### Diagnosis (evidence, not guesswork)
+- Dump the mono face (Consolas) at the app size (17px) in all three env modes
+  (`%TEMP%\opencode\glyphprobe.d`, `glyphprobe2.d`):
+  - `AURORA_HINTING` unset and `=1`: correct glyphs.
+  - `AURORA_HINTING=natural`: `X`/`x` lose the whole lower-left arm, `1`/`I`
+    lose their serifs, and the `X` bbox grows from 10x11 to 10x16 — i.e. the
+    outline coordinates are rewritten, not just the coverage.
+- Cause: `enableNativeTextRendering()` set `AURORA_HINTING=natural`, enabling
+  the experimental TrueType bytecode interpreter (`hinter.d` header:
+  "Conformance is not yet established ... off by default"; `truetype.d` also
+  warns it corrupts some outlines order-dependently). Intermittency = which
+  glyphs/order hit the bad path.
+
+### Change
+- `aurora-opencode-core/source/auroraopencode/core.d`: `enableNativeTextRendering()`
+  no longer sets `AURORA_HINTING`; it only pins `AURORA_TEXT_CONTRAST=0.5`
+  (an alpha remap that cannot move geometry). The function doc explains why the
+  hinter stays off.
+
+### How to test
+1. Probe: rasterize Consolas `X` at 17px for env modes `""`, `1`, `natural`
+   and eyeball the bitmap (`glyphprobe2.d`), or render the failing strings
+   (`glyphshot.d` -> top=natural, bottom=fixed -> `glyphshot2.png`).
+2. Smoke: Pro `verifyNativeTextGlyphs()` (runs before the first window) asserts
+   the app does not enable the experimental hinter and that mono `X` has ink in
+   all four quadrants. To prove the guard catches a regression:
+   `$env:AURORA_HINTING='natural'; .\build\headless-pro-smoke.exe` -> EXIT=1.
+
+### Result
+Pro smoke prints `Native text: mono X keeps all four strokes, hinting=off` and
+`... smoke test passed.`; baseline smoke EXIT=0; both apps rebuilt; Pro
+relaunched.
 
 ## Pro: collapse/expand is sluggish (2026-09-13)
 

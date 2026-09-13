@@ -972,37 +972,23 @@ MdComposition composeMarkdown(MarkdownBlock[] blocks, int lineWidth,
 
 void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
 {
+    // Paint every background before any glyph. An inline-code run is composed
+    // of several MdItem text segments, and each segment paints a padded pill
+    // background (item.x - 3, width + 6). If a segment's background were
+    // painted immediately before its own glyphs, the next segment's left
+    // overhang would erase the right side of the previous segment's final
+    // glyph (for example the "X" in `SYNTAX`).
     foreach (item; c.items)
     {
         switch (item.kind)
         {
             case MdItemKind.text:
-                if (item.layout is null) break;
-                if (item.codePill && item.layout.lines.length == 1)
+                if (item.layout !is null && item.codePill &&
+                    item.layout.lines.length == 1)
                 {
                     canvas.fillRoundedRect(Rect(cast(int)(dx + item.x) - 3,
                         cast(int)(dy + item.y), cast(int)(item.w + 6),
                         cast(int) item.h), 4, mdCodeBg);
-                }
-                if (item.clipText)
-                {
-                    auto clipped = canvas.clipped(Rect(
-                        cast(int)(dx + item.clipX), cast(int)(dy + item.y),
-                        cast(int) item.clipW, cast(int) item.h));
-                    clipped.drawLayout(Point(cast(int)(dx + item.x),
-                        cast(int)(dy + item.y)), item.layout, item.color);
-                }
-                else
-                    canvas.drawLayout(Point(cast(int)(dx + item.x),
-                        cast(int)(dy + item.y)), item.layout, item.color);
-                if (item.underline && item.layout.lines.length == 1)
-                {
-                    const line = item.layout.lines[0];
-                    canvas.drawLine(Point(cast(int)(dx + item.x),
-                        cast(int)(dy + item.y + line.ascent + 1)),
-                        Point(cast(int)(dx + item.x + item.w),
-                        cast(int)(dy + item.y + line.ascent + 1)),
-                        item.color, 1);
                 }
                 break;
             case MdItemKind.panel:
@@ -1022,6 +1008,31 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
                 break;
             default:
                 break;
+        }
+    }
+
+    foreach (item; c.items)
+    {
+        if (item.kind != MdItemKind.text || item.layout is null) continue;
+        if (item.clipText)
+        {
+            auto clipped = canvas.clipped(Rect(
+                cast(int)(dx + item.clipX), cast(int)(dy + item.y),
+                cast(int) item.clipW, cast(int) item.h));
+            clipped.drawLayout(Point(cast(int)(dx + item.x),
+                cast(int)(dy + item.y)), item.layout, item.color);
+        }
+        else
+            canvas.drawLayout(Point(cast(int)(dx + item.x),
+                cast(int)(dy + item.y)), item.layout, item.color);
+        if (item.underline && item.layout.lines.length == 1)
+        {
+            const line = item.layout.lines[0];
+            canvas.drawLine(Point(cast(int)(dx + item.x),
+                cast(int)(dy + item.y + line.ascent + 1)),
+                Point(cast(int)(dx + item.x + item.w),
+                cast(int)(dy + item.y + line.ascent + 1)),
+                item.color, 1);
         }
     }
 }

@@ -2739,6 +2739,27 @@ public final class OpenCodeRoot : VBox
         _client.closeSession();
     }
 
+    /// The stock CheckBox reserves a fixed 12 px per character, which leaves a
+    /// wide dead gap trailing its label (the composer's Thinking toggle used to
+    /// push the Tools toggle ~70 px away). Measure the label and hug it instead
+    /// so the two toggles read as a tight pair.
+    private void hugCheckBoxLabel(CheckBox box, string label)
+    {
+        const palette = theme();
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast(FontFace) palette.uiFont;
+        options.pixelSize = fontPixelSize(palette.fontScale);
+        options.wrap = false;
+        const measured = fontSystem().textEngine.layout(toUTF32(label), options)
+            .measuredSize();
+        // CheckBox paints its indicator at x=3 (18 px wide) and the text at
+        // x=28, so 28 px of left chrome plus a small trailing pad.
+        const width = maxInt(32, 28 + measured.width + 8);
+        box.layoutHints().preferredWidth = width;
+        box.layoutHints().minWidth = width;
+    }
+
     private void buildUi()
     {
         // Frameless window: the vendored TitleBar is the whole top band and the
@@ -2781,6 +2802,7 @@ public final class OpenCodeRoot : VBox
 
         _thinkingBox = composerControls.add(new CheckBox("Thinking"));
         _thinkingBox.setId("oc-thinking");
+        hugCheckBoxLabel(_thinkingBox, "Thinking");
         _thinkingBox.setChecked(_settings.thinking, false);
         _thinkingBox.onChanged = delegate(bool value)
         {
@@ -2791,6 +2813,7 @@ public final class OpenCodeRoot : VBox
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
+        hugCheckBoxLabel(_toolsBox, "Tools");
         _toolsBox.setChecked(_settings.toolsEnabled, false);
         _toolsBox.onChanged = delegate(bool value)
         {
@@ -5508,6 +5531,18 @@ public final class OpenCodeRoot : VBox
     public bool hasCustomTitleBarForTesting()
     {
         return _titleBar !is null;
+    }
+
+    /// Test-only: the window-level title shown at the left of the titlebar.
+    public string titleBarTitleForTesting()
+    {
+        return _titleBar is null ? "" : _titleBar.title().to!string;
+    }
+
+    /// Test-only: the width reserved for the left title region.
+    public int titleBarTitleWidthForTesting()
+    {
+        return _titleBar is null ? 0 : _titleBar.titleRect().width;
     }
 
     public void openNewProjectDialogForTesting()

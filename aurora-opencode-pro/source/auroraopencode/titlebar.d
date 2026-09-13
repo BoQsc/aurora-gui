@@ -37,9 +37,11 @@ public final class OpenCodeTitleBar : TitleBar
     this(GuiWindow window)
     {
         _window = window;
-        // No title text: the app identity is the icon and the merged toolbar,
-        // and the whole band is needed for the toolbar controls.
-        setTitle("");
+        // The app identity sits at the left of the band; the merged toolbar
+        // still fills the rest. The title region is pinned to a compact width
+        // so it never claims the 2/5 auto-allocation and squeeze the toolbar.
+        setTitle("Aurora OpenCode");
+        setTitleWidth(150);
         setIcon(IconKind.terminal);
         setBarHeight(titleBarHeight);
         layoutHints().preferredHeight = titleBarHeight;

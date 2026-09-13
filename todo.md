@@ -1,5 +1,90 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: inline-code "X" rendered as ">" (fixed, root cause)
+
+User: "Are we ready to commit and push what solved this" (the intermittent
+broken `X` seen live as `SYNTA)` in green inline-code chips).
+
+Root cause (reproduced in isolation with a software-render probe): an inline
+code span such as `` `SYNTAX OK (27874 chars of JS)` `` is composed as SEVERAL
+`codePill` `MdItem` text segments (words/spaces). `paintMarkdown` painted each
+segment's pill background `(item.x - 3, w + 6)` immediately before that
+segment's glyphs, so the NEXT segment's 3 px left overhang was drawn AFTER the
+PREVIOUS segment's glyphs and erased the right tips of its last glyph. For
+`SYNTAX` that last glyph is `X`, leaving the left arms only = a `>`.
+
+- [x] `aurora-opencode-core/source/auroraopencode/markdown.d`: `paintMarkdown`
+      now paints ALL backgrounds (codePill pills, panels, quote bars, rules) in
+      a first pass and ALL text/underlines in a second pass, so no background
+      can overdraw a glyph. Pill segments still chain into one continuous band.
+- [x] Pro smoke guard `verifyInlineCodePillGlyphs()`: software-renders the code
+      pill, locates the `X` cell from the shaped layout, and asserts ink in both
+      the left and right halves (fails on the old ordering).
+- [x] Pro + baseline rebuilt (`dub build --compiler=dmd --force`); Pro smoke and
+      baseline smoke both EXIT=0; single Pro instance relaunched (PID 30688).
+- Evidence: `%TEMP%\opencode\paint_code_fixed_3x.png` (clean `SYNTAX`, one pill).
+
+## 2026-09-13 - Pro: titlebar left title "Aurora OpenCode" (fixed)
+
+User: "Add to the titlebar left title 'Aurora OpenCode'".
+
+- [x] `titlebar.d` `OpenCodeTitleBar`: `setTitle("")` -> `setTitle("Aurora
+      OpenCode")`; `setTitleWidth(150)` pins the region so the vendored TitleBar
+      does not allocate its default 2/5 of the band and crush the toolbar.
+- [x] `appui.d`: `titleBarTitleForTesting()` + `titleBarTitleWidthForTesting()`.
+- [x] Pro smoke guard asserts the title text and a compact (<= 200 px) region.
+- [x] Pro rebuilt and one instance relaunched; smoke EXIT=0.
+- Evidence: `aurora-opencode-pro/build/titlebar-check.png` (title at top-left).
+
+## 2026-09-13 - Pro: move Tools toggle closer to Thinking (fixed)
+
+User: "let's move the tools toggle closer to thinking toggle" (Aurora OpenCode
+Pro composer footer, next to `deepseek/deepseek-v4.1-flash` / `4%`).
+
+Diagnosis (screenshot measurement): the footer order already was
+model, context meter, Thinking, Tools, but the stock `CheckBox`
+(`vendor/aurora-d-0.4.5/source/aurora/widgets/basic.d:57`) sized itself as
+`34 + 12*len` px. "Thinking" therefore claimed 130 px and left ~70 px of dead
+space after its label, so Tools looked detached even though the two widgets were
+8 px apart.
+
+- [x] `appui.d` `hugCheckBoxLabel()`: measure the label with the text engine
+      (same way Button/Label do) and set `preferredWidth`/`minWidth` to
+      `max(32, 28 + textWidth + 8)` for both the Thinking and Tools toggles.
+      Gap between the labels dropped ~70 px -> ~34 px (widget gap 8 px).
+- [x] Pro smoke guard: `Thinking/Tools toggles hug their labels (gap 8 px)` —
+      asserts each toggle width is below the old reservation and the inter-toggle
+      gap is <= 12 px.
+- [x] Pro rebuilt (`dub build --compiler=dmd --force`), single instance
+      relaunched; smoke EXIT=0.
+- Evidence: `%TEMP%\opencode\pro_window.png` + `pro_footer_zoom4.png`.
+
+## 2026-09-13 - Pro: broken/hollow letters "from time to time" (fixed)
+
+User: "Why we are getting broken font/text/letters from time to time. Needs to
+be fixed." (screenshot: "SYNTAX"/"SMOKE" with a mangled `X`).
+
+Diagnosis: `enableNativeTextRendering()` forced `AURORA_HINTING=natural`, which
+turns on the bundled TrueType bytecode interpreter in its experimental
+`natural` grid mode. That interpreter is documented as non-conformant, and the
+natural grid rewrites real outlines. Proved by rasterizing Consolas `X` at 17px:
+natural mode drops the entire lower-left arm (bitmap becomes 10x16 and
+malformed), while hinting off and ordinary hinting both produce a correct 10x11
+X; `x`, `1`, `I` are corrupted too. Damage is glyph- and order-dependent, so it
+appeared "from time to time".
+
+- [x] `core.d` `enableNativeTextRendering()`: stop enabling hinting; keep only
+      the safe `AURORA_TEXT_CONTRAST=0.5` coverage curve (alpha-only, cannot
+      move glyph geometry). Doc updated to explain why.
+- [x] Pro smoke guard `verifyNativeTextGlyphs()`: asserts the app does not
+      enable the experimental hinter and that mono `X` keeps ink in all four
+      quadrants; runs before the first window. With `AURORA_HINTING=natural`
+      forced it fails (EXIT=1).
+- [x] Both apps rebuilt, Pro relaunched (single instance); Pro + baseline
+      smokes EXIT=0.
+- Evidence: `%TEMP%\opencode\glyphshot2.png` (top = natural/broken `X`, bottom
+  = fixed).
+
 ## 2026-09-13 - Pro: collapse/expand is sluggish (root-caused & fixed)
 
 User: "Why collapse uncollapse is so nonperformant noninstant it's weird."
