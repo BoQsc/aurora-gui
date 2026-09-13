@@ -2,9 +2,11 @@ module auroraopencode_pro_headless_smoke;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
-import auroraopencode.core : OpenCodeToolCall, opencodeComposerHeight,
-    opencodeContentMaxWidth, opencodeTheme,
-    setOpencodeStateDirectoryForTesting;
+import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
+    OpenCodeToolCall,
+    activeMessagePath, ensureMessageGraph, newMessageId,
+    opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
+    setOpencodeStateDirectoryForTesting, siblingMessages;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
@@ -227,6 +229,7 @@ int main(string[] args)
     const count = root.messageCountForTesting();
     assert(root.bubbleActionForTesting(cast(int) count - 2) == "",
         "Older user bubble should not carry an action pill");
+    const totalBeforeRegenerate = root.totalMessageCountForTesting();
     assert(root.prepareRegenerateForTesting(),
         "Regenerate was not offered after an assistant reply");
     // After dropping the reply, the user message is the last bubble and has no
@@ -234,6 +237,10 @@ int main(string[] args)
     assert(root.lastBubbleActionForTesting() == "",
         "After regenerate the last bubble should have no pill");
     const countAfterRegenerate = root.messageCountForTesting();
+    assert(countAfterRegenerate == cast(int) count - 1,
+        "Regenerate should drop the reply from the visible path");
+    assert(root.totalMessageCountForTesting() == totalBeforeRegenerate,
+        "Regenerate must keep the replaced reply stored as a branch");
 
     // Edit & resend the newest user message via the right-click context menu.
     root.openMessageContextMenuForTesting(countAfterRegenerate - 1);
@@ -256,10 +263,13 @@ int main(string[] args)
     assert(driver.paint(), "Edit & resend did not repaint");
     dismissContextMenus(root);
     root.tickTree(0.02);
-    assert(root.messageCountForTesting() == countAfterRegenerate - 1,
-        "Edit & resend did not truncate at the user message");
+    assert(root.messageCountForTesting() == countAfterRegenerate,
+        "Edit & resend must not remove the original run");
     assert(root.inputTextForTesting() == "A new user message.",
         "Edit & resend did not prefill the input");
+    assert(root.pendingEditIndexForTesting() >= 0,
+        "Edit & resend did not arm an edit for submit");
+    root.cancelPendingEditForTesting();
     writeln("Edit & resend prefilled input: ", root.inputTextForTesting());
 
     // Regression: the context menu on an older user message targets THAT
@@ -268,6 +278,7 @@ int main(string[] args)
         ["user", "assistant", "user"],
         ["edit me zero", "reply one", "edit me two"]);
     const menuCount = root.messageCountForTesting();
+    const totalBeforeOlderEdit = root.totalMessageCountForTesting();
     root.openMessageContextMenuForTesting(cast(int) menuCount - 3);
     root.tickTree(0.02);
     auto olderMenu = cast(ContextMenu) currentTransientPopup(root);
@@ -288,8 +299,13 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(root.inputTextForTesting() == "edit me zero",
         "Older message Edit & resend targeted the wrong message");
-    assert(root.messageCountForTesting() == cast(int) menuCount - 3,
-        "Older message Edit & resend did not truncate at its own message");
+    assert(root.messageCountForTesting() == menuCount,
+        "Older message Edit & resend must not remove its own run");
+    assert(root.totalMessageCountForTesting() == totalBeforeOlderEdit,
+        "Older message Edit & resend must keep the original run stored");
+    assert(root.pendingEditIndexForTesting() >= 0,
+        "Older message Edit & resend did not arm an edit");
+    root.cancelPendingEditForTesting();
     writeln("Context menu targets its own message (no foreach capture bug)");
 
     // --- Message text selection + Copy (Pro) ----------------------------
@@ -358,6 +374,191 @@ int main(string[] args)
     assert(root.lastBubbleActionForTesting() == "Regenerate",
         "Pill did not refresh after the final regenerate");
     writeln("Chat-quality pill stays on the latest assistant reply");
+
+    // --- Message edit + regenerate keep their runs (branch history) -------
+    // Regenerating keeps the replaced reply stored and flips between runs with
+    // the footer `‹ n/m ›` arrows.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["first prompt", "first answer"]);
+    assert(root.messageCountForTesting() == 2,
+        "Fresh branch session should show two messages");
+    assert(root.prepareRegenerateForTesting(),
+        "Regenerate was not offered in the branch session");
+    assert(root.messageCountForTesting() == 1,
+        "Regenerate should leave only the prompt visible");
+    assert(root.totalMessageCountForTesting() == 2,
+        "Regenerate must keep the replaced reply stored");
+    root.addConversationForTesting(["assistant"], ["second answer"]);
+    const branchReplyChild = root.messageCountForTesting() - 1;
+    assert(root.bubbleVersionForTesting(branchReplyChild) == "2/2",
+        "Regenerated reply should expose two branches");
+    assert(root.invokeBubbleVersionPrevForTesting(branchReplyChild),
+        "Branch back arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "first answer",
+        "Branching back did not show the original reply");
+    assert(root.invokeBubbleVersionNextForTesting(branchReplyChild),
+        "Branch forward arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "second answer",
+        "Branching forward did not return to the new reply");
+
+    // Editing a prompt and submitting branches it instead of overwriting it.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["original prompt", "original answer"]);
+    root.editAndResendForTesting(0);
+    assert(root.pendingEditIndexForTesting() == 0,
+        "Edit did not arm the first prompt");
+    assert(root.inputTextForTesting() == "original prompt",
+        "Edit did not prefill the prompt");
+    assert(root.messageCountForTesting() == 2,
+        "Edit must not change the visible conversation before submit");
+    const editedIndex = root.commitEditForTesting("edited prompt");
+    assert(editedIndex >= 0, "Edit submit did not create a new prompt");
+    assert(root.messageVersionCountForTesting(editedIndex) == 2,
+        "Edited prompt should have two versions");
+    assert(root.totalMessageCountForTesting() == 3,
+        "Edit submit must keep the original run stored");
+    root.addConversationForTesting(["assistant"], ["edited answer"]);
+    const editedUserChild = root.messageCountForTesting() - 2;
+    assert(root.bubbleVersionForTesting(editedUserChild) == "2/2",
+        "Edited prompt should expose two versions");
+    assert(root.invokeBubbleVersionPrevForTesting(editedUserChild),
+        "Prompt version back arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "original answer",
+        "Switching to the original prompt did not show its answer");
+    assert(root.invokeBubbleVersionNextForTesting(editedUserChild),
+        "Prompt version forward arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "edited answer",
+        "Switching forward did not restore the edited branch");
+    // Continuing from a restored branch appends to it without disturbing the
+    // other run.
+    root.addConversationForTesting(["user"], ["continue here"]);
+    assert(root.lastAssistantContentForTesting() == "continue here",
+        "Continuing on a restored branch did not append to it");
+    assert(root.invokeBubbleVersionPrevForTesting(editedUserChild),
+        "Prompt version back arrow failed after continuing");
+    assert(root.lastAssistantContentForTesting() == "original answer",
+        "Continuing on one branch disturbed the other run");
+    writeln("Edit + regenerate keep prior runs and branch navigation works");
+
+    // Core graph persistence: a session saved with ids/activeLeaf must keep its
+    // genuine root branch (two prompts sharing an empty parent), while a legacy
+    // transcript with no ids is rebuilt as a single chain.
+    {
+        ChatMessage u1; u1.role = "user"; u1.content = "one";
+        u1.id = newMessageId();
+        ChatMessage a1; a1.role = "assistant"; a1.content = "answer";
+        a1.id = newMessageId(); a1.parentId = u1.id;
+        ChatMessage u2; u2.role = "user"; u2.content = "two";
+        u2.id = newMessageId();
+        ChatMessage a2; a2.role = "assistant"; a2.content = "answer2";
+        a2.id = newMessageId(); a2.parentId = u2.id;
+        ChatSession branched;
+        branched.messages = [u1, a1, u2, a2];
+        branched.activeLeafId = a2.id;
+        ensureMessageGraph(branched);
+        assert(branched.messages[2].parentId == "",
+            "ensureMessageGraph relinked a genuine root branch");
+        assert(activeMessagePath(branched).length == 2,
+            "active path did not follow the second root branch");
+        assert(siblingMessages(branched, 0).length == 2,
+            "the two prompts should be siblings");
+        ChatSession legacy;
+        legacy.messages = [u1, a1];
+        legacy.messages[0].id = ""; legacy.messages[0].parentId = "";
+        legacy.messages[1].id = ""; legacy.messages[1].parentId = "";
+        ensureMessageGraph(legacy);
+        assert(legacy.messages[1].id.length > 0 &&
+            legacy.messages[1].parentId == legacy.messages[0].id,
+            "legacy transcript was not rebuilt as a chain");
+        assert(activeMessagePath(legacy).length == 2,
+            "legacy transcript active path should contain both messages");
+    }
+    writeln("Message-graph persistence keeps branches and repairs legacy files");
+
+    // App-level round-trip: a regenerated reply survives a real save to
+    // sessions.json followed by a startup-style reload, and the reloaded
+    // branches stay navigable.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["p1", "a1"]);
+    assert(root.prepareRegenerateForTesting(),
+        "Regenerate was not offered in the round-trip session");
+    root.addConversationForTesting(["assistant"], ["a2"]);
+    assert(root.messageCountForTesting() == 2 &&
+        root.totalMessageCountForTesting() == 3,
+        "Round-trip session was not built with a stored branch");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    assert(root.messageCountForTesting() == 2,
+        "Reloaded branch session lost its active path");
+    assert(root.totalMessageCountForTesting() == 3,
+        "Reloaded branch session lost a stored run");
+    const reloadedReply = root.messageCountForTesting() - 1;
+    assert(root.bubbleVersionForTesting(reloadedReply) == "2/2",
+        "Reloaded regenerated reply lost its version history");
+    assert(root.invokeBubbleVersionPrevForTesting(reloadedReply),
+        "Reloaded version back arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "a1",
+        "Reloaded branch did not navigate back to the original run");
+    assert(root.invokeBubbleVersionNextForTesting(reloadedReply),
+        "Reloaded version forward arrow was not clickable");
+    assert(root.lastAssistantContentForTesting() == "a2",
+        "Reloaded branch did not navigate forward to the new run");
+    writeln("Branches survive a save + reload with version navigation intact");
+    const branchShots = buildPath(tempDir(), "aurora-opencode-branch-shots");
+    if (!exists(branchShots)) mkdirRecurse(branchShots);
+    assert(driver.paint(), "Branch viewer did not repaint");
+    const branchNav = root.bubbleVersionNavBoundsForTesting(reloadedReply);
+    const branchAction = root.bubbleActionBoundsForTesting(reloadedReply);
+    assert(branchNav.width > 0 && branchAction.width > 0,
+        "Branch version nav or action pill was not laid out");
+    assert(branchNav.right() <= branchAction.x,
+        "Version nav overlaps the action pill");
+    window.saveScreenshot(buildPath(branchShots, "branch-nav.ppm"));
+    writeln("Branch screenshot: ", branchShots);
+
+    // Outgoing-request sanitizer: a stored assistant `tool_calls` message with
+    // no (or partial) tool replies must never reach the provider, which
+    // otherwise answers HTTP 400 ("insufficient tool messages following
+    // tool_calls message").
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["start"]);
+    root.appendDanglingToolCallsForTesting("call_dangling");
+    root.addConversationForTesting(["user"], ["keep going"]);
+    auto dangling = root.requestMessagesForTesting();
+    foreach (m; dangling)
+    {
+        assert(!(m.role == "assistant" && m.toolCalls.length > 0),
+            "Dangling assistant tool_calls reached the provider request");
+        assert(m.role != "tool",
+            "Orphan tool reply reached the provider request");
+    }
+    writeln("Outgoing request drops unanswered tool_calls (HTTP 400 guard)");
+
+    // A fully-answered exchange is preserved verbatim.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["read it"]);
+    root.appendDanglingToolCallsForTesting("call_ok");
+    root.appendToolReplyForTesting("call_ok", "file contents");
+    root.addConversationForTesting(["assistant"], ["done"]);
+    auto answeredReqs = root.requestMessagesForTesting();
+    bool sawCall, sawReply;
+    foreach (i, m; answeredReqs)
+    {
+        if (m.role == "assistant" && m.toolCalls.length == 1)
+        {
+            sawCall = true;
+            assert(i + 1 < answeredReqs.length &&
+                answeredReqs[i + 1].role == "tool" &&
+                answeredReqs[i + 1].toolCallId == "call_ok",
+                "Answered tool call lost its adjacent reply");
+            sawReply = true;
+        }
+    }
+    assert(sawCall && sawReply,
+        "A valid tool exchange was dropped by the sanitizer");
+    writeln("Outgoing request keeps a fully-answered tool exchange");
 
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip

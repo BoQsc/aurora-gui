@@ -1,5 +1,101 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: HTTP 400 "insufficient tool messages following tool_calls" (done)
+
+User complaint: `Error: Upstream returned HTTP 400: ... An assistant message
+with 'tool_calls' must be followed by tool messages responding to each
+'tool_call_id'. (insufficient tool messages following tool_calls message)`.
+
+Diagnosed from the live `%APPDATA%\Aurora OpenCode\sessions.json`: sessions had
+an assistant message with `toolCalls` in the active path whose `tool` replies
+were missing. Two ways that state arises:
+- The app was closed/persisted mid-tool (assistant `tool_calls` saved before the
+  worker appended results) — sessions ended on that assistant.
+- The tool-loop guard fired: `handleToolCalls` sets `toolCalls` on the assistant
+  and then appended the `maxToolRounds` "finalize" (or doom-loop "recovery")
+  **user** message directly, with no tool replies in between (session 32).
+
+- [x] **Request sanitizer** (`buildRequestMessages`, used by `startChatRequest`):
+      an assistant `tool_calls` message is sent only when every call id has a
+      contiguous matching `tool` reply; otherwise the assistant is downgraded to
+      a plain message (dropped when it has no content/reasoning) and orphan tool
+      replies are dropped. Existing broken sessions now send a valid request.
+- [x] **Stop creating broken state**: the doom-loop and `maxToolRounds` paths now
+      append a synthetic `tool` result per pending call (`appendSkippedToolResults`)
+      before the recovery/finalize user message, so the stored transcript is valid.
+- [x] Verified: Pro smoke EXIT=0 with new asserts "Outgoing request drops
+      unanswered tool_calls (HTTP 400 guard)" and "Outgoing request keeps a
+      fully-answered tool exchange"; the full tool-loop suite still passes.
+
+## 2026-09-13 - Pro: edit / regenerate keep prior runs + branch navigation (done)
+
+User: "Add ability to edit messages and regenerate on submit, also keep the
+previous edit runs/generation so we can go back if we want and continue."
+Modeled on `anomalyco/opencode` message branching (a message tree, not a
+snapshot stack).
+
+- [x] **Message graph in core** (`core.d`): `ChatMessage` gains `id`/`parentId`,
+      `ChatSession` gains `activeLeafId`; added `newMessageId`,
+      `ensureMessageGraph` (backfills ids/links for legacy linear transcripts and
+      repairs dangling parents), `activeMessagePath`, `deepestDescendant`,
+      `siblingMessages`. `messages` holds every branch; `activeLeafId` selects the
+      visible root->leaf path, so abandoned runs are never deleted.
+- [x] **Non-destructive regenerate / edit** (`appui.d`): `prepareRegenerate` moves
+      `activeLeafId` to the message's parent (reply kept as a sibling);
+      `editAndResend` only prefills the composer and arms `_editMessageIndex`;
+      `sendMessage` commits the edit as a NEW user sibling (same parent) instead
+      of truncating. `appendMessage` wires id/parent/leaf for every new message.
+- [x] **Version navigation UI**: footer `"< n/m >"` (chevrons, hover + click) on any
+      bubble with siblings; `switchMessageBranch` jumps to the deepest descendant
+      of the chosen sibling. Status line reads "Viewing version n of m."
+- [x] **Persistence**: per-message `id`/`parentId` + session `activeLeaf` saved and
+      restored; legacy files backfilled on load.
+- [x] **Rendering fix**: the action pill ("Regenerate") was drawn before the version
+      nav and used a stale `_versionWidth`, overlapping the nav on the first
+      frame; reordered so nav lays out first.
+- [x] Verified: Pro `dub build --compiler=dmd --force`; baseline build + baseline
+      `headless-smoke.exe` EXIT=0; Pro `headless-pro-smoke.exe` EXIT=0 with new
+      asserts: regenerate keeps the reply stored and flips `2/2` back/forward;
+      edit submit creates a second prompt version and continuing on a restored
+      branch does not disturb the other run; a save + startup reload preserves the
+      branch and its navigation; core `ensureMessageGraph` keeps a genuine root
+      branch and repairs a legacy chain; nav never overlaps the action pill.
+      Screenshot `%TEMP%\aurora-opencode-branch-shots\branch-nav.png` shows
+      `"< 2/2 >"` beside "Regenerate".
+
+## 2026-09-13 - Pro: collapsible multilevel tool parts + edit diffs (done)
+
+User: "implement collapsible multilevel tool parts (Shell, Edit, Explored, Read,
+Exploring, Thinking); edit parts show a `+53 -0` green/red counter and expand on
+click to a line-numbered, add/del-highlighted diff with surrounding context,
+code-colored or plain." Modeled on `anomalyco/opencode`.
+
+- [x] **Edit tool + real diffs** (`tools.d`, shared core): added `edit`
+      (`runEdit`, exact replace, unique-match unless `replaceAll`, reports
+      `Edited … +A -D`), `TextDiff`/`computeTextDiff` (unified `@@` hunks with
+      3 context lines, LCS capped at 1600 lines/side, emitted cap 1200, block
+      fallback), and made `write`/`remove` report diffs too. `ToolExecution`,
+      `ChatMessage` and `OpenCodeEvent` all carry `additions`/`deletions`/`diff`.
+- [x] **Rich tool header** (`MessageBubble.drawToolHeader`): `▸/▾ <Title> <subtitle>`
+      left, right-aligned `+N` green / `-M` red counters. Titles: Shell / Read /
+      Write / Edit / Delete / Glob / Grep. Subtitles: command, basename, pattern.
+      Tool bubbles no longer draw a footer (header carries the identity).
+- [x] **Expandable diff body** (`ensureToolLines`/`drawToolBody`): parses the
+      unified diff into cached mono rows (old/new line numbers, sign), fills
+      green/red row tints, monospace, capped at 600 rendered rows; plain tool
+      output renders as numbered plain rows.
+- [x] **Multilevel grouping** (`ToolGroupBubble`): a run of ≥2 consecutive
+      `read`/`glob`/`grep` results folds into one `▸/▾ Explored  N reads, M
+      searches` row; expanding reveals each child tool part (itself collapsible).
+      `rebuildMessageColumn` builds groups; `refreshBubbleActions` maps by
+      `messageIndex`; tool test hooks recurse into groups.
+- [x] Verified: Pro `dub build --compiler=dmd --force`; `headless-pro-smoke.exe`
+      EXIT=0 (new asserts: read+grep fold into one collapsed `Explored` group; an
+      `edit` reports `+adds/-dels` and changes the file on disk); baseline
+      `headless-smoke.exe` EXIT=0; baseline + Pro apps build. Screenshots
+      `%TEMP%\aurora-opencode-tool-shots\{explored-expanded,edit-diff-expanded}.png`
+      show the folded group and the `+1 -1` line-numbered diff.
+
 ## 2026-09-13 - Pro: context tooltip delay/above + message text selection (done)
 
 User: "add delay to the context tooltip and make it properly positioned above.

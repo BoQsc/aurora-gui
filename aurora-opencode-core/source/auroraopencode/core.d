@@ -296,6 +296,12 @@ public struct ChatMessage
     int diffAdditions;  // file-mutating tools: added line count (+N)
     int diffDeletions;  // file-mutating tools: removed line count (-M)
     string toolDiff;    // file-mutating tools: unified diff for the expanded view
+    // Message graph: every message names its parent, so an edited prompt or a
+    // regenerated reply can be kept alongside the run it replaced (a sibling
+    // branch) instead of being discarded. `id` is unique within a session and
+    // `parentId` is empty only for a root message.
+    string id;
+    string parentId;
 }
 
 public struct ChatSession
@@ -305,6 +311,154 @@ public struct ChatSession
     bool thinking;
     string projectId;  // owning project; empty/unknown maps to the sandbox
     ChatMessage[] messages;
+    // The id of the message at the tip of the branch currently shown. The
+    // visible conversation is the path from this leaf up through `parentId`s;
+    // messages that belong to abandoned branches stay in `messages` untouched
+    // so the user can switch back and continue from them.
+    string activeLeafId;
+}
+
+// ---------------------------------------------------------------------------
+// Message graph (branching / edit-run history)
+// ---------------------------------------------------------------------------
+
+private __gshared size_t messageIdCounter;
+
+/// A process-unique message id. The wall-clock tick makes collisions across
+/// restarts impossible; the counter separates messages created in one tick.
+public string newMessageId()
+{
+    return "m" ~ to!string(Clock.currTime.stdTime) ~ "-" ~
+        to!string(messageIdCounter++);
+}
+
+/**
+ * Repair a session's message graph after loading it from disk (or after a
+ * legacy file written before branching existed).
+ *
+ * Every message gets an id if it is missing, and each message that has no
+ * parent is linked to the message before it so an old linear transcript stays
+ * a single chain. The active leaf defaults to the last message. Existing ids
+ * and parent links (from a branching save) are preserved.
+ */
+public void ensureMessageGraph(ref ChatSession session)
+{
+    // A transcript with no ids at all predates branching: rebuild it as a
+    // single chain. Once any id exists the session carries real graph info, so
+    // an empty parentId is a deliberate root (e.g. the first prompt of a new
+    // branch) and must be preserved.
+    bool hasGraph;
+    foreach (message; session.messages)
+        if (message.id.length > 0)
+        {
+            hasGraph = true;
+            break;
+        }
+    bool[string] seen;
+    string previousId;
+    foreach (ref message; session.messages)
+    {
+        const hadId = message.id.length > 0 && (message.id in seen) is null;
+        if (!hadId) message.id = newMessageId();
+        seen[message.id] = true;
+        if (!hasGraph)
+        {
+            // Legacy linear transcript: chain each message to its predecessor.
+            message.parentId = previousId;
+        }
+        else if (!hadId && message.parentId.length == 0)
+        {
+            // A message appended without graph info continues the chain.
+            message.parentId = previousId;
+        }
+        else if (message.parentId.length > 0 &&
+            (message.parentId in seen) is null)
+        {
+            // Dangling parent link (corrupt file): reattach to the chain.
+            message.parentId = previousId;
+        }
+        previousId = message.id;
+    }
+    if (session.activeLeafId.length == 0 ||
+        (session.activeLeafId in seen) is null)
+    {
+        session.activeLeafId = session.messages.length > 0
+            ? session.messages[$ - 1].id : "";
+    }
+}
+
+/**
+ * The indices (into `session.messages`) of the visible conversation, ordered
+ * root-first. Walks `parentId` links back from the active leaf, so a branch
+ * switch only changes which leaf is active — `messages` is never rearranged
+ * and abandoned runs stay addressable.
+ */
+public size_t[] activeMessagePath(const ref ChatSession session)
+{
+    size_t[] path;
+    if (session.messages.length == 0) return path;
+    size_t[string] indexById;
+    foreach (index, message; session.messages)
+        if (message.id.length > 0)
+            indexById[message.id] = index;
+    string id = session.activeLeafId;
+    const fallback = session.messages[$ - 1].id;
+    if (id.length == 0 || (id in indexById) is null)
+        id = fallback;
+    size_t guard = session.messages.length + 1;
+    while (id.length > 0 && guard-- > 0)
+    {
+        auto found = id in indexById;
+        if (found is null) break;
+        const index = *found;
+        path ~= index;
+        id = session.messages[index].parentId;
+    }
+    size_t[] reversed;
+    reversed.length = path.length;
+    foreach (i, value; path)
+        reversed[path.length - 1 - i] = value;
+    return reversed;
+}
+
+/// The index of the deepest message reachable from `startIndex` (following
+/// parent links forward). When a message has several children (branches), the
+/// last-appended one is chosen, matching the order the user saw them created.
+public size_t deepestDescendant(const ref ChatSession session, size_t startIndex)
+{
+    if (startIndex >= session.messages.length) return startIndex;
+    size_t current = startIndex;
+    size_t guard = session.messages.length + 1;
+    while (guard-- > 0)
+    {
+        const id = session.messages[current].id;
+        if (id.length == 0) break;
+        size_t child = size_t.max;
+        foreach (index, message; session.messages)
+        {
+            if (index <= current) continue;
+            if (message.parentId.length > 0 && message.parentId == id)
+                child = index;
+        }
+        if (child == size_t.max) break;
+        current = child;
+    }
+    return current;
+}
+
+/// Indices of every message that is a sibling of `messageIndex` (same parent,
+/// same role), in array order. Used to offer `< n/m >` version navigation.
+public size_t[] siblingMessages(const ref ChatSession session,
+    size_t messageIndex)
+{
+    size_t[] siblings;
+    if (messageIndex >= session.messages.length) return siblings;
+    const parent = session.messages[messageIndex].parentId;
+    const role = session.messages[messageIndex].role;
+    foreach (index, message; session.messages)
+        if (message.parentId == parent && message.role == role)
+            siblings ~= index;
+    return siblings;
 }
 
 /// A workspace a conversation belongs to. The sandbox project is always

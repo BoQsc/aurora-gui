@@ -131,6 +131,17 @@ private final class MessageBubble : Widget
     private void delegate() _actionCallback;
     private Rect _actionRect;
     private bool _actionHover;
+    // Branch navigation (Pro): when an edited prompt or a regenerated reply has
+    // sibling versions, the footer shows `‹ n/m ›` so the user can flip between
+    // the kept runs. The callbacks switch the session's active leaf.
+    private int _versionPosition;
+    private int _versionTotal;
+    private void delegate() _versionPrev;
+    private void delegate() _versionNext;
+    private Rect _versionPrevRect;
+    private Rect _versionNextRect;
+    private int _versionHover;
+    private int _versionWidth;
     // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
     void delegate(int messageIndex, Point globalPosition) onContextMenuRequested;
 
@@ -449,6 +460,60 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Wire the branch navigation shown in the footer: `‹ position/total ›`.
+    /// The callbacks switch the session's active leaf to the previous/next
+    /// sibling version of this message.
+    void setVersionInfo(int position, int total, void delegate() previous,
+        void delegate() next)
+    {
+        _versionPosition = position;
+        _versionTotal = total;
+        _versionPrev = previous;
+        _versionNext = next;
+        invalidate();
+    }
+
+    /// Test-only: the `n/m` version label ("" when the message has no siblings).
+    public string versionTextForTesting()
+    {
+        return _versionTotal > 1
+            ? to!string(_versionPosition) ~ "/" ~ to!string(_versionTotal) : "";
+    }
+
+    /// Test-only: bounds of the `‹ n/m ›` nav (empty when there are no
+    /// siblings). Used to assert it never overlaps the action pill.
+    public Rect versionNavBoundsForTesting() const
+    {
+        if (_versionTotal <= 1 || _versionNextRect.width == 0)
+            return Rect.init;
+        const left = _versionPrevRect.x;
+        const right = _versionNextRect.right();
+        return Rect(left, _versionPrevRect.y, right - left,
+            _versionPrevRect.height);
+    }
+
+    /// Test-only: bounds of the action pill (Regenerate / Retry).
+    public Rect actionBoundsForTesting() const
+    {
+        return _actionRect;
+    }
+
+    /// Test-only: invoke the previous-version arrow, if present.
+    public bool invokeVersionPrevForTesting()
+    {
+        if (_versionTotal <= 1 || _versionPrev is null) return false;
+        _versionPrev();
+        return true;
+    }
+
+    /// Test-only: invoke the next-version arrow, if present.
+    public bool invokeVersionNextForTesting()
+    {
+        if (_versionTotal <= 1 || _versionNext is null) return false;
+        _versionNext();
+        return true;
+    }
+
     /// Test-only: the label of the current action pill.
     public string actionLabelForTesting()
     {
@@ -616,7 +681,7 @@ private final class MessageBubble : Widget
         // footer (and must not reserve footer space either).
         if (_role != "tool" &&
             (_time.length > 0 || _usageText.length > 0 ||
-             _actionLabel.length > 0))
+             _actionLabel.length > 0 || _versionTotal > 1))
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
@@ -741,6 +806,7 @@ private final class MessageBubble : Widget
             drawCopyPill(canvas, _copyRects[index],
                 _hoverCopy == cast(int) index);
         }
+        drawVersionNav(canvas, width, height);
         drawActionPill(canvas, width, height);
         drawFooter(canvas, width, height);
     }
@@ -751,12 +817,45 @@ private final class MessageBubble : Widget
         auto labelLayout = canvas.layoutText(toUTF32(_actionLabel), 1,
             FontRole.ui, cast(FontFace) theme().uiFont, 200, false);
         const aw = maxInt(52, cast(int) labelLayout.width + 18);
-        _actionRect = Rect(padH, height - padV - 19, aw, 18);
+        const x0 = padH + (_versionTotal > 1 ? _versionWidth + 6 : 0);
+        _actionRect = Rect(x0, height - padV - 19, aw, 18);
         canvas.fillRoundedRect(_actionRect, 9,
             _actionHover ? opencodeAccent.withAlpha(150) : opencodeBorder);
         canvas.drawTextInRect(_actionRect, toUTF32(_actionLabel),
             _actionHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
             HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    /// Footer branch navigation: `‹ n/m ›`. `m > 1` means this prompt or reply
+    /// has sibling runs (an earlier edit or generation) the user can flip back
+    /// to; the arrows switch the session's visible branch.
+    private void drawVersionNav(ref Canvas canvas, int width, int height)
+    {
+        _versionPrevRect = Rect.init;
+        _versionNextRect = Rect.init;
+        _versionWidth = 0;
+        if (_versionTotal <= 1) return;
+        const y = height - padV - 19;
+        const label = to!string(_versionPosition) ~ "/" ~ to!string(_versionTotal);
+        auto labelLayout = canvas.layoutText(toUTF32(label), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, 200, false);
+        const chevronW = 16;
+        int x = padH;
+        _versionPrevRect = Rect(x, y, chevronW, 18);
+        canvas.drawTextInRect(_versionPrevRect, toUTF32("‹"),
+            _versionHover == 1 ? opencodeText : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+        x += chevronW;
+        const textW = maxInt(22, cast(int) labelLayout.width + 8);
+        canvas.drawTextInRect(Rect(x, y, textW, 18), toUTF32(label),
+            opencodeMuted, 1, HorizontalAlign.center, VerticalAlign.middle,
+            true);
+        x += textW;
+        _versionNextRect = Rect(x, y, chevronW, 18);
+        canvas.drawTextInRect(_versionNextRect, toUTF32("›"),
+            _versionHover == 2 ? opencodeText : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+        _versionWidth = x + chevronW - padH;
     }
 
     /// Header for a tool result: a ▸/▾ toggle, the tool's human title (Shell,
@@ -1376,21 +1475,30 @@ private final class MessageBubble : Widget
             _collapseRect.contains(event.position);
         const overThinking = _thinking.length > 0 &&
             _thinkingRect.contains(event.position);
+        int overVersion;
+        if (_versionTotal > 1)
+        {
+            if (_versionPrevRect.contains(event.position)) overVersion = 1;
+            else if (_versionNextRect.contains(event.position)) overVersion = 2;
+        }
         int hoverSeg;
         size_t hoverChar;
         const overText = selectSegmentAt(event.position, hoverSeg, hoverChar);
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
             overAction != _actionHover || overCollapse != _collapseHover ||
-            overThinking != _thinkingHover || overText != _textHover)
+            overThinking != _thinkingHover || overVersion != _versionHover ||
+            overText != _textHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
             _actionHover = overAction;
             _collapseHover = overCollapse;
             _thinkingHover = overThinking;
+            _versionHover = overVersion;
             _textHover = overText;
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
-                overCollapse || overThinking ? CursorKind.hand :
+                overCollapse || overThinking || overVersion != 0
+                ? CursorKind.hand :
                 (overText ? CursorKind.text : CursorKind.arrow));
             invalidate();
         }
@@ -1419,6 +1527,19 @@ private final class MessageBubble : Widget
         {
             setCollapsed(!_collapsed);
             return true;
+        }
+        if (_versionTotal > 1)
+        {
+            if (_versionPrevRect.contains(event.position) && _versionPrev !is null)
+            {
+                _versionPrev();
+                return true;
+            }
+            if (_versionNextRect.contains(event.position) && _versionNext !is null)
+            {
+                _versionNext();
+                return true;
+            }
         }
         if (_actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position))
@@ -1474,13 +1595,15 @@ private final class MessageBubble : Widget
     protected override void onMouseLeave()
     {
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
-            _collapseHover || _thinkingHover || _textHover)
+            _collapseHover || _thinkingHover || _versionHover != 0 ||
+            _textHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
             _collapseHover = false;
             _thinkingHover = false;
+            _versionHover = 0;
             _textHover = false;
             setCursor(CursorKind.arrow);
             invalidate();
@@ -2389,6 +2512,10 @@ public final class OpenCodeRoot : VBox
     private string _filterText;
     private string _lastUsageText;
     private bool _suppressDoneStatus;
+    // Index (into the current session's `messages`) of a user prompt the user
+    // chose to edit. Send replaces it with a sibling branch so the original
+    // run survives; -1 when no edit is pending.
+    private int _editMessageIndex = -1;
 
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
@@ -3105,6 +3232,7 @@ public final class OpenCodeRoot : VBox
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         _streamBubble = null;
+        _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _pendingToolResults = 0;
@@ -3126,6 +3254,7 @@ public final class OpenCodeRoot : VBox
         if (index < 0 || index >= cast(int) _sessions.length) return;
         _current = index;
         _streamBubble = null;
+        _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _pendingToolResults = 0;
@@ -3148,39 +3277,81 @@ public final class OpenCodeRoot : VBox
         selectSession(_sessionIndices[row]);
     }
 
+    /// Append a message as a child of the active leaf and advance the leaf so
+    /// the new message becomes the visible tip. All new turns (user prompts,
+    /// assistant replies, tool results, recovery notes) go through here so the
+    /// message graph stays consistent and branches never lose their parent.
+    private static void appendMessage(ref ChatSession session,
+        ChatMessage message)
+    {
+        message.id = newMessageId();
+        message.parentId = session.activeLeafId;
+        session.messages ~= message;
+        session.activeLeafId = message.id;
+    }
+
+    /// When a tool batch is abandoned (the loop guard or the round cap fired),
+    /// the assistant message already carries `tool_calls`. The API requires a
+    /// `tool` reply for every id before any following message, so record an
+    /// explanatory result per call — otherwise the stored transcript is invalid
+    /// and the next request fails with HTTP 400.
+    private static void appendSkippedToolResults(ref ChatSession session,
+        const(OpenCodeToolCall)[] calls, string reason)
+    {
+        foreach (call; calls)
+        {
+            ChatMessage result;
+            result.role = "tool";
+            result.content = reason;
+            result.toolCallId = call.id;
+            result.toolName = call.name;
+            appendMessage(session, result);
+        }
+    }
+
     private void rebuildMessageColumn()
     {
         _messageColumn.clearChildren();
         if (_current < 0) return;
         const session = &_sessions[_current];
+        const path = activeMessagePath(*session);
         // Only the latest real assistant reply shows its token usage in the
         // footer. Tool-call wrappers (empty content + tool requests) never do.
         int latestAssistantIndex = -1;
-        foreach_reverse (index, message; session.messages)
+        foreach_reverse (slot, index; path)
         {
+            const message = session.messages[index];
             if (message.role == "assistant" && message.toolCalls.length == 0)
             {
                 latestAssistantIndex = cast(int) index;
                 break;
             }
         }
-        size_t index = 0;
-        while (index < session.messages.length)
+        // Branch version counts per message (siblings = same parent+role), so
+        // edited prompts / regenerated replies can show `< n/m >` in the
+        // footer. Computed once per rebuild rather than per bubble.
+        size_t[] versionPositions, versionTotals;
+        computeSiblingVersions(*session, versionPositions, versionTotals);
+        size_t slot = 0;
+        while (slot < path.length)
         {
+            const index = path[slot];
             if (isContextTool(session.messages[index]))
             {
                 // Fold a run of two or more context tools into one foldable
                 // "Explored" row; a lone read stays a plain "Read" part.
-                size_t end = index;
-                while (end < session.messages.length &&
-                    isContextTool(session.messages[end]))
+                size_t end = slot;
+                while (end < path.length &&
+                    isContextTool(session.messages[path[end]]))
                     ++end;
-                if (end - index >= 2)
+                if (end - slot >= 2)
                 {
                     MessageBubble[] parts;
-                    foreach (member; index .. end)
-                        parts ~= buildMessageBubble(member,
-                            session.messages[member], latestAssistantIndex);
+                    foreach (member; slot .. end)
+                        parts ~= buildMessageBubble(path[member],
+                            session.messages[path[member]],
+                            latestAssistantIndex, versionPositions,
+                            versionTotals);
                     auto group = new ToolGroupBubble(parts);
                     group.onSizeChanged = delegate()
                     {
@@ -3188,13 +3359,14 @@ public final class OpenCodeRoot : VBox
                         _messagesScroll.invalidate();
                     };
                     _messageColumn.add(group);
-                    index = end;
+                    slot = end;
                     continue;
                 }
             }
             _messageColumn.add(buildMessageBubble(index,
-                session.messages[index], latestAssistantIndex));
-            ++index;
+                session.messages[index], latestAssistantIndex,
+                versionPositions, versionTotals));
+            ++slot;
         }
         // A live "Exploring" row while context tools are still running.
         if (_liveToolCalls.length > 0)
@@ -3241,15 +3413,48 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    /// For every message, its 0-based position among siblings (same parent and
+    /// role) and the sibling count. A count > 1 marks a message that has an
+    /// earlier/later branch run the user can switch to.
+    private static void computeSiblingVersions(const ref ChatSession session,
+        out size_t[] positions, out size_t[] totals)
+    {
+        positions.length = session.messages.length;
+        totals.length = session.messages.length;
+        size_t[string] count, seen;
+        foreach (message; session.messages)
+        {
+            const key = message.parentId ~ "\x1f" ~ message.role;
+            count[key] = count.get(key, 0) + 1;
+        }
+        foreach (index, message; session.messages)
+        {
+            const key = message.parentId ~ "\x1f" ~ message.role;
+            const order = seen.get(key, 0);
+            seen[key] = order + 1;
+            positions[index] = order;
+            totals[index] = count.get(key, 0);
+        }
+    }
+
     /// Build the retained bubble for one message, wiring its context menu,
     /// collapse callback and usage footer. Shared by the plain and grouped
     /// paths in rebuildMessageColumn.
     private MessageBubble buildMessageBubble(size_t index,
-        ref const ChatMessage message, int latestAssistantIndex)
+        ref const ChatMessage message, int latestAssistantIndex,
+        size_t[] versionPositions, size_t[] versionTotals)
     {
         auto bubble = new MessageBubble();
         bubble.setRole(message.role);
         bubble.setMessageIndex(cast(int) index);
+        // Edited prompts / regenerated replies have sibling runs; show the
+        // `< n/m >` branch switcher so the user can flip back and continue.
+        if (index < versionTotals.length && versionTotals[index] > 1)
+        {
+            bubble.setVersionInfo(cast(int) versionPositions[index] + 1,
+                cast(int) versionTotals[index],
+                versionAction(index, -1), versionAction(index, +1));
+        }
         bubble.setContent(message.content);
         // A tool-call wrapper with no content/reasoning is not a visible
         // reply; keep its slot (for index mapping) but collapse it away.
@@ -3359,6 +3564,58 @@ public final class OpenCodeRoot : VBox
         return delegate() { editAndResend(sessionIndex, messageIndex); };
     }
 
+    /// Delegate factory for a branch-version arrow (see regenerateAction).
+    private void delegate() versionAction(size_t messageIndex, int direction)
+    {
+        const sessionIndex = _current;
+        const index = cast(int) messageIndex;
+        return delegate() { switchMessageBranch(sessionIndex, index, direction); };
+    }
+
+    /// Switch the visible branch to a sibling version of `messageIndex` (an
+    /// edited prompt or a regenerated reply), then follow that run to its tip.
+    /// The old run stays in `messages` so the user can come back at any time.
+    private void switchMessageBranch(int sessionIndex, int messageIndex,
+        int direction)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length)
+            return;
+        if (_client.busy())
+        {
+            _client.cancel();
+            _suppressDoneStatus = true;
+        }
+        cancelPendingTools();
+        const siblings = siblingMessages(*session,
+            cast(size_t) messageIndex);
+        if (siblings.length < 2) return;
+        int position = -1;
+        foreach (i, index; siblings)
+            if (cast(int) index == messageIndex)
+            {
+                position = cast(int) i;
+                break;
+            }
+        if (position < 0) return;
+        const target = position + direction;
+        if (target < 0 || target >= cast(int) siblings.length) return;
+        const leaf = deepestDescendant(*session,
+            siblings[cast(size_t) target]);
+        session.activeLeafId = session.messages[leaf].id;
+        _streamBubble = null;
+        _editMessageIndex = -1;
+        rebuildMessageColumn();
+        updateSessionList(false);
+        markDirty();
+        refreshUsageBadge();
+        updateStatus("Viewing version " ~ to!string(target + 1) ~ " of " ~
+            to!string(siblings.length) ~ ".");
+    }
+
 
     private void addUserBubble(string text)
     {
@@ -3391,7 +3648,7 @@ public final class OpenCodeRoot : VBox
         ChatMessage message;
         message.role = "assistant";
         message.time = currentTimestamp();
-        session.messages ~= message;
+        appendMessage(*session, message);
 
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
@@ -3496,6 +3753,19 @@ public final class OpenCodeRoot : VBox
 
     // -- tool loop ---------------------------------------------------------
 
+    /// Drop any in-flight tool batch state. Used when the user branches away
+    /// (edit/regenerate/version switch) so late tool results from the abandoned
+    /// run cannot append to the newly selected branch.
+    private void cancelPendingTools()
+    {
+        _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
+        _pendingToolResults = 0;
+        _toolRounds = 0;
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
+    }
+
     /// The model requested tool calls. Finalize the assistant message with the
     /// request (so it persists and is replayed on regeneration), then execute
     /// each tool on a worker thread. Results are pushed back through the
@@ -3544,13 +3814,16 @@ public final class OpenCodeRoot : VBox
         }
         if (_lastToolRepeatCount >= doomLoopRepeatThreshold)
         {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the model repeated the same request " ~
+                "without making progress.");
             ChatMessage recovery;
             recovery.role = "user";
             recovery.content = "You appear to be repeating the same tool call " ~
                 "(" ~ signature ~ ") without making progress. Stop calling " ~
                 "tools and answer the user's question directly with what you " ~
                 "have already learned.";
-            session.messages ~= recovery;
+            appendMessage(*session, recovery);
             markDirty();
             _toolRounds = 0;
             _lastToolSignature = "";
@@ -3565,12 +3838,15 @@ public final class OpenCodeRoot : VBox
         if (_toolRounds >= maxToolRounds)
         {
             // Last-chance final request: tell the model to stop and answer.
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the maximum number of tool rounds was " ~
+                "reached.");
             ChatMessage finalize;
             finalize.role = "user";
             finalize.content = "You have reached the maximum number of tool " ~
                 "calls. Stop using tools now and answer the user's question " ~
                 "directly with what you have learned so far.";
-            session.messages ~= finalize;
+            appendMessage(*session, finalize);
             markDirty();
             _toolRounds = 0;
             _lastToolSignature = "";
@@ -3672,7 +3948,7 @@ public final class OpenCodeRoot : VBox
         toolMessage.diffDeletions = event.diffDeletions;
         toolMessage.toolDiff = event.diffText;
         toolMessage.time = currentTimestamp();
-        session.messages ~= toolMessage;
+        appendMessage(*session, toolMessage);
 
         // Rebuild the column so consecutive context tool results (read/glob/
         // grep) fold into a single "Explored" group and diffs pick up their
@@ -3720,11 +3996,22 @@ public final class OpenCodeRoot : VBox
         session.model = _settings.model;
         session.thinking = _settings.thinking;
 
+        // Editing a prompt: branch from the original prompt's parent so the
+        // edited turn becomes a sibling and the old run is kept, not truncated.
+        if (_editMessageIndex >= 0)
+        {
+            if (_editMessageIndex < cast(int) session.messages.length &&
+                session.messages[cast(size_t) _editMessageIndex].role == "user")
+                session.activeLeafId = session.messages[
+                    cast(size_t) _editMessageIndex].parentId;
+            _editMessageIndex = -1;
+        }
+
         ChatMessage userMessage;
         userMessage.role = "user";
         userMessage.content = text;
         userMessage.time = currentTimestamp();
-        session.messages ~= userMessage;
+        appendMessage(*session, userMessage);
         addUserBubble(text);
         _input.setText("");
         markDirty();
@@ -3741,6 +4028,81 @@ public final class OpenCodeRoot : VBox
     /// tools are enabled, the structured history (including tool calls and
     /// results) is sent together with the tool definitions and a steering
     /// prompt that directs the model toward the native D tools.
+    /// Build the outgoing history from the active branch, defensively. A stored
+    /// assistant message may carry `tool_calls` whose results never arrived
+    /// (the app was closed mid-tool, a tool run was abandoned, or a save
+    /// predates the tool-reply guarantee). The provider rejects an assistant
+    /// `tool_calls` message that is not immediately followed by a `tool`
+    /// message for every call id ("insufficient tool messages following
+    /// tool_calls message", HTTP 400), so keep the calls only when the full
+    /// contiguous set of replies is present; otherwise downgrade the assistant
+    /// to a plain message and drop the orphan tool replies.
+    private static ChatRequestMessage[] buildRequestMessages(
+        const ref ChatSession session)
+    {
+        ChatRequestMessage[] messages;
+        const path = activeMessagePath(session);
+        size_t slot = 0;
+        while (slot < path.length)
+        {
+            const message = session.messages[path[slot]];
+            if (message.role == "assistant" && message.toolCalls.length > 0)
+            {
+                bool[string] outstanding;
+                foreach (call; message.toolCalls)
+                    outstanding[call.id] = true;
+                size_t replyEnd = slot + 1;
+                while (replyEnd < path.length &&
+                    session.messages[path[replyEnd]].role == "tool")
+                {
+                    const replyId = session.messages[path[replyEnd]].toolCallId;
+                    if (replyId in outstanding) outstanding.remove(replyId);
+                    ++replyEnd;
+                }
+                if (outstanding.length == 0)
+                {
+                    ChatRequestMessage request;
+                    request.role = message.role;
+                    request.content = message.content;
+                    request.toolCalls = message.toolCalls.dup;
+                    messages ~= request;
+                    foreach (k; slot + 1 .. replyEnd)
+                    {
+                        const reply = session.messages[path[k]];
+                        ChatRequestMessage tool;
+                        tool.role = reply.role;
+                        tool.content = reply.content;
+                        tool.toolCallId = reply.toolCallId;
+                        messages ~= tool;
+                    }
+                }
+                else if (message.content.length > 0 ||
+                    message.reasoning.length > 0)
+                {
+                    ChatRequestMessage request;
+                    request.role = message.role;
+                    request.content = message.content;
+                    messages ~= request;
+                }
+                slot = replyEnd;
+                continue;
+            }
+            if (message.role == "tool")
+            {
+                // Orphan reply that does not follow a kept tool_calls message.
+                ++slot;
+                continue;
+            }
+            ChatRequestMessage request;
+            request.role = message.role;
+            request.content = message.content;
+            request.toolCallId = message.toolCallId;
+            messages ~= request;
+            ++slot;
+        }
+        return messages;
+    }
+
     private void startChatRequest(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -3764,15 +4126,7 @@ public final class OpenCodeRoot : VBox
                 workspace, platform);
             messages ~= systemPrompt;
         }
-        foreach (message; session.messages)
-        {
-            ChatRequestMessage request;
-            request.role = message.role;
-            request.content = message.content;
-            request.toolCallId = message.toolCallId;
-            request.toolCalls = message.toolCalls.dup;
-            messages ~= request;
-        }
+        messages ~= buildRequestMessages(*session);
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
             tools = _settings.legacyTools
@@ -3796,8 +4150,10 @@ public final class OpenCodeRoot : VBox
         startChatRequest(sessionIndex);
     }
 
-    /// Remove an assistant reply (and everything after it) so its history is
-    /// ready to re-run. Returns false when there is nothing to regenerate.
+    /// Point the active leaf just before an assistant reply so a fresh reply is
+    /// generated as a sibling branch. The old reply (and its continuation) stays
+    /// in `messages`, available through the `‹ n/m ›` branch switcher. Returns
+    /// false when there is nothing to regenerate.
     private bool prepareRegenerate(int sessionIndex, int messageIndex)
     {
         if (_client.busy()) return false;
@@ -3806,15 +4162,19 @@ public final class OpenCodeRoot : VBox
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return false;
-        if (session.messages[messageIndex].role != "assistant") return false;
-        session.messages = session.messages[0 .. messageIndex];
+        const message = session.messages[cast(size_t) messageIndex];
+        if (message.role != "assistant") return false;
+        cancelPendingTools();
+        session.activeLeafId = message.parentId;
         _streamBubble = null;
+        _editMessageIndex = -1;
         rebuildMessageColumn();
         return true;
     }
 
-    /// Edit-and-resend a user message: cancel any in-flight reply, truncate
-    /// the conversation at that message, and prefill the input with its text.
+    /// Start editing a user message: prefill the composer with its text. The
+    /// next Send branches from that prompt's parent, keeping the original run
+    /// as a sibling version rather than discarding it.
     private void editAndResend(int sessionIndex, int messageIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -3824,18 +4184,22 @@ public final class OpenCodeRoot : VBox
             _client.cancel();
             _suppressDoneStatus = true;
         }
+        cancelPendingTools();
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
-        const message = session.messages[messageIndex];
+        const message = session.messages[cast(size_t) messageIndex];
         if (message.role != "user") return;
-        session.messages = session.messages[0 .. messageIndex];
         _streamBubble = null;
-        rebuildMessageColumn();
-        _input.setText(message.content);
-        _input.requestFocus();
+        _editMessageIndex = messageIndex;
+        if (sessionIndex == _current)
+        {
+            _input.setText(message.content);
+            _input.requestFocus();
+        }
         markDirty();
-        updateStatus("Editing — press Send to re-send.");
+        updateStatus("Editing prompt — press Send to replace it " ~
+            "(the previous run is kept).");
     }
 
     // -- model picker -----------------------------------------------------
@@ -4138,10 +4502,9 @@ public final class OpenCodeRoot : VBox
         if (_current >= 0)
         {
             auto session = &_sessions[_current];
-            for (int index = cast(int) session.messages.length - 1;
-                index >= 0; --index)
+            foreach_reverse (slot, index; activeMessagePath(*session))
             {
-                auto message = &session.messages[cast(size_t) index];
+                auto message = &session.messages[index];
                 if (message.role == "assistant" && message.totalTokens > 0)
                 {
                     prompt = message.promptTokens;
@@ -4275,9 +4638,10 @@ public final class OpenCodeRoot : VBox
                 !canFind(title.toLower(), _filterText.toLower()))
                 continue;
             indices ~= cast(int) index;
-            const secondary = session.messages.length == 0
-                ? ""
-                : session.messages[$ - 1].time;
+            string secondary;
+            const path = activeMessagePath(session);
+            if (path.length > 0)
+                secondary = session.messages[path[$ - 1]].time;
             items ~= ListItem(title, IconKind.none, secondary);
         }
         _sessionIndices = indices;
@@ -4311,6 +4675,7 @@ public final class OpenCodeRoot : VBox
         else if (_current > sessionIndex)
             --_current;
         _streamBubble = null;
+        _editMessageIndex = -1;
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -4454,8 +4819,9 @@ public final class OpenCodeRoot : VBox
         builder.put("# " ~ session.title ~ "\n\n");
         builder.put("Model: " ~ session.model ~ "  •  Thinking: " ~
             (session.thinking ? "on" : "off") ~ "\n\n---\n\n");
-        foreach (message; session.messages)
+        foreach (index; activeMessagePath(*session))
         {
+            const message = session.messages[index];
             builder.put("## " ~ (message.role == "user" ? "User" :
                 (message.role == "tool" ? "Tool (" ~ message.toolName ~ ")" :
                     "Assistant")));
@@ -4513,10 +4879,16 @@ public final class OpenCodeRoot : VBox
         root["thinking"] = session.thinking;
         if (session.projectId.length > 0)
             root["project"] = session.projectId;
+        if (session.activeLeafId.length > 0)
+            root["activeLeaf"] = session.activeLeafId;
         JSONValue messages = JSONValue(string[].init);
         foreach (message; session.messages)
         {
             JSONValue messageJson;
+            if (message.id.length > 0)
+                messageJson["id"] = message.id;
+            if (message.parentId.length > 0)
+                messageJson["parentId"] = message.parentId;
             messageJson["role"] = message.role;
             messageJson["content"] = message.content;
             if (message.reasoning.length > 0)
@@ -4583,6 +4955,8 @@ public final class OpenCodeRoot : VBox
                             session.projectId = field.str;
                         if (session.projectId.length == 0)
                             session.projectId = sandboxProjectId;
+                        if (auto field = "activeLeaf" in sessionValue.object)
+                            session.activeLeafId = field.str;
                         if (auto field = "messages" in sessionValue.object)
                         {
                             if (field.type == JSONType.array)
@@ -4592,6 +4966,10 @@ public final class OpenCodeRoot : VBox
                                     if (messageValue.type != JSONType.object)
                                         continue;
                                     ChatMessage message;
+                                    if (auto f = "id" in messageValue.object)
+                                        message.id = f.str;
+                                    if (auto f = "parentId" in messageValue.object)
+                                        message.parentId = f.str;
                                     if (auto f = "role" in messageValue.object)
                                         message.role = f.str;
                                     if (auto f = "content" in messageValue.object)
@@ -4640,6 +5018,9 @@ public final class OpenCodeRoot : VBox
                                 }
                             }
                         }
+                        // Repair/backfill the message graph for sessions saved
+                        // before branching existed (or with dangling links).
+                        ensureMessageGraph(session);
                         _sessions ~= session;
                     }
                 }
@@ -4774,8 +5155,11 @@ public final class OpenCodeRoot : VBox
     /// Test-only: full text of the latest assistant message in the current session.
     public string lastAssistantContentForTesting()
     {
-        if (_current < 0 || _sessions[_current].messages.length == 0) return "";
-        return _sessions[_current].messages[$ - 1].content;
+        if (_current < 0) return "";
+        auto session = &_sessions[_current];
+        const path = activeMessagePath(*session);
+        if (path.length == 0) return "";
+        return session.messages[path[$ - 1]].content;
     }
 
     /// Test-only: number of persisted chat sessions.
@@ -4947,7 +5331,7 @@ public final class OpenCodeRoot : VBox
             message.content = contents[index];
             if (reasoning !is null && index < reasoning.length)
                 message.reasoning = reasoning[index];
-            session.messages ~= message;
+            appendMessage(*session, message);
         }
         rebuildMessageColumn();
     }
@@ -4958,11 +5342,31 @@ public final class OpenCodeRoot : VBox
         return MessageBubble.shapeCount;
     }
 
-    /// Test-only: message count of the current session.
+    /// Test-only: number of messages in the visible (active-branch) path of the
+    /// current session.
     public int messageCountForTesting()
     {
         if (_current < 0) return 0;
+        return cast(int) activeMessagePath(_sessions[_current]).length;
+    }
+
+    /// Test-only: total messages stored for the current session, including
+    /// abandoned branch runs that are not on the visible path.
+    public int totalMessageCountForTesting()
+    {
+        if (_current < 0) return 0;
         return cast(int) _sessions[_current].messages.length;
+    }
+
+    /// Test-only: number of sibling versions of the message at physical
+    /// `index` (1 when it has no branch alternatives).
+    public int messageVersionCountForTesting(int index)
+    {
+        if (_current < 0) return 0;
+        auto session = &_sessions[_current];
+        if (index < 0 || index >= cast(int) session.messages.length) return 0;
+        return cast(int) siblingMessages(*session,
+            cast(size_t) index).length;
     }
 
     /// Test-only: role of the message at `index`.
@@ -4998,8 +5402,9 @@ public final class OpenCodeRoot : VBox
     /// `index`, exactly as a right-click on that bubble would.
     public void openMessageContextMenuForTesting(int index)
     {
-        showMessageContextMenu(index, Point(10, 10),
-            messageBubbleForTesting(index));
+        auto bubble = messageBubbleForTesting(index);
+        showMessageContextMenu(bubble is null ? index : bubble.messageIndex(),
+            Point(10, 10), bubble);
     }
 
     /// Test-only: select all text in the message bubble at `index`.
@@ -5091,13 +5496,98 @@ public final class OpenCodeRoot : VBox
         editAndResend(_current, index);
     }
 
+    /// Test-only: the pending edit target (-1 when no prompt is being edited).
+    public int pendingEditIndexForTesting()
+    {
+        return _editMessageIndex;
+    }
+
+    /// Test-only: cancel a pending edit without submitting it.
+    public void cancelPendingEditForTesting()
+    {
+        _editMessageIndex = -1;
+    }
+
+    /// Test-only: replace the composer text directly (bypassing keystrokes).
+    public void setInputForTesting(string text)
+    {
+        _input.setText(text);
+    }
+
+    /// Test-only: apply a pending edit and append the edited prompt as a sibling
+    /// branch without starting a network request. Returns the new physical
+    /// message index, or -1 when there is nothing to edit.
+    public int commitEditForTesting(string text)
+    {
+        if (_current < 0 || _editMessageIndex < 0) return -1;
+        auto session = &_sessions[_current];
+        if (_editMessageIndex >= cast(int) session.messages.length) return -1;
+        const target = session.messages[cast(size_t) _editMessageIndex];
+        if (target.role != "user") return -1;
+        session.activeLeafId = target.parentId;
+        ChatMessage message;
+        message.role = "user";
+        message.content = text;
+        message.time = currentTimestamp();
+        appendMessage(*session, message);
+        _editMessageIndex = -1;
+        rebuildMessageColumn();
+        updateSessionList(false);
+        markDirty();
+        return cast(int) session.messages.length - 1;
+    }
+
+    /// Test-only: force the visible branch to a sibling version of the message
+    /// at physical `index` (-1 previous / +1 next).
+    public void switchMessageBranchForTesting(int index, int direction)
+    {
+        switchMessageBranch(_current, index, direction);
+    }
+
+    /// Test-only: the `n/m` version label on the bubble at child `index`.
+    public string bubbleVersionForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? "" : bubble.versionTextForTesting();
+    }
+
+    /// Test-only: bounds of the version nav on the bubble at child `index`.
+    public Rect bubbleVersionNavBoundsForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Rect.init : bubble.versionNavBoundsForTesting();
+    }
+
+    /// Test-only: bounds of the action pill on the bubble at child `index`.
+    public Rect bubbleActionBoundsForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Rect.init : bubble.actionBoundsForTesting();
+    }
+
+    /// Test-only: click the previous-version arrow on the bubble at child
+    /// `index`, exactly as a mouse click would.
+    public bool invokeBubbleVersionPrevForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble !is null && bubble.invokeVersionPrevForTesting();
+    }
+
+    /// Test-only: click the next-version arrow on the bubble at child `index`.
+    public bool invokeBubbleVersionNextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble !is null && bubble.invokeVersionNextForTesting();
+    }
+
     /// Test-only: true when the last assistant reply was removed in
     /// preparation for a regenerate.
     public bool prepareRegenerateForTesting()
     {
         if (_current < 0) return false;
-        return prepareRegenerate(_current,
-            cast(int) _sessions[_current].messages.length - 1);
+        const path = activeMessagePath(_sessions[_current]);
+        if (path.length == 0) return false;
+        return prepareRegenerate(_current, cast(int) path[$ - 1]);
     }
 
     /// Test-only: action-pill label on the last bubble ("" when none).
@@ -5123,12 +5613,17 @@ public final class OpenCodeRoot : VBox
     /// events without any network activity).
     public void recordContextUsageForTesting(int prompt, int completion, int total)
     {
-        if (_current >= 0 && _sessions[_current].messages.length > 0)
+        if (_current >= 0)
         {
-            auto message = &_sessions[_current].messages[$ - 1];
-            message.promptTokens = prompt;
-            message.completionTokens = completion;
-            message.totalTokens = total;
+            auto session = &_sessions[_current];
+            const path = activeMessagePath(*session);
+            if (path.length > 0)
+            {
+                auto message = &session.messages[path[$ - 1]];
+                message.promptTokens = prompt;
+                message.completionTokens = completion;
+                message.totalTokens = total;
+            }
         }
         refreshUsageBadge();
     }
@@ -5190,6 +5685,54 @@ public final class OpenCodeRoot : VBox
     public void newChatForTesting()
     {
         newChat();
+    }
+
+    /// Test-only: persist the current sessions to disk immediately.
+    public void persistForTesting()
+    {
+        markDirty();
+    }
+
+    /// Test-only: reload sessions.json exactly as app startup does, so a test
+    /// can prove branch ids / active leaf / version history survive a save.
+    public void reloadSessionsForTesting()
+    {
+        restoreSessions();
+    }
+
+    /// Test-only: the sanitized outgoing message list for the current session
+    /// (the exact history `startChatRequest` would send, minus the system
+    /// prompt and tool definitions).
+    public ChatRequestMessage[] requestMessagesForTesting()
+    {
+        if (_current < 0) return null;
+        return buildRequestMessages(_sessions[_current]);
+    }
+
+    /// Test-only: append an assistant message carrying `tool_calls` and no
+    /// reply, simulating a transcript persisted mid-tool (the HTTP 400 case).
+    public void appendDanglingToolCallsForTesting(string callId)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "assistant";
+        message.toolCalls = [OpenCodeToolCall(callId, "read", "{}")];
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+    }
+
+    /// Test-only: append a `tool` reply for `callId` as the active leaf's child.
+    public void appendToolReplyForTesting(string callId, string content)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "tool";
+        message.content = content;
+        message.toolCallId = callId;
+        appendMessage(*session, message);
+        rebuildMessageColumn();
     }
 
     /// Test-only: open the settings dialog and return the legacy checkbox, or
@@ -5273,9 +5816,10 @@ public final class OpenCodeRoot : VBox
     public int userMessageCountForTesting()
     {
         if (_current < 0) return 0;
+        auto session = &_sessions[_current];
         int count;
-        foreach (message; _sessions[_current].messages)
-            if (message.role == "user") ++count;
+        foreach (index; activeMessagePath(*session))
+            if (session.messages[index].role == "user") ++count;
         return count;
     }
 
@@ -5283,9 +5827,10 @@ public final class OpenCodeRoot : VBox
     public int toolMessageCountForTesting()
     {
         if (_current < 0) return 0;
+        auto session = &_sessions[_current];
         int count;
-        foreach (message; _sessions[_current].messages)
-            if (message.role == "tool") ++count;
+        foreach (index; activeMessagePath(*session))
+            if (session.messages[index].role == "tool") ++count;
         return count;
     }
 
@@ -5294,8 +5839,9 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return "";
         auto session = &_sessions[_current];
-        foreach_reverse (message; session.messages)
+        foreach_reverse (slot, index; activeMessagePath(*session))
         {
+            const message = session.messages[index];
             if (message.role == "tool") return message.content;
         }
         return "";
@@ -5306,9 +5852,11 @@ public final class OpenCodeRoot : VBox
     public string toolResultForTesting(int n)
     {
         if (_current < 0) return "";
+        auto session = &_sessions[_current];
         int seen;
-        foreach (message; _sessions[_current].messages)
+        foreach (index; activeMessagePath(*session))
         {
+            const message = session.messages[index];
             if (message.role != "tool") continue;
             if (seen == n) return message.content;
             ++seen;

@@ -1,5 +1,187 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: HTTP 400 "insufficient tool messages following tool_calls" (2026-09-13)
+
+Symptom: sending a message returned
+`Error: Upstream returned HTTP 400: ... An assistant message with 'tool_calls'
+must be followed by tool messages responding to each 'tool_call_id'.
+(insufficient tool messages following tool_calls message)`.
+
+### Diagnosis (evidence, not guesswork)
+- Inspected the live `%APPDATA%\Aurora OpenCode\sessions.json` with a PowerShell
+  walker that rebuilds each session's active path and flags any assistant
+  `tool_calls` whose call ids are not answered by the immediately-following
+  `tool` messages. Sessions 3, 9 and 32 had violations.
+- Session 32 showed the mechanism: at slot 25 an assistant carried `toolCalls`
+  and the very next path message was the `maxToolRounds` "finalize" **user**
+  prompt — `handleToolCalls` records the calls and then appends the finalize
+  prompt without tool replies. Sessions 3/9 simply ended on an assistant
+  `tool_calls` message (persisted mid-tool / abandoned run).
+
+### Fix
+- `appui.d`: new `private static ChatRequestMessage[] buildRequestMessages(const
+  ref ChatSession)` — walks the active path, keeps an assistant `tool_calls`
+  message only if every call id has a contiguous matching `tool` reply, otherwise
+  downgrades it to a plain message (drops it if it has no content/reasoning) and
+  skips orphan tool replies. `startChatRequest` now appends
+  `buildRequestMessages(*session)`.
+- `appui.d`: new `appendSkippedToolResults(session, calls, reason)` appends a
+  synthetic `tool` message per pending call; called in the doom-loop guard and
+  the `maxToolRounds` finalize path before the recovery/finalize user message.
+
+### Method / how to test
+- Test hooks: `requestMessagesForTesting()` (returns the exact sanitized
+  outgoing list for the current session, minus system prompt/tools),
+  `appendDanglingToolCallsForTesting(callId)` (assistant with `tool_calls`, no
+  reply) and `appendToolReplyForTesting(callId, content)`.
+- Case 1 (unanswered): `newChatForTesting`, add user, append dangling call, add
+  another user; assert no outgoing message is an assistant with `toolCalls` and
+  none is role `tool`.
+- Case 2 (answered): add user, dangling call, matching tool reply, assistant;
+  assert the assistant `toolCalls` is present and its reply is adjacent with the
+  same `toolCallId`.
+- Indirect proof the synthetic results work: the existing
+  `Doom-loop recovery breaks repeated identical tool calls` and tool-round tests
+  still pass (EXIT=0) after the guard change.
+
+### Result
+- Pro `headless-pro-smoke.exe` EXIT=0, including the two new sanitizer asserts
+  and the existing tool-loop suite. (Fix is Pro-`appui.d`-only; core and baseline
+  untouched.)
+
+## Pro: edit / regenerate keep prior runs + branch navigation (2026-09-13)
+
+User: "Add ability to edit messages and regenerate on submit, also keep the
+previous edit runs/generation so we can go back if we want and continue."
+Modeled on `anomalyco/opencode` message branching.
+
+### Change
+- `core.d`: `ChatMessage` gained `id`/`parentId`; `ChatSession` gained
+  `activeLeafId`. New `newMessageId` (`"m" ~ tick ~ "-" ~ counter`),
+  `ensureMessageGraph` (detects legacy linear transcripts via "no id at all";
+  preserves deliberate empty-parent roots when any id exists; repairs dangling
+  parents; defaults `activeLeafId` to the last message), `activeMessagePath`,
+  `deepestDescendant`, `siblingMessages`. `messages` keeps every branch; only
+  `activeLeafId` moves.
+- `appui.d`:
+  - `appendMessage(session, message)` assigns id, sets `parentId =
+    activeLeafId`, appends and advances the leaf; used by every append site
+    (`beginAssistantMessage`, `handleToolCalls`, `applyToolResult`, test seeding).
+  - `rebuildMessageColumn` walks `activeMessagePath` and computes
+    `computeSiblingVersions` (key `parentId ~ 0x1f ~ role`); `buildMessageBubble`
+    passes each bubble its version position/total and prev/next callbacks.
+  - `prepareRegenerate` is non-destructive (sets `activeLeafId = parentId`);
+    `editAndResend` only prefills + sets `_editMessageIndex`; `sendMessage`
+    commits a pending edit as a NEW user sibling of the original prompt's parent.
+  - `switchMessageBranch(sessionIndex, messageIndex, direction)` finds siblings,
+    jumps to the deepest descendant of the chosen sibling, and sets the status
+    "Viewing version n of m".
+  - `cancelPendingTools()` clears all in-flight tool state on a branch jump.
+  - `MessageBubble`: `setVersionInfo`, `drawVersionNav` (`"< n/m >"` chevrons,
+    hover + click), footer reserved when `_versionTotal > 1`. Paint order is
+    `drawVersionNav` THEN `drawActionPill` so the pill's x offset uses the
+    freshly-measured `_versionWidth` (fixes a first-frame overlap).
+  - Persistence: `sessionToJson` writes per-message `id`/`parentId` + session
+    `activeLeaf`; `restoreSessions` reads them and calls `ensureMessageGraph`.
+  - `refreshUsageBadge` / `updateSessionList` / `exportCurrentConversation` use
+    the active path.
+
+### Method / how to test
+- Rebuild Pro: `dub build --compiler=dmd --force` (kill the running Pro exe
+  first; it locks the binary).
+- Compile + run the Pro headless smoke:
+  `dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe`
+  then run and check `$LASTEXITCODE` via PowerShell (NOT `cmd & echo
+  %ERRORLEVEL%`, which expands at parse time).
+- The branch test block (after "Message text selection + copy works"):
+  fresh `newChatForTesting` -> seed `["user","assistant"]` -> `prepareRegenerate
+  ForTesting` -> append a second assistant -> `bubbleVersionForTesting(child)`
+  is `"2/2"` -> `invokeBubbleVersionPrev/NextForTesting` flips the content. Then
+  edit the prompt: `commitEditForTesting("edited prompt")` returns a new
+  physical index, `messageVersionCountForTesting(index) == 2`,
+  `totalMessageCountForTesting` grows, and switching versions shows each run's
+  answer; continuing on a restored branch does not disturb the other run.
+- App round-trip: build a regenerated reply, `persistForTesting()` then
+  `reloadSessionsForTesting()` (calls `restoreSessions`), and assert the visible
+  path, total count, `"2/2"` label and back/forward navigation all survive.
+- Core unit block: build a session with two genuine roots (empty parent) plus a
+  legacy chain with no ids; `ensureMessageGraph` must keep the root branch and
+  rebuild the legacy chain; `activeMessagePath`/`siblingMessages` must agree.
+- Overlap regression: after a paint, `bubbleVersionNavBoundsForTesting(i).right()
+  <= bubbleActionBoundsForTesting(i).x`.
+- Screenshot: the block writes `%TEMP%\aurora-opencode-branch-shots\branch-nav
+  .ppm`; convert with `%TEMP%\ppm2png.ps1` and zoom with `%TEMP%\zoom-text.ps1`.
+- Test-hook note: `openMessageContextMenuForTesting(childIndex)` now resolves the
+  bubble's physical `messageIndex()` (child index and physical index diverge
+  once branches/groups exist).
+
+### Result
+- Pro `dub build --compiler=dmd --force` OK. Baseline app build OK, baseline
+  `headless-smoke.exe` EXIT=0, Pro `headless-pro-smoke.exe` EXIT=0 (all branch
+  asserts pass; "Edit + regenerate keep prior runs and branch navigation works",
+  "Message-graph persistence keeps branches and repairs legacy files",
+  "Branches survive a save + reload with version navigation intact").
+
+## Pro: collapsible multilevel tool parts + edit diffs (2026-09-13)
+
+User: "implement collapsible multilevel tool parts (Shell, Edit, Explored, Read,
+Exploring, Thinking); edit parts show a `+53 -0` green/red counter and expand on
+click to a line-numbered, add/del-highlighted diff with surrounding context,
+code-colored or plain." Modeled on `anomalyco/opencode`
+(`basic-tool.tsx`, `diff-changes.tsx`, `tool-status-title.tsx`,
+`part-default-open.ts`, `packages/ui/src/i18n/en.ts`).
+
+### Change
+- `tools.d` (core, shared): `ToolExecution` gained `additions`/`deletions`/
+  `diff`; new `TextDiff` + `computeTextDiff(old,new)` (common prefix/suffix +
+  LCS hunks, `diffContext=3`, `diffLcsLimit=1600`, `diffMaxLines=1200`, block
+  fallback); new `edit` tool (`editToolDefinition`/`runEdit`, exact replace,
+  unique match unless `replaceAll`, reports `Edited … +A -D`); `runWrite`/
+  `runRemove` compute diffs too; dispatcher handles `edit`.
+- `core.d`: `ChatMessage` gained `diffAdditions`/`diffDeletions`/`toolDiff`;
+  palette gained `opencodeDiffAdd`/`opencodeDiffDelete`/`opencodeDiffAddBg`/
+  `opencodeDiffDeleteBg`/`opencodeDiffGutter`. `opencode_client.d`:
+  `OpenCodeEvent` gained the same diff fields.
+- `appui.d`:
+  - `runToolWorker` copies the diff fields; `applyToolResult` sets them on the
+    `tool` message and calls `rebuildMessageColumn()` (full rebuild so grouping
+    is correct).
+  - `MessageBubble`: `setDiff`; `drawToolHeader` now renders `▸/▾ Title subtitle`
+    plus right-aligned `+N` (green) / `-M` (red); title/subtitle helpers
+    (`toolTitle` → Shell/Read/Write/Edit/Delete/Glob/Grep; `toolSubtitle` →
+    command / basename / pattern; `toolArgString`, `basenameOf`).
+    `ensureToolLines` parses the unified diff (`@@` resets old/new counters) or
+    plain output into cached mono rows (old/new line numbers, sign, cap 600);
+    `drawToolBody` fills green/red row tints and draws the rows. Tool bubbles no
+    longer draw a footer (the header names the tool).
+  - New `ToolGroupBubble` (second level): folds a run of ≥2 consecutive
+    `read`/`glob`/`grep` results into one `▸/▾ Explored  N reads, M searches`
+    row; expanding shows each child tool part, itself collapsible.
+    `rebuildMessageColumn` builds groups; `refreshBubbleActions` resolves the
+    message by `bubble.messageIndex()` (child index ≠ message index with groups);
+    `toolBubblesForTesting` recurses into groups so existing tool test hooks
+    still address parts by ordinal.
+- `headless_pro_smoke.d`: new asserts — read+grep fold into one collapsed group
+  (`contextGroupCountForTesting`/`firstToolGroup*`), and an `edit` call reports
+  `+adds/-dels` (`toolHasDiffForTesting`/`toolDiffAdditions/Deletions`) with the
+  file actually changed on disk. Saves screenshots to
+  `%TEMP%\aurora-opencode-tool-shots\` (`explored-collapsed/expanded`,
+  `edit-diff-expanded`).
+
+### How to re-test
+1. Rebuild + smoke: kill `aurora-opencode-pro.exe`,
+   `dub build --compiler=dmd --force`, then `build\headless-pro-smoke.exe` —
+   expect `Context tools fold into a collapsible Explored group` and
+   `Edit tool reports a +adds/-dels diff`, EXIT=0. Baseline `aurora-opencode`
+   `build\headless-smoke.exe` must also stay EXIT=0.
+2. Visual: run the smoke, then convert
+   `%TEMP%\aurora-opencode-tool-shots\{explored-expanded,edit-diff-expanded}.ppm`
+   with `%TEMP%\ppm2png.ps1`. Expect `▾ Explored  1 read, 1 search` with indented
+   `Read notes.txt` / `Grep tool`, and `▾ Edit editme.txt` with `+1 -1` and a
+   line-numbered diff (`- beta` red row, `+ BETA` green row).
+
 ## Pro: context tooltip delay/above + message text selection (2026-09-13)
 
 User: "add delay to the context tooltip and make it properly positioned above.
