@@ -1,5 +1,42 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: in-progress rows for edits/writes/shell (2026-09-13)
+
+Symptom (user): "Why we do not show what is going on between edits or while the
+edit is being made."
+
+### Diagnosis
+- `rebuildMessageColumn` built the live row only when the running batch had a
+  context tool: `if (liveReads + liveSearches > 0)`. Edit / Write / Delete /
+  Shell produced no row while running — the conversation stayed empty until the
+  result (and its diff) arrived.
+- Confirmed the diff itself is per-edit: `runEdit` reads the file, applies the
+  change, writes it, and computes old->new, so line numbers are correct as of
+  that edit. Multiple edits therefore show different line numbers by design.
+
+### Change
+- `appui.d`: moved `humanToolTitle`, `humanToolSubtitle`, `toolArgFromArgs`,
+  `basenameOf`, `capitalizeFirst` to module scope (shared by `MessageBubble`
+  header and the new live row).
+- New `private final class LiveToolRow : Widget` — renders
+  `"▸ <Title>  <subtitle>  ..."` in `opencodeAccent`, `textForTesting()` for
+  assertions.
+- `rebuildMessageColumn` live block: keep the aggregated `ToolGroupBubble`
+  "Exploring" for read/glob/grep, and add a `LiveToolRow` for every other
+  running call. Rows are dropped by `applyToolResult` as each call reports.
+
+### Method / how to test
+- Test hook: `liveToolRowTextsForTesting()` (labels of currently-running rows).
+- In the edit-tool block, immediately after `injectToolCallsForTesting([editCall])`
+  (before any tick drains the worker result) assert one row exists and contains
+  `Edit` + `editme.txt`. Then screenshot `%TEMP%\aurora-opencode-live-shots\
+  live-edit-row.ppm` while the row is on screen.
+
+### Result
+- Pro `headless-pro-smoke.exe` EXIT=0, new line: "In-progress edit row shown
+  while the edit runs: ▸ Edit  editme.txt  ..."; screenshot shows the live row
+  plus "Running 1 tool call(s)…" status. App rebuilds.
+
 ## Pro: HTTP 400 "insufficient tool messages following tool_calls" (2026-09-13)
 
 Symptom: sending a message returned

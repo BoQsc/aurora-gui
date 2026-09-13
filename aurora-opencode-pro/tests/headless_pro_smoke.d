@@ -963,6 +963,20 @@ int main(string[] args)
     editCall.arguments =
         `{"filePath":"editme.txt","oldString":"beta","newString":"BETA"}`;
     root.injectToolCallsForTesting([editCall]);
+    // While the edit is running its result/diff is not known yet, so an
+    // in-progress row must stand in for it (the old behavior showed nothing for
+    // edits, only for read/glob/grep).
+    auto liveEditRows = root.liveToolRowTextsForTesting();
+    assert(liveEditRows.length == 1,
+        "Edit did not show an in-progress row while running");
+    assert(liveEditRows[0].indexOf("Edit") >= 0 &&
+        liveEditRows[0].indexOf("editme.txt") >= 0,
+        "In-progress edit row lacks the tool/file: " ~ liveEditRows[0]);
+    writeln("In-progress edit row shown while the edit runs: ", liveEditRows[0]);
+    assert(driver.paint(), "In-progress edit row did not paint");
+    const liveShots = buildPath(tempDir(), "aurora-opencode-live-shots");
+    if (!exists(liveShots)) mkdirRecurse(liveShots);
+    window.saveScreenshot(buildPath(liveShots, "live-edit-row.ppm"));
     const editDeadline = Clock.currTime + 5.seconds;
     while (root.toolMessageCountForTesting() < 1 && Clock.currTime < editDeadline)
     {

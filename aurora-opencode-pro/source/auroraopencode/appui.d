@@ -867,8 +867,8 @@ private final class MessageBubble : Widget
         const h = toolHeaderHeight();
         _collapseRect = Rect(padH, top, maxInt(1, innerWidth), h);
         const toggle = _collapsed ? "▸" : "▾";
-        string left = toggle ~ " " ~ toolTitle();
-        const subtitle = toolSubtitle();
+        string left = toggle ~ " " ~ humanToolTitle(_toolName);
+        const subtitle = humanToolSubtitle(_toolName, _toolArgs);
         if (subtitle.length > 0) left ~= "  " ~ subtitle;
 
         int statsWidth;
@@ -903,91 +903,6 @@ private final class MessageBubble : Widget
     private static int toolHeaderHeight()
     {
         return fontPixelSize(2) + 2;
-    }
-
-    /// Human title for the tool, mirroring opencode's tool titles.
-    private string toolTitle()
-    {
-        switch (_toolName)
-        {
-            case "bash":
-            case "run":
-            case "dshell":
-                return "Shell";
-            case "read":
-                return "Read";
-            case "write":
-                return "Write";
-            case "edit":
-                return "Edit";
-            case "remove":
-                return "Delete";
-            case "glob":
-                return "Glob";
-            case "grep":
-                return "Grep";
-            default:
-                if (_toolName.length == 0) return "Tool";
-                return capitalizeFirst(_toolName);
-        }
-    }
-
-    private static string capitalizeFirst(string value)
-    {
-        if (value.length == 0) return value;
-        auto buffer = value.dup;
-        if (buffer[0] >= 'a' && buffer[0] <= 'z')
-            buffer[0] -= 32;
-        return cast(string) buffer;
-    }
-
-    /// A short, tool-specific subtitle (the command, filename or pattern).
-    private string toolSubtitle()
-    {
-        switch (_toolName)
-        {
-            case "bash":
-            case "run":
-            case "dshell":
-                auto command = toolArgString("command");
-                if (command.length == 0) command = toolArgString("program");
-                if (command.length == 0) command = toolArgString("args");
-                return command;
-            case "read":
-            case "write":
-            case "edit":
-                return basenameOf(toolArgString("filePath"));
-            case "glob":
-            case "grep":
-                return toolArgString("pattern");
-            case "remove":
-                auto path = toolArgString("path");
-                if (path.length == 0) path = toolArgString("filePath");
-                return basenameOf(path);
-            default:
-                return toolArgString("path");
-        }
-    }
-
-    private string toolArgString(string key)
-    {
-        if (_toolArgs.length == 0) return "";
-        JSONValue value;
-        try value = parseJSON(_toolArgs);
-        catch (Exception) value = JSONValue.init;
-        if (value.type != JSONType.object) return "";
-        if (auto field = key in value.object)
-            if (field.type == JSONType.string)
-                return field.str;
-        return "";
-    }
-
-    private static string basenameOf(string path)
-    {
-        size_t cut;
-        foreach (index, ch; path)
-            if (ch == '/' || ch == '\\') cut = index + 1;
-        return path[cut .. $];
     }
 
     private static string padLeft(int value, int width)
@@ -1608,6 +1523,147 @@ private final class MessageBubble : Widget
             setCursor(CursorKind.arrow);
             invalidate();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared tool labels + in-progress tool row (Pro)
+// ---------------------------------------------------------------------------
+
+/// Human title for a tool, mirroring opencode's tool titles. Shared by the
+/// completed tool bubble and the in-progress live row.
+private string humanToolTitle(string toolName)
+{
+    switch (toolName)
+    {
+        case "bash":
+        case "run":
+        case "dshell":
+            return "Shell";
+        case "read":
+            return "Read";
+        case "write":
+            return "Write";
+        case "edit":
+            return "Edit";
+        case "remove":
+            return "Delete";
+        case "glob":
+            return "Glob";
+        case "grep":
+            return "Grep";
+        default:
+            if (toolName.length == 0) return "Tool";
+            return capitalizeFirst(toolName);
+    }
+}
+
+private static string capitalizeFirst(string value)
+{
+    if (value.length == 0) return value;
+    auto buffer = value.dup;
+    if (buffer[0] >= 'a' && buffer[0] <= 'z')
+        buffer[0] -= 32;
+    return cast(string) buffer;
+}
+
+/// A short, tool-specific subtitle (the command, filename or pattern).
+private string humanToolSubtitle(string toolName, string toolArgs)
+{
+    switch (toolName)
+    {
+        case "bash":
+        case "run":
+        case "dshell":
+            auto command = toolArgFromArgs(toolArgs, "command");
+            if (command.length == 0)
+                command = toolArgFromArgs(toolArgs, "program");
+            if (command.length == 0) command = toolArgFromArgs(toolArgs, "args");
+            return command;
+        case "read":
+        case "write":
+        case "edit":
+            return basenameOf(toolArgFromArgs(toolArgs, "filePath"));
+        case "glob":
+        case "grep":
+            return toolArgFromArgs(toolArgs, "pattern");
+        case "remove":
+            auto path = toolArgFromArgs(toolArgs, "path");
+            if (path.length == 0) path = toolArgFromArgs(toolArgs, "filePath");
+            return basenameOf(path);
+        default:
+            return toolArgFromArgs(toolArgs, "path");
+    }
+}
+
+private string toolArgFromArgs(string toolArgs, string key)
+{
+    if (toolArgs.length == 0) return "";
+    JSONValue value;
+    try value = parseJSON(toolArgs);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object) return "";
+    if (auto field = key in value.object)
+        if (field.type == JSONType.string)
+            return field.str;
+    return "";
+}
+
+private static string basenameOf(string path)
+{
+    size_t cut;
+    foreach (index, ch; path)
+        if (ch == '/' || ch == '\\') cut = index + 1;
+    return path[cut .. $];
+}
+
+/// A lightweight in-progress tool row (Edit / Write / Delete / Shell) shown
+/// while the tool executes, so the user can see what is happening before the
+/// result (and its diff) is available. The context tools keep their aggregated
+/// "Exploring" row; this covers the tool calls that mutate files or run
+/// commands. The row is replaced by the real result bubble once the tool
+/// reports back.
+private final class LiveToolRow : Widget
+{
+    private string _title;
+    private string _subtitle;
+
+    void delegate() onSizeChanged;
+
+    this(string title, string subtitle)
+    {
+        _title = title;
+        _subtitle = subtitle;
+    }
+
+    private int rowHeight()
+    {
+        return fontPixelSize(2) + 2;
+    }
+
+    private string rowText() const
+    {
+        string text = "▸ " ~ _title;
+        if (_subtitle.length > 0) text ~= "  " ~ _subtitle;
+        return text ~ "  ...";
+    }
+
+    string textForTesting() const { return rowText(); }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        const height = rowHeight();
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, maxInt(1, bounds().width), false);
+        canvas.drawLayout(Point(0, 0), layout, opencodeAccent);
     }
 }
 
@@ -3368,7 +3424,12 @@ public final class OpenCodeRoot : VBox
                 versionPositions, versionTotals));
             ++slot;
         }
-        // A live "Exploring" row while context tools are still running.
+        // Live rows while tool calls are still running: context tools fold into
+        // the aggregated "Exploring" row, and every other tool (Edit / Write /
+        // Delete / Shell) gets its own in-progress row so the user can see what
+        // is happening while it executes — after an edit the file (and its line
+        // numbers) may have shifted, so the real diff is only known once the
+        // tool reports back.
         if (_liveToolCalls.length > 0)
         {
             int liveReads, liveSearches;
@@ -3388,6 +3449,20 @@ public final class OpenCodeRoot : VBox
                     _messagesScroll.invalidate();
                 };
                 _messageColumn.add(live);
+            }
+            foreach (call; _liveToolCalls)
+            {
+                if (call.name == "read" || call.name == "glob" ||
+                    call.name == "grep")
+                    continue;
+                auto row = new LiveToolRow(humanToolTitle(call.name),
+                    humanToolSubtitle(call.name, call.arguments));
+                row.onSizeChanged = delegate()
+                {
+                    _messageColumn.invalidate();
+                    _messagesScroll.invalidate();
+                };
+                _messageColumn.add(row);
             }
         }
         _messagesScroll.follow = true;
@@ -5698,6 +5773,17 @@ public final class OpenCodeRoot : VBox
     public void reloadSessionsForTesting()
     {
         restoreSessions();
+    }
+
+    /// Test-only: labels of the in-progress tool rows currently in the column
+    /// (one per running Edit / Write / Delete / Shell call).
+    public string[] liveToolRowTextsForTesting()
+    {
+        string[] labels;
+        foreach (child; _messageColumn.children())
+            if (auto row = cast(LiveToolRow) child)
+                labels ~= row.textForTesting();
+        return labels;
     }
 
     /// Test-only: the sanitized outgoing message list for the current session

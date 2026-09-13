@@ -1,5 +1,31 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: show in-progress rows for edits/writes/shell (done)
+
+User: "Why we do not show what is going on between edits or while the edit is
+being made the line number could change as edits happen."
+
+Diagnosis: the live "Exploring" row was only built when the running batch
+contained read/glob/grep (`if (liveReads + liveSearches > 0)`). An Edit / Write /
+Delete / Shell call showed nothing in the conversation until it finished, so
+there was no indication of what was happening while it ran. (Each edit's diff is
+computed against the file state at the moment it runs, so its line numbers are
+correct for that edit; consecutive edits can legitimately show different line
+numbers as earlier edits shift the file.)
+
+- [x] Extracted the tool title/subtitle helpers (`humanToolTitle`,
+      `humanToolSubtitle`, `toolArgFromArgs`, `basenameOf`, `capitalizeFirst`)
+      to module scope so the live row and the completed bubble share them.
+- [x] New `LiveToolRow` widget: `"▸ Edit  editme.txt  ..."` in accent, static
+      height, shown while the tool runs and replaced by the real result bubble
+      (with its diff) when it reports back.
+- [x] `rebuildMessageColumn` now adds one live row per running non-context tool
+      in addition to the aggregated "Exploring" row for context tools.
+- [x] Verified: Pro smoke EXIT=0 with new assert "In-progress edit row shown
+      while the edit runs: `▸ Edit  editme.txt  ...`"; screenshot
+      `%TEMP%\aurora-opencode-live-shots\live-edit-row.png` shows the row and the
+      "Running 1 tool call(s)…" status.
+
 ## 2026-09-13 - Pro: HTTP 400 "insufficient tool messages following tool_calls" (done)
 
 User complaint: `Error: Upstream returned HTTP 400: ... An assistant message
