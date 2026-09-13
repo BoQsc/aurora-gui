@@ -1,5 +1,45 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Timeline ruler cursor priority (done)
+
+User: "things under the timeline ruler are gaining priority in interaction using
+cursor, fix it. seems like simple ordering of ui elements fix."
+
+- [x] Root cause: `trackRect()` subtracts `_verticalScroll`, so a scrolled row
+      (and its clip) can extend into the 24px ruler band; `trackAtY`,
+      `resizeTrackAtY`, and `overLabelResizeHandle` matched it, so hovering the
+      ruler over a clip edge showed the clip's resize cursor.
+- [x] `timeline.d`: the ruler band is now transport-only — absolute
+      `y < rulerHeight()` guard in `trackAtY`/`resizeTrackAtY` and a `point.y`
+      guard in `overLabelResizeHandle` (the latter previously matched the label
+      boundary at any height).
+- [x] Regression `tests/timeline_ruler_priority_smoke.d`: ruler over a scrolled
+      clip edge stays `arrow`; the same edge below the ruler still offers
+      `resizeHorizontal`. `timeline_multiselect_smoke` + `timeline_zoombar_smoke`
+      + `dub test` (42 modules) all pass.
+
+## 2026-09-13 - Remember each project's view position (done)
+
+User: "can we try save last positions of user like scrollbars, everytime opening
+a project seems to be off." Reopening a project should show the same timeline
+zoom/scroll and Project Media scroll as when it was saved.
+
+- [x] `project.d`: `ProjectViewState` (timeline zoom/scroll/vertical/fit/
+      fitAllDurations + media scroll + `hasView`); `ProjectData.view`;
+      `viewJson`/`viewFromJson`; `saveProjectFile` trailing `view` param. The
+      `view` key is emitted only when `hasView`, so old files and non-editor
+      callers are unchanged and legacy files report `hasView == false`.
+- [x] `timeline.d`: `viewFits()`, `viewFitsAllDurations()`, `restoreView(...)`.
+- [x] `editor.d`: `captureViewState()`, deferred `requestViewRestore()`/
+      `applyViewState()` (1 frame so offsets clamp against laid-out content);
+      wired into `openProject` + `onTick` + the three `saveProjectFile` calls;
+      `newProject` clears any pending restore.
+- [x] Tests: `project.d` round-trip unittest; new GUI
+      `tests/view_state_smoke.d` proves zoom/scroll/media offset restore through
+      save→open. `dub test` 42 modules; `dub build` links; screenshot
+      `build/headless-smoke/view-state.png` shows the reopened project at
+      `00:00:02` with the media list offset.
+
 ## 2026-09-13 - Inspector sidebar is overwhelming (done)
 
 User: the ITEM EFFECTS / KEYFRAMES sidebar has too much and feels overwhelming;
@@ -22,6 +62,15 @@ make it concise while keeping it fully functional and instant.
       8px side padding; `GlyphButton` forced width 24 → 8px slot → clipped.
       Now width = max(floor, measured+24). Pixel regression added (bright glyph
       span must exceed the old 8px clip).
+- [x] Follow-up: Gain field showed `⌐0.0 dB` (leading `+` clipped). `TextField`
+      single-line scroll reserves width-8px; the 76px field overflowed `+0.0 dB`,
+      scrolled to the trailing caret, clipped the sign. Widened
+      `InspectorValueField` to 96px (min 90). Regression asserts ink starts at
+      the padding for `+0.0 dB` and `-60.0 dB`.
+- [x] Follow-up: Inspector checkboxes stretched the full row, so the empty space
+      right of the label was hoverable/clickable. Added `InspectorCheckBox`
+      (fillCrossAxis=false + measured content width). Regression: far-right click
+      must not toggle; label click must toggle.
 
 ## 2026-09-10 - Selection marquee from outside the tracks (done)
 

@@ -834,6 +834,41 @@ final class TimelineWidget : Widget
         invalidate();
     }
 
+    /** Whether the timeline is currently auto-fitting the sequence. */
+    bool viewFits() const @safe pure nothrow @nogc { return _fitView; }
+    bool viewFitsAllDurations() const @safe pure nothrow @nogc
+    {
+        return _fitAllDurations;
+    }
+
+    /** Restore a saved project view. `fit` modes ignore the explicit zoom and
+     * recompute against the current viewport; otherwise the stored zoom and
+     * scroll are clamped to the live bounds. */
+    void restoreView(double zoom, double scroll, int vertical, bool fit,
+        bool fitAllDurations)
+    {
+        if (fit)
+        {
+            _fitView = true;
+            _fitAllDurations = fitAllDurations;
+            applyFitView();
+        }
+        else
+        {
+            _fitView = false;
+            _fitAllDurations = false;
+            _pixelsPerSecond = clampValue(zoom < MinPixelsPerSecond ?
+                MinPixelsPerSecond : zoom, MinPixelsPerSecond, MaxPixelsPerSecond);
+            _scrollSeconds = scroll < 0.0 ? 0.0 : scroll;
+            clampScroll();
+        }
+        if (vertical >= 0) _verticalScroll = vertical;
+        clampVerticalScroll();
+        syncPlayheadLayer();
+        notifyHorizontalViewportChanged();
+        invalidate();
+    }
+
     void setZoom(double value)
     {
         const old = _pixelsPerSecond;
@@ -1173,11 +1208,15 @@ final class TimelineWidget : Widget
 
     private bool overLabelResizeHandle(Point point) const
     {
+        // The ruler is transport-only; the label resize handle lives below it.
+        if (point.y < rulerHeight()) return false;
         return point.x >= labelWidth() - 3 && point.x <= labelWidth() + 3;
     }
 
     private bool resizeTrackAtY(int y, out TrackAddress address) const
     {
+        // Track edges scrolled up beneath the ruler must not claim the pointer.
+        if (y < rulerHeight()) return false;
         foreach (row; 0 .. totalRows())
         {
             const candidate = addressForRow(row);
@@ -1221,6 +1260,11 @@ final class TimelineWidget : Widget
 
     private bool trackAtY(int y, out TrackAddress address) const
     {
+        // The ruler is a dedicated transport band. Track rows scrolled up
+        // underneath it (the geometry subtracts _verticalScroll) must never win
+        // hover or hit testing over the ruler, or a clip under the ruler shows
+        // its resize/move cursor while the pointer is on the ruler itself.
+        if (y < rulerHeight()) return false;
         // trackRect() paints rows at rulerHeight() + NewTrackDropGap. Hit
         // testing must use the same origin or the bottom ~6px of every clip
         // body falls in a dead zone where the row is painted but not

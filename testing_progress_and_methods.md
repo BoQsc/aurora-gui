@@ -1,5 +1,76 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Timeline ruler must win interaction over content scrolled beneath it (2026-09-13)
+
+User: "things under the timeline ruler are gaining priority in interaction using
+cursor, fix it. seems like simple ordering of ui elements fix."
+
+**Root cause:** `trackRect()` places rows at `rulerHeight() + NewTrackDropGap +
+rowTop - _verticalScroll`. Once the timeline is scrolled down, a row (and its
+clips) can geometrically extend up into the 24px ruler band. `trackAtY`,
+`resizeTrackAtY`, and `overLabelResizeHandle` only tested geometry, so hover and
+hit testing over the ruler could resolve to the clip/track underneath. Concrete
+repro: 11 video tracks, `verticalScroll=40` puts the top row at `y=-8`, its clip
+body at `y=9..31`; hovering the ruler over the clip's right edge returned
+`resizeHorizontal` instead of the ruler's arrow.
+
+**Fix (`timeline.d`):** the ruler band is transport-only. Added an absolute
+`if (y < rulerHeight()) return false;` guard to `trackAtY` and `resizeTrackAtY`,
+and `if (point.y < rulerHeight()) return false;` to `overLabelResizeHandle`
+(previously it matched the label boundary at any height, including in the ruler).
+The ruler's own `onMouseDown` scrub branch already ran first, so this only
+restores hover/cursor and downstream hit-testing priority.
+
+**Verification:** new `tests/timeline_ruler_priority_smoke.d` drops the fixture
+on the top row, adds 10 tracks, scrolls the clip under the ruler, and asserts the
+ruler cursor stays `arrow` (not `resizeHorizontal`) while the same clip edge
+below the ruler still advertises `resizeHorizontal`. Also ran
+`timeline_multiselect_smoke` and `timeline_zoombar_smoke` (both pass) and
+`dub test` (42 modules).
+
+## Persist the per-project view (scrollbars + zoom) (2026-09-13)
+
+User: "can we try save last positions of user like scrollbars, everytime opening
+a project seems to be off." Every project now remembers where the user was
+looking.
+
+**Change:**
+- `project.d`: new `ProjectViewState { double timelineZoom; double
+  timelineScroll; int timelineVerticalScroll; bool timelineFit; bool
+  timelineFitAllDurations; int mediaScroll; bool hasView; }`; `ProjectData` gains
+  `view`; `viewJson`/`viewFromJson`; `saveProjectFile` takes a trailing
+  `ProjectViewState view = ProjectViewState.init`. The `"view"` key is written
+  ONLY when `view.hasView` (editor saves set it), so files from other callers and
+  old files stay byte-compatible, and a missing key loads with `hasView == false`.
+- `timeline.d`: `viewFits()`, `viewFitsAllDurations()`, and `restoreView(zoom,
+  scroll, vertical, fit, fitAllDurations)` — fit modes recompute against the live
+  viewport; explicit mode clamps zoom/scroll, then vertical, then resyncs the
+  playhead layer and viewport.
+- `editor.d`: `captureViewState()` (sets `hasView`), `requestViewRestore(view)`
+  (sets a 1-frame `_viewRestoreDelay`), `applyViewState(view)` (`timeline
+  .restoreView` + `_mediaList.verticalScrollbar().setValue(view.mediaScroll)`).
+  `openProject` requests a restore when `data.view.hasView`; `onTick` applies the
+  pending view after the delay; all three `saveProjectFile` calls pass
+  `captureViewState()`; `newProject` clears any pending restore.
+- Why the 1-frame delay: the vendor loop runs `onTick` BEFORE layout+paint, and
+  the media/timeline offsets clamp against freshly laid-out content, so the
+  request is consumed one tick after the loaded project has painted.
+
+**Verification:**
+- `dub test` → 42 modules pass, including a new round-trip unittest in
+  `project.d` (legacy save has no view; an explicit view round-trips) and the
+  legacy-file assert that a file without a view must report `hasView == false`.
+- New GUI smoke `tests/view_state_smoke.d`: loads the fixture on V1, adds 24
+  synthetic assets so the Project Media bin scrolls, sets max zoom + horizontal
+  scroll + media scroll, saves, then `zoomToFit()` + resets media scroll, opens
+  the project, ticks the deferred restore, and asserts the timeline zoom/scroll
+  and media `scrollOffset()` came back and `viewFits()` is false. Screenshot
+  `build/headless-smoke/view-state.png` shows the reopened project scrolled to
+  `00:00:02` with the media list offset.
+- Build/run:
+  `dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\view_state_smoke.d -of=build\headless-smoke\view-state-smoke.exe -L/DEFAULTLIB:user32 -L/DEFAULTLIB:gdi32 -L/DEFAULTLIB:shell32 -L/DEFAULTLIB:winmm -L/DEFAULTLIB:wininet`
+  then `set AURORA_RENDERER=software&& set SDL_AUDIODRIVER=dummy&& build\headless-smoke\view-state-smoke.exe "build\headless-smoke\media\base-av.mp4"`.
+
 ## Inspector sidebar: collapsible, concise sections (2026-09-13)
 
 User: the ITEM EFFECTS / KEYFRAMES sidebar is overwhelming; make it concise but
@@ -28,6 +99,27 @@ invisible sliver. Now `GlyphButton` treats the requested width as a floor and
 keeps the Button-measured width (`measured + 24`), so the glyph always fits. The
 smoke test adds a pixel regression: it reads `window.surface()` and requires the
 bright glyph span inside each button to exceed 8px (the old clip width).
+
+**Follow-up fix (2026-09-13): Inspector checkboxes had a clickable dead zone.**
+`CheckBox` is a plain `Widget`; a `VBox` stretches its children across the
+cross axis (`fillCrossAxis` defaults true), so "Mute item audio" filled the whole
+row and any click right of the label toggled it (and the hand cursor showed
+there). Added `InspectorCheckBox`, which measures its label via a `Label` probe
+(`theme().fontScale`) and sets `fillCrossAxis = false` + a content-sized
+`preferredWidth`, so only the 18px box and the text are interactive. Regression:
+the smoke test asserts the Mute checkbox is narrower than the AUDIO body, that a
+click in the far-right dead zone leaves `checked()` unchanged, and that a click
+on the label still toggles it.
+
+**Follow-up fix (2026-09-13): value fields clipped their leading sign.** The
+Gain field showed `⌐0.0 dB` instead of `+0.0 dB`. `TextField.ensureCursorVisible`
+uses a single-line viewport of `bounds().width - padding*2 - 8` (an extra 8px
+reserve). InspectorValueField was 76px, so `+0.0 dB` (~64px layout) overflowed,
+scrolled to the trailing caret and clipped the first glyph at the content clip
+edge. Widened `InspectorValueField` to min 90 / preferred 96 so the widest
+display string (`-60.0 dB`) fits. Regression: the smoke test reads
+`window.surface()` and asserts the Gain/Position X/Scale ink starts at the field
+padding (>=4px) for both `+0.0 dB` and the clamped `-60.0 dB`.
 
 **Aurora layout gotcha (important):** `Box.onLayout` sizes children from
 `layoutHints().preferredHeight`, NOT from their measured size. A nested

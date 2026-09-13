@@ -13,6 +13,22 @@ enum int defaultPreviewQualityHeight = 720;
 enum int defaultCompositionWidth = 1920;
 enum int defaultCompositionHeight = 1080;
 
+/** Per-project editing view (scrollbars/zoom). Persisted so reopening a
+ * project returns to the same place instead of snapping the timeline to fit.
+ * `hasView` is false for older files that predate the field, in which case the
+ * editor keeps its normal auto-fit behavior. */
+struct ProjectViewState
+{
+    double timelineZoom;            // pixels per second
+    double timelineScroll;          // seconds from the sequence start
+    int timelineVerticalScroll;     // track lane scroll, px
+    bool timelineFit;               // timeline was auto-fitting the sequence
+    bool timelineFitAllDurations;   // explicit Fit (fits long sequences too)
+    int mediaScroll;                // Project Media bin scroll offset, px
+
+    bool hasView;                   // set only by the loader
+}
+
 /** Serializable editor state. Media metadata is stored so opening a project
  * does not block the UI on a fresh FFprobe pass. The undo/redo history rides
  * in the same file, so it travels with the project and is always consistent
@@ -34,6 +50,7 @@ struct ProjectData
     // Path of the last successful export output, so the Output/Compress buttons
     // remember it across restart/reopen. Persisted in the project file.
     string lastExportPath;
+    ProjectViewState view;
     TimelineSnapshot[] undo;
     TimelineSnapshot[] redo;
 }
@@ -62,6 +79,35 @@ private JSONValue jsonNumber(double value, double fallback, string fieldPath)
 private JSONValue jsonColor(uint value)
 {
     return JSONValue(cast(ulong) value);
+}
+
+private JSONValue viewJson(const ProjectViewState value)
+{
+    return JSONValue([
+        "timelineZoom": jsonNumber(value.timelineZoom, 0.0,
+            "view.timelineZoom"),
+        "timelineScroll": jsonNumber(value.timelineScroll, 0.0,
+            "view.timelineScroll"),
+        "timelineVerticalScroll": JSONValue(cast(long) value.timelineVerticalScroll),
+        "timelineFit": JSONValue(value.timelineFit),
+        "timelineFitAllDurations": JSONValue(value.timelineFitAllDurations),
+        "mediaScroll": JSONValue(cast(long) value.mediaScroll)
+    ]);
+}
+
+private ProjectViewState viewFromJson(const JSONValue value)
+{
+    ProjectViewState view;
+    view.timelineZoom = numberValue(value, "timelineZoom");
+    view.timelineScroll = numberValue(value, "timelineScroll");
+    view.timelineVerticalScroll = cast(int) integerValue(value,
+        "timelineVerticalScroll");
+    view.timelineFit = boolValue(value, "timelineFit", true);
+    view.timelineFitAllDurations = boolValue(value,
+        "timelineFitAllDurations", false);
+    view.mediaScroll = cast(int) integerValue(value, "mediaScroll");
+    view.hasView = true;
+    return view;
 }
 
 private JSONValue keyframeJson(const EffectKeyframe value, string ownerPath,
@@ -284,7 +330,8 @@ void saveProjectFile(string path, EditorModel model, double playhead,
     int compositionHeight = defaultCompositionHeight,
     const(TimelineSnapshot)[] undo = null,
     const(TimelineSnapshot)[] redo = null,
-    string lastExportPath = "")
+    string lastExportPath = "",
+    ProjectViewState view = ProjectViewState.init)
 {
     JSONValue[] assets;
     foreach (index, asset; model.assets) assets ~= assetJson(asset, index);
@@ -318,6 +365,13 @@ void saveProjectFile(string path, EditorModel model, double playhead,
             "redo": JSONValue(redoJson)
         ])
     ]);
+    // Only projects saved by the editor carry a view; keep this key absent when
+    // a caller did not capture one so older readers/writers stay unchanged.
+    if (view.hasView)
+    {
+        auto fields = root.object;
+        fields["view"] = viewJson(view);
+    }
     write(path, root.toPrettyString());
 }
 
@@ -517,6 +571,10 @@ ProjectData loadProjectFile(string path)
         "compositionHeight", defaultCompositionHeight);
     result.lastExportPath = stringValue(root, "lastExportPath");
 
+    auto view = member(root, "view");
+    if (view !is null && view.type == JSONType.object)
+        result.view = viewFromJson(*view);
+
     auto assets = member(root, "assets");
     if (assets !is null && assets.type == JSONType.array)
         foreach (entry; assets.array)
@@ -670,4 +728,27 @@ unittest
         "Legacy project file gained phantom history");
     assert(legacy.lastExportPath.length == 0,
         "A save without an export path must load an empty last export");
+    assert(!legacy.view.hasView,
+        "A legacy project file must not claim a saved view");
+
+    // The editing view (scrollbars/zoom) round-trips with the project.
+    ProjectViewState view;
+    view.timelineZoom = 237.5;
+    view.timelineScroll = 4.25;
+    view.timelineVerticalScroll = 96;
+    view.timelineFit = false;
+    view.timelineFitAllDurations = false;
+    view.mediaScroll = 132;
+    view.hasView = true;
+    saveProjectFile(projectPath, model, 2.0, false, 0.0, true, 3.0, 720,
+        defaultCompositionWidth, defaultCompositionHeight, null, null, "",
+        view);
+    const withView = loadProjectFile(projectPath);
+    assert(withView.view.hasView, "Saved project view was not reloaded");
+    assert(withView.view.timelineZoom == 237.5 &&
+        withView.view.timelineScroll == 4.25 &&
+        withView.view.timelineVerticalScroll == 96 &&
+        withView.view.timelineFit == false &&
+        withView.view.mediaScroll == 132,
+        "Project view round-trip changed the saved values");
 }

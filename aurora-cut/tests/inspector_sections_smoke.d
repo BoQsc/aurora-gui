@@ -57,6 +57,22 @@ private int countBrightPixels(Surface surface, Rect globalRect, int scale)
     return count;
 }
 
+/** Left offset of the first bright (glyph) pixel inside a widget, in logical px.
+ *  A value less than the field padding means the text scrolled and clipped. */
+private int inkLeftOffset(Surface surface, Rect globalRect, int scale)
+{
+    foreach (py; globalRect.y .. globalRect.bottom())
+        foreach (px; globalRect.x .. globalRect.right())
+        {
+            const c = surface.pixel(px * scale, py * scale);
+            const r = (c >> 16) & 0xff;
+            const g = (c >> 8) & 0xff;
+            const b = c & 0xff;
+            if ((r + g + b) / 3 > 110) return px - globalRect.x;
+        }
+    return -1;
+}
+
 /** Horizontal extent of bright (glyph) pixels inside a widget, in logical px. */
 private int brightSpanX(Surface surface, Rect globalRect, int scale)
 {
@@ -166,6 +182,58 @@ int main(string[] arguments)
         "Inspector property names collapsed to zero height");
     assert(gainKey.visible() && gainKey.text() == "◇"d,
         "Per-item keyframe control is not a compact diamond glyph");
+
+    // Regression: numeric fields must show their leading sign. The TextField
+    // reserves 8px inside its padding and scrolls to the trailing caret, so an
+    // undersized field clips the first glyph ("+0.0 dB" -> "⌐0.0 dB"). Assert
+    // the ink starts at the field's normal padding instead of the clip edge.
+    foreach (probeId; ["clip-volume-db", "clip-position-x", "clip-scale"])
+    {
+        auto probe = requireWidget!InspectorValueField(editor, probeId);
+        const offset = inkLeftOffset(window.surface(), globalBounds(probe), pixelScale);
+        assert(offset >= 4,
+            probeId ~ " clipped its leading glyph (ink offset " ~
+            offset.to!string ~ "px)");
+    }
+
+    // The gain field must also fit the widest display string, "-60.0 dB",
+    // which is what a gain just above the silence cutoff formats to.
+    assert(editor.modelForTesting().setVolume(v1, 0, 0.001003),
+        "Could not drive the fixture gain near its minimum");
+    timeline.setSelection(v1, 0);
+    assert(driver.paint(), "Paint after driving gain to minimum failed");
+    auto gainField = requireWidget!InspectorValueField(editor, "clip-volume-db");
+    assert(gainField.textUtf8() == "-60.0 dB",
+        "Gain field did not show the widest dB string, got: " ~ gainField.textUtf8());
+    const minGainOffset = inkLeftOffset(window.surface(),
+        globalBounds(gainField), pixelScale);
+    assert(minGainOffset >= 4,
+        "Gain field clipped the leading minus at -60 dB (ink offset " ~
+        minGainOffset.to!string ~ "px)");
+
+    // Regression: the Mute checkbox must not stretch across the whole row. The
+    // empty space to the right of its label is inert; only box + label react.
+    auto muteBox = requireWidget!CheckBox(editor, "clip-mute");
+    auto audioBody = requireWidget!Widget(editor, "inspector-body-AUDIO");
+    assert(audioBody.visible(), "AUDIO body is not visible");
+    assert(muteBox.bounds().width < audioBody.bounds().width,
+        "Mute checkbox still stretches the full Inspector row");
+    const muteBefore = muteBox.checked();
+    const muteBounds = globalBounds(muteBox);
+    const audioBounds = globalBounds(audioBody);
+    const farRight = Point(audioBounds.right() - 6,
+        muteBounds.y + muteBounds.height / 2);
+    assert(farRight.x > muteBounds.right(),
+        "Audio row is too narrow for this dead-zone check");
+    driver.click(farRight);
+    assert(driver.paint(), "Paint after dead-zone click failed");
+    assert(muteBox.checked() == muteBefore,
+        "Clicking the empty space right of the Mute label toggled it");
+    driver.click(globalCenter(muteBox));
+    assert(driver.paint(), "Paint after label click failed");
+    assert(muteBox.checked() != muteBefore,
+        "Clicking the Mute label did not toggle the checkbox");
+    driver.click(globalCenter(muteBox));
 
     // Text-item controls remain present and addressable.
     requireWidget!Widget(editor, "clip-mute");

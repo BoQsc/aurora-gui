@@ -17,8 +17,9 @@ import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectProperty,
 import auroracut.playback : PcmAudioPlayer, PlaybackWorkerStats, VideoFrameStream;
 import auroracut.preview : PreviewFrame, PreviewService,
     PreviewServiceStats, PreviewWidget;
-import auroracut.project : defaultCompositionHeight, defaultCompositionWidth,
-    defaultPreviewQualityHeight, loadProjectFile, saveProjectFile;
+import auroracut.project : ProjectViewState, defaultCompositionHeight,
+    defaultCompositionWidth, defaultPreviewQualityHeight, loadProjectFile,
+    saveProjectFile;
 import auroracut.recentprojects : clearRecentProjects,
     clearUnavailableRecentProjects, hasUnavailableRecentProjects,
     loadRecentProjects, rememberRecentProject;
@@ -309,8 +310,11 @@ final class InspectorValueField : TextField
         super("");
         _minimum = minimum;
         _maximum = maximum;
-        layoutHints().minWidth = 62;
-        layoutHints().preferredWidth = 76;
+        // Wide enough for the longest display string ("-60.0 dB") plus the
+        // TextField's internal 8px scroll reserve. A narrower field overflows,
+        // scrolls to the trailing caret and clips the leading sign ("+"/"-").
+        layoutHints().minWidth = 90;
+        layoutHints().preferredWidth = 96;
         layoutHints().minHeight = 22;
         layoutHints().preferredHeight = 22;
         setPadding(4);
@@ -650,6 +654,26 @@ private final class GlyphButton : Button
 }
 
 /**
+ * Inspector checkbox that only occupies its 18px box plus label. The base
+ * CheckBox stretches across the full row (VBox cross axis), so the empty space
+ * right of the text stayed hoverable and clickable. Measuring the label keeps
+ * the interactive area tight.
+ */
+private final class InspectorCheckBox : CheckBox
+{
+    this(string text, bool checked = false)
+    {
+        super(text, checked);
+        auto probe = new Label(text);
+        probe.setScale(theme().fontScale);
+        const contentWidth = 28 + probe.layoutHints().preferredWidth + 8;
+        layoutHints().fillCrossAxis = false;
+        layoutHints().minWidth = contentWidth;
+        layoutHints().preferredWidth = contentWidth;
+    }
+}
+
+/**
  * Collapsible Inspector group: a flat, full-width header (chevron + title +
  * optional right-hand annotation) over a body that holds the property rows.
  * Collapsing hides the body and removes it from layout so the Inspector stays
@@ -861,6 +885,11 @@ final class EditorRoot : VBox
     private ScrollView _inspectorScroll;
     private Button[] _clipControls;
     private bool _syncingInspector;
+    // Project view restore is deferred one frame: the lists/scrollbars can only
+    // accept a saved offset after their fresh content has been laid out.
+    private bool _pendingViewRestore;
+    private int _viewRestoreDelay;
+    private ProjectViewState _pendingView;
 
     private bool _inlineTextEditing;
     private bool _inlineTextChanged;
@@ -2097,10 +2126,10 @@ final class EditorRoot : VBox
             delegate(double value) { volumeChanged(value); },
             EffectProperty.volume, true);
         _volume.setId("clip-volume-db");
-        _mute = audioBody.add(new CheckBox("Mute item audio", false));
+        _mute = audioBody.add(new InspectorCheckBox("Mute item audio", false));
         _mute.setId("clip-mute");
         _mute.onChanged = delegate(bool value) { muteChanged(value); };
-        _audioProxyVisible = audioBody.add(new CheckBox(
+        _audioProxyVisible = audioBody.add(new InspectorCheckBox(
             "Show embedded audio on matching A track", false));
         _audioProxyVisible.setId("clip-audio-proxy");
         // This per-item display option lives in the timeline context menu.
@@ -2277,7 +2306,7 @@ final class EditorRoot : VBox
         _textColorField.setId("clip-text-color");
         configureInspectorTextField(_textColorField, "Change selected text color");
         _textColorField.onChanged = delegate() { textColorFieldChanged(); };
-        _textBox = textBody.add(new CheckBox("Background box", false));
+        _textBox = textBody.add(new InspectorCheckBox("Background box", false));
         _textBox.setId("clip-text-box");
         _textBox.onChanged = delegate(bool value) { textBoxChanged(value); };
         _inspectorTextSection.finishLayout();
@@ -2518,6 +2547,39 @@ final class EditorRoot : VBox
         _window.setTitle(title);
     }
 
+    /** Snapshot the user's editing view (timeline zoom/scroll + bin scroll) so
+     * it can be stored in the project file and restored on reopen. */
+    private ProjectViewState captureViewState() const
+    {
+        ProjectViewState view;
+        view.timelineZoom = _timeline.pixelsPerSecond();
+        view.timelineScroll = _timeline.horizontalScroll();
+        view.timelineVerticalScroll = _timeline.verticalScroll();
+        view.timelineFit = _timeline.viewFits();
+        view.timelineFitAllDurations = _timeline.viewFitsAllDurations();
+        view.mediaScroll = _mediaList is null ? 0 : _mediaList.scrollOffset();
+        view.hasView = true;
+        return view;
+    }
+
+    private void requestViewRestore(const ProjectViewState view)
+    {
+        _pendingView = view;
+        _pendingViewRestore = true;
+        // Wait for the frame that lays out the freshly loaded content before
+        // applying offsets, otherwise a list clamps them against stale bounds.
+        _viewRestoreDelay = 1;
+    }
+
+    private void applyViewState(const ProjectViewState view)
+    {
+        _timeline.restoreView(view.timelineZoom, view.timelineScroll,
+            view.timelineVerticalScroll, view.timelineFit,
+            view.timelineFitAllDurations);
+        if (_mediaList !is null)
+            _mediaList.verticalScrollbar().setValue(view.mediaScroll);
+    }
+
     private void saveProject(bool saveAs)
     {
         if (!saveAs && _projectPath.length > 0)
@@ -2541,7 +2603,7 @@ final class EditorRoot : VBox
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
                 _compositionWidth, _compositionHeight, _undo, _redo,
-                _lastExportPath);
+                _lastExportPath, captureViewState());
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2566,7 +2628,7 @@ final class EditorRoot : VBox
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
                 _compositionWidth, _compositionHeight, _undo, _redo,
-                _lastExportPath);
+                _lastExportPath, captureViewState());
             _projectPath = normalizedPath;
             _projectDirty = false;
             rememberRecentProject(normalizedPath);
@@ -2647,6 +2709,8 @@ final class EditorRoot : VBox
             updateQualityUi();
             syncOutputButtons();
             updateProjectTitle();
+            // Restore the saved viewport after the loaded content is laid out.
+            if (data.view.hasView) requestViewRestore(data.view);
             queueMissingPlaybackProxies();
             scheduleTimelineFrame();
             setStatus("Project opened: " ~ normalizedPath);
@@ -2669,6 +2733,7 @@ final class EditorRoot : VBox
     private void newProject()
     {
         endInlineTextEditing();
+        _pendingViewRestore = false;
         // Preserve the current session before wiping the model, matching the
         // autosave-on-exit contract for both named and unnamed projects.
         try
@@ -2679,7 +2744,7 @@ final class EditorRoot : VBox
             saveProjectFile(path, _model, _timeline.playhead(), _hasWorkIn,
                 _workIn, _hasWorkOut, _workOut, _previewQualityHeight,
                 _compositionWidth, _compositionHeight, _undo, _redo,
-                _lastExportPath);
+                _lastExportPath, captureViewState());
             rememberRecentProject(normalizedPath);
             appLog("Project autosaved before creating a new project: " ~
                 normalizedPath);
@@ -10096,6 +10161,18 @@ final class EditorRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        // Apply a project's saved viewport one frame after it was requested so
+        // the loaded content has been laid out and offsets clamp correctly.
+        if (_pendingViewRestore)
+        {
+            if (_viewRestoreDelay > 0)
+                --_viewRestoreDelay;
+            else
+            {
+                _pendingViewRestore = false;
+                applyViewState(_pendingView);
+            }
+        }
         drainYtDlpAddonInstall();
         drainDownloadedMedia();
         drainDownloadProgress();
