@@ -539,11 +539,22 @@ private final class MessageBubble : Widget
         const palette = theme();
         const width = bounds().width;
         const height = bounds().height;
-        const background = _role == "user" ? opencodeUserBubble :
-            opencodeAssistantBubble;
-        canvas.fillRoundedRect(Rect(0, 0, width, height), 10, background);
-        if (_failed)
-            canvas.strokeRect(Rect(0, 0, width, height), opencodeErrorRed, 1);
+
+        // Message flow mirrors the original opencode TUI (session/index.tsx):
+        // the user's turn is a subtle panel with a colored left accent bar,
+        // while the assistant's reply is not boxed at all and flows in the
+        // reading column. Wrapping every turn in a full-width rounded card made
+        // the transcript read like a list of cards instead of a conversation.
+        const int accentW = 3;
+        if (_role == "user")
+        {
+            canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodePanel);
+            canvas.fillRect(Rect(0, 0, accentW, height), opencodeAccent);
+        }
+        else if (_failed)
+        {
+            canvas.fillRect(Rect(0, 0, accentW, height), opencodeErrorRed);
+        }
 
         const innerWidth = maxInt(1, width - 2 * padH);
         int y = padV;
@@ -648,8 +659,9 @@ private final class MessageBubble : Widget
             cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
         const h = layout.measuredSize().height;
         _collapseRect = Rect(padH, top, maxInt(1, innerWidth), h);
-        canvas.fillRoundedRect(_collapseRect, 4,
-            _collapseHover ? opencodeSelection : opencodeField);
+        // No chip background: a tool call is a single quiet line, like the
+        // inline tool rows in the original opencode (InlineTool in
+        // session/index.tsx). Hover brightens the label only.
         canvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
     }
@@ -671,8 +683,9 @@ private final class MessageBubble : Widget
             cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
         const h = layout.measuredSize().height;
         _thinkingRect = Rect(padH, top, maxInt(1, innerWidth), h);
-        canvas.fillRoundedRect(_thinkingRect, 4,
-            _thinkingHover ? opencodeSelection : opencodeField);
+        // No chip background: reasoning is a single muted line ("▸ Thinking")
+        // that expands in place, like ReasoningHeader in the original opencode
+        // (session/index.tsx) rather than a filled button.
         canvas.drawLayout(Point(padH, top), layout,
             _thinkingLive ? opencodeAccent :
             (_thinkingHover ? opencodeText : opencodeMuted));

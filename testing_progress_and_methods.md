@@ -1,5 +1,65 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Transcript flow borrowed from the original opencode TUI (2026-09-13)
+
+User: "what could we learn from original opencode about display flow of messages
+and apply it so we have cleaner interface … I want messages flow ui better."
+
+**What the original does** (`anomalyco/opencode`, `dev`,
+`packages/tui/src/routes/session/index.tsx`, fetched raw and read locally):
+- A message is rendered from **parts**, not one card. `AssistantMessage` maps
+  parts through `PART_MAPPING = { text, tool, reasoning }`.
+- `UserMessage` is a **left border colored by the agent** plus a subtle
+  `backgroundPanel` block (`paddingTop/Bottom={1}`, `paddingLeft={2}`); it is
+  not a rounded card.
+- `TextPart` is **not boxed at all**: plain markdown at `paddingLeft={3}`, so
+  the reply flows in one reading column.
+- `ReasoningPart` collapses to a **single quiet line**: `Thinking…` spinner
+  while running, then `Thought: <summary> · <duration>`; no filled chip.
+- Tool calls render as **inline one-liners** (`InlineTool`: `⚙ tool args`,
+  spinner/pending, spinner-free when done) or a `BlockTool` for output.
+- Completed tools are hidden entirely unless `showDetails` is on.
+
+**What we changed** (both `aurora-opencode` and `aurora-opencode-pro`
+`MessageBubble.onPaint`):
+- Dropped the full-width rounded card that every role used to get.
+- **User turn** = `opencodePanel` fill (radius 8) + a 3 px `opencodeAccent`
+  left bar. Reads as "you asked" without dominating the column.
+- **Assistant turn** = no background; markdown flows on the app background in
+  the reading column (keeps `padH` inset so it lines up with the user text).
+- **Failed** messages = 3 px `opencodeErrorRed` left bar instead of a full
+  stroke around an invisible card.
+- Removed the filled `opencodeField` chip behind the reasoning header
+  (`drawThinkingHeader`) and the tool header (`drawToolHeader`); they are now
+  single muted lines that brighten on hover, like `ReasoningHeader`/`InlineTool`.
+
+Locations: Pro `appui.d` `onPaint` (chrome), `drawThinkingHeader`,
+`drawToolHeader`; baseline `appui.d` `onPaint`. Both apps share the same
+treatment on purpose.
+
+**Verification:**
+- `dub build --build=release` links for both apps.
+- Baseline `headless_smoke.exe` → real reply `AURORA-OPENCODE-GUI-OK`
+  (checked in the smoke `sessions.json`; stdout is swallowed for the
+  GUI-subsystem exe) with a clean `errors.log`.
+- Pro `headless_pro_smoke.exe` passes every step (thinking collapse, tool loop,
+  tool collapse/expand, doom-loop recovery, scroll preservation, context meter).
+- Screenshots: `--screenshot-chat` (fresh) and `--screenshot` (real history)
+  both look correct — `aui-pro-after.png`, `aui-base-after.png`,
+  `aui-pro-real-after.png`, `aui-base-real-after.png`. The long assistant reply
+  now reads as a document rather than a giant card.
+
+**Method: the smoke test writes `.ppm` capture files, which the image reader
+cannot open.** Convert them with a tiny P6 parser
+(`%TEMP%\ppm2png.ps1`):
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ppm2png.ps1" `
+  -Src "$env:TEMP\aurora-opencode-collapse-shots\tool-expanded.ppm" `
+  -Dst "$env:TEMP\tool-expanded.png"
+```
+That is how the new inline tool rows (`▸ ⚙ read(filePath=notes.txt)`) were
+visually confirmed.
+
 ## Aurora OpenCode moved to CommandCode + DeepSeek V4.1 Flash (2026-09-13)
 
 User: "update api key user_22Gj… and also we now use command code deep seek 4.1

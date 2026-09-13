@@ -233,11 +233,22 @@ private final class MessageBubble : Widget
         const palette = theme();
         const width = bounds().width;
         const height = bounds().height;
-        const background = _role == "user" ? opencodeUserBubble :
-            opencodeAssistantBubble;
-        canvas.fillRoundedRect(Rect(0, 0, width, height), 10, background);
-        if (_failed)
-            canvas.strokeRect(Rect(0, 0, width, height), opencodeErrorRed, 1);
+
+        // Message flow mirrors the original opencode TUI (session/index.tsx):
+        // the user's turn is a subtle panel with a colored left accent bar,
+        // while the assistant's reply is not boxed at all and flows in the
+        // reading column. Wrapping every turn in a full-width rounded card made
+        // the transcript read like a list of cards instead of a conversation.
+        const int accentW = 3;
+        if (_role == "user")
+        {
+            canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodePanel);
+            canvas.fillRect(Rect(0, 0, accentW, height), opencodeAccent);
+        }
+        else if (_failed)
+        {
+            canvas.fillRect(Rect(0, 0, accentW, height), opencodeErrorRed);
+        }
 
         const innerWidth = maxInt(1, width - 2 * padH);
         int y = padV;
