@@ -642,6 +642,25 @@ int main(string[] args)
         "Legacy tools tooltip should explain the shell tool: " ~ legacyTip);
     writeln("Legacy tools checkbox + tooltip present in Settings");
 
+    // The system prompt documents every tool (so the model can use them
+    // trivially) and Settings can show its full text.
+    assert(root.systemPromptButtonPresentForTesting(),
+        "Settings dialog missing the System prompt button");
+    const systemPrompt = root.systemPromptViewerTextForTesting();
+    assert(systemPrompt.indexOf("Aurora OpenCode") >= 0,
+        "system prompt is missing the identity line");
+    assert(systemPrompt.indexOf("`edit`") >= 0 &&
+        systemPrompt.indexOf("replaceAll") >= 0,
+        "system prompt does not document the edit tool: " ~ systemPrompt);
+    assert(systemPrompt.indexOf("Workflow:") >= 0,
+        "system prompt is missing the tool workflow guidance");
+    writeln("System prompt documents the tools and is viewable from Settings");
+    const promptShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
+    if (!exists(promptShots)) mkdirRecurse(promptShots);
+    assert(driver.paint(), "System prompt viewer did not repaint");
+    window.saveScreenshot(buildPath(promptShots, "system-prompt.ppm"));
+    root.dismissPopupForTesting();
+
     // Tool loop: with tools enabled and a workspace, an injected tool call is
     // executed locally and the result lands as a `tool` role message.
     auto workspaceDir = buildPath(stateDir, "workspace");
@@ -708,6 +727,65 @@ int main(string[] args)
     assert(root.messageCountForTesting() >= 3,
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
+
+    // Context grouping: the read+grep run folds into a single "Explored" row
+    // while the shell command stays its own part.
+    assert(root.contextGroupCountForTesting() == 1,
+        "read+grep run did not fold into one context group");
+    assert(root.firstToolGroupPartCountForTesting() == 2,
+        "context group should contain the two context tool parts");
+    assert(root.firstToolGroupCollapsedForTesting(),
+        "context group should start collapsed");
+    root.toggleFirstToolGroupForTesting();
+    assert(!root.firstToolGroupCollapsedForTesting(),
+        "context group did not expand on toggle");
+    assert(driver.paint(), "Expanded context group did not repaint");
+    const toolShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
+    if (!exists(toolShots)) mkdirRecurse(toolShots);
+    window.saveScreenshot(buildPath(toolShots, "explored-expanded.ppm"));
+    root.toggleFirstToolGroupForTesting();
+    assert(root.firstToolGroupCollapsedForTesting(),
+        "context group did not collapse again");
+    assert(driver.paint(), "Collapsed context group did not repaint");
+    window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
+    writeln("Context tools fold into a collapsible Explored group");
+
+    // Edit tool: a real file edit must report a unified diff with green/red
+    // counters (the collapsed part shows +N -M; the body shows line numbers).
+    write(buildPath(workspaceDir, "editme.txt"), "alpha\nbeta\ngamma\n");
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Rename beta"]);
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall editCall;
+    editCall.id = "call_test_edit";
+    editCall.name = "edit";
+    editCall.arguments =
+        `{"filePath":"editme.txt","oldString":"beta","newString":"BETA"}`;
+    root.injectToolCallsForTesting([editCall]);
+    const editDeadline = Clock.currTime + 5.seconds;
+    while (root.toolMessageCountForTesting() < 1 && Clock.currTime < editDeadline)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
+    }
+    assert(root.toolMessageCountForTesting() == 1,
+        "edit tool did not produce a tool result");
+    assert(root.toolResultForTesting(0).indexOf("Edited") >= 0,
+        "edit tool did not report success: " ~ root.toolResultForTesting(0));
+    assert(readText(buildPath(workspaceDir, "editme.txt")).indexOf("BETA") >= 0,
+        "edit tool did not apply the change to disk");
+    assert(root.toolHasDiffForTesting(0),
+        "edit tool did not report a diff body");
+    assert(root.toolDiffAdditionsForTesting(0) >= 1,
+        "edit diff should report at least one added line");
+    assert(root.toolDiffDeletionsForTesting(0) >= 1,
+        "edit diff should report at least one deleted line");
+    assert(root.firstToolBubbleCollapsedForTesting(),
+        "edit diff part should start collapsed");
+    root.toggleFirstToolBubbleForTesting();
+    assert(driver.paint(), "Expanded edit diff did not repaint");
+    window.saveScreenshot(buildPath(toolShots, "edit-diff-expanded.ppm"));
+    writeln("Edit tool reports a +adds/-dels diff");
 
     // The tool-call wrapper (the assistant message that requested tools) is
     // not a reply: it must not render as a visible empty bubble, and must not

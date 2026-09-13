@@ -9,7 +9,7 @@ import std.path : buildNormalizedPath, buildPath, expandTilde, isAbsolute;
 import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin;
-import std.string : replace, strip;
+import std.string : indexOf, replace, strip;
 import std.utf : toUTF8;
 import std.conv : to;
 import std.exception : collectException;
@@ -95,6 +95,23 @@ private OpenCodeToolDef removeToolDefinition()
     );
 }
 
+/// The D-native `edit` tool definition, shared by both tool sets. It performs
+/// an exact string replacement in a file (mirroring the opencode Edit tool), so
+/// the model can make surgical changes without rewriting the whole file. The
+/// result carries a unified diff that the UI renders as `+N -M` plus an
+/// expandable, line-numbered diff.
+private OpenCodeToolDef editToolDefinition()
+{
+    return OpenCodeToolDef(
+        "edit",
+        "Replace an exact string in a file. `oldString` must match the file " ~
+        "contents exactly (including indentation) and be unique unless " ~
+        "`replaceAll` is true. Prefer this over `write` for small, surgical " ~
+        "changes; use `write` for new files or full rewrites.",
+        `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"oldString":{"type":"string","description":"The exact text to replace"},"newString":{"type":"string","description":"The replacement text (use an empty string to delete)"},"replaceAll":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match"}},"required":["filePath","oldString","newString"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -110,6 +127,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         ),
         dshellToolDefinition(),
         removeToolDefinition(),
+        editToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -153,6 +171,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         ),
         dshellToolDefinition(),
         removeToolDefinition(),
+        editToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -252,6 +271,44 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "think about what the task is and what the files are supposed to do " ~
         "based on the filenames and directory structure.\n");
 
+    builder.put("\n# Tools\n");
+    builder.put("Call a tool by name with a JSON object of arguments. Pass " ~
+        "workspace-relative (or absolute) paths and never guess file " ~
+        "contents; read a file before you change it.\n");
+    builder.put("- `read` {\"filePath\":\"src/main.d\"} — print a text file so " ~
+        "you can inspect it.\n");
+    builder.put("- `write` {\"filePath\":\"notes.txt\",\"content\":\"...\"} — " ~
+        "create or fully overwrite a file (parent directories are made for " ~
+        "you).\n");
+    builder.put("- `edit` {\"filePath\":\"src/main.d\",\"oldString\":\"...\"," ~
+        "\"newString\":\"...\"} — exact, surgical replacement. `oldString` must " ~
+        "match the file text exactly (indentation included) and be unique; add " ~
+        "\"replaceAll\":true to change every occurrence, or \"newString\":\"\" " ~
+        "to delete. Prefer `edit` over `write` for small changes; the result " ~
+        "shows a unified +adds/-dels diff.\n");
+    builder.put("- `glob` {\"pattern\":\"src/**/*.d\"} — list files and " ~
+        "directories matching a glob pattern.\n");
+    builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"} " ~
+        "— regular-expression search of file contents; returns matching " ~
+        "paths.\n");
+    builder.put("- `remove` {\"path\":\"build\"} — delete a file or directory " ~
+        "tree.\n");
+    builder.put("- `dshell` {\"command\":\"list\",\"path\":\"src\"} — the native " ~
+        "natural-word shell: `where` (workspace path), `list` (directory " ~
+        "listing), `info` (file metadata).\n");
+    if (nativeOnly)
+        builder.put("- `run` {\"program\":\"dmd\",\"args\":[\"-run\"," ~
+            "\"app.d\"],\"workdir\":\".\"} — run an executable directly with an " ~
+            "argument list; no shell, no quoting or redirection.\n");
+    else
+        builder.put("- `bash` {\"command\":\"dub build\",\"workdir\":\".\"} — " ~
+            "run a shell command. Use only for builds, git, package managers, " ~
+            "or executables the native tools cannot handle.\n");
+    builder.put("Workflow: gather context with `read`/`glob`/`grep`, make the " ~
+        "smallest change with `edit` (or `write` for new files or full " ~
+        "rewrites), verify with `run`/`bash`, then briefly summarise what " ~
+        "changed.\n");
+
     builder.put("\n# Concise responses\n");
     builder.put("Keep answers short unless the user asks for detail. Answer " ~
         "directly, avoid introductions and conclusions, and do not repeat " ~
@@ -272,6 +329,218 @@ public struct ToolExecution
     string name;
     string output;
     bool failed;
+    // Diff metadata for file-mutating tools (edit/write/remove). The UI renders
+    // `additions`/`deletions` as the green/red `+N -M` counters and `diff` as
+    // the expandable line-numbered diff body. Empty/zero for other tools.
+    int additions;
+    int deletions;
+    string diff;
+}
+
+/// A line-based diff between two file bodies. `unified` uses the standard
+/// `@@ -old,+new @@` hunk format with up to `diffContext` unchanged lines of
+/// surrounding context, so the UI can render line numbers and green/red rows.
+public struct TextDiff
+{
+    string unified;
+    int additions;
+    int deletions;
+}
+
+/// Unified-diff context lines around each changed run (like `git diff -U3`).
+private enum int diffContext = 3;
+/// Guards against quadratic LCS on pathological inputs: when the changed
+/// middle is larger than this many lines on either side we fall back to a
+/// whole-block replace (all removals, then all additions).
+private enum int diffLcsLimit = 1600;
+/// Hard cap on emitted diff lines so a giant rewrite can never blow up the
+/// message column; the remainder is summarised with a trailing marker.
+private enum int diffMaxLines = 1200;
+
+/// Split a file body into lines, dropping a single trailing empty line so a
+/// final newline does not show up as a spurious unchanged line.
+private string[] diffLines(string text)
+{
+    import std.string : splitLines;
+    if (text.length == 0) return null;
+    auto lines = splitLines(text);
+    if (lines.length > 0 && lines[$ - 1].length == 0)
+        lines = lines[0 .. $ - 1];
+    return lines;
+}
+
+/// Compute a unified diff between `oldText` and `newText`. A null/empty
+/// `oldText` means a newly created file (every line an addition); an empty
+/// `newText` means deletion (every line a removal).
+public TextDiff computeTextDiff(string oldText, string newText)
+{
+    import std.algorithm : max;
+
+    auto before = diffLines(oldText);
+    auto after = diffLines(newText);
+
+    // Tagged edit script: ' ' unchanged, '-' removed, '+' added.
+    string[] ops;
+    ops.reserve(before.length + after.length);
+
+    size_t prefix;
+    while (prefix < before.length && prefix < after.length &&
+        before[prefix] == after[prefix])
+        ++prefix;
+    size_t suffix;
+    while (suffix < before.length - prefix && suffix < after.length - prefix &&
+        before[$ - 1 - suffix] == after[$ - 1 - suffix])
+        ++suffix;
+
+    TextDiff result;
+    if (prefix > 0)
+    {
+        foreach (line; before[0 .. prefix]) ops ~= " " ~ line;
+    }
+
+    auto midBefore = before[prefix .. $ - suffix];
+    auto midAfter = after[prefix .. $ - suffix];
+
+    void emitFallback()
+    {
+        foreach (line; midBefore) ops ~= "-" ~ line;
+        foreach (line; midAfter) ops ~= "+" ~ line;
+    }
+
+    if (midBefore.length == 0)
+    {
+        foreach (line; midAfter) ops ~= "+" ~ line;
+    }
+    else if (midAfter.length == 0)
+    {
+        foreach (line; midBefore) ops ~= "-" ~ line;
+    }
+    else if (cast(long) midBefore.length * midAfter.length > cast(long) diffLcsLimit * diffLcsLimit)
+    {
+        emitFallback();
+    }
+    else
+    {
+        // Classic LCS table + backtrack.
+        const n = midBefore.length;
+        const m = midAfter.length;
+        auto table = new int[(n + 1) * (m + 1)];
+        foreach (i; 0 .. n)
+            foreach (j; 0 .. m)
+            {
+                if (midBefore[i] == midAfter[j])
+                    table[(i + 1) * (m + 1) + j + 1] = table[i * (m + 1) + j] + 1;
+                else
+                    table[(i + 1) * (m + 1) + j + 1] =
+                        max(table[i * (m + 1) + j + 1], table[(i + 1) * (m + 1) + j]);
+            }
+        string[] reversed;
+        size_t i = n, j = m;
+        while (i > 0 || j > 0)
+        {
+            if (i > 0 && j > 0 && midBefore[i - 1] == midAfter[j - 1])
+            {
+                reversed ~= " " ~ midBefore[i - 1];
+                --i; --j;
+            }
+            else if (j > 0 && (i == 0 || table[(i) * (m + 1) + j - 1] >= table[(i - 1) * (m + 1) + j]))
+            {
+                reversed ~= "+" ~ midAfter[j - 1];
+                --j;
+            }
+            else
+            {
+                reversed ~= "-" ~ midBefore[i - 1];
+                --i;
+            }
+        }
+        for (size_t k = reversed.length; k > 0; --k)
+            ops ~= reversed[k - 1];
+    }
+
+    if (suffix > 0)
+        foreach (line; before[$ - suffix .. $]) ops ~= " " ~ line;
+
+    foreach (op; ops)
+    {
+        if (op.length == 0) continue;
+        if (op[0] == '+') ++result.additions;
+        else if (op[0] == '-') ++result.deletions;
+    }
+
+    // Group changed runs into hunks with up to `diffContext` context lines,
+    // merging runs that are close together so context is never duplicated.
+    size_t[] changeIdx;
+    foreach (idx, op; ops)
+        if (op.length > 0 && (op[0] == '+' || op[0] == '-'))
+            changeIdx ~= idx;
+
+    auto builder = appender!string();
+    size_t emitted;
+    if (changeIdx.length > 0)
+    {
+        size_t cursor;           // next op index to consider
+        size_t oldNo = 1, newNo = 1; // line numbers at `cursor`
+        // Precompute old/new line number before each op index.
+        auto oldAt = new size_t[ops.length + 1];
+        auto newAt = new size_t[ops.length + 1];
+        size_t o = 1, nw = 1;
+        foreach (idx, op; ops)
+        {
+            oldAt[idx] = o;
+            newAt[idx] = nw;
+            if (op.length == 0) continue;
+            if (op[0] != '+') ++o;
+            if (op[0] != '-') ++nw;
+        }
+        oldAt[ops.length] = o;
+        newAt[ops.length] = nw;
+
+        size_t ci;
+        while (ci < changeIdx.length)
+        {
+            // Extend the hunk to include this change and any following change
+            // within 2*context lines.
+            size_t last = changeIdx[ci];
+            size_t next = ci + 1;
+            while (next < changeIdx.length &&
+                changeIdx[next] - last <= cast(size_t) (2 * diffContext + 1))
+            {
+                last = changeIdx[next];
+                ++next;
+            }
+            size_t start = changeIdx[ci] >= cast(size_t) diffContext
+                ? changeIdx[ci] - diffContext : 0;
+            size_t end = last + diffContext + 1;
+            if (end > ops.length) end = ops.length;
+
+            size_t oldCount, newCount;
+            foreach (idx; start .. end)
+            {
+                if (ops[idx].length == 0) continue;
+                if (ops[idx][0] != '+') ++oldCount;
+                if (ops[idx][0] != '-') ++newCount;
+            }
+            if (emitted >= diffMaxLines)
+            {
+                builder.put("... (diff truncated)\n");
+                break;
+            }
+            builder.put("@@ -" ~ to!string(oldAt[start]) ~ "," ~
+                to!string(oldCount) ~ " +" ~ to!string(newAt[start]) ~ "," ~
+                to!string(newCount) ~ " @@\n");
+            foreach (idx; start .. end)
+            {
+                if (emitted >= diffMaxLines)
+                    break;
+                builder.put(ops[idx] ~ "\n");
+                ++emitted;
+            }
+            ci = next;
+        }
+    }
+    result.unified = builder.data;
+    return result;
 }
 
 /// Resolve a path argument against the workspace; absolute paths pass through.
@@ -562,6 +831,13 @@ private ToolExecution runWrite(string args, string workspace)
         return ToolExecution("write",
             "Error: write requires `filePath` and `content` arguments.", true);
     const path = resolveToolPath(filePath, workspace);
+    string previous;
+    const existed = exists(path) && isFile(path);
+    if (existed)
+    {
+        try previous = readText(path);
+        catch (Exception) previous = "";
+    }
     try
     {
         write(path, content);
@@ -569,8 +845,107 @@ private ToolExecution runWrite(string args, string workspace)
     catch (Exception error)
         return ToolExecution("write", "Error: could not write file: " ~
             error.msg, true);
-    return ToolExecution("write", "Wrote " ~ path ~ " (" ~
-        to!string(content.length) ~ " chars).", false);
+    auto diff = computeTextDiff(existed ? previous : "", content);
+    ToolExecution result;
+    result.name = "write";
+    result.output = (existed ? "Updated " : "Wrote ") ~ path ~ " (" ~
+        to!string(content.length) ~ " chars, +" ~ to!string(diff.additions) ~
+        " -" ~ to!string(diff.deletions) ~ ").";
+    result.additions = diff.additions;
+    result.deletions = diff.deletions;
+    result.diff = diff.unified;
+    return result;
+}
+
+/// The D-native `edit` tool: replace an exact `oldString` with `newString` in a
+/// file, then report a unified diff. Fails when the anchor is missing or (by
+/// default) ambiguous, so edits never silently change the wrong place.
+private ToolExecution runEdit(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string filePath;
+    string oldString;
+    string newString;
+    bool hasNewString;
+    bool replaceAll;
+    if (value.type == JSONType.object)
+    {
+        if (auto field = "filePath" in value.object)
+            if (field.type == JSONType.string)
+                filePath = field.str;
+        if (auto field = "oldString" in value.object)
+            if (field.type == JSONType.string)
+                oldString = field.str;
+        if (auto field = "newString" in value.object)
+            if (field.type == JSONType.string)
+            {
+                newString = field.str;
+                hasNewString = true;
+            }
+        if (auto field = "replaceAll" in value.object)
+            if (field.type == JSONType.true_)
+                replaceAll = true;
+    }
+    if (filePath.length == 0 || oldString.length == 0 || !hasNewString)
+        return ToolExecution("edit",
+            "Error: edit requires `filePath`, `oldString` and `newString`.",
+            true);
+    const path = resolveToolPath(filePath, workspace);
+    if (!exists(path) || !isFile(path))
+        return ToolExecution("edit", "Error: file not found: " ~ path, true);
+    string previous;
+    try previous = readText(path);
+    catch (Exception error)
+        return ToolExecution("edit", "Error: could not read file: " ~
+            error.msg, true);
+
+    // Count occurrences of the anchor.
+    size_t occurrences;
+    size_t searchFrom;
+    while (true)
+    {
+        const at = previous.indexOf(oldString, searchFrom);
+        if (at < 0) break;
+        ++occurrences;
+        searchFrom = at + oldString.length;
+    }
+    if (occurrences == 0)
+        return ToolExecution("edit",
+            "Error: `oldString` was not found in " ~ path ~ ".", true);
+    if (occurrences > 1 && !replaceAll)
+        return ToolExecution("edit", "Error: `oldString` appears " ~
+            to!string(occurrences) ~ " times in " ~ path ~
+            "; add more context to make it unique or set replaceAll=true.",
+            true);
+
+    string updated;
+    if (replaceAll)
+        updated = previous.replace(oldString, newString);
+    else
+    {
+        const at = previous.indexOf(oldString);
+        updated = previous[0 .. at] ~ newString ~ previous[at + oldString.length .. $];
+    }
+
+    try write(path, updated);
+    catch (Exception error)
+        return ToolExecution("edit", "Error: could not write file: " ~
+            error.msg, true);
+
+    auto diff = computeTextDiff(previous, updated);
+    ToolExecution result;
+    result.name = "edit";
+    result.output = "Edited " ~ path ~ " (" ~
+        to!string(replaceAll ? occurrences : 1) ~
+        (replaceAll && occurrences > 1 ? " replacements" : " replacement") ~
+        ", +" ~ to!string(diff.additions) ~ " -" ~ to!string(diff.deletions) ~
+        ").";
+    result.additions = diff.additions;
+    result.deletions = diff.deletions;
+    result.diff = diff.unified;
+    return result;
 }
 
 /// The D-native `remove` tool: deletes a file, or a directory tree. Accepts
@@ -607,8 +982,18 @@ private ToolExecution runRemove(string args, string workspace)
         }
         if (isFile(path))
         {
+            string previous;
+            try previous = readText(path);
+            catch (Exception) previous = "";
+            auto diff = computeTextDiff(previous, "");
             remove(path);
-            return ToolExecution("remove", "Removed file " ~ path, false);
+            ToolExecution result;
+            result.name = "remove";
+            result.output = "Removed file " ~ path ~ " (+0 -" ~
+                to!string(diff.deletions) ~ ").";
+            result.deletions = diff.deletions;
+            result.diff = diff.unified;
+            return result;
         }
         return ToolExecution("remove",
             "Error: not a file or directory: " ~ path, true);
@@ -813,6 +1198,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return runRead(call.arguments, workspace);
         case "write":
             return runWrite(call.arguments, workspace);
+        case "edit":
+            return runEdit(call.arguments, workspace);
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":

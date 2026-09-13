@@ -197,6 +197,33 @@ private final class MessageBubble : Widget
     private Rect _collapseRect;
     private bool _collapseHover;
 
+    // File-mutating tool results (edit/write/remove) carry a computed diff: the
+    // `+N -M` counters and the unified diff rendered as a line-numbered body
+    // with green additions and red deletions. Non-diff tool output is rendered
+    // as line-numbered plain monospace text instead.
+    private int _diffAdditions;
+    private int _diffDeletions;
+    private string _diffText;
+    private bool _hasDiff;
+
+    /// One rendered line of an expanded tool body. `kind` selects the row tint
+    /// and text colour; line numbers are 0 when the column does not apply.
+    private enum ToolLineKind : ubyte { context, add, del, hunk, plain }
+    private struct ToolLine
+    {
+        ToolLineKind kind;
+        int oldNo;
+        int newNo;
+        TextLayout layout;
+    }
+    private ToolLine[] _toolLines;
+    private size_t _toolLinesGen;
+    private size_t _toolLinesBuiltGen = size_t.max;
+    private int _toolLinesWidth = -1;
+    private int _toolLinesHeight;
+    private double _toolLineHeight;
+    private static immutable int maxRenderedToolLines = 600;
+
     // Thinking/reasoning block: collapsed into a slim header by default (like
     // the original opencode app), with a pulsing "Thinking…" indicator while
     // the assistant is still working. Click toggles the full reasoning text.
@@ -261,6 +288,17 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    void setDiff(int additions, int deletions, string diff)
+    {
+        _diffAdditions = additions;
+        _diffDeletions = deletions;
+        _diffText = diff;
+        _hasDiff = diff.length > 0 || additions > 0 || deletions > 0;
+        ++_toolLinesGen;
+        _toolLinesWidth = -1;
+        invalidate();
+    }
+
     void setCollapsed(bool value)
     {
         if (_collapsed == value) return;
@@ -284,6 +322,11 @@ private final class MessageBubble : Widget
     {
         setCollapsed(!_collapsed);
     }
+
+    /// Test-only: the green/red diff counters and whether a diff body exists.
+    public int diffAdditionsForTesting() { return _diffAdditions; }
+    public int diffDeletionsForTesting() { return _diffDeletions; }
+    public bool hasDiffForTesting() { return _hasDiff; }
 
     /// Test-only: the tool header's compact argument text, without the
     /// `⚙ name`/toggle prefix. Used to prove arrays render as a command line
@@ -513,6 +556,14 @@ private final class MessageBubble : Widget
         return fontSystem().textEngine.layout(text, options);
     }
 
+    /// Width of the right-aligned user bubble: capped at ~68% of the column so
+    /// the turn sits against the right edge like a chat reply, never full-bleed.
+    private static int userBubbleWidth(int totalWidth)
+    {
+        return minInt(maxInt(0, totalWidth),
+            maxInt(160, cast(int) (totalWidth * 0.68)));
+    }
+
     protected override Size onMeasure(Size available)
     {
         if (_hidden)
@@ -534,10 +585,11 @@ private final class MessageBubble : Widget
 
         if (_role == "tool")
         {
-            // Header (command) always; output below when expanded.
-            height += fontPixelSize(1) + 4;
-            if (!_collapsed && _content.length > 0)
-                height += shapedContent(innerWidth).measuredSize().height + gap;
+            // Header (title + subtitle + diff counters) always; the rendered
+            // body (unified diff or numbered output) only when expanded.
+            height += toolHeaderHeight();
+            if (!_collapsed)
+                height += ensureToolLines(innerWidth) + gap;
         }
         else if (_role == "assistant")
         {
@@ -548,16 +600,23 @@ private final class MessageBubble : Widget
         }
         else
         {
+            // A user turn wraps inside its right-aligned panel, so measure with
+            // that narrower width (onPaint must use the same width).
+            const wrapWidth = _role == "user" ?
+                maxInt(24, userBubbleWidth(available.width) - 2 * padH) :
+                innerWidth;
             if (_content.length > 0)
-                height += shapedContent(innerWidth).measuredSize().height;
+                height += shapedContent(wrapWidth).measuredSize().height;
             else if (_streaming)
                 height += pixelSize + 2;
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
-        if (_time.length > 0 || _usageText.length > 0 ||
-            _actionLabel.length > 0 ||
-            (_role == "tool" && _toolName.length > 0))
+        // Tool parts get their identity from the header, so they carry no
+        // footer (and must not reserve footer space either).
+        if (_role != "tool" &&
+            (_time.length > 0 || _usageText.length > 0 ||
+             _actionLabel.length > 0))
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
@@ -582,10 +641,19 @@ private final class MessageBubble : Widget
         // reading column. Wrapping every turn in a full-width rounded card made
         // the transcript read like a list of cards instead of a conversation.
         const int accentW = 3;
+        int userX;
+        int userInnerWidth = maxInt(1, width - 2 * padH);
         if (_role == "user")
         {
-            canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodePanel);
-            canvas.fillRect(Rect(0, 0, accentW, height), opencodeAccent);
+            // Right-align the user's turn: a rounded panel hugging the right
+            // edge with the accent bar on its right, like a chat reply.
+            const panelW = userBubbleWidth(width);
+            userX = maxInt(0, width - panelW);
+            userInnerWidth = maxInt(24, panelW - 2 * padH);
+            canvas.fillRoundedRect(Rect(userX, 0, panelW, height), 8,
+                opencodePanel);
+            canvas.fillRect(Rect(userX + panelW - accentW, 0, accentW, height),
+                opencodeAccent);
         }
         else if (_failed)
         {
@@ -621,20 +689,12 @@ private final class MessageBubble : Widget
 
         if (_role == "tool")
         {
-            // Always show the command header (⚙ name(args) ▸/▾); the output
-            // below it is shown only when expanded.
+            // Always show the tool header (▸/▾ title subtitle  +N -M); the
+            // rendered body below it is shown only when expanded.
             drawToolHeader(canvas, innerWidth, y);
-            y += fontPixelSize(1) + 4;
-            if (!_collapsed && _content.length > 0)
-            {
-                auto layout = shapedContent(innerWidth);
-                canvas.drawLayout(Point(padH, y), layout, opencodeText);
-                if (layout.lines.length > 0)
-                    _selSegments ~= SelectSegment(layout, padH, y,
-                        maxInt(1, innerWidth),
-                        layout.measuredSize().height);
-                y += layout.measuredSize().height + gap;
-            }
+            y += toolHeaderHeight();
+            if (!_collapsed)
+                y += drawToolBody(canvas, innerWidth, y) + gap;
         }
         else if (_content.length > 0 || _streaming)
         {
@@ -655,11 +715,13 @@ private final class MessageBubble : Widget
             }
             else
             {
-                auto layout = shapedContent(innerWidth);
-                canvas.drawLayout(Point(padH, contentY), layout, opencodeText);
+                const textX = _role == "user" ? userX + padH : padH;
+                const textWidth = _role == "user" ? userInnerWidth : innerWidth;
+                auto layout = shapedContent(textWidth);
+                canvas.drawLayout(Point(textX, contentY), layout, opencodeText);
                 if (layout.lines.length > 0)
-                    _selSegments ~= SelectSegment(layout, padH, contentY,
-                        maxInt(1, innerWidth),
+                    _selSegments ~= SelectSegment(layout, textX, contentY,
+                        maxInt(1, textWidth),
                         layout.measuredSize().height);
             }
         }
@@ -697,22 +759,281 @@ private final class MessageBubble : Widget
             HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
-    /// Header for a tool result: the command (⚙ name(args)) with a ▸/▾ toggle
-    /// indicator. Clicking it shows or hides the output below.
+    /// Header for a tool result: a ▸/▾ toggle, the tool's human title (Shell,
+    /// Read, Edit, …), its subtitle (command / filename / pattern) and — for
+    /// file-mutating tools — the green/red `+N -M` diff counters. Clicking the
+    /// row shows or hides the rendered body below.
     private void drawToolHeader(ref Canvas canvas, int innerWidth, int top)
     {
-        const label = _toolName.length > 0 ? _toolName : "tool";
-        const toggle = _collapsed ? "▸" : "▾";
-        const text = toggle ~ " ⚙ " ~ label ~ toolArgsDisplay();
-        auto layout = canvas.layoutText(toUTF32(text), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
-        const h = layout.measuredSize().height;
+        const h = toolHeaderHeight();
         _collapseRect = Rect(padH, top, maxInt(1, innerWidth), h);
-        // No chip background: a tool call is a single quiet line, like the
-        // inline tool rows in the original opencode (InlineTool in
-        // session/index.tsx). Hover brightens the label only.
-        canvas.drawLayout(Point(padH, top), layout,
+        const toggle = _collapsed ? "▸" : "▾";
+        string left = toggle ~ " " ~ toolTitle();
+        const subtitle = toolSubtitle();
+        if (subtitle.length > 0) left ~= "  " ~ subtitle;
+
+        int statsWidth;
+        TextLayout addLayout, delLayout;
+        if (_hasDiff && (_diffAdditions > 0 || _diffDeletions > 0))
+        {
+            addLayout = canvas.layoutText(toUTF32("+" ~ to!string(_diffAdditions)),
+                1, FontRole.monospace, null, 200, false);
+            delLayout = canvas.layoutText(toUTF32("-" ~ to!string(_diffDeletions)),
+                1, FontRole.monospace, null, 200, false);
+            statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+        }
+
+        const available = maxInt(1, innerWidth - statsWidth -
+            (statsWidth > 0 ? 8 : 0));
+        auto layout = canvas.layoutText(toUTF32(left), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, available, false);
+        auto labelCanvas = canvas.clipped(Rect(padH, top, available, h));
+        labelCanvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
+
+        if (statsWidth > 0)
+        {
+            const x = padH + innerWidth - statsWidth;
+            const sy = top + (h - cast(int) addLayout.height) / 2;
+            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
+            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+                delLayout, opencodeDiffDelete);
+        }
+    }
+
+    private static int toolHeaderHeight()
+    {
+        return fontPixelSize(2) + 2;
+    }
+
+    /// Human title for the tool, mirroring opencode's tool titles.
+    private string toolTitle()
+    {
+        switch (_toolName)
+        {
+            case "bash":
+            case "run":
+            case "dshell":
+                return "Shell";
+            case "read":
+                return "Read";
+            case "write":
+                return "Write";
+            case "edit":
+                return "Edit";
+            case "remove":
+                return "Delete";
+            case "glob":
+                return "Glob";
+            case "grep":
+                return "Grep";
+            default:
+                if (_toolName.length == 0) return "Tool";
+                return capitalizeFirst(_toolName);
+        }
+    }
+
+    private static string capitalizeFirst(string value)
+    {
+        if (value.length == 0) return value;
+        auto buffer = value.dup;
+        if (buffer[0] >= 'a' && buffer[0] <= 'z')
+            buffer[0] -= 32;
+        return cast(string) buffer;
+    }
+
+    /// A short, tool-specific subtitle (the command, filename or pattern).
+    private string toolSubtitle()
+    {
+        switch (_toolName)
+        {
+            case "bash":
+            case "run":
+            case "dshell":
+                auto command = toolArgString("command");
+                if (command.length == 0) command = toolArgString("program");
+                if (command.length == 0) command = toolArgString("args");
+                return command;
+            case "read":
+            case "write":
+            case "edit":
+                return basenameOf(toolArgString("filePath"));
+            case "glob":
+            case "grep":
+                return toolArgString("pattern");
+            case "remove":
+                auto path = toolArgString("path");
+                if (path.length == 0) path = toolArgString("filePath");
+                return basenameOf(path);
+            default:
+                return toolArgString("path");
+        }
+    }
+
+    private string toolArgString(string key)
+    {
+        if (_toolArgs.length == 0) return "";
+        JSONValue value;
+        try value = parseJSON(_toolArgs);
+        catch (Exception) value = JSONValue.init;
+        if (value.type != JSONType.object) return "";
+        if (auto field = key in value.object)
+            if (field.type == JSONType.string)
+                return field.str;
+        return "";
+    }
+
+    private static string basenameOf(string path)
+    {
+        size_t cut;
+        foreach (index, ch; path)
+            if (ch == '/' || ch == '\\') cut = index + 1;
+        return path[cut .. $];
+    }
+
+    private static string padLeft(int value, int width)
+    {
+        auto text = to!string(value < 0 ? 0 : value);
+        if (text.length >= width) return text;
+        return "                    "[0 .. width - text.length] ~ text;
+    }
+
+    private static int hunkStart(string raw, char sign)
+    {
+        foreach (index, ch; raw)
+        {
+            if (ch != sign) continue;
+            int value;
+            size_t cursor = index + 1;
+            while (cursor < raw.length && raw[cursor] >= '0' && raw[cursor] <= '9')
+            {
+                value = value * 10 + (raw[cursor] - '0');
+                ++cursor;
+            }
+            return value;
+        }
+        return 0;
+    }
+
+    private TextLayout shapeMonoLine(dstring text)
+    {
+        TextLayoutOptions options;
+        options.role = FontRole.monospace;
+        options.pixelSize = fontPixelSize(2);
+        options.maxWidth = 100_000;
+        options.wrap = false;
+        ++shapeCount;
+        return fontSystem().textEngine.layout(text, options);
+    }
+
+    /// Build (and cache) the shaped rows for the expanded tool body. Diffs are
+    /// parsed into context/add/delete rows with old/new line numbers; plain tool
+    /// output becomes numbered plain rows. Rows are capped so a giant output can
+    /// never stall a frame.
+    private int ensureToolLines(int innerWidth)
+    {
+        if (_toolLinesWidth == innerWidth && _toolLinesBuiltGen == _toolLinesGen)
+            return _toolLinesHeight;
+
+        import std.string : splitLines;
+
+        _toolLinesWidth = innerWidth;
+        _toolLinesBuiltGen = _toolLinesGen;
+        _toolLines.length = 0;
+
+        string[] source;
+        if (_hasDiff)
+            source = splitLines(_diffText);
+        else if (_content.length > 0)
+            source = splitLines(to!string(_content));
+
+        int oldNo, newNo, plainNo;
+        size_t emitted;
+        foreach (raw; source)
+        {
+            if (emitted >= maxRenderedToolLines) break;
+            ToolLine line;
+            string text = raw;
+            if (_hasDiff)
+            {
+                if (raw.length > 0 && raw[0] == '@')
+                {
+                    line.kind = ToolLineKind.hunk;
+                    oldNo = hunkStart(raw, '-') - 1;
+                    newNo = hunkStart(raw, '+') - 1;
+                    text = raw;
+                }
+                else if (raw.length > 0 && raw[0] == '+')
+                {
+                    line.kind = ToolLineKind.add;
+                    line.newNo = ++newNo;
+                    text = raw[1 .. $];
+                }
+                else if (raw.length > 0 && raw[0] == '-')
+                {
+                    line.kind = ToolLineKind.del;
+                    line.oldNo = ++oldNo;
+                    text = raw[1 .. $];
+                }
+                else
+                {
+                    line.kind = ToolLineKind.context;
+                    line.oldNo = ++oldNo;
+                    line.newNo = ++newNo;
+                    text = raw.length > 0 && raw[0] == ' ' ? raw[1 .. $] : raw;
+                }
+            }
+            else
+            {
+                line.kind = ToolLineKind.plain;
+                line.newNo = ++plainNo;
+            }
+
+            const oldStr = line.oldNo > 0 ? padLeft(line.oldNo, 4) : "    ";
+            const newStr = line.newNo > 0 ? padLeft(line.newNo, 4) : "    ";
+            const sign = line.kind == ToolLineKind.add ? '+' :
+                (line.kind == ToolLineKind.del ? '-' : ' ');
+            const visible = line.kind == ToolLineKind.hunk
+                ? text
+                : oldStr ~ " " ~ newStr ~ " " ~ sign ~ " " ~ text;
+            line.layout = shapeMonoLine(toUTF32(visible));
+            _toolLines ~= line;
+            ++emitted;
+        }
+
+        if (_toolLines.length > 0)
+            _toolLineHeight = _toolLines[0].layout.measuredSize().height;
+        if (_toolLineHeight <= 0)
+            _toolLineHeight = fontPixelSize(2) + 2;
+        _toolLinesHeight = cast(int) (_toolLines.length * _toolLineHeight);
+        return _toolLinesHeight;
+    }
+
+    /// Paint the expanded tool body (diff or numbered plain text) and register
+    /// each row as a selectable segment. Returns the height consumed.
+    private int drawToolBody(ref Canvas canvas, int innerWidth, int top)
+    {
+        ensureToolLines(innerWidth);
+        if (_toolLines.length == 0) return 0;
+        const rowH = maxInt(1, cast(int) _toolLineHeight);
+        const fullW = maxInt(1, innerWidth);
+        int y = top;
+        foreach (line; _toolLines)
+        {
+            if (line.kind == ToolLineKind.add)
+                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffAddBg);
+            else if (line.kind == ToolLineKind.del)
+                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffDeleteBg);
+            const color = line.kind == ToolLineKind.add ? opencodeDiffAdd :
+                line.kind == ToolLineKind.del ? opencodeDiffDelete :
+                line.kind == ToolLineKind.hunk ? opencodeMuted : opencodeText;
+            auto clipped = canvas.clipped(Rect(padH, y, fullW, rowH));
+            clipped.drawLayout(Point(padH, y), line.layout, color);
+            if (line.layout.lines.length > 0)
+                _selSegments ~= SelectSegment(line.layout, padH, y, fullW, rowH);
+            y += rowH;
+        }
+        return y - top;
     }
 
     /// Slim thinking header: `▸ Thinking` when collapsed (pulsing `▌` while
@@ -1008,8 +1329,10 @@ private final class MessageBubble : Widget
 
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
-        const footer = _usageText.length > 0 ? _usageText :
-            (_role == "tool" && _toolName.length > 0 ? "⚙ " ~ _toolName : _time);
+        // Tool parts have no footer: the header already names the tool and its
+        // subtitle, and the diff counters sit in the header itself.
+        if (_role == "tool") return;
+        const footer = _usageText.length > 0 ? _usageText : _time;
         if (footer.length == 0) return;
         auto layout = canvas.layoutText(toUTF32(footer), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, maxInt(1, width - 2 * padH), false);
@@ -1162,6 +1485,167 @@ private final class MessageBubble : Widget
             setCursor(CursorKind.arrow);
             invalidate();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context tool group (Pro): one foldable "Explored" row for a run of reads
+// ---------------------------------------------------------------------------
+
+/// A foldable group of consecutive context tool calls (Read / Glob / Grep),
+/// mirroring opencode's single "Explored" row. The header summarises the run
+/// ("Explored  2 reads, 1 search"); expanding reveals the individual tool rows
+/// as children, each of which is itself a collapsible MessageBubble. This is
+/// the second level of the tool-part hierarchy.
+private final class ToolGroupBubble : Widget
+{
+    private static immutable int indent = 18;
+
+    private MessageBubble[] _parts;
+    private bool _collapsed = true;
+    private bool _hover;
+    private Rect _headerRect;
+    // Live mode: the group is rendered while context tools are still running
+    // (title "Exploring" with a pulsing dot instead of the completed "Explored").
+    private bool _live;
+    private int _liveReads;
+    private int _liveSearches;
+
+    void delegate() onSizeChanged;
+
+    this(MessageBubble[] parts, bool live = false)
+    {
+        _parts = parts;
+        _live = live;
+        foreach (part; parts)
+        {
+            part.setVisible(false);
+            add(part);
+        }
+    }
+
+    void setLiveCounts(int reads, int searches)
+    {
+        _liveReads = reads;
+        _liveSearches = searches;
+        invalidate();
+    }
+
+    int partCount() const { return cast(int) _parts.length; }
+    bool collapsed() const { return _collapsed; }
+    bool collapsedForTesting() const { return _collapsed; }
+
+    void setCollapsed(bool value)
+    {
+        if (_collapsed == value) return;
+        _collapsed = value;
+        foreach (part; _parts)
+            part.setVisible(!_collapsed);
+        if (onSizeChanged !is null) onSizeChanged();
+        invalidate();
+    }
+
+    void toggle() { setCollapsed(!_collapsed); }
+
+    private int headerHeight()
+    {
+        return fontPixelSize(2) + 2;
+    }
+
+    private string headerText()
+    {
+        int reads, searches;
+        if (_live)
+        {
+            reads = _liveReads;
+            searches = _liveSearches;
+        }
+        else
+        {
+            foreach (part; _parts)
+            {
+                if (part._toolName == "read") ++reads;
+                else ++searches;
+            }
+        }
+        string summary;
+        if (reads > 0)
+            summary ~= to!string(reads) ~ (reads == 1 ? " read" : " reads");
+        if (searches > 0)
+        {
+            if (summary.length > 0) summary ~= ", ";
+            summary ~= to!string(searches) ~
+                (searches == 1 ? " search" : " searches");
+        }
+        const label = _live ? "Exploring" : "Explored";
+        return (_collapsed ? "▸" : "▾") ~ " " ~ label ~ "  " ~ summary;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        double height = headerHeight();
+        if (!_collapsed)
+        {
+            const childWidth = maxInt(0, width - indent);
+            foreach (part; _parts)
+            {
+                part.measure(Size(childWidth, available.height));
+                const hint = part.layoutHints().preferredHeight;
+                height += hint >= 0 ? hint : cast(double) part.bounds().height;
+            }
+        }
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = cast(int) height;
+        return Size(width, cast(int) height);
+    }
+
+    protected override void onLayout()
+    {
+        if (_collapsed) return;
+        const width = maxInt(0, bounds().width - indent);
+        int y = headerHeight();
+        foreach (part; _parts)
+        {
+            const hint = part.layoutHints().preferredHeight;
+            const childHeight = hint >= 0 ? hint : part.bounds().height;
+            part.setBounds(Rect(indent, y, width, childHeight));
+            y += childHeight;
+        }
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const h = headerHeight();
+        _headerRect = Rect(0, 0, bounds().width, h);
+        auto layout = canvas.layoutText(toUTF32(headerText()), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, maxInt(1, bounds().width), false);
+        canvas.drawLayout(Point(0, 0), layout,
+            _hover ? opencodeText : opencodeMuted);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.left &&
+            _headerRect.contains(event.position))
+        {
+            toggle();
+            return true;
+        }
+        return false;
+    }
+
+    protected override void onMouseEnter()
+    {
+        _hover = true;
+        invalidate();
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (!_hover) return;
+        _hover = false;
+        invalidate();
     }
 }
 
@@ -1913,6 +2397,9 @@ public final class OpenCodeRoot : VBox
     // the enriched history is re-sent until the model answers with text.
     private OpenCodeToolCall[] _pendingToolCalls;
     private int _pendingToolResults;
+    // The subset of `_pendingToolCalls` that has not reported yet, used to paint
+    // the live "Exploring" context row while tools are still running.
+    private OpenCodeToolCall[] _liveToolCalls;
     private int _toolRounds;
     private static immutable int maxToolRounds = 12;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
@@ -2339,6 +2826,7 @@ public final class OpenCodeRoot : VBox
         _current = -1;
         _streamBubble = null;
         _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         rebuildMessageColumn();
@@ -2618,6 +3106,7 @@ public final class OpenCodeRoot : VBox
         _current = cast(int) _sessions.length - 1;
         _streamBubble = null;
         _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         _lastToolSignature = "";
@@ -2638,6 +3127,7 @@ public final class OpenCodeRoot : VBox
         _current = index;
         _streamBubble = null;
         _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         _lastToolSignature = "";
@@ -2674,54 +3164,59 @@ public final class OpenCodeRoot : VBox
                 break;
             }
         }
-        foreach (index, message; session.messages)
+        size_t index = 0;
+        while (index < session.messages.length)
         {
-            auto bubble = new MessageBubble();
-            bubble.setRole(message.role);
-            bubble.setMessageIndex(cast(int) index);
-            bubble.setContent(message.content);
-            // A tool-call wrapper with no content/reasoning is not a visible
-            // reply; keep its slot (for index mapping) but collapse it away.
-            if (message.role == "assistant" && message.toolCalls.length > 0 &&
-                message.content.length == 0 && message.reasoning.length == 0 &&
-                !message.failed)
+            if (isContextTool(session.messages[index]))
             {
-                bubble.setHidden(true);
+                // Fold a run of two or more context tools into one foldable
+                // "Explored" row; a lone read stays a plain "Read" part.
+                size_t end = index;
+                while (end < session.messages.length &&
+                    isContextTool(session.messages[end]))
+                    ++end;
+                if (end - index >= 2)
+                {
+                    MessageBubble[] parts;
+                    foreach (member; index .. end)
+                        parts ~= buildMessageBubble(member,
+                            session.messages[member], latestAssistantIndex);
+                    auto group = new ToolGroupBubble(parts);
+                    group.onSizeChanged = delegate()
+                    {
+                        _messageColumn.invalidate();
+                        _messagesScroll.invalidate();
+                    };
+                    _messageColumn.add(group);
+                    index = end;
+                    continue;
+                }
             }
-            if (message.toolName.length > 0)
-                bubble.setToolName(message.toolName);
-            if (message.toolArgs.length > 0)
-                bubble.setToolArgs(message.toolArgs);
-            if (message.role == "tool")
+            _messageColumn.add(buildMessageBubble(index,
+                session.messages[index], latestAssistantIndex));
+            ++index;
+        }
+        // A live "Exploring" row while context tools are still running.
+        if (_liveToolCalls.length > 0)
+        {
+            int liveReads, liveSearches;
+            foreach (call; _liveToolCalls)
             {
-                // Expanding/collapsing changes the bubble height; re-measure
-                // the column WITHOUT snapping the scroll to the bottom.
-                bubble.onSizeChanged = delegate()
+                if (call.name == "read") ++liveReads;
+                else if (call.name == "glob" || call.name == "grep")
+                    ++liveSearches;
+            }
+            if (liveReads + liveSearches > 0)
+            {
+                auto live = new ToolGroupBubble(null, true);
+                live.setLiveCounts(liveReads, liveSearches);
+                live.onSizeChanged = delegate()
                 {
                     _messageColumn.invalidate();
                     _messagesScroll.invalidate();
                 };
+                _messageColumn.add(live);
             }
-            if (message.reasoning.length > 0)
-                bubble.setThinking(message.reasoning);
-            if (message.time.length > 0)
-                bubble.setTime(message.time);
-            if (message.failed)
-                bubble.setFailed("");
-            bubble.onContextMenuRequested =
-                delegate(int messageIndex, Point globalPosition)
-                {
-                    showMessageContextMenu(bubble.messageIndex(),
-                        globalPosition, bubble);
-                };
-            // Persisted token usage appears only on the latest assistant reply.
-            if (cast(int) index == latestAssistantIndex &&
-                message.totalTokens > 0)
-            {
-                bubble.setUsageText(" • " ~
-                    formatThousands(message.totalTokens) ~ " tokens");
-            }
-            _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
         _messageColumn.invalidate();
@@ -2729,6 +3224,78 @@ public final class OpenCodeRoot : VBox
         // update the content height / auto-follow after the message set changes.
         _messagesScroll.invalidate();
         refreshBubbleActions();
+    }
+
+    /// True for the read-only context tools that fold into an "Explored" group.
+    private static bool isContextTool(ref const ChatMessage message)
+    {
+        if (message.role != "tool") return false;
+        switch (message.toolName)
+        {
+            case "read":
+            case "glob":
+            case "grep":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// Build the retained bubble for one message, wiring its context menu,
+    /// collapse callback and usage footer. Shared by the plain and grouped
+    /// paths in rebuildMessageColumn.
+    private MessageBubble buildMessageBubble(size_t index,
+        ref const ChatMessage message, int latestAssistantIndex)
+    {
+        auto bubble = new MessageBubble();
+        bubble.setRole(message.role);
+        bubble.setMessageIndex(cast(int) index);
+        bubble.setContent(message.content);
+        // A tool-call wrapper with no content/reasoning is not a visible
+        // reply; keep its slot (for index mapping) but collapse it away.
+        if (message.role == "assistant" && message.toolCalls.length > 0 &&
+            message.content.length == 0 && message.reasoning.length == 0 &&
+            !message.failed)
+        {
+            bubble.setHidden(true);
+        }
+        if (message.toolName.length > 0)
+            bubble.setToolName(message.toolName);
+        if (message.toolArgs.length > 0)
+            bubble.setToolArgs(message.toolArgs);
+        if (message.role == "tool")
+            bubble.setDiff(message.diffAdditions, message.diffDeletions,
+                message.toolDiff);
+        if (message.role == "tool")
+        {
+            // Expanding/collapsing changes the bubble height; re-measure
+            // the column WITHOUT snapping the scroll to the bottom.
+            bubble.onSizeChanged = delegate()
+            {
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+            };
+        }
+        if (message.reasoning.length > 0)
+            bubble.setThinking(message.reasoning);
+        if (message.time.length > 0)
+            bubble.setTime(message.time);
+        if (message.failed)
+            bubble.setFailed("");
+        bubble.onContextMenuRequested =
+            delegate(int messageIndex, Point globalPosition)
+            {
+                showMessageContextMenu(bubble.messageIndex(),
+                    globalPosition, bubble);
+            };
+        // Persisted token usage appears only on the latest assistant reply.
+        if (cast(int) index == latestAssistantIndex &&
+            message.totalTokens > 0)
+        {
+            bubble.setUsageText(" • " ~
+                formatThousands(message.totalTokens) ~ " tokens");
+        }
+        return bubble;
     }
 
     /// Only the latest assistant REPLY carries an action pill ("Regenerate",
@@ -2744,33 +3311,36 @@ public final class OpenCodeRoot : VBox
         if (children.length == 0) return;
         const session = &_sessions[_current];
 
-        // The pill belongs to the last bubble that is not the live reply.
-        size_t actionIndex;
-        bool found;
+        // The pill belongs to the last MessageBubble that is not the live reply.
+        // Groups (which are not MessageBubbles) are skipped, and the message is
+        // resolved by the bubble's own stored index rather than its child slot,
+        // because a context group can make the two diverge.
+        MessageBubble target;
         for (size_t i = children.length; i > 0; --i)
         {
             auto child = cast(MessageBubble) children[i - 1];
             if (child is null) continue;
             if (_streamBubble !is null && child is _streamBubble) continue;
-            actionIndex = i - 1;
-            found = true;
+            target = child;
             break;
         }
 
-        foreach (index, child; children)
+        foreach (child; children)
         {
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
             bubble.clearAction();
-            if (!found || index != actionIndex ||
-                index >= session.messages.length)
+            if (target is null || bubble !is target) continue;
+            const messageIndex = bubble.messageIndex();
+            if (messageIndex < 0 ||
+                messageIndex >= cast(int) session.messages.length)
                 continue;
-            const message = session.messages[index];
+            const message = session.messages[cast(size_t) messageIndex];
             // Only a real assistant reply gets a visible pill; a tool-call
             // wrapper (empty content + tool requests) is not a reply.
             if (message.role == "assistant" && message.toolCalls.length == 0)
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
-                    regenerateAction(_current, cast(int) index));
+                    regenerateAction(_current, messageIndex));
         }
     }
 
@@ -3016,7 +3586,10 @@ public final class OpenCodeRoot : VBox
             " tool call(s)…");
 
         _pendingToolCalls = event.toolCalls.dup;
+        _liveToolCalls = event.toolCalls.dup;
         _pendingToolResults = cast(int) event.toolCalls.length;
+        // Show the live "Exploring" row while the context tools are running.
+        rebuildMessageColumn();
         const sessionIndex = _current;
         const workspace = workspaceForSession(sessionIndex);
         auto client = _client;
@@ -3052,6 +3625,9 @@ public final class OpenCodeRoot : VBox
             result.toolName = call.name;
             result.toolCallId = call.id;
             result.toolFailed = execution.failed;
+            result.diffAdditions = execution.additions;
+            result.diffDeletions = execution.deletions;
+            result.diffText = execution.diff;
             result.reasoning = false;
             client.pushLocalEvent(result);
         }
@@ -3076,6 +3652,15 @@ public final class OpenCodeRoot : VBox
                 break;
             }
         }
+        // Drop the reported call from the live set so the "Exploring" row only
+        // counts the context tools that are still running.
+        foreach (i, call; _liveToolCalls)
+            if (call.id == event.toolCallId)
+            {
+                _liveToolCalls =
+                    _liveToolCalls[0 .. i] ~ _liveToolCalls[i + 1 .. $];
+                break;
+            }
 
         ChatMessage toolMessage;
         toolMessage.role = "tool";
@@ -3083,25 +3668,19 @@ public final class OpenCodeRoot : VBox
         toolMessage.toolCallId = event.toolCallId;
         toolMessage.toolName = event.toolName;
         toolMessage.toolArgs = toolArgs;
+        toolMessage.diffAdditions = event.diffAdditions;
+        toolMessage.diffDeletions = event.diffDeletions;
+        toolMessage.toolDiff = event.diffText;
         toolMessage.time = currentTimestamp();
         session.messages ~= toolMessage;
 
-        auto bubble = new MessageBubble();
-        bubble.setRole("tool");
-        bubble.setContent(event.text);
-        bubble.setToolName(event.toolName);
-        bubble.setToolArgs(toolArgs);
-        if (event.toolFailed)
-            bubble.setFailed("");
-        // Expanding/collapsing changes the bubble height; re-measure the
-        // column WITHOUT snapping the scroll to the bottom.
-        bubble.onSizeChanged = delegate()
-        {
-            _messageColumn.invalidate();
-            _messagesScroll.invalidate();
-        };
-        _messageColumn.add(bubble);
-        _messagesScroll.follow = true;
+        // Rebuild the column so consecutive context tool results (read/glob/
+        // grep) fold into a single "Explored" group and diffs pick up their
+        // green/red counters and line-numbered bodies. Tool runs are infrequent
+        // enough that a full rebuild is cheaper than tracking the grouping
+        // incrementally, and it snaps the scroll to the newest output while the
+        // model is still working (matching the previous incremental behaviour).
+        rebuildMessageColumn();
         _messagesScroll.invalidate();
         markDirty();
 
@@ -3109,6 +3688,7 @@ public final class OpenCodeRoot : VBox
         if (_pendingToolResults <= 0)
         {
             _pendingToolCalls.length = 0;
+            _liveToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
             if (!_toolContinuationPaused)
@@ -3152,6 +3732,7 @@ public final class OpenCodeRoot : VBox
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
         _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
         _pendingToolResults = 0;
         startChatRequest(_current);
     }
@@ -3383,6 +3964,9 @@ public final class OpenCodeRoot : VBox
 
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
+        auto promptButton = footer.add(new Button("System prompt"));
+        promptButton.setId("oc-system-prompt-open");
+        promptButton.onClick = delegate() { showSystemPromptDialog(); };
         footer.add(new Spacer());
         auto cancelButton = footer.add(new Button("Cancel"));
         cancelButton.onClick = delegate() { dismissPopup(); };
@@ -3427,6 +4011,55 @@ public final class OpenCodeRoot : VBox
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
         popup.focusFirst();
+    }
+
+    /// Show the exact system prompt that is sent with every request, in a
+    /// read-only, scrollable viewer. Reuses the live settings (legacy-tools
+    /// toggle) and the active workspace, so what you see is what the model gets.
+    private void showSystemPromptDialog()
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        version (Windows)
+            const platform = "win32";
+        else version (Posix)
+            const platform = "posix";
+        else
+            const platform = "unknown";
+        const prompt = buildSystemPrompt(!_settings.legacyTools,
+            activeWorkspace(), platform);
+
+        auto content = new VBox(8, Insets(16));
+        content.layoutHints().preferredWidth = 640;
+
+        auto title = content.add(new Label("System prompt"));
+        title.setPixelSize(opencodeFontTitle);
+
+        auto hint = content.add(new Label(
+            "Sent as the system message on every request."));
+        hint.setScale(1);
+        hint.setColor(opencodeMuted);
+
+        auto viewer = new TextArea(prompt);
+        viewer.setId("oc-system-prompt");
+        viewer.setReadOnly(true);
+        viewer.layoutHints().preferredHeight = 420;
+        viewer.layoutHints().minHeight = 200;
+        content.add(viewer);
+
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto close = footer.add(new Button("Close"));
+        close.onClick = delegate() { dismissPopup(); };
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(680, 540));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
     }
 
     private void openPopup(PopupOverlay popup)
@@ -4575,6 +5208,29 @@ public final class OpenCodeRoot : VBox
         return _legacyTooltipAnchor !is null ? _legacyTooltipAnchor.text() : "";
     }
 
+    /// Test-only: open Settings and report whether the "System prompt" button
+    /// that opens the prompt viewer is present.
+    public bool systemPromptButtonPresentForTesting()
+    {
+        showSettingsDialog();
+        return findWidgetById(this, "oc-system-prompt-open") !is null;
+    }
+
+    /// Test-only: open the system-prompt viewer and return the exact text it
+    /// shows (the system message that would be sent on the next request).
+    public string systemPromptViewerTextForTesting()
+    {
+        showSystemPromptDialog();
+        auto viewer = cast(TextArea) findWidgetById(this, "oc-system-prompt");
+        return viewer is null ? "" : viewer.textUtf8();
+    }
+
+    /// Test-only: dismiss whatever popup is open.
+    public void dismissPopupForTesting()
+    {
+        dismissPopup();
+    }
+
     /// Test-only: depth-first search for a widget by id.
     private static Widget findWidgetById(Widget widget, string requestedId)
     {
@@ -4660,19 +5316,33 @@ public final class OpenCodeRoot : VBox
         return "";
     }
 
+    /// Test-only: every `tool` result bubble in visual order, recursing into
+    /// context groups so a test can address a tool part by ordinal even after
+    /// folding.
+    private MessageBubble[] toolBubblesForTesting()
+    {
+        MessageBubble[] result;
+        foreach (child; _messageColumn.children())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                foreach (part; group._parts)
+                    result ~= part;
+                continue;
+            }
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble.roleForTesting() == "tool")
+                    result ~= bubble;
+        }
+        return result;
+    }
+
     /// Test-only: whether the first `tool` result bubble is currently
     /// collapsed (tool outputs start collapsed by default).
     public bool firstToolBubbleCollapsedForTesting()
     {
-        const children = _messageColumn.children();
-        foreach (child; children)
-        {
-            auto bubble = cast(MessageBubble) child;
-            if (bubble is null) continue;
-            if (bubble.roleForTesting() != "tool") continue;
-            return bubble.collapsedForTesting();
-        }
-        return false;
+        auto bubbles = toolBubblesForTesting();
+        return bubbles.length > 0 && bubbles[0].collapsedForTesting();
     }
 
     /// Test-only: the message scroll view's current scroll offset.
@@ -4685,17 +5355,9 @@ public final class OpenCodeRoot : VBox
     /// text (`(name=value, ...)`) so tests can assert arrays render readably.
     public string toolArgsDisplayForTesting(int n)
     {
-        const children = _messageColumn.children();
-        int seen;
-        foreach (child; children)
-        {
-            auto bubble = cast(MessageBubble) child;
-            if (bubble is null) continue;
-            if (bubble.roleForTesting() != "tool") continue;
-            if (seen == n) return bubble.toolArgsDisplayForTesting();
-            ++seen;
-        }
-        return "";
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return "";
+        return bubbles[cast(size_t) n].toolArgsDisplayForTesting();
     }
 
     /// Test-only: scroll the message view to a specific offset.
@@ -4739,17 +5401,76 @@ public final class OpenCodeRoot : VBox
     /// reflow the scroll view, exactly as a click would.
     public void toggleFirstToolBubbleForTesting()
     {
-        const children = _messageColumn.children();
-        foreach (child; children)
-        {
-            auto bubble = cast(MessageBubble) child;
-            if (bubble is null) continue;
-            if (bubble.roleForTesting() != "tool") continue;
-            bubble.toggleCollapseForTesting();
-            _messageColumn.invalidate();
-            _messagesScroll.invalidate();
-            return;
-        }
+        auto bubbles = toolBubblesForTesting();
+        if (bubbles.length == 0) return;
+        bubbles[0].toggleCollapseForTesting();
+        _messageColumn.invalidate();
+        _messagesScroll.invalidate();
+    }
+
+    /// Test-only: number of folded context groups in the column.
+    public int contextGroupCountForTesting()
+    {
+        int count;
+        foreach (child; _messageColumn.children())
+            if (cast(ToolGroupBubble) child !is null) ++count;
+        return count;
+    }
+
+    /// Test-only: whether the first folded context group starts collapsed.
+    public bool firstToolGroupCollapsedForTesting()
+    {
+        foreach (child; _messageColumn.children())
+            if (auto group = cast(ToolGroupBubble) child)
+                return group.collapsedForTesting();
+        return false;
+    }
+
+    /// Test-only: expand (or collapse) the first folded context group and
+    /// reflow the scroll view, exactly as a header click would.
+    public void toggleFirstToolGroupForTesting()
+    {
+        foreach (child; _messageColumn.children())
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                group.toggle();
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+                return;
+            }
+    }
+
+    /// Test-only: number of tool parts folded inside the first context group.
+    public int firstToolGroupPartCountForTesting()
+    {
+        foreach (child; _messageColumn.children())
+            if (auto group = cast(ToolGroupBubble) child)
+                return group.partCount();
+        return 0;
+    }
+
+    /// Test-only: the green additions counter for the `tool` bubble at `n`.
+    public int toolDiffAdditionsForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return 0;
+        return bubbles[cast(size_t) n].diffAdditionsForTesting();
+    }
+
+    /// Test-only: the red deletions counter for the `tool` bubble at `n`.
+    public int toolDiffDeletionsForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return 0;
+        return bubbles[cast(size_t) n].diffDeletionsForTesting();
+    }
+
+    /// Test-only: whether the `tool` bubble at `n` has a diff body.
+    public bool toolHasDiffForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return false;
+        return bubbles[cast(size_t) n].hasDiffForTesting();
     }
 
     /// Test-only: the centered conversation column's laid-out width. It is the

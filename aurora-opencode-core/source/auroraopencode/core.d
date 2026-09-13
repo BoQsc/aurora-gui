@@ -168,6 +168,13 @@ public immutable Color opencodeThinkingText = Color.fromHex(0x8d8d99);
 public immutable Color opencodeErrorRed = Color.fromHex(0xff6b6b);
 public immutable Color opencodeKeyOk = Color.fromHex(0x6fd08c);
 public immutable Color opencodeKeyMissing = Color.fromHex(0xffa94d);
+// Diff rendering: `+N`/added lines use the green, `-M`/removed lines the red,
+// with a faint row tint behind each so changes are scannable at a glance.
+public immutable Color opencodeDiffAdd = Color.fromHex(0x6fd08c);
+public immutable Color opencodeDiffDelete = Color.fromHex(0xff6b6b);
+public immutable Color opencodeDiffAddBg = Color.fromHex(0x16281e);
+public immutable Color opencodeDiffDeleteBg = Color.fromHex(0x2c1a1d);
+public immutable Color opencodeDiffGutter = Color.fromHex(0x5c5c68);
 
 // ---------------------------------------------------------------------------
 // Typography and control metrics
@@ -286,6 +293,9 @@ public struct ChatMessage
     string toolCallId;  // "tool" role results, links back to an assistant call
     string toolName;    // "tool" role results: which tool produced the output
     string toolArgs;    // "tool" role results: the command's arguments (JSON)
+    int diffAdditions;  // file-mutating tools: added line count (+N)
+    int diffDeletions;  // file-mutating tools: removed line count (-M)
+    string toolDiff;    // file-mutating tools: unified diff for the expanded view
 }
 
 public struct ChatSession

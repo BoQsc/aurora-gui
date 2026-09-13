@@ -47,6 +47,9 @@ struct OpenCodeEvent
     string toolName;
     string toolCallId;
     bool toolFailed;
+    int diffAdditions;
+    int diffDeletions;
+    string diffText;
 }
 
 private struct HttpTarget
