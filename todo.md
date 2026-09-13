@@ -1,5 +1,114 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Aurora OpenCode Pro: center the chat column + taller composer (done)
+
+User: asked to center the main content (messages + input) with margin/padding like
+the original opencode, and to make the composer input about twice as tall with a
+rectangular up-arrow send button in its bottom-right corner.
+
+- [x] Matched upstream opencode tokens (`--container-3xl` = 48rem = 768 px,
+      `--spacing` = 4 px). Added shared constants `opencodeContentMaxWidth = 768`
+      and `opencodeComposerHeight = 116` in `aurora-opencode-core/.../core.d`.
+- [x] `appui.d`: new `CenteredColumn` wrapper spans the full pane but caps and
+      centers a single child at `opencodeContentMaxWidth`, so the scrollbar stays
+      pinned to the pane edge. The message list is wrapped inside the scroll view,
+      and the composer is wrapped in the VBox.
+- [x] Replaced the 58 px `inputRow`/`Button("Send")` with a `ChatComposer`
+      (rounded bordered panel, 116 px) holding a borderless transparent,
+      word-wrapping `ChatInput` plus a `ChatSendButton` pinned bottom-right.
+      `ChatSendButton : Button` custom-paints an accent up arrow (a white square
+      while streaming) so the existing `oc-send` lookup keeps working.
+- [x] Root cause note: the top-level `VBox` is never measured (only `ScrollView`
+      measures content), and `Box.onLayout` sizes children from hints, so the
+      composer wrapper must publish `preferredHeight` at construction or it lays
+      out to 0 px.
+- [x] Verified: `build\headless-pro-smoke.exe` passes including the new
+      "Chat column is centered; composer is 116 px tall with a bottom-right send"
+      step; `build\tools-test.exe` passes; Pro `dub build --compiler=dmd` compiles
+      (link only blocked by the running `aurora-opencode-pro.exe`), baseline
+      `dub build` links. Screenshot `aurora-opencode-pro\build\layout.png`.
+
+## 2026-09-13 - Fix laggy sidebar-width drag (done)
+
+User: "why changing width of sidebar it appears laggy. fix it".
+
+- [x] Diagnosed with a headless benchmark (`tests/drag_bench.d`, since removed):
+  a 30-message chat cost **~122 ms per drag step** (~200 ms in the first run).
+  Cause: `SplitPane.setRatio()` calls `layoutTree()` synchronously on every
+  pointer move, and the frame also relayouts, so the chat pane's whole message
+  list re-parses/re-shapes its markdown for every pixel while the sidebar moves.
+- [x] Fix in vendor `widgets/splitpane.d`: while `_dragging`, override
+  `layoutTree()` to reposition both panes (via `onLayout`) but recurse only into
+  the first pane. The second pane's internal layout rides along and is clipped
+  by its moving bounds; the full two-pane layout runs once on mouse-up. Other
+  apps are unaffected outside an active drag.
+- [x] Measured: live pointer drag **~13 ms per step** (~9x faster; smooth in a
+  debug build).
+- [x] Added a Pro smoke step ("Pointer split drag reflows the chat pane on
+  release") that does a real `driver.drag`, then asserts the chat content
+  reflowed to the new width after release.
+- [x] Verified: Pro `dub build` + smoke all pass; baseline `dub build` +
+  `headless-smoke.exe` EXIT=0; screenshot `%TEMP%\drag-fix.png` shows no layout
+  regression. Details in `testing_progress_and_methods.md`.
+
+## 2026-09-13 - Aurora OpenCode tool calls looked inelegant (done)
+
+User: screenshot of a chat where the tool rows read
+`run(program=cmd.exe, args=[…])` (failed "The filename, directory name, or
+volume label syntax is incorrect."), then `run(program=powershell.exe,
+args=[…])` ("(no output)"), then `dshell(command=list)`. "Why in aurora
+opencode we have this not elegant way".
+
+- [x] Diagnosed from the real `sessions.json` ("write a webpage" session) and a
+      standalone D `spawnProcess` repro: the model was asked to delete
+      `index.html`; there is no native delete tool, so it reached for `run`.
+      `run` spawns argv verbatim (no shell), but the model passed a shell-style
+      quoted path (`args:["/c","del","\"C:\\...\\index.html\""]`); cmd.exe then
+      saw literal quotes -> Win32 error 123. PowerShell's `Remove-Item
+      -LiteralPath '...'` worked silently -> empty output -> "(no output)". Then
+      `dshell list` verified the empty sandbox.
+- [x] Two real defects fixed:
+      1. Display: `MessageBubble.toolArgsDisplay()` (appui.d) rendered JSON
+         arrays as the opaque `args=[…]`, hiding the command. Now arrays are
+         flattened into a readable argv line (space-joined, spacey strings
+         quoted), e.g. `run(program=cmd.exe, args=/c del "C:\...\index.html")`.
+      2. Behavior: added a native `remove` tool (file or recursive directory)
+         to both tool sets + prompt + dispatcher, so deleting never needs
+         cmd.exe/powershell.exe (the "our own tools instead of bash" mode).
+- [x] Verified: `build\tools-test.exe` (new remove file+dir+missing asserts)
+      passes; Pro `dub build --compiler=dmd` links; `headless_pro_smoke.exe`
+      all steps pass. Details/commands in `testing_progress_and_methods.md`
+      "Aurora OpenCode tool rows: readable argv + native remove".
+
+## 2026-09-13 - Better font rendering / native-compatible text (done)
+
+User: "check if we can have better font rendering. currently it seems quite off
+and weird." then "so".
+
+- [x] Diagnosed: the default renderer is a correct exact-area A8 rasterizer but
+  matches Windows DirectWrite poorly at UI sizes. Measured with the repo's own
+  harness (`scripts/compare-font-rendering.py`) against native grayscale.
+- [x] A/B'd renderer modes. On dark theme at 13 px the default is noticeably
+  thin/grey (MAE 33.0 dark / 27.7 light); the vendor's experimental
+  `AURORA_HINTING=natural` path (natural-grid bytecode hinting + sampled coverage
+  lattice) is visibly crisper and much closer to native (MAE 22.1 dark / 10.2
+  light). Consolas was similar (13 px light MAE 40.6 → 6.4).
+- [x] Ruled out the sampled lattice *alone* (kept hinting off): MAE ~unchanged
+  (13 px dark 33.0 → 33.9), so the win is the grid-fitted hinting, not the
+  rasterizer. Ruled out a coverage-gamma-only fix: best gamma left light-theme
+  geometry error untouched (27.7 → 27.7), confirming a geometric/grid-fit gap.
+- [x] The vendor deliberately keeps this experimental and non-default, so instead
+  of flipping the vendored library's default (which would affect every Aurora
+  app) both OpenCode apps opt in explicitly via the new
+  `enableNativeTextRendering()` in `core.d`, called before the first window/font
+  in `app.d` (`main` + `runScreenshot`). An explicit `AURORA_HINTING` env value
+  still wins, so `AURORA_HINTING=0` forces the old renderer back.
+- [x] Verified: Pro `dub build` + smoke all pass; baseline `dub build` +
+  `headless-smoke.exe` EXIT=0; deterministic screenshots `%TEMP%\font-hint-
+  natural.png` (new default) vs `%TEMP%\font-hint-off.png` (`AURORA_HINTING=0`);
+  4x zoom `%TEMP%\zoom-hint-natural-rows.png` / `zoom-hint-off-rows.png`.
+  Details in `testing_progress_and_methods.md`.
+
 ## 2026-09-13 - Match upstream opencode typography / spacing / density (done)
 
 User: "we need to examine and think how we will improve the font sizes, padding

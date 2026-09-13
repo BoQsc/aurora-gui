@@ -2,7 +2,8 @@ module auroraopencode_pro_headless_smoke;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
-import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
+import auroraopencode.core : OpenCodeToolCall, opencodeComposerHeight,
+    opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import core.time : msecs, seconds;
 import core.thread : Thread;
@@ -445,6 +446,64 @@ int main(string[] args)
     assert(driver.paint(), "Split drag did not repaint");
     writeln("Sessions column is draggable and its width persists");
 
+    // A real pointer drag takes the fast path: the sidebar reflows as the
+    // divider moves while the chat pane is only repositioned and clipped, then
+    // reflows once on release. Confirm the chat content tracks the new width.
+    auto chatScroll = requireWidget!Widget(root, "oc-scroll");
+    const chatWidthBefore = chatScroll.bounds().width;
+    const splitOrigin = split.localToGlobal(Point(0, 0));
+    const dividerX = splitOrigin.x +
+        cast(int) (split.bounds().width * root.sessionsRatioForTesting());
+    const dragY = splitOrigin.y + split.bounds().height / 2;
+    driver.drag(Point(dividerX, dragY), Point(dividerX + 120, dragY), 12);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Pointer split drag did not repaint");
+    assert(chatScroll.bounds().width != chatWidthBefore,
+        "Chat pane did not reflow after the pointer drag ended");
+    writeln("Pointer split drag reflows the chat pane on release");
+
+    // Centered main column + taller composer: the message list and the prompt
+    // share one horizontally centered, max-width column (upstream opencode's
+    // `container-3xl`), and the composer is roughly twice the old 58 px input
+    // row with the send button pinned to its bottom-right corner.
+    auto messageCenter = requireWidget!Widget(root, "oc-message-center");
+    auto composerCenter = requireWidget!Widget(root, "oc-composer-center");
+    auto messages = requireWidget!Widget(root, "oc-messages");
+    auto composer = requireWidget!Widget(root, "oc-composer");
+    auto sendButton = requireWidget!Button(root, "oc-send");
+    assert(root.composerHeightForTesting() == opencodeComposerHeight,
+        "Composer should be " ~ to!string(opencodeComposerHeight) ~
+        " px tall, got " ~ to!string(root.composerHeightForTesting()));
+    assert(root.composerHeightForTesting() >= 100,
+        "Composer should be about twice the old 58 px input row");
+    const expectedColumn = minInt(messageCenter.bounds().width,
+        opencodeContentMaxWidth);
+    assert(root.messageColumnWidthForTesting() == expectedColumn,
+        "Conversation column should be capped at " ~
+        to!string(opencodeContentMaxWidth) ~ ", got " ~
+        to!string(root.messageColumnWidthForTesting()));
+    if (messageCenter.bounds().width > opencodeContentMaxWidth)
+        assert(root.messageColumnXForTesting() ==
+            (messageCenter.bounds().width - expectedColumn) / 2,
+            "Conversation column should be horizontally centered, x=" ~
+            to!string(root.messageColumnXForTesting()));
+    const expectedComposer = minInt(composerCenter.bounds().width,
+        opencodeContentMaxWidth);
+    assert(composer.bounds().width == expectedComposer,
+        "Composer should share the centered column width");
+    // The send button sits in the composer's bottom-right corner.
+    const sendOrigin = sendButton.localToGlobal(Point(0, 0));
+    const composerOrigin = composer.localToGlobal(Point(0, 0));
+    assert(sendOrigin.x >= composerOrigin.x + composer.bounds().width / 2,
+        "Send button should be on the right half of the composer");
+    assert(sendOrigin.y + sendButton.bounds().height <=
+        composerOrigin.y + composer.bounds().height,
+        "Send button should sit inside the composer");
+    assert(sendOrigin.y >= composerOrigin.y + composer.bounds().height / 2,
+        "Send button should sit in the lower half of the composer");
+    writeln("Chat column is centered; composer is ",
+        root.composerHeightForTesting(), " px tall with a bottom-right send");
+
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);
     root.tickTree(0.02);
@@ -487,22 +546,47 @@ int main(string[] args)
     grepCall.id = "call_test_2";
     grepCall.name = "grep";
     grepCall.arguments = `{"pattern":"tool"}`;
-    root.injectToolCallsForTesting([readCall, grepCall]);
+    OpenCodeToolCall runCall;
+    runCall.id = "call_test_3";
+    runCall.name = "run";
+    version (Windows)
+        runCall.arguments =
+            `{"program":"cmd.exe","args":["/d","/c","echo","run-args-ok"]}`;
+    else
+        runCall.arguments = `{"program":"/bin/echo","args":["run-args-ok"]}`;
+    root.injectToolCallsForTesting([readCall, grepCall, runCall]);
     // The tool worker runs on a background thread; tick the tree so onTick
     // drains the results, up to a short deadline.
     const deadline = Clock.currTime + 5.seconds;
-    while (root.toolMessageCountForTesting() < 2 && Clock.currTime < deadline)
+    while (root.toolMessageCountForTesting() < 3 && Clock.currTime < deadline)
     {
         root.tickTree(0.02);
         Thread.sleep(20.msecs);
     }
-    assert(root.toolMessageCountForTesting() == 2,
+    assert(root.toolMessageCountForTesting() == 3,
         "Tool results did not arrive as tool role messages");
     assert(root.toolResultForTesting(0).indexOf("hello tool world") >= 0,
         "read tool did not return the file contents: " ~
         root.toolResultForTesting(0));
     assert(root.toolResultForTesting(1).indexOf("notes.txt") >= 0,
         "grep tool did not find the matching file");
+    assert(root.toolResultForTesting(2).indexOf("run-args-ok") >= 0,
+        "run tool did not execute: " ~ root.toolResultForTesting(2));
+    // Regression: a JSON argv array must render as a readable command line,
+    // not the old opaque `args=[…]`.
+    assert(root.toolArgsDisplayForTesting(0).indexOf("filePath=notes.txt") >= 0,
+        "tool args did not render the object value: " ~
+        root.toolArgsDisplayForTesting(0));
+    const runArgs = root.toolArgsDisplayForTesting(2);
+    assert(runArgs.indexOf("[…]") < 0,
+        "tool args must not render as the opaque [..] placeholder: " ~ runArgs);
+    assert(runArgs.indexOf("program=cmd.exe") >= 0 ||
+        runArgs.indexOf("program=/bin/echo") >= 0,
+        "run args did not show the program: " ~ runArgs);
+    assert(runArgs.indexOf("/d /c echo run-args-ok") >= 0 ||
+        runArgs.indexOf("run-args-ok") >= 0,
+        "run args array was not flattened into a command line: " ~ runArgs);
+    writeln("Tool arg display flattens argv arrays into a command line");
     assert(driver.paint(), "Tool bubble did not paint");
     writeln("Tool loop executed read + grep and landed two tool messages");
     assert(root.messageCountForTesting() >= 3,

@@ -258,6 +258,14 @@ private final class MessageBubble : Widget
         setCollapsed(!_collapsed);
     }
 
+    /// Test-only: the tool header's compact argument text, without the
+    /// `⚙ name`/toggle prefix. Used to prove arrays render as a command line
+    /// rather than the opaque `args=[…]`.
+    public string toolArgsDisplayForTesting()
+    {
+        return toolArgsDisplay();
+    }
+
     void setThinkingCollapsed(bool value)
     {
         if (_thinkingCollapsed == value) return;
@@ -705,27 +713,57 @@ private final class MessageBubble : Widget
         {
             string[] parts;
             foreach (key, entry; value.object)
-            {
-                if (entry.type == JSONType.string)
-                    parts ~= key ~ "=" ~ entry.str;
-                else if (entry.type == JSONType.integer)
-                    parts ~= key ~ "=" ~ to!string(entry.integer);
-                else if (entry.type == JSONType.array)
-                    parts ~= key ~ "=[…]";
-                else
-                    parts ~= key;
-            }
+                parts ~= key ~ "=" ~ toolArgValue(entry, 0);
             string joined;
             foreach (index, part; parts)
             {
                 if (index > 0) joined ~= ", ";
                 joined ~= part;
             }
-            if (joined.length > 50) joined = joined[0 .. 50] ~ "…";
+            if (joined.length > 72) joined = joined[0 .. 72] ~ "…";
             return "(" ~ joined ~ ")";
         }
         if (args.length > 40) args = args[0 .. 40] ~ "…";
         return "(" ~ args ~ ")";
+    }
+
+    /// Render one tool-argument value for the compact header. Arrays are
+    /// flattened into a space-separated command line so an argv list reads
+    /// like what will actually run (`program=cmd.exe, args=/c del "x"`),
+    /// instead of the old opaque `args=[…]`.
+    private static string toolArgValue(JSONValue entry, int depth)
+    {
+        switch (entry.type)
+        {
+            case JSONType.string:
+                // Quote a single argument containing spaces so the argv list
+                // stays readable and unambiguous.
+                foreach (ch; entry.str)
+                    if (ch == ' ')
+                        return "\"" ~ entry.str ~ "\"";
+                return entry.str;
+            case JSONType.integer:
+                return to!string(entry.integer);
+            case JSONType.array:
+                if (depth >= 2) return "[…]";
+                string joined;
+                foreach (index, item; entry.array)
+                {
+                    if (index > 0) joined ~= " ";
+                    joined ~= toolArgValue(item, depth + 1);
+                }
+                return joined.length > 0 ? joined : "[]";
+            case JSONType.object:
+                return "{…}";
+            case JSONType.true_:
+                return "true";
+            case JSONType.false_:
+                return "false";
+            case JSONType.null_:
+                return "null";
+            default:
+                return "…";
+        }
     }
 
     private void collectMarkdownTargets(ref MdComposition composition, int contentY)
@@ -1175,6 +1213,160 @@ private final class ChatInput : TextArea
 }
 
 // ---------------------------------------------------------------------------
+// Centered content column
+// ---------------------------------------------------------------------------
+
+/// Wraps a single child and centers it horizontally inside a maximum width,
+/// matching the upstream opencode `container-3xl` column. The wrapper itself
+/// always spans the full pane so scrollbars stay pinned to the pane edge; only
+/// the child is capped and inset. The child of a scroll view is laid out
+/// directly by the viewport, so publishing hints here is harmless there and
+/// lets the same wrapper size a fixed-height composer inside a VBox.
+private final class CenteredColumn : Widget
+{
+    private Widget _content;
+    private int _maxWidth;
+
+    this(Widget content, int maxWidth)
+    {
+        _content = content;
+        _maxWidth = maxWidth;
+        add(content);
+    }
+
+    private int centeredWidth(int total) const @safe pure nothrow @nogc
+    {
+        return _maxWidth > 0 ? minInt(total, _maxWidth) : total;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        auto measured = _content.measure(Size(centeredWidth(width),
+            available.height));
+        // The framework may measure with a zero-height viewport before the
+        // first layout, and intrinsic measures are clamped to it. Read the
+        // child's published hint (like MessageBubble) so the composer keeps its
+        // intended height regardless of the provisional available size.
+        const childHeight = _content.layoutHints().preferredHeight >= 0 ?
+            _content.layoutHints().preferredHeight : measured.height;
+        // VBox layout sizes children from hints, not from the intrinsic measure
+        // result, so the composer wrapper must publish its height back.
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = childHeight;
+        return Size(width, childHeight);
+    }
+
+    protected override void onLayout()
+    {
+        const width = centeredWidth(bounds().width);
+        _content.setBounds(Rect(maxInt(0, (bounds().width - width) / 2), 0,
+            width, bounds().height));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chat composer: bordered prompt panel with a bottom-right send button
+// ---------------------------------------------------------------------------
+
+private final class ChatComposer : Widget
+{
+    private static immutable int pad = 8;
+    private static immutable int gap = 6;
+    private static immutable int buttonWidth = 40;
+    private static immutable int buttonHeight = 30;
+
+    private Widget _field;
+    private Widget _send;
+
+    this(Widget field, Widget send)
+    {
+        _field = field;
+        _send = send;
+        add(field);
+        add(send);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        // Publish the intended height rather than a provisional-clamped one;
+        // the first measure can arrive before the window has any bounds.
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = opencodeComposerHeight;
+        return Size(width, opencodeComposerHeight);
+    }
+
+    protected override void onLayout()
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        const fieldHeight = maxInt(0, height - pad * 2 - buttonHeight - gap);
+        _field.setBounds(Rect(pad, pad, maxInt(0, width - pad * 2),
+            fieldHeight));
+        _send.setBounds(Rect(maxInt(pad, width - pad - buttonWidth),
+            maxInt(pad, height - pad - buttonHeight), buttonWidth,
+            buttonHeight));
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        canvas.drawRoundedRect(Rect(0, 0, bounds().width, bounds().height),
+            maxInt(8, palette.cornerRadius), palette.fieldBackground,
+            palette.border, 1);
+    }
+}
+
+/// Accent send button: a rounded rectangle with an up arrow (Send) or a square
+/// (Stop) while a reply is streaming. Kept a `Button` subclass so the existing
+/// `oc-send` lookup and busy-state text contract continue to work.
+private final class ChatSendButton : Button
+{
+    private static immutable int buttonWidth = 40;
+    private static immutable int buttonHeight = 30;
+
+    this()
+    {
+        super("");
+        layoutHints().preferredWidth = buttonWidth;
+        layoutHints().minWidth = buttonWidth;
+        layoutHints().preferredHeight = buttonHeight;
+        layoutHints().minHeight = buttonHeight;
+        layoutHints().fillCrossAxis = false;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = buttonWidth;
+        layoutHints().preferredHeight = buttonHeight;
+        return Size(minInt(buttonWidth, available.width),
+            minInt(buttonHeight, available.height));
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        const stopping = text() == "Stop"d;
+        const background = stopping
+            ? (pressed() ? palette.buttonPressed :
+                (hovered() ? palette.buttonHover : palette.border))
+            : (pressed() ? palette.accentPressed :
+                (hovered() ? palette.accentHover : palette.accent));
+        canvas.drawRoundedRect(rect, maxInt(6, palette.cornerRadius - 2),
+            background, background.darker(20), 1);
+        const white = Color.rgb(255, 255, 255);
+        if (stopping)
+            canvas.fillRect(Rect((bounds().width - 10) / 2,
+                (bounds().height - 10) / 2, 10, 10), white);
+        else
+            drawIcon(canvas, IconKind.up, Rect((bounds().width - 16) / 2,
+                (bounds().height - 16) / 2, 16, 16), white);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Auto-follow scroll view
 // ---------------------------------------------------------------------------
 
@@ -1443,7 +1635,8 @@ public final class OpenCodeRoot : VBox
     private ChatScrollView _messagesScroll;
     private VBox _messageColumn;
     private ChatInput _input;
-    private Button _sendButton;
+    private ChatSendButton _sendButton;
+    private ChatComposer _composer;
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
@@ -1560,7 +1753,7 @@ public final class OpenCodeRoot : VBox
             saveSettingsNow();
             updateStatus(value
                 ? "Tools enabled — the model uses the D-native " ~
-                  "run/read/write/glob/grep/dshell tools."
+                  "run/read/write/remove/glob/grep/dshell tools."
                 : "Tools disabled.");
         };
 
@@ -1682,26 +1875,38 @@ public final class OpenCodeRoot : VBox
 
         _messageColumn = new VBox(6, Insets(12, 8));
         _messageColumn.setId("oc-messages");
-        _messagesScroll = new ChatScrollView(_messageColumn);
+        auto messageCenter = new CenteredColumn(_messageColumn,
+            opencodeContentMaxWidth);
+        messageCenter.setId("oc-message-center");
+        _messagesScroll = new ChatScrollView(messageCenter);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
-        auto inputRow = new HBox(8, Insets(10, 4));
-        inputRow.layoutHints().preferredHeight = 58;
         _input = new ChatInput();
         _input.setId("oc-input");
-        _input.layoutHints().flex = 1.0;
+        _input.setShowBorder(false);
+        _input.setTransparentBackground(true);
+        _input.setPadding(6);
+        _input.setWordWrap(true);
+        _input.setPlaceholder("Ask anything...");
         _input.onSendRequested = delegate() { sendMessage(); };
-        _sendButton = new Button("Send");
+        _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
-        _sendButton.setAccent(true);
         _sendButton.onClick = delegate() { sendMessage(); };
 
-        inputRow.add(_input);
-        inputRow.add(_sendButton);
+        auto composer = new ChatComposer(_input, _sendButton);
+        composer.setId("oc-composer");
+        _composer = composer;
+        auto composerCenter = new CenteredColumn(composer,
+            opencodeContentMaxWidth);
+        composerCenter.setId("oc-composer-center");
+        // The top-level VBox sizes children from hints and is never measured
+        // itself, so publish the composer's height here or it lays out to zero.
+        composerCenter.layoutHints().preferredHeight = opencodeComposerHeight;
+        composerCenter.layoutHints().minHeight = opencodeComposerHeight;
 
         chatPanel.add(_messagesScroll);
-        chatPanel.add(inputRow);
+        chatPanel.add(composerCenter);
 
         _sessionsSplit = new SplitPane(sidebar, chatPanel,
             Orientation.horizontal);
@@ -2868,8 +3073,8 @@ public final class OpenCodeRoot : VBox
         auto legacyTip = new TooltipAnchor(legacyCheck);
         legacyTip.setText(
             "Also lets the model use the legacy bash/cmd/powershell shell " ~
-            "tool in addition to the native run/read/write/glob/grep/dshell " ~
-            "tools. Off by default.");
+            "tool in addition to the native " ~
+            "run/read/write/remove/glob/grep/dshell tools. Off by default.");
         _legacyTooltipAnchor = legacyTip;
         legacyTip.onHoverChanged = delegate(bool open)
         {
@@ -4080,6 +4285,23 @@ public final class OpenCodeRoot : VBox
         return _messagesScroll.scrollY();
     }
 
+    /// Test-only: the `tool` result bubble at index `n`'s compact argument
+    /// text (`(name=value, ...)`) so tests can assert arrays render readably.
+    public string toolArgsDisplayForTesting(int n)
+    {
+        const children = _messageColumn.children();
+        int seen;
+        foreach (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.roleForTesting() != "tool") continue;
+            if (seen == n) return bubble.toolArgsDisplayForTesting();
+            ++seen;
+        }
+        return "";
+    }
+
     /// Test-only: scroll the message view to a specific offset.
     public void scrollToForTesting(int value)
     {
@@ -4132,5 +4354,39 @@ public final class OpenCodeRoot : VBox
             _messagesScroll.invalidate();
             return;
         }
+    }
+
+    /// Test-only: the centered conversation column's laid-out width. It is the
+    /// min of the scroll viewport and `opencodeContentMaxWidth`.
+    public int messageColumnWidthForTesting()
+    {
+        return _messageColumn.bounds().width;
+    }
+
+    /// Test-only: the centered conversation column's horizontal offset inside
+    /// its centering wrapper (positive when the pane is wider than the cap).
+    public int messageColumnXForTesting()
+    {
+        return _messageColumn.bounds().x;
+    }
+
+    /// Test-only: the centering wrapper's viewport width, so tests can verify
+    /// the column is centered as (wrapper - column) / 2.
+    public int messageCenterWidthForTesting()
+    {
+        auto parent = _messageColumn.parent();
+        return parent is null ? 0 : parent.bounds().width;
+    }
+
+    /// Test-only: the composer panel's height.
+    public int composerHeightForTesting()
+    {
+        return _composer.bounds().height;
+    }
+
+    /// Test-only: the composer panel's width.
+    public int composerWidthForTesting()
+    {
+        return _composer.bounds().width;
     }
 }

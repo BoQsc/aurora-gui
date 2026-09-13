@@ -99,6 +99,30 @@ class SplitPane : Widget
         }
     }
 
+    /**
+     * While a divider drag is active, reposition both panes but reflow only the
+     * first one. The second pane usually holds a long message/document list whose
+     * shaped-text layout is expensive; rebuilding it for every pointer pixel
+     * makes the drag crawl, and the moved pane clips the overflowing content
+     * anyway. The full two-pane layout runs once on mouse-up.
+     */
+    override void layoutTree()
+    {
+        if (!_dragging)
+        {
+            super.layoutTree();
+            return;
+        }
+        if (!visible()) return;
+        onLayout();
+        if (_first !is null && _first.visible())
+        {
+            if (_first.layoutHints().overlayFillParent)
+                _first.setBounds(Rect(0, 0, bounds().width, bounds().height));
+            _first.layoutTree();
+        }
+    }
+
     protected override void onPaint(ref Canvas canvas)
     {
         const divider = dividerRect();

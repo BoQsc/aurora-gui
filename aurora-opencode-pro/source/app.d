@@ -2,7 +2,7 @@ module app;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
-import auroraopencode.core : opencodeTheme;
+import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
 import auroraopencode.logging : logLaunch;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
@@ -12,6 +12,7 @@ import std.utf : toUTF32;
 
 private int runScreenshot(string path, bool withChat, string message)
 {
+    enableNativeTextRendering();
     WindowOptions options;
     options.title = "Aurora OpenCode";
     options.width = 1200;
@@ -97,6 +98,7 @@ private Widget findById(Widget widget, string requestedId)
 
 int main(string[] args)
 {
+    enableNativeTextRendering();
     if (args.length >= 3 && args[1] == "--screenshot")
         return runScreenshot(args[2], false, "");
     if (args.length >= 4 && args[1] == "--screenshot-chat")

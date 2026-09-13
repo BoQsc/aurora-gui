@@ -2,7 +2,8 @@ module auroraopencode.tools;
 
 import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef;
 import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
-    write, mkdirRecurse, remove, tempDir, getSize, timeLastModified;
+    write, mkdirRecurse, remove, rmdirRecurse, tempDir, getSize,
+    timeLastModified;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildNormalizedPath, buildPath, expandTilde, isAbsolute;
 import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
@@ -80,6 +81,20 @@ private OpenCodeToolDef dshellToolDefinition()
     );
 }
 
+/// The D-native `remove` tool definition, shared by both tool sets. Deletion
+/// is a first-class native operation so the model never has to spawn
+/// cmd.exe/powershell.exe (and get shell quoting wrong) just to delete a file.
+private OpenCodeToolDef removeToolDefinition()
+{
+    return OpenCodeToolDef(
+        "remove",
+        "Delete a file or directory in the workspace. Directories are removed " ~
+        "recursively. Use this instead of a shell command (del, rm, " ~
+        "Remove-Item).",
+        `{"type":"object","properties":{"path":{"type":"string","description":"Path to the file or directory, relative to the workspace or absolute"}},"required":["path"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -94,6 +109,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["command"]}`
         ),
         dshellToolDefinition(),
+        removeToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -136,6 +152,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["program"]}`
         ),
         dshellToolDefinition(),
+        removeToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read the contents of a text file from the workspace.",
@@ -210,7 +227,8 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
             "`dshell` with these natural words only: `where` for the " ~
             "workspace path, `list` to show a directory, `info` for file " ~
             "metadata. Use `glob` to list files by pattern, `read` to read " ~
-            "them, `write` to create them, `grep` to search contents, and " ~
+            "them, `write` to create them, `remove` to delete files or " ~
+            "directories, `grep` to search contents, and " ~
             "`run` to execute a program with an explicit argument list. " ~
             "Never use shell command words such as pwd, ls, dir, or stat; " ~
             "always prefer these tools over trying to reconstruct shell " ~
@@ -222,7 +240,8 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
             "native tools: `dshell` with these natural words only (`where` " ~
             "for the workspace path, `list` to show a directory, `info` for " ~
             "file metadata), `glob` to list files by pattern, `read` to read " ~
-            "them, `write` to create them, and `grep` to search contents. " ~
+            "them, `write` to create them, `remove` to delete files or " ~
+            "directories, and `grep` to search contents. " ~
             "Never use shell command words such as pwd, ls, dir, or stat for " ~
             "these operations. Use the `bash` tool only for running build " ~
             "commands, git, package managers, or other executables that the " ~
@@ -554,6 +573,51 @@ private ToolExecution runWrite(string args, string workspace)
         to!string(content.length) ~ " chars).", false);
 }
 
+/// The D-native `remove` tool: deletes a file, or a directory tree. Accepts
+/// `path` (or `filePath`, since models often reuse the read/write key).
+private ToolExecution runRemove(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string pathArg;
+    if (value.type == JSONType.object)
+    {
+        if (auto field = "path" in value.object)
+            if (field.type == JSONType.string)
+                pathArg = field.str;
+        if (pathArg.length == 0)
+            if (auto field = "filePath" in value.object)
+                if (field.type == JSONType.string)
+                    pathArg = field.str;
+    }
+    if (pathArg.length == 0)
+        return ToolExecution("remove",
+            "Error: remove requires a `path` argument.", true);
+    const path = resolveToolPath(pathArg, workspace);
+    if (!exists(path))
+        return ToolExecution("remove", "Error: not found: " ~ path, true);
+    try
+    {
+        if (isDir(path))
+        {
+            rmdirRecurse(path);
+            return ToolExecution("remove",
+                "Removed directory " ~ path, false);
+        }
+        if (isFile(path))
+        {
+            remove(path);
+            return ToolExecution("remove", "Removed file " ~ path, false);
+        }
+        return ToolExecution("remove",
+            "Error: not a file or directory: " ~ path, true);
+    }
+    catch (Exception error)
+        return ToolExecution("remove", "Error: could not remove: " ~
+            error.msg, true);
+}
+
 /// Convert a glob pattern to a regular expression. `**` crosses directory
 /// boundaries; `*` stays within one path segment. Path separators are treated
 /// as `/` so patterns behave consistently on Windows.
@@ -749,6 +813,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return runRead(call.arguments, workspace);
         case "write":
             return runWrite(call.arguments, workspace);
+        case "remove":
+            return runRemove(call.arguments, workspace);
         case "glob":
             return runGlob(call.arguments, workspace);
         case "grep":

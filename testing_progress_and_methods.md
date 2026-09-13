@@ -1,5 +1,180 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Fix laggy sessions/chat divider drag (2026-09-13)
+
+User: "why changing width of sidebar it appears laggy. fix it."
+
+### Diagnosis (measured, not guessed)
+Wrote a temporary headless benchmark (`aurora-opencode-pro/tests/drag_bench.d`,
+later deleted) that seeds a session with 30 (user+assistant) messages and times
+divider moves two ways:
+
+- `dragSessionsDividerForTesting` (programmatic `setRatio`, no pointer capture)
+  → full two-pane layout each move: **~122,000 us/move**.
+- real pointer drag (`driver.moveTo` + `mouseDown`/`mouseUp`, one `paint()` per
+  step).
+
+Root cause: `vendor/.../widgets/splitpane.d` `setRatio()` calls `layoutTree()`
+synchronously on every pointer move, and the frame's `ensureScene` calls
+`_root.layoutTree()` too. The chat pane is the SplitPane's second child, so its
+whole message list re-measured and **re-shaped its markdown for every pixel** the
+divider moved. A long chat therefore drags at single-digit fps.
+
+### Change
+`vendor/aurora-d-0.4.5/source/aurora/widgets/splitpane.d`: added an override of
+`layoutTree()`. When `_dragging` is true it calls `onLayout()` (which repositions
+both children via `setBounds`) and then recurses only into the first child.
+The second child keeps its previous internal layout, so it is only repositioned
+and clipped by its own moving bounds; its content reflows once when the pointer
+is released (`onMouseUp` clears `_dragging` and invalidates, and the next frame's
+`_root.layoutTree()` takes the normal `super.layoutTree()` path).
+
+Note: `Widget._visible`/`_bounds` are module-private, so the override uses the
+public `visible()`/`bounds()` accessors.
+
+### Verification
+- Benchmark after the change: live pointer drag **~13,100 us/step** (~9x faster).
+- `aurora-opencode-pro/tests/headless_pro_smoke.d`: new step "Pointer split drag
+  reflows the chat pane on release" does a real `driver.drag` on the divider and
+  asserts `oc-scroll` width changed after release (proves release reflows).
+- Pro `dub build --compiler=dmd --force` + smoke: all pass, EXIT=0.
+- Baseline `dub build` + `headless-smoke.exe`: EXIT=0.
+- Screenshot `%TEMP%\drag-fix.png` (seeded state) shows no layout regression.
+- Re-run the benchmark by recreating `tests/drag_bench.d` from this note:
+  build with the standard `-version=AuroraHeadless -i -Isource
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source` line and run
+  `build\drag-bench.exe 30 80`.
+
+## Better font rendering: native-compatible text (2026-09-13)
+
+User: "check if we can have better font rendering. currently it seems quite off
+and weird."
+
+### What was wrong (diagnosis, not guess)
+The shipping renderer (`rasterizeCoverage`, exact-area nonzero-winding A8) is
+geometrically correct but matches Windows DirectWrite grayscale poorly at UI
+sizes: on the dark theme the text reads thin and grey. This is visible in the
+real app (`%TEMP%\zoom-chatdef.png`) and measurable with the repo's own harness
+`scripts/compare-font-rendering.py`, which rasterizes the same shaped glyph
+IDs/origins as native DirectWrite.
+
+Baseline at 13 px (`build-validation/font-quality/baseline-2026-09-13`):
+- MAE light **27.66**, dark **33.04**; 1307/1332 differing pixels.
+
+### Mode A/B (evidence)
+| mode (`AURORA_HINTING`) | 13 light | 13 dark | 17 light | 17 dark |
+| --- | ---: | ---: | ---: | ---: |
+| default `0` (analytic) | 27.66 | 33.04 | 25.24 | 27.57 |
+| `natural` (natural-grid hinting + sampled lattice) | **10.21** | **22.08** | **15.74** | **23.96** |
+
+`natural` also cut total differing pixels (2 sizes x 2 themes) 6230 → 3806 and
+wins across sizes 21/26/34; it only regresses at 11 px dark (below our smallest
+UI size, 13). Consolas (monospace) behaved the same: 13 px light MAE 40.6 → 6.4.
+The natural-grid comparison sheet is
+`build-validation/font-quality/natural2-2026-09-13/13-dark-comparison.png`.
+
+### What actually fixes it (and what does not)
+- **Sampled lattice alone is not the fix.** Re-running with the sampled rasterizer
+  but hinting still off gave MAE 27.66 light / **33.85** dark — i.e. no better,
+  slightly worse. The win is the **grid-fitted (natural-grid bytecode) hinting**;
+  native is hinted, ours was not.
+- **Coverage gamma alone is not the fix.** Sweeping gamma over Aurora's own
+  coverage (simulated in Python, no rebuild) improved dark only
+  (33.04 → 26.26 at gamma 1.6) and did nothing on light (27.66 → 27.66),
+  confirming the remaining error is geometric/grid-fit, not just weight.
+
+### Change
+The vendored library deliberately keeps `AURORA_HINTING=natural` experimental and
+non-default (see `vendor/aurora-d-0.4.5/docs/FONT_QUALITY_VALIDATION.md`). Rather
+than flip the vendor default for every Aurora app, the OpenCode apps opt in
+explicitly:
+- `aurora-opencode-core/source/auroraopencode/core.d`: new
+  `public void enableNativeTextRendering()` sets `AURORA_HINTING=natural` **only
+  if unset** (`std.process.environment`).
+- `aurora-opencode-pro/source/app.d` and `aurora-opencode/source/app.d`: call it
+  as the first statement of `main()` and `runScreenshot()` (before the first
+  window/font is created).
+- Opt-out/override: an explicit env value wins, so `AURORA_HINTING=0` restores the
+  old renderer (used for the A/B screenshot below).
+
+### Verification / how to re-test
+1. Harness (vendor/vendor behavior, no app):
+   - `python scripts\compare-font-rendering.py --sizes 13 17 --out build-validation\font-quality\<tag>`
+   - `set "AURORA_HINTING=natural"&& python scripts\compare-font-rendering.py --sizes 13 17 --out build-validation\font-quality\<tag>-natural`
+   - Compare `mean_absolute_error` in `manifest.json`. (Note: in cmd.exe write
+     `set "VAR=value"&&` with no space before `&&`, otherwise the trailing space
+     becomes part of the value and `== "natural"` fails.)
+2. Builds: Pro `dub build --compiler=dmd --force` + `build\headless-pro-smoke.exe`
+   (EXIT=0); baseline `dub build` + `build\headless-smoke.exe` (EXIT=0).
+3. Screenshot A/B with the seeded state:
+   - `$env:APPDATA="$env:TEMP\oc-titlebar-shot\"; & .\aurora-opencode-pro.exe --screenshot "$env:TEMP\font-hint-natural.ppm"`
+   - then set `$env:AURORA_HINTING='0'` and repeat to `font-hint-off.ppm`.
+   - Convert with `%TEMP%\ppm2png.ps1`, zoom with `%TEMP%\zoom-text.ps1`.
+   - Artifacts: `%TEMP%\font-hint-natural.png`, `font-hint-off.png`,
+     `zoom-hint-natural-rows.png`, `zoom-hint-off-rows.png`.
+4. Relaunch the live Pro exe; `%APPDATA%\Aurora OpenCode\logs\errors.log` should
+   contain only the launch banner.
+
+## Aurora OpenCode tool rows: readable argv + native remove (2026-09-13)
+
+User: screenshot of Aurora OpenCode showing `run(program=cmd.exe, args=[…])`
+(failed "The filename, directory name, or volume label syntax is incorrect."),
+`run(program=powershell.exe, args=[…])` ("(no output)"), then
+`dshell(command=list)`. "Why in aurora opencode we have this not elegant way".
+
+### Evidence, not a guess
+- Pulled the real conversation from
+  `%APPDATA%\Aurora OpenCode\sessions.json` (title "write a webpage"). The
+  assistant had created `index.html`, then the user said "alright let's delete
+  it"; the model issued three tool calls:
+  `run{program:"cmd.exe",args:["/c","del","\"C:\\...\\sandbox\\index.html\""]}`,
+  `run{program:"powershell.exe",args:["-NoProfile","-Command","Remove-Item
+  -LiteralPath 'C:\\...\\index.html' -Force"]}`, `dshell{command:"list"}`.
+- Reproduced the first call exactly with a throwaway D program using the same
+  `std.process.spawnProcess(argv, stdin, outFile, outFile, null,
+  Config.suppressConsole, workdir)` call as `tools.d` `runProcess`:
+  `cmd.exe /c del "\"C:\...\zzq.txt\""` -> exit 1, prints "The filename,
+  directory name, or volume label syntax is incorrect." (Win32 123) and the
+  file survives. The PowerShell form -> exit 0, empty output, file deleted.
+  So `run(cmd.exe)` failed only because the model embedded shell-style quotes
+  in one argv element; `run` does no shell parsing, so cmd.exe received the
+  quotes literally.
+
+### Fixes
+- `aurora-opencode-pro/source/auroraopencode/appui.d`:
+  `MessageBubble.toolArgsDisplay()` used to emit `key=[…]` for a JSON array.
+  Added `toolArgValue()`: arrays are flattened space-separated (nested depth
+  capped at 2), strings containing spaces are quoted, and the joined string cap
+  rose 50 -> 72. Tool headers now read like the command that runs.
+- `aurora-opencode-pro/source/auroraopencode/tools.d`: new native `remove`
+  tool (schema `{path}`; also accepts `filePath`) in BOTH
+  `builtinToolDefinitions()` and `nativeOnlyToolDefinitions()`, dispatcher case
+  `remove`, prompt text, and `runRemove()` (file via `remove`, directory via
+  `rmdirRecurse`, missing path is a failed result). `rmdirRecurse` added to the
+  `std.file` import.
+- `aurora-opencode-core/source/auroraopencode/core.d` + appui tooltip/status:
+  tool lists now say `run/read/write/remove/glob/grep/dshell`.
+
+### How to re-test
+1. Tools unit test (fast, no GUI):
+   `cd aurora-opencode-pro` then
+   `dmd -i -Isource -I..\aurora-opencode-core\source
+   -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib
+   shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe`
+   then `build\tools-test.exe`. New asserts: `remove` deletes
+   `src/generated.txt`, deletes a `trash/` tree, fails on a missing path, and
+   both tool sets advertise `remove`.
+2. Pro build: `dub build --compiler=dmd` (no force needed unless the exe is
+   locked; `taskkill /F /IM aurora-opencode-pro.exe` first if so).
+3. Pro smoke:
+   `dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source
+   -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib
+   gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe`
+   then `build\headless-pro-smoke.exe` -> all steps pass.
+4. Manual: in a chat, ask the model to delete a file it created; it should call
+   `remove` once, and the tool row should show `remove(path=...)` (not
+   `args=[…]`).
+
 ## Match upstream opencode typography, spacing and control density (2026-09-13)
 
 User: "we need to examine and think how we will improve the font sizes, padding
@@ -7523,4 +7698,80 @@ isolated `--screenshot` run ignore your seeded files).
 **Result (2026-09-13):** both apps link; baseline smoke EXIT=0; Pro smoke all
 steps pass incl. projects (creator/switch/persist/divider/remove); tools test
 passes; screenshots above. Pro relaunched after rebuild.
+
+## Aurora OpenCode Pro: centered chat column + taller composer (2026-09-13)
+
+User: make the main content (messages + input) centered with margin/padding like
+the original opencode, and make the composer input about twice as tall with a
+rectangular up-arrow send button in its bottom-right corner.
+
+**Reference tokens:** upstream `anomalyco/opencode` `packages/ui/src/styles/theme.css`
+defines `--container-3xl: 48rem` (= 768 px at a 16 px root) on a `--spacing: 4px`
+grid. Added shared constants to `aurora-opencode-core/source/auroraopencode/core.d`:
+`opencodeContentMaxWidth = 768`, `opencodeComposerHeight = 116` (twice the old
+58 px input row).
+
+**Implementation (`aurora-opencode-pro/source/auroraopencode/appui.d`):**
+- `CenteredColumn : Widget` wraps one child, always spans the full pane (so the
+  scrollbar stays pinned to the pane edge), caps the child at
+  `opencodeContentMaxWidth`, and centers it: `x = (bounds.width - cap) / 2`.
+- The message list is `CenteredColumn(_messageColumn)` used as the `ChatScrollView`
+  content; the composer is `CenteredColumn(composer)` added to the chat `VBox`.
+  `_messageColumn` and the composer therefore share the same centered width.
+- `ChatComposer : Widget` is the bordered rounded panel (height 116). It lays out
+  a borderless, transparent, word-wrapping `ChatInput` across the top and pins a
+  `ChatSendButton` in the bottom-right corner.
+- `ChatSendButton : Button` custom-paints an accent rounded rectangle with
+  `drawIcon(IconKind.up, ...)` (a white square while streaming). It stays a
+  `Button` subclass so the existing `findById(root,"oc-send")` + `button.text()`
+  completion contract used by `source/app.d --screenshot-chat` keeps working.
+
+**Root cause worth remembering (framework):**
+- `Box.onLayout` sizes children purely from `layoutHints` (min/preferred/flex),
+  NOT from `measure()` results; custom widgets must publish their size via
+  `layoutHints()` in `onMeasure` (the `MessageBubble` pattern).
+- The top-level `VBox` is never measured: `measure()` is only called by
+  `Box.onMeasure`, `ScrollView`, and popups (`grep` in vendor confirms). So a
+  fixed-height child of the root VBox must publish `preferredHeight` at
+  construction time, not rely on `onMeasure` — otherwise it lays out to 0 px.
+- `measure()` clamps the returned height to `available.height`, and the first
+  measure can arrive with a zero-height viewport. Publish the intended height
+  unconditionally (as `MessageBubble` does) rather than a clamped value.
+
+**How to verify (from `aurora-opencode-pro/`):**
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+  user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+  -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+New step: `Chat column is centered; composer is 116 px tall with a bottom-right
+send`. It asserts the composer height == `opencodeComposerHeight`, the message
+column width == `min(centerWidth, opencodeContentMaxWidth)`, the column x is the
+centering offset when the pane is wider than the cap, the composer shares that
+width, and the send button's global origin is in the composer's lower-right
+quadrant.
+
+```
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+  -of=build\tools-test.exe
+build\tools-test.exe
+```
+Both pass. Pro `dub build --compiler=dmd` compiles; the final link to
+`aurora-opencode-pro.exe` reports `Access is denied` only because a live
+`aurora-opencode-pro.exe` locks the file (expected — close it to relink). To
+capture a picture without touching the running app, link a console-subsystem
+build to another name and use `--screenshot`:
+```
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  source\app.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+  -of=build\aurora-opencode-pro-verify.exe
+build\aurora-opencode-pro-verify.exe --screenshot build\layout.ppm
+ffmpeg -y -i build\layout.ppm build\layout.png   REM PPM -> PNG for inspection
+```
+`build\layout.png` shows the centered column and the 116 px composer with the
+up-arrow send button bottom-right.
+
 

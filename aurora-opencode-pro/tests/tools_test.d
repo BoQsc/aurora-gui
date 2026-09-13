@@ -41,6 +41,28 @@ int main()
     assert(readText(buildPath(dir, "src", "generated.txt")) ==
         "hello from tool", "write did not persist the content");
 
+    // remove deletes a file, and a directory recursively. This is the native
+    // alternative to shelling out to del/rm/Remove-Item.
+    auto removeResult = executeTool(makeCall("remove",
+        `{"path":"src/generated.txt"}`), dir);
+    assert(!removeResult.failed, "remove failed: " ~ removeResult.output);
+    assert(!exists(buildPath(dir, "src", "generated.txt")),
+        "remove did not delete the file");
+
+    mkdirRecurse(buildPath(dir, "trash", "nested"));
+    write(buildPath(dir, "trash", "nested", "deleteme.txt"), "x");
+    auto removeDirResult = executeTool(makeCall("remove",
+        `{"path":"trash"}`), dir);
+    assert(!removeDirResult.failed,
+        "remove directory failed: " ~ removeDirResult.output);
+    assert(!exists(buildPath(dir, "trash")),
+        "remove did not delete the directory tree");
+
+    auto removeMissing = executeTool(makeCall("remove",
+        `{"path":"does-not-exist.txt"}`), dir);
+    assert(removeMissing.failed, "remove of a missing path should fail");
+    writeln("D-native remove tool deletes files and directories");
+
     // glob with ** recursion
     auto globResult = executeTool(makeCall("glob", `{"pattern":"**/*.d"}`),
         dir);
@@ -180,33 +202,41 @@ int main()
     auto defaults = builtinToolDefinitions();
     bool hasShell;
     bool defaultHasDshell;
+    bool defaultHasRemove;
     foreach (tool; defaults)
     {
         if (tool.name == "bash") hasShell = true;
         if (tool.name == "dshell") defaultHasDshell = true;
+        if (tool.name == "remove") defaultHasRemove = true;
     }
     assert(hasShell, "Default toolset must include the shell tool");
     assert(defaultHasDshell, "Default toolset must include dshell");
+    assert(defaultHasRemove, "Default toolset must include remove");
 
     auto natives = nativeOnlyToolDefinitions();
     bool nativeHasShell;
     bool hasRun;
     bool nativeHasDshell;
+    bool nativeHasRemove;
     foreach (tool; natives)
     {
         if (tool.name == "bash") nativeHasShell = true;
         if (tool.name == "run") hasRun = true;
         if (tool.name == "dshell") nativeHasDshell = true;
+        if (tool.name == "remove") nativeHasRemove = true;
     }
     assert(!nativeHasShell, "Native toolset must not include the shell tool");
     assert(hasRun, "Native toolset must include the run tool");
     assert(nativeHasDshell, "Native toolset must include dshell");
+    assert(nativeHasRemove, "Native toolset must include remove");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("where") >= 0,
         "Default steering prompt must steer toward the natural dshell words");
     assert(toolSteeringPrompt(true).indexOf("list") >= 0,
         "Native steering prompt must mention the list operation");
+    assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
+        "Native steering prompt must mention the remove tool");
     writeln("Default vs native-only toolset shapes OK");
 
     // unknown tools report a clear error rather than crashing

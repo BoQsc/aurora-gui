@@ -191,6 +191,26 @@ public enum int opencodeControlHeight = 28;
 public enum int opencodeSessionRowHeight = 32;
 /// Height of the merged titlebar/toolbar band.
 public enum int opencodeTitleBarHeight = 40;
+/// Maximum width of the centered conversation/composer column. Mirrors the
+/// upstream opencode `--container-3xl` token (48rem = 768 px), so the message
+/// list and the prompt read as one centered column instead of stretching edge
+/// to edge on a wide window.
+public enum int opencodeContentMaxWidth = 768;
+/// Height of the chat composer panel: roughly twice the old single-row input,
+/// leaving room for a multi-line prompt with the send button pinned below.
+public enum int opencodeComposerHeight = 116;
+
+/// Opt this process into Aurora's native-compatibility text rendering: grid-
+/// fitted (natural-grid) hinting plus the sampled coverage lattice, which
+/// tracks Windows DirectWrite grayscale far more closely than the default
+/// exact-area rasterizer. Must be called before the first window or font is
+/// created. An explicit `AURORA_HINTING` value in the environment wins, so the
+/// renderer can still be forced back with `AURORA_HINTING=0`.
+public void enableNativeTextRendering()
+{
+    if (environment.get("AURORA_HINTING", "") == "")
+        environment["AURORA_HINTING"] = "natural";
+}
 
 public Theme opencodeTheme()
 {
@@ -302,7 +322,7 @@ public struct Settings
     string apiKey = "";
     string model = defaultModel;
     bool thinking;
-    bool toolsEnabled = true;  // native D tools (run/read/write/glob/grep/dshell); main, on by default
+    bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
     bool legacyTools;          // additionally expose the bash/cmd/powershell shell tool; off by default
     string workspace;          // working directory the tools run in
 }
