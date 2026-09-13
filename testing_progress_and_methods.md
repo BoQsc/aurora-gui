@@ -1,5 +1,92 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Aurora OpenCode moved to CommandCode + DeepSeek V4.1 Flash (2026-09-13)
+
+User: "update api key user_22Gj… and also we now use command code deep seek 4.1
+flash update it".
+
+**Provider switch (`aurora-opencode-core/core.d`):**
+- `defaultBaseUrl` = `https://api.commandcode.ai/provider/v1` (was
+  `https://opencode.ai/zen/go/v1`).
+- `defaultModel` = `deepseek/deepseek-v4.1-flash` (the id the CommandCode
+  `/models` endpoint returns; it reports `context_length: 1000000`).
+- `defaultModels` refreshed to the CommandCode catalog subset; the old
+  `legacyDemoBaseUrl` scalar became a `legacyBaseUrls` array
+  (`opencode-api.boqsc.eu`, `opencode.ai/zen/go/v1`). `loadSettings` rewrites a
+  legacy host to `defaultBaseUrl` AND re-reads the key (a key saved for the old
+  host cannot authenticate the new one).
+- `readDefaultKeyFile()` now reads the `commandcode` provider first from
+  `~/.local/share/opencode/auth.json` (then `opencode-go`, `deepseek`).
+
+**Runtime state updated:** `%APPDATA%\Aurora OpenCode\settings.json` — new
+`user_…` key, CommandCode base URL, `deepseek/deepseek-v4.1-flash`. Also updated
+the `commandcode` entry in `~/.local/share/opencode/auth.json` and
+`~/.config/opencode/commandcode.key`. NOTE the real state dir is
+`Aurora OpenCode` (NO space), not `Aurora Open Code`.
+
+**Real bug found (and fixed):** the old client sent
+`reasoning_effort: "none"` when Thinking was off; CommandCode rejects it with
+HTTP 400 `Invalid option: expected one of "low"|"medium"|"high"|"xhigh"|"max"`
+(seen in the smoke `errors.log`). Probed live with a browser UA (Cloudflare
+returns 1010 without one): `none` -> 400; absent / `low` / `high` -> 200.
+`buildChatBody` now maps the toggle onto the supported scale: Thinking on ->
+`high`, off -> `low`.
+
+**Existing sessions pin the old model:** `selectSession` copies the session
+model into `_settings.model`, and `applyModels` only rescues a model that is not
+in the fetched list (it then picks `_models[0]`, which is `claude-sonnet-5` for
+CommandCode). All 21 saved conversations used `deepseek-v4-flash`, so they were
+migrated to `deepseek/deepseek-v4.1-flash` in
+`%APPDATA%\Aurora OpenCode\sessions.json` (timestamped `.bak-…` kept).
+
+**Context meter would have lied for most models (caught + fixed):** the toolbar
+badge meters against `contextLimitForModel`, whose table only knew the old
+12-model catalog (`defaultContextLimit` = 128k for anything else). CommandCode
+serves 69 models, so switching providers would have shown wrong percentages for
+~50 of them. The table was rebuilt from the live `context_length` values (not
+from model-name guesses — the first pass guessed `claude-sonnet-5` = 200k,
+`kimi-k3`/`gemini-3.8-flash` = 1_048_576 and was wrong; the API says 1_000_000
+for all three). All 69 ids now have exact limits; the 10 legacy unprefixed ids
+remain as fallback for pre-switch settings. Note the client's
+`runModelsRequest` only reads `id`, it ignores `context_length`, so the table —
+not the live payload — is the source of truth; wiring the payload through the
+`models` event would be the durable follow-up.
+
+**Verification (all live, not assumed):**
+- `dub build --build=release` links for both `aurora-opencode` and
+  `aurora-opencode-pro`.
+- Baseline `tests/headless_smoke.d` (real chat) returned exactly
+  `AURORA-OPENCODE-GUI-OK`; confirmed via the smoke `sessions.json` because the
+  GUI-subsystem exe prints no stdout, and `errors.log` stayed clean. Its fixture
+  session model was also moved to `deepseek/deepseek-v4.1-flash`.
+- Pro `tests/headless_pro_smoke.d` "Aurora OpenCode Pro headless smoke test
+  passed." (badge 25% = 250000/1000000). Fixture model changed from the retired
+  `deepseek-v4-flash` to `deepseek/deepseek-v4.1-flash`; tooltip assert updated.
+- `aurora-opencode-core/tests/tool_sse_test.d` and
+  `aurora-opencode-pro/tests/tools_test.d` pass (fixture model aligned).
+- Live UI screenshots: `--screenshot-chat` in an isolated `APPDATA` returned
+  `AURORA-UI-OK` (baseline) and `AURORA-PRO-OK` (Pro, `Done. • 1,345 tokens`);
+  the toolbar shows `deepseek/deepseek-v4.1-flash` and the real state shows it
+  across every restored conversation.
+
+**How to test (Windows):**
+```
+# builds
+cd aurora-opencode && dub build --build=release
+cd aurora-opencode-pro && dub build --build=release
+
+# baseline real chat (isolated state, ignores your sessions)
+powershell -NoProfile -Command "$env:APPDATA=\"$env:TEMP\oc-state\"; & '.\aurora-opencode.exe' --screenshot-chat \"$env:TEMP\oc.png\" 'Say exactly: AURORA-UI-OK'"
+
+# pro real chat
+cd aurora-opencode-pro
+powershell -NoProfile -Command "$env:APPDATA=\"$env:TEMP\ocpro-state\"; & '.\aurora-opencode-pro.exe' --screenshot-chat \"$env:TEMP\ocpro.png\" 'Say exactly: AURORA-PRO-OK'"
+```
+Quoting gotcha: in PowerShell single quotes `$env:TEMP` is NOT expanded, so the
+`--screenshot-chat` path must be double-quoted. The GUI-subsystem exes print no
+stdout on their own; run them via PowerShell `&` (which captures it) or read the
+state/`errors.log` under the redirected `APPDATA`.
+
 ## Timeline ruler must win interaction over content scrolled beneath it (2026-09-13)
 
 User: "things under the timeline ruler are gaining priority in interaction using

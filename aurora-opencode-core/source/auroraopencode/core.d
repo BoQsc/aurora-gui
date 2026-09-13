@@ -12,24 +12,31 @@ import std.string : strip;
 // Shared defaults for the OpenAI-compatible opencode API mirror.
 // ---------------------------------------------------------------------------
 
-private immutable string defaultBaseUrl = "https://opencode.ai/zen/go/v1";
+private immutable string defaultBaseUrl = "https://api.commandcode.ai/provider/v1";
 
-/// Legacy demo-proxy host the app used to point at; migrated away so stale
-/// saved settings cannot pin the client to the unreachable demo host.
-private immutable string legacyDemoBaseUrl = "https://opencode-api.boqsc.eu";
-public immutable string defaultModel = "deepseek-v4-flash";
+/// Legacy hosts the app used to point at; migrated away so stale saved
+/// settings cannot pin the client to an unreachable or retired provider.
+private immutable string[] legacyBaseUrls = [
+    "https://opencode-api.boqsc.eu",
+    "https://opencode.ai/zen/go/v1"
+];
+public immutable string defaultModel = "deepseek/deepseek-v4.1-flash";
 
 public immutable string[] defaultModels = [
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "claude-sonnet-5",
+    "claude-opus-5",
     "gpt-5.6-luna",
-    "qwen3.8-max",
-    "glm-5.2",
-    "grok-4.5",
-    "kimi-k3",
-    "minimax-m3",
-    "mimo-v2.5-pro",
-    "hy3"
+    "gpt-5.5",
+    "zai-org/GLM-5.3",
+    "Qwen/Qwen3.8-Max",
+    "moonshotai/Kimi-K3",
+    "MiniMaxAI/MiniMax-M3",
+    "xai/grok-4.6",
+    "google/gemini-3.8-flash",
+    "tencent/hy3-paid"
 ];
 
 private immutable string[] defaultKeyFileCandidates = [
@@ -45,17 +52,89 @@ private immutable int defaultContextLimit = 128_000;
  *
  * The real opencode reads `model.limit.context` from provider metadata and
  * meters context as `tokens.used / limit.context`. The values below mirror the
- * official opencode model catalog (`https://models.opencode.ai/api.json`, the
- * source the opencode CLI itself fetches) for the models the mirror serves.
- * The fallback is a conservative estimate for unknown models.
+ * `context_length` the CommandCode provider reports from
+ * `https://api.commandcode.ai/provider/v1/models` for every model it serves.
+ * The legacy (unprefixed) ids are kept so a settings file written before the
+ * CommandCode switch still meters correctly. The fallback is a conservative
+ * estimate for unknown models.
  */
 public int contextLimitForModel(string model)
 {
     switch (model)
     {
+        // CommandCode provider catalog (context_length from /models).
+        case "deepseek/deepseek-v4.1-flash":       return 1_000_000;
+        case "deepseek/deepseek-v4-flash":         return 1_000_000;
+        case "deepseek/deepseek-v4-flash-fast":    return 1_000_000;
+        case "deepseek/deepseek-v4-flash-vision-exp": return 1_000_000;
+        case "deepseek/deepseek-v4-pro":           return 1_000_000;
+        case "claude-sonnet-5":                    return 1_000_000;
+        case "claude-sonnet-4-6":                  return 1_000_000;
+        case "claude-fable-5-1":                   return 1_000_000;
+        case "claude-fable-5":                     return 1_000_000;
+        case "claude-opus-5":                      return 1_000_000;
+        case "claude-opus-4-8":                    return 1_000_000;
+        case "claude-opus-4-7":                    return 1_000_000;
+        case "claude-haiku-4-5-20251001":          return 200_000;
+        case "gpt-5.6-sol":                        return 1_050_000;
+        case "gpt-5.6-terra":                      return 1_050_000;
+        case "gpt-5.6-luna":                       return 1_050_000;
+        case "gpt-5.5":                            return 400_000;
+        case "gpt-5.4":                            return 400_000;
+        case "gpt-5.4-mini":                       return 400_000;
+        case "gpt-5.3-codex":                      return 400_000;
+        case "moonshotai/Kimi-K3":                 return 1_000_000;
+        case "moonshotai/Kimi-K2.7-Code":          return 256_000;
+        case "moonshotai/Kimi-K2.7-Code-Highspeed": return 262_000;
+        case "moonshotai/Kimi-K2.6":               return 256_000;
+        case "moonshotai/Kimi-K2.5":               return 256_000;
+        case "zai-org/GLM-5.3":                    return 1_000_000;
+        case "zai-org/GLM-5.2":                    return 1_000_000;
+        case "zai-org/GLM-5.2-Fast":               return 1_000_000;
+        case "zai-org/GLM-5.1":                    return 200_000;
+        case "zai-org/GLM-5":                      return 200_000;
+        case "z-ai/glm-5.3-flash":                 return 1_048_576;
+        case "MiniMaxAI/MiniMax-M3":               return 1_000_000;
+        case "MiniMaxAI/MiniMax-M2.7":             return 200_000;
+        case "MiniMaxAI/MiniMax-M2.5":             return 200_000;
+        case "xiaomi/mimo-v2.5-pro":               return 1_000_000;
+        case "xiaomi/mimo-v2.5":                   return 1_000_000;
+        case "Qwen/Qwen3.8-Max-0902":              return 1_000_000;
+        case "Qwen/Qwen3.8-Max":                   return 1_000_000;
+        case "Qwen/Qwen3.8-Flash":                 return 1_000_000;
+        case "Qwen/Qwen3.8-27B":                   return 262_144;
+        case "Qwen/Qwen3.7-Max":                   return 1_000_000;
+        case "Qwen/Qwen3.7-Plus":                  return 1_000_000;
+        case "Qwen/Qwen3.7-Flash":                 return 1_000_000;
+        case "Qwen/Qwen3.6-Max-Preview":           return 200_000;
+        case "Qwen/Qwen3.6-Plus":                  return 200_000;
+        case "meituan/LongCat-2.0:free":           return 1_048_576;
+        case "stepfun/Step-3.7-Flash":             return 256_000;
+        case "stepfun/Step-3.5-Flash":             return 1_000_000;
+        case "tencent/hy3-paid":                   return 262_144;
+        case "tencent/hy4-preview":                return 1_048_576;
+        case "google/gemini-3.8-flash":            return 1_000_000;
+        case "google/gemini-3.7-flash":            return 1_048_576;
+        case "google/gemini-3.6-flash":            return 1_000_000;
+        case "google/gemini-3.5-flash":            return 1_000_000;
+        case "google/gemini-3.5-flash-lite":       return 1_000_000;
+        case "google/gemini-3.1-flash-lite":       return 1_000_000;
+        case "sakana/fugu-ultra":                  return 1_000_000;
+        case "nvidia/nemotron-3-ultra-550b-a55b":  return 1_000_000;
+        case "thinkingmachines/inkling":           return 256_000;
+        case "thinkingmachines/inkling-small":     return 1_000_000;
+        case "poolside/laguna-s-2.1-free":         return 256_000;
+        case "inclusionai/ling-3.0-flash-sante:free": return 262_144;
+        case "meta/muse-spark-1.1":                return 1_048_576;
+        case "meta/muse-spark-1.2":                return 1_048_576;
+        case "meta/muse-spark-1.2-contributor":    return 1_048_576;
+        case "meta/muse-spark-1.3":                return 1_048_576;
+        case "meta/muse-spark-1.3-contributor":    return 1_048_576;
+        case "xai/grok-4.6":                       return 500_000;
+        case "xai/grok-4.5":                       return 500_000;
+        // Legacy opencode.ai ids (pre-CommandCode settings files).
         case "deepseek-v4-flash":  return 1_000_000;
         case "deepseek-v4-pro":    return 1_000_000;
-        case "gpt-5.6-luna":       return 1_050_000;
         case "qwen3.8-max":        return 1_000_000;
         case "glm-5.2":            return 1_000_000;
         case "grok-4.5":           return 500_000;
@@ -221,7 +300,7 @@ private string readDefaultKeyFile()
                 auto value = parseJSON(readText(authPath));
                 if (value.type == JSONType.object)
                 {
-                    foreach (provider; ["opencode-go", "deepseek"])
+                    foreach (provider; ["commandcode", "opencode-go", "deepseek"])
                     {
                         if (auto found = provider in value.object)
                         {
@@ -307,9 +386,15 @@ public Settings loadSettings()
     if (settings.apiKey.length == 0)
         settings.apiKey = readDefaultKeyFile();
     if (settings.model.length == 0) settings.model = defaultModel;
-    if (settings.baseUrl.length >= legacyDemoBaseUrl.length &&
-        settings.baseUrl[0 .. legacyDemoBaseUrl.length] == legacyDemoBaseUrl)
+    foreach (legacy; legacyBaseUrls)
+    {
+        if (settings.baseUrl.length < legacy.length) continue;
+        if (settings.baseUrl[0 .. legacy.length] != legacy) continue;
         settings.baseUrl = defaultBaseUrl;
+        // A key saved for the old host cannot authenticate the new provider.
+        settings.apiKey = readDefaultKeyFile();
+        break;
+    }
     return settings;
 }
 

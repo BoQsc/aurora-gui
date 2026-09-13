@@ -45,7 +45,7 @@ private JSONValue makeSession(string title, string messageBody)
 {
     JSONValue session;
     session["title"] = title;
-    session["model"] = "deepseek-v4-flash";
+    session["model"] = "deepseek/deepseek-v4.1-flash";
     session["thinking"] = false;
     JSONValue messages = JSONValue(string[].init);
     JSONValue user;
@@ -276,7 +276,7 @@ int main(string[] args)
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip
     // with the full breakdown (mirrors the real opencode indicator). The
-    // limit comes from the official opencode model catalog: deepseek-v4-flash
+    // limit comes from the CommandCode model catalog: deepseek/deepseek-v4.1-flash
     // has a 1,000,000-token context window.
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
     root.recordContextUsageForTesting(240000, 10000, 250000);
@@ -295,7 +295,8 @@ int main(string[] args)
     const tooltip = root.contextTooltipTextForTesting();
     assert(tooltip.length > 0, "Context tooltip text is empty");
     assert(tooltip.indexOf("Context usage") >= 0, "Tooltip lacks the title");
-    assert(tooltip.indexOf("deepseek-v4-flash") >= 0, "Tooltip lacks the model");
+    assert(tooltip.indexOf("deepseek/deepseek-v4.1-flash") >= 0,
+        "Tooltip lacks the model");
     assert(tooltip.indexOf("1,000,000") >= 0, "Tooltip lacks the context limit");
     assert(tooltip.indexOf("250,000") >= 0, "Tooltip lacks the used tokens");
     assert(tooltip.indexOf("25%") >= 0, "Tooltip lacks the usage percent");

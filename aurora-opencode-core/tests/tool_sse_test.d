@@ -84,7 +84,7 @@ private void assertRequestBody()
         `{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}`;
 
     const body = client.buildBodyForTesting(
-        [user, assistant, toolResult], [sumTool], "deepseek-v4-flash", true);
+        [user, assistant, toolResult], [sumTool], "deepseek/deepseek-v4.1-flash", true);
     auto value = parseJSON(body);
     assert(value.type == JSONType.object, "Body is not an object");
     auto tools = "tools" in value.object;
@@ -124,7 +124,7 @@ private void assertPlainBody()
     user.role = "user";
     user.content = "Hi";
     const body = client.buildBodyForTesting([user], null,
-        "deepseek-v4-flash", true);
+        "deepseek/deepseek-v4.1-flash", true);
     auto value = parseJSON(body);
     assert(("tools" in value.object) is null, "Plain chat sent tools");
     writeln("Plain chat body stays tool-free");

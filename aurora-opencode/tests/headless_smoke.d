@@ -46,7 +46,7 @@ private void writeRestoredSessions(string stateDir, size_t count, int current)
     {
         JSONValue session;
         session["title"] = "Conversation " ~ to!string(index);
-        session["model"] = "deepseek-v4-flash";
+        session["model"] = "deepseek/deepseek-v4.1-flash";
         session["thinking"] = false;
         session["messages"] = JSONValue(string[].init);
         sessions.array ~= session;

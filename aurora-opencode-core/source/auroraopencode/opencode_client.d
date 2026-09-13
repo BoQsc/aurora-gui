@@ -696,8 +696,10 @@ final class OpenCodeClient
             root["tools"] = toolList;
         }
         root["stream"] = true;
-        if (!thinking)
-            root["reasoning_effort"] = "none";
+        // CommandCode accepts low|medium|high|xhigh|max and rejects the old
+        // "none" value. Map the Thinking checkbox onto that scale: on asks for
+        // deep reasoning, off the lightest available effort.
+        root["reasoning_effort"] = thinking ? "high" : "low";
         return root.toString();
     }
 
