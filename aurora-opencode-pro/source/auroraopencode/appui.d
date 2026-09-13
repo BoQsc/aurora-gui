@@ -1944,7 +1944,13 @@ private final class ActivityRow : Widget
 /// the second level of the tool-part hierarchy.
 private final class ToolGroupBubble : Widget
 {
-    private static immutable int indent = 18;
+    // Mirror MessageBubble's text insets (its padH/padV are private) so the
+    // "Explored" header sits on the same baseline and left edge as the sibling
+    // Thinking / Shell / Read rows instead of being flush to the bubble edge.
+    private static immutable int padH = 10;
+    private static immutable int padV = 6;
+    // Expanded children are nested one step in, relative to the header text.
+    private static immutable int indent = padH;
 
     private MessageBubble[] _parts;
     private bool _collapsed = true;
@@ -2029,10 +2035,12 @@ private final class ToolGroupBubble : Widget
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
-        double height = headerHeight();
+        // Match MessageBubble's vertical padding so a collapsed group row is
+        // the same height as a sibling Thinking / Shell / Read header row.
+        double height = 2 * padV + headerHeight();
         if (!_collapsed)
         {
-            const childWidth = maxInt(0, width - indent);
+            const childWidth = maxInt(0, width - 2 * padH);
             foreach (part; _parts)
             {
                 part.measure(Size(childWidth, available.height));
@@ -2048,13 +2056,13 @@ private final class ToolGroupBubble : Widget
     protected override void onLayout()
     {
         if (_collapsed) return;
-        const width = maxInt(0, bounds().width - indent);
-        int y = headerHeight();
+        const width = maxInt(0, bounds().width - 2 * padH);
+        int y = 2 * padV + headerHeight();
         foreach (part; _parts)
         {
             const hint = part.layoutHints().preferredHeight;
             const childHeight = hint >= 0 ? hint : part.bounds().height;
-            part.setBounds(Rect(indent, y, width, childHeight));
+            part.setBounds(Rect(padH, y, width, childHeight));
             y += childHeight;
         }
     }
@@ -2062,10 +2070,12 @@ private final class ToolGroupBubble : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         const h = headerHeight();
-        _headerRect = Rect(0, 0, bounds().width, h);
+        const available = maxInt(1, bounds().width - 2 * padH);
+        _headerRect = Rect(padH, padV, available, h);
         auto layout = canvas.layoutText(toUTF32(headerText()), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, maxInt(1, bounds().width), false);
-        canvas.drawLayout(Point(0, 0), layout,
+            cast(FontFace) theme().uiFont, available, false);
+        auto labelCanvas = canvas.clipped(Rect(padH, padV, available, h));
+        labelCanvas.drawLayout(Point(padH, padV), layout,
             _hover ? opencodeText : opencodeMuted);
     }
 
