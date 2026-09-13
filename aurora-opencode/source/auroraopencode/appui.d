@@ -1104,6 +1104,7 @@ public final class OpenCodeRoot : VBox
                 case OpenCodeEventKind.usage:
                     // Live usage updates; the final totals arrive with `done`.
                     break;
+                case OpenCodeEventKind.toolCallDelta:
                 case OpenCodeEventKind.toolCalls:
                 case OpenCodeEventKind.toolResult:
                     // Tool use is a Pro feature; the baseline never advertises

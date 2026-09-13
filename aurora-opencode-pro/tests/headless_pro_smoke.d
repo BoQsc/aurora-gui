@@ -7,6 +7,8 @@ import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     activeMessagePath, ensureMessageGraph, newMessageId,
     opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting, siblingMessages;
+import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
+    OpenCodeEventKind;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
@@ -559,6 +561,77 @@ int main(string[] args)
     assert(sawCall && sawReply,
         "A valid tool exchange was dropped by the sanitizer");
     writeln("Outgoing request keeps a fully-answered tool exchange");
+
+    // Streaming progress: the client must announce a tool by name as soon as
+    // the name appears (arguments still streaming), so the UI can show
+    // "Writing page.html ..." instead of looking stalled for several seconds.
+    {
+        auto client = new OpenCodeClient("https://example.invalid/v1", "k");
+        client.resetStreamStateForTesting();
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"content":"Creating it"}}]}` ~ "\n" ~
+            `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"filePath\":\"page.html\","}}]}}]}` ~
+            "\n");
+        OpenCodeEvent[] mid;
+        client.drain(mid);
+        bool sawProgress;
+        foreach (e; mid)
+            if (e.kind == OpenCodeEventKind.toolCallDelta &&
+                e.toolCalls.length == 1 && e.toolCalls[0].name == "write")
+                sawProgress = true;
+        assert(sawProgress,
+            "Client did not announce the tool call while its args streamed");
+        // The terminal event still carries the completed tool call.
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"newString\":\"hi\"}"}}]}}]}` ~
+            "\n");
+        auto finalEvents = client.finishStreamForTesting();
+        bool sawFinal;
+        foreach (e; finalEvents)
+            if (e.kind == OpenCodeEventKind.toolCalls)
+                sawFinal = true;
+        assert(sawFinal, "Stream did not finish with a toolCalls event");
+        writeln("Client announces a tool call while its arguments stream");
+    }
+
+    // Reasoning progress: CommandCode/DeepSeek gateways stream the chain of
+    // thought as `delta.reasoning` (with a parallel `reasoning_details` array),
+    // not `reasoning_content`. Missing those keys made the entire reasoning
+    // phase look like an endless cold start.
+    {
+        auto client = new OpenCodeClient("https://example.invalid/v1", "k");
+        client.resetStreamStateForTesting();
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"reasoning":"We","reasoning_details":[{"type":"reasoning.text","text":"We"}]}}]}` ~
+            "\n");
+        OpenCodeEvent[] events;
+        client.drain(events);
+        bool sawReasoning;
+        int reasoningCount;
+        foreach (e; events)
+        {
+            if (e.kind != OpenCodeEventKind.delta || !e.reasoning) continue;
+            ++reasoningCount;
+            if (e.text == "We") sawReasoning = true;
+        }
+        assert(sawReasoning,
+            "Client dropped a `reasoning` delta (looks like a cold start)");
+        assert(reasoningCount == 1,
+            "Reasoning text duplicated from reasoning + reasoning_details");
+        // `reasoning_details` is still honored when `reasoning` is absent.
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"Thinking"}]}}]}` ~
+            "\n");
+        OpenCodeEvent[] detailEvents;
+        client.drain(detailEvents);
+        bool sawDetail;
+        foreach (e; detailEvents)
+            if (e.kind == OpenCodeEventKind.delta && e.reasoning &&
+                e.text == "Thinking")
+                sawDetail = true;
+        assert(sawDetail, "Client dropped a reasoning_details delta");
+        writeln("Client surfaces streamed reasoning as it arrives");
+    }
 
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip

@@ -26,6 +26,7 @@ enum OpenCodeEventKind
     chatBegin,   // assistant reply started (text = "")
     delta,       // streaming fragment (text = fragment, reasoning = kind)
     usage,       // live usage update while streaming (token fields populated)
+    toolCallDelta, // assistant is generating tool arguments (toolCalls = partial)
     toolCalls,   // assistant finished requesting tools (text = content, toolCalls set)
     toolResult,  // a tool execution finished (text = output, toolName/toolCallId set)
     done,        // assistant reply finished (text = full content)
@@ -146,6 +147,10 @@ final class OpenCodeClient
     private string _streamReasoning;
     private string _streamContent;
     private OpenCodeToolCall[] _streamToolCalls;
+    // How many of `_streamToolCalls` already had a name announced to the UI, so
+    // a progress event fires once per new tool call (not on every argument
+    // fragment, which would flood the UI thread while a file body streams).
+    private size_t _streamToolNamesPushed;
     private bool _streamWantedTools;
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
@@ -417,6 +422,7 @@ final class OpenCodeClient
             _streamReasoning = "";
             _streamContent = "";
             _streamToolCalls.length = 0;
+            _streamToolNamesPushed = 0;
             _streamWantedTools = false;
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
@@ -564,6 +570,7 @@ final class OpenCodeClient
         _streamReasoning = "";
         _streamContent = "";
         _streamToolCalls.length = 0;
+        _streamToolNamesPushed = 0;
         _streamWantedTools = false;
         _lastPromptTokens = 0;
         _lastCompletionTokens = 0;
@@ -811,6 +818,20 @@ final class OpenCodeClient
                     }
                 }
                 _streamWantedTools = true;
+                // Announce each tool as soon as its name is known so the UI can
+                // show "Writing foo.html ..." while the arguments (the whole file
+                // body) are still streaming. Without this the reply looks
+                // stalled between the assistant's text and the tool starting.
+                size_t named;
+                foreach (call; _streamToolCalls)
+                    if (call.name.length > 0) ++named;
+                if (named > _streamToolNamesPushed)
+                {
+                    _streamToolNamesPushed = named;
+                    pushEvent(OpenCodeEvent(OpenCodeEventKind.toolCallDelta,
+                        "", false, null, false, 0, 0, 0,
+                        _streamToolCalls.dup));
+                }
             }
         }
 
@@ -822,6 +843,40 @@ final class OpenCodeClient
             {
                 fragment = found.str;
                 reasoningFragment = true;
+            }
+        }
+        if (fragment.length == 0)
+        {
+            // CommandCode/DeepSeek-style gateways stream the chain of thought
+            // as `reasoning` (a plain string), usually next to a parallel
+            // `reasoning_details` array. Recognizing only `reasoning_content`
+            // silently dropped every reasoning chunk, so the app showed
+            // nothing (not even the cold-start countdown resetting) for the
+            // whole reasoning phase — often a minute or more on coding tasks.
+            if (auto found = "reasoning" in delta.object)
+            {
+                if (found.type == JSONType.string && found.str.length > 0)
+                {
+                    fragment = found.str;
+                    reasoningFragment = true;
+                }
+            }
+        }
+        if (fragment.length == 0 && !reasoningFragment)
+        {
+            if (auto details = "reasoning_details" in delta.object)
+            {
+                if (details.type == JSONType.array)
+                {
+                    foreach (entry; details.array)
+                    {
+                        if (entry.type != JSONType.object) continue;
+                        if (auto text = "text" in entry.object)
+                            if (text.type == JSONType.string)
+                                fragment ~= text.str;
+                    }
+                    if (fragment.length > 0) reasoningFragment = true;
+                }
             }
         }
         if (fragment.length == 0)

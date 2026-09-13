@@ -1,5 +1,50 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: 80s "cold start" with nothing shown (root-caused & fixed)
+
+User: "why it takes a while for first prompt before anything happens? Why we
+are not streaming or showing anything? cold start is taking way over 80 seconds."
+
+Root cause (proved against the live endpoint, key never printed): the provider
+streams the chain of thought as `delta.reasoning` (string) plus a parallel
+`delta.reasoning_details` array — NOT `delta.reasoning_content`. `parseStreamChunk`
+only read `reasoning_content`/`content`, so every reasoning chunk was dropped.
+TTFB is ~1.5s and DNS/TLS/connect ~0.5s, so the "80s cold start" was simply the
+reasoning phase with zero events reaching the UI. No client rewrite was needed.
+
+- [x] curl probe: `http=200 ttfb=1.560 total=2.135`; first data line is
+      `delta.reasoning:"We"` — connection is not the bottleneck.
+- [x] `opencode_client.d`: parse `reasoning` (preferred) then `reasoning_details[].text`
+      as reasoning fragments; keep `reasoning_content`; avoid double-counting when
+      both `reasoning` and `reasoning_details` carry the same text.
+- [x] Smoke: assert a `reasoning` delta is surfaced once (not duplicated) and that
+      `reasoning_details` alone still works. Pro EXIT=0, baseline EXIT=0.
+- [x] Rebuilt both apps; relaunched Pro (single instance).
+
+## 2026-09-13 - Pro: no response gap before a tool call starts (done)
+
+User: "Why it has that stuck no response after saying they will do something and
+then after few seconds we see write being used."
+
+Diagnosis: while the model streams a tool call's **arguments** (the whole file
+body for `write`), the SSE chunks carry no `content`/`reasoning_content`
+fragment, so `parseStreamChunk` pushed nothing. The UI saw no events between the
+assistant's text and the final `toolCalls`, so it looked stalled for the seconds
+it took to generate the payload.
+
+- [x] `opencode_client.d`: new `OpenCodeEventKind.toolCallDelta`. The parser
+      tracks how many streamed tool calls have a name and emits one event per new
+      name (not per argument fragment) with the partial `toolCalls`.
+- [x] `appui.d` (Pro): `handleToolCallProgress` stores `_preparingToolCalls`,
+      sets status "Preparing tools…", and rebuilds so each named call shows a
+      `LiveToolRow` ("Writing page.html ..."). Cleared on toolCalls/done/error/
+      cancel/branch/session switch.
+- [x] `rebuildMessageColumn` now reuses the tagged `_streamBubble` when the
+      active leaf matches, so a mid-stream rebuild never orphans in-flight text.
+- [x] Baseline `appui.d`: added the `toolCallDelta` case to its exhaustive switch.
+- [x] Verified: Pro smoke EXIT=0 with "Client announces a tool call while its
+      arguments stream"; baseline smoke EXIT=0; both apps build.
+
 ## 2026-09-13 - Pro: show in-progress rows for edits/writes/shell (done)
 
 User: "Why we do not show what is going on between edits or while the edit is

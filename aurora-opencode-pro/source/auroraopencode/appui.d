@@ -1558,6 +1558,34 @@ private string humanToolTitle(string toolName)
     }
 }
 
+/// Present-participle title used while a tool call is still being generated:
+/// "Writing foo.html ..." reads better than the completed "Write".
+private string humanToolProgressTitle(string toolName)
+{
+    switch (toolName)
+    {
+        case "bash":
+        case "run":
+        case "dshell":
+            return "Running";
+        case "read":
+            return "Reading";
+        case "write":
+            return "Writing";
+        case "edit":
+            return "Editing";
+        case "remove":
+            return "Deleting";
+        case "glob":
+            return "Listing";
+        case "grep":
+            return "Searching";
+        default:
+            if (toolName.length == 0) return "Preparing";
+            return "Preparing " ~ toolName;
+    }
+}
+
 private static string capitalizeFirst(string value)
 {
     if (value.length == 0) return value;
@@ -2583,6 +2611,10 @@ public final class OpenCodeRoot : VBox
     // The subset of `_pendingToolCalls` that has not reported yet, used to paint
     // the live "Exploring" context row while tools are still running.
     private OpenCodeToolCall[] _liveToolCalls;
+    // Tool calls whose arguments the model is still generating (the stream has
+    // announced their names but not finished). Shown as in-progress rows so a
+    // large payload (a whole file for `write`) does not look like a stall.
+    private OpenCodeToolCall[] _preparingToolCalls;
     private int _toolRounds;
     private static immutable int maxToolRounds = 12;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
@@ -3010,6 +3042,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble = null;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         rebuildMessageColumn();
@@ -3291,6 +3324,7 @@ public final class OpenCodeRoot : VBox
         _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         _lastToolSignature = "";
@@ -3313,6 +3347,7 @@ public final class OpenCodeRoot : VBox
         _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         _lastToolSignature = "";
@@ -3419,10 +3454,37 @@ public final class OpenCodeRoot : VBox
                     continue;
                 }
             }
+            if (_streamBubble !is null &&
+                _streamBubble.messageIndex() == cast(int) index)
+            {
+                // Re-add the live reply instead of a fresh bubble so a rebuild
+                // during streaming does not drop in-flight text.
+                _messageColumn.add(_streamBubble);
+                ++slot;
+                continue;
+            }
             _messageColumn.add(buildMessageBubble(index,
                 session.messages[index], latestAssistantIndex,
                 versionPositions, versionTotals));
             ++slot;
+        }
+        // Tool calls the model has named but whose arguments are still streaming:
+        // show them as in-progress rows so the reply does not look stalled while
+        // a large payload (a whole file for `write`) is generated.
+        if (_preparingToolCalls.length > 0)
+        {
+            foreach (call; _preparingToolCalls)
+            {
+                if (call.name.length == 0) continue;
+                auto row = new LiveToolRow(humanToolProgressTitle(call.name),
+                    humanToolSubtitle(call.name, call.arguments));
+                row.onSizeChanged = delegate()
+                {
+                    _messageColumn.invalidate();
+                    _messagesScroll.invalidate();
+                };
+                _messageColumn.add(row);
+            }
         }
         // Live rows while tool calls are still running: context tools fold into
         // the aggregated "Exploring" row, and every other tool (Edit / Write /
@@ -3719,6 +3781,7 @@ public final class OpenCodeRoot : VBox
     private void beginAssistantMessage()
     {
         if (_current < 0) return;
+        _preparingToolCalls.length = 0;
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
@@ -3728,6 +3791,10 @@ public final class OpenCodeRoot : VBox
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
+        // Tag it with its message slot so a rebuild mid-stream (e.g. when a
+        // tool-call progress event arrives) can re-add the same live bubble
+        // instead of orphaning it.
+        _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
         _messageColumn.add(_streamBubble);
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
@@ -3764,6 +3831,7 @@ public final class OpenCodeRoot : VBox
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
         int completionTokens = 0, int totalTokens = 0)
     {
+        _preparingToolCalls.length = 0;
         if (_streamBubble !is null)
         {
             _streamBubble.setThinkingLive(false);
@@ -3799,6 +3867,7 @@ public final class OpenCodeRoot : VBox
 
     private void failAssistantMessage(string error)
     {
+        _preparingToolCalls.length = 0;
         if (_current < 0)
         {
             updateStatus("Error: " ~ error);
@@ -3835,10 +3904,24 @@ public final class OpenCodeRoot : VBox
     {
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+    }
+
+    /// The model is still generating tool-call arguments: it has named the
+    /// tools but the stream has not finished. Keep a live row per named call so
+    /// the UI shows what is coming while a large payload (a whole file for
+    /// `write`) streams in, instead of looking stalled after the assistant text.
+    private void handleToolCallProgress(const OpenCodeEvent event)
+    {
+        if (_current < 0) return;
+        if (event.toolCalls.length == 0) return;
+        _preparingToolCalls = event.toolCalls.dup;
+        updateStatus("Preparing tools…");
+        rebuildMessageColumn();
     }
 
     /// The model requested tool calls. Finalize the assistant message with the
@@ -3847,6 +3930,7 @@ public final class OpenCodeRoot : VBox
     /// client's event queue as toolResult events.
     private void handleToolCalls(const OpenCodeEvent event)
     {
+        _preparingToolCalls.length = 0;
         if (_current < 0) return;
         auto session = &_sessions[_current];
         if (session.messages.length == 0) return;
@@ -4040,6 +4124,7 @@ public final class OpenCodeRoot : VBox
         {
             _pendingToolCalls.length = 0;
             _liveToolCalls.length = 0;
+            _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
             if (!_toolContinuationPaused)
@@ -4095,6 +4180,7 @@ public final class OpenCodeRoot : VBox
         _lastToolRepeatCount = 0;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         startChatRequest(_current);
     }
@@ -5166,6 +5252,9 @@ public final class OpenCodeRoot : VBox
                             event.completionTokens, event.totalTokens);
                         refreshContextUsageTooltip();
                     }
+                    break;
+                case OpenCodeEventKind.toolCallDelta:
+                    handleToolCallProgress(event);
                     break;
                 case OpenCodeEventKind.toolCalls:
                     handleToolCalls(event);

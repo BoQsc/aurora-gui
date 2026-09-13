@@ -1,5 +1,85 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: 80s "cold start" with nothing shown (2026-09-13)
+
+Symptom (user): first prompt sits on "Cold-starting the model…" for >80s before
+anything appears; asking whether we stream at all.
+
+### Diagnosis (evidence, not guesswork)
+- Connection cost measured with curl: `dns=0.055 connect=0.066 tls=0.110
+  ttfb=0.569`, and the streaming chat probe returned
+  `http=200 ttfb=1.560 total=2.135`. Network/proxy are fine (ProxyEnable=0).
+- The first streamed data line was
+  `{"choices":[{"delta":{"reasoning":"We","reasoning_details":[...]}}]}`.
+  The provider streams thought as `delta.reasoning` (+ `reasoning_details`),
+  **not** `reasoning_content`.
+- `parseStreamChunk` only checked `reasoning_content`/`content`, so the whole
+  reasoning phase produced zero events; `_receivedFirstDelta` stayed false and
+  the cold-start counter kept climbing. The model was streaming the entire time.
+
+### Change
+- `opencode_client.d` `parseStreamChunk`: after `reasoning_content`, also accept
+  `reasoning` (string, preferred) and then `reasoning_details[].text`. If either
+  yields a fragment, do not fall through to `content`; if both `reasoning` and
+  `reasoning_details` repeat the same text, emit it once.
+
+### How to test
+1. Live probe (never echo the key):
+   `powershell -NoProfile -Command "$s=Get-Content -Raw \"$env:APPDATA\Aurora
+   OpenCode\settings.json\"|ConvertFrom-Json; ... curl.exe -s -N ... --data-binary
+   @body.json $url"` — confirm `ttfb` is ~1-2s and the first `data:` line carries
+   `delta.reasoning`.
+2. Smoke: `feedSseForTesting` a chunk with `reasoning` + `reasoning_details` and
+   assert exactly one reasoning `delta` event with the text; then a chunk with
+   only `reasoning_details` and assert it still surfaces. Keep the terminal
+   `toolCalls`/`finishStreamForTesting` case intact.
+
+### Result
+- Pro smoke EXIT=0 ("Client surfaces streamed reasoning as it arrives");
+  baseline smoke EXIT=0; both apps rebuilt; Pro relaunched.
+
+## Pro: no-response gap before a tool call starts (2026-09-13)
+
+Symptom (user): after the assistant says it will do something there is a long
+pause, then a `write` appears. Wondering what happens during the gap.
+
+### Diagnosis
+- `opencode_client.d` `parseStreamChunk` only derived a `delta` from
+  `content`/`reasoning_content` fragments. While the model streams a tool call's
+  `function.arguments` (for `write`, the entire file body), those chunks have no
+  content fragment, so the UI received no events until the terminal `toolCalls`
+  event at stream end. The pause is exactly the argument-generation time.
+
+### Change
+- `opencode_client.d`: added `OpenCodeEventKind.toolCallDelta`; field
+  `_streamToolNamesPushed`; after each tool_calls fragment the parser counts how
+  many streamed calls have a name and pushes one `toolCallDelta` event per new
+  name (partial `toolCalls`), throttled so argument fragments do not flood the
+  UI. Reset at stream start and in `resetStreamStateForTesting`.
+- `appui.d` (Pro): `handleToolCallProgress` sets `_preparingToolCalls` and
+  status "Preparing tools…", then `rebuildMessageColumn` renders a `LiveToolRow`
+  per named call using `humanToolProgressTitle` ("Writing page.html ..."). State
+  cleared in `handleToolCalls`, `finishAssistantMessage`, `failAssistantMessage`,
+  `cancelPendingTools`, session/new-chat reset and the retry path.
+- `rebuildMessageColumn` now re-adds the live `_streamBubble` (tagged with its
+  `messageIndex` in `beginAssistantMessage`) when the active leaf matches, so a
+  rebuild mid-stream does not orphan subsequent text deltas.
+- Baseline `appui.d`: added the `toolCallDelta` case to its `final switch`.
+
+### Method / how to test
+- Client unit case (Pro smoke): construct `OpenCodeClient`, `resetStreamState
+  ForTesting`, feed an SSE line with `tool_calls[0].function.name = "write"` and a
+  partial `arguments`, `drain`, and assert a `toolCallDelta` event carrying that
+  name arrived; then feed the remaining argument fragment and
+  `finishStreamForTesting` and assert a final `toolCalls` event.
+- Keep `feedSseForTesting` payload lines as `data: <json>\n` (the dispatcher
+  ignores anything not starting with `data:` and keeps an unterminated tail).
+
+### Result
+- Pro smoke EXIT=0 ("Client announces a tool call while its arguments stream");
+  baseline smoke EXIT=0; baseline + Pro apps build. The perceived stall now shows
+  "Preparing tools…" plus an in-progress row while the payload streams.
+
 ## Pro: in-progress rows for edits/writes/shell (2026-09-13)
 
 Symptom (user): "Why we do not show what is going on between edits or while the
