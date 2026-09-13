@@ -703,7 +703,11 @@ private final class MessageBubble : Widget
         if (_thinking.length > 0)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
-            height += fontPixelSize(1) + 4;
+            // Use the tool header's height so a collapsed "Thinking" row and a
+            // collapsed "Shell"/"Read" row are exactly the same height; the old
+            // `fontPixelSize(1) + 4` was 2 px shorter, so a mixed stack had
+            // uneven gaps.
+            height += toolHeaderHeight();
             if (!_thinkingCollapsed)
                 height += shapedThinking(innerWidth).measuredSize().height + gap;
         }
@@ -737,11 +741,7 @@ private final class MessageBubble : Widget
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
-        // Tool parts get their identity from the header, so they carry no
-        // footer (and must not reserve footer space either).
-        if (_role != "tool" &&
-            (_time.length > 0 || _usageText.length > 0 ||
-             _actionLabel.length > 0 || _versionTotal > 1))
+        if (footerVisible())
             height += fontPixelSize(1) + 4;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
@@ -791,7 +791,7 @@ private final class MessageBubble : Widget
         if (_thinking.length > 0)
         {
             drawThinkingHeader(canvas, innerWidth, y);
-            y += fontPixelSize(1) + 4;
+            y += toolHeaderHeight();
             if (!_thinkingCollapsed)
             {
                 auto layout = shapedThinking(innerWidth);
@@ -1440,11 +1440,32 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Whether this bubble reserves (and draws) the one-line meta footer.
+    ///
+    /// Tool parts carry no footer: the header already names the tool and its
+    /// subtitle, and the diff counters sit in the header itself.
+    ///
+    /// Tool-call wrappers (an assistant message with reasoning but no answer
+    /// text — the collapsed "Thinking" + "Shell" stack) also drop it. Reserving
+    /// the timestamp's line made those rows `fontPixelSize(1) + 4` px taller
+    /// than the tool rows they sit between, so a stack of collapsed rows had
+    /// alternating tall/short gaps. A real reply (answer text), an action pill,
+    /// token usage or branch nav still reserves the footer.
+    private bool footerVisible() const
+    {
+        if (_role == "tool") return false;
+        if (_usageText.length > 0 || _actionLabel.length > 0 ||
+            _versionTotal > 1)
+            return true;
+        if (_time.length == 0) return false;
+        if (_role == "assistant" && _content.length == 0 && !_failed)
+            return false;
+        return true;
+    }
+
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
-        // Tool parts have no footer: the header already names the tool and its
-        // subtitle, and the diff counters sit in the header itself.
-        if (_role == "tool") return;
+        if (!footerVisible()) return;
         const footer = _usageText.length > 0 ? _usageText : _time;
         if (footer.length == 0) return;
         auto layout = canvas.layoutText(toUTF32(footer), 1, FontRole.ui,
@@ -1902,7 +1923,9 @@ private final class ActivityRow : Widget
 
     private int rowHeight()
     {
-        return 2 * padV + fontPixelSize(2) + 6;
+        // Match every other single-line transcript row (Thinking / tool /
+        // group / live) so the activity row keeps the same gap as the rest.
+        return 2 * padV + fontPixelSize(2) + 2;
     }
 
     protected override void onTick(double deltaSeconds)
@@ -1929,9 +1952,8 @@ private final class ActivityRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        const contentH = rowHeight();
-        const top = padV;
-        const centerY = top + contentH / 2;
+        const h = rowHeight();
+        const centerY = h / 2;
         static immutable int[4] pulseAlphas = [80, 140, 220, 140];
         canvas.fillCircle(Point(padH - 6, centerY), 3,
             opencodeAccent.withAlpha(pulseAlphas[pulseStep()]));
@@ -1940,7 +1962,7 @@ private final class ActivityRow : Widget
             FontRole.ui, cast(FontFace) theme().uiFont,
             maxInt(1, bounds().width - textX - padH), false);
         canvas.drawLayout(Point(textX,
-            top + (contentH - cast(int) layout.height) / 2), layout, opencodeMuted);
+            (h - cast(int) layout.height) / 2), layout, opencodeMuted);
     }
 }
 
@@ -5876,6 +5898,17 @@ public final class OpenCodeRoot : VBox
                 message.reasoning = reasoning[index];
             appendMessage(*session, message);
         }
+        rebuildMessageColumn();
+    }
+
+    /// Test-only: stamp a completed time on the message at physical `index` so
+    /// its bubble reserves the meta footer exactly like a live session.
+    public void setMessageTimeForTesting(int index, string time)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        if (index < 0 || index >= cast(int) session.messages.length) return;
+        session.messages[cast(size_t) index].time = time;
         rebuildMessageColumn();
     }
 

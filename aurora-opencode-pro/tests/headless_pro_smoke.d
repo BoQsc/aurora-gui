@@ -1436,6 +1436,46 @@ int main(string[] args)
             "hidden wrapper added phantom spacing");
     }
 
+    // A stack of collapsed one-line rows must share one pitch. A reasoning-only
+    // assistant "Thinking" wrapper and a tool "Shell" row are both single-line
+    // headers; the assistant rows used to reserve an extra timestamp footer
+    // (and a 2 px shorter header), so their gaps alternated tall/short — the
+    // uneven spacing seen in the screenshot. Every one-line row must now measure
+    // the same height and sit exactly one column spacing apart.
+    {
+        root.newChatForTesting();
+        root.addConversationForTestingWithReasoning(
+            ["user", "assistant", "tool", "assistant", "tool"],
+            ["go", "", "shell out", "", "shell out"],
+            [null, "reasoning one", null, "reasoning two", null]);
+        foreach (i; 1 .. 5)
+            root.setMessageTimeForTesting(i, "12:34");
+        root.tickTree(0.02);
+        assert(driver.paint(), "Uniform-pitch repaint failed");
+        assert(root.messageCountForTesting() == 5,
+            "uniform-pitch scenario built the wrong column");
+        const expected = root.bubbleHeightForTesting(1);
+        foreach (i; 1 .. 5)
+        {
+            assert(root.bubbleHeightForTesting(i) == expected,
+                "one-line rows have different heights: index " ~
+                to!string(i) ~ " = " ~
+                to!string(root.bubbleHeightForTesting(i)) ~ " vs " ~
+                to!string(expected));
+        }
+        foreach (i; 1 .. 4)
+        {
+            const a = root.bubbleBoundsForTesting(i);
+            const b = root.bubbleBoundsForTesting(i + 1);
+            assert(b.y - (a.y + a.height) == 6,
+                "one-line rows are not one column spacing apart at index " ~
+                to!string(i));
+        }
+        window.saveScreenshot("build\\uniform-row-pitch.ppm");
+        writeln("Collapsed rows share a uniform pitch (height=", expected,
+            ", gap=6)");
+    }
+
     // Doom-loop recovery: repeating the same tool call with identical input
     // must break the loop and inject a recovery message asking for an answer,
     // instead of running tools forever until the round cap.

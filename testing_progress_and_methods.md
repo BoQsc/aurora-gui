@@ -1,5 +1,58 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: uneven gaps between collapsed Thinking / Shell rows (2026-09-13)
+
+**Complaint (user screenshot).** A stack of collapsed transcript rows
+(`▸ Thinking`, `▸ Shell powershell`, …) had alternating tall/short vertical
+gaps instead of a uniform column rhythm.
+
+**Root cause (measured, not guessed).** Two independent row-height mismatches,
+both in Pro `appui.d`:
+
+1. The collapsed Thinking header reserved `fontPixelSize(1) + 4` = **17 px while
+   the tool/Shell header reserved `toolHeaderHeight()` = `fontPixelSize(2) + 2`
+   = 19 px. With the Column constant 6 px spacing, a Thinking-only row was
+   `2*6 + 17 = 29` and a Shell row `2*6 + 19 = 31` — a 2 px jitter.
+2. Worse: a reasoning-only assistant wrapper (content empty, reasoning set —
+   the message that requested a tool) still reserved the one-line meta footer
+   (`fontPixelSize(1) + 4` = 17 px) for its timestamp, so it measured
+   `2*6 + 17 + 17 = 46` while the adjacent tool rows measured 31. Tool rows skip
+   the footer (`drawFooter`/measure returned early for `_role == "tool"`), so the
+   gap after every Thinking wrapper was 15 px larger than after every Shell row.
+3. `ActivityRow.rowHeight()` was `2*padV + fontPixelSize(2) + 6` = **35** (and
+   its content was centred with a double-counted `padV`), 4 px taller than the
+   31 px used by MessageBubble tool / ToolGroupBubble / LiveToolRow.
+
+**Fix (Pro `appui.d` only).**
+- Thinking header height now uses `toolHeaderHeight()` in both `onMeasure` and
+  `onPaint`, so Thinking == Shell == 31 px.
+- New `MessageBubble.footerVisible()` predicate used by `onMeasure` and
+  `drawFooter`: a one-line assistant header (`_content.length == 0`, not failed)
+  no longer reserves the footer; real replies (answer text), action pills, token
+  usage and branch nav still do.
+- `ActivityRow.rowHeight()` now `2*padV + fontPixelSize(2) + 2` = 31 and the dot
+  / label are centred on the row (`h/2`), removing the double-counted `padV`.
+
+**Test hook:** `setMessageTimeForTesting(index, time)` stamps a timestamp so the
+smoke can exercise the footer path (default test conversations carry no time).
+
+**Regression guard (Pro smoke).** New step `Collapsed rows share a uniform
+pitch`: a fresh chat `[user, assistant(reasoning), tool, assistant(reasoning),
+tool]` gets a timestamp on every row, then the smoke asserts all four one-line
+rows have equal height and consecutive bounds are exactly 6 px apart, and dumps
+`aurora-opencode-pro/build/uniform-row-pitch.ppm` (convert with
+`python -c "from PIL import Image;Image.open('uniform-row-pitch.ppm').save('uniform-row-pitch.png')"`).
+
+Negative proof (reverting only one half fails the guard):
+- footer skip removed → `one-line rows have different heights: index 2 = 31 vs 48`
+- header unified removed → `one-line rows have different heights: index 2 = 31 vs 29`
+
+**Result (2026-09-13):** Pro smoke EXIT=0 incl. the new step
+(`Collapsed rows share a uniform pitch (height=31, gap=6)`); rebuilt with
+`dub build --compiler=dmd --force`; launched exactly one
+`aurora-opencode-pro.exe`. Live capture `%TEMP%\opencode\gap-fixed-live.png`;
+the guard screenshot `uniform-row-pitch.png` shows the uniform stack.
+
 ## Pro tool-round cap (2026-09-13)
 
 The "You have reached the maximum number of tool calls..." message is generated

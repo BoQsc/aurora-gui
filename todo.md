@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: gap inconsistency between collapsed Thinking / Shell rows (fixed)
+
+User (screenshot): the collapsed `▸ Thinking` and `▸ Shell powershell` rows in
+a transcript had alternately large and tight vertical gaps.
+
+- [x] **Diagnosis**: two row-height mismatches in `aurora-opencode-pro/.../appui.d`
+      (1) the collapsed Thinking header reserved 17 px vs the tool header's 19 px;
+      (2) a reasoning-only assistant wrapper (the tool-call request) still
+      reserved the 17 px timestamp footer while tool rows skip the footer, so it
+      measured 46 px next to 31 px tool rows; (3) `ActivityRow` was 35 px vs the
+      shared 31 px. Measured: Thinking `2*6+17=29`, Shell `2*6+19=31`, wrapper
+      with footer `2*6+17+17=46`, Activity `2*6+17+6=35`.
+- [x] **Fix**: Thinking header uses `toolHeaderHeight()`; new
+      `MessageBubble.footerVisible()` drops the footer for one-line assistant
+      headers (real replies/pills/usage/branch nav keep it); `ActivityRow`
+      unified to 31 px and centred on the row.
+- [x] **Verified**: Pro smoke EXIT=0 with the new `Collapsed rows share a
+      uniform pitch` step (`height=31, gap=6`); negative runs (footer skip
+      disabled → `31 vs 48`; header unification reverted → `31 vs 29`) both
+      fire. Rebuilt, launched exactly one `aurora-opencode-pro.exe`. See
+      `testing_progress_and_methods.md` "uneven gaps between collapsed
+      Thinking / Shell rows".
+
 ## 2026-09-13 - Pro: "maximum number of tool calls" cap too low (fixed)
 
 User: the chat stops with "You have reached the maximum number of tool calls.
