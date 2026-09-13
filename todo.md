@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: "maximum number of tool calls" cap too low (fixed)
+
+User: the chat stops with "You have reached the maximum number of tool calls.
+Stop using tools now and answer the user's question directly with what you have
+learned so far." — asked whether that came from the API.
+
+- [x] **Diagnosis**: it is OUR limitation, not the API. The exact string is
+      synthesized locally in `aurora-opencode-pro/.../appui.d:4348` when
+      `_toolRounds >= maxToolRounds`. The API only supplies tool-call events.
+      (Separate local guard: doom-loop recovery at `doomLoopRepeatThreshold`.)
+- [x] **Fix**: raised `maxToolRounds` from `12` to `50` (`appui.d:2882`).
+- [x] **Verified**: Pro `dub build --build=release` links; `headless-pro-smoke.exe`
+      EXIT=0 (all steps, including "Doom-loop recovery breaks repeated identical
+      tool calls" and the tool-loop assertions). Rebuilt, killed the old
+      `aurora-opencode-pro-fix.exe`, relaunched exactly one. See
+      `testing_progress_and_methods.md` "Pro tool-round cap".
+
 ## 2026-09-13 - Pro: no in-flow "what is going on" while the model works (fixed)
 
 User: the chat can look frozen — after Send there is a silent network

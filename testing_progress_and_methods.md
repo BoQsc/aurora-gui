@@ -1,5 +1,27 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro tool-round cap (2026-09-13)
+
+The "You have reached the maximum number of tool calls..." message is generated
+by the app, not the API: `aurora-opencode-pro/source/auroraopencode/appui.d`
+appends that literal as a synthetic user message when
+`_toolRounds >= maxToolRounds` (constant `maxToolRounds`, currently `50`;
+`doomLoopRepeatThreshold` is the separate repeated-signature guard). There is no
+smoke assert on the exact constant, so after changing it run the normal Pro
+smoke to confirm the tool loop + doom-loop steps still pass:
+
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib ^
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+
+Expect `Doom-loop recovery breaks repeated identical tool calls`,
+`Tool loop executed read + grep and landed two tool messages`, then
+`Aurora OpenCode Pro headless smoke test passed.` (EXIT=0). Then rebuild the
+release app and relaunch a single instance.
+
 ## Pro: large phantom gaps between message/tool rows (2026-09-13)
 
 ### Symptom

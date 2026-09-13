@@ -1752,6 +1752,11 @@ private static string basenameOf(string path)
 /// reports back.
 private final class LiveToolRow : Widget
 {
+    // Match MessageBubble/ToolGroupBubble insets so a live row shares the
+    // reading column's left edge and leaves the same 6px above and below.
+    private static immutable int padH = 10;
+    private static immutable int padV = 6;
+
     private string _title;
     private string _subtitle;
     // Provisional `+N -M` for a file-mutating tool whose arguments are still
@@ -1783,7 +1788,7 @@ private final class LiveToolRow : Widget
 
     private int rowHeight()
     {
-        return fontPixelSize(2) + 2;
+        return 2 * padV + fontPixelSize(2) + 2;
     }
 
     private string rowText() const
@@ -1806,7 +1811,7 @@ private final class LiveToolRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        const innerWidth = maxInt(1, bounds().width);
+        const innerWidth = maxInt(1, bounds().width - 2 * padH);
         int statsWidth;
         TextLayout addLayout, delLayout;
         if (_hasDiff)
@@ -1821,12 +1826,12 @@ private final class LiveToolRow : Widget
             (statsWidth > 0 ? 8 : 0));
         auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, available, false);
-        auto clipped = canvas.clipped(Rect(0, 0, available, rowHeight()));
-        clipped.drawLayout(Point(0, 0), layout, opencodeAccent);
+        auto clipped = canvas.clipped(Rect(padH, padV, available, rowHeight()));
+        clipped.drawLayout(Point(padH, padV), layout, opencodeAccent);
         if (statsWidth > 0)
         {
-            const x = innerWidth - statsWidth;
-            const sy = (rowHeight() - cast(int) addLayout.height) / 2;
+            const x = padH + innerWidth - statsWidth;
+            const sy = padV + (rowHeight() - cast(int) addLayout.height) / 2;
             canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
             canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
                 delLayout, opencodeDiffDelete);
@@ -1851,6 +1856,11 @@ private final class ActivityRow : Widget
     private string _label;
     private double _elapsed;
     private bool _live;
+
+    // Same insets as every other transcript row so the gap above and below a
+    // stacked collapsible row stays uniform.
+    private static immutable int padH = 10;
+    private static immutable int padV = 6;
 
     this()
     {
@@ -1892,7 +1902,7 @@ private final class ActivityRow : Widget
 
     private int rowHeight()
     {
-        return fontPixelSize(2) + 6;
+        return 2 * padV + fontPixelSize(2) + 6;
     }
 
     protected override void onTick(double deltaSeconds)
@@ -1919,17 +1929,18 @@ private final class ActivityRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        const height = bounds().height;
-        const centerY = height / 2;
+        const contentH = rowHeight();
+        const top = padV;
+        const centerY = top + contentH / 2;
         static immutable int[4] pulseAlphas = [80, 140, 220, 140];
-        canvas.fillCircle(Point(4, centerY), 3,
+        canvas.fillCircle(Point(padH - 6, centerY), 3,
             opencodeAccent.withAlpha(pulseAlphas[pulseStep()]));
-        const textX = 14;
+        const textX = padH;
         auto layout = canvas.layoutText(toUTF32(displayText()), 1,
             FontRole.ui, cast(FontFace) theme().uiFont,
-            maxInt(1, bounds().width - textX), false);
+            maxInt(1, bounds().width - textX - padH), false);
         canvas.drawLayout(Point(textX,
-            (height - cast(int) layout.height) / 2), layout, opencodeMuted);
+            top + (contentH - cast(int) layout.height) / 2), layout, opencodeMuted);
     }
 }
 
@@ -2868,7 +2879,7 @@ public final class OpenCodeRoot : VBox
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
     private int _toolRounds;
-    private static immutable int maxToolRounds = 12;
+    private static immutable int maxToolRounds = 50;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Doom-loop recovery (mirrors the original opencode app): when the model
