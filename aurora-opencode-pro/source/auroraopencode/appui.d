@@ -289,6 +289,11 @@ private final class MessageBubble : Widget
     {
         if (_hidden == value) return;
         _hidden = value;
+        // Exclude the bubble from layout entirely. It keeps its slot in the
+        // column (so child index <-> message index mapping is intact), but a
+        // merely zero-height child still made the VBox add its spacing around
+        // it, opening a phantom gap between the surrounding messages.
+        setVisible(!value);
         invalidate();
     }
 
@@ -1109,8 +1114,15 @@ private final class MessageBubble : Widget
         int lastRow = count;
         if (!clip.empty())
         {
-            firstRow = maxInt(0, cast(int) ((clip.y - top) / rowH));
-            lastRow = minInt(count, cast(int) ((clip.bottom() - top) / rowH) + 2);
+            // `clipRect()` is in surface/draw-list coordinates while `top` is
+            // canvas-local, so subtract the canvas origin first. Without this,
+            // every row below a bubble that is offset down the window (or
+            // scrolled) was culled as "above the clip" and the expanded body
+            // rendered blank for read/edit parts lower in the transcript.
+            const originY = canvas.toSurface(Point(0, 0)).y;
+            firstRow = maxInt(0, cast(int) ((clip.y - originY - top) / rowH));
+            lastRow = minInt(count,
+                cast(int) ((clip.bottom() - originY - top) / rowH) + 2);
         }
 
         foreach (i; firstRow .. lastRow)
@@ -5771,6 +5783,23 @@ public final class OpenCodeRoot : VBox
         const children = _messageColumn.children();
         if (index < 0 || index >= cast(int) children.length) return 0;
         return children[cast(size_t) index].bounds().height;
+    }
+
+    /// Test-only: the message-column bounds of the bubble at `index` (hidden
+    /// bubbles keep a slot but are excluded from layout).
+    public Rect bubbleBoundsForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return Rect.init;
+        return children[cast(size_t) index].bounds();
+    }
+
+    /// Test-only: whether the bubble at `index` takes part in layout/painting.
+    public bool bubbleVisibleForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return false;
+        return children[cast(size_t) index].visible();
     }
 
     /// Test-only: current input text.

@@ -156,6 +156,21 @@ private void verifyIncrementalMarkdownCompose()
             "incremental compose placed markdown items at a different x");
     }
     writeln("Incremental markdown compose matches a full compose");
+
+    // The last block must not reserve a trailing gap (it showed as a phantom gap
+    // below every assistant reply). A two-paragraph document is therefore
+    // exactly two single-paragraph heights plus one inter-block gap.
+    {
+        auto one = composeMarkdown(parseMarkdown("same paragraph text\n"d),
+            width, false);
+        auto two = composeMarkdown(parseMarkdown(
+            "same paragraph text\n\nsame paragraph text\n"d), width, false);
+        assert(one.trailingGap > 0,
+            "a paragraph should report the gap it would add after itself");
+        assert(abs(two.height - (2 * one.height + one.trailingGap)) < 0.5,
+            "the last markdown block still reserved a trailing gap");
+        writeln("No trailing gap below the last markdown block");
+    }
 }
 
 private Widget findById(Widget widget, string requestedId)
@@ -1257,6 +1272,31 @@ int main(string[] args)
     }
     writeln("Tool-call wrapper is hidden, no pill, no token usage");
 
+    // Hidden tool-call wrappers keep a column slot for index mapping but must
+    // not take part in layout: a zero-height *visible* child still made the VBox
+    // add its spacing around it, opening a phantom gap between messages.
+    foreach (index; 0 .. root.messageCountForTesting())
+    {
+        if (!root.bubbleHiddenForTesting(index)) continue;
+        assert(!root.bubbleVisibleForTesting(index),
+            "Hidden bubble must be excluded from layout");
+        assert(root.bubbleHeightForTesting(index) == 0,
+            "Hidden bubble must have no height");
+    }
+    writeln("Hidden wrappers take no layout space");
+
+    // The column here is [user, hidden wrapper, tool]: with the wrapper excluded
+    // from layout the tool bubble sits exactly one VBox spacing (6 px) below the
+    // user bubble, instead of 12 px (a spacing on each side of the zero-height
+    // wrapper).
+    if (root.messageCountForTesting() == 3 && root.bubbleHiddenForTesting(1))
+    {
+        const first = root.bubbleBoundsForTesting(0);
+        const next = root.bubbleBoundsForTesting(2);
+        assert(next.y - (first.y + first.height) == 6,
+            "hidden wrapper added phantom spacing");
+    }
+
     // Doom-loop recovery: repeating the same tool call with identical input
     // must break the loop and inject a recovery message asking for an answer,
     // instead of running tools forever until the round cap.
@@ -1384,6 +1424,35 @@ int main(string[] args)
         assert(driver.paint(), "Tool collapse paint failed");
     }
     const firstToolShapes = expandTool();
+    // Regression: the lazy row culling subtracted a canvas-local `top` from a
+    // surface-space clip, so an offset/scrolled tool body culled nearly every
+    // row and rendered blank. With the clip converted to local coordinates the
+    // expanded body must actually contain ink.
+    {
+        auto scroll = requireWidget!Widget(root, "oc-scroll");
+        const origin = scroll.globalOrigin();
+        const sb = scroll.bounds();
+        auto surface = window.surface();
+        size_t ink;
+        const x0 = maxInt(0, origin.x);
+        const y0 = maxInt(0, origin.y);
+        const x1 = minInt(surface.width(), origin.x + sb.width - 20);
+        const y1 = minInt(surface.height(), origin.y + sb.height);
+        foreach (y; y0 .. y1)
+            foreach (x; x0 .. x1)
+            {
+                const pixel = surface.pixels()[cast(size_t) y *
+                    cast(size_t) surface.width() + cast(size_t) x];
+                const lum = ((pixel >> 16) & 0xff) + ((pixel >> 8) & 0xff) +
+                    (pixel & 0xff);
+                if (lum > 200) ++ink;
+            }
+        writeln("Large tool output expand ink=", ink);
+        window.saveScreenshot("build\\large-tool-expanded.ppm");
+        assert(ink > 500,
+            "Expanded large tool output rendered blank (ink=" ~
+            to!string(ink) ~ ")");
+    }
     collapseTool();
     const secondToolShapes = expandTool();
     assert(secondToolShapes == 0,

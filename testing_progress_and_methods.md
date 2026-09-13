@@ -1,5 +1,66 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: large phantom gaps between message/tool rows (2026-09-13)
+
+### Symptom
+Live Pro showed large vertical gaps between collapsed tool/Thinking/Read rows
+and the surrounding assistant replies (user screenshot). The whitespace was
+bigger than the intended `_messageColumn` spacing.
+
+### Root cause (diagnosis method)
+Measured live layout via `MessageBubble.bubbleBoundsForTesting` /
+`bubbleVisibleForTesting` (added for the smoke). Two independent phantom gaps:
+
+1. Hidden tool-call wrapper bubbles stayed `visible() == true`. `VBox` counts
+   them in `visibleChildren`, so it added its 6 px spacing around a zero-height
+   child: `[user y=8 h=36]`, hidden child `y=50 h=0`, tool `y=56` -> 6 px dead.
+2. `composeMarkdownInto` (`markdown.d`) appended `blockGap(bodyPx)` after the
+   LAST block too, so every assistant reply carried ~8.5 px of dead space below
+   its last line before the bubble's bottom padding.
+
+A third, separate defect made the CONTENT of an expanded tool/read/edit body
+render blank (the user: "some do show text and some do not, mostly read and
+edit", "top and bottom ... unrendered"): `MessageBubble.drawToolBody` culled
+lazy rows with `(clip.y - top) / rowH`, mixing a **surface-space** clip
+(`Canvas.clipRect()` returns `_clip`, which `Canvas.clipped` stores after
+translating the local rect by the canvas origin) with a **canvas-local** `top`.
+For a bubble low in the window the row window shifted down by `originY/rowH`
+rows, so the rows actually inside the viewport were never shaped/drawn; when
+the transcript was scrolled (negative content offset) the whole visible body
+was culled and the viewport went blank.
+
+### Fix
+- `appui.d`: `MessageBubble.setHidden(value)` also calls `setVisible(!value)`
+  (the slot is retained for index mapping but excluded from layout/paint).
+- `appui.d`: `drawToolBody` converts the clip to canvas-local coordinates
+  (`const originY = canvas.toSurface(Point(0, 0)).y;`) before computing
+  `firstRow`/`lastRow`. This is the same idiom already documented in
+  `vendor/aurora-d-0.4.5/source/aurora/pointer.d` ("The clip rect lives in
+  surface/draw-list coordinates while the polygon is in canvas-local ones").
+- `markdown.d`: `MdComposition` gains `double trailingGap`; the
+  `composeMarkdownInto` loop is indexed (`isLast`) and records the final block
+  gap into `trailingGap` instead of advancing `y`; `MarkdownComposer` restores it
+  for committed chunks (`committedHeight += part.height + part.trailingGap`)
+  because a committed chunk is still followed by the tail.
+
+### How to test
+1. Pro smoke guards (build command as in the streaming section):
+   `Hidden wrappers take no layout space` (hidden = not visible, 0 height, and
+   the next visible bubble sits exactly the column spacing below the previous
+   one), `No trailing gap below the last markdown block` (two identical
+   paragraphs' height == `2*one.height + one.trailingGap`), and
+   `Large tool output expand ink=...` — after expanding a 600-row tool output
+   the message viewport (`oc-scroll`) must contain ink. Measured: fixed
+   `ink=57547`; reverting only the clip conversion gave `ink=0` and the assert
+   fired, so the guard genuinely catches the local/surface mix. The scenario
+   also dumps `aurora-opencode-pro/build/large-tool-expanded.ppm` (convert with
+   `python -c "from PIL import Image;Image.open('large-tool-expanded.ppm').save('large-tool-expanded.png')"`)
+   for visual inspection: lines 571-600 fill the `oc-scroll` viewport.
+2. Live: collapse tool rows and confirm no dead band around the zero-height
+   wrappers and no gap below the last markdown line; expand a `Read`/`Edit`
+   part lower in a scrolled transcript and confirm every visible row renders.
+3. Baseline smoke (`aurora-opencode`, shared `markdown.d`) must still EXIT=0.
+
 ## Pro: streaming markdown recomposed the whole message every frame (2026-09-13)
 
 ### Symptom

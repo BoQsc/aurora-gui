@@ -86,6 +86,11 @@ struct MdComposition
     double cursorX = 0;
     double cursorY = 0;
     int cursorPx = 0;
+    // Space the final block would have added after itself. `composeMarkdownInto`
+    // omits it from `height` (a composed list should not reserve space below its
+    // last block); the incremental composer adds it back for a committed chunk
+    // that is still followed by more content.
+    double trailingGap = 0;
 }
 
 private immutable Color mdText = Color.fromHex(0xe8e8ec);
@@ -812,23 +817,31 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     c.cursorX = 0;
     c.cursorY = 0;
     c.cursorPx = 0;
+    c.trailingGap = 0;
     const bodyPx = opencodeFontBase;
     double y = 0;
-    foreach (ref block; blocks)
+    // The last block must not reserve trailing space: that showed up as a
+    // phantom gap below every assistant reply. The amount it would have added is
+    // reported so the incremental composer can restore it between chunks.
+    double trailingGap = 0;
+    foreach (blockIndex, ref block; blocks)
     {
+        const isLast = blockIndex + 1 == blocks.length;
         prepareFlowPieces(block);
         switch (block.type)
         {
             case BlockType.paragraph:
                 y += composeRuns(c, block.flowPieces, lineWidth, y,
                     mdText, bodyPx, 0);
-                y += blockGap(bodyPx);
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
                 break;
             case BlockType.heading:
                 const px = block.level <= 2 ? opencodeFontTitle : bodyPx;
                 y += composeRuns(c, block.flowPieces, lineWidth, y,
                     mdHeading, px, 0);
-                y += blockGap(bodyPx);
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
                 break;
             case BlockType.codeBlock:
             {
@@ -915,7 +928,9 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     panel.codeText ~= codeLine;
                 }
                 c.items[panelIndex] = panel;
-                y += panelH + blockGap(bodyPx);
+                y += panelH;
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
                 break;
             }
             case BlockType.bulletList:
@@ -946,7 +961,8 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     }
                     y = itemTop + itemHeight;
                 }
-                y += blockGap(bodyPx);
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
                 break;
             }
             case BlockType.blockquote:
@@ -965,7 +981,8 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 bar.color = mdLink;
                 c.items.insertInPlace(startIndex, bar);
                 y = quoteTop + quoteHeight;
-                y += blockGap(bodyPx);
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
                 break;
             }
             case BlockType.rule:
@@ -978,7 +995,8 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 item.h = 1;
                 item.color = mdRule;
                 c.items ~= item;
-                y += bodyPx;
+                if (isLast) trailingGap = bodyPx;
+                else y += bodyPx;
                 break;
             }
             default:
@@ -1001,6 +1019,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
             c.items ~= item;
         }
     }
+    c.trailingGap = trailingGap;
     c.height = y;
 }
 
@@ -1053,7 +1072,9 @@ struct MarkdownComposer
             composeMarkdownInto(part, committedBlocks, lineWidth, false);
             foreach (ref item; part.items) item.y += committedHeight;
             committedItems ~= part.items;
-            committedHeight += part.height;
+            // Restore the gap the committed chunk omitted, because it is still
+            // followed by the tail.
+            committedHeight += part.height + part.trailingGap;
             committedLen = commit;
         }
 
@@ -1068,6 +1089,7 @@ struct MarkdownComposer
         c.cursorX = tail.cursorX;
         c.cursorY = tail.cursorY + committedHeight;
         c.cursorPx = tail.cursorPx;
+        c.trailingGap = tail.trailingGap;
     }
 }
 

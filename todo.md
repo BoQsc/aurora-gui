@@ -1,5 +1,50 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: large gaps between message/tool rows (fixed, root cause)
+
+User: "Why there are such large gaps between. fix it should be easy" (screenshot
+of collapsed Shell/Grep/Thinking/Read rows with big vertical whitespace).
+Follow-up: "some do show text and some do not, mostly read and edit" — expanding
+a read/edit body could render blank.
+
+Three independent defects, all in the shared core/pro UI:
+
+1. Hidden tool-call wrapper bubbles kept `visible() == true`, so the message
+   `VBox` still counted them in `visibleChildren` and added its 6 px spacing on
+   each side of a zero-height child. Measured: `[user y=8 h=36]`, hidden child
+   `y=50 h=0`, tool `y=56` -> 6 px of dead space.
+   - [x] `appui.d` `MessageBubble.setHidden(value)` now also calls
+         `setVisible(!value)`, so the slot (needed for index mapping) keeps its
+         position but is excluded from layout and paint.
+2. `composeMarkdownInto` appended the inter-block gap after EVERY block,
+   including the last, leaving ~8.5 px of dead space below every assistant
+   reply before the bubble's bottom padding.
+   - [x] `MdComposition` gains `trailingGap`; the composer loop tracks
+         `isLast` and, instead of advancing `y`, records the gap in
+         `trailingGap`; `MarkdownComposer` restores it for committed chunks
+          (`committedHeight += part.height + part.trailingGap`) because the
+          committed chunk is followed by the tail.
+3. `MessageBubble.drawToolBody` culled lazy rows with `(clip.y - top) / rowH`,
+   mixing a **surface-space** clip (`Canvas.clipRect()`) with a **canvas-local**
+   `top`. A bubble low in the window shifted the row window by `originY/rowH`
+   rows, so the rows inside the viewport were never drawn; a scrolled transcript
+   (negative content offset) culled the whole visible body -> blank read/edit.
+   - [x] `drawToolBody` now converts the clip with
+         `const originY = canvas.toSurface(Point(0, 0)).y;` (same idiom as
+         `vendor/aurora-d-0.4.5/source/aurora/pointer.d`).
+- [x] Pro smoke guards: hidden wrappers are `!visible` with 0 height and take no
+      layout space; two identical paragraphs' height equals
+      `2*one.height + one.trailingGap` ("No trailing gap below the last markdown
+      block"); a 600-row tool output expanded in a scrolled transcript paints
+      ink into the `oc-scroll` viewport ("Large tool output expand ink=57547";
+      reverting only the clip conversion gave `ink=0` and the assert fired).
+- [x] Pro + baseline rebuilt (`dub build --compiler=dmd --force`); Pro smoke and
+      baseline smoke both EXIT=0; killed old Pro, relaunched exactly one
+      (PID 22372).
+- Net effect: every assistant<->tool boundary loses ~14.5 px (6 px hidden
+  wrapper + ~8.5 px trailing markdown gap). Tool-to-tool pitch is unchanged
+  (padV 12 + column spacing 6 around a single short line).
+
 ## 2026-09-13 - Pro: streaming render was O(n^2) (fixed, benchmarked)
 
 User: "What to do to have perfect fast token, text, visual/graphical streaming
