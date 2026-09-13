@@ -1212,6 +1212,147 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     }
 }
 
+/// Count the lines in a file body without allocating a line array. A single
+/// trailing newline does not start a new line, matching `diffLines`.
+private int countBodyLines(string text)
+{
+    if (text.length == 0) return 0;
+    int lines = 1;
+    foreach (ch; text)
+        if (ch == '\n') ++lines;
+    if (text[$ - 1] == '\n') --lines;
+    return lines;
+}
+
+/// Extract a JSON string value for `key` from a possibly-truncated object
+/// body. Unlike `parseJSON` this tolerates a value whose closing quote has not
+/// streamed yet, so the UI can show a live `+N -M` while a file body is still
+/// arriving. Escapes (`\n`, `\t`, `\"`, `\\`, `\/`, `\uXXXX`) are decoded;
+/// an incomplete `\u` escape is dropped.
+private string extractPartialJsonString(string body, string key)
+{
+    import std.string : indexOf;
+    const needle = "\"" ~ key ~ "\"";
+    auto at = body.indexOf(needle);
+    if (at < 0) return "";
+    size_t cursor = cast(size_t) at + needle.length;
+
+    bool skipSpace()
+    {
+        while (cursor < body.length &&
+            (body[cursor] == ' ' || body[cursor] == '\t' ||
+             body[cursor] == '\n' || body[cursor] == '\r'))
+            ++cursor;
+        return cursor < body.length;
+    }
+
+    if (!skipSpace() || body[cursor] != ':') return "";
+    ++cursor;
+    if (!skipSpace() || body[cursor] != '"') return "";
+    ++cursor;
+
+    auto builder = appender!string();
+    while (cursor < body.length)
+    {
+        const ch = body[cursor];
+        if (ch == '"') break;
+        if (ch != '\\')
+        {
+            builder.put(ch);
+            ++cursor;
+            continue;
+        }
+        if (cursor + 1 >= body.length) break;
+        const esc = body[cursor + 1];
+        switch (esc)
+        {
+            case 'n': builder.put('\n'); break;
+            case 't': builder.put('\t'); break;
+            case 'r': builder.put('\r'); break;
+            case 'b': builder.put('\b'); break;
+            case 'f': builder.put('\f'); break;
+            case '"': builder.put('"'); break;
+            case '\\': builder.put('\\'); break;
+            case '/': builder.put('/'); break;
+            case 'u':
+                if (cursor + 5 >= body.length)
+                {
+                    cursor = body.length;
+                    continue;
+                }
+                uint code;
+                bool valid = true;
+                foreach (k; 0 .. 4)
+                {
+                    const h = body[cursor + 2 + k];
+                    uint digit;
+                    if (h >= '0' && h <= '9') digit = h - '0';
+                    else if (h >= 'a' && h <= 'f') digit = h - 'a' + 10;
+                    else if (h >= 'A' && h <= 'F') digit = h - 'A' + 10;
+                    else { valid = false; break; }
+                    code = code * 16 + digit;
+                }
+                if (!valid)
+                {
+                    cursor = body.length;
+                    continue;
+                }
+                builder.put(cast(dchar) code);
+                cursor += 6;
+                continue;
+            default: builder.put(esc); break;
+        }
+        cursor += 2;
+    }
+    return builder.data;
+}
+
+/// The value of a string argument, preferring an exact `parseJSON` (the whole
+/// tool call has arrived) and falling back to the tolerant partial extractor
+/// (still streaming).
+private string partialStringArg(string argsJson, string key)
+{
+    JSONValue value;
+    try value = parseJSON(argsJson);
+    catch (Exception) value = JSONValue.init;
+    if (value.type == JSONType.object)
+        if (auto field = key in value.object)
+            if (field.type == JSONType.string)
+                return field.str;
+    return extractPartialJsonString(argsJson, key);
+}
+
+/// Best-effort additions/deletions for a file-mutating tool whose arguments
+/// are still streaming (or have just arrived). `write` reports the line count
+/// of the partial `content` as additions; `edit` diffs the partial
+/// `oldString`/`newString`. Returns false when there is nothing meaningful to
+/// show yet, or for tools that do not produce a diff. The exact diff replaces
+/// this preview once the tool executes.
+public bool previewToolDiff(string toolName, string argsJson,
+    out int additions, out int deletions)
+{
+    additions = 0;
+    deletions = 0;
+    if (toolName == "write")
+    {
+        const content = partialStringArg(argsJson, "content");
+        if (content.length == 0) return false;
+        additions = countBodyLines(content);
+        return additions > 0;
+    }
+    if (toolName == "edit")
+    {
+        const oldText = partialStringArg(argsJson, "oldString");
+        const newText = partialStringArg(argsJson, "newString");
+        if (oldText.length == 0 && newText.length == 0) return false;
+        auto diff = computeTextDiff(oldText, newText);
+        additions = diff.additions;
+        deletions = diff.deletions;
+        return additions > 0 || deletions > 0;
+    }
+    return false;
+}
+
 /// The D-native `dshell` tool: a tiny shell implemented in D that covers the
 /// commands the model most often reaches for (pwd, ls/dir, stat) so it never
 /// needs to invoke bash/cmd/powershell for plain directory introspection.

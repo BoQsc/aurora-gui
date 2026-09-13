@@ -14,6 +14,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
     parseMarkdown;
+import auroraopencode.tools : previewToolDiff;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
@@ -724,6 +725,9 @@ int main(string[] args)
     {
         auto client = new OpenCodeClient("https://example.invalid/v1", "k");
         client.resetStreamStateForTesting();
+        // No throttle window, so every argument change emits progress and the
+        // test never waits on a clock.
+        client.setToolProgressIntervalMsForTesting(0);
         client.feedSseForTesting(
             `data: {"choices":[{"delta":{"content":"Creating it"}}]}` ~ "\n" ~
             `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"filePath\":\"page.html\","}}]}}]}` ~
@@ -737,9 +741,25 @@ int main(string[] args)
                 sawProgress = true;
         assert(sawProgress,
             "Client did not announce the tool call while its args streamed");
+        // More of the file body arrives: the client must push another progress
+        // event so the live `+N -M` counters grow while the tool is still
+        // streaming (this was previously emitted only once per tool name).
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"content\":\"one\\ntwo\\nthree\","}}]}}]}` ~
+            "\n");
+        OpenCodeEvent[] streamed;
+        client.drain(streamed);
+        bool sawGrownProgress;
+        foreach (e; streamed)
+            if (e.kind == OpenCodeEventKind.toolCallDelta &&
+                e.toolCalls.length == 1 &&
+                e.toolCalls[0].arguments.length > 20)
+                sawGrownProgress = true;
+        assert(sawGrownProgress,
+            "Client did not push throttled progress as the args grew");
         // The terminal event still carries the completed tool call.
         client.feedSseForTesting(
-            `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"newString\":\"hi\"}"}}]}}]}` ~
+            `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}}"}}]}}]}` ~
             "\n");
         auto finalEvents = client.finishStreamForTesting();
         bool sawFinal;
@@ -748,6 +768,29 @@ int main(string[] args)
                 sawFinal = true;
         assert(sawFinal, "Stream did not finish with a toolCalls event");
         writeln("Client announces a tool call while its arguments stream");
+    }
+
+    // Live diff preview: a file-mutating tool's arguments are counted as they
+    // stream, so the UI can show a growing `+N -M` before the tool runs.
+    {
+        int adds, dels;
+        assert(previewToolDiff("write",
+            `{"filePath":"a.txt","content":"one\ntwo\nthr`, adds, dels),
+            "Partial write args did not produce a preview");
+        assert(adds == 3 && dels == 0,
+            "Partial write preview wrong: +" ~ to!string(adds) ~ " -" ~
+            to!string(dels));
+        assert(previewToolDiff("write",
+            `{"filePath":"a.txt","content":"one\ntwo"}`, adds, dels) &&
+            adds == 2 && dels == 0,
+            "Complete write preview wrong");
+        assert(previewToolDiff("edit",
+            `{"filePath":"a.txt","oldString":"beta","newString":"BETA\nextra"}`,
+            adds, dels) && adds == 2 && dels == 1,
+            "Edit preview wrong: +" ~ to!string(adds) ~ " -" ~ to!string(dels));
+        assert(!previewToolDiff("read", `{"filePath":"a.txt"}`, adds, dels),
+            "Read should not report a diff");
+        writeln("Live tool diff preview counts streamed write/edit args");
     }
 
     // Reasoning progress: CommandCode/DeepSeek gateways stream the chain of
@@ -1206,6 +1249,80 @@ int main(string[] args)
     window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
     writeln("Context tools fold into a collapsible Explored group");
 
+    // Live diff counters: while the model streams a file-mutating tool's
+    // arguments, the in-progress row must show a provisional `+N -M` that
+    // grows as the body arrives (a big write used to show no progress at all
+    // until the tool finished).
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Write a page"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall prep;
+        prep.name = "write";
+        prep.arguments = `{"filePath":"page.html","content":"<html>\n<body>\n<p>`;
+        root.injectToolProgressForTesting([prep]);
+        auto rows = root.liveToolRowTextsForTesting();
+        auto diffs = root.liveToolRowDiffTextsForTesting();
+        assert(rows.length == 1 && diffs.length == 1,
+            "Live write row missing");
+        assert(diffs[0] == "+3 -0",
+            "Live write counters wrong: " ~ diffs[0]);
+        assert(driver.paint(), "Live write row did not paint");
+        // More of the file body streams in: counters must grow.
+        prep.arguments =
+            `{"filePath":"page.html","content":"<html>\n<body>\n<p>hi</p>\n</body>\n</html>"}`;
+        root.injectToolProgressForTesting([prep]);
+        diffs = root.liveToolRowDiffTextsForTesting();
+        assert(diffs[0] == "+5 -0",
+            "Live write counters did not grow: " ~ diffs[0]);
+        // An edit previews both sides as soon as the new string streams.
+        OpenCodeToolCall editPrep;
+        editPrep.name = "edit";
+        editPrep.arguments =
+            `{"filePath":"a.txt","oldString":"beta","newString":"BETA\nextra"}`;
+        root.injectToolProgressForTesting([editPrep]);
+        diffs = root.liveToolRowDiffTextsForTesting();
+        assert(diffs.length == 1 && diffs[0] == "+2 -1",
+            "Live edit counters wrong: " ~ diffs[0]);
+        assert(driver.paint(), "Live edit row did not paint");
+        writeln("Live tool rows grow +N -M as arguments stream");
+    }
+
+    // Live activity row: while the assistant works — before the first token,
+    // while reasoning, and between tool rounds — the transcript must end with a
+    // pulsing "what is going on" row so the chat never looks frozen. The row
+    // shows the phase text, updates as the phase changes, and clears the moment
+    // work stops.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Do something"]);
+        assert(!root.activityVisibleForTesting(),
+            "Activity row appeared before any work started");
+        // A tool-call progress event must label the row "Preparing tools…".
+        OpenCodeToolCall prep;
+        prep.name = "write";
+        prep.arguments = `{"filePath":"page.html","content":"<html>`;
+        root.injectToolProgressForTesting([prep]);
+        assert(root.activityVisibleForTesting(),
+            "Activity row did not appear while preparing tools");
+        assert(root.activityTextForTesting() == "Preparing tools…",
+            "Activity row shows the wrong phase: " ~
+            root.activityTextForTesting());
+        assert(driver.paint(), "Activity row did not paint");
+        const actShots = buildPath(tempDir(), "aurora-opencode-live-shots");
+        if (!exists(actShots)) mkdirRecurse(actShots);
+        window.saveScreenshot(buildPath(actShots, "activity-preparing.ppm"));
+        // A phase change updates the same row in place.
+        root.setActivityForTesting("Running 2 tools…");
+        assert(root.activityTextForTesting() == "Running 2 tools…",
+            "Activity row did not update its phase");
+        // Clearing removes it from the transcript.
+        root.clearActivityForTesting();
+        assert(!root.activityVisibleForTesting(),
+            "Activity row did not clear when work stopped");
+        writeln("Live activity row shows the phase and clears when done");
+    }
+
     // Edit tool: a real file edit must report a unified diff with green/red
     // counters (the collapsed part shows +N -M; the body shows line numbers).
     write(buildPath(workspaceDir, "editme.txt"), "alpha\nbeta\ngamma\n");
@@ -1256,6 +1373,28 @@ int main(string[] args)
     assert(driver.paint(), "Expanded edit diff did not repaint");
     window.saveScreenshot(buildPath(toolShots, "edit-diff-expanded.ppm"));
     writeln("Edit tool reports a +adds/-dels diff");
+
+    // Restart persistence: the edit's counters and unified diff body must
+    // survive a save + reload. They used to be dropped, so after a restart the
+    // expanded edit showed a bare one-line summary with no diff at all.
+    {
+        const addsBefore = root.toolDiffAdditionsForTesting(0);
+        const delsBefore = root.toolDiffDeletionsForTesting(0);
+        assert(addsBefore >= 1 && delsBefore >= 1,
+            "precondition: edit reported a diff");
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.toolHasDiffForTesting(0),
+            "reloaded edit lost its diff body");
+        assert(root.toolDiffAdditionsForTesting(0) == addsBefore &&
+            root.toolDiffDeletionsForTesting(0) == delsBefore,
+            "reloaded edit lost its diff counters");
+        root.toggleFirstToolBubbleForTesting();
+        assert(driver.paint(), "Restored edit diff did not repaint");
+        window.saveScreenshot(buildPath(toolShots, "restored-edit-diff.ppm"));
+        root.toggleFirstToolBubbleForTesting();
+        writeln("Edit diff survives a save + reload");
+    }
 
     // The tool-call wrapper (the assistant message that requested tools) is
     // not a reply: it must not render as a visible empty bubble, and must not
@@ -1370,6 +1509,37 @@ int main(string[] args)
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
     writeln("Collapse screenshots: ", shotDir);
+
+    // Read bodies survive a restart: their text is persisted and the restored
+    // Explored group still expands to render the read output (the reported
+    // regression was that read/edit bodies went blank after a restart).
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Read both files"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        root.appendToolMessageForTesting("read",
+            "line one\nline two\nline three\n", `{"filePath":"a.txt"}`,
+            0, 0, "");
+        root.appendToolMessageForTesting("read", "second file\nbody\n",
+            `{"filePath":"b.txt"}`, 0, 0, "");
+        assert(root.contextGroupCountForTesting() == 1,
+            "two reads did not fold into one context group");
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.toolResultForTesting(0).indexOf("line one") >= 0,
+            "restored read lost its content: " ~ root.toolResultForTesting(0));
+        assert(root.toolResultForTesting(1).indexOf("second file") >= 0,
+            "restored second read lost its content");
+        assert(root.contextGroupCountForTesting() == 1,
+            "restored reads did not fold into a group");
+        assert(root.firstToolGroupPartCountForTesting() == 2,
+            "restored group lost a read part");
+        root.toggleFirstToolGroupForTesting();
+        assert(driver.paint(), "Restored read group did not repaint");
+        window.saveScreenshot(buildPath(shotDir, "restored-reads-expanded.ppm"));
+        root.toggleFirstToolGroupForTesting();
+        writeln("Read bodies survive a save + reload");
+    }
 
     // Collapse/expand performance: expanding a tool output used to shape every
     // row up front (600 rows, ~2 s of freeze). Now only the visible rows are

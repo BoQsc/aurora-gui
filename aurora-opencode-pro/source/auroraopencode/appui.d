@@ -9,7 +9,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
-    executeTool, nativeOnlyToolDefinitions;
+    executeTool, nativeOnlyToolDefinitions, previewToolDiff;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -1754,6 +1754,13 @@ private final class LiveToolRow : Widget
 {
     private string _title;
     private string _subtitle;
+    // Provisional `+N -M` for a file-mutating tool whose arguments are still
+    // streaming (or have just arrived). Replaced by the real result bubble's
+    // counters once the tool reports back. Shown right-aligned like the
+    // completed tool header so the two read as the same control.
+    private int _additions;
+    private int _deletions;
+    private bool _hasDiff;
 
     void delegate() onSizeChanged;
 
@@ -1762,6 +1769,17 @@ private final class LiveToolRow : Widget
         _title = title;
         _subtitle = subtitle;
     }
+
+    void setDiff(int additions, int deletions)
+    {
+        _additions = additions;
+        _deletions = deletions;
+        _hasDiff = additions > 0 || deletions > 0;
+        invalidate();
+    }
+
+    int diffAdditionsForTesting() const { return _additions; }
+    int diffDeletionsForTesting() const { return _deletions; }
 
     private int rowHeight()
     {
@@ -1788,9 +1806,130 @@ private final class LiveToolRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
+        const innerWidth = maxInt(1, bounds().width);
+        int statsWidth;
+        TextLayout addLayout, delLayout;
+        if (_hasDiff)
+        {
+            addLayout = canvas.layoutText(toUTF32("+" ~ to!string(_additions)),
+                1, FontRole.monospace, null, 200, false);
+            delLayout = canvas.layoutText(toUTF32("-" ~ to!string(_deletions)),
+                1, FontRole.monospace, null, 200, false);
+            statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+        }
+        const available = maxInt(1, innerWidth - statsWidth -
+            (statsWidth > 0 ? 8 : 0));
         auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, maxInt(1, bounds().width), false);
-        canvas.drawLayout(Point(0, 0), layout, opencodeAccent);
+            cast(FontFace) theme().uiFont, available, false);
+        auto clipped = canvas.clipped(Rect(0, 0, available, rowHeight()));
+        clipped.drawLayout(Point(0, 0), layout, opencodeAccent);
+        if (statsWidth > 0)
+        {
+            const x = innerWidth - statsWidth;
+            const sy = (rowHeight() - cast(int) addLayout.height) / 2;
+            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
+            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+                delLayout, opencodeDiffDelete);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live activity row (Pro): spinner + phase label at the end of the transcript
+// ---------------------------------------------------------------------------
+
+/// A small always-visible "what is going on" row that sits at the end of the
+/// conversation while the assistant is busy. It shows a pulsing dot, the
+/// current phase ("Waiting for the model…", "Thinking…", "Writing…",
+/// "Running 2 tools…") and the elapsed seconds. It fills the gaps where the
+/// transcript would otherwise look frozen: after a prompt is sent (before the
+/// first token), between tool rounds, and while a long reasoning or file body
+/// streams. The dot is drawn rather than a glyph so it never depends on font
+/// coverage.
+private final class ActivityRow : Widget
+{
+    private string _label;
+    private double _elapsed;
+    private bool _live;
+
+    this()
+    {
+        setId("oc-activity");
+    }
+
+    /// Set the phase label. Changing the label restarts the elapsed clock so
+    /// the seconds always describe the current phase.
+    void setLabel(string label)
+    {
+        if (_label == label) return;
+        _label = label;
+        _elapsed = 0.0;
+        invalidate();
+    }
+
+    void setLive(bool value)
+    {
+        if (_live == value) return;
+        _live = value;
+        if (!_live) _elapsed = 0.0;
+        invalidate();
+    }
+
+    bool hasLabel() const { return _label.length > 0; }
+    string textForTesting() const { return _label; }
+
+    private int pulseStep() const
+    {
+        return cast(int) (_elapsed * 4) % 4;
+    }
+
+    private string displayText() const
+    {
+        const seconds = cast(int) _elapsed;
+        return _label ~ (seconds >= 1
+            ? "  " ~ to!string(seconds) ~ "s" : "");
+    }
+
+    private int rowHeight()
+    {
+        return fontPixelSize(2) + 6;
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_live) return;
+        const beforePulse = pulseStep();
+        const beforeSeconds = cast(int) _elapsed;
+        _elapsed += deltaSeconds;
+        // Repaint only when the visible state changes: a long wait must not
+        // repaint the whole window every frame.
+        if (pulseStep() != beforePulse ||
+            cast(int) _elapsed != beforeSeconds)
+            invalidate();
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        const height = rowHeight();
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const height = bounds().height;
+        const centerY = height / 2;
+        static immutable int[4] pulseAlphas = [80, 140, 220, 140];
+        canvas.fillCircle(Point(4, centerY), 3,
+            opencodeAccent.withAlpha(pulseAlphas[pulseStep()]));
+        const textX = 14;
+        auto layout = canvas.layoutText(toUTF32(displayText()), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont,
+            maxInt(1, bounds().width - textX), false);
+        canvas.drawLayout(Point(textX,
+            (height - cast(int) layout.height) / 2), layout, opencodeMuted);
     }
 }
 
@@ -2701,6 +2840,10 @@ public final class OpenCodeRoot : VBox
     private int _editMessageIndex = -1;
 
     private MessageBubble _streamBubble;
+    // The live "what is going on" row pinned to the end of the transcript while
+    // the assistant works. Retained across rebuilds so its pulse and elapsed
+    // clock keep running; the column re-adds it whenever a label is set.
+    private ActivityRow _activityRow;
     private PopupOverlay _activePopup;
 
     // Tool loop: the model may request tool calls, the app executes them, and
@@ -3167,6 +3310,7 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
+        clearActivity();
         rebuildMessageColumn();
         if (_status !is null) updateStatus("");
     }
@@ -3453,6 +3597,7 @@ public final class OpenCodeRoot : VBox
         _lastToolRepeatCount = 0;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
+        clearActivity();
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -3474,6 +3619,7 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        clearActivity();
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
         _settings.thinking = _sessions[index].thinking;
@@ -3600,6 +3746,11 @@ public final class OpenCodeRoot : VBox
                 if (call.name.length == 0) continue;
                 auto row = new LiveToolRow(humanToolProgressTitle(call.name),
                     humanToolSubtitle(call.name, call.arguments));
+                // Live `+N -M`: while the arguments stream, show a provisional
+                // diff so a large write/edit grows its counters in real time.
+                int adds, dels;
+                if (previewToolDiff(call.name, call.arguments, adds, dels))
+                    row.setDiff(adds, dels);
                 row.onSizeChanged = delegate()
                 {
                     _messageColumn.invalidate();
@@ -3641,6 +3792,11 @@ public final class OpenCodeRoot : VBox
                     continue;
                 auto row = new LiveToolRow(humanToolTitle(call.name),
                     humanToolSubtitle(call.name, call.arguments));
+                // The arguments are complete here, so the provisional diff is
+                // exact; it bridges the gap until the result reports back.
+                int adds, dels;
+                if (previewToolDiff(call.name, call.arguments, adds, dels))
+                    row.setDiff(adds, dels);
                 row.onSizeChanged = delegate()
                 {
                     _messageColumn.invalidate();
@@ -3649,6 +3805,11 @@ public final class OpenCodeRoot : VBox
                 _messageColumn.add(row);
             }
         }
+        // The live activity row is always last so the eye lands on it while the
+        // assistant works (waiting for the first token, thinking, writing, or
+        // running tools). It bridges the gaps that otherwise look frozen.
+        if (_activityRow !is null && _activityRow.hasLabel())
+            _messageColumn.add(_activityRow);
         _messagesScroll.follow = true;
         _messageColumn.invalidate();
         // The column is a retained layer; let the ScrollView re-measure and
@@ -3918,6 +4079,9 @@ public final class OpenCodeRoot : VBox
         // instead of orphaning it.
         _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
         _messageColumn.add(_streamBubble);
+        // The request headers are in; the model is now thinking or about to
+        // emit its first token. Keep the in-flow row honest about the phase.
+        setActivity(_settings.thinking ? "Thinking…" : "Writing…");
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
         refreshBubbleActions();
@@ -3931,6 +4095,9 @@ public final class OpenCodeRoot : VBox
             _receivedFirstDelta = true;
             updateStatus("Generating…");
         }
+        // Reasoning and answer text are different phases; label the live row
+        // accordingly so the user can tell thought from the reply taking shape.
+        setActivity(reasoning ? "Thinking…" : "Writing…");
         auto session = &_sessions[_current];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
@@ -3954,6 +4121,7 @@ public final class OpenCodeRoot : VBox
         int completionTokens = 0, int totalTokens = 0)
     {
         _preparingToolCalls.length = 0;
+        clearActivity();
         if (_streamBubble !is null)
         {
             _streamBubble.setThinkingLive(false);
@@ -3990,6 +4158,7 @@ public final class OpenCodeRoot : VBox
     private void failAssistantMessage(string error)
     {
         _preparingToolCalls.length = 0;
+        clearActivity();
         if (_current < 0)
         {
             updateStatus("Error: " ~ error);
@@ -4031,6 +4200,36 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        clearActivity();
+    }
+
+    /// Show (or update) the in-flow activity row. It fills the gaps where the
+    /// transcript would otherwise look frozen: before the first token, while
+    /// reasoning, while tool arguments stream, and between tool rounds. A
+    /// non-empty label pins the row to the end of the column; an empty one
+    /// removes it.
+    private void setActivity(string label)
+    {
+        if (_activityRow is null) _activityRow = new ActivityRow();
+        const wasPresent = _activityRow.parent() !is null;
+        _activityRow.setLabel(label);
+        _activityRow.setLive(label.length > 0);
+        if (_current < 0) return;
+        const present = label.length > 0;
+        // Only rebuild when the row enters or leaves the transcript; a phase
+        // change within the same row is a cheap invalidate.
+        if (wasPresent != present) rebuildMessageColumn();
+        else _activityRow.invalidate();
+    }
+
+    /// Remove the in-flow activity row (reply finished, failed or cancelled).
+    private void clearActivity()
+    {
+        if (_activityRow is null) return;
+        const wasPresent = _activityRow.parent() !is null;
+        _activityRow.setLabel("");
+        _activityRow.setLive(false);
+        if (wasPresent && _current >= 0) rebuildMessageColumn();
     }
 
     /// The model is still generating tool-call arguments: it has named the
@@ -4043,6 +4242,7 @@ public final class OpenCodeRoot : VBox
         if (event.toolCalls.length == 0) return;
         _preparingToolCalls = event.toolCalls.dup;
         updateStatus("Preparing tools…");
+        setActivity("Preparing tools…");
         rebuildMessageColumn();
     }
 
@@ -4139,8 +4339,10 @@ public final class OpenCodeRoot : VBox
             return;
         }
         ++_toolRounds;
-        updateStatus("Running " ~ to!string(event.toolCalls.length) ~
-            " tool call(s)…");
+        const toolCount = event.toolCalls.length;
+        updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
+        setActivity("Running " ~ to!string(toolCount) ~
+            (toolCount == 1 ? " tool…" : " tools…"));
 
         _pendingToolCalls = event.toolCalls.dup;
         _liveToolCalls = event.toolCalls.dup;
@@ -4262,6 +4464,7 @@ public final class OpenCodeRoot : VBox
         {
             _client.cancel();
             updateStatus("Stopping…");
+            setActivity("Stopping…");
             return;
         }
 
@@ -4421,6 +4624,9 @@ public final class OpenCodeRoot : VBox
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
         updateStatus("Generating…");
+        // Fill the request round-trip immediately: the transcript shows a live
+        // "waiting" row from the moment Send is pressed until the first event.
+        setActivity("Waiting for the model…");
         updateSendButton();
     }
 
@@ -5205,6 +5411,16 @@ public final class OpenCodeRoot : VBox
                 messageJson["toolName"] = message.toolName;
             if (message.toolArgs.length > 0)
                 messageJson["toolArgs"] = message.toolArgs;
+            // File-mutating tools carry a computed diff. It must survive a
+            // restart: without it an expanded edit loses its green/red `+N -M`
+            // counters and its line-numbered unified body (the old behavior
+            // showed only the one-line tool summary).
+            if (message.diffAdditions > 0)
+                messageJson["diffAdditions"] = message.diffAdditions;
+            if (message.diffDeletions > 0)
+                messageJson["diffDeletions"] = message.diffDeletions;
+            if (message.toolDiff.length > 0)
+                messageJson["toolDiff"] = message.toolDiff;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -5278,6 +5494,14 @@ public final class OpenCodeRoot : VBox
                                         message.toolName = f.str;
                                     if (auto f = "toolArgs" in messageValue.object)
                                         message.toolArgs = f.str;
+                                    if (auto f = "diffAdditions" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.diffAdditions = cast(int) f.integer;
+                                    if (auto f = "diffDeletions" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.diffDeletions = cast(int) f.integer;
+                                    if (auto f = "toolDiff" in messageValue.object)
+                                        message.toolDiff = f.str;
                                     if (auto f = "toolCalls" in messageValue.object)
                                     {
                                         if (f.type == JSONType.array)
@@ -6030,6 +6254,77 @@ public final class OpenCodeRoot : VBox
         return labels;
     }
 
+    /// Test-only: provisional `+N -M` counters of the in-progress tool rows
+    /// ("" when a row has no diff yet), in column order.
+    public string[] liveToolRowDiffTextsForTesting()
+    {
+        string[] labels;
+        foreach (child; _messageColumn.children())
+            if (auto row = cast(LiveToolRow) child)
+                labels ~= (row.diffAdditionsForTesting() > 0 ||
+                    row.diffDeletionsForTesting() > 0
+                    ? "+" ~ to!string(row.diffAdditionsForTesting()) ~
+                        " -" ~ to!string(row.diffDeletionsForTesting())
+                    : "");
+        return labels;
+    }
+
+    /// Test-only: the phase text currently shown in the live activity row
+    /// ("" when the row is not in the transcript). Drives the "what is going
+    /// on" indicator so a smoke test can prove it appears, updates and clears.
+    public void setActivityForTesting(string label)
+    {
+        setActivity(label);
+    }
+
+    /// Test-only: clear the live activity row exactly as reply completion does.
+    public void clearActivityForTesting()
+    {
+        clearActivity();
+    }
+
+    /// Test-only: whether the live activity row is part of the transcript.
+    public bool activityVisibleForTesting()
+    {
+        return _activityRow !is null && _activityRow.parent() !is null;
+    }
+
+    /// Test-only: the live activity row's phase text ("" when absent).
+    public string activityTextForTesting()
+    {
+        return _activityRow is null ? "" : _activityRow.textForTesting();
+    }
+
+    /// Test-only: inject a tool-call progress event (the model is still
+    /// streaming the arguments), exactly as the client would deliver it.
+    public void injectToolProgressForTesting(const(OpenCodeToolCall)[] calls)
+    {
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.toolCallDelta;
+        event.toolCalls = calls.dup;
+        handleToolCallProgress(event);
+    }
+
+    /// Test-only: append a completed `tool` message with its diff metadata,
+    /// simulating a restored/executed result without running a real tool.
+    public void appendToolMessageForTesting(string toolName, string content,
+        string args, int additions, int deletions, string diff)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "tool";
+        message.toolName = toolName;
+        message.content = content;
+        message.toolArgs = args;
+        message.diffAdditions = additions;
+        message.diffDeletions = deletions;
+        message.toolDiff = diff;
+        message.time = currentTimestamp();
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+    }
+
     /// Test-only: the sanitized outgoing message list for the current session
     /// (the exact history `startChatRequest` would send, minus the system
     /// prompt and tool definitions).
@@ -6282,6 +6577,17 @@ public final class OpenCodeRoot : VBox
         auto bubbles = toolBubblesForTesting();
         if (bubbles.length == 0) return;
         bubbles[0].toggleCollapseForTesting();
+        _messageColumn.invalidate();
+        _messagesScroll.invalidate();
+    }
+
+    /// Test-only: expand (or collapse) the `tool` result bubble at ordinal `n`
+    /// (recursing into context groups) and reflow the scroll view.
+    public void toggleToolBubbleForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return;
+        bubbles[cast(size_t) n].toggleCollapseForTesting();
         _messageColumn.invalidate();
         _messagesScroll.invalidate();
     }

@@ -8691,4 +8691,120 @@ headless smoke passes all steps; screenshot confirms the composer/messages colum
 now fills the chat pane; app relaunched (exactly one
 `aurora-opencode-pro.exe`).
 
+## Aurora OpenCode Pro: live `+N -M` counters + diff/read bodies survive restart (2026-09-13)
+
+User report (two bugs): (1) the `+N -M` additions/deletions never updated in
+real time while a file-mutating tool's arguments streamed, and (2) after an app
+restart, collapsed tool parts (edits/reads) no longer showed their content when
+expanded.
+
+**Root causes:**
+- Real time: the SSE client only pushed `OpenCodeEventKind.toolCallDelta` once
+  per newly-named tool (`_streamToolNamesPushed`), so between the name appearing
+  and the tool executing the UI got no argument updates at all. Big writes showed
+  a static "Writing …" row for the whole stream.
+- Restart: `sessionToJson`/`restoreSessions` in
+  `aurora-opencode-pro/source/auroraopencode/appui.d` never persisted
+  `diffAdditions`, `diffDeletions`, or `toolDiff`; the real
+  `%APPDATA%\Aurora OpenCode\sessions.json` only carried
+  `content,id,parentId,role,time,toolCallId,toolName` (+`toolArgs`), so a
+  restored edit/read rendered as a bare one-line summary.
+
+**Implementation:**
+- `aurora-opencode-core/source/auroraopencode/opencode_client.d`: while
+  `_streamToolCalls` arguments grow, push throttled `toolCallDelta` events —
+  `_toolProgressIntervalMs` (default 120 ms) + `_lastToolProgressTime`
+  (`core.time.MonoTime`) + `_streamToolArgBytes`, firing on a new name OR an
+  argument-size change that is due. Reset in `runChatRequest` and
+  `resetStreamStateForTesting`. Test hook
+  `setToolProgressIntervalMsForTesting(0)` makes every change emit (no clock
+  wait). Note: do NOT gate the "due" check on `_streamActive` — the headless
+  `feedSseForTesting` path never sets it and progress would never fire.
+- `aurora-opencode-pro/source/auroraopencode/tools.d`: added
+  `countBodyLines`, `extractPartialJsonString` (tolerant of truncated JSON
+  strings, decodes `\n \t \r \b \f \" \\ \/ \uXXXX`), `partialStringArg`
+  (exact `parseJSON` else partial), and public
+  `previewToolDiff(toolName, argsJson, out additions, out deletions)`:
+  `write` → line count of the (possibly partial) `content`; `edit` →
+  `computeTextDiff(oldString, newString)`. Non-diff tools return false.
+- `aurora-opencode-pro/source/auroraopencode/appui.d`: `LiveToolRow` gained
+  `_additions`/`_deletions`/`_hasDiff`, `setDiff`, and right-aligned green/red
+  counters (`opencodeDiffAdd`/`opencodeDiffDelete`) in `onPaint`, matching the
+  completed `MessageBubble` tool header. `rebuildMessageColumn` feeds
+  `previewToolDiff` into every `_preparingToolCalls` row (live) and every
+  `_liveToolCalls` row. `sessionToJson`/`restoreSessions` now round-trip
+  `diffAdditions`, `diffDeletions`, `toolDiff`.
+
+**New test hooks:** `liveToolRowDiffTextsForTesting`,
+`injectToolProgressForTesting`, `appendToolMessageForTesting`,
+`toggleToolBubbleForTesting(n)`.
+
+**How to verify (from `aurora-opencode-pro/`):**
+```
+dub build --compiler=dmd --force
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+  user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+  -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+New/updated smoke steps: `Client announces a tool call while its arguments
+stream` (now also feeds a second args fragment and expects a grown progress
+event), `Live tool diff preview counts streamed write/edit args`,
+`Live tool rows grow +N -M as arguments stream` (+3 -0 → +5 -0 for a streaming
+write, +2 -1 for an edit), `Edit diff survives a save + reload`, and `Read
+bodies survive a save + reload` (two restored reads fold into one Explored group
+and expand to paint). Pass = `Aurora OpenCode Pro headless smoke test passed.`
+
+**Result (2026-09-13):** rebuilt with `dub build --compiler=dmd --force`; Pro
+smoke passes all steps incl. the four new ones; app relaunched (exactly one
+`aurora-opencode-pro.exe`).
+
+## Aurora OpenCode Pro: in-flow live activity row (2026-09-13)
+
+**Complaint.** The chat could look frozen: after Send there was a network
+round-trip with no visible sign of work, reasoning showed only a collapsed
+pulsing "Thinking" header, tool-argument streaming showed rows but no phase, and
+between tool rounds the transcript looked stalled. The only feedback was the
+bottom status line, far from the conversation.
+
+**Fix (Pro `appui.d` only).** New private `ActivityRow : Widget` — a 4-step
+alpha-pulsing dot (`Canvas.fillCircle`, no glyph so it never depends on font
+coverage) plus the phase label and elapsed seconds, pinned as the last child of
+`_messageColumn`. `OpenCodeRoot` owns one retained `_activityRow` (created
+lazily) and drives it through `setActivity(string)` / `clearActivity()`:
+
+| Event | Phase shown |
+|---|---|
+| `startChatRequest` | `Waiting for the model…` |
+| `beginAssistantMessage` | `Thinking…` (thinking on) / `Writing…` |
+| `appendStreamDelta` | `Thinking…` (reasoning) / `Writing…` (answer) |
+| `handleToolCallProgress` | `Preparing tools…` |
+| `handleToolCalls` | `Running N tool…` / `Running N tools…` |
+| Send while busy (`sendMessage` cancel) | `Stopping…` |
+| `finishAssistantMessage` / `failAssistantMessage` / `cancelPendingTools` / `newChat` / `selectSession` / `syncCurrentToActiveProject` | cleared |
+
+`setActivity` rebuilds the column only when the row enters/leaves; a phase
+change is a cheap `invalidate()`. `ActivityRow.setLabel` resets the elapsed clock
+on a phase change; `onTick` invalidates only when the pulse step or integer
+second changes, so a long wait does not repaint every frame. The dot is drawn
+with `opencodeAccent.withAlpha([80,140,220,140])` and the text with
+`opencodeMuted`. No core change; baseline is untouched.
+
+**Test hooks:** `setActivityForTesting`, `clearActivityForTesting`,
+`activityVisibleForTesting`, `activityTextForTesting`.
+
+**How to test (Pro smoke).** New step `Live activity row shows the phase and
+clears when done`: a fresh chat has no row; `injectToolProgressForTesting`
+shows `Preparing tools…`; the row paints and writes
+`%TEMP%\aurora-opencode-live-shots\activity-preparing.ppm`; a phase change
+updates in place; clearing removes it. Pass = `Aurora OpenCode Pro headless
+smoke test passed.`
+
+**Result (2026-09-13):** Pro smoke EXIT=0 (incl. the new step); baseline
+`headless-smoke.exe` EXIT=0; rebuilt with `dub build --compiler=dmd --force`;
+killed the old Pro instance and relaunched exactly one
+(`aurora-opencode-pro.exe`, errors.log clean).
+
+
 

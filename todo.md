@@ -1,5 +1,79 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: no in-flow "what is going on" while the model works (fixed)
+
+User: the chat can look frozen — after Send there is a silent network
+round-trip, reasoning shows only a collapsed pulsing "Thinking" header, and
+between tool rounds the transcript looks stalled (the only feedback was the
+bottom status line, far from the conversation).
+
+- [x] **`ActivityRow` widget** (`aurora-opencode-pro/.../appui.d`): a pulsing
+      dot (`Canvas.fillCircle`, no glyph so no font-coverage risk) + phase label
+      + elapsed seconds, pinned as the last child of `_messageColumn`.
+      `setLabel` resets the elapsed clock on a phase change; `onTick` invalidates
+      only when the pulse step or the integer second changes.
+- [x] **Root wiring**: retained `_activityRow`; `setActivity(string)` /
+      `clearActivity()`. Phases: `Waiting for the model…` (startChatRequest),
+      `Thinking…`/`Writing…` (begin + deltas, by reasoning flag),
+      `Preparing tools…` (progress), `Running N tool…/tools…` (tool calls),
+      `Stopping…` (cancel), cleared on finish/fail/cancel/new/select/resync.
+- [x] **Test hooks + smoke step** `Live activity row shows the phase and clears
+      when done` (`setActivityForTesting`, `clearActivityForTesting`,
+      `activityVisibleForTesting`, `activityTextForTesting`).
+- [x] **Verified**: Pro smoke EXIT=0; baseline smoke EXIT=0; Pro rebuilt and
+      relaunched (exactly one instance, errors.log clean). See
+      `testing_progress_and_methods.md` "in-flow live activity row".
+
+## 2026-09-13 - Pro: `+N -M` not live + edit/read bodies blank after restart (fixed, root cause)
+
+User (two complaints): (1) the additions/deletions counters never updated in
+real time while a file-mutating tool's arguments streamed, and (2) after an app
+restart, expanding a collapsed edit/read tool part showed no content.
+
+Two independent root causes:
+
+1. **No live argument updates.** `opencode_client.d` emitted
+   `OpenCodeEventKind.toolCallDelta` only once per newly-named tool
+   (`_streamToolNamesPushed`), so between the name appearing and the tool
+   executing the UI got zero updates — a big `write` showed a static
+   "Writing …" row for the whole stream.
+2. **Diff fields were never persisted.** `sessionToJson`/`restoreSessions` in
+   `aurora-opencode-pro/.../appui.d` dropped `diffAdditions`, `diffDeletions`
+   and `toolDiff`. Verified against the real
+   `%APPDATA%\Aurora OpenCode\sessions.json`: tool messages carried only
+   `content,id,parentId,role,time,toolCallId,toolName` (+`toolArgs`), so a
+   restored edit/read rendered as a bare one-line summary.
+
+- [x] **Client throttle** (`aurora-opencode-core/.../opencode_client.d`): while
+      `_streamToolCalls` arguments grow, push throttled `toolCallDelta` events —
+      `_toolProgressIntervalMs` (default 120 ms) + `_lastToolProgressTime`
+      (`core.time.MonoTime`) + `_streamToolArgBytes`; fires on a new name OR an
+      argument-size change that is due. Reset in `runChatRequest` /
+      `resetStreamStateForTesting`. Test hook
+      `setToolProgressIntervalMsForTesting(0)`. Gotcha: do NOT gate "due" on
+      `_streamActive` — `feedSseForTesting` never sets it, so progress would
+      never fire in tests.
+- [x] **Preview counters** (`tools.d`): `countBodyLines`,
+      `extractPartialJsonString` (tolerant of truncated JSON strings, decodes
+      `\n \t \r \b \f \" \\ \/ \uXXXX`), `partialStringArg`, and public
+      `previewToolDiff(tool, argsJson, out adds, out dels)` — `write` = line
+      count of the (partial) `content`, `edit` = `computeTextDiff(old,new)`,
+      non-diff tools return false.
+- [x] **UI** (`appui.d`): `LiveToolRow` gained `setDiff` and right-aligned
+      green/red counters; `rebuildMessageColumn` feeds `previewToolDiff` into
+      every live/preparing row. `sessionToJson`/`restoreSessions` now round-trip
+      `diffAdditions`, `diffDeletions`, `toolDiff`.
+- [x] **Smoke guards** (`tests/headless_pro_smoke.d`):
+      `Client announces a tool call while its arguments stream` now also feeds a
+      second args fragment and expects a grown progress event;
+      `Live tool diff preview counts streamed write/edit args`;
+      `Live tool rows grow +N -M as arguments stream` (+3 -0 -> +5 -0 write,
+      +2 -1 edit); `Edit diff survives a save + reload`;
+      `Read bodies survive a save + reload`. Pass = `Aurora OpenCode Pro
+      headless smoke test passed.`
+- [x] Rebuilt Pro (`dub build --compiler=dmd --force`); smoke EXIT=0; killed
+      old Pro, relaunched exactly one (PID 15816).
+
 ## 2026-09-13 - Pro: large gaps between message/tool rows (fixed, root cause)
 
 User: "Why there are such large gaps between. fix it should be easy" (screenshot

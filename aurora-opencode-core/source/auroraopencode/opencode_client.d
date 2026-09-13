@@ -2,6 +2,7 @@ module auroraopencode.opencode_client;
 
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import core.time : MonoTime, msecs;
 import core.sys.windows.windows : DWORD, BOOL, FALSE, TRUE, GetLastError;
 import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     HTTP_QUERY_FLAG_NUMBER, HTTP_QUERY_STATUS_CODE, HttpOpenRequestW,
@@ -151,6 +152,14 @@ final class OpenCodeClient
     // a progress event fires once per new tool call (not on every argument
     // fragment, which would flood the UI thread while a file body streams).
     private size_t _streamToolNamesPushed;
+    // While a tool's arguments stream, the UI wants periodic progress so the
+    // live `+N -M` counters grow as the file body arrives. Emitting one event
+    // per fragment would flood the UI thread, so progress is throttled to at
+    // most once per `_toolProgressIntervalMs` and only when the arguments
+    // actually changed.
+    private int _toolProgressIntervalMs = 120;
+    private MonoTime _lastToolProgressTime;
+    private size_t _streamToolArgBytes;
     private bool _streamWantedTools;
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
@@ -423,6 +432,8 @@ final class OpenCodeClient
             _streamContent = "";
             _streamToolCalls.length = 0;
             _streamToolNamesPushed = 0;
+            _streamToolArgBytes = 0;
+            _lastToolProgressTime = MonoTime.currTime;
             _streamWantedTools = false;
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
@@ -571,10 +582,20 @@ final class OpenCodeClient
         _streamContent = "";
         _streamToolCalls.length = 0;
         _streamToolNamesPushed = 0;
+        _streamToolArgBytes = 0;
+        _lastToolProgressTime = MonoTime.currTime;
         _streamWantedTools = false;
         _lastPromptTokens = 0;
         _lastCompletionTokens = 0;
         _lastTotalTokens = 0;
+    }
+
+    /// Test-only: how many ms must pass between throttled tool-progress
+    /// events. 0 makes every argument change emit one, so a test can observe
+    /// the live counters without waiting on a clock.
+    public void setToolProgressIntervalMsForTesting(int value)
+    {
+        _toolProgressIntervalMs = value;
     }
 
     /// Test-only: build the request JSON body without sending anything.
@@ -822,12 +843,24 @@ final class OpenCodeClient
                 // show "Writing foo.html ..." while the arguments (the whole file
                 // body) are still streaming. Without this the reply looks
                 // stalled between the assistant's text and the tool starting.
+                // While the arguments keep growing, push throttled updates too so
+                // the live `+N -M` counters advance with the streamed file body.
                 size_t named;
+                size_t argBytes;
                 foreach (call; _streamToolCalls)
+                {
                     if (call.name.length > 0) ++named;
-                if (named > _streamToolNamesPushed)
+                    argBytes += call.arguments.length;
+                }
+                const newName = named > _streamToolNamesPushed;
+                const argsChanged = argBytes != _streamToolArgBytes;
+                const due = (MonoTime.currTime -
+                    _lastToolProgressTime).total!"msecs" >= _toolProgressIntervalMs;
+                if (named > 0 && (newName || (argsChanged && due)))
                 {
                     _streamToolNamesPushed = named;
+                    _streamToolArgBytes = argBytes;
+                    _lastToolProgressTime = MonoTime.currTime;
                     pushEvent(OpenCodeEvent(OpenCodeEventKind.toolCallDelta,
                         "", false, null, false, 0, 0, 0,
                         _streamToolCalls.dup));
