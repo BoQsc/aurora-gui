@@ -1,5 +1,65 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Projects rail collapse + merged custom titlebar (2026-09-13)
+
+User: "By default collapse the projects sidebar to icon width, and merge the
+titlebar and toolbar into one custom titlebar to save UI space."
+
+**Rail collapse**
+- `ProjectState.projectsCollapsed` (default `true`), persisted in
+  `projects.json` as `projectsCollapsed`. `loadProjects`/`saveProjects` in
+  `aurora-opencode-core/source/auroraopencode/core.d`.
+- `OpenCodeRoot.applyProjectsRailState()`: collapsed → column 48 px, "Projects"
+  header hidden, New project button icon-only, toggle `chevronRight`;
+  expanded → 150 px, header + labels visible, toggle `chevronDown`.
+- `toggleProjectsRail()` flips the flag, re-applies the layout, and saves.
+- Gotcha: a `VBox` sizes children from `layoutHints().preferredHeight`, **not**
+  from `measure()`. The new rail-header `HBox` therefore needed an explicit
+  `preferredHeight = 40`; otherwise it collapsed to 0 height and the toggle
+  chevron never painted.
+
+**Merged custom titlebar**
+- New `aurora-opencode-pro/source/auroraopencode/titlebar.d`:
+  `OpenCodeTitleBar : TitleBar` (frameless dark chrome) modelled on the
+  downstream Notepad/Designer titlebars — owner-driven window move, work-area
+  maximize/restore, restore-on-drag, drag snapping, owner system menu.
+  `titleBarHeight = 46`.
+- `buildUi` adds `_titleBar` as the root's first child and installs the old
+  toolbar `HBox` as `_titleBar.setContent(toolbar)`; the separate toolbar row is
+  gone. The title text is hidden (icon identity only) so the controls fit at
+  1200 px (with the 150 px title region the "Settings" button and key badge
+  clipped).
+- `TitleBarSnapPreview` overlay added last with
+  `excludeFromLayout`/`overlayFillParent`/`allowOverflow`; `updateSnapPreview`
+  maps screen snap bounds to window-local coordinates.
+- `source/app.d`: `options.decorated = false` and
+  `options.synchronizedDragPointer = false` (run + screenshot paths).
+- Why a subclass: `TitleBar`'s default `onDragMoved` moves the *widget*, not the
+  window; a frameless window needs owner-driven `setWindowPosition` +
+  `redrawWindow` (copy of the proven notepad/designer pattern). Events bubble,
+  so clicks on empty toolbar areas reach the bar and start the move.
+
+**Verification**
+- Pro smoke now asserts: custom titlebar present, rail starts collapsed
+  (width ≤ 48), toggle expands (> 48), `projectsCollapsed: false` persisted,
+  toggle collapses again. All steps pass.
+- Pro smoke build/run:
+  `dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe`
+  then `build\headless-pro-smoke.exe`.
+- `dub build --compiler=dmd --force`: baseline + Pro link. Baseline
+  `headless-smoke.exe` EXIT=0; Pro `tools-test.exe` pass.
+- Screenshots (isolated state dir, seeded with sandbox + `aurora-gui`):
+  ```
+  set "APPDATA=%TEMP%\oc-titlebar-shot"
+  aurora-opencode-pro.exe --screenshot %TEMP%\aui-pro-titlebar-collapsed.ppm
+  powershell -NoProfile -File %TEMP%\ppm2png.ps1 %TEMP%\aui-pro-titlebar-collapsed.ppm %TEMP%\aui-pro-titlebar-collapsed.png
+  ```
+  `%TEMP%\aui-pro-titlebar-collapsed.png` (icon rail + merged bar; New chat,
+  model, ctx, Thinking, Tools, Export, Settings, key badge, min/max/close) and
+  `%TEMP%\aui-pro-titlebar-expanded.png` ("Projects" header, chevron-down,
+  "New project").
+- Live relaunch (real `%APPDATA%`): PID 1712, `errors.log` clean.
+
 ## Transcript flow borrowed from the original opencode TUI (2026-09-13)
 
 User: "what could we learn from original opencode about display flow of messages

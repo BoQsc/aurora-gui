@@ -264,6 +264,9 @@ public struct ProjectState
     Project[] projects;
     string activeId;
     double sessionsRatio = 0.3;  // sessions-column share of the split
+    // The project rail starts as a narrow strip of icon tiles; the user can
+    // expand it to show the project names and the New project button.
+    bool projectsCollapsed = true;
 }
 
 public struct Settings
@@ -527,6 +530,10 @@ public ProjectState loadProjects()
                         ratio = cast(double) found.integer;
                     if (ratio > 0.05 && ratio < 0.95) state.sessionsRatio = ratio;
                 }
+                if (auto found = "projectsCollapsed" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        state.projectsCollapsed = found.type == JSONType.true_;
             }
         }
         catch (Exception error)
@@ -561,6 +568,7 @@ public void saveProjects(const ref ProjectState state)
     root["projects"] = list;
     root["active"] = state.activeId;
     root["sessionsRatio"] = state.sessionsRatio;
+    root["projectsCollapsed"] = state.projectsCollapsed;
     try write(projectsStorePath(), root.toString());
     catch (Exception error)
     {

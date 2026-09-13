@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Aurora OpenCode Pro: collapse project rail + merge titlebar/toolbar (done)
+
+User: "By default collapse the projects sidebar to icon width, and merge the
+titlebar and toolbar into one custom titlebar to save UI space."
+
+- [x] `ProjectState.projectsCollapsed` (default `true`, persisted in
+      `projects.json`); rail toggle (`IconButton` chevron) flips collapsed
+      (48 px, icon tiles, icon-only New project) ↔ expanded (150 px, "Projects"
+      header + names + "New project").
+- [x] Rail header `HBox` given `preferredHeight = 40` (VBox sizes from
+      `layoutHints().preferredHeight`, not `measure()`; otherwise it collapsed
+      to 0 and the toggle vanished).
+- [x] New `auroraopencode/titlebar.d` `OpenCodeTitleBar : TitleBar`
+      (frameless dark chrome, owner drag/snap, work-area maximize,
+      restore-on-drag, system menu); toolbar installed via `setContent`; snap
+      preview overlay; `app.d` uses `decorated = false` +
+      `synchronizedDragPointer = false`.
+- [x] Pro smoke extended (titlebar present, collapsed default, toggle +
+      persistence); baseline smoke EXIT=0; `tools-test` pass; screenshots
+      `%TEMP%\aui-pro-titlebar-collapsed.png` / `-expanded.png`; live relaunch
+      PID 1712. Details in `testing_progress_and_methods.md`
+      "Projects rail collapse + merged custom titlebar".
+
 ## 2026-09-13 - Aurora OpenCode: sandbox + per-project conversations + resizable list (done)
 
 User: "by default should be on a standard sandbox conversation folder. This

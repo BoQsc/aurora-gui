@@ -16,6 +16,7 @@ private int runScreenshot(string path, bool withChat, string message)
     options.title = "Aurora OpenCode";
     options.width = 1200;
     options.height = 800;
+    options.decorated = false;
     options.darkTitleBar = true;
     options.renderer = RendererPreference.automatic;
     auto window = new GuiWindow(options, opencodeTheme());
@@ -105,7 +106,11 @@ int main(string[] args)
     options.title = "Aurora OpenCode";
     options.width = 1200;
     options.height = 800;
+    options.decorated = false;
     options.darkTitleBar = true;
+    // The custom titlebar owns window moves; keep the native pointer during
+    // those drags (Aurora's synchronized drawn cursor is for compositor drags).
+    options.synchronizedDragPointer = false;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);

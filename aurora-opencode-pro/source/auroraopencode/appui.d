@@ -7,6 +7,7 @@ import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
     composeMarkdownInto, paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
+import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     executeTool, nativeOnlyToolDefinitions;
 import core.thread : Thread;
@@ -1417,6 +1418,12 @@ public final class OpenCodeRoot : VBox
 
     private ProjectState _projectState;
     private ProjectListView _projectRail;
+    private VBox _projectsColumn;
+    private Label _projectsHeader;
+    private Button _newProjectButton;
+    private IconButton _railToggle;
+    private OpenCodeTitleBar _titleBar;
+    private TitleBarSnapPreview _snapPreview;
     private SplitPane _sessionsSplit;
     private Label _sessionsHeader;
     private Label _sessionsPath;
@@ -1504,8 +1511,13 @@ public final class OpenCodeRoot : VBox
 
     private void buildUi()
     {
-        auto toolbar = add(new HBox(6, Insets(8, 4)));
-        toolbar.layoutHints().preferredHeight = 46;
+        // Frameless window: the vendored TitleBar is the whole top band and the
+        // old toolbar row lives inside it as the bar's content widget.
+        _titleBar = add(new OpenCodeTitleBar(_window));
+        _titleBar.setId("oc-titlebar");
+        _titleBar.onSnapPreview = &updateSnapPreview;
+
+        auto toolbar = new HBox(6, Insets(8, 4));
 
         auto newChatButton = toolbar.add(new Button("New chat", IconKind.newDocument));
         newChatButton.setId("oc-new");
@@ -1558,15 +1570,27 @@ public final class OpenCodeRoot : VBox
         _keyBadge.setId("oc-key");
         _keyBadge.setScale(1);
 
+        _titleBar.setContent(toolbar);
+
         auto body = add(new HBox(0));
         body.layoutHints().flex = 1.0;
 
-        auto projectsColumn = new VBox(4, Insets(6));
-        projectsColumn.layoutHints().preferredWidth = 150;
+        auto projectsColumn = new VBox(4, Insets(4));
+        projectsColumn.layoutHints().preferredWidth = 48;
         projectsColumn.setBackground(opencodeBackground);
-        auto projectsHeader = projectsColumn.add(new Label("Projects"));
-        projectsHeader.setScale(1);
-        projectsHeader.setColor(opencodeMuted);
+        _projectsColumn = projectsColumn;
+
+        auto railHeader = projectsColumn.add(new HBox(2));
+        railHeader.layoutHints().preferredHeight = 40;
+        _projectsHeader = railHeader.add(new Label("Projects"));
+        _projectsHeader.setScale(1);
+        _projectsHeader.setColor(opencodeMuted);
+        railHeader.add(new Spacer());
+        _railToggle = railHeader.add(new IconButton(IconKind.chevronRight));
+        _railToggle.setId("oc-rail-toggle");
+        _railToggle.setFlat(true);
+        _railToggle.onClick = delegate() { toggleProjectsRail(); };
+
         _projectRail = projectsColumn.add(new ProjectListView());
         _projectRail.setId("oc-projects");
         _projectRail.layoutHints().flex = 1.0;
@@ -1579,11 +1603,10 @@ public final class OpenCodeRoot : VBox
         {
             showProjectContextMenu(row, point);
         };
-        auto newProjectButton = projectsColumn.add(
+        _newProjectButton = projectsColumn.add(
             new Button("New project", IconKind.newDocument));
-        newProjectButton.setId("oc-new-project");
-        newProjectButton.layoutHints().preferredWidth = 138;
-        newProjectButton.onClick = delegate() { showNewProjectDialog(); };
+        _newProjectButton.setId("oc-new-project");
+        _newProjectButton.onClick = delegate() { showNewProjectDialog(); };
 
         auto sidebar = new VBox(2, Insets(8));
         sidebar.layoutHints().minWidth = 190;
@@ -1669,9 +1692,59 @@ public final class OpenCodeRoot : VBox
         _status.setId("oc-status");
         _status.layoutHints().preferredHeight = 22;
         _status.setScale(1);
+
+        // Drag-snap preview: added last, painted above all content, and excluded
+        // from the VBox flow so it never consumes layout space.
+        _snapPreview = add(new TitleBarSnapPreview());
+        _snapPreview.setId("oc-snap");
+        _snapPreview.layoutHints().excludeFromLayout = true;
+        _snapPreview.layoutHints().overlayFillParent = true;
+        _snapPreview.layoutHints().allowOverflow = true;
+
+        applyProjectsRailState();
     }
 
     // -- projects ---------------------------------------------------------
+
+    /// Apply the collapsed/expanded presentation of the project rail.
+    private void applyProjectsRailState()
+    {
+        const collapsed = _projectState.projectsCollapsed;
+        _projectsColumn.layoutHints().preferredWidth = collapsed ? 48 : 150;
+        _projectsHeader.setVisible(!collapsed);
+        _newProjectButton.setText(collapsed ? "" : "New project");
+        _newProjectButton.layoutHints().preferredWidth = collapsed ? 40 : 138;
+        _railToggle.setIcon(collapsed ? IconKind.chevronRight
+            : IconKind.chevronDown);
+        _projectsColumn.invalidate();
+    }
+
+    /// Flip the rail between icon width and the full project list.
+    private void toggleProjectsRail()
+    {
+        _projectState.projectsCollapsed = !_projectState.projectsCollapsed;
+        applyProjectsRailState();
+        saveProjects(_projectState);
+    }
+
+    /// Map a drag-snap preview from screen to window-local coordinates.
+    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
+    {
+        if (_snapPreview is null) return;
+        if (target == TitleBarSnapTarget.none)
+        {
+            _snapPreview.hide();
+            return;
+        }
+        Rect origin;
+        if (!_window.windowBounds(origin))
+        {
+            _snapPreview.hide();
+            return;
+        }
+        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
+            bounds.width, bounds.height));
+    }
 
     private int activeProjectIndex()
     {
@@ -3572,6 +3645,31 @@ public final class OpenCodeRoot : VBox
         const width = maxInt(1, _sessionsSplit.bounds().width);
         _sessionsSplit.setRatio(_sessionsSplit.ratio() +
             cast(double) deltaX / width);
+    }
+
+    /// Test-only: true while the project rail is collapsed to icon width.
+    public bool projectsRailCollapsedForTesting()
+    {
+        return _projectState.projectsCollapsed;
+    }
+
+    /// Test-only: the rail's current preferred width in logical pixels.
+    public int projectsRailWidthForTesting()
+    {
+        return _projectsColumn is null
+            ? 0 : _projectsColumn.layoutHints().preferredWidth;
+    }
+
+    /// Test-only: flip the project rail like clicking the toggle button.
+    public void toggleProjectsRailForTesting()
+    {
+        toggleProjectsRail();
+    }
+
+    /// Test-only: true when the merged custom titlebar owns the top band.
+    public bool hasCustomTitleBarForTesting()
+    {
+        return _titleBar !is null;
     }
 
     public void openNewProjectDialogForTesting()

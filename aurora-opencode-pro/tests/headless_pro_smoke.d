@@ -8,7 +8,7 @@ import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir, write;
-import std.json : JSONValue, parseJSON;
+import std.json : JSONType, JSONValue, parseJSON;
 import std.conv : to;
 import std.path : buildPath;
 import std.stdio : writeln;
@@ -340,6 +340,31 @@ int main(string[] args)
     assert(projects.items().length == 1, "Rail should show one project tile");
     writeln("Sandbox is the default project: ",
         root.activeProjectPathForTesting());
+
+    // The merged custom titlebar owns the top band and the project rail starts
+    // collapsed to icon width; the toggle expands it and the state persists.
+    assert(root.hasCustomTitleBarForTesting(),
+        "The merged custom titlebar should own the top band");
+    assert(root.projectsRailCollapsedForTesting(),
+        "Project rail should start collapsed");
+    assert(root.projectsRailWidthForTesting() <= 48,
+        "Collapsed rail should be icon width, got " ~
+        to!string(root.projectsRailWidthForTesting()));
+    root.toggleProjectsRailForTesting();
+    root.tickTree(0.02);
+    assert(!root.projectsRailCollapsedForTesting(),
+        "Toggling should expand the rail");
+    assert(root.projectsRailWidthForTesting() > 48,
+        "Expanded rail should be wider than icon width");
+    auto railJson = parseJSON(readText(buildPath(stateDir, "projects.json")));
+    assert(railJson["projectsCollapsed"].type == JSONType.false_,
+        "Expanded rail state was not persisted");
+    root.toggleProjectsRailForTesting();
+    root.tickTree(0.02);
+    assert(root.projectsRailCollapsedForTesting(),
+        "Toggling again should collapse the rail");
+    assert(driver.paint(), "Rail toggle did not repaint");
+    writeln("Project rail collapses to icon width and persists its state");
 
     // Create a project through the real dialog.
     root.openNewProjectDialogForTesting();
