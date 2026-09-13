@@ -142,6 +142,26 @@ private final class MessageBubble : Widget
     private Rect[] _linkRects;
     private string[] _linkUrls;
 
+    // Text selection (Pro): drag across a message to select it, then copy from
+    // the right-click menu. The paint pass records one segment per selectable
+    // run (like the copy/link targets above); the mouse handlers map points to
+    // a (segment, character) caret using the retained TextLayout geometry.
+    private struct SelectSegment
+    {
+        TextLayout layout;
+        int x;
+        int y;
+        int w;
+        int h;
+    }
+    private SelectSegment[] _selSegments;
+    private bool _selecting;
+    private int _selAnchorSeg = -1;
+    private size_t _selAnchorChar;
+    private int _selFocusSeg = -1;
+    private size_t _selFocusChar;
+    private bool _textHover;
+
     // Shaped text is expensive and wrapped layouts are never cached by the
     // text engine, so each bubble caches its own layout and reuses it across
     // measures and repaints. The ScrollView measures its content twice per
@@ -198,6 +218,13 @@ private final class MessageBubble : Widget
     void setMessageIndex(int index)
     {
         _messageIndex = index;
+    }
+
+    /// The message index this bubble renders (used by the context menu so it
+    /// never relies on a captured `foreach` slot).
+    int messageIndex() const
+    {
+        return _messageIndex;
     }
 
     /// Hide the bubble entirely: it measures to zero height and paints nothing
@@ -580,10 +607,15 @@ private final class MessageBubble : Widget
             }
         }
 
+        // Highlight the active selection using the previous paint's segment
+        // geometry (drawn before the glyphs so the text stays readable).
+        drawSelection(canvas);
+
         _copyRects.length = 0;
         _copyLabels.length = 0;
         _linkRects.length = 0;
         _linkUrls.length = 0;
+        _selSegments.length = 0;
 
         const contentY = y;
 
@@ -597,6 +629,10 @@ private final class MessageBubble : Widget
             {
                 auto layout = shapedContent(innerWidth);
                 canvas.drawLayout(Point(padH, y), layout, opencodeText);
+                if (layout.lines.length > 0)
+                    _selSegments ~= SelectSegment(layout, padH, y,
+                        maxInt(1, innerWidth),
+                        layout.measuredSize().height);
                 y += layout.measuredSize().height + gap;
             }
         }
@@ -621,6 +657,10 @@ private final class MessageBubble : Widget
             {
                 auto layout = shapedContent(innerWidth);
                 canvas.drawLayout(Point(padH, contentY), layout, opencodeText);
+                if (layout.lines.length > 0)
+                    _selSegments ~= SelectSegment(layout, padH, contentY,
+                        maxInt(1, innerWidth),
+                        layout.measuredSize().height);
             }
         }
 
@@ -770,6 +810,14 @@ private final class MessageBubble : Widget
     {
         foreach (item; composition.items)
         {
+            // Selectable runs are the plain prose/heading/list text. Clipped
+            // code lines keep their dedicated Copy pill instead.
+            if (item.kind == MdItemKind.text && item.layout !is null &&
+                !item.clipText)
+                _selSegments ~= SelectSegment(item.layout,
+                    cast(int)(padH + item.x), cast(int)(contentY + item.y),
+                    maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
+
             if (item.kind == MdItemKind.text && item.target.length > 0)
             {
                 _linkRects ~= Rect(cast(int)(padH + item.x),
@@ -796,6 +844,168 @@ private final class MessageBubble : Widget
             HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
+    /// True when a non-empty text range is selected in this bubble.
+    public bool hasSelection()
+    {
+        return _selAnchorSeg >= 0 && _selFocusSeg >= 0 &&
+            (_selAnchorSeg != _selFocusSeg ||
+             _selAnchorChar != _selFocusChar);
+    }
+
+    /// The selected message text ("" when nothing is selected).
+    public string selectedText()
+    {
+        if (!hasSelection()) return "";
+        int firstSeg, lastSeg;
+        size_t firstChar, lastChar;
+        orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
+        string result;
+        bool haveLine;
+        double lastY;
+        for (int seg = firstSeg; seg <= lastSeg; ++seg)
+        {
+            if (seg < 0 || seg >= cast(int) _selSegments.length) continue;
+            const layout = _selSegments[seg].layout;
+            const len = layout.text().length;
+            const from = seg == firstSeg
+                ? (firstChar < len ? firstChar : len) : 0;
+            const endIndex = seg == lastSeg
+                ? (lastChar < len ? lastChar : len) : len;
+            if (endIndex <= from) continue;
+            const y = _selSegments[seg].y;
+            if (haveLine && y != lastY) result ~= '\n';
+            result ~= to!string(layout.text()[from .. endIndex]);
+            lastY = y;
+            haveLine = true;
+        }
+        return result;
+    }
+
+    /// Select the whole message (right-click → Select all).
+    public void selectAll()
+    {
+        if (_selSegments.length == 0) return;
+        _selAnchorSeg = 0;
+        _selAnchorChar = 0;
+        _selFocusSeg = cast(int) _selSegments.length - 1;
+        _selFocusChar = _selSegments[$ - 1].layout.text().length;
+        invalidate();
+    }
+
+    /// Test-only: global origin of the first selectable run.
+    public Point textOriginForTesting()
+    {
+        if (_selSegments.length == 0) return Point(-1, -1);
+        const segment = _selSegments[0];
+        return localToGlobal(Point(segment.x + 1,
+            segment.y + maxInt(1, segment.h / 2)));
+    }
+
+    /// Test-only: global point just inside the right edge of the first run.
+    public Point textEndForTesting()
+    {
+        if (_selSegments.length == 0) return Point(-1, -1);
+        const segment = _selSegments[0];
+        return localToGlobal(Point(segment.x + maxInt(1, segment.w - 1),
+            segment.y + maxInt(1, segment.h / 2)));
+    }
+
+    private void orderedSelection(out int firstSeg, out size_t firstChar,
+        out int lastSeg, out size_t lastChar)
+    {
+        const backwards = _selAnchorSeg > _selFocusSeg ||
+            (_selAnchorSeg == _selFocusSeg &&
+             _selAnchorChar > _selFocusChar);
+        firstSeg = backwards ? _selFocusSeg : _selAnchorSeg;
+        lastSeg = backwards ? _selAnchorSeg : _selFocusSeg;
+        firstChar = backwards ? _selFocusChar : _selAnchorChar;
+        lastChar = backwards ? _selAnchorChar : _selFocusChar;
+    }
+
+    private void drawSelection(ref Canvas canvas)
+    {
+        if (!hasSelection()) return;
+        int firstSeg, lastSeg;
+        size_t firstChar, lastChar;
+        orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
+        foreach (segIndex, segment; _selSegments)
+        {
+            const index = cast(int) segIndex;
+            if (index < firstSeg || index > lastSeg) continue;
+            const layout = segment.layout;
+            const len = layout.text().length;
+            const from = index == firstSeg
+                ? (firstChar < len ? firstChar : len) : 0;
+            const endIndex = index == lastSeg
+                ? (lastChar < len ? lastChar : len) : len;
+            foreach (rect; layout.selectionRects(from, endIndex))
+                canvas.fillRect(Rect(segment.x + cast(int) rect.x,
+                    segment.y + cast(int) rect.y,
+                    maxInt(1, cast(int) rect.width),
+                    maxInt(1, cast(int) rect.height)), opencodeSelection);
+        }
+    }
+
+    /// Map a bubble-local point to a (segment, character) caret.
+    private bool selectSegmentAt(Point position, out int segIndex,
+        out size_t charIndex)
+    {
+        segIndex = -1;
+        charIndex = 0;
+        foreach (index, segment; _selSegments)
+        {
+            if (position.x < segment.x || position.x >= segment.x + segment.w ||
+                position.y < segment.y || position.y >= segment.y + segment.h)
+                continue;
+            segIndex = cast(int) index;
+            charIndex = segment.layout.hitTest(position.x - segment.x,
+                position.y - segment.y);
+            return true;
+        }
+        return false;
+    }
+
+    /// Extend the selection to `position`, clamping to the nearest run when
+    /// the pointer is dragged past the text so the tail still selects.
+    private void extendSelection(Point position)
+    {
+        int segIndex;
+        size_t charIndex;
+        if (selectSegmentAt(position, segIndex, charIndex))
+        {
+            _selFocusSeg = segIndex;
+            _selFocusChar = charIndex;
+            return;
+        }
+        if (_selSegments.length == 0) return;
+        int nearest;
+        bool found;
+        double nearestDistance;
+        foreach (index, segment; _selSegments)
+        {
+            const centreY = segment.y + segment.h * 0.5;
+            double distance = position.y - centreY;
+            if (distance < 0) distance = -distance;
+            if (!found || distance < nearestDistance)
+            {
+                nearest = cast(int) index;
+                nearestDistance = distance;
+                found = true;
+            }
+        }
+        _selFocusSeg = nearest;
+        _selFocusChar = position.y < _selSegments[nearest].y
+            ? 0 : _selSegments[nearest].layout.text().length;
+    }
+
+    private void clearSelection()
+    {
+        if (_selAnchorSeg < 0 && _selFocusSeg < 0) return;
+        _selAnchorSeg = -1;
+        _selFocusSeg = -1;
+        invalidate();
+    }
+
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
         const footer = _usageText.length > 0 ? _usageText :
@@ -811,6 +1021,13 @@ private final class MessageBubble : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_selecting)
+        {
+            extendSelection(event.position);
+            setCursor(CursorKind.text);
+            invalidate();
+            return true;
+        }
         int nextCopy = -1;
         int nextLink = -1;
         foreach (index; 0 .. _copyRects.length)
@@ -836,17 +1053,22 @@ private final class MessageBubble : Widget
             _collapseRect.contains(event.position);
         const overThinking = _thinking.length > 0 &&
             _thinkingRect.contains(event.position);
+        int hoverSeg;
+        size_t hoverChar;
+        const overText = selectSegmentAt(event.position, hoverSeg, hoverChar);
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
             overAction != _actionHover || overCollapse != _collapseHover ||
-            overThinking != _thinkingHover)
+            overThinking != _thinkingHover || overText != _textHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
             _actionHover = overAction;
             _collapseHover = overCollapse;
             _thinkingHover = overThinking;
+            _textHover = overText;
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
-                overCollapse || overThinking ? CursorKind.hand : CursorKind.arrow);
+                overCollapse || overThinking ? CursorKind.hand :
+                (overText ? CursorKind.text : CursorKind.arrow));
             invalidate();
         }
         return false;
@@ -896,19 +1118,47 @@ private final class MessageBubble : Widget
                 openLinkInBrowser(_linkUrls[_hoverLink]);
             return true;
         }
+        // Begin a text selection when the point lands on selectable text.
+        int segIndex;
+        size_t charIndex;
+        if (selectSegmentAt(event.position, segIndex, charIndex))
+        {
+            _selecting = true;
+            _selAnchorSeg = segIndex;
+            _selAnchorChar = charIndex;
+            _selFocusSeg = segIndex;
+            _selFocusChar = charIndex;
+            captureMouse();
+            invalidate();
+            return true;
+        }
+        // A click on empty space drops any existing selection.
+        clearSelection();
+        return false;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (_selecting)
+        {
+            _selecting = false;
+            releaseMouse();
+            return true;
+        }
         return false;
     }
 
     protected override void onMouseLeave()
     {
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
-            _collapseHover || _thinkingHover)
+            _collapseHover || _thinkingHover || _textHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
             _collapseHover = false;
             _thinkingHover = false;
+            _textHover = false;
             setCursor(CursorKind.arrow);
             invalidate();
         }
@@ -1678,6 +1928,14 @@ public final class OpenCodeRoot : VBox
     private ContextUsageBadge _usageBadge;
     private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
+    // Payload of the most recent message "Copy" context-menu action; retained
+    // so tests can verify what a Copy would put on the clipboard.
+    private string _lastMessageCopy;
+    // Hover-intent delay so the tooltip does not flash open just because the
+    // pointer swept across the badge on its way to the send button.
+    private bool _usageTooltipPending;
+    private double _usageTooltipHoverSeconds;
+    private static immutable double usageTooltipDelaySeconds = 0.45;
 
     // Generic hover tooltip (used for dialog options such as Legacy tools).
     private TooltipAnchor _legacyTooltipAnchor;
@@ -1745,7 +2003,19 @@ public final class OpenCodeRoot : VBox
         _usageBadge.setModel(_settings.model);
         _usageBadge.onHoverChanged = delegate(bool open)
         {
-            setContextUsageTooltipOpen(open);
+            if (open)
+            {
+                // Arm the hover-intent timer; onTick opens the tooltip once the
+                // pointer has rested on the badge long enough.
+                _usageTooltipPending = true;
+                _usageTooltipHoverSeconds = 0.0;
+            }
+            else
+            {
+                _usageTooltipPending = false;
+                _usageTooltipHoverSeconds = 0.0;
+                if (_usageTooltipOpen) setContextUsageTooltipOpen(false);
+            }
         };
 
         _thinkingBox = composerControls.add(new CheckBox("Thinking"));
@@ -2441,7 +2711,8 @@ public final class OpenCodeRoot : VBox
             bubble.onContextMenuRequested =
                 delegate(int messageIndex, Point globalPosition)
                 {
-                    showMessageContextMenu(cast(int) index, globalPosition);
+                    showMessageContextMenu(bubble.messageIndex(),
+                        globalPosition, bubble);
                 };
             // Persisted token usage appears only on the latest assistant reply.
             if (cast(int) index == latestAssistantIndex &&
@@ -2533,9 +2804,8 @@ public final class OpenCodeRoot : VBox
             bubble.onContextMenuRequested =
                 delegate(int messageIndex, Point globalPosition)
                 {
-                    showMessageContextMenu(
-                        cast(int) _sessions[_current].messages.length - 1,
-                        globalPosition);
+                    showMessageContextMenu(bubble.messageIndex(),
+                        globalPosition, bubble);
                 };
         }
         _messageColumn.add(bubble);
@@ -3162,7 +3432,15 @@ public final class OpenCodeRoot : VBox
     private void openPopup(PopupOverlay popup)
     {
         _activePopup = popup;
-        popupRoot(this).add(popup);
+        auto root = popupRoot(this);
+        root.add(popup);
+        // Composited overlays are normally sized by the base layout pass via
+        // `overlayFillParent`, but that pass only runs while the base is dirty.
+        // Adding a composited child marks only the composition dirty, so a popup
+        // opened after another composited popup (e.g. a context menu) was
+        // dismissed can keep zero bounds and dismiss itself on the first click.
+        // Size it explicitly, exactly as showContextMenu does for menus.
+        popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
     }
 
     private void dismissPopup()
@@ -3339,7 +3617,9 @@ public final class OpenCodeRoot : VBox
         const measured = _usageTooltip.measure(Size(int.max, int.max));
         const gap = 6;
         int x = anchor.x;
-        int y = anchor.bottom() + gap;
+        // The badge lives in the composer footer at the window bottom, so the
+        // tooltip opens above it (below would fall off-screen and be clamped).
+        int y = anchor.y - measured.height - gap;
         x = clampInt(x, 8, maxInt(8, bounds().width - measured.width - 8));
         y = clampInt(y, 8, maxInt(8, bounds().height - measured.height - 8));
         _usageTooltip.setBounds(Rect(x, y, measured.width, measured.height));
@@ -3405,19 +3685,34 @@ public final class OpenCodeRoot : VBox
         refreshUsageBadge();
     }
 
-    private void showMessageContextMenu(int messageIndex, Point globalPosition)
+    private void showMessageContextMenu(int messageIndex, Point globalPosition,
+        MessageBubble sourceBubble = null)
     {
         if (_current < 0) return;
         auto session = &_sessions[_current];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
         const message = session.messages[cast(size_t) messageIndex];
+        const hasSelection = sourceBubble !is null &&
+            sourceBubble.hasSelection();
         auto items = [
-            ContextMenuItem.command("Copy message", IconKind.save, delegate()
+            ContextMenuItem.command(hasSelection ? "Copy selection"
+                : "Copy message", IconKind.save, delegate()
             {
-                copyTextToClipboard(message.content);
+                const payload = hasSelection
+                    ? sourceBubble.selectedText() : message.content;
+                copyTextToClipboard(payload);
+                _lastMessageCopy = payload;
             }, "Ctrl+C"),
         ];
+        if (sourceBubble !is null)
+        {
+            items ~= ContextMenuItem.command("Select all", IconKind.terminal,
+                delegate()
+                {
+                    sourceBubble.selectAll();
+                });
+        }
         if (message.role == "assistant")
         {
             items ~= ContextMenuItem.command(
@@ -3745,6 +4040,17 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        // Hover-intent delay for the context tooltip.
+        if (_usageTooltipPending && !_usageTooltipOpen)
+        {
+            _usageTooltipHoverSeconds += deltaSeconds;
+            if (_usageTooltipHoverSeconds >= usageTooltipDelaySeconds)
+            {
+                _usageTooltipPending = false;
+                setContextUsageTooltipOpen(true);
+            }
+        }
+
         OpenCodeEvent[] events;
         _client.drain(events);
         foreach (event; events)
@@ -4047,11 +4353,57 @@ public final class OpenCodeRoot : VBox
         return bubble !is null && bubble.invokeActionForTesting();
     }
 
+    /// Test-only: the message bubble at child `index` (null when out of range).
+    private MessageBubble messageBubbleForTesting(int index)
+    {
+        const children = _messageColumn.children();
+        if (index < 0 || index >= cast(int) children.length) return null;
+        return cast(MessageBubble) children[cast(size_t) index];
+    }
+
     /// Test-only: open the right-click context menu for the message at
     /// `index`, exactly as a right-click on that bubble would.
     public void openMessageContextMenuForTesting(int index)
     {
-        showMessageContextMenu(index, Point(10, 10));
+        showMessageContextMenu(index, Point(10, 10),
+            messageBubbleForTesting(index));
+    }
+
+    /// Test-only: select all text in the message bubble at `index`.
+    public bool selectAllMessageTextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        if (bubble is null) return false;
+        bubble.selectAll();
+        return true;
+    }
+
+    /// Test-only: the selected text of the message bubble at `index`.
+    public string selectedMessageTextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? "" : bubble.selectedText();
+    }
+
+    /// Test-only: the global origin of the first selectable run in the bubble.
+    public Point messageTextOriginForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Point(-1, -1)
+            : bubble.textOriginForTesting();
+    }
+
+    /// Test-only: the global far edge (right, middle) of the first run.
+    public Point messageTextEndForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Point(-1, -1) : bubble.textEndForTesting();
+    }
+
+    /// Test-only: payload of the most recent message Copy menu action.
+    public string lastCopiedMessageTextForTesting()
+    {
+        return _lastMessageCopy;
     }
 
     /// Test-only: feed a usage event as the client would while streaming.
@@ -4166,6 +4518,25 @@ public final class OpenCodeRoot : VBox
     {
         return _usageTooltipOpen && _usageTooltip !is null &&
             _usageTooltip.parent() !is null;
+    }
+
+    /// Test-only: the context tooltip's global bounds (Rect.init when closed).
+    public Rect contextTooltipBoundsForTesting()
+    {
+        if (_usageTooltip is null || _usageTooltip.parent() is null)
+            return Rect.init;
+        const origin = _usageTooltip.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, _usageTooltip.bounds().width,
+            _usageTooltip.bounds().height);
+    }
+
+    /// Test-only: the context badge's global bounds.
+    public Rect contextBadgeBoundsForTesting()
+    {
+        if (_usageBadge is null) return Rect.init;
+        const origin = _usageBadge.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, _usageBadge.bounds().width,
+            _usageBadge.bounds().height);
     }
 
     /// Test-only: enable tools and set the workspace directory they run in.

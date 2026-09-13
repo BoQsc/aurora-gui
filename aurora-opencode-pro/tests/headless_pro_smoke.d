@@ -292,6 +292,64 @@ int main(string[] args)
         "Older message Edit & resend did not truncate at its own message");
     writeln("Context menu targets its own message (no foreach capture bug)");
 
+    // --- Message text selection + Copy (Pro) ----------------------------
+    // A trailing assistant keeps the next "regenerate" case ending on an
+    // assistant bubble, exactly as it did before this block was inserted.
+    root.addConversationForTesting(["user", "assistant"],
+        ["select this text", "trailing assistant reply"]);
+    const selIndex = root.messageCountForTesting() - 2;
+    root.tickTree(0.02);
+    assert(driver.paint(), "Selection test did not paint");
+
+    // Dragging across the user bubble selects its text.
+    const selOrigin = root.messageTextOriginForTesting(selIndex);
+    const selEnd = root.messageTextEndForTesting(selIndex);
+    assert(selOrigin.x >= 0 && selEnd.x > selOrigin.x,
+        "Message text selection anchors were not found");
+    driver.drag(selOrigin, selEnd);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Drag selection did not repaint");
+    assert(root.selectedMessageTextForTesting(selIndex) == "select this text",
+        "Dragging across the message did not select its text");
+
+    // Select all from the right-click menu, then Copy the selection.
+    root.openMessageContextMenuForTesting(selIndex);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Selection context menu did not paint");
+    auto selMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(selMenu !is null, "Selection context menu did not open");
+    bool selectedAll;
+    foreach (item; selMenu.items())
+        if (item.label == toUTF32("Select all"))
+        {
+            item.action();
+            selectedAll = true;
+            break;
+        }
+    assert(selectedAll, "Select all missing from the message context menu");
+    root.tickTree(0.02);
+    dismissContextMenus(root);
+    assert(root.selectedMessageTextForTesting(selIndex) == "select this text",
+        "Select all did not select the whole message");
+
+    root.openMessageContextMenuForTesting(selIndex);
+    root.tickTree(0.02);
+    selMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(selMenu !is null, "Copy-selection menu did not reopen");
+    bool copiedSelection;
+    foreach (item; selMenu.items())
+        if (item.label == toUTF32("Copy selection"))
+        {
+            item.action();
+            copiedSelection = true;
+            break;
+        }
+    assert(copiedSelection, "Copy selection missing when text is selected");
+    assert(root.lastCopiedMessageTextForTesting() == "select this text",
+        "Copy selection copied the wrong payload");
+    dismissContextMenus(root);
+    writeln("Message text selection + copy works from the context menu");
+
     // Regenerate still works after an edit.
     root.addConversationForTesting(
         ["assistant"], ["A reply that will be regenerated."]);
@@ -317,9 +375,19 @@ int main(string[] args)
         "Tooltip must be closed before hovering the badge");
     driver.moveTo(globalCenter(usageBadge));
     root.tickTree(0.02);
+    assert(driver.paint(), "Repaint after hovering the badge failed");
+    assert(!root.isContextTooltipOpenForTesting(),
+        "Hover tooltip must wait for the hover-intent delay");
+    // Rest on the badge until the hover-intent delay elapses.
+    foreach (_; 0 .. 20) root.tickTree(0.05);
     assert(driver.paint(), "Tooltip did not paint after hover");
     assert(root.isContextTooltipOpenForTesting(),
         "Hovering the badge did not open the context tooltip");
+    const tooltipBounds = root.contextTooltipBoundsForTesting();
+    const badgeBounds = root.contextBadgeBoundsForTesting();
+    assert(tooltipBounds.height > 0 &&
+        tooltipBounds.bottom() <= badgeBounds.y,
+        "Context tooltip should open above the badge");
     const tooltip = root.contextTooltipTextForTesting();
     assert(tooltip.length > 0, "Context tooltip text is empty");
     assert(tooltip.indexOf("Context usage") >= 0, "Tooltip lacks the title");

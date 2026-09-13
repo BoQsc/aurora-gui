@@ -1,5 +1,46 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: context tooltip delay/above + message text selection (done)
+
+User: "add delay to the context tooltip and make it properly positioned above.
+Add ability to select text and a context menu for cursor so we can copy and
+paste."
+
+- [x] **Context tooltip** (`oc-usage`): was opening the instant the pointer
+      touched the badge and was anchored *below* it (bottom of the window, so it
+      got clamped back over the button). Added a hover-intent delay
+      (`_usageTooltipPending` + `_usageTooltipHoverSeconds`, opened from
+      `OpenCodeRoot.onTick` after `usageTooltipDelaySeconds = 0.45`) and flipped
+      `positionContextUsageTooltip` to open above the badge
+      (`y = anchor.y - measured.height - gap`), then clamped.
+- [x] **Message text selection**: the prompt input already had drag-select +
+      Cut/Copy/Paste/Select-All (vendor `TextEditor`), but the conversation
+      bubbles had no selection at all. Added to `MessageBubble`: the paint pass
+      records one `SelectSegment` per selectable run (plain user/tool text and
+      unclipped markdown text; code lines keep their Copy pill), and left-drag
+      maps points to a `(segment, char)` caret via `TextLayout.hitTest`. The
+      highlight is drawn from last frame's segments *before* the glyphs (so the
+      text stays readable) using `TextLayout.selectionRects` + `opencodeSelection`.
+      Drag past the ends clamps to the nearest run; I-beam cursor over text;
+      `captureMouse`/`releaseMouse` fix the drag target.
+- [x] **Context menu**: `showMessageContextMenu` now takes the source bubble.
+      With a selection it shows `Copy selection` (else `Copy message`) and a new
+      `Select all` item; the Copy payload is retained as
+      `_lastMessageCopy` so tests can assert it. Real right-click now uses
+      `bubble.messageIndex()` instead of the captured `foreach` slot.
+- [x] **Root-cause fix while wiring this up**: opening a normal popup after a
+      context menu had been dismissed left the popup at **zero bounds** and it
+      immediately dismissed on the first click (`The dialog did not create the
+      project`). Cause: composited children are sized by the *base* layout pass
+      via `overlayFillParent`, but `Widget.add` of a composited child marks only
+      the composition dirty (`invalidateComposition`), never `_baseDirty`; after
+      a prior composited popup was dismissed the base pass was skipped, so the
+      new `PopupOverlay` kept `Rect(0,0,0,0)`. `openPopup` now sizes the overlay
+      explicitly to the root bounds, exactly as `showContextMenu` already does.
+- [x] Verified: Pro `dub build --compiler=dmd --force`; `headless-pro-smoke.exe`
+      EXIT=0 (drag-select, Select all, Copy selection, plus the project-dialog
+      regression); baseline `headless-smoke.exe` EXIT=0.
+
 ## 2026-09-13 - Pro: model/context/thinking/tools moved under the prompt input (done)
 
 User: "Let's move model selector, context usage, thinking and tools under the

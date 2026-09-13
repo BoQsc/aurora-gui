@@ -1,5 +1,55 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: context tooltip delay/above + message text selection (2026-09-13)
+
+User: "add delay to the context tooltip and make it properly positioned above.
+Add ability to select text and a context menu for cursor so we can copy and
+paste."
+
+### Change
+- `appui.d`:
+  - Tooltip: `ContextUsageBadge` `onHoverChanged` arms `_usageTooltipPending` /
+    `_usageTooltipHoverSeconds = 0`; `OpenCodeRoot.onTick` opens only after
+    `usageTooltipDelaySeconds` (0.45 s) of continuous hover (leave cancels +
+    closes). `positionContextUsageTooltip` now opens **above** the badge
+    (`y = anchor.y - measured.height - gap`) before clamping.
+  - `MessageBubble`: paint pass records `SelectSegment`s (one per selectable
+    run), left-drag sets a `(segment, char)` caret via `TextLayout.hitTest`,
+    `drawSelection` paints `opencodeSelection` from last frame's segments before
+    the glyphs, I-beam cursor over text, `captureMouse`/`releaseMouse` across the
+    drag. `showMessageContextMenu(index, pos, sourceBubble)` shows
+    `Copy selection`/`Copy message` + `Select all`; the copied payload is kept in
+    `_lastMessageCopy`. Real right-click passes `bubble.messageIndex()`.
+  - `openPopup` now pins the overlay to the root bounds. **Root cause of the
+    regression this uncovered**: composited children are sized by the *base*
+    layout pass via `overlayFillParent`, but `Widget.add` on a composited child
+    only calls `invalidateComposition()` (never sets `_baseDirty`), so after a
+    context menu was added then dismissed, the base pass was skipped and the next
+    `PopupOverlay` stayed `Rect(0,0,0,0)` → dismissed on the first click.
+    `showContextMenu` already sized menus explicitly; `openPopup` now does too.
+- `headless_pro_smoke.d`: new always-on selection block — drag across a user
+  bubble (asserts `selectedMessageTextForTesting`), `Select all` from the menu,
+  then `Copy selection` (asserts `lastCopiedMessageTextForTesting`); keeps the
+  project-dialog create step as the regression guard for the popup-bounds bug.
+
+### How to re-test
+1. Rebuild + smoke: kill `aurora-opencode-pro.exe`,
+   `dub build --compiler=dmd --force`, then `build\headless-pro-smoke.exe` —
+   expect `Message text selection + copy works from the context menu` and
+   `Created project: proj-one`, EXIT=0. Baseline `aurora-opencode`
+   `build\headless-smoke.exe` must also stay EXIT=0.
+2. Visual selection harness: `%TEMP%\oc-focuscheck\selection.d` (build like
+   `focuscheck.d`: `dmd -version=AuroraHeadless -i -Isource
+   -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source
+   <file> user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=...`), run
+   from the pro dir. It adds a "select this text..." user bubble, drags over it,
+   and writes `%TEMP%\oc-focuscheck\selection.ppm`. Convert with
+   `%TEMP%\ppm2png.ps1`; the selected row shows a lighter band (see
+   `%TEMP%\oc-focuscheck\selection.png`).
+3. Tooltip: hover-check harness pattern from the earlier tooltip work
+   (`contextTooltipBoundsForTesting` must be **above** `contextBadgeBoundsForTesting`);
+   live, the tooltip must not appear before ~0.45 s.
+
 ## Pro: model/context/thinking/tools in the composer footer (2026-09-13)
 
 User: "Let's move model selector, context usage, thinking and tools under the main
