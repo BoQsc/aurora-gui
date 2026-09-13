@@ -989,6 +989,11 @@ public final class OpenCodeRoot : VBox
         root["title"] = session.title;
         root["model"] = session.model;
         root["thinking"] = session.thinking;
+        // Preserve the owning project even though the baseline client has no
+        // project UI: the Pro client shares this sessions.json and would lose
+        // every assignment if the baseline dropped the field.
+        if (session.projectId.length > 0)
+            root["project"] = session.projectId;
         JSONValue messages = JSONValue(string[].init);
         foreach (message; session.messages)
         {
@@ -1028,6 +1033,9 @@ public final class OpenCodeRoot : VBox
                             session.model = field.str;
                         if (auto field = "thinking" in sessionValue.object)
                             session.thinking = field.type == JSONType.true_;
+                        if (auto field = "project" in sessionValue.object)
+                            if (field.type == JSONType.string)
+                                session.projectId = field.str;
                         if (auto field = "messages" in sessionValue.object)
                         {
                             if (field.type == JSONType.array)

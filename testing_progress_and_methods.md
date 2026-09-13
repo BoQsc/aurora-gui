@@ -7188,3 +7188,72 @@ non-throwing `queryWifi()`; screenshots show the live network list and the
 selected "Speakers (High Definition...)" device row. `dub test --force` in
 vendor still 37/37 (no vendor changes).
 
+## Projects: sandbox + per-project conversations + resizable list (2026-09-13)
+
+User: "by default should be on a standard sandbox conversation folder … per
+project conversation and ui to the left just like opencode with rectangles
+representing projects, you click on project and each project have their own
+sessions/conversations … sandbox … the first project and default one … we also
+need to expand in width the conversation listing ui and allow to drag to
+adjust width."
+
+**Data model (core.d):** `Project { id, name, path }` and
+`ProjectState { projects, activeId, sessionsRatio }`; `ChatSession` gained
+`projectId`. The sandbox (`sandboxProjectId = "sandbox"`, name `Sandbox`,
+folder `buildPath(opencodeStateDirectory(), "sandbox")`) is guaranteed first /
+active. Persisted to `projects.json` (`loadProjects`/`saveProjects`);
+`newProjectId()` = `"p" ~ stdTime ~ "-" ~ counter`. `ensureProjectDirectory()`
+creates a project's folder. Both apps share `%APPDATA%\Aurora OpenCode`
+(**no space between "Open" and "Code"** — a wrong join silently makes an
+isolated `--screenshot` run ignore your seeded files).
+
+**Baseline coexistence:** baseline `sessionToJson` writes
+`root["project"] = session.projectId` and `restoreSessions` reads `"project"`
+(and defaults it to sandbox) so both apps can share `sessions.json`.
+
+**Pro UI (appui.d):**
+- Body is `HBox { projects rail (fixed 150 px), SplitPane(sessionsColumn,
+  chatPanel) }`. The rail is a `ProjectListView : ListView` with a custom
+  `onPaint` drawing rounded-rect tiles (accent-tinted when active) with a
+  letter badge; `_hoverRow` tracks hover.
+- Sessions are filtered by `activeProjectId()` (legacy empty ids count as
+  sandbox) and by the text filter (`_sessionIndices`).
+- `newChat()` tags the session with the active project; tool workspace is
+  `workspaceForSession(index)` (the session's own project path), so switching
+  projects mid-run cannot retarget an in-flight tool batch. `buildSystemPrompt`
+  uses the same resolver.
+- `selectProject`/create/remove call `syncCurrentToActiveProject()`: if
+  `_current` is not in the active project, open that project's most recent
+  chat, or none. This fixes a foreign chat showing after a project switch.
+- `SplitPane` (`oc-split`) divider is draggable; `onRatioChanged` marks
+  `_sessionsRatioDirty` and `onTick` persists `projects.json` once per tick
+  (not once per mouse-move).
+- New-project dialog (`oc-project-name` / `oc-project-path-input` /
+  `oc-project-create`) uses text fields because the vendor file dialog cannot
+  select a folder. Rename/remove live in the rail context menu; the sandbox is
+  neither renameable nor removable; removing a project reassigns its chats to
+  the sandbox (the folder on disk is left alone).
+
+**How to verify:**
+- Pro smoke (extended): `dmd -version=AuroraHeadless -i -Isource
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source
+  tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib
+  winmm.lib -of=build\headless-pro-smoke.exe` then run it. New asserts cover:
+  sandbox is first/active, the create dialog makes a project + folder, new
+  chats are tagged, switching tiles swaps the list, `projects.json` is written,
+  the divider drag widens and persists `sessionsRatio`, and removing a project
+  reassigns its chats.
+- Baseline + tools: `dub build --compiler=dmd --force` in both app dirs;
+  baseline `tests\headless_smoke.d` (EXIT=0) and Pro `tests\tools_test.d`.
+- Visual: seed an isolated `%TEMP%\oc-proj-shot\Aurora OpenCode\` with
+  `projects.json` + `sessions.json` (paths use forward or escaped slashes),
+  set `APPDATA` to `%TEMP%\oc-proj-shot`, run
+  `aurora-opencode-pro.exe --screenshot out.ppm`, convert with
+  `%TEMP%\ppm2png.ps1`. Screenshots `%TEMP%\aui-pro-projects.png` (sandbox
+  active, its 2 chats) and `%TEMP%\aui-pro-project-p1b.png` (aurora-gui active,
+  its 2 chats + correct chat body) confirm rails, filtering, and the divider.
+
+**Result (2026-09-13):** both apps link; baseline smoke EXIT=0; Pro smoke all
+steps pass incl. projects (creator/switch/persist/divider/remove); tools test
+passes; screenshots above. Pro relaunched after rebuild.
+

@@ -1,5 +1,34 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Aurora OpenCode: sandbox + per-project conversations + resizable list (done)
+
+User: "by default should be on a standard sandbox conversation folder. This
+probably not yet a feature so let's do it. I also would like to have similar way
+of per project conversation and ui to the left just like opencode with
+rectangles representing projects, you click on project and each project have
+their own sessions/conversations. Sure sandbox conversation the first project
+and default one for quick chatting and quick doing anything. we also need to
+expand in width the conversation listing ui and allow to drag to adjust width."
+
+- [x] Core model: `Project`/`ProjectState`, `ChatSession.projectId`, sandbox
+      (first + default, folder `stateDir/sandbox`), `projects.json`
+      load/save, `newProjectId`, `ensureProjectDirectory`.
+- [x] Pro UI: projects rail (rounded-rect tiles) + session list filtered by the
+      active project + `SplitPane` sessions/chat divider whose ratio is
+      persisted (debounced to one write per tick). New-chat tags the active
+      project; tools use the session's own project folder.
+- [x] New/rename/remove project flows; sandbox is protected; removing a project
+      reassigns its chats to the sandbox (folder on disk untouched).
+- [x] Fixed a corner case found by screenshot: switching project while the open
+      chat belonged to another project showed a foreign chat; now
+      `syncCurrentToActiveProject()` opens that project's latest chat or none.
+- [x] Baseline keeps the shared `sessions.json` compatible (`project` field).
+- [x] Verified: Pro smoke extended (creator/switch/persist/divider/remove),
+      baseline smoke EXIT=0, tools test pass; screenshots
+      `%TEMP%\aui-pro-projects.png` / `%TEMP%\aui-pro-project-p1b.png`.
+      Details in `testing_progress_and_methods.md`
+      "Projects: sandbox + per-project conversations…".
+
 ## 2026-09-13 - Timeline ruler cursor priority (done)
 
 User: "things under the timeline ruler are gaining priority in interaction using

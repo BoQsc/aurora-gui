@@ -2,6 +2,8 @@ module auroraopencode.core;
 
 import aurora;
 import auroraopencode.logging : logError;
+import std.conv : to;
+import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
@@ -243,7 +245,25 @@ public struct ChatSession
     string title;
     string model;
     bool thinking;
+    string projectId;  // owning project; empty/unknown maps to the sandbox
     ChatMessage[] messages;
+}
+
+/// A workspace a conversation belongs to. The sandbox project is always
+/// present, always first, and is the default for quick chats.
+public struct Project
+{
+    string id;
+    string name;
+    string path;
+}
+
+/// Persisted project list plus the small bits of UI state that belong with it.
+public struct ProjectState
+{
+    Project[] projects;
+    string activeId;
+    double sessionsRatio = 0.3;  // sessions-column share of the split
 }
 
 public struct Settings
@@ -414,5 +434,149 @@ public void saveSettings(const ref Settings settings)
     catch (Exception error)
     {
         logError("failed to save settings: " ~ error.msg);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+public immutable string sandboxProjectId = "sandbox";
+public immutable string sandboxProjectName = "Sandbox";
+
+/// The standard sandbox folder: a dedicated directory under the app's state
+/// directory so a brand-new install always has a safe place to chat and run
+/// tools without touching any real project.
+public string sandboxProjectPath()
+{
+    return buildPath(opencodeStateDirectory(), "sandbox");
+}
+
+public Project makeSandboxProject()
+{
+    Project project;
+    project.id = sandboxProjectId;
+    project.name = sandboxProjectName;
+    project.path = sandboxProjectPath();
+    return project;
+}
+
+/// A unique id for a user-added project. The monotonic tick makes collisions
+/// impossible across restarts; the counter separates adds in one tick.
+public string newProjectId()
+{
+    static size_t counter;
+    return "p" ~ to!string(Clock.currTime.stdTime) ~ "-" ~ to!string(counter++);
+}
+
+private string projectsStorePath()
+{
+    return buildPath(opencodeStateDirectory(), "projects.json");
+}
+
+/// Load the project list. The sandbox project is guaranteed to exist and to be
+/// first, and the active id is repaired to a real project if it is stale.
+public ProjectState loadProjects()
+{
+    ProjectState state;
+    bool sandboxSeen;
+    const path = projectsStorePath();
+    if (exists(path))
+    {
+        try
+        {
+            auto value = parseJSON(readText(path));
+            if (value.type == JSONType.object)
+            {
+                if (auto found = "projects" in value.object)
+                {
+                    if (found.type == JSONType.array)
+                    {
+                        foreach (projectValue; found.array)
+                        {
+                            if (projectValue.type != JSONType.object) continue;
+                            Project project;
+                            if (auto f = "id" in projectValue.object)
+                                project.id = f.str;
+                            if (auto f = "name" in projectValue.object)
+                                project.name = f.str;
+                            if (auto f = "path" in projectValue.object)
+                                project.path = f.str;
+                            if (project.id.length == 0) continue;
+                            if (project.id == sandboxProjectId)
+                            {
+                                sandboxSeen = true;
+                                project.name = sandboxProjectName;
+                                if (project.path.length == 0)
+                                    project.path = sandboxProjectPath();
+                            }
+                            else if (project.name.length == 0)
+                                project.name = project.id;
+                            state.projects ~= project;
+                        }
+                    }
+                }
+                if (auto found = "active" in value.object)
+                    if (found.type == JSONType.string)
+                        state.activeId = found.str;
+                if (auto found = "sessionsRatio" in value.object)
+                {
+                    double ratio = state.sessionsRatio;
+                    if (found.type == JSONType.float_) ratio = found.floating;
+                    else if (found.type == JSONType.integer)
+                        ratio = cast(double) found.integer;
+                    if (ratio > 0.05 && ratio < 0.95) state.sessionsRatio = ratio;
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            logError("failed to load projects: " ~ error.msg);
+        }
+    }
+    if (!sandboxSeen)
+        state.projects = makeSandboxProject() ~ state.projects;
+    bool activeFound;
+    foreach (project; state.projects)
+        if (project.id == state.activeId) activeFound = true;
+    if (!activeFound)
+        state.activeId = state.projects.length > 0
+            ? state.projects[0].id : sandboxProjectId;
+    return state;
+}
+
+public void saveProjects(const ref ProjectState state)
+{
+    ensureStateDirectory();
+    JSONValue root;
+    JSONValue list = JSONValue(string[].init);
+    foreach (project; state.projects)
+    {
+        JSONValue item;
+        item["id"] = project.id;
+        item["name"] = project.name;
+        item["path"] = project.path;
+        list.array ~= item;
+    }
+    root["projects"] = list;
+    root["active"] = state.activeId;
+    root["sessionsRatio"] = state.sessionsRatio;
+    try write(projectsStorePath(), root.toString());
+    catch (Exception error)
+    {
+        logError("failed to save projects: " ~ error.msg);
+    }
+}
+
+public void ensureProjectDirectory(const ref Project project)
+{
+    if (project.path.length == 0) return;
+    try
+    {
+        if (!exists(project.path)) mkdirRecurse(project.path);
+    }
+    catch (Exception error)
+    {
+        logError("failed to create project directory: " ~ error.msg);
     }
 }

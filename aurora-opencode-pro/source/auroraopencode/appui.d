@@ -17,7 +17,7 @@ import std.conv : to;
 import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : buildPath;
+import std.path : baseName, buildPath;
 import std.string : strip, toLower;
 import std.utf : toUTF16z, toUTF32;
 version (Windows)
@@ -1308,6 +1308,101 @@ public final class SessionListView : ListView
 }
 
 // ---------------------------------------------------------------------------
+// Project rail: a stack of rounded rectangles, one per project
+// ---------------------------------------------------------------------------
+
+public final class ProjectListView : ListView
+{
+    void delegate(int index, Point globalPosition) onContextMenuRequested;
+
+    private int _hoverRow = -1;
+
+    private static dchar upperInitial(dstring text)
+    {
+        if (text.length == 0) return '?';
+        uint code = text[0];
+        if (code >= 'a' && code <= 'z') code -= 32;
+        return cast(dchar) code;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+        const rowHeight = rowHeight();
+        if (rowHeight <= 0) return;
+
+        auto content = canvas.clipped(Rect(0, 0, width, height));
+        const offset = scrollOffset();
+        const selected = selectedIndex();
+        const count = cast(int) items().length;
+        const first = offset / rowHeight;
+        const last = clampInt((offset + height) / rowHeight + 1, 0, count);
+
+        foreach (index; first .. last)
+        {
+            const item = items()[cast(size_t) index];
+            const y = index * rowHeight - offset;
+            const tile = Rect(4, y + 3, maxInt(0, width - 8), rowHeight - 6);
+            const active = index == selected;
+
+            content.fillRoundedRect(tile, 8, active ? opencodeSelection
+                : (index == _hoverRow ? opencodeField : opencodeElevated));
+            if (active)
+                content.drawRoundedRect(tile, 8, Color.rgba(0, 0, 0, 0),
+                    opencodeAccent, 1);
+
+            const badge = Rect(tile.x + 7, tile.y + (tile.height - 22) / 2,
+                22, 22);
+            content.fillRoundedRect(badge, 6,
+                opencodeAccent.withAlpha(active ? 220 : 95));
+            content.drawTextInRect(badge, [upperInitial(item.text)],
+                Color.rgb(255, 255, 255), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true);
+
+            const textLeft = badge.right() + 8;
+            const textWidth = maxInt(0, tile.right() - textLeft - 8);
+            const titleColor = item.disabled || item.dimmed ? opencodeMuted
+                : (active ? opencodeText : opencodeText.withAlpha(220));
+            content.drawTextInRect(Rect(textLeft, tile.y, textWidth, tile.height),
+                item.text, titleColor, theme().fontScale,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        setCursor(CursorKind.arrow);
+        const next = indexAt(event.position);
+        if (next != _hoverRow)
+        {
+            _hoverRow = next;
+            invalidate();
+        }
+        return true;
+    }
+
+    override void onMouseLeave()
+    {
+        _hoverRow = -1;
+        setCursor(CursorKind.arrow);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right)
+        {
+            const row = indexAt(event.position);
+            if (row >= 0 && onContextMenuRequested !is null)
+                onContextMenuRequested(row, localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main root
 // ---------------------------------------------------------------------------
 
@@ -1319,6 +1414,13 @@ public final class OpenCodeRoot : VBox
     private ChatSession[] _sessions;
     private int _current = -1;
     private string[] _models = defaultModels.dup;
+
+    private ProjectState _projectState;
+    private ProjectListView _projectRail;
+    private SplitPane _sessionsSplit;
+    private Label _sessionsHeader;
+    private Label _sessionsPath;
+    private bool _sessionsRatioDirty;
 
     private SessionListView _sessionList;
     private ChatScrollView _messagesScroll;
@@ -1374,13 +1476,20 @@ public final class OpenCodeRoot : VBox
         _window = window;
         setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
         _settings = loadSettings();
+        _projectState = loadProjects();
+        migrateWorkspaceIntoProjects();
+        foreach (project; _projectState.projects)
+            ensureProjectDirectory(project);
         _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
         buildUi();
+        updateProjectRail();
         restoreSessions();
+        syncCurrentToActiveProject();
         // The restored selection is applied before the first layout. Revealing
         // it at that point would measure against a zero-height viewport and
         // seed the list's scroll offset at the bottom.
         updateSessionList(false);
+        updateSessionsHeader();
         updateKeyBadge();
         updateSendButton();
         _client.fetchModels();
@@ -1452,12 +1561,42 @@ public final class OpenCodeRoot : VBox
         auto body = add(new HBox(0));
         body.layoutHints().flex = 1.0;
 
+        auto projectsColumn = new VBox(4, Insets(6));
+        projectsColumn.layoutHints().preferredWidth = 150;
+        projectsColumn.setBackground(opencodeBackground);
+        auto projectsHeader = projectsColumn.add(new Label("Projects"));
+        projectsHeader.setScale(1);
+        projectsHeader.setColor(opencodeMuted);
+        _projectRail = projectsColumn.add(new ProjectListView());
+        _projectRail.setId("oc-projects");
+        _projectRail.layoutHints().flex = 1.0;
+        _projectRail.setRowHeight(44);
+        _projectRail.onSelectionChanged = delegate(int index)
+        {
+            selectProject(index);
+        };
+        _projectRail.onContextMenuRequested = delegate(int row, Point point)
+        {
+            showProjectContextMenu(row, point);
+        };
+        auto newProjectButton = projectsColumn.add(
+            new Button("New project", IconKind.newDocument));
+        newProjectButton.setId("oc-new-project");
+        newProjectButton.layoutHints().preferredWidth = 138;
+        newProjectButton.onClick = delegate() { showNewProjectDialog(); };
+
         auto sidebar = new VBox(2, Insets(8));
-        sidebar.layoutHints().preferredWidth = 200;
+        sidebar.layoutHints().minWidth = 190;
+        sidebar.layoutHints().preferredWidth = 300;
         sidebar.setBackground(opencodePanel);
-        auto sidebarHeader = sidebar.add(new Label("Conversations"));
-        sidebarHeader.setScale(1);
-        sidebarHeader.setColor(opencodeMuted);
+        _sessionsHeader = sidebar.add(new Label("Sandbox"));
+        _sessionsHeader.setId("oc-project-title");
+        _sessionsHeader.setScale(1);
+        _sessionsHeader.setColor(opencodeText);
+        _sessionsPath = sidebar.add(new Label(""));
+        _sessionsPath.setId("oc-project-path");
+        _sessionsPath.setScale(1);
+        _sessionsPath.setColor(opencodeMuted);
         _filterField = sidebar.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
@@ -1510,13 +1649,338 @@ public final class OpenCodeRoot : VBox
         chatPanel.add(_messagesScroll);
         chatPanel.add(inputRow);
 
-        body.add(sidebar);
-        body.add(chatPanel);
+        _sessionsSplit = new SplitPane(sidebar, chatPanel,
+            Orientation.horizontal);
+        _sessionsSplit.setId("oc-split");
+        _sessionsSplit.layoutHints().flex = 1.0;
+        _sessionsSplit.setRatio(_projectState.sessionsRatio, false);
+        _sessionsSplit.onRatioChanged = delegate(double ratio)
+        {
+            // Dragging fires per pixel; persist once per tick instead of on
+            // every mouse-move.
+            _projectState.sessionsRatio = ratio;
+            _sessionsRatioDirty = true;
+        };
+
+        body.add(projectsColumn);
+        body.add(_sessionsSplit);
 
         _status = add(new Label("Ready"));
         _status.setId("oc-status");
         _status.layoutHints().preferredHeight = 22;
         _status.setScale(1);
+    }
+
+    // -- projects ---------------------------------------------------------
+
+    private int activeProjectIndex()
+    {
+        if (_projectState.projects.length == 0) return -1;
+        foreach (index, project; _projectState.projects)
+            if (project.id == _projectState.activeId) return cast(int) index;
+        return 0;
+    }
+
+    private string activeProjectId()
+    {
+        const index = activeProjectIndex();
+        return index >= 0 ? _projectState.projects[cast(size_t) index].id
+            : sandboxProjectId;
+    }
+
+    /// The folder the active project's tools run in.
+    private string activeWorkspace()
+    {
+        const index = activeProjectIndex();
+        if (index < 0) return ".";
+        const path = _projectState.projects[cast(size_t) index].path;
+        return path.length > 0 ? path : ".";
+    }
+
+    private Project* activeProject()
+    {
+        const index = activeProjectIndex();
+        return index >= 0 ? &_projectState.projects[cast(size_t) index] : null;
+    }
+
+    /// The folder a specific conversation's tools run in. Resolved from the
+    /// conversation's own project so switching projects mid-run cannot retarget
+    /// an in-flight tool batch.
+    private string workspaceForSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return activeWorkspace();
+        const id = _sessions[cast(size_t) sessionIndex].projectId;
+        foreach (project; _projectState.projects)
+            if (project.id == id && project.path.length > 0) return project.path;
+        return activeWorkspace();
+    }
+
+    /// A session with no project id predates projects and lives in the sandbox.
+    private static string sessionProjectId(const ref ChatSession session)
+    {
+        return session.projectId.length > 0
+            ? session.projectId : sandboxProjectId;
+    }
+
+    /// Keep the open conversation inside the active project: if the current
+    /// session belongs elsewhere (e.g. restored `current` or a project switch),
+    /// open that project's most recent chat, or none when it has no chats.
+    private void syncCurrentToActiveProject()
+    {
+        const projectId = activeProjectId();
+        if (_current >= 0 && _current < cast(int) _sessions.length &&
+            sessionProjectId(_sessions[_current]) == projectId)
+            return;
+        int candidate = -1;
+        foreach (index, session; _sessions)
+            if (sessionProjectId(session) == projectId)
+                candidate = cast(int) index;
+        if (candidate >= 0)
+        {
+            selectSession(candidate);
+            return;
+        }
+        _current = -1;
+        _streamBubble = null;
+        _pendingToolCalls.length = 0;
+        _pendingToolResults = 0;
+        _toolRounds = 0;
+        rebuildMessageColumn();
+        if (_status !is null) updateStatus("");
+    }
+
+    /// Adopt a workspace set by an older build as a real project so it is not
+    /// silently lost now that the workspace follows the active project.
+    private void migrateWorkspaceIntoProjects()
+    {
+        if (_settings.workspace.length == 0) return;
+        foreach (project; _projectState.projects)
+            if (project.path == _settings.workspace) return;
+        Project project;
+        project.id = newProjectId();
+        project.name = projectNameFromPath(_settings.workspace);
+        project.path = _settings.workspace;
+        _projectState.projects ~= project;
+        _projectState.activeId = project.id;
+        saveProjects(_projectState);
+    }
+
+    private static string projectNameFromPath(string path)
+    {
+        const name = baseName(path);
+        return name.length > 0 ? name : path;
+    }
+
+    private void updateProjectRail()
+    {
+        if (_projectRail is null) return;
+        ListItem[] items;
+        foreach (project; _projectState.projects)
+            items ~= ListItem(project.name, IconKind.none, "");
+        _projectRail.setItems(items);
+        const index = activeProjectIndex();
+        if (index >= 0) _projectRail.setSelectedIndex(index, false);
+    }
+
+    private void updateSessionsHeader()
+    {
+        if (_sessionsHeader is null) return;
+        const project = activeProject();
+        _sessionsHeader.setText(project is null ? "Sandbox" : project.name);
+        if (_sessionsPath !is null)
+            _sessionsPath.setText(project is null ? "" : project.path);
+    }
+
+    private void selectProject(int index)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        const id = _projectState.projects[cast(size_t) index].id;
+        if (id == _projectState.activeId)
+        {
+            if (_projectRail !is null) _projectRail.setSelectedIndex(index, false);
+            return;
+        }
+        _projectState.activeId = id;
+        saveProjects(_projectState);
+        updateSessionsHeader();
+        syncCurrentToActiveProject();
+        updateSessionList(false);
+        _input.requestFocus();
+    }
+
+    private void showNewProjectDialog()
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        auto content = new VBox(8, Insets(14));
+        content.layoutHints().preferredWidth = 400;
+
+        auto title = content.add(new Label("New project"));
+        title.setScale(3);
+
+        auto nameLabel = content.add(new Label("Name"));
+        nameLabel.setScale(1);
+        nameLabel.setColor(opencodeMuted);
+        auto nameField = content.add(new TextField(""));
+        nameField.setId("oc-project-name");
+        nameField.setPlaceholder("My project");
+
+        auto pathLabel = content.add(new Label("Folder"));
+        pathLabel.setScale(1);
+        pathLabel.setColor(opencodeMuted);
+        auto pathField = content.add(new TextField(""));
+        pathField.setId("oc-project-path-input");
+        pathField.setPlaceholder("C:\\path\\to\\folder");
+
+        auto errorLabel = content.add(new Label(""));
+        errorLabel.setScale(1);
+        errorLabel.setColor(opencodeErrorRed);
+
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 42;
+        footer.add(new Spacer());
+        auto cancel = footer.add(new Button("Cancel"));
+        cancel.setId("oc-project-cancel");
+        cancel.onClick = delegate() { dismissPopup(); };
+        auto create = footer.add(new Button("Create"));
+        create.setId("oc-project-create");
+        create.setAccent(true);
+        create.onClick = delegate()
+        {
+            const name = nameField.textUtf8().strip();
+            const path = pathField.textUtf8().strip();
+            if (name.length == 0)
+            {
+                errorLabel.setText("Give the project a name.");
+                return;
+            }
+            if (path.length == 0)
+            {
+                errorLabel.setText("Pick a folder.");
+                return;
+            }
+            Project project;
+            project.id = newProjectId();
+            project.name = name;
+            project.path = path;
+            ensureProjectDirectory(project);
+            _projectState.projects ~= project;
+            _projectState.activeId = project.id;
+            saveProjects(_projectState);
+            dismissPopup();
+            updateProjectRail();
+            updateSessionsHeader();
+            syncCurrentToActiveProject();
+            updateSessionList(false);
+            updateStatus("Created project " ~ name ~ ".");
+        };
+
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(420, 300));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+        nameField.requestFocus();
+    }
+
+    private void showProjectContextMenu(int index, Point globalPosition)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        const project = _projectState.projects[cast(size_t) index];
+        const isSandbox = project.id == sandboxProjectId;
+        ContextMenuItem[] items;
+        if (!isSandbox)
+            items ~= ContextMenuItem.command("Rename", IconKind.settings,
+                delegate() { showRenameProjectDialog(index); });
+        items ~= ContextMenuItem.command("New chat here", IconKind.terminal,
+            delegate()
+            {
+                _projectState.activeId = project.id;
+                saveProjects(_projectState);
+                updateProjectRail();
+                updateSessionsHeader();
+                updateSessionList(false);
+                newChat();
+            });
+        if (!isSandbox)
+            items ~= ContextMenuItem.command("Remove", IconKind.trash,
+                delegate() { removeProject(index); });
+        showContextMenu(_projectRail, globalPosition, items);
+    }
+
+    private void showRenameProjectDialog(int index)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        auto content = new VBox(8, Insets(14));
+        content.layoutHints().preferredWidth = 400;
+
+        auto title = content.add(new Label("Rename project"));
+        title.setScale(3);
+
+        auto nameField = content.add(
+            new TextField(_projectState.projects[cast(size_t) index].name));
+        nameField.setId("oc-project-rename");
+
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 42;
+        footer.add(new Spacer());
+        auto cancel = footer.add(new Button("Cancel"));
+        cancel.setId("oc-project-rename-cancel");
+        cancel.onClick = delegate() { dismissPopup(); };
+        auto save = footer.add(new Button("Rename"));
+        save.setId("oc-project-rename-save");
+        save.setAccent(true);
+        save.onClick = delegate()
+        {
+            const name = nameField.textUtf8().strip();
+            if (name.length == 0) return;
+            _projectState.projects[cast(size_t) index].name = name;
+            saveProjects(_projectState);
+            dismissPopup();
+            updateProjectRail();
+            updateSessionsHeader();
+            updateSessionList(false);
+        };
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(420, 200));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+        nameField.requestFocus();
+    }
+
+    private void removeProject(int index)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        const project = _projectState.projects[cast(size_t) index];
+        if (project.id == sandboxProjectId) return;
+        foreach (ref session; _sessions)
+            if (session.projectId == project.id)
+                session.projectId = sandboxProjectId;
+        _projectState.projects = _projectState.projects[0 .. cast(size_t) index]
+            ~ _projectState.projects[cast(size_t) index + 1 .. $];
+        if (_projectState.activeId == project.id)
+            _projectState.activeId = sandboxProjectId;
+        saveProjects(_projectState);
+        persistState();
+        updateProjectRail();
+        updateSessionsHeader();
+        syncCurrentToActiveProject();
+        updateSessionList(false);
+        updateStatus("Removed project " ~ project.name ~ ".");
     }
 
     // -- sessions ---------------------------------------------------------
@@ -1527,6 +1991,7 @@ public final class OpenCodeRoot : VBox
         session.title = "New chat";
         session.model = _settings.model;
         session.thinking = _settings.thinking;
+        session.projectId = activeProjectId();
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         _streamBubble = null;
@@ -1931,7 +2396,7 @@ public final class OpenCodeRoot : VBox
         _pendingToolCalls = event.toolCalls.dup;
         _pendingToolResults = cast(int) event.toolCalls.length;
         const sessionIndex = _current;
-        const workspace = _settings.workspace;
+        const workspace = workspaceForSession(sessionIndex);
         auto client = _client;
         auto worker = new Thread({
             runToolWorker(client, sessionIndex, _pendingToolCalls, workspace);
@@ -2083,8 +2548,7 @@ public final class OpenCodeRoot : VBox
         {
             ChatRequestMessage systemPrompt;
             systemPrompt.role = "system";
-            const workspace = _settings.workspace.length > 0
-                ? _settings.workspace : ".";
+            const workspace = workspaceForSession(sessionIndex);
             version (Windows)
                 const platform = "win32";
             else version (Posix)
@@ -2250,16 +2714,16 @@ public final class OpenCodeRoot : VBox
 
         auto workspaceRow = new HBox(8);
         workspaceRow.layoutHints().preferredHeight = 40;
-        auto workspaceLabel = workspaceRow.add(new Label("Workspace"));
+        auto workspaceLabel = workspaceRow.add(new Label("Project folder"));
         workspaceLabel.layoutHints().preferredWidth = 110;
         workspaceLabel.setScale(1);
         auto workspaceField = workspaceRow.add(
-            new TextField(_settings.workspace));
+            new TextField(activeWorkspace()));
         workspaceField.setId("oc-workspace");
         workspaceField.layoutHints().flex = 1.0;
         auto workspaceHint = content.add(new Label(
-            "Directory where tools (bash/read/write/glob/grep) operate. " ~
-            "Leave empty to use the app directory."));
+            "Folder where the active project's tools (bash/read/write/glob/" ~
+            "grep) operate. Switch projects in the rail on the left."));
         workspaceHint.setScale(1);
         workspaceHint.setColor(opencodeMuted);
 
@@ -2306,7 +2770,16 @@ public final class OpenCodeRoot : VBox
             const workspace = workspaceField.textUtf8().strip();
             if (baseUrl.length > 0) _settings.baseUrl = baseUrl;
             _settings.apiKey = apiKey;
-            _settings.workspace = workspace;
+            if (auto project = activeProject())
+            {
+                if (workspace.length > 0 && workspace != project.path)
+                {
+                    project.path = workspace;
+                    ensureProjectDirectory(*project);
+                    saveProjects(_projectState);
+                    updateSessionsHeader();
+                }
+            }
             _client.setCredentials(_settings.baseUrl, _settings.apiKey);
             saveSettingsNow();
             updateKeyBadge();
@@ -2521,8 +2994,12 @@ public final class OpenCodeRoot : VBox
     {
         ListItem[] items;
         int[] indices;
+        const projectId = activeProjectId();
         foreach (index, session; _sessions)
         {
+            // Sessions restored from an older build have no project; they
+            // belong to the sandbox.
+            if (sessionProjectId(session) != projectId) continue;
             const title = session.title.length > 0 ? session.title : "New chat";
             if (_filterText.length > 0 &&
                 !canFind(title.toLower(), _filterText.toLower()))
@@ -2749,6 +3226,8 @@ public final class OpenCodeRoot : VBox
         root["title"] = session.title;
         root["model"] = session.model;
         root["thinking"] = session.thinking;
+        if (session.projectId.length > 0)
+            root["project"] = session.projectId;
         JSONValue messages = JSONValue(string[].init);
         foreach (message; session.messages)
         {
@@ -2815,6 +3294,10 @@ public final class OpenCodeRoot : VBox
                             session.model = field.str;
                         if (auto field = "thinking" in sessionValue.object)
                             session.thinking = field.type == JSONType.true_;
+                        if (auto field = "project" in sessionValue.object)
+                            session.projectId = field.str;
+                        if (session.projectId.length == 0)
+                            session.projectId = sandboxProjectId;
                         if (auto field = "messages" in sessionValue.object)
                         {
                             if (field.type == JSONType.array)
@@ -2971,6 +3454,12 @@ public final class OpenCodeRoot : VBox
         if (_streamBubble !is null)
             _streamBubble.tickThinking(deltaSeconds);
 
+        if (_sessionsRatioDirty)
+        {
+            _sessionsRatioDirty = false;
+            saveProjects(_projectState);
+        }
+
         updateSendButton();
     }
 
@@ -3004,6 +3493,107 @@ public final class OpenCodeRoot : VBox
     {
         if (index < 0 || index >= cast(int) _sessions.length) return "";
         return _sessions[index].title;
+    }
+
+    // -- project test accessors -------------------------------------------
+
+    /// Test-only: project names in rail order (the sandbox is always first).
+    public string[] projectNamesForTesting()
+    {
+        string[] names;
+        foreach (project; _projectState.projects) names ~= project.name;
+        return names;
+    }
+
+    public int projectCountForTesting() const
+    {
+        return cast(int) _projectState.projects.length;
+    }
+
+    public int activeProjectIndexForTesting()
+    {
+        return activeProjectIndex();
+    }
+
+    public string activeProjectNameForTesting()
+    {
+        const index = activeProjectIndex();
+        return index >= 0
+            ? _projectState.projects[cast(size_t) index].name : "";
+    }
+
+    public string activeProjectIdForTesting()
+    {
+        return activeProjectId();
+    }
+
+    public void removeProjectForTesting(int index)
+    {
+        removeProject(index);
+    }
+
+    public string activeProjectPathForTesting()
+    {
+        const index = activeProjectIndex();
+        return index >= 0
+            ? _projectState.projects[cast(size_t) index].path : "";
+    }
+
+    /// Test-only: the project id a session belongs to.
+    public string sessionProjectForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return "";
+        return _sessions[index].projectId;
+    }
+
+    /// Test-only: number of session rows currently visible for the active
+    /// project (after the project and text filters).
+    public int visibleSessionCountForTesting() const
+    {
+        return cast(int) _sessionIndices.length;
+    }
+
+    public void selectProjectForTesting(int index)
+    {
+        selectProject(index);
+    }
+
+    /// Test-only: the sessions/chat divider ratio.
+    public double sessionsRatioForTesting()
+    {
+        return _sessionsSplit is null ? _projectState.sessionsRatio
+            : _sessionsSplit.ratio();
+    }
+
+    /// Test-only: nudge the sessions/chat divider like a small drag.
+    public void dragSessionsDividerForTesting(int deltaX)
+    {
+        if (_sessionsSplit is null) return;
+        const width = maxInt(1, _sessionsSplit.bounds().width);
+        _sessionsSplit.setRatio(_sessionsSplit.ratio() +
+            cast(double) deltaX / width);
+    }
+
+    public void openNewProjectDialogForTesting()
+    {
+        showNewProjectDialog();
+    }
+
+    /// Test-only: create a project directly (bypassing the dialog).
+    public void addProjectForTesting(string name, string path)
+    {
+        Project project;
+        project.id = newProjectId();
+        project.name = name;
+        project.path = path;
+        ensureProjectDirectory(project);
+        _projectState.projects ~= project;
+        _projectState.activeId = project.id;
+        saveProjects(_projectState);
+        updateProjectRail();
+        updateSessionsHeader();
+        syncCurrentToActiveProject();
+        updateSessionList(false);
     }
 
     /// Test-only: append a conversation (parallel role/content arrays) without
@@ -3193,6 +3783,12 @@ public final class OpenCodeRoot : VBox
     {
         _settings.toolsEnabled = true;
         _settings.workspace = workspace;
+        if (auto project = activeProject())
+        {
+            project.path = workspace;
+            ensureProjectDirectory(*project);
+            saveProjects(_projectState);
+        }
         if (_toolsBox !is null) _toolsBox.setChecked(true, false);
     }
 

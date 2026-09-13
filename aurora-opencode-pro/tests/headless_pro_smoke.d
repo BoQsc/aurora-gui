@@ -7,8 +7,8 @@ import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
-import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
-import std.json : JSONValue;
+import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir, write;
+import std.json : JSONValue, parseJSON;
 import std.conv : to;
 import std.path : buildPath;
 import std.stdio : writeln;
@@ -321,6 +321,103 @@ int main(string[] args)
     assert(root.contextUsageTextForTesting() == "25%",
         "Badge should restore the persisted usage for the session");
     writeln("Context meter follows the active session");
+
+    // --- Projects -------------------------------------------------------
+    // The sandbox is the default project (first in the rail) and owns the
+    // restored chats. Creating, switching, persisting, and removing projects
+    // must all keep each project's conversation list separate.
+    auto projects = requireWidget!ListView(root, "oc-projects");
+    const sandboxVisible = root.visibleSessionCountForTesting();
+    assert(root.projectCountForTesting() == 1,
+        "Expected only the sandbox project");
+    assert(root.projectNamesForTesting()[0] == "Sandbox",
+        "Sandbox must be the first project");
+    assert(root.activeProjectNameForTesting() == "Sandbox",
+        "Sandbox must be active by default");
+    assert(root.activeProjectPathForTesting().indexOf("sandbox") >= 0,
+        "Sandbox folder should live under the state directory: " ~
+        root.activeProjectPathForTesting());
+    assert(projects.items().length == 1, "Rail should show one project tile");
+    writeln("Sandbox is the default project: ",
+        root.activeProjectPathForTesting());
+
+    // Create a project through the real dialog.
+    root.openNewProjectDialogForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "New project dialog did not paint");
+    auto projectName = requireWidget!TextField(root, "oc-project-name");
+    auto projectPath = requireWidget!TextField(root, "oc-project-path-input");
+    const projectDir = buildPath(stateDir, "proj-one");
+    projectName.setText("proj-one");
+    projectPath.setText(projectDir);
+    root.tickTree(0.02);
+    driver.click(globalCenter(requireWidget!Button(root, "oc-project-create")));
+    root.tickTree(0.02);
+    assert(driver.paint(), "New project dialog did not paint after create");
+    assert(root.projectCountForTesting() == 2,
+        "The dialog did not create the project");
+    assert(projects.items().length == 2, "Rail did not gain a tile");
+    assert(root.activeProjectNameForTesting() == "proj-one",
+        "The new project should become active");
+    assert(root.visibleSessionCountForTesting() == 0,
+        "A new project starts with no conversations");
+    assert(exists(projectDir), "Project folder was not created");
+    writeln("Created project: ", root.activeProjectNameForTesting());
+
+    // New chats belong to the active project.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    assert(root.visibleSessionCountForTesting() == 1,
+        "New chat is missing from the project list");
+    const projectChat = cast(int) root.sessionCountForTesting() - 1;
+    assert(root.sessionProjectForTesting(projectChat) ==
+        root.activeProjectIdForTesting(),
+        "New chat was not tagged with the active project");
+
+    // Switching tiles swaps in that project's own conversation list.
+    projects.onSelectionChanged(0);
+    root.tickTree(0.02);
+    assert(root.activeProjectNameForTesting() == "Sandbox",
+        "Tile 0 must select the sandbox");
+    assert(root.visibleSessionCountForTesting() == sandboxVisible,
+        "Sandbox did not restore its own conversations");
+    projects.onSelectionChanged(1);
+    root.tickTree(0.02);
+    assert(root.visibleSessionCountForTesting() == 1,
+        "Switching back did not show the project's chat");
+    writeln("Project switching filters the conversation list");
+
+    assert(exists(buildPath(stateDir, "projects.json")),
+        "projects.json was not written");
+
+    // The sessions/chat divider is a draggable SplitPane and its width is
+    // persisted so the layout survives a restart.
+    auto split = requireWidget!SplitPane(root, "oc-split");
+    const ratioBefore = root.sessionsRatioForTesting();
+    assert(split.ratio() == ratioBefore, "Split ratio accessor mismatch");
+    assert(ratioBefore > 0.1 && ratioBefore < 0.5,
+        "Unexpected default split ratio: " ~ to!string(ratioBefore));
+    root.dragSessionsDividerForTesting(120);
+    root.tickTree(0.02);
+    assert(root.sessionsRatioForTesting() > ratioBefore,
+        "Dragging did not widen the conversation list");
+    auto projectsJson = parseJSON(readText(buildPath(stateDir, "projects.json")));
+    assert(projectsJson["sessionsRatio"].floating > ratioBefore,
+        "Split ratio was not persisted");
+    assert(driver.paint(), "Split drag did not repaint");
+    writeln("Sessions column is draggable and its width persists");
+
+    // Removing a project moves its chats to the sandbox.
+    root.removeProjectForTesting(1);
+    root.tickTree(0.02);
+    assert(root.projectCountForTesting() == 1, "Project was not removed");
+    assert(root.activeProjectNameForTesting() == "Sandbox",
+        "Removing the active project should fall back to the sandbox");
+    projects.onSelectionChanged(0);
+    root.tickTree(0.02);
+    assert(root.visibleSessionCountForTesting() == sandboxVisible + 1,
+        "The removed project's chats were not reassigned to the sandbox");
+    writeln("Removing a project reassigns its chats to the sandbox");
 
     // Native tools are the main mode; Legacy tools live in Settings with a
     // hover tooltip, not in the toolbar.
