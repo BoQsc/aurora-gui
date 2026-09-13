@@ -22,6 +22,26 @@ User: "Let's move new chat button to the above the search chats."
   full-width "New chat" button above "Search chats", no collision; toolbar has
   no New chat. Pro smoke passes; live relaunch PID 31724, `errors.log` clean.
 
+### Follow-up: search field's bottom was clipped
+
+- Symptom: the "Search chats" field's bottom border was missing; the first
+  session row overlapped its bottom ~8 px.
+- Root cause: `TextField`'s constructor sets `layoutHints().minHeight = 38`
+  (`vendor/.../widgets/texteditor.d:1418`). The nested header `VBox` lays a
+  child out at `maxInt(minHeight, preferredHeight)`, so the field was laid out
+  at 38 px even though `preferredHeight` was 30; but
+  `updateSessionsHeaderHeight()` summed only `preferredHeight`, making the
+  column 8 px too short, so the next sibling (the list) started 8 px early and
+  covered the field's bottom.
+- Fix: set `minHeight = 30` on the button and the search field (matching the
+  30 px `preferredHeight`), and change `updateSessionsHeaderHeight()` to sum
+  `maxInt(hints.minHeight, maxInt(0, hints.preferredHeight))` for every row so a
+  mismatch can never recur.
+- Verified on `%TEMP%\aui-pro-newchat3.png` at x=120/x=238: button y=104-133,
+  gap 134-139, search top border y=140, bottom border y=169 (30 px, complete);
+  list starts y=170. Zoom `%TEMP%\aui-newchat3-top.png`. Pro smoke passes; live
+  relaunch PID 23220, `errors.log` clean.
+
 ## Remove gap between sessions scrollbar and split divider (2026-09-13)
 
 User: "why there is such huge gap between scrollbar of chat conversations

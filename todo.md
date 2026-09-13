@@ -11,8 +11,14 @@ User: "Let's move new chat button to the above the search chats."
 - [x] Fixed the two controls colliding (2 px gap, 38 px button vs 24 px field):
       header `VBox` spacing -> 6 px and both the button and search field -> 30 px
       so they read as a matched pair.
-- [x] Verified: Pro smoke pass; screenshot `%TEMP%\aui-pro-newchat2.png`; live
-      relaunch PID 31724, `errors.log` clean.
+- [x] Fixed the search field's bottom being clipped: `TextField`'s default
+      `minHeight` is 38, so the nested `VBox` laid it out at 38 px while the
+      header column only reserved 30 -> the list overlapped the field's bottom
+      8 px. Pinned `minHeight = 30` on both controls and made
+      `updateSessionsHeaderHeight()` use `max(minHeight, preferredHeight)`.
+- [x] Verified: Pro smoke pass; screenshot `%TEMP%\aui-pro-newchat3.png`
+      (field bottom border visible at y=169); live relaunch PID 23220,
+      `errors.log` clean.
 
 ## 2026-09-13 - Remove gap between sessions scrollbar and split divider (done)
 

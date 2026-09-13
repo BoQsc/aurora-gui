@@ -1641,12 +1641,18 @@ public final class OpenCodeRoot : VBox
         _newChatButton = headerColumn.add(new Button("New chat", IconKind.newDocument));
         _newChatButton.setId("oc-new");
         // Match the search field's height so the two controls read as a pair.
+        // Pin minHeight too: the nested VBox lays a child out at
+        // max(minHeight, preferredHeight), and TextField's default minHeight is
+        // 38; leaving it there made the column 8 px too short and the list
+        // overlapped the field's bottom.
         _newChatButton.layoutHints().preferredHeight = 30;
+        _newChatButton.layoutHints().minHeight = 30;
         _newChatButton.onClick = delegate() { newChat(); };
         _filterField = headerColumn.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
         _filterField.layoutHints().preferredHeight = 30;
+        _filterField.layoutHints().minHeight = 30;
         _filterField.onChanged = delegate()
         {
             _filterText = _filterField.textUtf8().strip();
@@ -1898,14 +1904,16 @@ public final class OpenCodeRoot : VBox
     {
         if (_sessionsHeaderColumn is null) return;
         int height = 18; // three 6px gaps between the four rows
-        if (_sessionsHeader !is null)
-            height += maxInt(0, _sessionsHeader.layoutHints().preferredHeight);
-        if (_sessionsPath !is null)
-            height += maxInt(0, _sessionsPath.layoutHints().preferredHeight);
-        if (_newChatButton !is null)
-            height += maxInt(0, _newChatButton.layoutHints().preferredHeight);
-        if (_filterField !is null)
-            height += maxInt(0, _filterField.layoutHints().preferredHeight);
+        foreach (child; [
+            cast(Widget) _sessionsHeader,
+            cast(Widget) _sessionsPath,
+            cast(Widget) _newChatButton,
+            cast(Widget) _filterField])
+        {
+            if (child is null) continue;
+            const hints = child.layoutHints();
+            height += maxInt(hints.minHeight, maxInt(0, hints.preferredHeight));
+        }
         _sessionsHeaderColumn.layoutHints().preferredHeight = height;
     }
 
