@@ -1,5 +1,91 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Match upstream opencode typography, spacing and control density (2026-09-13)
+
+User: "we need to examine and think how we will improve the font sizes, padding
+and margins in this aurora opencode program. The original opencode seems to be
+getting it quite right" then "Let's try to improve situation drastically."
+
+### Reference: upstream opencode tokens (`github.com/anomalyco/opencode`, branch `dev`)
+From `packages/ui/src/styles/theme.css`:
+- font sizes **small 13 / base 14 / large 16 / x-large 20 px**; weights 400/500;
+  line-heights 130/150/180/200 %; `--spacing: 0.25rem` (4 px grid);
+  radii xs/sm/md/lg/xl = 2/4/6/8/10 px.
+- Controls (`packages/ui/src/components/*`, `v2/components/*`): button small
+  h24 / normal h28 / large h32, radius 6 (v1) or 4-6 (v2), font 13 weight
+  500-530; icon button 20/24/32; input h32 radius 6 font 14; dialog/titlebar
+  legacy 40 / v2 36.
+
+### Diff that mattered here
+Aurora's vendored `aurora.font` tiers are `caption 13 / body 17 / heading 22 /
+display 30` and `Theme.controlHeight` defaulted to **38**, so the opencode app
+rendered a 17 px body and 38-46 px controls next to upstream opencode's 14/13 px
+text and 28-32 px controls. The whole UI read ~20-35 % oversized.
+
+### Changes
+- `aurora-opencode-core/source/auroraopencode/core.d`: added opencode-matched
+  constants and applied the theme.
+  - `opencodeFontSmall = 13`, `opencodeFontBase = 14`, `opencodeFontTitle = 16`,
+    `opencodeFontDisplay = 20`, `opencodeControlHeight = 28`,
+    `opencodeSessionRowHeight = 32`, `opencodeTitleBarHeight = 40`.
+  - `opencodeTheme()`: `theme.controlHeight = opencodeControlHeight` and
+    `theme.fontScale = TextScale.caption`, so every widget that derives its text
+    from the palette (buttons, list rows, menus, most labels) renders at 13 px.
+- `aurora-opencode-core/source/auroraopencode/markdown.d`: chat body now uses
+  `opencodeFontBase` (14) instead of `fontPixelSize(2)` (17); h1/h2 use
+  `opencodeFontTitle` (16) instead of `fontPixelSize(3)` (22). Because
+  `blockGap(bodyPx)` scales with it, block spacing tightens automatically.
+- Vendor `vendor/aurora-d-0.4.5/source/aurora/widgets/button.d`: the height floor
+  changed from `maxInt(38, palette.controlHeight)` to
+  `maxInt(24, palette.controlHeight)`. Safe for every other app: the default
+  `Theme.controlHeight` is still 38, so they are unaffected; only an app that
+  opts into a smaller `controlHeight` gets compact buttons.
+- Vendor `.../widgets/texteditor.d` `TextField`: default `preferredHeight`/
+  `minHeight` now follow `theme().controlHeight` (+2 / +0) instead of the fixed
+  40/38. The default 38 px theme reproduces 40/38 exactly, so other apps are
+  unchanged.
+- `aurora-opencode-pro/source/auroraopencode/appui.d`: toolbar and chat input
+  row `Insets(8,4)`→`Insets(10,4)` + spacing 6→8; projects rail row 44→40;
+  sessions sidebar spacing 2→4 and header spacing 6→8; message column
+  `VBox(4, Insets(8))`→`VBox(6, Insets(12, 8))`; New chat / search
+  `30`→`opencodeControlHeight`; session rows `30`→`opencodeSessionRowHeight`;
+  status bar 22→24; dialog content `Insets(14)`→`Insets(16)`, dialog rows
+  40→32, footer 42→36, settings field 34→30; four dialog titles
+  `setScale(3)` (22 px) → `setPixelSize(opencodeFontTitle)` (16 px).
+- `aurora-opencode-pro/source/auroraopencode/titlebar.d`: merged titlebar
+  height 46→`opencodeTitleBarHeight` (40).
+- `aurora-opencode/source/auroraopencode/appui.d` (baseline): its private
+  `MessageBubble` shaped text at `fontPixelSize(2)` (17) directly, so both
+  occurrences now use `opencodeFontBase` (14) to stay consistent with the shared
+  theme. Baseline otherwise keeps its simpler layout.
+
+### Verification (2026-09-13)
+- Pro: `dub build --compiler=dmd --force` links; smoke:
+  `dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe`
+  then `build\headless-pro-smoke.exe` → "Aurora OpenCode Pro headless smoke test
+  passed." (all steps).
+- Baseline: `dub build --compiler=dmd --force` links; `tests\headless_smoke.d`
+  build + run → EXIT=0.
+- Screenshot: built exe, `aurora-opencode-pro.exe --screenshot
+  %TEMP%\aui-pro-typography.ppm`, converted with `%TEMP%\ppm2png.ps1` →
+  `%TEMP%\aui-pro-typography.png`. Compared with the pre-change
+  `%TEMP%\aui-pro-order.png`: 13 px UI text, 14 px chat body, 28 px controls,
+  40 px titlebar and 32 px session rows.
+- Live: Pro relaunched PID 2000, `errors.log` contains only the launch banner.
+
+### How to re-test
+1. `taskkill /F /IM aurora-opencode-pro.exe` (the exe is locked while running),
+   then `dub build --compiler=dmd --force` in `aurora-opencode-pro`, then relaunch.
+2. Rebuild + run the Pro and baseline smokes with the commands above.
+3. Screenshot and eyeball density vs upstream opencode:
+   `aurora-opencode-pro.exe --screenshot %TEMP%\aui-pro-typography.ppm` then
+   `powershell -File %TEMP%\ppm2png.ps1 %TEMP%\aui-pro-typography.ppm
+   %TEMP%\aui-pro-typography.png`.
+4. To retune, only the constants in `core.d` need to move; the vendor floor is
+   `maxInt(24, controlHeight)` so `opencodeControlHeight` can go down to 24.
+
 ## List conversations newest-first (2026-09-13)
 
 User: "the latest chat should be at the top not bottom"

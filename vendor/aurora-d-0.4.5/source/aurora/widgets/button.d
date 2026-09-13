@@ -71,7 +71,10 @@ class Button : Widget
     private void updatePreferredSize()
     {
         const palette = theme();
-        const controlHeight = maxInt(38, palette.controlHeight);
+        // Honour the theme's control height so apps that opt into a denser
+        // layout get compact buttons. The floor only guards against a
+        // nonsensical value; the default theme still yields 38 px.
+        const controlHeight = maxInt(24, palette.controlHeight);
         layoutHints().preferredHeight = controlHeight;
         if (_text.length == 0)
         {

@@ -1414,8 +1414,11 @@ class TextField : TextEditor
     this(string text = "")
     {
         super(text, false);
-        layoutHints().preferredHeight = 40;
-        layoutHints().minHeight = 38;
+        // Follow the theme's control height so a dense app gets compact
+        // fields. The default 38 px theme keeps the historical 40/38 sizes.
+        const height = maxInt(24, theme().controlHeight);
+        layoutHints().preferredHeight = height + 2;
+        layoutHints().minHeight = height;
     }
 }
 

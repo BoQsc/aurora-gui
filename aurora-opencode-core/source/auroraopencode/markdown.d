@@ -1,6 +1,7 @@
 module auroraopencode.markdown;
 
 import aurora;
+import auroraopencode.core : opencodeFontBase, opencodeFontTitle;
 import std.algorithm.comparison : max, min;
 import std.array : insertInPlace;
 import std.conv : to;
@@ -769,7 +770,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     c.cursorX = 0;
     c.cursorY = 0;
     c.cursorPx = 0;
-    const bodyPx = fontPixelSize(2);
+    const bodyPx = opencodeFontBase;
     double y = 0;
     foreach (ref block; blocks)
     {
@@ -782,7 +783,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 y += blockGap(bodyPx);
                 break;
             case BlockType.heading:
-                const px = block.level <= 2 ? fontPixelSize(3) : bodyPx;
+                const px = block.level <= 2 ? opencodeFontTitle : bodyPx;
                 y += composeRuns(c, block.flowPieces, lineWidth, y,
                     mdHeading, px, 0);
                 y += blockGap(bodyPx);

@@ -199,7 +199,7 @@ private final class MessageBubble : Widget
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast(FontFace) theme().uiFont;
-        options.pixelSize = fontPixelSize(2);
+        options.pixelSize = opencodeFontBase;
         options.maxWidth = maxInt(1, width);
         options.wrap = true;
         ++shapeCount;
@@ -209,7 +209,7 @@ private final class MessageBubble : Widget
     protected override Size onMeasure(Size available)
     {
         const innerWidth = maxInt(24, available.width - 2 * padH);
-        const pixelSize = fontPixelSize(2);
+        const pixelSize = opencodeFontBase;
         int height = 2 * padV;
         if (_thinking.length > 0)
             height += shapedThinking(innerWidth).measuredSize().height + gap;

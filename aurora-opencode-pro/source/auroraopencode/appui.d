@@ -1527,7 +1527,7 @@ public final class OpenCodeRoot : VBox
         _titleBar.setId("oc-titlebar");
         _titleBar.onSnapPreview = &updateSnapPreview;
 
-        auto toolbar = new HBox(6, Insets(8, 4));
+        auto toolbar = new HBox(8, Insets(10, 4));
 
         _modelButton = toolbar.add(new Button(_settings.model));
         _modelButton.setId("oc-model");
@@ -1600,7 +1600,7 @@ public final class OpenCodeRoot : VBox
         _projectRail = projectsColumn.add(new ProjectListView());
         _projectRail.setId("oc-projects");
         _projectRail.layoutHints().flex = 1.0;
-        _projectRail.setRowHeight(44);
+        _projectRail.setRowHeight(40);
         _projectRail.onSelectionChanged = delegate(int index)
         {
             selectProject(index);
@@ -1618,7 +1618,7 @@ public final class OpenCodeRoot : VBox
         // No right padding: the conversation list (and its scrollbar) must run
         // flush to the split-pane divider on the right.
         sidebarPadding.right = 0;
-        auto sidebar = new VBox(2, sidebarPadding);
+        auto sidebar = new VBox(4, sidebarPadding);
         sidebar.layoutHints().minWidth = 190;
         sidebar.layoutHints().preferredWidth = 300;
         sidebar.setBackground(opencodePanel);
@@ -1626,9 +1626,10 @@ public final class OpenCodeRoot : VBox
         // scrollable conversation list is flush with the divider.
         Insets headerPadding;
         headerPadding.right = 8;
-        // 6 px between rows so the New chat button and the Search chats field
-        // do not collide (they used to sit 2 px apart with mismatched heights).
-        auto headerColumn = new VBox(6, headerPadding);
+        // 8 px between rows so the New chat button and the Search chats field
+        // read as a matched pair (they once sat 2 px apart with mismatched
+        // heights).
+        auto headerColumn = new VBox(8, headerPadding);
         _sessionsHeaderColumn = headerColumn;
         _sessionsHeader = headerColumn.add(new Label("Sandbox"));
         _sessionsHeader.setId("oc-project-title");
@@ -1642,17 +1643,16 @@ public final class OpenCodeRoot : VBox
         _newChatButton.setId("oc-new");
         // Match the search field's height so the two controls read as a pair.
         // Pin minHeight too: the nested VBox lays a child out at
-        // max(minHeight, preferredHeight), and TextField's default minHeight is
-        // 38; leaving it there made the column 8 px too short and the list
-        // overlapped the field's bottom.
-        _newChatButton.layoutHints().preferredHeight = 30;
-        _newChatButton.layoutHints().minHeight = 30;
+        // max(minHeight, preferredHeight); leaving them mismatched once made
+        // the column too short and the list overlapped the field's bottom.
+        _newChatButton.layoutHints().preferredHeight = opencodeControlHeight;
+        _newChatButton.layoutHints().minHeight = opencodeControlHeight;
         _newChatButton.onClick = delegate() { newChat(); };
         _filterField = headerColumn.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
-        _filterField.layoutHints().preferredHeight = 30;
-        _filterField.layoutHints().minHeight = 30;
+        _filterField.layoutHints().preferredHeight = opencodeControlHeight;
+        _filterField.layoutHints().minHeight = opencodeControlHeight;
         _filterField.onChanged = delegate()
         {
             _filterText = _filterField.textUtf8().strip();
@@ -1663,7 +1663,7 @@ public final class OpenCodeRoot : VBox
         _sessionList = sidebar.add(new SessionListView());
         _sessionList.setId("oc-sessions");
         _sessionList.layoutHints().flex = 1.0;
-        _sessionList.setRowHeight(30);
+        _sessionList.setRowHeight(opencodeSessionRowHeight);
         _sessionList.onSelectionChanged = delegate(int index)
         {
             selectSessionByRow(index);
@@ -1680,13 +1680,13 @@ public final class OpenCodeRoot : VBox
         auto chatPanel = new VBox(0);
         chatPanel.layoutHints().flex = 1.0;
 
-        _messageColumn = new VBox(4, Insets(8));
+        _messageColumn = new VBox(6, Insets(12, 8));
         _messageColumn.setId("oc-messages");
         _messagesScroll = new ChatScrollView(_messageColumn);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
-        auto inputRow = new HBox(6, Insets(8, 4));
+        auto inputRow = new HBox(8, Insets(10, 4));
         inputRow.layoutHints().preferredHeight = 58;
         _input = new ChatInput();
         _input.setId("oc-input");
@@ -1721,7 +1721,7 @@ public final class OpenCodeRoot : VBox
 
         _status = add(new Label("Ready"));
         _status.setId("oc-status");
-        _status.layoutHints().preferredHeight = 22;
+        _status.layoutHints().preferredHeight = 24;
         _status.setScale(1);
 
         // Drag-snap preview: added last, painted above all content, and excluded
@@ -1939,11 +1939,11 @@ public final class OpenCodeRoot : VBox
     {
         if (_activePopup !is null) _activePopup.dismiss();
 
-        auto content = new VBox(8, Insets(14));
+        auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 400;
 
         auto title = content.add(new Label("New project"));
-        title.setScale(3);
+        title.setPixelSize(opencodeFontTitle);
 
         auto nameLabel = content.add(new Label("Name"));
         nameLabel.setScale(1);
@@ -1964,7 +1964,7 @@ public final class OpenCodeRoot : VBox
         errorLabel.setColor(opencodeErrorRed);
 
         auto footer = new HBox(8);
-        footer.layoutHints().preferredHeight = 42;
+        footer.layoutHints().preferredHeight = 36;
         footer.add(new Spacer());
         auto cancel = footer.add(new Button("Cancel"));
         cancel.setId("oc-project-cancel");
@@ -2045,18 +2045,18 @@ public final class OpenCodeRoot : VBox
             return;
         if (_activePopup !is null) _activePopup.dismiss();
 
-        auto content = new VBox(8, Insets(14));
+        auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 400;
 
         auto title = content.add(new Label("Rename project"));
-        title.setScale(3);
+        title.setPixelSize(opencodeFontTitle);
 
         auto nameField = content.add(
             new TextField(_projectState.projects[cast(size_t) index].name));
         nameField.setId("oc-project-rename");
 
         auto footer = new HBox(8);
-        footer.layoutHints().preferredHeight = 42;
+        footer.layoutHints().preferredHeight = 36;
         footer.add(new Spacer());
         auto cancel = footer.add(new Button("Cancel"));
         cancel.setId("oc-project-rename-cancel");
@@ -2809,14 +2809,14 @@ public final class OpenCodeRoot : VBox
     {
         if (_activePopup !is null) _activePopup.dismiss();
 
-        auto content = new VBox(8, Insets(14));
+        auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 520;
 
         auto title = content.add(new Label("Settings"));
-        title.setScale(3);
+        title.setPixelSize(opencodeFontTitle);
 
         auto baseRow = new HBox(8);
-        baseRow.layoutHints().preferredHeight = 40;
+        baseRow.layoutHints().preferredHeight = 32;
         auto baseLabel = baseRow.add(new Label("API base URL"));
         baseLabel.layoutHints().preferredWidth = 110;
         baseLabel.setScale(1);
@@ -2824,7 +2824,7 @@ public final class OpenCodeRoot : VBox
         baseField.layoutHints().flex = 1.0;
 
         auto keyRow = new HBox(8);
-        keyRow.layoutHints().preferredHeight = 40;
+        keyRow.layoutHints().preferredHeight = 32;
         auto keyLabel = keyRow.add(new Label("API key"));
         keyLabel.layoutHints().preferredWidth = 110;
         keyLabel.setScale(1);
@@ -2838,7 +2838,7 @@ public final class OpenCodeRoot : VBox
         hint.setColor(opencodeMuted);
 
         auto workspaceRow = new HBox(8);
-        workspaceRow.layoutHints().preferredHeight = 40;
+        workspaceRow.layoutHints().preferredHeight = 32;
         auto workspaceLabel = workspaceRow.add(new Label("Project folder"));
         workspaceLabel.layoutHints().preferredWidth = 110;
         workspaceLabel.setScale(1);
@@ -2855,7 +2855,7 @@ public final class OpenCodeRoot : VBox
         // Legacy tools: an opt-in extra on top of the native D tools. Its
         // label shows a small hover tooltip explaining what it is.
         auto legacyRow = new HBox(8);
-        legacyRow.layoutHints().preferredHeight = 40;
+        legacyRow.layoutHints().preferredHeight = 32;
         auto legacyCheck = new CheckBox("Legacy tools");
         legacyCheck.setId("oc-legacy");
         legacyCheck.setChecked(_settings.legacyTools, false);
@@ -2882,7 +2882,7 @@ public final class OpenCodeRoot : VBox
         content.add(legacyRow);
 
         auto footer = new HBox(8);
-        footer.layoutHints().preferredHeight = 42;
+        footer.layoutHints().preferredHeight = 36;
         footer.add(new Spacer());
         auto cancelButton = footer.add(new Button("Cancel"));
         cancelButton.onClick = delegate() { dismissPopup(); };
@@ -3234,15 +3234,15 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         if (_activePopup !is null) _activePopup.dismiss();
 
-        auto content = new VBox(8, Insets(14));
+        auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 360;
         auto title = content.add(new Label("Rename conversation"));
-        title.setScale(3);
+        title.setPixelSize(opencodeFontTitle);
         auto field = content.add(new TextField(_sessions[sessionIndex].title));
         field.setId("oc-rename-field");
-        field.layoutHints().preferredHeight = 34;
+        field.layoutHints().preferredHeight = 30;
         auto footer = new HBox(8);
-        footer.layoutHints().preferredHeight = 42;
+        footer.layoutHints().preferredHeight = 36;
         footer.add(new Spacer());
         auto cancelButton = footer.add(new Button("Cancel"));
         cancelButton.onClick = delegate() { dismissPopup(); };

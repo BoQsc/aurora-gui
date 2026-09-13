@@ -1,5 +1,32 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Match upstream opencode typography / spacing / density (done)
+
+User: "we need to examine and think how we will improve the font sizes, padding
+and margins in this aurora opencode program. The original opencode seems to be
+getting it quite right." then "Let's try to improve situation drastically."
+
+- [x] Examined upstream opencode tokens (`packages/ui/src/styles/theme.css`):
+  13/14/16/20 px text, 4 px spacing grid, 28-32 px controls, radius 6-10.
+- [x] Aurora rendered 17 px body / 38-46 px controls because the vendored tiers
+  are 13/17/22/30 and `Theme.controlHeight` defaulted to 38.
+- [x] Added opencode-matched constants in `core.d` (`opencodeFontSmall/Base/
+  Title/Display`, `opencodeControlHeight=28`, `opencodeSessionRowHeight=32`,
+  `opencodeTitleBarHeight=40`); theme uses `fontScale = caption` +
+  `controlHeight = 28`.
+- [x] `markdown.d` chat body 17→14, h1/h2 22→16. Vendor `button.d` floor
+  38→`maxInt(24, controlHeight)` and `TextField` defaults now follow
+  `controlHeight` (both no-ops for the default 38 theme, so other apps are
+  untouched).
+- [x] Pro layout: toolbar/input insets + gaps, rail row 44→40, sidebar/header
+  spacing, message column padding 12/8, session rows 32, status 24, dialog
+  padding/rows/footer and titles 22→16, titlebar 46→40.
+- [x] Baseline `MessageBubble` text 17→14 for consistency.
+- [x] Verified: Pro `dub build` + smoke all pass; baseline `dub build` +
+  `headless-smoke.exe` EXIT=0; screenshot `%TEMP%\aui-pro-typography.png` vs
+  before `%TEMP%\aui-pro-order.png`; live relaunch PID 2000, `errors.log` clean.
+  Details in `testing_progress_and_methods.md`.
+
 ## 2026-09-13 - List conversations newest-first (done)
 
 User: "the latest chat should be at the top not bottom"

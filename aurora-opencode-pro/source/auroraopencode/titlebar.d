@@ -2,7 +2,7 @@ module auroraopencode.titlebar;
 
 import aurora;
 import auroraopencode.core : opencodeBackground, opencodeMuted,
-    opencodePressed, opencodeSelection, opencodeText;
+    opencodePressed, opencodeSelection, opencodeText, opencodeTitleBarHeight;
 
 /**
  * The Aurora OpenCode Pro titlebar.
@@ -15,12 +15,12 @@ import auroraopencode.core : opencodeBackground, opencodeMuted,
  *
  * The application toolbar is installed as the middle content widget, so the
  * native titlebar and the old separate toolbar row collapse into this single
- * 46 px band.
+ * 40 px band.
  */
 public final class OpenCodeTitleBar : TitleBar
 {
     /// Height shared by the titlebar and the merged toolbar.
-    public static immutable int titleBarHeight = 46;
+    public static immutable int titleBarHeight = opencodeTitleBarHeight;
 
     private GuiWindow _window;
     private bool _maximized;

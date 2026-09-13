@@ -169,6 +169,29 @@ public immutable Color opencodeErrorRed = Color.fromHex(0xff6b6b);
 public immutable Color opencodeKeyOk = Color.fromHex(0x6fd08c);
 public immutable Color opencodeKeyMissing = Color.fromHex(0xffa94d);
 
+// ---------------------------------------------------------------------------
+// Typography and control metrics
+// ---------------------------------------------------------------------------
+// Matched to the upstream opencode UI (packages/ui/src/styles/theme.css):
+// small 13 px, base 14 px, title/large 16 px, display 20 px, on a 4 px grid.
+// Aurora's vendored tiers are 13/17/22/30, so the app pins explicit pixel
+// sizes wherever the tier alone would render noticeably too large.
+
+/// Small UI text: menus, buttons, captions and the status line.
+public enum int opencodeFontSmall = 13;
+/// Body text: chat messages, session titles and inputs.
+public enum int opencodeFontBase = 14;
+/// Section and dialog titles.
+public enum int opencodeFontTitle = 16;
+/// Largest in-app text.
+public enum int opencodeFontDisplay = 20;
+/// Height of buttons, inputs and toolbar controls.
+public enum int opencodeControlHeight = 28;
+/// Height of a single session list row.
+public enum int opencodeSessionRowHeight = 32;
+/// Height of the merged titlebar/toolbar band.
+public enum int opencodeTitleBarHeight = 40;
+
 public Theme opencodeTheme()
 {
     auto theme = Theme.dark();
@@ -186,7 +209,8 @@ public Theme opencodeTheme()
     theme.buttonHover = opencodeSelection;
     theme.buttonPressed = opencodePressed;
     theme.cornerRadius = 8;
-    theme.controlHeight = 38;
+    theme.controlHeight = opencodeControlHeight;
+    theme.fontScale = cast(int) TextScale.caption;
     return theme;
 }
 
