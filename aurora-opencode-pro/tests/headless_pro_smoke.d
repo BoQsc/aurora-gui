@@ -1164,6 +1164,102 @@ int main(string[] args)
     root.tickTree(0.02);
     writeln("Collapse screenshots: ", shotDir);
 
+    // Collapse/expand performance: expanding a tool output used to shape every
+    // row up front (600 rows, ~2 s of freeze). Now only the visible rows are
+    // shaped and the layout is cached across toggles, so the first expand is
+    // bounded and every later toggle does no shaping at all.
+    root.newChatForTesting();
+    {
+        import std.array : appender;
+        string[] roles, bodies;
+        roles ~= "user"; bodies ~= "Do the work.";
+        foreach (i; 0 .. 40)
+        {
+            roles ~= "assistant";
+            bodies ~= "Reply number " ~ to!string(i) ~
+                " with some **markdown** text, a `code` span, and a list:\n" ~
+                "- one\n- two\n- three\n";
+            roles ~= "user";
+            bodies ~= "Follow-up " ~ to!string(i);
+        }
+        auto big = appender!string();
+        foreach (i; 0 .. 4000)
+            big.put("line " ~ to!string(i) ~
+                " of a large tool output with some content\n");
+        roles ~= "tool";
+        bodies ~= big.data;
+        root.addConversationForTesting(roles, bodies);
+    }
+    root.tickTree(0.02);
+    assert(driver.paint(), "Large-output paint failed");
+
+    size_t expandTool()
+    {
+        root.toggleFirstToolBubbleForTesting();
+        root.tickTree(0.02);
+        const before = root.bubbleShapeCountForTesting();
+        const started = Clock.currTime;
+        assert(driver.paint(), "Tool expand paint failed");
+        const shapes = root.bubbleShapeCountForTesting() - before;
+        const elapsed = (Clock.currTime - started).total!"msecs";
+        assert(shapes <= 120,
+            "Expanding a large tool output shaped too many rows: " ~
+            to!string(shapes));
+        assert(elapsed < 1500,
+            "Expanding a large tool output was too slow: " ~
+            to!string(elapsed) ~ " ms");
+        return shapes;
+    }
+    void collapseTool()
+    {
+        root.toggleFirstToolBubbleForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Tool collapse paint failed");
+    }
+    const firstToolShapes = expandTool();
+    collapseTool();
+    const secondToolShapes = expandTool();
+    assert(secondToolShapes == 0,
+        "Re-expanding a tool output re-shaped rows: " ~
+        to!string(secondToolShapes));
+    collapseTool();
+    writeln("Large tool output: first expand shapes=", firstToolShapes,
+        ", re-expand shapes=", secondToolShapes);
+
+    // Thinking block: a long reasoning block must also cache its wrapped shape
+    // across toggles instead of re-shaping the whole text every time.
+    root.newChatForTesting();
+    {
+        import std.array : appender;
+        auto reason = appender!string();
+        foreach (i; 0 .. 400)
+            reason.put("Reasoning line " ~ to!string(i) ~
+                " weighing the options and constraints carefully.\n");
+        root.addConversationForTestingWithReasoning(["user", "assistant"],
+            ["Think hard", "The answer."], [null, reason.data]);
+    }
+    root.tickTree(0.02);
+    assert(driver.paint(), "Long-reasoning paint failed");
+    {
+        root.toggleLastThinkingForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Thinking expand paint failed");
+        root.toggleLastThinkingForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Thinking collapse paint failed");
+        const before = root.bubbleShapeCountForTesting();
+        root.toggleLastThinkingForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Thinking re-expand paint failed");
+        const reshaped = root.bubbleShapeCountForTesting() - before;
+        // One wrapped block may be re-shaped at a newly-seen width, but it must
+        // never be shaped per line. Anything above a couple means the
+        // width-keyed cache regressed.
+        assert(reshaped <= 2,
+            "Re-expanding reasoning re-shaped too much: " ~ to!string(reshaped));
+        writeln("Reasoning re-expand shapes=", reshaped);
+    }
+
     root.shutdownClient();
     window.close();
     try rmdirRecurse(stateDir);
@@ -1171,3 +1267,4 @@ int main(string[] args)
     writeln("Aurora OpenCode Pro headless smoke test passed.");
     return 0;
 }
+

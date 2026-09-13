@@ -1,5 +1,32 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: collapse/expand is sluggish (root-caused & fixed)
+
+User: "Why collapse uncollapse is so nonperformant noninstant it's weird."
+
+Diagnosis: expanding a tool output re-shaped EVERY row up front. `ensureToolLines`
+built a full `TextLayout` for all rows (capped at 600), so one toggle cost ~2s of
+text shaping; the width was part of the cache key, so any 14px scrollbar-induced
+width change invalidated the whole cache. Thinking blocks had a single-slot
+cache keyed on width, so each toggle re-shaped the entire wrapped block.
+
+- [x] Lazy row shaping: `ensureToolLines` builds only the row strings + one
+      reference line height; each row's `TextLayout` is built on demand in
+      `drawToolBody` and only for rows intersecting `canvas.clipRect()`.
+      `ToolLine` gained `string visible` + a lazy `layout`.
+- [x] Tool cache key no longer includes width (monospace rows never wrap), so it
+      rebuilds only when the message/tool gen changes.
+- [x] Thinking cache changed from a single slot to a width-keyed ring
+      (`shapeCacheSize` 3 -> 5): `_thinkingWidths`, `_thinkingLayouts`,
+      `_thinkingShapedGens`, `_thinkingCacheCount`.
+- [x] Measured: first tool expand 1,973,770us -> ~90,000us (1.97s -> ~90ms);
+      re-expand ~6,000us `shapes=0`; collapse ~7,000-9,000us. Thinking re-expand
+      `shapes=0`. Thinking FIRST expand still ~373ms (120 lines)/~1.17s (400
+      lines) — proportional wrapped-text shaping (remaining cost).
+- [x] Smoke guard: 4000-line tool output; first expand `shapes<=120` and
+      `<1500ms`, re-expand `shapes==0`; thinking re-expand `shapes<=2`. Pro
+      smoke EXIT=0, baseline EXIT=0; rebuilt and relaunched Pro (single instance).
+
 ## 2026-09-13 - Pro: 80s "cold start" with nothing shown (root-caused & fixed)
 
 User: "why it takes a while for first prompt before anything happens? Why we

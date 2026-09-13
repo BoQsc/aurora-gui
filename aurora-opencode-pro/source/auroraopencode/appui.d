@@ -179,15 +179,21 @@ private final class MessageBubble : Widget
     // layout (once with and once without the scrollbar width), so a single
     // slot would thrash and re-shape every frame while dragging; a small
     // width-keyed set covers both measure widths.
-    private static immutable int shapeCacheSize = 3;
+    private static immutable int shapeCacheSize = 5;
     private int[shapeCacheSize] _contentWidths;
     private TextLayout[shapeCacheSize] _contentLayouts;
     private size_t[shapeCacheSize] _contentShapedGen;
     private size_t _contentCacheCount;
     private size_t _contentGen = 1;
-    private TextLayout _thinkingLayout;
-    private int _thinkingLayoutWidth = -1;
-    private size_t _thinkingShapedGen;
+    // The thinking block is wrapped, so its layout depends on width. The
+    // ScrollView measures its content twice per layout (once without and once
+    // with the scrollbar), which oscillates the width; a single-slot cache
+    // thrashed and re-shaped the whole reasoning text on every toggle. Use the
+    // same small width-keyed ring as the message content.
+    private int[shapeCacheSize] _thinkingWidths;
+    private TextLayout[shapeCacheSize] _thinkingLayouts;
+    private size_t[shapeCacheSize] _thinkingShapedGens;
+    private size_t _thinkingCacheCount;
     private size_t _thinkingGen = 1;
 
     private MarkdownBlock[] _mdBlocks;
@@ -225,6 +231,10 @@ private final class MessageBubble : Widget
         ToolLineKind kind;
         int oldNo;
         int newNo;
+        // The fully composed row text (line numbers + sign + body). Shaped
+        // lazily and cached in `layout`; only rows that are actually visible
+        // are ever shaped, so expanding a huge output stays instant.
+        string visible;
         TextLayout layout;
     }
     private ToolLine[] _toolLines;
@@ -539,13 +549,30 @@ private final class MessageBubble : Widget
 
     private TextLayout shapedThinking(int width)
     {
-        if (_thinkingLayout !is null && _thinkingLayoutWidth == width &&
-            _thinkingShapedGen == _thinkingGen)
-            return _thinkingLayout;
-        _thinkingLayout = shape(_thinking, width);
-        _thinkingLayoutWidth = width;
-        _thinkingShapedGen = _thinkingGen;
-        return _thinkingLayout;
+        foreach (index; 0 .. _thinkingCacheCount)
+        {
+            if (_thinkingShapedGens[index] == _thinkingGen &&
+                _thinkingWidths[index] == width)
+                return _thinkingLayouts[index];
+        }
+
+        auto layout = shape(_thinking, width);
+
+        if (_thinkingCacheCount == shapeCacheSize)
+        {
+            for (size_t shift = 1; shift < shapeCacheSize; ++shift)
+            {
+                _thinkingWidths[shift - 1] = _thinkingWidths[shift];
+                _thinkingLayouts[shift - 1] = _thinkingLayouts[shift];
+                _thinkingShapedGens[shift - 1] = _thinkingShapedGens[shift];
+            }
+            --_thinkingCacheCount;
+        }
+        _thinkingWidths[_thinkingCacheCount] = width;
+        _thinkingLayouts[_thinkingCacheCount] = layout;
+        _thinkingShapedGens[_thinkingCacheCount] = _thinkingGen;
+        ++_thinkingCacheCount;
+        return layout;
     }
 
     private TextLayout shapedContent(int width)
@@ -946,7 +973,13 @@ private final class MessageBubble : Widget
     /// never stall a frame.
     private int ensureToolLines(int innerWidth)
     {
-        if (_toolLinesWidth == innerWidth && _toolLinesBuiltGen == _toolLinesGen)
+        // Tool rows are monospace and never wrap (see shapeMonoLine), so a
+        // row's shaped layout does not depend on the bubble width. Keying the
+        // cache on width made the ScrollView's two measurement passes (with
+        // and without the scrollbar) invalidate every shaped row on each
+        // toggle, re-shaping the visible rows again every time. Rebuild only
+        // when the content generation changes.
+        if (_toolLinesBuiltGen == _toolLinesGen)
             return _toolLinesHeight;
 
         import std.string : splitLines;
@@ -1007,16 +1040,22 @@ private final class MessageBubble : Widget
             const newStr = line.newNo > 0 ? padLeft(line.newNo, 4) : "    ";
             const sign = line.kind == ToolLineKind.add ? '+' :
                 (line.kind == ToolLineKind.del ? '-' : ' ');
-            const visible = line.kind == ToolLineKind.hunk
+            const visibleText = line.kind == ToolLineKind.hunk
                 ? text
                 : oldStr ~ " " ~ newStr ~ " " ~ sign ~ " " ~ text;
-            line.layout = shapeMonoLine(toUTF32(visible));
+            line.visible = visibleText;
             _toolLines ~= line;
             ++emitted;
         }
 
+        // Height comes from the row count times one measured line; individual
+        // rows are shaped on demand in drawToolBody. Shaping all of them up
+        // front cost ~2 s for a 600-line output and made expand feel frozen.
         if (_toolLines.length > 0)
-            _toolLineHeight = _toolLines[0].layout.measuredSize().height;
+        {
+            const reference = shapeMonoLine(toUTF32("0"));
+            _toolLineHeight = reference.measuredSize().height;
+        }
         if (_toolLineHeight <= 0)
             _toolLineHeight = fontPixelSize(2) + 2;
         _toolLinesHeight = cast(int) (_toolLines.length * _toolLineHeight);
@@ -1028,12 +1067,33 @@ private final class MessageBubble : Widget
     private int drawToolBody(ref Canvas canvas, int innerWidth, int top)
     {
         ensureToolLines(innerWidth);
-        if (_toolLines.length == 0) return 0;
+        const count = cast(int) _toolLines.length;
+        if (count == 0) return 0;
         const rowH = maxInt(1, cast(int) _toolLineHeight);
         const fullW = maxInt(1, innerWidth);
-        int y = top;
-        foreach (line; _toolLines)
+
+        // Shape and draw only the rows that intersect the visible clip. A
+        // collapsed->expanded toggle over a large output used to shape every
+        // row (hundreds of TextLayouts, ~2 s); now it shapes just the ~30 on
+        // screen and caches them for later paints/scrolls.
+        const clip = canvas.clipRect();
+        int firstRow = 0;
+        int lastRow = count;
+        if (!clip.empty())
         {
+            firstRow = maxInt(0, cast(int) ((clip.y - top) / rowH));
+            lastRow = minInt(count, cast(int) ((clip.bottom() - top) / rowH) + 2);
+        }
+
+        foreach (i; firstRow .. lastRow)
+        {
+            auto line = &_toolLines[cast(size_t) i];
+            if (line.layout is null)
+            {
+                line.layout = shapeMonoLine(toUTF32(
+                    line.visible.length > 0 ? line.visible : " "));
+            }
+            const y = top + i * rowH;
             if (line.kind == ToolLineKind.add)
                 canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffAddBg);
             else if (line.kind == ToolLineKind.del)
@@ -1045,9 +1105,8 @@ private final class MessageBubble : Widget
             clipped.drawLayout(Point(padH, y), line.layout, color);
             if (line.layout.lines.length > 0)
                 _selSegments ~= SelectSegment(line.layout, padH, y, fullW, rowH);
-            y += rowH;
         }
-        return y - top;
+        return count * rowH;
     }
 
     /// Slim thinking header: `▸ Thinking` when collapsed (pulsing `▌` while
@@ -5505,6 +5564,10 @@ public final class OpenCodeRoot : VBox
     {
         return MessageBubble.shapeCount;
     }
+
+
+
+
 
     /// Test-only: number of messages in the visible (active-branch) path of the
     /// current session.

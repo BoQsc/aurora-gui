@@ -1,5 +1,50 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Pro: collapse/expand is sluggish (2026-09-13)
+
+Symptom (user): "Why collapse uncollapse is so nonperformant noninstant it's
+weird." Expanding a tool result or a thinking block janked for ~1-2s.
+
+### Diagnosis (measured, not guessed)
+- `ensureToolLines` shaped a full `TextLayout` for EVERY row up front (rows capped
+  at 600), and the width was part of the cache key. One toggle cost ~2s, and the
+  14px scrollbar-induced width change evicted the whole cache. Instrumented
+  `shapeCount` on a 4000-line output: first expand = 600 shapes, 1,973,770us.
+- Thinking had a single-slot width-keyed cache, so each expand re-shaped the
+  whole wrapped block.
+
+### Change (Pro `aurora-opencode-pro/source/auroraopencode/appui.d`)
+- `ToolLine` now holds `string visible` and a lazy `TextLayout layout`.
+  `ensureToolLines` only builds rows + measures ONE reference line height;
+  `drawToolBody` shapes/draws only rows intersecting `canvas.clipRect()`.
+- Tool cache key drops the width (monospace rows never wrap); rebuilds only on
+  `_toolLinesGen`.
+- Thinking cache is now a width-keyed ring of `shapeCacheSize` (3 -> 5) entries:
+  `_thinkingWidths`, `_thinkingLayouts`, `_thinkingShapedGens`, `_thinkingCacheCount`.
+
+### Measurements
+- Tool first expand: 1,973,770us -> ~90,000us (~1.97s -> ~90ms).
+- Tool re-expand: ~6,000us, `shapes=0`. Collapse: ~7,000-9,000us.
+- Thinking re-expand: `shapes=0` (was 2 misses/toggle with the single slot).
+- Thinking FIRST expand still ~373ms (120 lines) / ~1.17s (400 lines):
+  proportional wrapped-text shaping — inherent, only paid once, then cached.
+
+### How to test
+Run the Pro smoke (see centered-column section for the command). New guard builds
+a session with a 4000-line tool output, expands/collapses/re-expands and asserts:
+first expand `shapes<=120` and `<1500ms`, re-expand `shapes==0`; a large reasoning
+block re-expands with `shapes<=2`. Prints `Large tool output: first expand
+shapes=..., re-expand shapes=...` and `Reasoning re-expand shapes=...`.
+Pro smoke EXIT=0, baseline smoke EXIT=0; rebuilt and relaunched Pro.
+
+### Notes / gotchas
+- Use the `edit` tool for source edits: PowerShell `Set-Content -Encoding UTF8`
+  corrupts non-ASCII glyphs (`…`, `‹`, `›`) into mojibake and adds a BOM. Repair
+  with a .NET round-trip (`[IO.File]::WriteAllText(..., New-Object
+  System.Text.UTF8Encoding($false))`).
+- `appui.d` is CRLF; .NET writes normalize to LF, so restore CRLF after any
+  scripted rewrite.
+
 ## Pro: 80s "cold start" with nothing shown (2026-09-13)
 
 Symptom (user): first prompt sits on "Cold-starting the model…" for >80s before
