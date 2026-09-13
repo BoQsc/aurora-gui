@@ -1,0 +1,16 @@
+This is an example text file.
+
+It was created as a simple demonstration. You can edit it, rename it,
+or use it as a starting point for something larger.
+
+Here is a short sample of longer prose:
+
+The quiet of early morning has a texture all its own. Before traffic
+fills the streets and screens begin to glow, there is a brief window
+where the world seems to hold its breath. It is in these hours that
+many writers, thinkers, and makers do their best work - not because
+the morning is magical, but because it is empty. Distraction has not
+yet arrived to claim its share of attention, and so the mind can
+settle into a single task without apology or interruption.
+
+End of example.

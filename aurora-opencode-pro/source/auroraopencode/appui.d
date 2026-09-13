@@ -109,9 +109,9 @@ private string formatThousands(int value)
 
 private final class MessageBubble : Widget
 {
-    private static immutable int padH = 14;
-    private static immutable int padV = 10;
-    private static immutable int gap = 6;
+    private static immutable int padH = 10;
+    private static immutable int padV = 6;
+    private static immutable int gap = 4;
 
     private string _role;
     private dstring _thinking;
@@ -1322,8 +1322,8 @@ public final class OpenCodeRoot : VBox
 
     private void buildUi()
     {
-        auto toolbar = add(new HBox(8, Insets(10, 6)));
-        toolbar.layoutHints().preferredHeight = 52;
+        auto toolbar = add(new HBox(6, Insets(8, 4)));
+        toolbar.layoutHints().preferredHeight = 46;
 
         auto newChatButton = toolbar.add(new Button("New chat", IconKind.newDocument));
         newChatButton.setId("oc-new");
@@ -1379,14 +1379,14 @@ public final class OpenCodeRoot : VBox
         auto body = add(new HBox(0));
         body.layoutHints().flex = 1.0;
 
-        auto sidebar = new VBox(6, Insets(8));
-        sidebar.layoutHints().preferredWidth = 220;
+        auto sidebar = new VBox(4, Insets(6));
+        sidebar.layoutHints().preferredWidth = 200;
         auto sidebarHeader = sidebar.add(new Label("Conversations"));
         sidebarHeader.setScale(1);
         sidebarHeader.setColor(opencodeMuted);
         _filterField = sidebar.add(new TextField(""));
         _filterField.setId("oc-filter");
-        _filterField.layoutHints().preferredHeight = 26;
+        _filterField.layoutHints().preferredHeight = 24;
         _filterField.onChanged = delegate()
         {
             _filterText = _filterField.textUtf8().strip();
@@ -1395,6 +1395,7 @@ public final class OpenCodeRoot : VBox
         _sessionList = sidebar.add(new SessionListView());
         _sessionList.setId("oc-sessions");
         _sessionList.layoutHints().flex = 1.0;
+        _sessionList.setRowHeight(34);
         _sessionList.onSelectionChanged = delegate(int index)
         {
             selectSessionByRow(index);
@@ -1411,14 +1412,14 @@ public final class OpenCodeRoot : VBox
         auto chatPanel = new VBox(0);
         chatPanel.layoutHints().flex = 1.0;
 
-        _messageColumn = new VBox(6, Insets(12));
+        _messageColumn = new VBox(4, Insets(8));
         _messageColumn.setId("oc-messages");
         _messagesScroll = new ChatScrollView(_messageColumn);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
-        auto inputRow = new HBox(8, Insets(12, 8));
-        inputRow.layoutHints().preferredHeight = 88;
+        auto inputRow = new HBox(6, Insets(8, 4));
+        inputRow.layoutHints().preferredHeight = 58;
         _input = new ChatInput();
         _input.setId("oc-input");
         _input.layoutHints().flex = 1.0;
@@ -1439,7 +1440,7 @@ public final class OpenCodeRoot : VBox
 
         _status = add(new Label("Ready"));
         _status.setId("oc-status");
-        _status.layoutHints().preferredHeight = 26;
+        _status.layoutHints().preferredHeight = 22;
         _status.setScale(1);
     }
 

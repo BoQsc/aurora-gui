@@ -60,6 +60,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ppm2png.ps1" `
 That is how the new inline tool rows (`▸ ⚙ read(filePath=notes.txt)`) were
 visually confirmed.
 
+## Compact pass on the transcript chrome (2026-09-13)
+
+User: "make ui more compact." Applied to BOTH apps (`appui.d`) on top of the
+opencode-inspired flow above:
+
+- `MessageBubble`: `padH` 14→10, `padV` 10→6, inter-bubble `gap` 6→4.
+- Toolbar `HBox(8, Insets(10,6))` + height 52 → `HBox(6, Insets(8,4))` +
+  height 46.
+- Sidebar `VBox(6, Insets(8))` + width 220 → `VBox(4, Insets(6))` + width 200.
+- Pro search filter height 26→24; `_sessionList.setRowHeight(34)` added to both
+  (default was looser; 34 is the comfortable minimum above the 28 floor in
+  `vendor/aurora-d-0.4.5/source/listview.d`).
+- `_messageColumn` `VBox(6, Insets(12))` → `VBox(4, Insets(8))`.
+- Input row `HBox(8, Insets(12,8))` + height 88 → `HBox(6, Insets(8,4))` +
+  height 58.
+- Status bar height 26→22.
+
+**Verification (after the layout change):**
+- Both apps rebuilt (`dub build --build=release`).
+- Baseline `headless_smoke.exe` → `EXIT=0`.
+- Pro `headless_pro_smoke.exe` → all steps pass (context badge 25%, tool loop
+  read+grep, doom-loop recovery, collapse/expand + scroll preservation).
+- Fresh `--screenshot-chat` with a clean isolated `%APPDATA%`
+  (`%TEMP%\oc-compact-fresh`) → user panel at `Rect(8, 8, 984, 53)`, assistant
+  at `Rect(8, 65, 984, 61)`, reply `AURORA-PRO-OK`; capture
+  `%TEMP%\aui-pro-chat-compact.png`.
+- Real-history captures `%TEMP%\aui-pro-real-compact.png` /
+  `%TEMP%\aui-base-real-compact.png` reviewed.
+
+Do NOT reuse `%TEMP%\oc-after-pro` for `--screenshot-chat`: its stored session
+has a dangling assistant `tool_calls`, so the next send 400s with
+`An assistant message with 'tool_calls' must be followed by tool messages
+responding to each 'tool_call_id'.` Use a brand-new isolated `%APPDATA%`.
+
 ## Aurora OpenCode moved to CommandCode + DeepSeek V4.1 Flash (2026-09-13)
 
 User: "update api key user_22Gj… and also we now use command code deep seek 4.1
