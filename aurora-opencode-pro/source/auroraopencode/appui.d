@@ -3,8 +3,8 @@ module auroraopencode.appui;
 import aurora;
 import auroraopencode.core;
 import auroraopencode.logging : logError, setLogDirectory;
-import auroraopencode.markdown : MarkdownBlock, MdComposition, MdItemKind,
-    composeMarkdownInto, paintMarkdown, parseMarkdown;
+import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
+    paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.titlebar : OpenCodeTitleBar;
@@ -196,12 +196,19 @@ private final class MessageBubble : Widget
     private size_t _thinkingCacheCount;
     private size_t _thinkingGen = 1;
 
-    private MarkdownBlock[] _mdBlocks;
-    private size_t _mdBlocksGen;
     private int[2] _mdWidths;
     private MdComposition[2] _mdCompositions;
     private size_t[2] _mdGens;
     private size_t _mdCount;
+
+    // Incremental composition for streaming. Markdown grows by appending, and a
+    // blank line ends a block, so everything up to the last blank line outside
+    // a fence is stable: `MarkdownComposer` parses and composes it once and
+    // only recomposes the current (growing) block per frame. Without this every
+    // delta re-parsed and re-composed the whole message, making a long stream
+    // quadratic (measured ~19 ms/frame at 120k, with 60 ms+ spikes). The
+    // ScrollView measures at two widths, so keep one composer per width.
+    private MarkdownComposer[2] _mdComposers;
 
     // Tool result bubbles (`tool` role) are a single element: the header shows
     // the command (⚙ name(args)) and the output below is collapsible. Clicking
@@ -409,6 +416,7 @@ private final class MessageBubble : Widget
         _content = toUTF32(value);
         ++_contentGen;
         _contentCacheCount = 0;
+        resetMarkdownCommit();
         invalidate();
     }
 
@@ -604,6 +612,28 @@ private final class MessageBubble : Widget
         return layout;
     }
 
+    private void resetMarkdownCommit()
+    {
+        foreach (ref composer; _mdComposers)
+            composer.reset();
+    }
+
+    private MarkdownComposer* composerFor(int width)
+    {
+        foreach (ref composer; _mdComposers)
+            if (composer.width == width) return &composer;
+        foreach (ref composer; _mdComposers)
+            if (composer.width < 0)
+            {
+                composer.reset();
+                composer.width = width;
+                return &composer;
+            }
+        _mdComposers[0].reset();
+        _mdComposers[0].width = width;
+        return &_mdComposers[0];
+    }
+
     private MdComposition markdownFor(int width)
     {
         foreach (index; 0 .. _mdCount)
@@ -612,11 +642,6 @@ private final class MessageBubble : Widget
                 return _mdCompositions[index];
         }
 
-        if (_mdBlocks is null || _mdBlocksGen != _contentGen)
-        {
-            _mdBlocks = parseMarkdown(_content);
-            _mdBlocksGen = _contentGen;
-        }
         MdComposition composition;
 
         if (_mdCount == 2)
@@ -627,8 +652,11 @@ private final class MessageBubble : Widget
             _mdGens[0] = _mdGens[1];
             --_mdCount;
         }
-        composeMarkdownInto(composition, _mdBlocks,
-            maxInt(24, width), _streaming);
+
+        const lineWidth = maxInt(24, width);
+        composerFor(lineWidth).compose(composition, _content, lineWidth,
+            _streaming);
+
         _mdWidths[_mdCount] = width;
         _mdCompositions[_mdCount] = composition;
         _mdGens[_mdCount] = _contentGen;

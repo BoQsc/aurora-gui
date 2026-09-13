@@ -194,6 +194,48 @@ private bool isClosingFence(dstring line, const FenceInfo fence)
     return true;
 }
 
+/// Index just past the last blank line at or after `from` that safely ends a
+/// block outside a fenced code block. Returns `from` when there is no such
+/// boundary. The scan always starts outside a fence because a commit point is
+/// itself always outside one, so successive calls need no carried state. This
+/// lets a growing streamed document be composed incrementally: everything
+/// before the returned index can be parsed and composed once and reused while
+/// only the tail is recomposed per frame.
+size_t markdownCommitPoint(dstring text, size_t from)
+{
+    FenceInfo fence;
+    size_t commit = from;
+    size_t lineStart = from;
+    for (size_t i = from; i < text.length; ++i)
+    {
+        if (text[i] != '\n') continue;
+        auto line = text[lineStart .. i];
+        if (fence.valid)
+        {
+            if (isClosingFence(line, fence)) fence = FenceInfo.init;
+        }
+        else
+        {
+            auto t = trim(line);
+            auto detected = detectFence(t);
+            if (detected.valid) fence = detected;
+            else
+            {
+                bool blank = true;
+                foreach (ch; line)
+                    if (ch != ' ' && ch != '\t' && ch != '\r')
+                    {
+                        blank = false;
+                        break;
+                    }
+                if (blank) commit = i + 1;
+            }
+        }
+        lineStart = i + 1;
+    }
+    return commit;
+}
+
 private bool isRule(dstring line)
 {
     if (line.length < 3) return false;
@@ -968,6 +1010,65 @@ MdComposition composeMarkdown(MarkdownBlock[] blocks, int lineWidth,
     MdComposition result;
     composeMarkdownInto(result, blocks, lineWidth, streaming);
     return result;
+}
+
+/// Incrementally composes a growing markdown document at a fixed line width.
+/// Each call takes the full (only ever appended) text; every block already
+/// terminated by a blank line outside a fenced code block is parsed and
+/// composed exactly once and cached, so a frame during streaming only pays for
+/// the current block instead of the whole message. Call `reset` (or change the
+/// width) to drop the cache; a width change rebuilds it automatically.
+struct MarkdownComposer
+{
+    int width = -1;
+    private size_t committedLen;
+    private double committedHeight;
+    private MdItem[] committedItems;
+
+    void reset()
+    {
+        width = -1;
+        committedLen = 0;
+        committedHeight = 0;
+        committedItems.length = 0;
+    }
+
+    void compose(ref MdComposition c, dstring text, int lineWidth,
+        bool streaming)
+    {
+        if (width != lineWidth)
+        {
+            width = lineWidth;
+            committedLen = 0;
+            committedHeight = 0;
+            committedItems.length = 0;
+        }
+
+        // Fold every complete block into the committed prefix exactly once.
+        const commit = markdownCommitPoint(text, committedLen);
+        if (commit > committedLen)
+        {
+            auto committedBlocks = parseMarkdown(text[committedLen .. commit]);
+            MdComposition part;
+            composeMarkdownInto(part, committedBlocks, lineWidth, false);
+            foreach (ref item; part.items) item.y += committedHeight;
+            committedItems ~= part.items;
+            committedHeight += part.height;
+            committedLen = commit;
+        }
+
+        // Compose only the still-growing tail and place it below the prefix.
+        auto tailBlocks = parseMarkdown(text[committedLen .. $]);
+        MdComposition tail;
+        composeMarkdownInto(tail, tailBlocks, lineWidth, streaming);
+        foreach (ref item; tail.items) item.y += committedHeight;
+        c.items = committedItems.dup;
+        c.items ~= tail.items;
+        c.height = committedHeight + tail.height;
+        c.cursorX = tail.cursorX;
+        c.cursorY = tail.cursorY + committedHeight;
+        c.cursorPx = tail.cursorPx;
+    }
 }
 
 void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)

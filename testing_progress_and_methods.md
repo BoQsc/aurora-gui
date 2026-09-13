@@ -1,5 +1,78 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: streaming markdown recomposed the whole message every frame (2026-09-13)
+
+### Symptom
+Long assistant replies streamed less smoothly as they grew: the per-delta
+(near-per-frame) cost kept climbing with the message length, so a big reply
+dropped frames. The work happened in `MessageBubble.markdownFor` (Pro
+`appui.d`), which re-parsed and re-composed the entire `_content` on every new
+`_contentGen`.
+
+### Root cause (diagnosis method)
+A throwaway benchmark (`%TEMP%\opencode\streambench.d`) builds a representative
+markdown document (headings, paragraphs with inline code/links, bullet lists,
+```d fences), warms the shared word-layout cache, then streams it in 40-char
+steps and times three strategies at width 700. The full strategy re-parses and
+re-composes every step:
+
+```
+dmd -O -release -i -I<repo>\aurora-opencode-core\source ^
+    -I<repo>\vendor\aurora-d-0.4.5\source streambench.d ^
+    user32.lib gdi32.lib shell32.lib -of=streambench.exe
+streambench.exe 120000 40
+```
+
+Before the fix (per step): 20k = 2.7 ms, 60k = 8.2 ms, 120k = 17.1 ms, i.e.
+linear in message length per frame -> quadratic over the stream, with 60-130 ms
+worst-case steps. `parseMarkdown` was called on the whole text and
+`composeMarkdownInto` rebuilt every `MdItem` each time; `shapeOne` uses
+`layoutCached`, so word shaping was already cached - the cost was the O(n)
+scan/allocate/assemble.
+
+### Fix
+`aurora-opencode-core/source/auroraopencode/markdown.d`:
+- `markdownCommitPoint(text, from)` returns the index just past the last blank
+  line at/after `from` that terminates a block OUTSIDE a fenced code block (the
+  scan tracks `FenceInfo`). A blank line flushes paragraph/list/quote in
+  `parseMarkdown`, so everything before it is a stable, independently
+  parseable prefix.
+- `MarkdownComposer` caches that prefix: it parses/composes each newly committed
+  chunk once (at a fixed width) and appends it, then composes only the tail
+  (`text[committedLen .. $]`) each call. A width change rebuilds the cache.
+
+`aurora-opencode-pro/source/auroraopencode/appui.d`: `MessageBubble` keeps one
+`MarkdownComposer` per measured width (the `ScrollView` measures with and
+without the scrollbar) and calls it from `markdownFor`.
+
+After the fix (per step): 20k = 0.08 ms (max 2.5), 60k = 0.14 ms (max 3.7),
+120k = 0.30 ms (max 10) - ~34-57x faster, effectively flat. Remaining growth is
+the per-frame concatenation of all items; it is well inside a frame budget.
+Known limit: a single block with no blank line (one enormous paragraph) has no
+commit boundary and still recomposes per frame; realistic multi-block replies
+are covered.
+
+### How to test
+1. Equivalence guard in the Pro smoke (from `aurora-opencode-pro`):
+   ```
+   dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+       -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d ^
+       user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib ^
+       -of=build\headless-pro-smoke.exe
+   build\headless-pro-smoke.exe
+   ```
+   Pass = `Incremental markdown compose matches a full compose` and the final
+   `Aurora OpenCode Pro headless smoke test passed.` It streams the document in
+   3-char chunks through `MarkdownComposer` and asserts item count, height,
+   kind, x and y all match a one-shot `composeMarkdown(parseMarkdown(full))`.
+2. Benchmark: build/run as above and compare the `parse+compose full` and
+   `incremental` lines.
+3. Baseline smoke (`aurora-opencode`, shared `markdown.d`) must still EXIT=0.
+
+### Note
+This is an application-level composition cache, not a change to glyph/text
+rendering. Do NOT re-enable the experimental `natural` hinter to chase perf.
+
 ## Pro: inline-code "X" drawn as ">" - background overdraw (2026-09-13)
 
 ### Symptom

@@ -1,5 +1,34 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Pro: streaming render was O(n^2) (fixed, benchmarked)
+
+User: "What to do to have perfect fast token, text, visual/graphical streaming
+smooth rendering performance ... benchmark and fix".
+
+Benchmark (`%TEMP%\opencode\streambench.d`) showed per-frame markdown cost
+scaled with the whole message, so a long stream was quadratic:
+
+| message | full parse+compose | incremental |
+| --- | --- | --- |
+| 20k  | 2.7 ms/step (max 6.8 ms)   | 0.08 ms/step (max 2.5 ms) |
+| 60k  | 8.2 ms/step (max 33 ms)    | 0.14 ms/step (max 3.7 ms) |
+| 120k | 17.1 ms/step (max 132 ms)  | 0.30 ms/step (max 10 ms) |
+
+- [x] `markdown.d`: new `MarkdownComposer` commits every complete block (blank
+      line outside a fence) once and recomposes only the growing tail;
+      `markdownCommitPoint` finds the last safe, fence-aware boundary.
+- [x] `appui.d` `MessageBubble.markdownFor`: one `MarkdownComposer` per measured
+      width (the ScrollView measures two widths).
+- [x] Pro smoke guard `verifyIncrementalMarkdownCompose()`: streams a document in
+      3-char chunks and asserts item count/height/kind/x/y match a one-shot
+      compose (covers blank lines inside fences and headings without blank
+      separators).
+- [x] Both apps rebuilt (`dub build --compiler=dmd --force`); Pro + baseline
+      smoke EXIT=0; single Pro instance relaunched (PID 32800).
+- Known limit: a single block with no blank line (e.g. one 100k-char paragraph)
+      still recomposes per frame; realistic multi-block replies are covered.
+- Evidence: `%TEMP%\opencode\streambench.exe 20000|60000|120000 40`.
+
 ## 2026-09-13 - Pro: inline-code "X" rendered as ">" (fixed, root cause)
 
 User: "Are we ready to commit and push what solved this" (the intermittent

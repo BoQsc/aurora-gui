@@ -12,7 +12,8 @@ import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     setOpencodeStateDirectoryForTesting, siblingMessages;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
-import auroraopencode.markdown : composeMarkdown, paintMarkdown, parseMarkdown;
+import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
+    parseMarkdown;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.datetime : Clock;
@@ -114,6 +115,49 @@ private void verifyInlineCodePillGlyphs()
     assert(false, "Inline-code pill 'X' not found in the composition");
 }
 
+/// Regression: while a reply streams in the bubble composes it incrementally
+/// (only the block still growing is recomposed). The result must match a
+/// one-shot compose of the whole document, or text would shift and jump as the
+/// message arrives.
+private void verifyIncrementalMarkdownCompose()
+{
+    import std.math : abs;
+    import auroraopencode.markdown : MarkdownComposer;
+
+    immutable dstring full =
+        "# Heading\n\n"d ~
+        "A paragraph with **bold**, `code`, and a [link](https://opencode.ai).\n\n"d ~
+        "```d\nvoid main() {}\n\nint x = 1;\n```\n\n"d ~
+        "## Sub heading\nright after the heading with `x` and a [link](https://y).\n\n"d ~
+        "- one\n- two\n- three\n\n"d ~
+        "> a quote line\n\n"d ~
+        "Final paragraph that keeps growing and growing."d;
+
+    const width = 640;
+    MarkdownComposer composer;
+    MdComposition incremental;
+    for (size_t n = 0; n <= full.length; n += 3)
+        composer.compose(incremental, full[0 .. n], width, false);
+    composer.compose(incremental, full, width, false);
+
+    auto reference = composeMarkdown(parseMarkdown(full), width, false);
+
+    assert(incremental.items.length == reference.items.length,
+        "incremental compose produced a different item count");
+    assert(abs(incremental.height - reference.height) < 0.5,
+        "incremental compose produced a different height");
+    foreach (i; 0 .. reference.items.length)
+    {
+        assert(incremental.items[i].kind == reference.items[i].kind,
+            "incremental compose reordered markdown items");
+        assert(abs(incremental.items[i].y - reference.items[i].y) < 0.5,
+            "incremental compose placed markdown items at a different y");
+        assert(abs(incremental.items[i].x - reference.items[i].x) < 0.5,
+            "incremental compose placed markdown items at a different x");
+    }
+    writeln("Incremental markdown compose matches a full compose");
+}
+
 private Widget findById(Widget widget, string requestedId)
 {
     if (widget is null) return null;
@@ -183,6 +227,7 @@ int main(string[] args)
     setOpencodeStateDirectoryForTesting(stateDir);
     verifyNativeTextGlyphs();
     verifyInlineCodePillGlyphs();
+    verifyIncrementalMarkdownCompose();
 
     WindowOptions options;
     options.title = "Aurora OpenCode Pro headless";
