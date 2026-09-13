@@ -1,5 +1,19 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - List conversations newest-first (done)
+
+User: "the latest chat should be at the top not bottom"
+
+- [x] Pro `updateSessionList()` now walks `_sessions` with `foreach_reverse`, so
+      the newest conversation (a freshly created one) is row 0 and times read
+      descending. `_sessionIndices` still holds the real indices, so
+      select/delete/context-menu mapping is unchanged.
+- [x] Added `visibleSessionIndexAtRowForTesting()` and a smoke assertion that
+      rows map to descending session indices and the newest is row 0.
+- [x] Verified: Pro smoke pass (new "Conversations are listed newest-first"
+      step); screenshot `%TEMP%\aui-pro-order.png`; live relaunch PID 11860,
+      `errors.log` clean. Baseline left oldest-first (features land in Pro).
+
 ## 2026-09-13 - Move "New chat" button above the search field (done)
 
 User: "Let's move new chat button to the above the search chats."

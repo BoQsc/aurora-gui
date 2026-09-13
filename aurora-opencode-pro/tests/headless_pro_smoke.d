@@ -341,6 +341,19 @@ int main(string[] args)
     writeln("Sandbox is the default project: ",
         root.activeProjectPathForTesting());
 
+    // Conversations are listed newest-first: the newest-created session is the
+    // top row, so visible rows map to descending session indices.
+    assert(root.visibleSessionCountForTesting() >= 2,
+        "Need at least two restored sessions to check ordering");
+    for (int row = 0; row + 1 < root.visibleSessionCountForTesting(); ++row)
+        assert(root.visibleSessionIndexAtRowForTesting(row) >
+            root.visibleSessionIndexAtRowForTesting(row + 1),
+            "Conversations must be listed newest-first");
+    assert(root.visibleSessionIndexAtRowForTesting(0) ==
+        cast(int) root.sessionCountForTesting() - 1,
+        "The newest conversation should be the top row");
+    writeln("Conversations are listed newest-first");
+
     // The merged custom titlebar owns the top band and the project rail starts
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),

@@ -3120,7 +3120,9 @@ public final class OpenCodeRoot : VBox
         ListItem[] items;
         int[] indices;
         const projectId = activeProjectId();
-        foreach (index, session; _sessions)
+        // Newest conversation first: sessions are appended on creation, so walk
+        // the array backwards and keep the real indices for row -> session.
+        foreach_reverse (index, session; _sessions)
         {
             // Sessions restored from an older build have no project; they
             // belong to the sandbox.
@@ -3618,6 +3620,14 @@ public final class OpenCodeRoot : VBox
     {
         if (index < 0 || index >= cast(int) _sessions.length) return "";
         return _sessions[index].title;
+    }
+
+    /// Test-only: the session-array index shown at a visible list row
+    /// (row 0 is the top of the list).
+    public int visibleSessionIndexAtRowForTesting(int row) const
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return -1;
+        return _sessionIndices[row];
     }
 
     // -- project test accessors -------------------------------------------

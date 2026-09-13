@@ -1,5 +1,25 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## List conversations newest-first (2026-09-13)
+
+User: "the latest chat should be at the top not bottom"
+
+- Root cause: `updateSessionList()` iterated `_sessions` in array order and new
+  chats are appended with `_sessions ~= session`, so the newest landed on the
+  last row.
+- Fix (Pro): iterate `foreach_reverse (index, session; _sessions)` and keep
+  appending the real `index` to `_sessionIndices`. Every row → session lookup
+  (`selectSessionByRow`, `deleteSessionAtRow`, `setSelectedIndex` via the
+  `_current` match) goes through `_sessionIndices`, so no other code changed.
+- New test hook `visibleSessionIndexAtRowForTesting(int row)` returns
+  `_sessionIndices[row]`. The smoke test asserts visible rows map to strictly
+  descending session indices and that row 0 is the newest session
+  (`sessionCount - 1`).
+- Verified: Pro smoke passes with the new "Conversations are listed newest-first"
+  step; screenshot `%TEMP%\aui-pro-order.png` shows 14:52, 14:41, 14:30 … top to
+  bottom; live relaunch PID 11860, `errors.log` clean. Baseline (`aurora-opencode`)
+  still lists oldest-first by design.
+
 ## Move "New chat" button above the search field (2026-09-13)
 
 User: "Let's move new chat button to the above the search chats."
