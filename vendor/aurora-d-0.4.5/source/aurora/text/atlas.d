@@ -5,7 +5,9 @@ import aurora.text.glyph : GlyphBitmap;
 import aurora.text.fontcollection : FontCollection;
 import aurora.text.layout : TextLayoutEngine;
 import aurora.types : Rect, maxInt;
+import std.conv : to;
 import std.math : floor;
+import std.process : environment;
 
 enum GlyphHorizontalPhases = 8;
 
@@ -63,12 +65,40 @@ final class GlyphAtlas
     private int _shelfHeight;
     private ulong _revision = 1;
 
+    // Native Windows rendering pushes antialiased coverage away from the
+    // background before compositing, which keeps small text crisp instead of
+    // thin and washed out. Aurora historically composited coverage linearly.
+    // This is the odds-form contrast curve T(a) = a / (a + (1 - a)(1 - c));
+    // c = 0.5 matches the DirectWrite grayscale transfer measured against
+    // native output. Set AURORA_TEXT_CONTRAST=0 to restore linear coverage.
+    private ubyte[256] _coverageTransfer;
+    private float _coverageContrast = 0.5f;
+
+    private void rebuildCoverageTransfer()
+    {
+        const k = 1.0f - _coverageContrast;
+        foreach (value; 0 .. 256)
+        {
+            const a = cast(float) value / 255.0f;
+            const denominator = a + (1.0f - a) * k;
+            const enhanced = denominator > 0.0f ? a / denominator : a;
+            _coverageTransfer[value] = cast(ubyte) (enhanced * 255.0f + 0.5f);
+        }
+    }
+
     this(int width = 512, int height = 512)
     {
         _width = maxInt(32, width);
         _height = maxInt(32, height);
         _pixels.length = cast(size_t) _width * cast(size_t) _height;
         _pixels[0] = 255; // Solid geometry samples this white texel.
+        try
+            _coverageContrast = to!float(environment.get("AURORA_TEXT_CONTRAST", "0.5"));
+        catch (Exception)
+            _coverageContrast = 0.5f;
+        if (_coverageContrast < 0.0f) _coverageContrast = 0.0f;
+        if (_coverageContrast > 0.95f) _coverageContrast = 0.95f;
+        rebuildCoverageTransfer();
     }
 
     int width() const @safe pure nothrow @nogc { return _width; }
@@ -100,10 +130,14 @@ final class GlyphAtlas
         // Use 16 vertical samples per row at small UI sizes and 8 for larger
         // text, with exact horizontal span coverage in both outline formats.
         // Sharp mode also aligns font-authored vertical zones where available;
-        // smooth mode preserves the outline. Neither boosts alpha contrast.
+        // smooth mode preserves the outline. Coverage is then contrast-enhanced
+        // toward native DirectWrite weight (see _coverageTransfer).
         const coverageSamples = pixelSize <= 16 ? 8 : 4;
         auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples,
             cast(double) phaseX / GlyphHorizontalPhases, renderMode == FontRenderMode.sharp);
+        if (_coverageContrast > 0.0f)
+            foreach (ref value; bitmap.alpha)
+                value = _coverageTransfer[value];
         auto result = insert(bitmap);
         _glyphs[key] = result;
         return result;

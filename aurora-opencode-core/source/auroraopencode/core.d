@@ -203,13 +203,17 @@ public enum int opencodeComposerHeight = 116;
 /// Opt this process into Aurora's native-compatibility text rendering: grid-
 /// fitted (natural-grid) hinting plus the sampled coverage lattice, which
 /// tracks Windows DirectWrite grayscale far more closely than the default
-/// exact-area rasterizer. Must be called before the first window or font is
-/// created. An explicit `AURORA_HINTING` value in the environment wins, so the
-/// renderer can still be forced back with `AURORA_HINTING=0`.
+/// exact-area rasterizer. Also pins the atlas coverage contrast (DirectWrite
+/// applies the same "enhanced contrast" to antialiased coverage before
+/// compositing) that keeps small text from reading thin and washed out. Must be
+/// called before the first window or font is created. An explicit
+/// `AURORA_HINTING`/`AURORA_TEXT_CONTRAST` value in the environment wins.
 public void enableNativeTextRendering()
 {
     if (environment.get("AURORA_HINTING", "") == "")
         environment["AURORA_HINTING"] = "natural";
+    if (environment.get("AURORA_TEXT_CONTRAST", "") == "")
+        environment["AURORA_TEXT_CONTRAST"] = "0.5";
 }
 
 public Theme opencodeTheme()

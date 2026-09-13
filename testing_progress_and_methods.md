@@ -1,5 +1,76 @@
 ﻿# Testing Progress and Methods (Aurora Cut)
 
+## Native-style glyph coverage contrast (2026-09-13)
+
+User: "i see no great improvements in font text rendering, smaller text looks
+awful, so yea we really need to look further or maybe even start working on
+improving at the aurora core the rendering of text and font."
+
+### Diagnosis (measured, not guessed)
+1. Ran the font harness against the **neutral** DirectWrite reference
+   (`--audit-neutral`, gamma=1, contrast=0) instead of only the monitor-tuned
+   reference. With `AURORA_HINTING=natural`, Aurora's raw coverage is already
+   close to DirectWrite's raw coverage:
+   | size/theme | vs neutral MAE | differing px |
+   | --- | ---: | ---: |
+   | 13 light | 7.22 | 202 |
+   | 13 dark | 6.12 | 202 |
+   | 17 light | 13.02 | 419 |
+   | 17 dark | 11.03 | 419 |
+   The whole geometry (hinting) half is therefore done; the gap is **coverage
+   weight**.
+2. The monitor reference showed DirectWrite params **gamma 1.8, enhanced
+   contrast 0.5, grayscale enhanced contrast 1.0**; native grayscale AA output is
+   quantized to only **9 levels** (0..8).
+3. Extracting the per-pixel transfer from `*-native-neutral.png` →
+   `*-native-gray.png` (dark theme) gave a clean, size-independent curve:
+   `0.125→0.2269, 0.25→0.4120, 0.375→0.5556, 0.5→0.6667, 0.625→0.7639,
+   0.75→0.8426, 0.875→0.9167`. So DirectWrite **pushes antialiased coverage away
+   from the background** before compositing; Aurora composited it linearly
+   (the atlas comment literally said "Neither boosts alpha contrast").
+4. Simulated the fix in Python (recover Aurora coverage, apply the measured
+   transfer, re-composite): dark MAE 22.08→5.81 (13 px), 23.96→11.56 (17 px).
+   The clean odds form `T(a)=a/(a+(1-a)(1-c))` with `c=0.5` reproduces the
+   measured curve within ~4 gray levels.
+
+### Change
+`vendor/aurora-d-0.4.5/source/aurora/text/atlas.d`: `GlyphAtlas` now builds a
+256-entry coverage transfer (`_coverageTransfer`) in its constructor and applies
+it to every rasterized glyph's alpha before caching. Default `contrast = 0.5`;
+override/disable with `AURORA_TEXT_CONTRAST` (0 restores linear coverage). This
+is applied once per cached glyph, so it affects **both** the software and Vulkan
+backends and costs nothing per frame. The stale comments in
+`vendor/aurora-d-0.4.5/tests/dpi_rendering.d` ("Neither mode applies an
+additional contrast curve") were corrected.
+
+### Results (harness, `AURORA_HINTING=natural`, `build-validation/font-quality/contrast-nat`)
+| size/theme | MAE before | MAE after |
+| --- | ---: | ---: |
+| 13 dark | 22.08 | **6.91** |
+| 17 dark | 23.96 | **12.44** |
+| 13 light | 10.21 | 27.47 |
+| 17 light | 15.74 | 31.79 |
+
+The app is dark-only (`opencodeBackground = #111114`; no light theme), so the
+light-theme regression is not reachable in this product; it is documented here
+for any future light theme (a polarity-aware curve would be needed there).
+
+### Verification / how to re-test
+1. Harness (no app): `set "AURORA_HINTING=natural"&& python
+   scripts\compare-font-rendering.py --sizes 13 17 --out
+   build-validation\font-quality\<tag>`; read `mean_absolute_error` and
+   `different_pixels` from `manifest.json`. To isolate coverage from hinting use
+   `--audit-neutral` and compare `13-dark-native-neutral.png` vs
+   `13-dark-native-gray.png`.
+2. Both apps rebuilt: Pro `dub build --compiler=dmd --force` +
+   `build\headless-pro-smoke.exe` (EXIT=0); baseline `dub build` +
+   `build\headless-smoke.exe` (EXIT=0).
+3. Vendor tests touching the atlas: `build\v-dpi.exe` EXIT=0 and
+   `build\v-fqr.exe` (run from `vendor\aurora-d-0.4.5`) EXIT=0.
+4. Screenshot: `& .\aurora-opencode-pro.exe --screenshot "$env:TEMP\text-contrast.ppm"`,
+   convert with `%TEMP%\ppm2png.ps1`, zoom with `%TEMP%\zoom-text.ps1`
+   (`%TEMP%\text-contrast.png`, `zoom-new-rows.png`, `zoom-new-body.png`).
+
 ## Fix laggy sessions/chat divider drag (2026-09-13)
 
 User: "why changing width of sidebar it appears laggy. fix it."

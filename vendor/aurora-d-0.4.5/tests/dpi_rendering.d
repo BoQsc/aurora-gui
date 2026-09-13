@@ -123,9 +123,9 @@ int main()
     assert(smooth.region.width == sharp.region.width);
     assert(smooth.advance == sharp.advance);
     // Sharp mode can align font-authored vertical zones at small sizes.
-    // Neither mode applies an additional contrast curve. Both must retain
-    // intermediate (true grayscale) alpha at glyph edges, and neither may
-    // collapse to binary coverage.
+    // Both modes now apply the shared native-style contrast curve, yet must
+    // retain intermediate (true grayscale) alpha at glyph edges, and neither
+    // may collapse to binary coverage.
     if (face.isOpenType())
     {
         assert(hasIntermediateCoverage(smoothAtlas.pixels(), smoothAtlas.width(),

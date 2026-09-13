@@ -155,6 +155,23 @@ parity at the required monitor settings.
 python scripts/compare-font-rendering.py --require-exact --audit-neutral --audit-shared-alpha --text H --sizes 11 13 17 21 26 34 --out build-validation/font-quality/neutral-audit
 ```
 
+### Coverage contrast is now applied (2026-09-13)
+
+Earlier revisions composited antialiased coverage linearly, so small text read
+thinner and greyer than native even when the outline coverage matched. Comparing
+like for like against the neutral capture shows the residual is weight, not
+geometry: with `AURORA_HINTING=natural`, raw coverage is already close to the
+neutral reference (13px dark MAE 6.1, light 7.2).
+
+The atlas now builds a 256-entry odds-form contrast transfer
+`T(a) = a / (a + (1 - a)(1 - c))` with `c = 0.5` and applies it to every
+rasterized glyph before caching, matching the measured DirectWrite grayscale
+transfer (monitor gamma 1.8, enhanced contrast 0.5). This lowers dark-theme MAE
+versus the monitor reference from 22.08 to 6.91 at 13px and 23.96 to 12.44 at
+17px. The curve is tuned for light-on-dark text (the product theme); dark-on-light
+text becomes slightly heavier than native. Set `AURORA_TEXT_CONTRAST=0` to
+restore linear coverage.
+
 ### Instruction and native-rendering compatibility
 
 An additional experiment is selected with `AURORA_HINTING=natural`. It implements

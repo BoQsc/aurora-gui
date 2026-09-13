@@ -1,5 +1,34 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-13 - Small text still looked awful: native-style coverage contrast (done)
+
+User: "i see no great improvements in font text rendering, smaller text looks
+awful, so yea we really need to look further or maybe even start working on
+improving at the aurora core the rendering of text and font."
+
+- [x] Diagnosed with the harness's **neutral** DirectWrite reference
+  (`--audit-neutral`): with `AURORA_HINTING=natural`, Aurora's *raw coverage*
+  already nearly matches DirectWrite (MAE 6.1 dark / 7.2 light at 13 px; 202
+  differing px). The remaining gap was not geometry but **coverage weight**.
+- [x] Found DirectWrite's monitor params (gamma 1.8, enhanced contrast 0.5,
+  grayscale contrast 1.0) and extracted its exact coverage transfer from
+  `*-native-neutral.png` → `*-native-gray.png`. Native grayscale AA is only
+  **9 levels**; DirectWrite pushes coverage away from the background before
+  compositing. Aurora's atlas explicitly did not ("Neither boosts alpha
+  contrast").
+- [x] Core fix in `vendor/.../text/atlas.d`: `GlyphAtlas` builds a 256-entry
+  odds-form contrast transfer `T(a)=a/(a+(1-a)(1-c))`, `c=0.5`, and applies it to
+  each rasterized glyph's alpha before caching — one-time cost, both backends
+  benefit. `AURORA_TEXT_CONTRAST` overrides (0 disables). Corrected the stale
+  "no contrast curve" comments in `tests/dpi_rendering.d`.
+- [x] Measured: dark-theme MAE 22.08 → **6.91** (13 px) and 23.96 → **12.44**
+  (17 px). Light theme gets bolder (documented; app is dark-only, no light
+  theme exists).
+- [x] Verified: Pro smoke EXIT=0; baseline smoke EXIT=0; vendor `v-dpi.exe` and
+  `v-fqr.exe` EXIT=0; screenshot `%TEMP%\text-contrast.png` +
+  `zoom-new-rows.png` clearly crisper. Details in
+  `testing_progress_and_methods.md`.
+
 ## 2026-09-13 - Aurora OpenCode Pro: center the chat column + taller composer (done)
 
 User: asked to center the main content (messages + input) with margin/padding like
