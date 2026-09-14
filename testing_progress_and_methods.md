@@ -1,5 +1,75 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: transcript order churn — per-turn reasoning + canonical post-finish rebuild (2026-09-14)
+
+**Complaint (user).** "order or things change in the middle instead of at the
+start or end in the chain of chat. Mostly i'm concerned about tools usage and
+thinking and all these just popping around in the chat at random, reordering or
+incorrectly ordering placing or showing incorrect flow of chat, not one after
+another flow."
+
+**How to test live (the phase-dump harness).** `aurora-opencode-pro/tests/
+pro_flow_repro.d` drives a scripted multi-round exchange and prints one
+`columnDebugForTesting()` line per flattened transcript visual at every phase:
+begin → reasoning → content → tool-call progress → running → round-1 result →
+(a gap where the next round is requested but no round-2 turn exists yet) →
+round-2 reasoning → round-2 result → final answer → finish → **finish + explicit
+rebuild**. A stuck/inconsistent view shows up as the same widget's `think=` flag
+or position differing between consecutive phases.
+
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\pro_flow_repro.d user32.lib ^
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\pro-flow-repro.exe
+build\pro-flow-repro.exe          # scripted exchange, dumps every phase
+build\pro-flow-repro.exe real     # real %APPDATA%\Aurora OpenCode\sessions.json
+```
+
+**Findings (before the fix).**
+1. **Thinking header migrated.** Reasoning was concatenated across an exchange's
+   rounds and attached to the exchange's LAST settled assistant turn. Dump:
+   `after round 1 tool result` had bubble1 `think=1`; `after round 2 tool result`
+   had bubble1 `think=0` and bubble3 `think=1`. So the `▸ Thinking` header jumped
+   down the transcript as each round settled, and during a round's stream two
+   headers showed at once (previous merged + live). A pure tool-request turn
+   (reasoning, no prose) vanished on settle (it was visible only via live
+   reasoning). Everything after the first user turn moved.
+2. **Stale stream view.** `finishAssistantMessage`/`failAssistantMessage`
+   nulled `_streamBubble` but did not rebuild, so the visible transcript was the
+   stream-only bubble (no timestamp/usage footer, no context menu, no collapse
+   wiring). The next rebuild rearranged it: "after finish" bubble3 `think=1`,
+   bubble5 `think=1`; "after finish + rebuild" bubble3 `think=0`,
+   bubble5 `think=1`.
+
+**Fix (Pro `appui.d`).**
+- Per-turn reasoning: in `rebuildMessageColumn`, `thinkingText[slot] =
+  session.messages[index].reasoning` (the merge loop is deleted). Each assistant
+  turn renders its own reasoning once, attached to its round; the transcript is
+  append-only and no widget moves. A tool-request turn stays visible iff it has
+  its own reasoning (or prose).
+- `finishAssistantMessage` persists `_liveOutputTokens` to
+  `message.completionTokens` when no exact count was supplied (synthetic/estimate
+  paths), then `rebuildMessageColumn()` so the settled view is canonical at once.
+  `failAssistantMessage` likewise rebuilds instead of hand-mounting a bubble.
+
+**Test hooks.** `thinkingTextsForTesting()` returns every visible Thinking
+block's text in transcript order; `thinkingHeaderCountForTesting()` counts them;
+`thinkingTextForTesting()` = first one.
+
+**How to verify.**
+- Smoke guard `Each tool round keeps its own Thinking header (stable order)`:
+  user → tool-request(read, reason A) → reply → tool-request(write, reason B) →
+  reply → answer(reason C) asserts 3 headers with A/B/C in order, then
+  `rebuildForTesting()` asserts the list is byte-for-byte identical. Pass =
+  `Aurora OpenCode Pro headless smoke test passed.`
+- Repro phase dumps: the "after finish" and "after finish + explicit rebuild"
+  dumps are now identical; every phase appends only.
+- Real session (`build\pro-flow-repro.exe real`, "how are you"): 55 sessions,
+  `visuals=131`, `thinkingHeaders=24`, `toolMessages=57`; each round's
+  `▸ Thinking` is immediately followed by its own action group.
+  Screenshot from the smoke run:
+  `%TEMP%\aurora-opencode-exchange-shots\per-turn-thinking.ppm`.
+
 ## Pro: Codex-style persistent collapsible action groups (2026-09-14)
 
 **Complaint (user).** "on codex I see 'edited a file', 'edited a file, ran

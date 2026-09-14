@@ -97,6 +97,16 @@ int main(string[] args)
     }
     dump(root, "after round 1 tool result");
 
+    // The gap the user feels: the tool result has landed and the client has
+    // asked for the next round, but the round-2 assistant turn does not exist
+    // yet. Where does the "Waiting for the model…" row land?
+    root.setActivityForTesting("Waiting for the model…");
+    dump(root, "GAP: waiting for round 2 (no round-2 turn yet)");
+    writeln("  >> groupParts=", root.firstToolGroupPartCountForTesting(),
+        " activityVisualIndex=", root.activityRowVisualIndexForTesting(),
+        " activityVisible=", root.activityVisibleForTesting());
+    root.clearActivityForTesting();
+
     // Round 2: the model reasons again, then edits the file.
     root.beginStreamForTesting();
     root.streamReasoningForTesting("Now let me add physics.");
@@ -125,6 +135,12 @@ int main(string[] args)
 
     root.finishStreamForTesting();
     dump(root, "after finish (phase row removed)");
+
+    // Consistency check: the canonical rebuild must render the SAME transcript
+    // the user was just looking at. If it differs, the view "changes in the
+    // middle" the next time anything triggers a rebuild.
+    root.rebuildForTesting();
+    dump(root, "after finish + explicit rebuild (canonical view)");
 
     return 0;
 }

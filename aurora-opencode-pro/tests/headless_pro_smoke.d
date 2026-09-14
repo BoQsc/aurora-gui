@@ -1568,11 +1568,11 @@ int main(string[] args)
         writeln("Unnamed tool does not mask the named one: ", rows2[0]);
     }
 
-    // Regression: one exchange must show a single "Thinking" block. The model
-    // reasons once per tool round, so a multi-round exchange used to stack one
-    // "▸ Thinking" per round next to the tool rows, reading as several unrelated
-    // blocks. Every round's reasoning is now merged into one block on the
-    // answering turn, and nothing is dropped.
+    // Codex-style stability: every assistant turn keeps its OWN reasoning
+    // attached to it, so a multi-round exchange is append-only — the Thinking
+    // headers never merge, migrate down the transcript or vanish as rounds
+    // settle (the old merge made the block jump from round to round, which read
+    // as the transcript reordering itself).
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Do the work"]);
@@ -1586,23 +1586,32 @@ int main(string[] args)
             ["Done — I read a.txt and wrote out.txt."], ["Now I can answer."]);
         root.tickTree(0.02);
         assert(driver.paint(), "Multi-round exchange paint failed");
-        assert(root.thinkingHeaderCountForTesting() == 1,
-            "Expected one Thinking header for the exchange, got " ~
-            to!string(root.thinkingHeaderCountForTesting()));
-        // The single block still holds every round's reasoning, in order.
-        const merged = root.thinkingTextForTesting();
-        const firstAt = merged.indexOf("I should read the file first.");
-        const secondAt = merged.indexOf("I should write the result.");
-        const answerAt = merged.indexOf("Now I can answer.");
-        assert(firstAt >= 0 && secondAt > firstAt && answerAt > secondAt,
-            "Merged Thinking block dropped or reordered a round: " ~ merged);
+        const int headers = root.thinkingHeaderCountForTesting();
+        const auto texts = root.thinkingTextsForTesting();
+        assert(headers == 3 && texts.length == 3,
+            "Each round should keep its own Thinking header, got " ~
+            to!string(headers));
+        assert(texts[0].indexOf("read the file first") >= 0 &&
+            texts[1].indexOf("write the result") >= 0 &&
+            texts[2].indexOf("Now I can answer") >= 0,
+            "Per-round Thinking is out of order or wrong: " ~
+            texts[0] ~ " || " ~ texts[1] ~ " || " ~ texts[2]);
+        // Stability: a canonical rebuild must render the identical transcript.
+        root.rebuildForTesting();
+        root.tickTree(0.02);
+        const auto after = root.thinkingTextsForTesting();
+        assert(after.length == texts.length,
+            "A rebuild changed the number of Thinking blocks");
+        foreach (i; 0 .. after.length)
+            assert(after[i] == texts[i],
+                "A rebuild reordered the Thinking blocks at " ~ to!string(i));
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Expanded merged Thinking did not paint");
+        assert(driver.paint(), "Expanded per-turn Thinking did not paint");
         const exShots = buildPath(tempDir(), "aurora-opencode-exchange-shots");
         if (!exists(exShots)) mkdirRecurse(exShots);
-        window.saveScreenshot(buildPath(exShots, "one-thinking-per-exchange.ppm"));
-        writeln("One Thinking header per exchange (all rounds merged)");
+        window.saveScreenshot(buildPath(exShots, "per-turn-thinking.ppm"));
+        writeln("Each tool round keeps its own Thinking header (stable order)");
     }
 
     // Regression: a reasoning-only stream must print "Thinking" once (the

@@ -1,5 +1,50 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: transcript order churn — Thinking header migrated mid-exchange + stale stream view
+
+**Complaint (user).** "order or things change in the middle instead of at the
+start or end in the chain of chat. Mostly i'm concerned about tools usage and
+thinking and all these just popping around in the chat at random, reordering or
+incorrectly ordering placing or showing incorrect flow of chat, not one after
+another flow."
+
+**Live evidence (`pro-flow-repro` phase dumps + real session).** Two concrete,
+reproducible order bugs:
+1. The exchange's reasoning was merged onto the exchange's LAST settled
+   assistant turn, so as each round settled the single `▸ Thinking` header
+   jumped DOWN the transcript (round-1 turn lost it, round-2 turn gained it).
+   While a round streamed, two `▸ Thinking` headers showed at once (the previous
+   round's merged block + the live round). A pure tool-request turn (reasoning,
+   no prose) was visible while streaming, then vanished on settle. Phase dumps:
+   `after round 1 tool result` → bubble1 `think=1`; `after round 2 tool result`
+   → bubble1 `think=0`, bubble3 `think=1`.
+2. `finishAssistantMessage` / `failAssistantMessage` nulled `_streamBubble`
+   without rebuilding, so the visible transcript was the stream-only bubble (no
+   timestamp/usage footer, no context menu, no collapse wiring); the next rebuild
+   rearranged it. Example: the `▸ Thinking` header moved from turn 3 to turn 5 —
+   "after finish" bubble3 `think=1`/bubble5 `think=1` vs "after finish + rebuild"
+   bubble3 `think=0`/bubble5 `think=1`.
+
+**Fix (`aurora-opencode-pro/source/auroraopencode/appui.d`).**
+- Codex-style **per-turn reasoning**: `thinkingText[slot] = message.reasoning`
+  (the merge-across-rounds loop is gone). Each assistant turn shows its own
+  chain-of-thought, once, attached to its round; nothing migrates or vanishes.
+  The order is stable and append-only: user → assistant(thinking+text) → action
+  group → assistant → group → … → final assistant.
+- `finishAssistantMessage` persists the live token count when the provider
+  reports no exact count, then rebuilds the column so the settled view is
+  canonical immediately; `failAssistantMessage` rebuilds too.
+
+- [x] New hook `thinkingTextsForTesting()` (every visible Thinking block in
+      transcript order).
+- [x] Smoke guard rewritten: "Each tool round keeps its own Thinking header
+      (stable order)" (3 rounds → 3 headers, correct order/content; a canonical
+      rebuild yields an identical list). `headless-pro-smoke.exe` EXIT=0.
+- [x] Verified live with `build\pro-flow-repro.exe` (phase dumps identical
+      before/after the post-finish rebuild) and `build\pro-flow-repro.exe real`
+      (55 sessions, "how are you": 24 per-round Thinking headers, each followed
+      by its own action group). Details in `testing_progress_and_methods.md`.
+
 ## 2026-09-14 - Pro: "do it the Codex way" — persistent collapsible action groups (not fake indicators)
 
 **Complaint (user).** "on codex I see 'edited a file', 'edited a file, ran

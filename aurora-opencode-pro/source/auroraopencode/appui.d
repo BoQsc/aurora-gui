@@ -4151,46 +4151,18 @@ public final class OpenCodeRoot : VBox
         size_t[] versionPositions, versionTotals;
         computeSiblingVersions(*session, versionPositions, versionTotals);
 
-        // Reasoning streams once per tool round, but one exchange — the
-        // assistant turns between two user prompts — is one answer to the user.
-        // Keep every round's reasoning available while presenting it once: the
-        // exchange's last settled assistant turn carries a single collapsible
-        // "Thinking" block holding all of the rounds' reasoning, instead of a
-        // separate header per round. The live reply is excluded because it
-        // streams its own reasoning live (and would otherwise duplicate it).
+        // Codex-style per-turn reasoning: every assistant turn shows its own
+        // chain of thought, once, attached to the turn that produced it. It
+        // never migrates between turns as the exchange's rounds settle. (The old
+        // design concatenated every round of an exchange into one block on the
+        // exchange's LAST turn, so the single "Thinking" header jumped down the
+        // transcript on each round and a pure tool-request turn vanished the
+        // moment its reasoning moved on — the "order changes in the middle"
+        // churn.) The live reply is handled separately: it streams its reasoning
+        // into `_streamBubble`, which a rebuild then renders from the message.
         auto thinkingText = new string[](path.length);
-        for (size_t start = 0; start < path.length; )
-        {
-            size_t end = start;
-            while (end < path.length &&
-                session.messages[path[end]].role != "user")
-                ++end;
-            size_t host = size_t.max;
-            foreach_reverse (slot; start .. end)
-            {
-                if (session.messages[path[slot]].role != "assistant")
-                    continue;
-                if (_streamBubble !is null &&
-                    _streamBubble.messageIndex() == cast(int) path[slot])
-                    continue;
-                host = slot;
-                break;
-            }
-            if (host != size_t.max)
-            {
-                string combined;
-                foreach (slot; start .. end)
-                {
-                    const reasoning = session.messages[path[slot]].reasoning;
-                    if (reasoning.length == 0) continue;
-                    if (combined.length > 0) combined ~= "\n\n";
-                    combined ~= reasoning;
-                }
-                thinkingText[host] = combined;
-            }
-            if (end >= path.length) break;
-            start = end + 1; // `end` is the user message opening the next one.
-        }
+        foreach (slot, index; path)
+            thinkingText[slot] = session.messages[index].reasoning;
 
         // Nesting: a `tool` result belongs to the assistant turn that requested
         // it. Match each result's `toolCallId` to the assistant whose `toolCalls`
@@ -4520,9 +4492,8 @@ public final class OpenCodeRoot : VBox
         bubble.setContent(message.content);
         // A tool-call wrapper with no prose and no reasoning to show is not a
         // visible reply; keep its slot (for index mapping) but collapse it away.
-        // Its reasoning is not lost: it was merged into the exchange's single
-        // Thinking block (see rebuildMessageColumn), so the tool rows underneath
-        // carry the whole turn.
+        // A tool-request turn that DID reason stays visible as its own
+        // `▸ Thinking` header above its tool rows (each round keeps its own).
         if (message.role == "assistant" && message.toolCalls.length > 0 &&
             message.content.length == 0 && thinkingText.length == 0 &&
             !message.failed)
@@ -4536,10 +4507,9 @@ public final class OpenCodeRoot : VBox
         if (message.role == "tool")
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 message.toolDiff);
-        // The reasoning passed in is the whole exchange's chain of thought,
-        // already merged across its tool rounds, so a multi-round exchange shows
-        // exactly one expandable "Thinking" block instead of a header per round.
-        // Nothing is dropped: every round's reasoning is inside it.
+        // The reasoning passed in is this turn's own chain of thought, so each
+        // round shows an expandable "Thinking" block attached to the reply it
+        // belongs to — a stable, append-only transcript.
         const showThinking = thinkingText.length > 0;
         if (showThinking)
             bubble.setThinking(thinkingText);
@@ -4830,6 +4800,11 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
+        // The synthetic (`finishStreamForTesting`) and estimate-only paths pass
+        // no explicit completion count; persist the live count so a rebuild
+        // still shows it on the Thinking header after the stream bubble is gone.
+        if (completionTokens == 0 && _liveOutputTokens > 0)
+            completionTokens = cast(int) _liveOutputTokens;
         if (_current >= 0 && _sessions[_current].messages.length > 0)
         {
             auto message = &_sessions[_current].messages[$ - 1];
@@ -4841,6 +4816,11 @@ public final class OpenCodeRoot : VBox
                 message.totalTokens = totalTokens;
             }
         }
+        // The streamed bubble was built for streaming only (no timestamp, usage
+        // footer, context menu or collapse wiring). Rebuild so the settled view
+        // is canonical immediately — otherwise the transcript silently
+        // rearranges the next time anything triggers a rebuild.
+        rebuildMessageColumn();
         string status = cancelled ? "Stopped." : "Done.";
         if (!cancelled && totalTokens > 0)
         {
@@ -4880,17 +4860,14 @@ public final class OpenCodeRoot : VBox
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error: " ~ error;
         message.failed = true;
-        if (_streamBubble is null)
+        if (_streamBubble !is null)
         {
-            _streamBubble = new MessageBubble();
-            _streamBubble.setRole("assistant");
-            _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
-            _messageColumn.add(_streamBubble);
+            _streamBubble.setStreaming(false);
+            _streamBubble = null;
         }
-        _streamBubble.setStreaming(false);
-        _streamBubble.setFailed(error);
-        _streamBubble = null;
-        _messagesScroll.invalidate();
+        // Render the canonical settled view (the streamed bubble lacked the
+        // timestamp footer, context menu and collapse wiring).
+        rebuildMessageColumn();
         updateStatus("Error: " ~ error);
         markDirty();
         refreshBubbleActions();
@@ -7392,9 +7369,8 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
     }
 
-    /// Test-only: the number of visible reasoning headers in the transcript, so
-    /// a test can prove one exchange shows a single "Thinking" (tool rounds are
-    /// merged into one block instead of one header per round).
+    /// Test-only: the number of visible reasoning headers in the transcript
+    /// (one per assistant turn that reasoned — Codex-style per-turn reasoning).
     public int thinkingHeaderCountForTesting()
     {
         int count;
@@ -7408,18 +7384,27 @@ public final class OpenCodeRoot : VBox
         return count;
     }
 
-    /// Test-only: the text of the first visible "Thinking" block, so a test can
-    /// prove a merged block still contains every round's reasoning.
+    /// Test-only: the text of the first visible "Thinking" block.
     public string thinkingTextForTesting()
     {
+        auto all = thinkingTextsForTesting();
+        return all.length > 0 ? all[0] : "";
+    }
+
+    /// Test-only: the text of every visible "Thinking" block in transcript
+    /// order, so a test can prove each round keeps its own reasoning attached to
+    /// its turn and that a rebuild does not reorder or merge them.
+    public string[] thinkingTextsForTesting()
+    {
+        string[] texts;
         foreach (child; messageColumnVisuals())
         {
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
             if (bubble.hasThinkingForTesting() && !bubble.hiddenForTesting())
-                return bubble.thinkingTextForTesting();
+                texts ~= bubble.thinkingTextForTesting();
         }
-        return "";
+        return texts;
     }
 
     /// Test-only: the sanitized outgoing message list for the current session
