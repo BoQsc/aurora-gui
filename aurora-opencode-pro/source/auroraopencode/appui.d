@@ -3643,6 +3643,16 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private PopupOverlay _activePopup;
+    // Recycled by OpenCodeClient.drain. Keeping it on the root makes event
+    // delivery allocation-free after the queue reaches its normal capacity.
+    private OpenCodeEvent[] _eventScratch;
+    private ulong _nextRequestId;
+    private ulong _activeRequestId;
+    private int _activeRequestSession = -1;
+    // Tool results often arrive together after a parallel read lane. Defer the
+    // expensive full transcript reconstruction until the drained batch ends.
+    private bool _batchingToolResults;
+    private bool _toolTranscriptDirty;
 
     // Tool loop: the model may request tool calls, the app executes them, and
     // the enriched history is re-sent until the model answers with text.
@@ -3683,6 +3693,15 @@ public final class OpenCodeRoot : VBox
     private int _lastFailureRepeatCount;
     private bool _failureLoopDetected;
     private static immutable int failureLoopRepeatThreshold = 3;
+    // Bound read-only fan-out. A model can emit dozens of independent searches;
+    // one OS thread per call hurts throughput and responsiveness on laptops.
+    private static immutable size_t maxParallelToolWorkers = 4;
+
+    // Session persistence is intentionally off the mutation hot path. Bursts of
+    // tool results collapse to one save, while shutdown/restart still flushes.
+    private bool _stateDirty;
+    private MonoTime _persistDue;
+    private static immutable int persistDebounceMs = 150;
 
     private ContextUsageBadge _usageBadge;
     private HoverTooltip _usageTooltip;
@@ -3750,6 +3769,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
+        if (_stateDirty) persistState();
         _client.closeSession();
     }
 
@@ -5634,10 +5654,15 @@ public final class OpenCodeRoot : VBox
         // Show the live "Exploring" row while the context tools are running.
         rebuildMessageColumn();
         const sessionIndex = _current;
+        const requestId = _activeRequestId;
         const workspace = workspaceForSession(sessionIndex);
+        // The UI may clear/replace its live arrays as soon as the user cancels
+        // or navigates. Give the worker an immutable batch it exclusively owns.
+        auto workerCalls = _pendingToolCalls.dup;
         auto client = _client;
         auto worker = new Thread({
-            runToolWorker(client, sessionIndex, _pendingToolCalls, workspace);
+            runToolWorker(client, sessionIndex, requestId,
+                workerCalls, workspace);
         });
         worker.isDaemon = true;
         worker.start();
@@ -5661,7 +5686,7 @@ public final class OpenCodeRoot : VBox
     /// in model order, not completion order, so parallelism cannot reshuffle
     /// the transcript.
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
-        const(OpenCodeToolCall)[] calls, string workspace)
+        ulong requestId, const(OpenCodeToolCall)[] calls, string workspace)
     {
         size_t slot;
         while (slot < calls.length)
@@ -5669,7 +5694,7 @@ public final class OpenCodeRoot : VBox
             if (!toolSupportsParallel(calls[slot]))
             {
                 publishToolResult(client, calls[slot],
-                    executeTool(calls[slot], workspace));
+                    executeTool(calls[slot], workspace), requestId);
                 ++slot;
                 continue;
             }
@@ -5680,20 +5705,31 @@ public final class OpenCodeRoot : VBox
             size_t end = slot + 1;
             while (end < calls.length && toolSupportsParallel(calls[end]))
                 ++end;
-            ParallelToolJob[] jobs;
-            Thread[] workers;
-            foreach (call; calls[slot .. end])
+            // Run the lane in bounded waves. Four concurrent filesystem reads
+            // saturate typical laptop storage without creating an unbounded
+            // collection of stacks and scheduler contention.
+            size_t wave = slot;
+            while (wave < end)
             {
-                auto job = new ParallelToolJob(call, workspace);
-                jobs ~= job;
-                auto worker = new Thread(&job.run);
-                worker.isDaemon = true;
-                workers ~= worker;
-                worker.start();
+                const waveEnd = wave + maxParallelToolWorkers < end
+                    ? wave + maxParallelToolWorkers : end;
+                ParallelToolJob[] jobs;
+                Thread[] workers;
+                foreach (call; calls[wave .. waveEnd])
+                {
+                    auto job = new ParallelToolJob(call, workspace);
+                    jobs ~= job;
+                    auto worker = new Thread(&job.run);
+                    worker.isDaemon = true;
+                    workers ~= worker;
+                    worker.start();
+                }
+                foreach (worker; workers) worker.join();
+                foreach (job; jobs)
+                    publishToolResult(client, job.call, job.execution,
+                        requestId);
+                wave = waveEnd;
             }
-            foreach (worker; workers) worker.join();
-            foreach (job; jobs)
-                publishToolResult(client, job.call, job.execution);
             slot = end;
         }
     }
@@ -5727,7 +5763,8 @@ public final class OpenCodeRoot : VBox
     }
 
     private static void publishToolResult(OpenCodeClient client,
-        const ref OpenCodeToolCall call, const ToolExecution execution)
+        const ref OpenCodeToolCall call, const ToolExecution execution,
+        ulong requestId)
     {
         OpenCodeEvent result;
         result.kind = OpenCodeEventKind.toolResult;
@@ -5739,6 +5776,7 @@ public final class OpenCodeRoot : VBox
         result.diffDeletions = execution.deletions;
         result.diffText = execution.diff;
         result.reasoning = false;
+        result.requestId = requestId;
         client.pushLocalEvent(result);
     }
 
@@ -5812,9 +5850,9 @@ public final class OpenCodeRoot : VBox
         // enough that a full rebuild is cheaper than tracking the grouping
         // incrementally, and it snaps the scroll to the newest output while the
         // model is still working (matching the previous incremental behaviour).
-        rebuildMessageColumn();
-        _messagesScroll.invalidate();
-        markDirty();
+        _toolTranscriptDirty = true;
+        if (!_batchingToolResults)
+            flushToolTranscriptChanges();
 
         --_pendingToolResults;
         if (_pendingToolResults <= 0)
@@ -6146,7 +6184,9 @@ public final class OpenCodeRoot : VBox
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
         _client.startChatMessages(messages, tools, _settings.model,
-            _settings.thinking);
+            _settings.thinking, ++_nextRequestId);
+        _activeRequestId = _nextRequestId;
+        _activeRequestSession = sessionIndex;
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
@@ -6497,6 +6537,16 @@ public final class OpenCodeRoot : VBox
         const local = isLoopbackApiBaseUrl(_settings.baseUrl);
         _keyBadge.setText(hasKey ? "Key set" : local ? "Local API" : "No key");
         _keyBadge.setColor(hasKey || local ? opencodeKeyOk : opencodeKeyMissing);
+    }
+
+    private void flushToolTranscriptChanges()
+    {
+        if (!_toolTranscriptDirty) return;
+        _toolTranscriptDirty = false;
+        rebuildMessageColumn();
+        _messagesScroll.invalidate();
+        refreshBubbleActions();
+        markDirty();
     }
 
     private void updateStatus(string text)
@@ -6866,7 +6916,8 @@ public final class OpenCodeRoot : VBox
 
     private void markDirty()
     {
-        persistState();
+        _stateDirty = true;
+        _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
     }
 
     private void saveSettingsNow()
@@ -6876,7 +6927,7 @@ public final class OpenCodeRoot : VBox
 
     private void persistState()
     {
-        saveSettings(_settings);
+        _stateDirty = false;
         ensureStateDirectory();
         JSONValue root;
         JSONValue list = JSONValue(string[].init);
@@ -7108,17 +7159,48 @@ public final class OpenCodeRoot : VBox
             }
         }
 
-        OpenCodeEvent[] events;
-        _client.drain(events);
-        foreach (event; events)
+        _client.drain(_eventScratch);
+        _batchingToolResults = true;
+        size_t eventIndex;
+        while (eventIndex < _eventScratch.length)
         {
+            auto event = _eventScratch[eventIndex];
+            // Cancellation, navigation, and a subsequent request can all race
+            // with a worker's final queue push. Never attach those stale bytes
+            // or tool results to a different conversation/branch.
+            if (event.requestId != 0 &&
+                (event.requestId != _activeRequestId ||
+                 _activeRequestSession != _current))
+            {
+                ++eventIndex;
+                continue;
+            }
+            // Providers commonly send a few bytes per SSE record. Merge only
+            // adjacent fragments of the same channel, preserving exact ordering
+            // between reasoning, prose, tools, usage, and terminal events.
+            if (event.kind == OpenCodeEventKind.delta)
+            {
+                const reasoning = event.reasoning;
+                auto merged = appender!string();
+                while (eventIndex < _eventScratch.length &&
+                    _eventScratch[eventIndex].kind == OpenCodeEventKind.delta &&
+                    _eventScratch[eventIndex].reasoning == reasoning &&
+                    _eventScratch[eventIndex].requestId == event.requestId)
+                {
+                    merged.put(_eventScratch[eventIndex].text);
+                    ++eventIndex;
+                }
+                appendStreamDelta(merged.data, reasoning);
+                continue;
+            }
+            ++eventIndex;
             final switch (event.kind)
             {
                 case OpenCodeEventKind.chatBegin:
                     beginAssistantMessage();
                     break;
                 case OpenCodeEventKind.delta:
-                    appendStreamDelta(event.text, event.reasoning);
+                    assert(false, "delta handled by the coalescing path");
                     break;
                 case OpenCodeEventKind.usage:
                     // The provider reports live token usage while streaming;
@@ -7162,8 +7244,17 @@ public final class OpenCodeRoot : VBox
                 case OpenCodeEventKind.models:
                     applyModels(event.modelIds);
                     break;
+                case OpenCodeEventKind.modelsError:
+                    // Discovery is independent of chat. Keep the configured
+                    // model usable and never turn this into a failed reply or
+                    // overwrite the more important status of an active turn.
+                    if (!_client.busy())
+                        updateStatus("Could not refresh models: " ~ event.text);
+                    break;
             }
         }
+        _batchingToolResults = false;
+        flushToolTranscriptChanges();
 
         // The upstream model can take several seconds to return its first
         // token (cold start). Surface that as a live countdown so the UI
@@ -7190,6 +7281,9 @@ public final class OpenCodeRoot : VBox
             _sessionsRatioDirty = false;
             saveProjects(_projectState);
         }
+
+        if (_stateDirty && MonoTime.currTime >= _persistDue)
+            persistState();
 
         updateSendButton();
     }
@@ -7849,7 +7943,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: persist the current sessions to disk immediately.
     public void persistForTesting()
     {
-        markDirty();
+        persistState();
     }
 
     /// Test-only: reload sessions.json exactly as app startup does, so a test

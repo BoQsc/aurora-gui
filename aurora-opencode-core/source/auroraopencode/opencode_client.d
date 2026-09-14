@@ -33,6 +33,7 @@ enum OpenCodeEventKind
     done,        // assistant reply finished (text = full content)
     error,       // request failed (text = message)
     models,      // model list refreshed (modelIds = ids)
+    modelsError, // model discovery failed; must not fail an active chat
 }
 
 struct OpenCodeEvent
@@ -52,6 +53,9 @@ struct OpenCodeEvent
     int diffAdditions;
     int diffDeletions;
     string diffText;
+    // Opaque UI-supplied identity for routing late events. Zero is reserved for
+    // standalone parser tests and callers that do not need request isolation.
+    ulong requestId;
 }
 
 private struct HttpTarget
@@ -144,7 +148,6 @@ final class OpenCodeClient
 {
     private Mutex _mutex;
     private OpenCodeEvent[] _pending;
-    private Thread _worker;
     private bool _chatBusy;
     private bool _modelsBusy;
     private bool _cancel;
@@ -156,6 +159,7 @@ final class OpenCodeClient
     private string _apiKey;
     private string _streamReasoning;
     private string _streamContent;
+    private ulong _streamRequestId;
     private OpenCodeToolCall[] _streamToolCalls;
     // How many of `_streamToolCalls` already had a name announced to the UI, so
     // a progress event fires once per new tool call (not on every argument
@@ -225,7 +229,8 @@ final class OpenCodeClient
 
     /** Start a streaming chat completion with tool definitions. */
     void startChatMessages(const(ChatRequestMessage)[] messages,
-        const(OpenCodeToolDef)[] tools, string model, bool thinking)
+        const(OpenCodeToolDef)[] tools, string model, bool thinking,
+        ulong requestId = 0)
     {
         _mutex.lock();
         if (_chatBusy)
@@ -266,11 +271,11 @@ final class OpenCodeClient
             toolCopy ~= copy;
         }
 
-        _worker = new Thread({
-            runChatRequest(messageCopy, toolCopy, model, thinking);
+        auto worker = new Thread({
+            runChatRequest(messageCopy, toolCopy, model, thinking, requestId);
         });
-        _worker.isDaemon = true;
-        _worker.start();
+        worker.isDaemon = true;
+        worker.start();
     }
 
     void cancel()
@@ -299,9 +304,9 @@ final class OpenCodeClient
         _modelsHandle = null;
         _mutex.unlock();
 
-        _worker = new Thread({ runModelsRequest(); });
-        _worker.isDaemon = true;
-        _worker.start();
+        auto worker = new Thread({ runModelsRequest(); });
+        worker.isDaemon = true;
+        worker.start();
     }
 
     /** Release the shared session. Call once on shutdown. */
@@ -319,13 +324,19 @@ final class OpenCodeClient
         }
     }
 
-    /** Move all pending events into `output` and clear the queue. */
+    /**
+     * Move all pending events into `output` and recycle the caller's previous
+     * buffer for producers. This is a constant-time swap under the mutex: the
+     * streaming worker never waits while the UI copies a potentially large
+     * burst of events, and steady-state ticks allocate no event arrays.
+     */
     void drain(ref OpenCodeEvent[] output)
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        output.length = 0;
-        output ~= _pending;
+        auto reusable = output;
+        output = _pending;
+        _pending = reusable;
         _pending.length = 0;
     }
 
@@ -352,7 +363,27 @@ final class OpenCodeClient
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
+
+        // These are snapshots, not an ordered history. When the UI is slower
+        // than a provider's fragment rate, retaining obsolete snapshots only
+        // causes redundant transcript rebuilds and badge layout work.
+        if (_pending.length > 0 &&
+            (event.kind == OpenCodeEventKind.toolCallDelta ||
+             event.kind == OpenCodeEventKind.usage) &&
+            _pending[$ - 1].kind == event.kind)
+        {
+            _pending[$ - 1] = event;
+            return;
+        }
         _pending ~= event;
+    }
+
+    /// Tag every event produced by the current streaming request. Tool-result
+    /// events are tagged by their executor because they outlive this worker.
+    private void pushStreamEvent(OpenCodeEvent event)
+    {
+        event.requestId = _streamRequestId;
+        pushEvent(event);
     }
 
     private void finishWorker(bool chat)
@@ -423,7 +454,7 @@ final class OpenCodeClient
     }
 
     private void runChatRequest(ChatRequestMessage[] messages,
-        OpenCodeToolDef[] tools, string model, bool thinking)
+        OpenCodeToolDef[] tools, string model, bool thinking, ulong requestId)
     {
         scope (exit)
         {
@@ -440,6 +471,7 @@ final class OpenCodeClient
                 _baseUrl);
             _streamReasoning = "";
             _streamContent = "";
+            _streamRequestId = requestId;
             _streamToolCalls.length = 0;
             _streamToolNamesPushed = 0;
             _streamToolArgBytes = 0;
@@ -496,7 +528,7 @@ final class OpenCodeClient
                     (detail.length > 0 ? ": " ~ truncateForError(detail) : ""));
             }
 
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
             _streamActive = true;
 
             ubyte[8192] buffer;
@@ -529,7 +561,7 @@ final class OpenCodeClient
             }
 
             if (cancelled)
-                pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
+                pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
                     _streamContent, false, null, true, _lastPromptTokens,
                     _lastCompletionTokens, _lastTotalTokens));
             else
@@ -544,11 +576,11 @@ final class OpenCodeClient
             const cancelNow = _cancel;
             _mutex.unlock();
             if (cancelNow)
-                pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
+                pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
                     _streamContent, false, null, true, _lastPromptTokens,
                     _lastCompletionTokens, _lastTotalTokens));
             else
-                pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
+                pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
     }
 
@@ -557,12 +589,12 @@ final class OpenCodeClient
     private void pushStreamEnd()
     {
         if (_streamWantedTools)
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.toolCalls,
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.toolCalls,
                 _streamContent, false, null, false, _lastPromptTokens,
                 _lastCompletionTokens, _lastTotalTokens,
                 _streamToolCalls.dup));
         else
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.done,
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
                 _streamContent, false, null, false, _lastPromptTokens,
                 _lastCompletionTokens, _lastTotalTokens));
     }
@@ -659,6 +691,18 @@ final class OpenCodeClient
                 throw new Exception("Could not open the models URL (" ~
                     wininetErrorText(GetLastError()) ~ ").");
 
+            DWORD statusCode;
+            DWORD statusLength = cast(DWORD) statusCode.sizeof;
+            if (HttpQueryInfoW(request,
+                    HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                    &statusCode, &statusLength, null) && statusCode != 200)
+            {
+                const detail = readAllAsUtf8(request);
+                throw new Exception("Models endpoint returned HTTP " ~
+                    to!string(statusCode) ~
+                    (detail.length > 0 ? ": " ~ truncateForError(detail) : ""));
+            }
+
             const body = readAllAsUtf8(request);
             string[] ids;
             auto value = parseJSON(body);
@@ -686,7 +730,7 @@ final class OpenCodeClient
             if (!shuttingDown())
                 logError("models request failed: " ~ error.msg ~ " [" ~
                     _baseUrl ~ "]");
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.modelsError, error.msg));
         }
     }
 
@@ -777,6 +821,43 @@ final class OpenCodeClient
     {
         if (value.length <= 800) return value;
         return value[0 .. 800] ~ "…";
+    }
+
+    unittest
+    {
+        // Snapshot events collapse, ordered deltas do not, and request identity
+        // survives the zero-copy drain. This exercises the hot queue without a
+        // provider or network connection.
+        auto client = new OpenCodeClient("http://127.0.0.1:8080/v1", "");
+        OpenCodeEvent usage;
+        usage.kind = OpenCodeEventKind.usage;
+        usage.totalTokens = 10;
+        usage.requestId = 7;
+        client.pushLocalEvent(usage);
+        usage.totalTokens = 20;
+        client.pushLocalEvent(usage);
+
+        OpenCodeEvent first;
+        first.kind = OpenCodeEventKind.delta;
+        first.text = "a";
+        first.requestId = 7;
+        client.pushLocalEvent(first);
+        OpenCodeEvent second = first;
+        second.text = "b";
+        client.pushLocalEvent(second);
+
+        OpenCodeEvent[] events;
+        client.drain(events);
+        assert(events.length == 3);
+        assert(events[0].totalTokens == 20 && events[0].requestId == 7);
+        assert(events[1].text == "a" && events[2].text == "b");
+
+        // A second cycle reuses the previous output allocation as the producer's
+        // next queue rather than copying its contents under the mutex.
+        client.pushLocalEvent(first);
+        client.drain(events);
+        assert(events.length == 1 && events[0].text == "a");
+        client.closeSession();
     }
 
     private string dispatchSseLines(string buffer)
@@ -884,7 +965,7 @@ final class OpenCodeClient
                     _streamToolNamesPushed = named;
                     _streamToolArgBytes = argBytes;
                     _lastToolProgressTime = MonoTime.currTime;
-                    pushEvent(OpenCodeEvent(OpenCodeEventKind.toolCallDelta,
+                    pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.toolCallDelta,
                         "", false, null, false, 0, 0, 0,
                         _streamToolCalls.dup));
                 }
@@ -947,7 +1028,7 @@ final class OpenCodeClient
         if (fragment.length == 0) return;
         if (reasoningFragment) _streamReasoning ~= fragment;
         else _streamContent ~= fragment;
-        pushEvent(OpenCodeEvent(OpenCodeEventKind.delta, fragment,
+        pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta, fragment,
             reasoningFragment));
     }
 
@@ -976,7 +1057,7 @@ final class OpenCodeClient
             _lastPushedPrompt = _lastPromptTokens;
             _lastPushedCompletion = _lastCompletionTokens;
             _lastPushedTotal = _lastTotalTokens;
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
                 false, _lastPromptTokens, _lastCompletionTokens,
                 _lastTotalTokens));
         }

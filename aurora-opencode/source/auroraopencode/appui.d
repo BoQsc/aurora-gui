@@ -1119,6 +1119,10 @@ public final class OpenCodeRoot : VBox
                 case OpenCodeEventKind.models:
                     applyModels(event.modelIds);
                     break;
+                case OpenCodeEventKind.modelsError:
+                    if (!_client.busy())
+                        updateStatus("Could not refresh models: " ~ event.text);
+                    break;
             }
         }
 
