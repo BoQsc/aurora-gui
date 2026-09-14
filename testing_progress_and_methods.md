@@ -8987,5 +8987,65 @@ smoke test passed.`
 killed the old Pro instance and relaunched exactly one
 (`aurora-opencode-pro.exe`, errors.log clean).
 
+## Aurora OpenCode Pro: duplicate "Thinking" and phantom stream cursor (2026-09-14)
+
+**Complaint.** A screenshot showed `● Thinking… 4s` (activity row) ABOVE
+`▸ Thinking ▌` (in-bubble reasoning header) with a stray `▌` caret below, while
+no answer text had been written. "why this is duplicate and why we have cursor
+appear while no text is written, not a single letter starts to be written".
+
+**Root cause (three defects, all `aurora-opencode-pro/source/auroraopencode/appui.d`).**
+
+1. **Duplicate indicator.** `appendStreamDelta` called `setActivity(reasoning ?
+   "Thinking…" : "Writing…")` on every fragment. Reasoning *also* renders the
+   `MessageBubble` header `▸ Thinking` (with its own live pulse, since
+   `_thinking.length > 0` and `_thinkingLive`), so the word "Thinking" appeared in
+   two different widgets in the same phase.
+2. **Row ordered above the reply.** `beginAssistantMessage` appended the live
+   bubble with `_messageColumn.add(_streamBubble)` and then called
+   `setActivity(...)`. Because a row was already pinned from the earlier
+   `Waiting for the model…` phase, `setActivity` took the "present" branch
+   (`wasPresent == present`) and only `invalidate()`d — no rebuild — so the pinned
+   row stayed ABOVE the bubble it described. (Only a later tool-progress rebuild
+   reordered it.)
+3. **Phantom cursor.** `MessageBubble.onMeasure` did `else if (_streaming)
+   height += pixelSize + 2;` and `onPaint` drew a `▌` when
+   `markdownFor(innerWidth).items.length == 0`. Both key off `_streaming`, which is
+   true from `chatBegin` until `done` — including the whole reasoning phase and the
+   cold-start gap — so a text cursor blinked where no text existed.
+
+**Fix.**
+
+- Reasoning branch: append reasoning, `setThinkingLive(true)`, then
+  `clearActivity()`; the pulsing in-bubble header is the single "Thinking"
+  indicator.
+- Answer branch: `setThinkingLive(false)` (header stops pulsing), append content,
+  `setActivity("Writing…")` (row returns as the phase indicator).
+- `beginAssistantMessage` now calls `rebuildMessageColumn()` after `setActivity`
+  instead of adding the bubble directly, so `rebuildMessageColumn` nests the reply
+  before its phase row.
+- Removed the empty-content caret from both `onMeasure` (dropped the
+  `pixelSize` local) and `onPaint`.
+
+**Test hooks added.** `beginStreamForTesting()` (`beginAssistantMessage`),
+`streamReasoningForTesting(text)` / `streamContentForTesting(text)`
+(`appendStreamDelta`), `activityRowVisualIndexForTesting()`,
+`messageColumnVisualCountForTesting()`.
+
+**How to test (Pro smoke).** Guard `Reasoning stream: one Thinking header, no
+phantom cursor`: builds a session with a static reasoning-only assistant (height
+baseline), pins `Waiting for the model…`, `beginStreamForTesting()` (activity
+visible — no header yet), `streamReasoningForTesting("same reasoning")`, then
+asserts the activity row is gone, any activity row is the LAST flattened visual
+(never above the reply), and the live reasoning-only bubble height equals the
+static one. Pass = `Aurora OpenCode Pro headless smoke test passed.`
+
+**Negative proof.** Re-adding `else if (_streaming) height += opencodeFontBase +
+2;` makes the guard fire: `live=44 static=28` (16 px = the phantom line).
+
+**Result (2026-09-14):** Pro smoke EXIT=0; rebuilt with `dub build
+--compiler=dmd --force`; killed the old Pro instance and relaunched exactly one;
+`pro-after-thinking-fix.png` captured.
+
 
 

@@ -706,7 +706,6 @@ private final class MessageBubble : Widget
             return Size(0, 0);
         }
         const innerWidth = maxInt(24, available.width - 2 * padH);
-        const pixelSize = opencodeFontBase;
         int height = 2 * padV;
         if (_thinking.length > 0)
         {
@@ -734,8 +733,6 @@ private final class MessageBubble : Widget
                 height += thinkingContentGap;
             if (_content.length > 0)
                 height += cast(int) markdownFor(innerWidth).height;
-            else if (_streaming)
-                height += pixelSize + 2;
         }
         else
         {
@@ -746,8 +743,6 @@ private final class MessageBubble : Widget
                 innerWidth;
             if (_content.length > 0)
                 height += shapedContent(wrapWidth).measuredSize().height;
-            else if (_streaming)
-                height += pixelSize + 2;
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
@@ -842,12 +837,6 @@ private final class MessageBubble : Widget
                 {
                     paintMarkdown(canvas, composition, padH, contentY);
                     collectMarkdownTargets(composition, contentY);
-                }
-                else if (_streaming)
-                {
-                    auto layout = canvas.layoutText("▌"d, 2, FontRole.ui, null,
-                        innerWidth, false);
-                    canvas.drawLayout(Point(padH, contentY), layout, palette.text);
                 }
             }
             else
@@ -2024,8 +2013,8 @@ private final class ToolGroupBubble : Widget
     // Thinking / Shell / Read rows instead of being flush to the bubble edge.
     private static immutable int padH = 10;
     private static immutable int padV = 6;
-    // Expanded children are nested one step in, relative to the header text.
-    private static immutable int indent = padH;
+    // Expanded children sit at the same left edge as the header text above
+    // them; `onLayout` places them at `padH`, matching MessageBubble's text.
 
     private MessageBubble[] _parts;
     private bool _collapsed = true;
@@ -3815,8 +3804,12 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Horizontal inset for a tool result nested under the assistant turn that
-    /// requested it, so a call reads as a sub-node of the reply.
-    private static immutable int toolNestIndent = 16;
+    /// requested it. Kept at 0 so every collapsible transcript row — a nested
+    /// tool result, a top-level "Explored" group, a live/Thinking row, the
+    /// replies themselves — shares one left edge instead of stepping in as the
+    /// nesting deepens. The nest still exists to group a turn's rows and to
+    /// publish its measured size (see `TurnNest`).
+    private static immutable int toolNestIndent = 0;
 
     private void rebuildMessageColumn()
     {
@@ -4387,10 +4380,14 @@ public final class OpenCodeRoot : VBox
         // tool-call progress event arrives) can re-add the same live bubble
         // instead of orphaning it.
         _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
-        _messageColumn.add(_streamBubble);
         // The request headers are in; the model is now thinking or about to
         // emit its first token. Keep the in-flow row honest about the phase.
         setActivity(_settings.thinking ? "Thinking…" : "Writing…");
+        // Rebuild rather than appending the bubble directly: a row already
+        // pinned for a previous phase (e.g. "Waiting for the model…") would
+        // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
+        // nests the live reply before its phase row.
+        rebuildMessageColumn();
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
         refreshBubbleActions();
@@ -4404,9 +4401,11 @@ public final class OpenCodeRoot : VBox
             _receivedFirstDelta = true;
             updateStatus("Generating…");
         }
-        // Reasoning and answer text are different phases; label the live row
-        // accordingly so the user can tell thought from the reply taking shape.
-        setActivity(reasoning ? "Thinking…" : "Writing…");
+        // Reasoning and answer text are different phases. Reasoning is shown by
+        // the in-bubble "▸ Thinking" header, which pulses while it streams, so
+        // the out-of-bubble activity row is dropped to avoid printing "Thinking"
+        // twice. Once answer text starts, the header stops pulsing and the
+        // activity row takes over as the "Writing…" phase indicator.
         auto session = &_sessions[_current];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
@@ -4415,11 +4414,14 @@ public final class OpenCodeRoot : VBox
             message.reasoning ~= text;
             _streamBubble.appendThinking(text);
             _streamBubble.setThinkingLive(true);
+            clearActivity();
         }
         else
         {
+            _streamBubble.setThinkingLive(false);
             message.content ~= text;
             _streamBubble.appendContent(text);
+            setActivity("Writing…");
         }
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
@@ -6620,6 +6622,44 @@ public final class OpenCodeRoot : VBox
     public string activityTextForTesting()
     {
         return _activityRow is null ? "" : _activityRow.textForTesting();
+    }
+
+    /// Test-only: start a live assistant turn exactly as a `chatBegin` event
+    /// does, so a smoke test can drive the streaming phases (reasoning, then
+    /// answer) without a real network round-trip.
+    public void beginStreamForTesting()
+    {
+        beginAssistantMessage();
+    }
+
+    /// Test-only: deliver a streamed reasoning (chain-of-thought) fragment.
+    public void streamReasoningForTesting(string text)
+    {
+        appendStreamDelta(text, true);
+    }
+
+    /// Test-only: deliver a streamed answer fragment.
+    public void streamContentForTesting(string text)
+    {
+        appendStreamDelta(text, false);
+    }
+
+    /// Test-only: visual index of the live activity row in the flattened
+    /// transcript (-1 when absent). Proves the phase row renders AFTER the live
+    /// reply it describes, never above it.
+    public int activityRowVisualIndexForTesting()
+    {
+        if (_activityRow is null) return -1;
+        foreach (i, widget; messageColumnVisuals())
+            if (widget is _activityRow) return cast(int) i;
+        return -1;
+    }
+
+    /// Test-only: number of flattened transcript visuals (nested turn
+    /// containers expanded), matching `messageColumnVisuals` order.
+    public int messageColumnVisualCountForTesting()
+    {
+        return cast(int) messageColumnVisuals().length;
     }
 
     /// Test-only: inject a tool-call progress event (the model is still

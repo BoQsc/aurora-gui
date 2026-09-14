@@ -1,5 +1,37 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: duplicate "Thinking" rows + cursor with no text (fixed)
+
+User (screenshot): "why this is duplicate and why we have cursor appear while no
+text is written, not a single letter starts to be written". Screenshot showed
+`● Thinking… 4s` (activity row) ABOVE `▸ Thinking ▌` (reasoning header) plus a
+stray `▌` caret below.
+
+- [x] **Diagnosis (three defects, all in `aurora-opencode-pro/.../appui.d`)**:
+      1. **Duplicate**: `appendStreamDelta` set the activity row to `Thinking…`
+         while the in-bubble `▸ Thinking` header also rendered, so "Thinking"
+         appeared twice.
+      2. **Wrong order**: `beginAssistantMessage` did `_messageColumn.add(
+         _streamBubble)` while `setActivity("Thinking…")` kept the row present
+         (label changed from `Waiting for the model…`), so `setActivity` took the
+         "present" branch and never rebuilt — the pinned row stayed ABOVE the
+         reply it described.
+      3. **Phantom cursor**: `MessageBubble.onMeasure`/`onPaint` reserved and drew
+         a `▌` caret whenever `_streaming && _content.length == 0`, which is true
+         for the entire reasoning phase, so a block cursor blinked with no text.
+- [x] **Fix**: reasoning deltas now `clearActivity()` (the pulsing in-bubble
+      header is the single "Thinking" indicator); the first answer delta stops the
+      header pulse and re-shows the row as `Writing…`; `beginAssistantMessage`
+      rebuilds instead of appending the bubble so the reply is ordered before its
+      phase row; the empty-content caret line is removed from both measure and
+      paint.
+- [x] **Verified**: Pro smoke EXIT=0 with new guard `Reasoning stream: one
+      Thinking header, no phantom cursor` (activity absent during reasoning;
+      activity, when present, is the LAST visual; live reasoning-only bubble
+      height == static reasoning bubble height). Negative run (caret restored)
+      fires: `live=44 static=28`. Rebuilt + killed old PID + relaunched exactly
+      one instance (`pro-after-thinking-fix.png`).
+
 ## 2026-09-14 - Pro: Regenerate pill had no top padding/margin (fixed)
 
 User: "WHy regenerate button have no top padding or margin."

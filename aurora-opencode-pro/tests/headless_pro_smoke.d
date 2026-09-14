@@ -1249,8 +1249,9 @@ int main(string[] args)
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
         writeln("Context tools fold into a collapsible Explored group");
 
-    // Nesting: the tool results render as indented children of the assistant
-    // turn that requested them, and they must actually take layout space. The
+    // Nesting: the tool results render as children of the assistant turn that
+    // requested them (at the same left edge, not stepped in), and they must
+    // actually take layout space. The
     // base VBox sizes children from layoutHints and a plain VBox never
     // publishes its measured size, so a nested tool row was laid out at zero
     // height and the action "disappeared" the moment it became a record.
@@ -1280,9 +1281,30 @@ int main(string[] args)
         const nested = root.bubbleBoundsForTesting(2);
         assert(nested.height > 0,
             "nested tool node must take layout space");
-        assert(nested.x == assistantX + 16,
-            "nested tool node must be indented under its turn");
-        writeln("Tool results nest under the assistant turn with a real height");
+        // Every collapsible row shares one left edge: a nested tool result
+        // must NOT step in under its turn.
+        assert(nested.x == assistantX,
+            "nested tool node must share the turn's left edge, got x=" ~
+            to!string(nested.x) ~ " vs assistant x=" ~ to!string(assistantX));
+        writeln("Tool results nest under the assistant turn at one left edge");
+
+        // The whole point: every collapsible row in the transcript lines up on
+        // one left edge, whether it is a top-level Thinking header, an
+        // "Explored" group, or a tool row nested under a turn. A mixed column
+        // (some rows at the column edge, some stepped in) is the bug.
+        int edge = -1;
+        foreach (i; 0 .. root.messageCountForTesting())
+        {
+            if (!root.bubbleVisibleForTesting(i)) continue;
+            const bounds = root.bubbleBoundsForTesting(i);
+            if (bounds.width == 0) continue;
+            if (edge < 0) edge = bounds.x;
+            assert(bounds.x == edge,
+                "transcript row " ~ to!string(i) ~ " is indented: x=" ~
+                to!string(bounds.x) ~ " vs " ~ to!string(edge));
+        }
+        assert(edge >= 0, "no visible rows to compare");
+        writeln("Every transcript row shares one left edge (x=", edge, ")");
     }
 
     // Live diff counters: while the model streams a file-mutating tool's
@@ -1357,6 +1379,37 @@ int main(string[] args)
         assert(!root.activityVisibleForTesting(),
             "Activity row did not clear when work stopped");
         writeln("Live activity row shows the phase and clears when done");
+    }
+
+    // Regression: a reasoning-only stream must print "Thinking" once (the
+    // in-bubble header), keep any phase row BELOW the live reply, and not
+    // reserve a phantom text-cursor line while the answer is still empty.
+    {
+        root.newChatForTesting();
+        // A phase row pinned before the reply arrives — the real
+        // "Waiting for the model…" state — used to stay ABOVE the reply.
+        root.setActivityForTesting("Waiting for the model…");
+        root.addConversationForTestingWithReasoning(["user", "assistant", "user"],
+            ["q1", "", "q2"], [null, "same reasoning", null]);
+        assert(driver.paint(), "Static reasoning layout failed");
+        const int staticHeight = root.bubbleHeightForTesting(1);
+        root.beginStreamForTesting();
+        assert(driver.paint(), "Stream begin layout failed");
+        assert(root.activityVisibleForTesting(),
+            "A fresh stream should start with the activity row (no header yet)");
+        root.streamReasoningForTesting("same reasoning");
+        assert(driver.paint(), "Reasoning stream paint failed");
+        assert(!root.activityVisibleForTesting(),
+            "Reasoning stream must not show a second 'Thinking' activity row");
+        const int activityIndex = root.activityRowVisualIndexForTesting();
+        const int visualCount = root.messageColumnVisualCountForTesting();
+        assert(activityIndex == -1 || activityIndex == visualCount - 1,
+            "Any phase row must render after the live reply, never above it");
+        const int liveHeight = root.bubbleHeightForTesting(3);
+        assert(liveHeight == staticHeight,
+            "A reasoning-only stream reserved a phantom cursor line: live=" ~
+            to!string(liveHeight) ~ " static=" ~ to!string(staticHeight));
+        writeln("Reasoning stream: one Thinking header, no phantom cursor");
     }
 
     // Edit tool: a real file edit must report a unified diff with green/red

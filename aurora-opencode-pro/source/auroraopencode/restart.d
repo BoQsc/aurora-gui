@@ -113,13 +113,21 @@ string restartScript(in RestartPlan plan)
     script ~= "$log = " ~ psQuote(plan.logPath) ~ "\n";
     script ~= "Set-Content -LiteralPath $log -Value 'restart requested'\n";
     // Wait for the app to exit: the build cannot overwrite a running image.
-    // Bounded wait: the app exits within milliseconds of closing its window,
-    // so this only ever fires if something is badly wrong (or if Windows
-    // recycled the PID). It must not hang the helper forever.
+    // Bounded wait for the app to exit. The bound only matters when the user
+    // leaves the window open: the guard below then aborts instead of
+    // relaunching a duplicate.
     script ~= "$pid0 = " ~ to!string(plan.waitPid) ~ "\n";
-    script ~= "$deadline = (Get-Date).AddSeconds(120)\n";
+    script ~= "$deadline = (Get-Date).AddSeconds(600)\n";
     script ~= "while ((Get-Process -Id $pid0 -ErrorAction SilentlyContinue) " ~
         "-and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }\n";
+    // If the app is still alive the wait timed out: it still holds the .exe,
+    // so a build cannot succeed and relaunching would spawn a duplicate
+    // instance. Abort and leave the log as the record.
+    script ~= "if (Get-Process -Id $pid0 -ErrorAction SilentlyContinue) {\n";
+    script ~= "  Add-Content -LiteralPath $log -Value " ~
+        "'app did not exit; restart aborted'\n";
+    script ~= "  exit 0\n";
+    script ~= "}\n";
     script ~= "Start-Sleep -Milliseconds 300\n";
     if (plan.rebuild && plan.workingDir.length > 0)
     {
@@ -127,6 +135,18 @@ string restartScript(in RestartPlan plan)
         script ~= "if (Get-Command dub -ErrorAction SilentlyContinue) {\n";
         script ~= "  Add-Content -LiteralPath $log -Value 'rebuilding'\n";
         script ~= "  & dub build --build=release --force *>> $log\n";
+        // A failed build must never be silent. The likeliest cause is the
+        // .exe still being locked (another instance was started while the
+        // build ran), which DMD reports as "Access is denied" at link time.
+        // Without this check the helper relaunched the OLD binary and the
+        // user saw the app come back, assuming the new code was in.
+        script ~= "  $buildCode = $LASTEXITCODE\n";
+        script ~= "  if ($buildCode -ne 0) {\n";
+        script ~= "    Add-Content -LiteralPath $log -Value " ~
+            "('build FAILED exit ' + $buildCode + '; relaunching previous binary')\n";
+        script ~= "  } else {\n";
+        script ~= "    Add-Content -LiteralPath $log -Value 'build ok'\n";
+        script ~= "  }\n";
         script ~= "} else {\n";
         script ~= "  Add-Content -LiteralPath $log -Value " ~
             "'dub not found; relaunching the current build'\n";
@@ -147,10 +167,17 @@ string restartScript(in RestartPlan plan)
     auto script = appender!string;
     script ~= "log=" ~ shQuote(plan.logPath) ~ "\n";
     script ~= "echo 'restart requested' > \"$log\"\n";
-    // Bounded wait (600 x 0.2s = 120s); see the Windows branch above.
+    // Bounded wait (3000 x 0.2s = 600s); see the Windows branch above.
     script ~= "n=0\n";
     script ~= "while kill -0 " ~ to!string(plan.waitPid) ~
-        " 2>/dev/null && [ $n -lt 600 ]; do sleep 0.2; n=$((n+1)); done\n";
+        " 2>/dev/null && [ $n -lt 3000 ]; do sleep 0.2; n=$((n+1)); done\n";
+    // Timed out with the app alive: it still holds the .exe, so abort rather
+    // than relaunch a duplicate (see the Windows branch).
+    script ~= "if kill -0 " ~ to!string(plan.waitPid) ~
+        " 2>/dev/null; then\n";
+    script ~= "  echo 'app did not exit; restart aborted' >> \"$log\"\n";
+    script ~= "  exit 0\n";
+    script ~= "fi\n";
     script ~= "sleep 0.3\n";
     if (plan.rebuild && plan.workingDir.length > 0)
     {
