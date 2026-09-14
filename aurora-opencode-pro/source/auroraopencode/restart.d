@@ -19,8 +19,8 @@ import std.stdio : stderr, stdin, stdout;
  *
  *   1. the window closes and `main` returns, releasing the .exe lock;
  *   2. the helper waits for this PID to disappear;
- *   3. it runs `dub build` in the package directory;
- *   4. it relaunches the binary.
+ *   3. it runs `dub run --build=release --force` in the package directory;
+ *   4. DUB rebuilds the correct target and launches it.
  *
  * Every step is appended to a log next to the app's state, so a restart that
  * fails is diagnosable after the window is gone.
@@ -99,12 +99,13 @@ private string shQuote(string value)
 
 /**
  * The helper script for Windows: a hidden PowerShell process that waits for
- * `waitPid`, rebuilds with DUB, then relaunches the executable.
+ * `waitPid`, then lets `dub run` rebuild and relaunch the executable.
  *
- * The rebuild is forced. Incremental DUB builds have missed edits here, and a
- * restart that silently relaunches the old binary is worse than a slow one.
- * A failed build still leaves the previous .exe in place (DMD only writes at
- * link time), so the relaunch below is safe either way.
+ * The rebuild is forced. Incremental DUB builds have missed edits here. DUB
+ * must also own the launch: manually starting `plan.exePath` after `dub build`
+ * can select a stale/copied binary instead of the target DUB just produced.
+ * If DUB is missing or fails before launching, the previous executable is
+ * started as a recovery path so Restart never leaves the app closed.
  */
 version (Windows)
 string restartScript(in RestartPlan plan)
@@ -133,19 +134,17 @@ string restartScript(in RestartPlan plan)
     {
         script ~= "Set-Location -LiteralPath " ~ psQuote(plan.workingDir) ~ "\n";
         script ~= "if (Get-Command dub -ErrorAction SilentlyContinue) {\n";
-        script ~= "  Add-Content -LiteralPath $log -Value 'rebuilding'\n";
-        script ~= "  & dub build --build=release --force *>> $log\n";
-        // A failed build must never be silent. The likeliest cause is the
-        // .exe still being locked (another instance was started while the
-        // build ran), which DMD reports as "Access is denied" at link time.
-        // Without this check the helper relaunched the OLD binary and the
-        // user saw the app come back, assuming the new code was in.
-        script ~= "  $buildCode = $LASTEXITCODE\n";
-        script ~= "  if ($buildCode -ne 0) {\n";
+        script ~= "  Add-Content -LiteralPath $log -Value " ~
+            "'rebuilding and relaunching with dub run'\n";
+        script ~= "  & dub run --build=release --force *>> $log\n";
+        script ~= "  $runCode = $LASTEXITCODE\n";
+        // A successful `dub run` returns only after the relaunched GUI later
+        // exits. Do not start a second copy. A non-zero result commonly means
+        // compilation failed before launch, so recover with the old binary.
+        script ~= "  if ($runCode -eq 0) { exit 0 }\n";
+        script ~= "  if ($runCode -ne 0) {\n";
         script ~= "    Add-Content -LiteralPath $log -Value " ~
-            "('build FAILED exit ' + $buildCode + '; relaunching previous binary')\n";
-        script ~= "  } else {\n";
-        script ~= "    Add-Content -LiteralPath $log -Value 'build ok'\n";
+            "('dub run FAILED exit ' + $runCode + '; relaunching previous binary')\n";
         script ~= "  }\n";
         script ~= "} else {\n";
         script ~= "  Add-Content -LiteralPath $log -Value " ~
@@ -183,8 +182,11 @@ string restartScript(in RestartPlan plan)
     {
         script ~= "cd " ~ shQuote(plan.workingDir) ~ " || exit 1\n";
         script ~= "if command -v dub >/dev/null 2>&1; then\n";
-        script ~= "  echo 'rebuilding' >> \"$log\"\n";
-        script ~= "  dub build --build=release --force >> \"$log\" 2>&1\n";
+        script ~= "  echo 'rebuilding and relaunching with dub run' >> \"$log\"\n";
+        script ~= "  dub run --build=release --force >> \"$log\" 2>&1\n";
+        script ~= "  code=$?\n";
+        script ~= "  [ $code -eq 0 ] && exit 0\n";
+        script ~= "  echo \"dub run FAILED exit $code; relaunching previous binary\" >> \"$log\"\n";
         script ~= "else\n";
         script ~= "  echo 'dub not found; relaunching the current build' " ~
             ">> \"$log\"\n";
