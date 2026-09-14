@@ -1372,6 +1372,12 @@ int main(string[] args)
         root.setActivityForTesting("Thinking…");
         assert(root.activityTextForTesting() == "Thinking…",
             "Activity row did not update its phase");
+        // The clock must keep running across a phase change (no reset), so the
+        // seconds describe how long the request has been in flight.
+        root.tickTree(1.2);
+        assert(root.activityDisplayTextForTesting().indexOf("1s") >= 0,
+            "Activity row is missing the elapsed seconds: " ~
+            root.activityDisplayTextForTesting());
         root.clearActivityForTesting();
         assert(!root.activityVisibleForTesting(),
             "Activity row did not clear when work stopped");
@@ -1390,6 +1396,52 @@ int main(string[] args)
         if (!exists(actShots)) mkdirRecurse(actShots);
         window.saveScreenshot(buildPath(actShots, "live-tool-row-no-phase.ppm"));
         writeln("Live phase row shows only when no live tool row does");
+    }
+
+    // Grouping: a burst of in-flight tools must read as ONE line (the active
+    // tool, a count of the rest, the provisional diff) instead of a stack of
+    // rows that keep appearing and scrolling the transcript. The clock keeps
+    // running so the user can tell work is progressing.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Do many things"]);
+        OpenCodeToolCall one, two, three;
+        one.name = "dshell";
+        one.arguments = `{"command":"echo one"}`;
+        two.name = "write";
+        two.arguments = `{"filePath":"x.txt","content":"a\nb\n"}`;
+        three.name = "read";
+        three.arguments = `{"filePath":"y.txt"}`;
+        root.injectToolProgressForTesting([one, two, three]);
+        auto rows = root.liveToolRowTextsForTesting();
+        assert(rows.length == 1,
+            "Expected one aggregated live row, got " ~ to!string(rows.length));
+        assert(rows[0].indexOf("+2 more") >= 0,
+            "Aggregate live row did not count the other tools: " ~ rows[0]);
+        auto diffs = root.liveToolRowDiffTextsForTesting();
+        assert(diffs.length == 1 && diffs[0] == "+2 -0",
+            "Aggregate live row diff is wrong: " ~
+            (diffs.length ? diffs[0] : "(none)"));
+        // The elapsed suffix appears once a whole second has ticked.
+        root.tickTree(1.2);
+        rows = root.liveToolRowTextsForTesting();
+        assert(rows[0].indexOf("1s") >= 0,
+            "Aggregate live row is missing the elapsed seconds: " ~ rows[0]);
+        assert(driver.paint(), "Aggregated live row did not paint");
+        writeln("In-flight tools group into one animated row: ", rows[0]);
+        // An early unnamed tool must not mask a later named one and leave the
+        // aggregate stuck on the generic "Preparing".
+        OpenCodeToolCall blank, named;
+        blank.name = "";
+        blank.arguments = `{}`;
+        named.name = "write";
+        named.arguments = `{"filePath":"z.txt","content":"x\n"}`;
+        root.injectToolProgressForTesting([blank, named]);
+        auto rows2 = root.liveToolRowTextsForTesting();
+        assert(rows2.length == 1 && rows2[0].indexOf("Writing") >= 0,
+            "Unnamed tool masked the named one: " ~
+            (rows2.length ? rows2[0] : "(none)"));
+        writeln("Unnamed tool does not mask the named one: ", rows2[0]);
     }
 
     // Regression: one exchange must show a single "Thinking" block. The model
@@ -1439,6 +1491,11 @@ int main(string[] args)
         root.setActivityForTesting("Waiting for the model…");
         root.addConversationForTestingWithReasoning(["user", "assistant", "user"],
             ["q1", "", "q2"], [null, "same reasoning", null]);
+        // The waiting row must sit AFTER the trailing prompt, not nested under
+        // the previous answer (the "waiting above the prompt" bug).
+        assert(root.activityRowVisualIndexForTesting() ==
+            root.messageColumnVisualCountForTesting() - 1,
+            "Waiting row rendered above the prompt instead of after it");
         assert(driver.paint(), "Static reasoning layout failed");
         const int staticHeight = root.bubbleHeightForTesting(1);
         root.beginStreamForTesting();
@@ -1458,6 +1515,37 @@ int main(string[] args)
             "A reasoning-only stream reserved a phantom cursor line: live=" ~
             to!string(liveHeight) ~ " static=" ~ to!string(staticHeight));
         writeln("Reasoning stream: one Thinking header, no phantom cursor");
+    }
+
+    // Regression: a request that fails before any assistant turn exists must
+    // attach the error to a NEW assistant reply, never to the user's prompt.
+    // The old code wrote "Error: …" into the last message, which was the user's
+    // message when `chatBegin` had not fired yet, corrupting the prompt.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Please answer this."]);
+        root.failAssistantMessageForTesting("HTTP 400: bad request");
+        assert(root.messageCountForTesting() == 2,
+            "A failed request must add an assistant turn, got " ~
+            to!string(root.messageCountForTesting()));
+        assert(root.messageRoleForTesting(0) == "user" &&
+            root.messageContentForTesting(0) == "Please answer this.",
+            "The user prompt was corrupted by the error: " ~
+            root.messageContentForTesting(0));
+        assert(root.messageRoleForTesting(1) == "assistant",
+            "The error was not attached to an assistant reply");
+        assert(root.lastAssistantContentForTesting().indexOf("Error:") >= 0,
+            "The error text is missing from the reply: " ~
+            root.lastAssistantContentForTesting());
+        // A later failure after a reply already exists must not add a phantom
+        // extra assistant turn on top of it.
+        root.failAssistantMessageForTesting("second failure");
+        assert(root.messageCountForTesting() == 2,
+            "A repeated failure added a phantom assistant turn");
+        assert(!root.activityVisibleForTesting(),
+            "A failed request left the activity row behind");
+        assert(driver.paint(), "Failed-reply layout did not paint");
+        writeln("Failure before chatBegin attaches to the reply, not the prompt");
     }
 
     // Edit tool: a real file edit must report a unified diff with green/red

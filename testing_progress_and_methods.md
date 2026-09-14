@@ -9187,5 +9187,127 @@ exactly one (PID 19488); live screenshot `merge-after.png` shows session "hey"'s
 `save it into file` exchange as five tool rows followed by a single `▸ Thinking`
 block holding every round's reasoning, above the answer.
 
+## Aurora OpenCode Pro: message-flow UI — group in-flight tools into ONE animated row + elapsed clock (2026-09-14)
+
+**Complaint.** "do a few tests from user perspective on ui of messages flow. and
+fix obvious annoyances or what makes it hard to follow or even things like
+constant scrolling instead of grouping into one and showing brief and animation
+that things are working with time elapsed."
+
+**Root cause (`aurora-opencode-pro/source/auroraopencode/appui.d`).**
+
+1. **A row per in-flight tool.** `addLiveToolRows` created one `LiveToolRow` for
+   every `_preparingToolCalls` entry, plus a live `ToolGroupBubble` for runs of
+   context tools, plus the generic activity row. A burst of 3-5 named calls
+   stacked 3-6 rows that each appeared mid-reply and pushed the column down —
+   the main "constant scrolling / hard to follow" source.
+2. **No sense of progress.** The live rows were static (no animation, no clock),
+   so a large `write` streaming its body looked frozen.
+
+**Fix (one aggregate row with a live clock).**
+
+- `LiveToolRow` was rewritten from a throwaway static line into a retained,
+  animated aggregate. New API: `setSummary(title, subtitle, more)`, `setDiff`,
+  `setLive`, `isLive()`, `setId("oc-live-tool")`. It draws a pulsing accent dot
+  (`pulseStep()` = `(int)(_elapsed*4)%4`) and `onTick` accumulates `_elapsed`,
+  appending `  Ns` once a whole second passes. `displayText()` = `title  subtitle
+  [+N more]  [Ns]`; the `+adds/-dels` stats draw right-aligned.
+- `syncLiveRow()` is the single source of truth: with no in-flight work it calls
+  `setLive(false)`; otherwise it names the first running call (else the first
+  preparing one), counts `total - 1` as `+N more`, and sums `previewToolDiff`
+  over `_preparingToolCalls ~ _liveToolCalls`.
+- `addLiveToolRows` now just `syncLiveRow()`s and adds the one `_liveRow` (plus
+  the activity row when `activityRowWanted()`), and `rebuildMessageColumn`
+  detaches `_liveRow` alongside `_activityRow`/`_streamBubble`.
+- `ActivityRow.setLabel` no longer resets the clock; only `setLive` does, so the
+  seconds measure the request across phase changes (`Waiting…` → `Thinking…` →
+  `Writing…`).
+
+**Test hooks.** `ActivityRow.displayTextForTesting()` +
+`root.activityDisplayTextForTesting()` (rendered text incl. the `Ns` suffix);
+`LiveToolRow.textForTesting()` now returns the rendered `displayText()`.
+
+**How to test (Pro smoke).**
+
+- Guard `In-flight tools group into one animated row`: injects a 3-call burst
+  (dshell + write + read) and asserts `liveToolRowTextsForTesting().length == 1`,
+  the text contains `+2 more`, the summed diff is `+2 -0`, and after
+  `tickTree(1.2)` the text contains `1s`; prints
+  `Running  echo one  +2 more  1s`.
+- Guard `Live phase row shows only when no live tool row does` now also ticks
+  `1.2s` after a phase change and asserts `activityDisplayTextForTesting()`
+  contains `1s` (proves the clock survives the label change).
+- Existing guards `Live tool rows grow +N -M as arguments stream` and
+  `In-progress edit row shown while the edit runs` still pass (single live row,
+  `indexOf`-based).
+- Pass = `Aurora OpenCode Pro headless smoke test passed.`
+
+**Result (2026-09-14):** Pro smoke EXIT=0; rebuilt with `dub build
+--compiler=dmd --force`; killed old instances and relaunched exactly one (PID
+17624); screenshot `flow-restored.png` shows a clean single `▸ Thinking` per
+exchange with no timestamp band and stable tool rows.
+
+**Live-drive note (for next time).** Driving the real app with
+`build/uitest/drive.ps1` needs the window actually on top: `WindowFromPoint`
+returned another app (a browser) even though `GetForegroundWindow` reported
+Aurora, so synthetic clicks/keys were going to the browser. `drive.ps1` now
+calls `SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW)` before
+clicking. Even then the maximized `GetWindowRect` alternated between
+`(0,0,1920,1040)` and `(-7,-7,1927,1087)`, so always re-query the rect in the
+same call and click the composer input at ~`(width*0.55, top+62)` above the
+controls row (the `Thinking`/`Tools` checkboxes occupy the very bottom row).
+`send_prompt.ps1` (param `-NoEnter`) focuses the composer at
+`(W/2, H - BottomGap)`, and `send_and_capture.ps1` sends then captures in the
+same process. Note `Get-Process ... MainWindowHandle` became unreliable mid-run
+(it started resolving to a small/black top-level window even while the app was
+fine), so prefer `cap2.ps1` (largest visible window via `EnumWindows`) or
+`screen.ps1` (whole-desktop `CopyFromScreen`). If `PrintWindow` returns black,
+the app window is occluded — bring it forward first.
+
+## Aurora OpenCode Pro: "waiting" row placed ABOVE the prompt it belongs to (2026-09-14)
+
+**Complaint.** "nowhere close to resolved, the waiting appears above instead of
+after previous message makes no logical sense, and this is illogical probably in
+most parts of entire program flow."
+
+**Root cause (`rebuildMessageColumn` in
+`aurora-opencode-pro/source/auroraopencode/appui.d`).** `liveHostSlot` was chosen
+as the **last assistant message anywhere in the active path**, and the in-flight
+rows (activity + live tool) were nested inside that turn. When the user sends a
+new prompt, the path ends with the **user** message, so the last assistant is the
+*previous* reply — the "Waiting for the model…" row was nested under that reply,
+i.e. ABOVE the prompt. The same wrongness affected regenerate
+(`prepareRegenerate` moves the leaf to the reply's parent), edit-and-resend, and
+branch switches.
+
+**Fix (general rule).** Compute `liveHostSlot` by scanning the path **backwards**,
+skipping owned tool results (`owner[slot] != size_t.max`) and stopping at the
+first top-level message: if it is an `assistant`, that is the host; otherwise
+`liveHostSlot` stays `size_t.max`. With no host, `addLiveToolRows` appends the
+rows to the end of `_messageColumn`, after the prompt. This fixes every path that
+ends on a user/tool turn at once, not just send.
+
+**How to test (Pro smoke).** The `Reasoning stream: one Thinking header, no
+phantom cursor` guard already builds
+`user(q1) → assistant("same reasoning") → user(q2)` with a waiting row pinned, and
+now asserts:
+```d
+assert(root.activityRowVisualIndexForTesting() ==
+    root.messageColumnVisualCountForTesting() - 1,
+    "Waiting row rendered above the prompt instead of after it");
+```
+`activityRowVisualIndexForTesting()` flattens the column one nest level, so a row
+nested under the assistant lands before `q2` and the assertion fails.
+
+**Negative proof.** Restoring the old "last assistant" scan makes the guard fire:
+`core.exception.AssertError@tests\headless_pro_smoke.d(1483): Waiting row rendered
+above the prompt instead of after it`. Reverted after confirming.
+
+**Result (2026-09-14).** Pro smoke EXIT=0; rebuilt with `dub build
+--compiler=dmd --force`; killed the running instance and relaunched exactly one
+(PID 12964). Live screenshot `w3.png` shows the sent prompt
+`Reply with exactly: ok` with its `ok` reply directly below it, after the previous
+exchange — chronological order holds.
+
 
 

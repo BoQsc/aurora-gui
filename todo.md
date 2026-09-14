@@ -1,5 +1,90 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: flow audit — error corrupted the prompt, unnamed tool masked the row (fixed)
+
+Follow-up to the "waiting row" fix, auditing the rest of the client→transcript
+flow for the same class of illogical ordering/attachment.
+
+- [x] **Bug: a failed request corrupted the user's prompt.** `failAssistantMessage`
+      appended `"Error: …"` to `session.messages[$-1]`. When the request failed
+      before the first streamed byte (`chatBegin` never fired) that message was
+      the **user's** prompt, so the prompt itself was rewritten as an error and
+      marked failed. Fix: if the last message is not an assistant turn, create
+      the reply turn first (and clear the activity row after). Guard
+      `Failure before chatBegin attaches to the reply, not the prompt`; negative
+      proof (old condition restored) fires `A failed request must add an
+      assistant turn, got 1`.
+- [x] **Bug: an unnamed early tool masked a named one.** `syncLiveRow` named the
+      first preparing/running call even when its name was still empty, leaving
+      the aggregate stuck on the generic "Preparing" while a later call was
+      already named. Fix: prefer the first call with a non-empty name, falling
+      back to a generic row only when nothing is named yet. Guard extends
+      `In-flight tools group into one animated row`.
+- [x] **Bug: `cancelPendingTools` could leave a stale live row.** It cleared the
+      live sets but only rebuilt if the activity row happened to be present, so a
+      live tool row (which has no label) could stay pinned to an abandoned run.
+      Fix: rebuild when there were live rows.
+- [x] **Verified**: Pro smoke EXIT=0 after all three; rebuilt + relaunched exactly
+      one (PID 19464).
+
+## 2026-09-14 - Pro: "waiting" row rendered ABOVE the prompt it belongs to (fixed)
+
+User: "nowhere close to resolved, the waiting appears above instead of after
+previous message makes no logical sense, and this is illogical probably in most
+parts of entire program flow."
+
+- [x] **Diagnosis (root cause)**: `rebuildMessageColumn` picked `liveHostSlot` as
+      the **last assistant message in the path**, then nested the in-flight
+      activity/live rows inside that turn. After the user sends a new prompt the
+      path ends with that **user** message, so the last assistant is the
+      *previous* answer — the "Waiting for the model…" row was nested under it,
+      i.e. ABOVE the prompt that triggered it. Same wrongness on regenerate,
+      edit-and-resend, and any prompt sent when the tail turn is a user prompt.
+- [x] **Fix (general rule)**: only host live rows when the newest **top-level,
+      non-owned** turn is an assistant reply. If the newest turn is a user prompt
+      (or a top-level tool row) there is no host, so `addLiveToolRows` appends
+      them to the end of the column — after the prompt. This covers send,
+      regenerate, edit-resend and branch switches, not just the one case.
+- [x] **Verified**: the `Reasoning stream: one Thinking header, no phantom
+      cursor` guard now asserts `activityRowVisualIndexForTesting() ==
+      messageColumnVisualCountForTesting() - 1` right after the trailing prompt.
+      Negative proof (old `liveHostSlot` restored) fires `Waiting row rendered
+      above the prompt instead of after it` (headless_pro_smoke.d:1483); reverted
+      after confirming. Pro smoke EXIT=0. Rebuilt + relaunched exactly one
+      (PID 12964); live screenshot `w3.png` shows `Reply with exactly: ok` with
+      its `ok` reply directly below it, after the prior exchange.
+
+## 2026-09-14 - Pro: message-flow UI — group in-flight tools into ONE working row + elapsed clock (fixed)
+
+User: "do a few tests from user perspective on ui of messages flow. and fix obvious
+annoyances or what makes it hard to follow or even things like constant scrolling
+instead of grouping into one and showing brief and animation that things are
+working with time elapsed."
+
+- [x] **Diagnosis**: every in-flight tool call got its own `LiveToolRow`, and a run
+      of context tools got a live `ToolGroupBubble` on top. While several tools
+      were named/running the transcript stacked 2-5 rows that each appeared and
+      pushed the column down (the main "constant scrolling / hard to follow"
+      source), and none of them showed how long the work had been going.
+- [x] **Fix (group into one)**: replaced the per-call rows with a single retained
+      `_liveRow` (`syncLiveRow()`). It names the active tool (`humanToolTitle` /
+      `humanToolProgressTitle`), shows the subtitle, appends `+N more` for the
+      rest of the batch (`_preparingToolCalls ~ _liveToolCalls`), and sums the
+      provisional `+adds/-dels` across every call (e.g. `Running  echo one  +2 more
+      +2 -0  1s`). It is detached/re-added in `rebuildMessageColumn` so it stays a
+      single stable row.
+- [x] **Fix (animation + elapsed)**: `LiveToolRow` now draws a pulsing accent dot
+      and accumulates elapsed seconds in `onTick`, appending `  3s`. `ActivityRow`
+      no longer resets its clock on a phase-label change (`Waiting…` → `Thinking…`
+      → `Writing…`), so its seconds measure the request, not the phase.
+- [x] **Verified**: guard `In-flight tools group into one animated row` asserts a
+      3-tool burst yields exactly one live row, that it says `+2 more`, that the
+      summed diff is `+2 -0`, and that after `tickTree(1.2)` it contains `1s`.
+      The activity-row guard now also ticks and asserts the `1s` suffix. Pro smoke
+      EXIT=0 (all checks). Rebuilt + killed old PIDs + relaunched exactly one
+      (PID 17624); screenshot `flow-restored.png` shows one `▸ Thinking` per
+      exchange, clean tool rows, no timestamp band.
+
 ## 2026-09-14 - Pro: transcript order — one "Thinking" per exchange, all rounds kept (fixed)
 
 User: "i think the ordering of things in messages was bad too make better ordering

@@ -1828,6 +1828,12 @@ private final class TurnNest : VBox
 /// "Exploring" row; this covers the tool calls that mutate files or run
 /// commands. The row is replaced by the real result bubble once the tool
 /// reports back.
+/// One compact, animated row summarising the in-flight tool work so a whole
+/// round reads as a single line instead of a stack of rows that keep appearing
+/// and scrolling. It names the running tool (or the one whose arguments are
+/// still streaming), counts any others as "+N more", shows a provisional
+/// `+N -M` for file-mutating tools, and pulses a dot next to the elapsed
+/// seconds. Retained across rebuilds so its clock and pulse keep running.
 private final class LiveToolRow : Widget
 {
     // Match MessageBubble/ToolGroupBubble insets so a live row shares the
@@ -1837,32 +1843,61 @@ private final class LiveToolRow : Widget
 
     private string _title;
     private string _subtitle;
+    private int _more;
     // Provisional `+N -M` for a file-mutating tool whose arguments are still
     // streaming (or have just arrived). Replaced by the real result bubble's
-    // counters once the tool reports back. Shown right-aligned like the
-    // completed tool header so the two read as the same control.
+    // counters once the tool reports back.
     private int _additions;
     private int _deletions;
     private bool _hasDiff;
+    private bool _live;
+    private double _elapsed;
 
     void delegate() onSizeChanged;
 
-    this(string title, string subtitle)
+    this()
     {
+        setId("oc-live-tool");
+    }
+
+    /// Update the aggregated summary. `more` is the number of additional tool
+    /// calls beyond the named one.
+    void setSummary(string title, string subtitle, int more)
+    {
+        if (_title == title && _subtitle == subtitle && _more == more)
+            return;
         _title = title;
         _subtitle = subtitle;
+        _more = more;
+        invalidate();
     }
 
     void setDiff(int additions, int deletions)
     {
+        if (_additions == additions && _deletions == deletions) return;
         _additions = additions;
         _deletions = deletions;
         _hasDiff = additions > 0 || deletions > 0;
         invalidate();
     }
 
+    void setLive(bool value)
+    {
+        if (_live == value) return;
+        _live = value;
+        if (!_live) _elapsed = 0.0;
+        invalidate();
+    }
+
+    bool isLive() const { return _live; }
+
     int diffAdditionsForTesting() const { return _additions; }
     int diffDeletionsForTesting() const { return _deletions; }
+
+    private int pulseStep() const
+    {
+        return cast(int) (_elapsed * 4) % 4;
+    }
 
     private int rowHeight()
     {
@@ -1871,12 +1906,32 @@ private final class LiveToolRow : Widget
 
     private string rowText() const
     {
-        string text = "▸ " ~ _title;
+        string text = _title;
         if (_subtitle.length > 0) text ~= "  " ~ _subtitle;
-        return text ~ "  ...";
+        if (_more > 0) text ~= "  +" ~ to!string(_more) ~ " more";
+        return text;
     }
 
-    string textForTesting() const { return rowText(); }
+    /// The rendered line, including the elapsed seconds so a slow tool reads as
+    /// steady progress rather than a stall.
+    private string displayText() const
+    {
+        const seconds = cast(int) _elapsed;
+        return rowText() ~ (seconds >= 1 ? "  " ~ to!string(seconds) ~ "s" : "");
+    }
+
+    string textForTesting() const { return displayText(); }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_live) return;
+        const beforePulse = pulseStep();
+        const beforeSeconds = cast(int) _elapsed;
+        _elapsed += deltaSeconds;
+        if (pulseStep() != beforePulse ||
+            cast(int) _elapsed != beforeSeconds)
+            invalidate();
+    }
 
     protected override Size onMeasure(Size available)
     {
@@ -1889,7 +1944,13 @@ private final class LiveToolRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        const innerWidth = maxInt(1, bounds().width - 2 * padH);
+        const h = rowHeight();
+        const centerY = h / 2;
+        static immutable int[4] pulseAlphas = [80, 140, 220, 140];
+        canvas.fillCircle(Point(padH - 6, centerY), 3,
+            opencodeAccent.withAlpha(pulseAlphas[pulseStep()]));
+        const textX = padH;
+        const innerWidth = maxInt(1, bounds().width - textX - padH);
         int statsWidth;
         TextLayout addLayout, delLayout;
         if (_hasDiff)
@@ -1902,14 +1963,14 @@ private final class LiveToolRow : Widget
         }
         const available = maxInt(1, innerWidth - statsWidth -
             (statsWidth > 0 ? 8 : 0));
-        auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
+        auto layout = canvas.layoutText(toUTF32(displayText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, available, false);
-        auto clipped = canvas.clipped(Rect(padH, padV, available, rowHeight()));
-        clipped.drawLayout(Point(padH, padV), layout, opencodeAccent);
+        canvas.drawLayout(Point(textX, (h - cast(int) layout.height) / 2),
+            layout, opencodeMuted);
         if (statsWidth > 0)
         {
             const x = padH + innerWidth - statsWidth;
-            const sy = padV + (rowHeight() - cast(int) addLayout.height) / 2;
+            const sy = (h - cast(int) addLayout.height) / 2;
             canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
             canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
                 delLayout, opencodeDiffDelete);
@@ -1945,13 +2006,13 @@ private final class ActivityRow : Widget
         setId("oc-activity");
     }
 
-    /// Set the phase label. Changing the label restarts the elapsed clock so
-    /// the seconds always describe the current phase.
+    /// Set the phase label. The elapsed clock keeps running across phase
+    /// changes so the seconds describe how long the assistant has been working
+    /// on the request, not just the current phase.
     void setLabel(string label)
     {
         if (_label == label) return;
         _label = label;
-        _elapsed = 0.0;
         invalidate();
     }
 
@@ -1959,12 +2020,14 @@ private final class ActivityRow : Widget
     {
         if (_live == value) return;
         _live = value;
-        if (!_live) _elapsed = 0.0;
+        // A fresh work session starts the clock; stopping clears it.
+        _elapsed = 0.0;
         invalidate();
     }
 
     bool hasLabel() const { return _label.length > 0; }
     string textForTesting() const { return _label; }
+    string displayTextForTesting() const { return displayText(); }
 
     private int pulseStep() const
     {
@@ -2944,6 +3007,9 @@ public final class OpenCodeRoot : VBox
     // the assistant works. Retained across rebuilds so its pulse and elapsed
     // clock keep running; the column re-adds it whenever a label is set.
     private ActivityRow _activityRow;
+    // The single aggregated in-flight tool row (one line for a whole round).
+    // Retained across rebuilds so its pulse and elapsed clock keep running.
+    private LiveToolRow _liveRow;
     // UI-only expand state, keyed by the globally-unique message id. The
     // transcript is rebuilt from scratch as the reply and its tools stream, so
     // without this a tool output or reasoning block the user opened would snap
@@ -3850,6 +3916,8 @@ public final class OpenCodeRoot : VBox
         // them attached and reporting visible after they are dropped.
         if (_activityRow !is null && _activityRow.parent() !is null)
             _activityRow.parent().remove(_activityRow);
+        if (_liveRow !is null && _liveRow.parent() !is null)
+            _liveRow.parent().remove(_liveRow);
         if (_streamBubble !is null && _streamBubble.parent() !is null)
             _streamBubble.parent().remove(_streamBubble);
         _messageColumn.clearChildren();
@@ -3943,18 +4011,23 @@ public final class OpenCodeRoot : VBox
             }
         }
         // In-flight rows (streamed tool arguments, running tools, activity) and
-        // the streaming reply belong to the newest assistant turn; render them
-        // nested in that turn instead of pinning them to the bottom.
+        // the streaming reply belong to the newest *top-level* turn, and only
+        // when that turn is an assistant reply. If the newest turn is the user
+        // prompt (the request was just sent, before the reply turn exists) there
+        // is no host: the rows go to the bottom, after the prompt. Nesting them
+        // under the previous answer put "Waiting for the model…" ABOVE the prompt
+        // that triggered it.
         const bool isLive = (_activityRow !is null && _activityRow.hasLabel()) ||
             _preparingToolCalls.length > 0 || _liveToolCalls.length > 0;
         size_t liveHostSlot = size_t.max;
         if (isLive)
             foreach_reverse (slot, index; path)
+            {
+                if (owner[slot] != size_t.max) continue; // owned tool result
                 if (session.messages[index].role == "assistant")
-                {
                     liveHostSlot = slot;
-                    break;
-                }
+                break;
+            }
         bool liveRowsAdded = false;
 
         size_t slot = 0;
@@ -4138,64 +4211,91 @@ public final class OpenCodeRoot : VBox
     /// column when there is no assistant turn to nest under.
     private void addLiveToolRows(VBox target)
     {
-        // Tool calls the model has named but whose arguments are still
-        // streaming: show them as in-progress rows so the reply does not look
-        // stalled while a large payload (a whole file for `write`) streams.
-        foreach (call; _preparingToolCalls)
-        {
-            if (call.name.length == 0) continue;
-            auto row = new LiveToolRow(humanToolProgressTitle(call.name),
-                humanToolSubtitle(call.name, call.arguments));
-            int adds, dels;
-            if (previewToolDiff(call.name, call.arguments, adds, dels))
-                row.setDiff(adds, dels);
-            row.onSizeChanged = delegate()
-            {
-                _messageColumn.invalidate();
-                _messagesScroll.invalidate();
-            };
-            target.add(row);
-        }
-        // Context tools fold into the aggregated "Exploring" row, and every
-        // other tool (Edit / Write / Delete / Shell) gets its own in-progress
-        // row so the user can see what is happening while it executes.
-        int liveReads, liveSearches;
-        foreach (call; _liveToolCalls)
-        {
-            if (call.name == "read") ++liveReads;
-            else if (call.name == "glob" || call.name == "grep")
-                ++liveSearches;
-        }
-        if (liveReads + liveSearches > 0)
-        {
-            auto live = new ToolGroupBubble(null, true);
-            live.setLiveCounts(liveReads, liveSearches);
-            live.onSizeChanged = delegate()
-            {
-                _messageColumn.invalidate();
-                _messagesScroll.invalidate();
-            };
-            target.add(live);
-        }
-        foreach (call; _liveToolCalls)
-        {
-            if (call.name == "read" || call.name == "glob" ||
-                call.name == "grep")
-                continue;
-            auto row = new LiveToolRow(humanToolTitle(call.name),
-                humanToolSubtitle(call.name, call.arguments));
-            int adds, dels;
-            if (previewToolDiff(call.name, call.arguments, adds, dels))
-                row.setDiff(adds, dels);
-            row.onSizeChanged = delegate()
-            {
-                _messageColumn.invalidate();
-                _messagesScroll.invalidate();
-            };
-            target.add(row);
-        }
+        // One aggregated row for the whole in-flight batch: naming every call
+        // separately made a round of tool work stack up rows that kept
+        // appearing and scrolling. `syncLiveRow` names the active tool, counts
+        // the rest, sums the provisional diff, and keeps the clock running.
+        syncLiveRow();
+        if (_liveRow !is null && _liveRow.isLive())
+            target.add(_liveRow);
         if (activityRowWanted())
             target.add(_activityRow);
+    }
+
+    /// Refresh the retained aggregate live row from the preparing/running tool
+    /// calls. Hides it when there is no in-flight work.
+    private void syncLiveRow()
+    {
+        const total = _preparingToolCalls.length + _liveToolCalls.length;
+        if (total == 0)
+        {
+            if (_liveRow !is null) _liveRow.setLive(false);
+            return;
+        }
+        if (_liveRow is null)
+        {
+            _liveRow = new LiveToolRow();
+            _liveRow.onSizeChanged = delegate()
+            {
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+            };
+        }
+
+        // Name a running call if there is one (its arguments have fully
+        // streamed), otherwise the one still streaming. Prefer a call the model
+        // has already named: an early unnamed tool must not mask a later named
+        // one and leave the row stuck on the generic "Preparing".
+        OpenCodeToolCall named;
+        bool running;
+        bool haveNamed;
+        foreach (call; _liveToolCalls)
+            if (call.name.length > 0)
+            {
+                named = call;
+                running = true;
+                haveNamed = true;
+                break;
+            }
+        if (!haveNamed)
+            foreach (call; _preparingToolCalls)
+                if (call.name.length > 0)
+                {
+                    named = call;
+                    haveNamed = true;
+                    break;
+                }
+        if (!haveNamed)
+        {
+            // Nothing named yet: keep showing a generic row rather than blinking
+            // out while the first tool name streams.
+            if (_liveToolCalls.length > 0)
+            {
+                named = _liveToolCalls[0];
+                running = true;
+            }
+            else
+                named = _preparingToolCalls[0];
+        }
+
+        const title = running
+            ? humanToolTitle(named.name) : humanToolProgressTitle(named.name);
+        const subtitle = humanToolSubtitle(named.name, named.arguments);
+
+        int adds, dels;
+        foreach (call; _preparingToolCalls ~ _liveToolCalls)
+        {
+            int a, d;
+            if (previewToolDiff(call.name, call.arguments, a, d))
+            {
+                adds += a;
+                dels += d;
+            }
+        }
+
+        _liveRow.setSummary(title, subtitle, cast(int) total - 1);
+        _liveRow.setDiff(adds, dels);
+        _liveRow.setLive(true);
     }
 
     /// True for the read-only context tools that fold into an "Explored" group.
@@ -4573,15 +4673,22 @@ public final class OpenCodeRoot : VBox
     private void failAssistantMessage(string error)
     {
         _preparingToolCalls.length = 0;
-        clearActivity();
         if (_current < 0)
         {
+            clearActivity();
             updateStatus("Error: " ~ error);
             return;
         }
         auto session = &_sessions[_current];
-        if (session.messages.length == 0)
+        // The failure can arrive before any assistant turn exists (the request
+        // was rejected before the first streamed byte, so `chatBegin` never
+        // fired). Create the reply turn first: without this the error text was
+        // appended to the USER's prompt and marked it failed, corrupting the
+        // history and rendering the user's own message as an error.
+        if (session.messages.length == 0 ||
+            session.messages[$ - 1].role != "assistant")
             beginAssistantMessage();
+        clearActivity();
         auto message = &session.messages[$ - 1];
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error: " ~ error;
@@ -4590,6 +4697,7 @@ public final class OpenCodeRoot : VBox
         {
             _streamBubble = new MessageBubble();
             _streamBubble.setRole("assistant");
+            _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
             _messageColumn.add(_streamBubble);
         }
         _streamBubble.setStreaming(false);
@@ -4608,6 +4716,8 @@ public final class OpenCodeRoot : VBox
     /// run cannot append to the newly selected branch.
     private void cancelPendingTools()
     {
+        const hadLiveRows = _preparingToolCalls.length > 0 ||
+            _liveToolCalls.length > 0;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -4616,6 +4726,9 @@ public final class OpenCodeRoot : VBox
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
         clearActivity();
+        // A live tool row has no label of its own, so `clearActivity` alone
+        // leaves it pinned to the abandoned run; rebuild to drop it.
+        if (hadLiveRows) rebuildMessageColumn();
     }
 
     /// Show (or update) the in-flow activity row. It fills the gaps where the
@@ -4658,18 +4771,19 @@ public final class OpenCodeRoot : VBox
     }
 
     /// The model is still generating tool-call arguments: it has named the
-    /// tools but the stream has not finished. Keep a live row per named call so
-    /// the UI shows what is coming while a large payload (a whole file for
-    /// `write`) streams in, instead of looking stalled after the assistant text.
+    /// tools but the stream has not finished. Refresh the single aggregate live
+    /// row so the UI shows what is coming while a large payload (a whole file
+    /// for `write`) streams in, instead of looking stalled after the assistant
+    /// text.
     private void handleToolCallProgress(const OpenCodeEvent event)
     {
         if (_current < 0) return;
         if (event.toolCalls.length == 0) return;
         _preparingToolCalls = event.toolCalls.dup;
         updateStatus("Preparing tools…");
-        // The live per-tool rows already say what is being prepared, so the
-        // generic phase row would only duplicate them. Drop it; it comes back
-        // when the next round waits on the model with no live rows to show.
+        // The aggregate live row already says what is being prepared, so the
+        // generic phase row would only duplicate it. Drop it; it comes back
+        // when the next round waits on the model with no live row to show.
         clearActivity();
         rebuildMessageColumn();
     }
@@ -6350,6 +6464,22 @@ public final class OpenCodeRoot : VBox
         return _sessions[_current].messages[cast(size_t) index].role;
     }
 
+    /// Test-only: content of the message at `index`.
+    public string messageContentForTesting(int index)
+    {
+        if (_current < 0) return "";
+        if (index < 0 || index >= cast(int) _sessions[_current].messages.length)
+            return "";
+        return _sessions[_current].messages[cast(size_t) index].content;
+    }
+
+    /// Test-only: route a failure through the reply-failure path exactly as the
+    /// `error` event does (no network round-trip).
+    public void failAssistantMessageForTesting(string error)
+    {
+        failAssistantMessage(error);
+    }
+
     /// Test-only: invoke the action pill on the bubble at `index` exactly as a
     /// mouse click would, exercising the real delegate captured for that
     /// bubble (regression: foreach closures must not all target the last
@@ -6745,6 +6875,13 @@ public final class OpenCodeRoot : VBox
     public string activityTextForTesting()
     {
         return _activityRow is null ? "" : _activityRow.textForTesting();
+    }
+
+    /// Test-only: the live activity row's rendered text including the elapsed
+    /// suffix ("…  3s"), so a smoke test can prove the clock advances.
+    public string activityDisplayTextForTesting()
+    {
+        return _activityRow is null ? "" : _activityRow.displayTextForTesting();
     }
 
     /// Test-only: start a live assistant turn exactly as a `chatBegin` event
