@@ -1,5 +1,113 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: paragraph -> collapsible interleave restored; Thinking stays visible (2026-09-14)
+
+**Supersedes** the "Codex-scale turn grouping" method below: the one-group-per-
+user-turn merge stranded all collapsibles at the turn's start. Each round again
+gets its own action group, so the transcript interleaves
+`paragraph -> collapsible -> paragraph -> collapsible`, and every round keeps its
+own visible, collapsed-by-default `▸ Thinking` block.
+
+**What changed (Pro `source/auroraopencode/appui.d`, core `core.d`).**
+- `rebuildMessageColumn`: dropped `turnUserId[]`/`isTurnAnchor[]`/reasoning
+  aggregation; restored `thinkingText[slot] = message.reasoning` per round and
+  per-round `childSlots` groups under each assistant bubble.
+- Turn timer still rides the turn's FIRST group: `openTurn`/`turnTimingApplied`
+  reset on each user message; `applyTurnTiming(group, openTurn)` on the first
+  group built in the turn. `addLiveToolRows` now returns the group it creates.
+- `ChatMessage.internal` (core.d) marks synthetic control turns (max-rounds
+  finalize, doom-loop recovery). They are still sent to the model but
+  `rebuildMessageColumn` skips them and `activeTurnUserId` ignores them, so no
+  fake user bubble appears at the cap.
+- `maxToolRounds` raised `50` -> `300` (appui.d): a real task legitimately takes
+  many rounds (one `edit` per round), and 50 truncated real work mid-file.
+  `buildSystemPrompt` (tools.d) now asks the model to batch independent tool
+  calls and to write one short sentence before a batch.
+
+**How to test (automated).**
+```
+rem smoke — expect "…smoke test passed."
+"C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource ^
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib ^
+  winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+
+rem repro — one GROUP per round, interleaved; real mode must not throw
+"C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource ^
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  tests\pro_flow_repro.d user32.lib gdi32.lib shell32.lib wininet.lib ^
+  winmm.lib -of=build\pro-flow-repro.exe
+build\pro-flow-repro.exe          # phase dumps: user, assistant, GROUP, assistant, GROUP, …, final
+build\pro-flow-repro.exe real     # restored sessions render with the interleave
+```
+
+**Smoke guard.** "Each tool round keeps its own Thinking + action group (stable
+order)": a 3-round turn asserts 3 Thinking headers (in order) and 2 round groups,
+then a canonical rebuild is byte-identical. Timer guard
+"Action group header times the turn and freezes at completion" still passes.
+
+**Live check.**
+```
+taskkill /F /PID <pid>          rem find with: tasklist /FI "IMAGENAME eq aurora-opencode-pro.exe"
+"C:\D\dmd2\windows\bin64\dmd.exe" ...  rem build
+"C:\D\dmd2\windows\bin64\dub.exe" build --compiler=dmd --force --build=release
+rem relaunch exactly one, then capture its window:
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\opencode\capture_aurora.ps1" -ProcessId <pid>
+```
+Expect a mid-run agent transcript to show `▸ Thinking`, then `▸ Explored N searches`
+/ `▸ Shell …` / `▸ Patch …` groups repeating, one per round, with prose between.
+
+## Pro: Codex-scale turn grouping + "Worked for" timer header (2026-09-14)
+
+**Complaint (user).** Aurora's tool rendering was still too fragmented ("one
+line of write, many collapsables, thinking, text at end"); Codex "groups way
+larger amounts of toolcalls, adds a timer 'worked for 0m 0s' above".
+
+**What changed (Pro `source/auroraopencode/appui.d`).**
+- A user turn's tool results from *all* assistant rounds fold into ONE
+  `ToolGroupBubble`, anchored at the turn's first assistant reply
+  (`turnUserId[]`/`isTurnAnchor[]` in `rebuildMessageColumn`). Reasoning and
+  assistant prose remain separate per-round cells.
+- The group header carries the turn clock: `Working for Xm Ys` while live,
+  `Worked for Xm Ys` once settled (`formatTurnDuration`, `ToolGroupBubble.
+  setTiming`/`onTick`). `startChatRequest(sessionIndex, userTurn)` starts the
+  clock only for user-initiated sends (tool-continuation rounds pass `false`);
+  `freezeTurnTiming()` stores the final total in `_turnDurations[userId]`.
+- `addToolSlots(..., string collapseKey)` now takes the stable user-turn key so
+  expand state survives later-round rebuilds. `pro_flow_repro.d` scripted calls
+  now carry ids (without ids they take the orphan path and never merge).
+
+**How to test (automated).**
+```
+rem smoke (adds the timer guard) — expect "headless smoke test passed."
+"C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource ^
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib ^
+  winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+
+rem repro — a 2-round turn must dump ONE "GROUP ... parts=2" (not two parts=1)
+"C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource ^
+  -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source ^
+  tests\pro_flow_repro.d user32.lib gdi32.lib shell32.lib wininet.lib ^
+  winmm.lib -of=build\pro-flow-repro.exe
+build\pro-flow-repro.exe          # look for "GROUP ▸ Edited 2 files parts=2"
+build\pro-flow-repro.exe real     # restored session, no exception
+```
+
+**Smoke guard.** "Action group header times the turn and freezes at
+completion": drives `startTurnClockForTesting()`, injects a read tool, ticks the
+tree so the live header reads `Working for 0m 2s`, finishes the turn and asserts
+`Worked for`, then ticks 5 s and asserts the header is byte-identical (frozen).
+Note: the settled total comes from the wall clock while the test advances virtual
+tick time, so the guard checks the freeze, not an exact virtual second count.
+
+**Results.** Smoke EXIT=0; repro shows one merged group; real session merges
+historical rounds (6 groups, no exception). App rebuilt (dub release) and
+relaunched as exactly one instance. Live timer over a real prompt is the only
+uncovered step (needs network + API credits).
+
 ## Pro: transcript order churn — per-turn reasoning + canonical post-finish rebuild (2026-09-14)
 
 **Complaint (user).** "order or things change in the middle instead of at the
@@ -9621,6 +9729,113 @@ offset/limit, grep lines, edit uniqueness wording).
 (`dub build --build=release --compiler=dmd --force`); the running instance
 (PID 25312) was killed and exactly one new instance launched (PID 24940,
 confirmed via `tasklist`).
+
+## Codex agent workflow: prompt, `apply_patch`, `update_plan` (2026-09-14)
+
+**Why.** The user: "you are nowhere the workflow of codex. Why you are avoiding
+making it better." The agent made one dependent `edit` per round, so a multi-file
+change burned dozens of rounds and hit the tool cap. Codex's own workflow solves
+this with a plan tool, a multi-file patch tool, and a specific prompt; we were
+missing all three.
+
+**What changed.** `tools.d`:
+1. `buildSystemPrompt` was rewritten to port the real Codex prompt
+   (`codex-rs/core/gpt-5.1-codex-max_prompt.md`), adapted to our tool names and
+   the Chat Completions transport: identity + `## General`, `## Editing
+   constraints` (ASCII default, `apply_patch` preferred, dirty-worktree and
+   destructive-command rules, stop on unexpected changes), `## Plan tool`,
+   `## Special user requests` (run simple commands; review mindset), `##
+   Frontend tasks`, `## Presenting your work and final message` (concise, don't
+   dump files, numeric options), final-answer style and file-reference rules
+   (`path:line` in backticks, no `file://`, no ranges). ASCII only.
+2. `apply_patch` tool: JSON `{patch}`, Codex `*** Begin Patch` / `*** End Patch`
+   format with `*** Add File:` / `*** Update File:` / `*** Delete File:`
+   sections and space/`-`/`+` line markers. Applies many files and hunks in ONE
+   call (`runApplyPatch`), so a multi-file change is one round. Add File creates
+   parent dirs; Update matches context exactly and fails loudly with the reason;
+   the result carries a combined diff + `+N -M` counters like `edit`/`write`.
+3. `update_plan` tool: JSON `{explanation?, plan:[{step,status}]}` with
+   `pending`/`in_progress`/`completed`; validates at most one `in_progress` step
+   and renders a checked list (`[x]`/`[>]`/`[ ]`) into the tool output.
+4. Both tools are advertised in `builtinToolDefinitions()` and
+   `nativeOnlyToolDefinitions()` via `applyPatchToolDefinition()` /
+   `updatePlanToolDefinition()`.
+5. `appui.d` display: `humanToolTitle` (`Patch`/`Plan`), `humanToolProgressTitle`
+   (`Applying`/`Planning`), `humanToolSubtitle` ("3 files" / "2 steps", from new
+   `patchFileCount`/`planStepCount`/`countOccurrences` helpers), and
+   `actionGroupSummary` now counts `apply_patch` as an edit and `update_plan` as
+   "updated the plan".
+
+**How to test.** Build the test binaries exactly as above (`tools_test.d`
+without `-version=AuroraHeadless`; `headless_pro_smoke.d` with it). New guards in
+`tools_test.d`:
+- `apply_patch adds, updates and deletes files in one call` — one JSON call:
+  Add File `sub/new.txt` (creates `sub/`), Update `keep.txt` (`keep/old` ->
+  `keep/new`), Delete `gone.txt`; asserts content, deletion and a
+  non-zero diff.
+- `update_plan renders steps and enforces one in-progress step` — asserts
+  `[x]`/`[>]`/`[ ]` markers and that two `in_progress` steps are rejected.
+Prompt assertions still hold (`toolSteeringPrompt` text checks) and the smoke
+"system prompt viewer" guard reads the new text without asserting section names.
+
+**Result (2026-09-14).** `dub build --build=release --compiler=dmd --force`
+EXIT=0; `tools-test.exe` EXIT=0 (`Aurora OpenCode Pro tools module test passed.`);
+`headless-pro-smoke.exe` EXIT=0. App rebuilt at **20:08**; the previous instance
+(PID 10224) was killed and exactly one new instance launched (PID 17128,
+confirmed via `tasklist`, exe timestamp 20:08). Window captured with
+`PrintWindow` (`temp\opencode\printwin.ps1`) because `SetForegroundWindow` is
+ignored for a non-foreground launcher; titlebar reads
+`Aurora OpenCode 2026-09-14 20:08` and the transcript shows the
+paragraph -> collapsible interleave.
+
+**Live workflow validation (2026-09-14, real gateway request).** Added
+`tests/live_probe.d` (build with the `tools_test.d` command line, run with
+`AURORA_PROBE_KEY` set; it reads no secret from the repo). It builds the EXACT
+app request with `OpenCodeClient.buildBodyForTesting(messages,
+builtinToolDefinitions(), model, false)` (with `"stream":true` flipped to
+`false`), POSTs it to the gateway with curl, executes each returned `tool_calls`
+entry with the real `executeTool`, feeds the `tool` results back, and repeats.
+Against a scratch workspace (`src/math.d`, `src/app.d`, `src/old.d`) with the
+task "add `add(int,int)` to math.d, call it from app.d, delete old.d", the model
+(`deepseek/deepseek-v4.1-flash`) ran **4 rounds and finished**:
+- round 0: `["bash", "read", "read", "read"]` — independent calls batched into
+  one response (our batching guidance works).
+- round 1: `["apply_patch"]` — ONE call, "Applied patch to 3 files (+6 -5)".
+- round 2: `["bash"]` — verified the file tree.
+- round 3: final message, concise, with file refs (`src/math.d:8`,
+  `src/app.d:8`, `src/old.d`).
+Files verified on disk: `add` present in math.d, app.d calls it, old.d deleted.
+`update_plan` was not used — correct, the prompt says skip the plan for the
+easiest ~25% tasks.
+
+**Two follow-up fixes from that live run.** (1) `write` claimed "Creates parent
+directories as needed" but `runWrite` did not; a live `write` of
+`tests\check.d` failed with "The system cannot find the path specified". Fixed
+with `mkdirRecurse(dirName(path))` (same as `apply_patch` Add File). Guard:
+`tools_test.d` "write creates missing parent directories".
+(2) The model then looped for ~7 rounds retrying a *near-identical failing*
+`dmd` command — the exact-call doom-loop guard never fired because the arguments
+differed each round. Added progress-based loop detection in `appui.d`: on a
+failed tool result, signature = `toolName|firstOutputLine`; the same signature
+repeating `failureLoopRepeatThreshold` (3) times sets `_failureLoopDetected`,
+and on batch completion `breakToolLoop` injects a hidden control turn ("the same
+tool failure repeated 3 times... explain the blocker or change approach") and
+re-sends. A success clears the counter; counters reset at turn boundaries
+(newChat / session switch / branch / send). Guard: `headless_pro_smoke.d`
+"Repeated-failure recovery breaks a failing tool loop" (new test hooks
+`injectToolResultForTesting`, `lastUserMessageForTesting`). Smoke EXIT=0 with
+both new guards; app rebuilt and one instance relaunched (PID 22620, titlebar
+`2026-09-14 20:47`).
+
+**Concurrency note.** While this work was in progress, a SECOND agent session
+was editing the same working tree (it added an `IntroOverlay` empty-state widget
+to `appui.d` and smoke assertions). The two change sets coexist in the tree and
+the full smoke suite passes; neither side reverted the other. If builds fail
+with `Access is denied` on `aurora-opencode-pro.exe`, another instance still
+holds the exe — kill it before rebuilding.
+
+
+
 
 
 

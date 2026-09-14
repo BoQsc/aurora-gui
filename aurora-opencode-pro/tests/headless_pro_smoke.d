@@ -1321,6 +1321,54 @@ int main(string[] args)
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
         writeln("A turn's tools fold into one collapsible action group");
 
+    // Turn timer: the one action group header reports how long the turn ran —
+    // "Working for 0m 2s" while it is still live, "Worked for 0m 2s" once it
+    // settles — and the settled total freezes (later ticks must not keep adding
+    // seconds to a finished turn).
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Time this turn"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        root.startTurnClockForTesting();
+        OpenCodeToolCall timedCall;
+        timedCall.id = "call_timed_1";
+        timedCall.name = "read";
+        timedCall.arguments = `{"filePath":"notes.txt"}`;
+        root.injectToolCallsForTesting([timedCall]);
+        const timedDeadline = Clock.currTime + 5.seconds;
+        while (root.toolMessageCountForTesting() < 1 &&
+            Clock.currTime < timedDeadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(20.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == 1,
+            "timed tool did not produce a result");
+        // Advance the clock the way the frame tick does while the turn runs.
+        root.tickTree(2.1);
+        auto timedHeaders = root.toolGroupHeaderTextsForTesting();
+        assert(timedHeaders.length == 1 &&
+            timedHeaders[0].indexOf("Working for 0m 2s") >= 0,
+            "live action group is missing the running timer: " ~
+            (timedHeaders.length ? timedHeaders[0] : "(none)"));
+        assert(driver.paint(), "Timed live action group did not paint");
+        // Completing the turn freezes the total (the settled value comes from
+        // the wall clock, so just require the past-tense header here).
+        root.finishStreamForTesting();
+        auto doneHeaders = root.toolGroupHeaderTextsForTesting();
+        assert(doneHeaders.length == 1 &&
+            doneHeaders[0].indexOf("Worked for") >= 0,
+            "settled action group is missing the frozen timer: " ~
+            (doneHeaders.length ? doneHeaders[0] : "(none)"));
+        // More ticks must not change a finished turn's total.
+        root.tickTree(5.0);
+        auto frozenHeaders = root.toolGroupHeaderTextsForTesting();
+        assert(frozenHeaders.length == 1 && frozenHeaders[0] == doneHeaders[0],
+            "the settled timer kept ticking: " ~ frozenHeaders[0] ~
+            " vs " ~ doneHeaders[0]);
+        writeln("Action group header times the turn and freezes at completion");
+    }
+
     // Nesting: the tool results render as children of the assistant turn that
     // requested them (at the same left edge, not stepped in), and they must
     // actually take layout space. The
@@ -1568,11 +1616,11 @@ int main(string[] args)
         writeln("Unnamed tool does not mask the named one: ", rows2[0]);
     }
 
-    // Codex-style stability: every assistant turn keeps its OWN reasoning
+    // Codex-style stability: every assistant round keeps its OWN reasoning
     // attached to it, so a multi-round exchange is append-only — the Thinking
     // headers never merge, migrate down the transcript or vanish as rounds
-    // settle (the old merge made the block jump from round to round, which read
-    // as the transcript reordering itself).
+    // settle. Each round's prose is followed by that round's own collapsible
+    // action group, so the transcript interleaves paragraph -> collapsible.
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Do the work"]);
@@ -1596,6 +1644,11 @@ int main(string[] args)
             texts[2].indexOf("Now I can answer") >= 0,
             "Per-round Thinking is out of order or wrong: " ~
             texts[0] ~ " || " ~ texts[1] ~ " || " ~ texts[2]);
+        // One collapsible action group per round, in round order.
+        const auto groups = root.toolGroupHeaderTextsForTesting();
+        assert(groups.length == 2,
+            "Each tool round should keep its own action group, got " ~
+            to!string(groups.length));
         // Stability: a canonical rebuild must render the identical transcript.
         root.rebuildForTesting();
         root.tickTree(0.02);
@@ -1607,11 +1660,12 @@ int main(string[] args)
                 "A rebuild reordered the Thinking blocks at " ~ to!string(i));
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Expanded per-turn Thinking did not paint");
+        assert(driver.paint(), "Expanded per-round Thinking did not paint");
         const exShots = buildPath(tempDir(), "aurora-opencode-exchange-shots");
         if (!exists(exShots)) mkdirRecurse(exShots);
         window.saveScreenshot(buildPath(exShots, "per-turn-thinking.ppm"));
-        writeln("Each tool round keeps its own Thinking header (stable order)");
+        writeln("Each tool round keeps its own Thinking + action group "
+            ~ "(stable order)");
     }
 
     // Regression: a reasoning-only stream must print "Thinking" once (the
@@ -1938,6 +1992,21 @@ int main(string[] args)
         "Doom-loop recovery did not reset the repeat counter");
     writeln("Doom-loop recovery breaks repeated identical tool calls");
 
+    // Progress-based loop recovery: the same FAILING tool (slightly different
+    // arguments each time, so the exact-call signature never matches) must also
+    // be broken once the identical failure repeats.
+    root.addConversationForTesting(["assistant"], [""]);
+    const failUserCountBefore = root.userMessageCountForTesting();
+    root.injectToolResultForTesting("bash", "Error: module not found", true);
+    root.injectToolResultForTesting("bash", "Error: module not found", true);
+    root.injectToolResultForTesting("bash", "Error: module not found", true);
+    assert(root.userMessageCountForTesting() == failUserCountBefore + 1,
+        "Repeated-failure recovery did not inject a recovery message");
+    assert(root.lastUserMessageForTesting().indexOf("repeated") >= 0,
+        "Repeated-failure recovery message did not explain the loop: " ~
+        root.lastUserMessageForTesting());
+    writeln("Repeated-failure recovery breaks a failing tool loop");
+
     // The doom-loop injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the
     // middle of the cache/perf block below and calls rebuildMessageColumn(),
@@ -2229,6 +2298,73 @@ int main(string[] args)
         assert(reshaped <= 2,
             "Re-expanding reasoning re-shaped too much: " ~ to!string(reshaped));
         writeln("Reasoning re-expand shapes=", reshaped);
+    }
+
+    // Empty-conversation intro overlay: a brand-new chat shows the welcome
+    // block (suggestions measured and laid out) and hides it the moment the
+    // first message arrives. Clicking a suggestion prefills the composer.
+    {
+        root.newChatForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Empty-state intro did not paint");
+        auto intro = requireWidget!Widget(root, "oc-intro");
+        assert(root.introVisibleForTesting(),
+            "Intro overlay should be visible on an empty conversation");
+        const introBounds = intro.bounds();
+        assert(introBounds.width > 0 && introBounds.height > 0,
+            "Intro overlay should fill the transcript viewport");
+        const suggestions = root.introSuggestionsForTesting();
+        assert(suggestions.length > 0, "Intro overlay has no suggestions");
+        // Staggered fade-in: visible immediately, fully opaque within a tick.
+        assert(root.introFadeForTesting() < 1.0,
+            "Intro overlay should still be fading in on first paint");
+        root.tickTree(0.3);
+        assert(root.introFadeForTesting() >= 1.0,
+            "Intro overlay fade did not complete");
+        assert(driver.paint(), "Faded intro did not paint");
+        window.saveScreenshot("build\\intro-empty.ppm");
+        const firstPill = root.introSuggestionBoundsForTesting(0);
+        assert(firstPill.width > 0 && firstPill.height > 0,
+            "Intro suggestion pill was not laid out");
+        assert(root.clickIntroSuggestionForTesting(0),
+            "Clicking an intro suggestion should prefill the composer");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == suggestions[0],
+            "Intro suggestion did not populate the prompt input");
+        assert(root.introVisibleForTesting(),
+            "Prefilling the prompt should keep the intro (no message yet)");
+        root.setInputForTesting("");
+
+        // A real pointer press on the pill must reach the overlay through the
+        // normal hit-test/dispatch path, not just the test callback.
+        const pillOrigin = intro.localToGlobal(
+            Point(firstPill.x, firstPill.y));
+        driver.click(Point(pillOrigin.x + firstPill.width / 2,
+            pillOrigin.y + firstPill.height / 2));
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == suggestions[0],
+            "A real click on an intro suggestion did not prefill the prompt");
+        root.setInputForTesting("");
+        writeln("Empty-state intro shows and prefills the composer");
+
+        // The first message replaces the welcome with the transcript.
+        root.addConversationForTesting(["user"], ["Hello there"]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "Transcript after intro did not paint");
+        assert(!root.introVisibleForTesting(),
+            "Intro overlay should hide once a message exists");
+        // Switching back to the still-empty chat brings it back.
+        root.newChatForTesting();
+        root.tickTree(0.02);
+        assert(root.introVisibleForTesting(),
+            "A fresh conversation should show the intro again");
+        assert(root.introFadeForTesting() < 1.0,
+            "Re-showing the intro should replay the fade");
+        root.addConversationForTesting(["user"], ["Second chat prompt"]);
+        root.tickTree(0.02);
+        assert(!root.introVisibleForTesting(),
+            "Intro overlay should stay hidden after the next prompt");
+        writeln("Intro overlay tracks conversation emptiness");
     }
 
     // Restart: a Restart button in the toolbar, and a request that persists

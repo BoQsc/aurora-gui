@@ -342,7 +342,63 @@ int main()
         "Native steering prompt must mention the list operation");
     assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
         "Native steering prompt must mention the remove tool");
+    // The prompt carries the Codex workflow: a plan tool, a multi-file patch
+    // tool, and the editing constraints.
+    assert(toolSteeringPrompt(false).indexOf("apply_patch") >= 0,
+        "Steering prompt must advertise apply_patch");
+    assert(toolSteeringPrompt(false).indexOf("update_plan") >= 0,
+        "Steering prompt must advertise update_plan");
+    assert(toolSteeringPrompt(false).indexOf("Editing constraints") >= 0,
+        "Steering prompt must carry the Codex editing constraints");
     writeln("Default vs native-only toolset shapes OK");
+
+    // write creates missing parent directories, as its description promises.
+    {
+        auto result = executeTool(makeCall("write",
+            `{"filePath":"deep/nested/file.txt","content":"hi"}`), dir);
+        assert(!result.failed, "write parent dirs failed: " ~ result.output);
+        assert(readText(buildPath(dir, "deep", "nested", "file.txt")) == "hi",
+            "write did not create parent directories");
+        writeln("write creates missing parent directories");
+    }
+
+    // apply_patch: one call adds, updates and deletes several files, the
+    // Codex multi-file editing workflow.
+    {
+        write(buildPath(dir, "keep.txt"), "keep\nold\n");
+        write(buildPath(dir, "gone.txt"), "bye\n");
+        auto result = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Add File: sub/new.txt\n+hello\n+world\n*** Update File: keep.txt\n@@\n keep\n-old\n+new\n*** Delete File: gone.txt\n*** End Patch"}`),
+            dir);
+        assert(!result.failed, "apply_patch failed: " ~ result.output);
+        assert(readText(buildPath(dir, "sub", "new.txt")) ==
+            "hello\nworld", "apply_patch add content wrong");
+        assert(readText(buildPath(dir, "keep.txt")) == "keep\nnew\n",
+            "apply_patch update wrong: " ~ readText(buildPath(dir, "keep.txt")));
+        assert(!exists(buildPath(dir, "gone.txt")),
+            "apply_patch delete failed");
+        assert(result.additions > 0 && result.deletions > 0,
+            "apply_patch must report a diff: " ~ result.output);
+        writeln("apply_patch adds, updates and deletes files in one call");
+    }
+
+    // update_plan renders a checked list and enforces a single in-progress
+    // step, so the transcript can show the plan.
+    {
+        auto result = executeTool(makeCall("update_plan",
+            `{"explanation":"starting","plan":[{"step":"read","status":"completed"},{"step":"write","status":"in_progress"},{"step":"test","status":"pending"}]}`),
+            dir);
+        assert(!result.failed, "update_plan failed: " ~ result.output);
+        assert(result.output.indexOf("[x] read") >= 0 &&
+            result.output.indexOf("[>] write") >= 0 &&
+            result.output.indexOf("[ ] test") >= 0,
+            "update_plan output wrong: " ~ result.output);
+        auto bad = executeTool(makeCall("update_plan",
+            `{"plan":[{"step":"a","status":"in_progress"},{"step":"b","status":"in_progress"}]}`),
+            dir);
+        assert(bad.failed, "update_plan must reject two in_progress steps");
+        writeln("update_plan renders steps and enforces one in-progress step");
+    }
 
     // unknown tools report a clear error rather than crashing
     auto unknownResult = executeTool(makeCall("nope", "{}"), dir);

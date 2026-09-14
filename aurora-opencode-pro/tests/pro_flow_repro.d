@@ -79,6 +79,7 @@ int main(string[] args)
     dump(root, "after content stream");
 
     OpenCodeToolCall writeCall;
+    writeCall.id = "call_write_1";
     writeCall.name = "write";
     writeCall.arguments =
         `{"filePath":"game.html","content":"<html>\n<body>\n</body>\n</html>"}`;
@@ -114,6 +115,7 @@ int main(string[] args)
 
     root.streamContentForTesting("Adding the physics loop now.");
     OpenCodeToolCall editCall;
+    editCall.id = "call_edit_1";
     editCall.name = "edit";
     editCall.arguments =
         `{"filePath":"game.html","oldString":"body","newString":"body + js"}`;

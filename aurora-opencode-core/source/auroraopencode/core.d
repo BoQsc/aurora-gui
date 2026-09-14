@@ -303,6 +303,11 @@ public struct ChatMessage
     // `parentId` is empty only for a root message.
     string id;
     string parentId;
+    // Synthetic control turn (e.g. "you reached the tool-round limit, stop and
+    // answer"). It is still sent to the model as a user message, but it is an
+    // app instruction rather than the user's own words, so the transcript hides
+    // it instead of rendering it as a fake user bubble.
+    bool internal;
 }
 
 public struct ChatSession

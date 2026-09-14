@@ -113,6 +113,39 @@ private OpenCodeToolDef editToolDefinition()
     );
 }
 
+/// The D-native `apply_patch` tool definition, shared by both tool sets. It
+/// takes a Codex-format patch (multi-file, multi-hunk) and applies the whole
+/// thing in one call, so a change spanning several files costs one round
+/// instead of one round per edit.
+private OpenCodeToolDef applyPatchToolDefinition()
+{
+    return OpenCodeToolDef(
+        "apply_patch",
+        "Apply a patch in the Codex format to one or more files in a single " ~
+        "call. The patch is wrapped in `*** Begin Patch` / `*** End Patch` " ~
+        "and may contain `*** Add File:`, `*** Update File:` and `*** Delete " ~
+        "File:` sections. Inside an update, unchanged context lines start " ~
+        "with a space, removed lines with `-` and added lines with `+`. " ~
+        "Prefer this over several `edit` calls when a change touches " ~
+        "multiple files or places.",
+        `{"type":"object","properties":{"patch":{"type":"string","description":"The patch text, starting with *** Begin Patch and ending with *** End Patch"}},"required":["patch"]}`
+    );
+}
+
+/// The D-native `update_plan` tool definition: records the task plan so the
+/// user can see the steps and their progress. At most one step may be
+/// `in_progress` at a time.
+private OpenCodeToolDef updatePlanToolDefinition()
+{
+    return OpenCodeToolDef(
+        "update_plan",
+        "Update the task plan with a list of steps, each carrying a status " ~
+        "of `pending`, `in_progress` or `completed`. Use it for multi-step " ~
+        "work; at most one step may be in_progress at a time.",
+        `{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The list of steps"}},"required":["plan"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -129,6 +162,8 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         dshellToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
+        applyPatchToolDefinition(),
+        updatePlanToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -175,6 +210,8 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         dshellToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
+        applyPatchToolDefinition(),
+        updatePlanToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -221,9 +258,11 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     const isGitRepo = exists(buildPath(workspace, ".git"));
 
     auto builder = appender!string();
-    builder.put("You are Aurora OpenCode, an interactive desktop assistant " ~
-        "that helps users with software engineering and file tasks. Use the " ~
-        "instructions below and the tools available to you to assist the user.\n");
+    builder.put("You are Aurora OpenCode, an interactive coding agent that " ~
+        "runs on the user's computer and works through the same agent " ~
+        "workflow as Codex: plan, gather context, apply patches, run " ~
+        "commands, verify, and report. Use the instructions below and the " ~
+        "tools available to you to assist the user.\n");
 
     builder.put("\n# Environment\n");
     builder.put("<env>\n");
@@ -234,14 +273,44 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("  Today's date: " ~ today ~ "\n");
     builder.put("</env>\n");
 
-    builder.put("\n# Tone and style\n");
-    builder.put("Be concise, direct, and to the point. When you run a " ~
-        "non-trivial tool call, explain what it does and why you are running " ~
-        "it. Your output is displayed in a chat UI and rendered with " ~
-        "GitHub-flavored Markdown. Minimize output tokens while maintaining " ~
-        "helpfulness, quality, and accuracy; only address the specific query " ~
-        "at hand. Do not add unnecessary preamble or postamble. Only use " ~
-        "emojis if the user explicitly requests them.\n");
+    builder.put("\n## General\n");
+    builder.put("- When searching for text or files, prefer `grep` and " ~
+        "`glob` because they are much faster than shelling out; if you do " ~
+        "use a shell, prefer ripgrep (`rg`).\n");
+    builder.put("- Your output is plain text rendered in a chat UI with " ~
+        "GitHub-flavored Markdown. Be concise, direct, and active; mirror " ~
+        "the user's tone; only use emojis if the user explicitly asks.\n");
+    builder.put("- Do not narrate every individual tool call. Write one " ~
+        "short sentence before a batch of calls so the user can follow " ~
+        "along, then let the tools speak for themselves.\n");
+
+    builder.put("\n## Editing constraints\n");
+    builder.put("- Default to ASCII when creating or editing files. Only " ~
+        "introduce non-ASCII when there is a clear justification and the " ~
+        "file already uses it.\n");
+    builder.put("- Add succinct comments only where the code is not " ~
+        "self-explanatory; do not comment trivial statements.\n");
+    builder.put("- Prefer `apply_patch` for file edits: it applies many " ~
+        "files and hunks in one call, so a whole change costs one round. " ~
+        "Use `edit`/`write` when a patch is awkward, and never use " ~
+        "`apply_patch` for auto-generated files or bulk search-and-replace.\n");
+    builder.put("- The worktree may be dirty. NEVER revert changes you did " ~
+        "not make unless the user explicitly asks; work with them instead. " ~
+        "Do not amend commits unless asked.\n");
+    builder.put("- NEVER run destructive commands such as `git reset " ~
+        "--hard` or `git checkout --` unless the user explicitly requests " ~
+        "or approves them.\n");
+    builder.put("- If you notice unexpected changes you did not make, stop " ~
+        "and ask the user how to proceed.\n");
+
+    builder.put("\n## Plan tool\n");
+    builder.put("Use the `update_plan` tool to track multi-step work.\n");
+    builder.put("- Skip the plan for straightforward tasks (roughly the " ~
+        "easiest 25%) and never make a single-step plan.\n");
+    builder.put("- Give each step a `status`: `pending`, `in_progress`, or " ~
+        "`completed`. At most one step may be `in_progress` at a time.\n");
+    builder.put("- Update the plan after completing a step, not on every " ~
+        "tool call.\n");
 
     builder.put("\n# Tool usage policy\n");
     if (nativeOnly)
@@ -292,6 +361,17 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "\"replaceAll\":true to change every occurrence, or \"newString\":\"\" " ~
         "to delete. Prefer `edit` over `write` for small changes; the result " ~
         "shows a unified +adds/-dels diff.\n");
+    builder.put("- `apply_patch` {\"patch\":\"*** Begin Patch\\n*** Update " ~
+        "File: src/main.d\\n@@\\n context\\n-old\\n+new\\n*** End Patch\"} - " ~
+        "apply a multi-file, multi-hunk patch in ONE call (Codex patch " ~
+        "format). Use `*** Add File:`, `*** Update File:` and `*** Delete " ~
+        "File:` sections; prefix unchanged lines with a space, removals " ~
+        "with `-`, additions with `+`. This is the preferred way to make a " ~
+        "change that touches several files or places.\n");
+    builder.put("- `update_plan` {\"explanation\":\"why\",\"plan\":" ~
+        "[{\"step\":\"read the code\",\"status\":\"completed\"}," ~
+        "{\"step\":\"write the fix\",\"status\":\"in_progress\"}]} - record " ~
+        "and update the task plan so the user can see the steps.\n");
     builder.put("- `glob` {\"pattern\":\"src/**/*.d\"} — list files and " ~
         "directories matching a glob pattern.\n");
     builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"} " ~
@@ -314,6 +394,60 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "smallest change with `edit` (or `write` for new files or full " ~
         "rewrites), verify with `run`/`bash`, then briefly summarise what " ~
         "changed.\n");
+    builder.put("Batch independent tool calls into a single response (for " ~
+        "example read several files, or grep several patterns, at once) so a " ~
+        "turn does not spend one round per tiny step. Only call tools one at a " ~
+        "time when each call depends on the previous result.\n");
+    builder.put("Before a batch of tool calls, write one short sentence saying " ~
+        "what you are about to do and why, so the user can follow along; keep " ~
+        "it to a line, do not narrate every individual call.\n");
+
+    builder.put("\n## Special user requests\n");
+    builder.put("- If the user makes a simple request you can fulfil with a " ~
+        "terminal command (such as asking for the time), run the command.\n");
+    builder.put("- If the user asks for a \"review\", default to a code " ~
+        "review mindset: prioritise bugs, risks, behavioural regressions " ~
+        "and missing tests. Findings are the primary focus, ordered by " ~
+        "severity with file/line references, followed by open questions; " ~
+        "keep any summary brief and last. If there are no findings, say so " ~
+        "and name the residual risks or testing gaps.\n");
+
+    builder.put("\n## Frontend tasks\n");
+    builder.put("When doing frontend design tasks, avoid safe, average " ~
+        "layouts and aim for interfaces that feel intentional and bold.\n");
+    builder.put("- Typography: expressive, purposeful fonts; avoid default " ~
+        "stacks (Inter, Roboto, Arial, system).\n");
+    builder.put("- Color: choose a clear visual direction; define CSS " ~
+        "variables; avoid purple-on-white and default dark-mode looks.\n");
+    builder.put("- Motion: a few meaningful animations (page load, " ~
+        "staggered reveals) instead of generic micro-motions.\n");
+    builder.put("- Background: gradients, shapes or subtle patterns, not " ~
+        "a flat single color.\n");
+    builder.put("- Ensure the page works on desktop and mobile. Exception: " ~
+        "when working inside an existing website or design system, preserve " ~
+        "its established patterns and visual language.\n");
+
+    builder.put("\n## Presenting your work and final message\n");
+    builder.put("- Default: be very concise; a friendly coding-teammate " ~
+        "tone. Skip heavy formatting for simple confirmations.\n");
+    builder.put("- For substantial work, summarise clearly: lead with a " ~
+        "quick explanation of the change, then the context of where and why " ~
+        "it was made. Do not start with the word \"summary\".\n");
+    builder.put("- Do not dump large files you wrote; reference paths only. " ~
+        "The user is on the same machine, so never say \"save/copy this " ~
+        "file\".\n");
+    builder.put("- Offer logical next steps (tests, commits, build) " ~
+        "briefly, and add verification steps if you could not do something.\n");
+    builder.put("- When you list options for the user to choose from, use a " ~
+        "numeric list so the user can reply with a single number.\n");
+    builder.put("- Final answer style: plain text; short Title Case headers " ~
+        "in **bold** only when they help; bullets with \"-\", 4-6 per list, " ~
+        "one line each, most important first; backticks for commands, " ~
+        "paths, env vars and code ids (never combined with bold); no " ~
+        "nested bullets; present tense, active voice.\n");
+    builder.put("- File references: wrap each path in backticks, give each " ~
+        "reference its own path, and optionally a 1-based line/column " ~
+        "(e.g. `src/app.d:42`). Do not use `file://` URIs or line ranges.\n");
 
     builder.put("\n# Concise responses\n");
     builder.put("Keep answers short unless the user asks for detail. Answer " ~
@@ -994,6 +1128,8 @@ private ToolExecution runWrite(string args, string workspace)
     }
     try
     {
+        import std.path : dirName;
+        if (dirName(path).length > 0) mkdirRecurse(dirName(path));
         write(path, content);
     }
     catch (Exception error)
@@ -1200,6 +1336,359 @@ private ToolExecution runEdit(string args, string workspace)
     result.additions = diff.additions;
     result.deletions = diff.deletions;
     result.diff = diff.unified;
+    return result;
+}
+
+/// Join patch lines with the newline the patch format uses.
+private string joinPatchLines(string[] items)
+{
+    auto builder = appender!string();
+    foreach (index, item; items)
+    {
+        if (index > 0) builder.put("\n");
+        builder.put(item);
+    }
+    return builder.data;
+}
+
+/// True when `line` (after trimming) starts with one of the `*** ...`
+/// section markers used by the Codex patch format.
+private bool isPatchDirective(string line)
+{
+    const trimmed = strip(line);
+    foreach (prefix; ["*** Begin Patch", "*** End Patch", "*** Add File:",
+        "*** Update File:", "*** Delete File:", "*** Move to:"])
+    {
+        if (trimmed.length >= prefix.length &&
+            trimmed[0 .. prefix.length] == prefix)
+            return true;
+    }
+    return false;
+}
+
+/// Apply a Codex-format patch to one or more files in a single call. The
+/// patch is a sequence of `*** Add File:` / `*** Update File:` /
+/// `*** Delete File:` sections wrapped in `*** Begin Patch` / `*** End
+/// Patch`. This is the multi-file editing workflow: many hunks across many
+/// files cost one round instead of one round per edit.
+private ToolExecution runApplyPatch(string args, string workspace)
+{
+    import std.string : splitLines;
+
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string patch;
+    if (value.type == JSONType.object)
+    {
+        foreach (key; ["patch", "input", "text"])
+        {
+            if (auto field = key in value.object)
+            {
+                if (field.type == JSONType.string && field.str.length > 0)
+                {
+                    patch = field.str;
+                    break;
+                }
+            }
+        }
+    }
+    if (patch.length == 0)
+        return ToolExecution("apply_patch",
+            "Error: apply_patch requires a `patch` string.", true);
+
+    patch = patch.replace("\r\n", "\n").replace("\r", "\n");
+    auto lines = patch.splitLines();
+    if (lines.length > 0 && lines[$ - 1].length == 0)
+        lines = lines[0 .. $ - 1];
+
+    // Locate the envelope; be lenient if the model omitted the markers.
+    size_t bodyStart = 0;
+    size_t bodyEnd = lines.length;
+    foreach (index, line; lines)
+        if (strip(line) == "*** Begin Patch")
+        {
+            bodyStart = index + 1;
+            break;
+        }
+    for (size_t index = lines.length; index > 0; --index)
+        if (strip(lines[index - 1]) == "*** End Patch")
+        {
+            bodyEnd = index - 1;
+            break;
+        }
+    if (bodyStart > bodyEnd) bodyStart = bodyEnd;
+
+    string[] touched;
+    string combinedDiff;
+    int totalAdditions;
+    int totalDeletions;
+    string[] failures;
+
+    size_t cursor = bodyStart;
+    while (cursor < bodyEnd)
+    {
+        const directive = strip(lines[cursor]);
+        if (directive.length == 0)
+        {
+            ++cursor;
+            continue;
+        }
+        if (directive.length >= "*** Add File:".length &&
+            directive[0 .. "*** Add File:".length] == "*** Add File:")
+        {
+            const rel = strip(directive["*** Add File:".length .. $]);
+            ++cursor;
+            auto builder = appender!string();
+            bool first = true;
+            while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+            {
+                const raw = lines[cursor];
+                if (!first) builder.put("\n");
+                first = false;
+                builder.put(raw.length > 0 && raw[0] == '+' ? raw[1 .. $] : raw);
+                ++cursor;
+            }
+            const path = resolveToolPath(rel, workspace);
+            try
+            {
+                import std.path : dirName;
+                if (dirName(path).length > 0) mkdirRecurse(dirName(path));
+                write(path, builder.data);
+                auto diff = computeTextDiff("", builder.data);
+                totalAdditions += diff.additions;
+                totalDeletions += diff.deletions;
+                combinedDiff ~= diff.unified ~ "\n";
+                touched ~= rel;
+            }
+            catch (Exception error)
+                failures ~= rel ~ ": " ~ error.msg;
+            continue;
+        }
+        if (directive.length >= "*** Delete File:".length &&
+            directive[0 .. "*** Delete File:".length] == "*** Delete File:")
+        {
+            const rel = strip(directive["*** Delete File:".length .. $]);
+            ++cursor;
+            const path = resolveToolPath(rel, workspace);
+            try
+            {
+                string previous = exists(path) ? readText(path) : "";
+                if (exists(path)) remove(path);
+                auto diff = computeTextDiff(previous, "");
+                totalDeletions += diff.deletions;
+                combinedDiff ~= diff.unified ~ "\n";
+                touched ~= rel;
+            }
+            catch (Exception error)
+                failures ~= rel ~ ": " ~ error.msg;
+            continue;
+        }
+        if (directive.length >= "*** Update File:".length &&
+            directive[0 .. "*** Update File:".length] == "*** Update File:")
+        {
+            const rel = strip(directive["*** Update File:".length .. $]);
+            ++cursor;
+            const path = resolveToolPath(rel, workspace);
+            if (!exists(path) || !isFile(path))
+            {
+                failures ~= rel ~ ": file not found";
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
+            string original;
+            try original = readText(path);
+            catch (Exception error)
+            {
+                failures ~= rel ~ ": " ~ error.msg;
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
+
+            string content = original;
+            size_t searchPos;
+            bool hunkFailed;
+            string failReason;
+            string[] oldLines;
+            string[] newLines;
+
+            void flushHunk()
+            {
+                if (oldLines.length == 0 && newLines.length == 0) return;
+                const oldBlock = joinPatchLines(oldLines);
+                const newBlock = joinPatchLines(newLines);
+                const at = oldBlock.length == 0
+                    ? searchPos : content.indexOf(oldBlock, searchPos);
+                if (at < 0)
+                {
+                    hunkFailed = true;
+                    failReason = "patch context not found";
+                    return;
+                }
+                content = content[0 .. at] ~ newBlock ~
+                    content[at + oldBlock.length .. $];
+                searchPos = at + newBlock.length;
+                oldLines.length = 0;
+                newLines.length = 0;
+            }
+
+            while (cursor < bodyEnd)
+            {
+                const raw = lines[cursor];
+                if (isPatchDirective(raw)) break;
+                if (strip(raw).length >= 2 && strip(raw)[0 .. 2] == "@@")
+                {
+                    flushHunk();
+                    if (hunkFailed) break;
+                    ++cursor;
+                    continue;
+                }
+                if (raw.length == 0)
+                {
+                    ++cursor;
+                    continue;
+                }
+                const marker = raw[0];
+                if (marker == '\\')
+                {
+                    ++cursor;
+                    continue;
+                }
+                const text = raw.length > 0 ? raw[1 .. $] : "";
+                switch (marker)
+                {
+                    case ' ':
+                        oldLines ~= text;
+                        newLines ~= text;
+                        break;
+                    case '-':
+                        oldLines ~= text;
+                        break;
+                    case '+':
+                        newLines ~= text;
+                        break;
+                    default:
+                        hunkFailed = true;
+                        failReason = "unexpected patch line: " ~ raw;
+                        break;
+                }
+                if (hunkFailed) break;
+                ++cursor;
+            }
+            if (!hunkFailed) flushHunk();
+            if (hunkFailed)
+            {
+                failures ~= rel ~ ": " ~ failReason;
+                continue;
+            }
+            try
+            {
+                write(path, content);
+                auto diff = computeTextDiff(original, content);
+                totalAdditions += diff.additions;
+                totalDeletions += diff.deletions;
+                combinedDiff ~= diff.unified ~ "\n";
+                touched ~= rel;
+            }
+            catch (Exception error)
+                failures ~= rel ~ ": " ~ error.msg;
+            continue;
+        }
+        ++cursor;
+    }
+
+    if (touched.length == 0 && failures.length == 0)
+        return ToolExecution("apply_patch",
+            "Error: no files were changed; the patch had no sections.", true);
+
+    auto builder = appender!string();
+    builder.put("Applied patch to " ~ to!string(touched.length) ~
+        (touched.length == 1 ? " file" : " files") ~ " (+" ~
+        to!string(totalAdditions) ~ " -" ~ to!string(totalDeletions) ~ ").");
+    if (failures.length > 0)
+    {
+        builder.put("\nFailed:");
+        foreach (failure; failures)
+            builder.put("\n- " ~ failure);
+    }
+    ToolExecution result;
+    result.name = "apply_patch";
+    result.output = builder.data;
+    result.additions = totalAdditions;
+    result.deletions = totalDeletions;
+    result.diff = combinedDiff;
+    result.failed = failures.length > 0;
+    return result;
+}
+
+/// The D-native `update_plan` tool: validate the model's plan and render it as
+/// a checked list so the transcript shows the steps and their progress.
+private ToolExecution runUpdatePlan(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object)
+        return ToolExecution("update_plan",
+            "Error: update_plan requires a `plan` array.", true);
+    JSONValue[] plan;
+    if (auto field = "plan" in value.object)
+        if (field.type == JSONType.array)
+            plan = field.array;
+    if (plan.length == 0)
+        return ToolExecution("update_plan",
+            "Error: `plan` must be a non-empty array of steps.", true);
+
+    string[] rendered;
+    int inProgress;
+    foreach (index, item; plan)
+    {
+        if (item.type != JSONType.object)
+            return ToolExecution("update_plan",
+                "Error: each plan item needs `step` and `status`.", true);
+        string step;
+        string status;
+        if (auto field = "step" in item.object)
+            if (field.type == JSONType.string)
+                step = field.str;
+        if (auto field = "status" in item.object)
+            if (field.type == JSONType.string)
+                status = field.str;
+        if (step.length == 0)
+            return ToolExecution("update_plan",
+                "Error: every plan step needs non-empty `step` text.", true);
+        string marker;
+        switch (status)
+        {
+            case "completed": marker = "[x]"; break;
+            case "in_progress": marker = "[>]"; ++inProgress; break;
+            case "pending": marker = "[ ]"; break;
+            default:
+                return ToolExecution("update_plan",
+                    "Error: invalid status '" ~ status ~
+                    "' (use pending, in_progress or completed).", true);
+        }
+        rendered ~= to!string(index + 1) ~ ". " ~ marker ~ " " ~ step;
+    }
+    if (inProgress > 1)
+        return ToolExecution("update_plan",
+            "Error: at most one step may be in_progress.", true);
+
+    string explanation;
+    if (auto field = "explanation" in value.object)
+        if (field.type == JSONType.string)
+            explanation = field.str;
+    auto builder = appender!string();
+    builder.put("Plan updated");
+    if (explanation.length > 0) builder.put(" (" ~ explanation ~ ")");
+    builder.put(":");
+    foreach (line; rendered)
+        builder.put("\n" ~ line);
+    ToolExecution result;
+    result.name = "update_plan";
+    result.output = builder.data;
     return result;
 }
 
@@ -1498,6 +1987,10 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return runWrite(call.arguments, workspace);
         case "edit":
             return runEdit(call.arguments, workspace);
+        case "apply_patch":
+            return runApplyPatch(call.arguments, workspace);
+        case "update_plan":
+            return runUpdatePlan(call.arguments, workspace);
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":

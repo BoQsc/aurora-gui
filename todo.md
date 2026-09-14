@@ -1,5 +1,144 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: restore paragraph -> collapsible interleave; keep Thinking visible
+
+**Complaint (user).** "it just goes on and on reaching limits and never producing
+anything or editing, i feel like we need again look at how codex does things.
+sure i see that they hide thinking at all, but this is different problem too, we
+simply not writing in text small paragrap -> collapsable -> text small paragraph
+-> collapsable. since we are open source, we should keep thinking not hidden and
+as collapsable."
+
+**Diagnosis.** The previous change (section below, "Codex-scale grouping") had
+merged every round of a user turn into ONE action group anchored at the turn's
+first assistant reply, while reasoning stayed per round. On a long agent run
+that produced a transcript shaped like `[Thinking, Thinking, Thinking, …]` then
+one giant `Edited 38 files parts=51` group stranded at the top, then the prose —
+i.e. the collapsibles no longer sat between the paragraphs. The real session at
+`%APPDATA%\Aurora OpenCode\sessions.json` ("let's make completely new platformer
+game") showed exactly this: 24 Thinking headers, one group with 51 parts, then
+~30 prose bubbles interleaved with hidden tool wrappers. It read as "nothing is
+happening, it just loops" because the edits were all collapsed into one group at
+the top instead of appearing next to the sentence that produced them.
+
+**Fix (revert of the merge; supersedes the section below).**
+- **One action group per round, in round order.** `rebuildMessageColumn` again
+  builds each round's group from that round's own owned tool results
+  (`childSlots`), placed right after the round's assistant bubble. A multi-round
+  turn now reads as `paragraph -> collapsible -> paragraph -> collapsible`.
+  Collapse state is keyed by the round's assistant message id.
+- **Thinking stays visible and collapsible, per round.**
+  `thinkingText[slot] = message.reasoning` (the cross-round aggregation and the
+  live-bubble suppression are gone). Reasoning is never hidden; it is only
+  collapsed by default, so an open-source user can inspect any round's chain of
+  thought.
+- **Turn timer** still rides the turn's first action group (the round timer is
+  per user turn): `openTurn` is reset on each user message and the first group
+  built in the turn gets `applyTurnTiming`; later rounds' groups stay untimed.
+  `addLiveToolRows` now returns the group it created so the live path can apply
+  the clock too.
+- **Internal control turns are no longer rendered as user bubbles.**
+  `ChatMessage` gained `bool internal`; the max-rounds finalize prompt and the
+  doom-loop recovery prompt set it. They are still sent to the model (they steer
+  it to stop and answer) but `rebuildMessageColumn` skips them and
+  `activeTurnUserId` ignores them, so the transcript no longer shows a fake
+  "You have reached the maximum number of tool calls…" user prompt where the
+  agent hit the cap. (Historical sessions saved before this change still show the
+  old message, since the flag was not persisted.)
+
+**Verified.**
+- [x] Smoke guard rewritten to the per-round design ("Each tool round keeps its
+      own Thinking + action group (stable order)"): 3 rounds -> 3 Thinking
+      headers, 2 groups, stable across a canonical rebuild. `headless-pro-smoke`
+      EXIT=0 (77 lines, ends "…smoke test passed").
+- [x] Timer guard still passes ("Action group header times the turn and freezes
+      at completion").
+- [x] `pro-flow-repro` scripted phases now read `user -> assistant -> GROUP ->
+      assistant -> GROUP -> … -> final assistant` (one group per round).
+- [x] `pro-flow-repro real` renders the 60-session store with the interleave and
+      no exception; the max-rounds user bubble is the only no longer-rendered
+      control message.
+- [x] App rebuilt (`dub build --compiler=dmd --force --build=release`), the old
+      PID killed, exactly one instance relaunched (PID 24364).
+
+**Agent loop fix (same session).** The user pushed back ("are you avoiding
+fixing issues?") and the screenshot showed the "last stand" session stuck in
+`▸ Thinking → ▸ Ran a command → ▸ Explored a file` for dozens of rounds until
+the cap. Dumping the real session from `%APPDATA%\Aurora OpenCode\sessions.json`
+showed the model was making legitimate progress (writes/edits/tests) but each
+`edit` is one dependent tool call, so a 40-edit task is ~40 rounds:
+`maxToolRounds = 50` fired at msgs 27/83/113, skipped the in-flight tool, and
+forced a finalize prompt mid-edit ("hit the tool limit mid-integration; the bot
+feature is half-…"). Fix:
+- `maxToolRounds` raised `50` -> `300` (appui.d). The doom-loop guard
+  (`doomLoopRepeatThreshold = 3`, identical repeated call) is the real loop
+  detector; the round cap is only a runaway backstop, so it must not truncate
+  real work. No test referenced the value.
+- `buildSystemPrompt` (tools.d) now asks the model to (a) batch independent
+  tool calls into one response so a turn does not spend a round per file/pattern,
+  and (b) write one short sentence before a batch so the transcript shows prose
+  between collapsibles instead of only tool groups.
+- Verified: smoke EXIT=0; app rebuilt and relaunched (PID 10224, titlebar
+  `2026-09-14 19:54`).
+
+## 2026-09-14 - Pro: Codex-scale grouping + turn timer header ("Worked for 0m 0s")
+
+**Complaint (user).** Aurora's transcript was still too fragmented around tools:
+"one line of write, many collapsables, thinking, text at end". Codex, by
+contrast, "groups way larger amounts of toolcalls, adds a timer 'worked for
+0m 0s' above, writes longer paragraphs."
+
+**Research (verified from `openai/codex` main, `codex-rs/tui/src`).** Codex
+grouping is by kind, not one blob: `ExecCell` coalesces consecutive
+read/list/search commands into one `Exploring`→`Explored` cell
+(`exec_cell/model.rs:89-113,205-216`); file edits (`PatchHistoryCell`) and
+MCP/computer calls are separate cells; in-flight work mutates ONE active cell in
+place (`chatwidget.rs:1219-1242`). "Worked for Xm Ys" is NOT a group header
+upstream — it is `FinalMessageSeparator` (`history_cell/separators.rs:51-80`), a
+dim line after the final message (only shown when elapsed > 60 s), joined by
+` · ` with `done %-I:%M %p`. The user chose: faithful per-kind grouping + the
+timer rendered AS the action-group header (a deliberate divergence from
+upstream placement).
+
+**Implemented (`aurora-opencode-pro/source/auroraopencode/appui.d`).**
+- **One action group per user turn, not per round.** A user turn may span
+  several assistant rounds (tool → reply → tool → reply). `rebuildMessageColumn`
+  now computes `turnUserId[slot]` (the user message that opened the turn) and
+  `isTurnAnchor[slot]` (the first assistant reply after it): the anchor's group
+  absorbs every owned tool result of every later round in that turn, so a
+  multi-round turn shows ONE collapsible (`Edited 2 files parts=2`) instead of
+  one group per round. Reasoning (`▸ Thinking`) and assistant text stay separate
+  cells per round (preserves the per-turn-reasoning ordering fix). Collapse state
+  is keyed by the user-turn id, so an expanded group stays expanded as later
+  rounds stream.
+- **Turn timer in the group header.** Header reads `▸ Working for 0m 2s ·
+  Edited a file, ran a command` while the turn runs and `▸ Worked for 0m 2s ·
+  …` once it settles. The clock is per *user* turn: `startChatRequest` takes
+  `userTurn` (tool-continuation rounds pass `false`), `beginTurnTiming` starts it
+  and `freezeTurnTiming` stores the final total in `_turnDurations[userId]`, so
+  every finished turn keeps its time for the rest of the run. A restored turn
+  whose duration was never observed shows the summary only (no timer).
+- `ToolGroupBubble.setTiming(live, seconds)` + `onTick` keep the running clock
+  between rebuilds (the root re-supplies the authoritative wall-clock elapsed on
+  every rebuild, so the display never drifts). New `formatTurnDuration` renders
+  `0m 3s` / `1m 07s`.
+- New hook `startTurnClockForTesting()` for the smoke.
+
+- [x] Smoke guard added ("Action group header times the turn and freezes at
+      completion"): live header shows `Working for 0m 2s`, settled shows
+      `Worked for`, and later ticks leave the frozen total unchanged.
+- [x] `pro_flow_repro.d` scripted tool calls given ids so they exercise the real
+      owner/merge path; a 2-round turn now dumps ONE `GROUP ▸ Edited 2 files
+      parts=2` (was two `parts=1`).
+- [x] Real restored session (`pro-flow-repro real`): merges historical
+      multi-round turns ("Edited a file, ran a command parts=2"), 6 groups total,
+      no exception.
+- [x] Full headless smoke EXIT=0 ("Aurora OpenCode Pro headless smoke test
+      passed."). App rebuilt (dub release) and relaunched as exactly one instance
+      (PID 16080, launched 2026-09-14 18:25:55).
+- [ ] Live end-to-end timer check needs a real prompt (network); deferred to the
+      user since it spends API credits. Unit/repro coverage stands.
+
 ## 2026-09-14 - Pro: transcript order churn — Thinking header migrated mid-exchange + stale stream view
 
 **Complaint (user).** "order or things change in the middle instead of at the
@@ -7365,4 +7504,18 @@ NOT ADDRESSED (verified infeasible now):
 - [x] Verified: `dub test` 40 modules (root), `dub test --config=application` 51 modules (aurora-stream), `python tests/verify-audio-transport.py` all pass.
 - [x] Diagnostic scripts created: TEST-RTMP-CONNECT.bat, TEST-UPLOAD-BANDWIDTH.bat, TEST-ENCODE-LOCAL.bat, TEST-SYSTEM-RESOURCES.bat in aurora-stream/.
 - [x] User workaround (until new build): RTMPS, lower bitrate, close background apps, Defender exclusion, wait 30 s between restarts — but the code fix now handles the stall gracefully.
+
+## 2026-09-14 — Aurora OpenCode Pro: adopt the Codex agent workflow — DONE
+- [x] User: "you are nowhere the workflow of codex. Why you are avoiding making it better." The transcript looked right but the AGENT behaviour did not: it made one dependent `edit` per round, so a multi-file change burned dozens of rounds and hit the tool cap.
+- [x] Root cause: we had never implemented Codex's actual workflow — no plan tool, no multi-file patch tool, and a generic system prompt. Raising `maxToolRounds` only delayed the problem.
+- [x] Ported the real Codex prompt (`codex-rs/core/gpt-5.1-codex-max_prompt.md`) into `tools.d` `buildSystemPrompt`, adapted to our tools/Chat-Completions: General, Editing constraints, Plan tool, Special user requests (review mindset), Frontend tasks, Presenting your work / final-answer style, file-reference rules. ASCII only.
+- [x] Added `apply_patch` (Codex `*** Begin Patch` format: Add/Update/Delete File, space/`-`/`+` markers) applied as a whole in one call — many files + hunks per round.
+- [x] Added `update_plan` (`{explanation?, plan:[{step,status}]}`, one `in_progress` max) rendered as a checked list.
+- [x] Wired both into `builtinToolDefinitions()` + `nativeOnlyToolDefinitions()` and the `appui.d` action rows (`Patch`/`Applying`, `Plan`/`Planning`, subtitle counts, group summary).
+- [x] Tests: `tools_test.d` gains `apply_patch adds, updates and deletes files in one call` and `update_plan renders steps and enforces one in-progress step`. `tools-test.exe` EXIT=0, `headless-pro-smoke.exe` EXIT=0.
+- [x] Rebuilt (20:08), killed PID 10224, launched exactly one instance (PID 17128); titlebar `Aurora OpenCode 2026-09-14 20:08` captured via `PrintWindow`.
+- [x] PROVEN live (2026-09-14): `tests/live_probe.d` runs the REAL app request (same system prompt + `builtinToolDefinitions`) against the gateway and executes the returned calls. Task "add add()/call it/delete old.d" finished in **4 rounds**: round 0 batched `bash + 3x read`, round 1 used **`apply_patch`** (one call, 3 files, +6 -5), round 2 verified, round 3 concise final answer with file refs. Files on disk correct. `update_plan` correctly skipped (simple task).
+- [x] Live run #2 (multi-step library) found `write` did NOT create parent dirs despite its description -> fixed `runWrite` with `mkdirRecurse(dirName(path))`; guard in `tools_test.d`.
+- [x] Live run #2 also showed a ~7-round loop retrying a near-identical FAILING `dmd` command; the exact-call doom-loop guard missed it. Added progress-based loop detection (same `toolName|firstOutputLine` failure 3x -> `breakToolLoop` injects a control turn); guard "Repeated-failure recovery breaks a failing tool loop".
+- [x] Noticed and documented: a SECOND agent session was editing the same tree (added `IntroOverlay`); both changes coexist and the smoke suite passes. Do not revert each other; kill any instance holding the exe before rebuilding.
 

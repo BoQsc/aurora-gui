@@ -1764,6 +1764,10 @@ private string humanToolTitle(string toolName)
             return "Write";
         case "edit":
             return "Edit";
+        case "apply_patch":
+            return "Patch";
+        case "update_plan":
+            return "Plan";
         case "remove":
             return "Delete";
         case "glob":
@@ -1792,6 +1796,10 @@ private string humanToolProgressTitle(string toolName)
             return "Writing";
         case "edit":
             return "Editing";
+        case "apply_patch":
+            return "Applying";
+        case "update_plan":
+            return "Planning";
         case "remove":
             return "Deleting";
         case "glob":
@@ -1830,6 +1838,18 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         case "write":
         case "edit":
             return basenameOf(toolArgFromArgs(toolArgs, "filePath"));
+        case "apply_patch":
+        {
+            const files = patchFileCount(toolArgFromArgs(toolArgs, "patch"));
+            if (files == 0) return "";
+            return to!string(files) ~ (files == 1 ? " file" : " files");
+        }
+        case "update_plan":
+        {
+            const steps = planStepCount(toolArgs);
+            if (steps == 0) return "";
+            return to!string(steps) ~ (steps == 1 ? " step" : " steps");
+        }
         case "glob":
         case "grep":
             return toolArgFromArgs(toolArgs, "pattern");
@@ -1861,6 +1881,45 @@ private static string basenameOf(string path)
     foreach (index, ch; path)
         if (ch == '/' || ch == '\\') cut = index + 1;
     return path[cut .. $];
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+private int countOccurrences(string haystack, string needle)
+{
+    import std.string : indexOf;
+
+    int count;
+    size_t from;
+    while (needle.length > 0)
+    {
+        const at = haystack.indexOf(needle, from);
+        if (at < 0) break;
+        ++count;
+        from = at + needle.length;
+    }
+    return count;
+}
+
+/// Number of file sections in a Codex-format patch, for the action row
+/// subtitle ("3 files").
+private int patchFileCount(string patch)
+{
+    return countOccurrences(patch, "*** Add File:") +
+        countOccurrences(patch, "*** Update File:") +
+        countOccurrences(patch, "*** Delete File:");
+}
+
+/// Number of steps in an `update_plan` call, for the action row subtitle.
+private int planStepCount(string toolArgs)
+{
+    JSONValue value;
+    try value = parseJSON(toolArgs);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object) return 0;
+    if (auto field = "plan" in value.object)
+        if (field.type == JSONType.array)
+            return cast(int) field.array.length;
+    return 0;
 }
 
 /// The body a mutating tool is producing, for the in-flight action row's
@@ -1896,13 +1955,14 @@ private string humanToolDetail(string toolName, string toolArgs)
 /// exploration (read/glob/grep).
 private string actionGroupSummary(const(string)[] toolNames, bool live)
 {
-    int edits, commands, explores;
+    int edits, commands, explores, plans;
     foreach (name; toolNames)
     {
         switch (name)
         {
             case "write":
             case "edit":
+            case "apply_patch":
             case "remove":
                 ++edits; break;
             case "bash":
@@ -1913,6 +1973,8 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
             case "glob":
             case "grep":
                 ++explores; break;
+            case "update_plan":
+                ++plans; break;
             default:
                 break;
         }
@@ -1946,6 +2008,8 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
             pieces ~= explores == 1 ? "explored a file"
                 : "explored " ~ to!string(explores) ~ " files";
     }
+    if (plans > 0)
+        pieces ~= live ? "updating the plan" : "updated the plan";
 
     string summary;
     foreach (index, piece; pieces)
@@ -1956,6 +2020,15 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
     if (summary.length == 0)
         summary = live ? "working" : "worked";
     return capitalizeFirst(summary);
+}
+
+/// Format an elapsed turn duration the way the action-group header shows it,
+/// e.g. "0m 3s" / "1m 07s" / "12m 04s". Whole seconds; never negative.
+private string formatTurnDuration(double seconds)
+{
+    if (seconds < 0) seconds = 0;
+    const total = cast(long) seconds;
+    return to!string(total / 60) ~ "m " ~ to!string(total % 60) ~ "s";
 }
 
 /// A vertical container that nests an assistant turn's tool results beneath it.
@@ -2308,6 +2381,15 @@ private final class ToolGroupBubble : Widget
     // and flips to the past tense once every tool has reported back.
     private bool _live;
 
+    // Turn clock, shown as the header prefix ("Worked for 0m 3s"). `timed` is
+    // false for a restored turn whose duration was never observed, so the
+    // header then carries only the action summary. `timing` keeps the clock
+    // running between column rebuilds; the root re-supplies the authoritative
+    // elapsed on every rebuild, so the ticking here never drifts.
+    private bool _timed;
+    private bool _timing;
+    private double _elapsedSeconds;
+
     // Optional persistence key so an expanded group stays expanded across the
     // many column rebuilds that happen while a reply streams.
     string collapseKey;
@@ -2377,6 +2459,27 @@ private final class ToolGroupBubble : Widget
         invalidate();
     }
 
+    /// Attach the turn clock to the header. `live` keeps it running (the header
+    /// reads "Working for 0m 3s"); a settled group shows the frozen total
+    /// ("Worked for 0m 3s"). Called on every rebuild with the root's
+    /// authoritative elapsed so the clock cannot drift.
+    void setTiming(bool live, double elapsedSeconds)
+    {
+        _timed = true;
+        _timing = live;
+        _elapsedSeconds = elapsedSeconds < 0 ? 0 : elapsedSeconds;
+        invalidate();
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_timing) return;
+        const int before = cast(int) _elapsedSeconds;
+        _elapsedSeconds += deltaSeconds;
+        // Repaint only when the visible second changes.
+        if (cast(int) _elapsedSeconds != before) invalidate();
+    }
+
     private int headerHeight()
     {
         return opencodeFontBase + 2;
@@ -2384,8 +2487,13 @@ private final class ToolGroupBubble : Widget
 
     private string headerText() const
     {
-        auto summary = actionGroupSummary(childToolNames(), _live);
-        return (_collapsed ? "▸" : "▾") ~ " " ~ summary;
+        const bool working = _timing || _live;
+        auto summary = actionGroupSummary(childToolNames(), working);
+        string head = summary;
+        if (_timed)
+            head = (working ? "Working for " : "Worked for ") ~
+                formatTurnDuration(_elapsedSeconds) ~ " · " ~ summary;
+        return (_collapsed ? "▸" : "▾") ~ " " ~ head;
     }
 
     protected override Size onMeasure(Size available)
@@ -2949,6 +3057,288 @@ private final class ChatScrollView : ScrollView
 }
 
 // ---------------------------------------------------------------------------
+// Empty-conversation intro overlay
+// ---------------------------------------------------------------------------
+
+/// Prompt starters offered on the empty state. Kept short so each pill fits on
+/// one line and the whole set packs into a couple of centered rows.
+private immutable string[] defaultIntroSuggestions = [
+    "Explain this codebase",
+    "Find and fix a bug",
+    "Write a test",
+    "Refactor a file",
+    "Summarize the project",
+];
+
+/// Shown over the transcript while the active conversation still has no
+/// messages: a centered welcome block with tappable prompt suggestions that
+/// prefill the composer. It is an overlay child of the scroll view (full
+/// viewport bounds, excluded from layout) so it never disturbs message layout,
+/// and it is hidden the moment the first bubble appears. The block fades in
+/// once, then stays put; that single motion marks the empty state without
+/// adding per-frame work to a live transcript.
+private final class IntroOverlay : Widget
+{
+    /// Fired with the suggestion's prompt text when a pill is clicked.
+    void delegate(string prompt) onSuggestion;
+
+    private static immutable int margin = 24;
+    private static immutable int iconSize = 44;
+    private static immutable int pillHeight = 34;
+    private static immutable int pillPadH = 14;
+    private static immutable int pillGap = 8;
+    private static immutable int rowGap = 10;
+    private static immutable double fadeSeconds = 0.18;
+
+    private string _title = "What can I help you with?";
+    private string _subtitle;
+    private string[] _suggestions;
+    private double _fade;
+    private int _hover = -1;
+    // Pill geometry is recorded during paint (like MessageBubble's copy/link
+    // targets) so hover and click map a point back to the right suggestion
+    // without measuring anything twice.
+    private Rect[] _pillRects;
+    private string[] _pillLabels;
+
+    void setSubtitle(string value)
+    {
+        if (_subtitle == value) return;
+        _subtitle = value;
+        invalidate();
+    }
+
+    void setSuggestions(const(string)[] values)
+    {
+        if (sameLabels(_suggestions, values)) return;
+        _suggestions = values.dup;
+        _hover = -1;
+        invalidate();
+    }
+
+    /// Restart the fade-in. Called every time the overlay becomes visible again
+    /// so the welcome animates in for each new conversation, not just at start.
+    void replay()
+    {
+        _fade = 0.0;
+        _hover = -1;
+        invalidate();
+    }
+
+    /// Test-only: current fade progress (0 = transparent, 1 = fully shown).
+    public double fadeForTesting() const { return _fade; }
+
+    /// Test-only: the suggestion labels rendered as pills.
+    public string[] suggestionsForTesting() const { return _suggestions.dup; }
+
+    /// Test-only: bounds of the pill at `index` (empty before the first paint).
+    public Rect suggestionBoundsForTesting(int index) const
+    {
+        return index >= 0 && index < cast(int) _pillRects.length
+            ? _pillRects[index] : Rect.init;
+    }
+
+    /// Test-only: click the pill at `index` exactly as a left click would.
+    public bool clickSuggestionForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _pillLabels.length) return false;
+        if (onSuggestion is null) return false;
+        onSuggestion(_pillLabels[index]);
+        return true;
+    }
+
+    private static bool sameLabels(const(string)[] a, const(string)[] b)
+    {
+        if (a.length != b.length) return false;
+        foreach (index; 0 .. a.length)
+            if (a[index] != b[index]) return false;
+        return true;
+    }
+
+    private TextLayout layoutFor(const(dchar)[] text, int pixelSize,
+        int maxWidth = 0, bool wrap = false)
+    {
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast(FontFace) theme().uiFont;
+        options.pixelSize = pixelSize;
+        options.maxWidth = maxWidth;
+        options.wrap = wrap;
+        return fontSystem().textEngine.layout(text, options);
+    }
+
+    private Color faded(Color color) const
+    {
+        return color.withAlpha(cast(int) (color.a * _fade));
+    }
+
+    private int pillAt(Point position) const
+    {
+        foreach (index, rect; _pillRects)
+            if (rect.contains(position)) return cast(int) index;
+        return -1;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        // The overlay fills its parent and takes its bounds from the layout
+        // pass; it never contributes an intrinsic size.
+        return available;
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (_fade >= 1.0) return;
+        _fade += deltaSeconds / fadeSeconds;
+        if (_fade >= 1.0) _fade = 1.0;
+        invalidate();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+
+        const contentWidth = maxInt(160,
+            minInt(width - 2 * margin, opencodeContentMaxWidth));
+        auto titleLayout = layoutFor(toUTF32(_title), opencodeFontDisplay);
+        TextLayout subtitleLayout;
+        if (_subtitle.length > 0)
+            // The workspace path can be long; wrap it inside the content column
+            // rather than letting it run past the pane edges.
+            subtitleLayout = layoutFor(toUTF32(_subtitle), opencodeFontBase,
+                contentWidth, true);
+        const titleH = cast(int) titleLayout.measuredSize().height;
+        const subtitleH = subtitleLayout is null ? 0 :
+            cast(int) subtitleLayout.measuredSize().height;
+
+        int[] pillWidths;
+        foreach (suggestion; _suggestions)
+        {
+            auto layout = layoutFor(toUTF32(suggestion), opencodeFontBase);
+            // A single suggestion wider than the column is capped so its pill
+            // still fits; the label is then elided at paint time.
+            pillWidths ~= minInt(contentWidth,
+                cast(int) layout.measuredSize().width + 2 * pillPadH);
+        }
+
+        // Pack the pills into centered rows that fit the content column.
+        struct PillRow { size_t first; size_t count; int width; }
+        PillRow[] rows;
+        size_t cursor;
+        while (cursor < _suggestions.length)
+        {
+            int rowWidth;
+            size_t count;
+            while (cursor + count < _suggestions.length)
+            {
+                const extra = pillWidths[cursor + count] +
+                    (count == 0 ? 0 : pillGap);
+                if (count > 0 && rowWidth + extra > contentWidth) break;
+                rowWidth += extra;
+                ++count;
+            }
+            if (count == 0)
+            {
+                count = 1;
+                rowWidth = pillWidths[cursor];
+            }
+            rows ~= PillRow(cursor, count, rowWidth);
+            cursor += count;
+        }
+
+        int pillsH;
+        if (rows.length > 0)
+            pillsH = cast(int) rows.length * pillHeight +
+                rowGap * (cast(int) rows.length - 1);
+
+        int block = iconSize + 18 + titleH + 8 + subtitleH;
+        if (rows.length > 0) block += 26 + pillsH;
+        int y = maxInt(24, (height - block) / 2 - 16);
+        const centerX = width / 2;
+
+        drawIcon(canvas, IconKind.terminal,
+            Rect(centerX - iconSize / 2, y, iconSize, iconSize),
+            faded(opencodeAccent));
+        y += iconSize + 18;
+
+        const titleX = maxInt(0,
+            (width - cast(int) titleLayout.measuredSize().width) / 2);
+        canvas.drawLayout(Point(titleX, y), titleLayout, faded(opencodeText));
+        y += titleH + 8;
+
+        if (subtitleH > 0)
+        {
+            const subtitleX = maxInt(0,
+                (width - cast(int) subtitleLayout.measuredSize().width) / 2);
+            canvas.drawLayout(Point(subtitleX, y), subtitleLayout,
+                faded(opencodeMuted));
+            y += subtitleH;
+        }
+
+        _pillRects.length = 0;
+        _pillLabels.length = 0;
+        if (rows.length == 0) return;
+        y += 26;
+        foreach (row; rows)
+        {
+            int x = maxInt(0, (width - row.width) / 2);
+            foreach (offset; 0 .. row.count)
+            {
+                const index = row.first + offset;
+                const rect = Rect(x, y, pillWidths[index], pillHeight);
+                const hovered = cast(int) index == _hover;
+                canvas.drawRoundedRect(rect, pillHeight / 2,
+                    faded(hovered ? opencodeSelection : opencodeField),
+                    faded(hovered ? opencodeAccent : opencodeBorder), 1);
+                // Draw through the pill's inner rect so a capped (too-wide)
+                // label elides instead of spilling past the rounded edge.
+                canvas.drawTextInRect(
+                    Rect(x + pillPadH, y, maxInt(1, pillWidths[index] - 2 * pillPadH),
+                        pillHeight),
+                    toUTF32(_suggestions[index]),
+                    faded(hovered ? opencodeText : opencodeMuted), 1,
+                    HorizontalAlign.center, VerticalAlign.middle, true,
+                    FontRole.ui, cast(FontFace) theme().uiFont);
+                _pillRects ~= rect;
+                _pillLabels ~= _suggestions[index];
+                x += pillWidths[index] + pillGap;
+            }
+            y += pillHeight + rowGap;
+        }
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const next = pillAt(event.position);
+        if (next != _hover)
+        {
+            _hover = next;
+            setCursor(next >= 0 ? CursorKind.hand : CursorKind.arrow);
+            invalidate();
+        }
+        return false;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_hover == -1) return;
+        _hover = -1;
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        const index = pillAt(event.position);
+        if (index < 0 || onSuggestion is null) return false;
+        onSuggestion(_pillLabels[index]);
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session sidebar list (Pro: context menu, Delete key)
 // ---------------------------------------------------------------------------
 
@@ -3187,6 +3577,7 @@ public final class OpenCodeRoot : VBox
     private SessionListView _sessionList;
     private ChatScrollView _messagesScroll;
     private VBox _messageColumn;
+    private IntroOverlay _introOverlay;
     private ChatInput _input;
     private ChatSendButton _sendButton;
     private ChatComposer _composer;
@@ -3241,7 +3632,14 @@ public final class OpenCodeRoot : VBox
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
     private int _toolRounds;
-    private static immutable int maxToolRounds = 50;
+    // Ceiling on assistant tool rounds in one user turn, not a "loop" detector:
+    // a real task legitimately takes many rounds because each `edit` is one
+    // dependent call (a 40-edit refactor is ~40 rounds). 50 cut real work off
+    // mid-file (observed 2026-09-14 on the "last stand" task: the cap fired at
+    // rounds 27/83/113 while the model was still editing). The doom-loop guard
+    // below catches genuine repetition; this is only a backstop against a truly
+    // runaway turn, so keep it high.
+    private static immutable int maxToolRounds = 300;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Doom-loop recovery (mirrors the original opencode app): when the model
@@ -3251,6 +3649,16 @@ public final class OpenCodeRoot : VBox
     private string _lastToolSignature;
     private int _lastToolRepeatCount;
     private static immutable int doomLoopRepeatThreshold = 3;
+
+    // Progress-based loop recovery: a model can also get stuck retrying a
+    // failing command with slightly different arguments (so the exact-call
+    // signature above never matches). Track the last failure's signature
+    // (tool name + first line of output); when the SAME failure repeats, the
+    // model is not making progress and the loop is broken. A success clears it.
+    private string _lastFailureSignature;
+    private int _lastFailureRepeatCount;
+    private bool _failureLoopDetected;
+    private static immutable int failureLoopRepeatThreshold = 3;
 
     private ContextUsageBadge _usageBadge;
     private HoverTooltip _usageTooltip;
@@ -3272,6 +3680,17 @@ public final class OpenCodeRoot : VBox
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
+
+    // Per-user-turn clock for the action-group header ("Worked for 0m 3s"). The
+    // clock spans the whole turn — every tool-continuation round re-enters the
+    // request path, but only the user-initiated request starts it. Completed
+    // durations are kept per turn (keyed by the id of the user message that
+    // opened it) so every finished turn in the session shows its time for the
+    // rest of the run.
+    private MonoTime _turnStartedAt;
+    private string _turnUserId;
+    private bool _turnTiming;
+    private double[string] _turnDurations;
 
     // Restart: rebuild the package with DUB and relaunch the app. A detached
     // helper does the work after this window closes (see auroraopencode.restart);
@@ -3577,6 +3996,24 @@ public final class OpenCodeRoot : VBox
         _messagesScroll = new ChatScrollView(messageCenter);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
+
+        // Welcome overlay lives inside the transcript viewport (so it scrolls
+        // with nothing and never competes with the message column's layout) and
+        // is painted above it. It is hidden as soon as the conversation has a
+        // message; `updateIntroOverlay` keeps that in step.
+        _introOverlay = _messagesScroll.add(new IntroOverlay());
+        _introOverlay.setId("oc-intro");
+        _introOverlay.layoutHints().excludeFromLayout = true;
+        _introOverlay.layoutHints().overlayFillParent = true;
+        _introOverlay.layoutHints().allowOverflow = true;
+        _introOverlay.setSuggestions(defaultIntroSuggestions);
+        _introOverlay.onSuggestion = delegate(string prompt)
+        {
+            _input.setText(prompt);
+            _input.requestFocus();
+            updateStatus("");
+        };
+        _introOverlay.setVisible(false);
 
         _input = new ChatInput();
         _input.setId("oc-input");
@@ -4039,6 +4476,9 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _failureLoopDetected = false;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         clearActivity();
@@ -4063,6 +4503,9 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _failureLoopDetected = false;
         clearActivity();
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
@@ -4130,7 +4573,11 @@ public final class OpenCodeRoot : VBox
         if (_streamBubble !is null && _streamBubble.parent() !is null)
             _streamBubble.parent().remove(_streamBubble);
         _messageColumn.clearChildren();
-        if (_current < 0) return;
+        if (_current < 0)
+        {
+            updateIntroOverlay();
+            return;
+        }
         const session = &_sessions[_current];
         const path = activeMessagePath(*session);
         // Only the latest real assistant reply shows its token usage in the
@@ -4151,15 +4598,16 @@ public final class OpenCodeRoot : VBox
         size_t[] versionPositions, versionTotals;
         computeSiblingVersions(*session, versionPositions, versionTotals);
 
-        // Codex-style per-turn reasoning: every assistant turn shows its own
-        // chain of thought, once, attached to the turn that produced it. It
-        // never migrates between turns as the exchange's rounds settle. (The old
-        // design concatenated every round of an exchange into one block on the
-        // exchange's LAST turn, so the single "Thinking" header jumped down the
-        // transcript on each round and a pure tool-request turn vanished the
-        // moment its reasoning moved on — the "order changes in the middle"
-        // churn.) The live reply is handled separately: it streams its reasoning
-        // into `_streamBubble`, which a rebuild then renders from the message.
+        // Codex-style per-round layout: each assistant round shows its own
+        // chain of thought (a collapsible `▸ Thinking` block), then its prose
+        // paragraph, then its own collapsible action group. A user turn that
+        // spans several rounds therefore reads as a clean, append-only
+        // `paragraph -> collapsible -> paragraph -> collapsible` sequence
+        // instead of one merged group stranded at the turn's start. Reasoning
+        // stays visible (never hidden) — open source, so the user can inspect
+        // it; it is just collapsed by default. The live reply streams its
+        // reasoning into `_streamBubble`, which a rebuild renders from the
+        // message, so the in-flight round shows its own Thinking too.
         auto thinkingText = new string[](path.length);
         foreach (slot, index; path)
             thinkingText[slot] = session.messages[index].reasoning;
@@ -4191,6 +4639,10 @@ public final class OpenCodeRoot : VBox
                 }
             }
         }
+        // User turn id, so the first action group of the turn can carry the
+        // turn timer ("Worked for …"). Later rounds' groups stay untimed.
+        string openTurn = "";
+
         // In-flight rows (streamed tool arguments, running tools, activity) and
         // the streaming reply belong to the newest *top-level* turn, and only
         // when that turn is an assistant reply. If the newest turn is the user
@@ -4210,12 +4662,31 @@ public final class OpenCodeRoot : VBox
                 break;
             }
         bool liveRowsAdded = false;
+        bool turnTimingApplied = false;
 
         size_t slot = 0;
         while (slot < path.length)
         {
             const index = path[slot];
             const message = session.messages[index];
+
+            // Synthetic control turns (max-rounds / loop recovery) steer the
+            // model but are not the user's words: keep them out of the
+            // transcript so the UI does not show a fake user prompt at the
+            // point the agent hit a limit.
+            if (message.internal)
+            {
+                ++slot;
+                continue;
+            }
+
+            // A user prompt opens a new turn; its first action group carries the
+            // turn timer, later rounds' groups stay untimed.
+            if (message.role == "user")
+            {
+                openTurn = message.id;
+                turnTimingApplied = false;
+            }
 
             // Owned results render as children of their assistant turn.
             if (owner[slot] != size_t.max)
@@ -4239,7 +4710,11 @@ public final class OpenCodeRoot : VBox
                         latestAssistantIndex, versionPositions, versionTotals,
                         thinkingText[slot]));
                 }
-                // The turn's tool results, in the order the model requested them.
+                // This round's own tool results, in the order the model
+                // requested them: the round's prose is followed by its own
+                // collapsible action group, so a multi-round turn reads as
+                // paragraph -> collapsible -> paragraph -> collapsible instead
+                // of one group stranded at the turn's start.
                 size_t[] childSlots;
                 foreach (call; message.toolCalls)
                 {
@@ -4261,12 +4736,20 @@ public final class OpenCodeRoot : VBox
                     nestPad.left = toolNestIndent;
                     auto nest = new TurnNest(nestPad);
                     auto group = addToolSlots(nest, childSlots, path, *session,
-                        latestAssistantIndex, versionPositions, versionTotals);
+                        latestAssistantIndex, versionPositions, versionTotals,
+                        session.messages[path[slot]].id);
                     if (slot == liveHostSlot)
                     {
-                        addLiveToolRows(group, nest,
+                        group = addLiveToolRows(group, nest,
                             "assistant:" ~ session.messages[path[slot]].id);
                         liveRowsAdded = true;
+                    }
+                    // The turn timer rides on the turn's first action group.
+                    if (!turnTimingApplied && openTurn.length > 0 &&
+                        group !is null)
+                    {
+                        applyTurnTiming(group, openTurn);
+                        turnTimingApplied = true;
                     }
                     _messageColumn.add(nest);
                 }
@@ -4319,7 +4802,36 @@ public final class OpenCodeRoot : VBox
         // The column is a retained layer; let the ScrollView re-measure and
         // update the content height / auto-follow after the message set changes.
         _messagesScroll.invalidate();
+        // Now that the column is populated, decide whether the welcome overlay
+        // belongs over it (empty conversation) or not.
+        updateIntroOverlay();
         refreshBubbleActions();
+    }
+
+    /// Show the welcome overlay only while the active conversation has no
+    /// visible messages. A brand-new chat, a restored-but-empty chat and the
+    /// no-session state all qualify; anything with a bubble (including a live
+    /// prompt) hides it. Called from the rebuild so it tracks exactly what the
+    /// transcript shows. Re-showing replays the fade so the intro animates in
+    /// for each new conversation rather than only once per run.
+    private void updateIntroOverlay()
+    {
+        if (_introOverlay is null) return;
+        const empty = messageColumnVisuals().length == 0;
+        if (empty) updateIntroSubtitle();
+        if (_introOverlay.visible() == empty) return;
+        _introOverlay.setVisible(empty);
+        if (empty) _introOverlay.replay();
+    }
+
+    /// Point the overlay's subtitle at the workspace the tools will run in, so
+    /// the empty state says where the agent is actually operating.
+    private void updateIntroSubtitle()
+    {
+        if (_introOverlay is null) return;
+        const workspace = activeWorkspace();
+        _introOverlay.setSubtitle(workspace.length > 0 && workspace != "."
+            ? "Working in " ~ workspace : "");
     }
 
     /// Every transcript widget in visual reading order, flattening an assistant
@@ -4338,14 +4850,16 @@ public final class OpenCodeRoot : VBox
         return result;
     }
 
-    /// Add a turn's owned tool results to `target` as one Codex-style action
-    /// group (a single collapsible summarising the whole turn) and return it so
-    /// the live path can append its in-flight rows. Returns null when the turn
-    /// ran no tools.
+    /// Add one round's owned tool results to `target` as a Codex-style action
+    /// group (a single collapsible summarising that round's tools) and return it
+    /// so the live path can append its in-flight rows. `collapseKey` is the
+    /// round's assistant message id, so an expanded group stays expanded across
+    /// the rebuilds that happen while the round streams. Returns null when the
+    /// round ran no tools.
     private ToolGroupBubble addToolSlots(VBox target, const(size_t)[] slots,
         const(size_t)[] path, ref const ChatSession session,
         int latestAssistantIndex, size_t[] versionPositions,
-        size_t[] versionTotals)
+        size_t[] versionTotals, string collapseKey)
     {
         if (slots.length == 0) return null;
         Widget[] parts;
@@ -4356,7 +4870,7 @@ public final class OpenCodeRoot : VBox
                 latestAssistantIndex, versionPositions, versionTotals);
         }
         auto group = new ToolGroupBubble(parts);
-        wireToolGroup(group, session.messages[path[slots[0]]].id);
+        wireToolGroup(group, collapseKey);
         target.add(group);
         return group;
     }
@@ -4399,10 +4913,13 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Append every in-flight tool call as a live child of `group` (creating a
-    /// group when the turn has no settled tools yet) so the action row is
+    /// group when the round has no settled tools yet) so the action row is
     /// present while tools run and becomes the record once their result bubbles
     /// arrive. With nothing in flight, falls back to the generic phase row.
-    private void addLiveToolRows(ToolGroupBubble group, VBox target, string key)
+    /// Returns the group (possibly newly created), or null when there was
+    /// nothing in flight and only the phase row was added.
+    private ToolGroupBubble addLiveToolRows(ToolGroupBubble group, VBox target,
+        string key)
     {
         OpenCodeToolCall[] inFlight;
         foreach (call; _liveToolCalls)
@@ -4425,10 +4942,11 @@ public final class OpenCodeRoot : VBox
                 group.addPart(buildLiveToolRow(call, running));
             }
             group.setLive(true);
-            return;
+            return group;
         }
         if (activityRowWanted())
             target.add(_activityRow);
+        return null;
     }
 
     /// True for the read-only context tools that fold into an "Explored" group.
@@ -4699,6 +5217,10 @@ public final class OpenCodeRoot : VBox
         _messageColumn.add(bubble);
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
+        // The first prompt was appended straight to the column (no rebuild yet
+        // — that happens when the reply begins), so drop the welcome overlay
+        // now instead of leaving it over the user's own message for a frame.
+        updateIntroOverlay();
         refreshBubbleActions();
     }
 
@@ -4788,6 +5310,9 @@ public final class OpenCodeRoot : VBox
     {
         _preparingToolCalls.length = 0;
         clearActivity();
+        // The turn is over: freeze the header clock before the rebuild that
+        // settles the action group, so its header shows the final total.
+        freezeTurnTiming();
         if (_streamBubble !is null)
         {
             // Settle the final count (exact when the provider reported it) and
@@ -4840,6 +5365,7 @@ public final class OpenCodeRoot : VBox
     private void failAssistantMessage(string error)
     {
         _preparingToolCalls.length = 0;
+        freezeTurnTiming();
         if (_current < 0)
         {
             clearActivity();
@@ -4889,7 +5415,13 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _failureLoopDetected = false;
         clearActivity();
+        // Branching away abandons the turn: stop its clock so it cannot keep
+        // ticking while another branch is displayed.
+        freezeTurnTiming();
         // A live tool row has no label of its own, so `clearActivity` alone
         // leaves it pinned to the abandoned run; rebuild to drop it.
         if (hadLiveRows) rebuildMessageColumn();
@@ -5002,6 +5534,7 @@ public final class OpenCodeRoot : VBox
                 "without making progress.");
             ChatMessage recovery;
             recovery.role = "user";
+            recovery.internal = true;
             recovery.content = "You appear to be repeating the same tool call " ~
                 "(" ~ signature ~ ") without making progress. Stop calling " ~
                 "tools and answer the user's question directly with what you " ~
@@ -5018,7 +5551,7 @@ public final class OpenCodeRoot : VBox
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
             if (!_toolContinuationPaused)
-                startChatRequest(_current);
+                startChatRequest(_current, false);
             return;
         }
 
@@ -5030,6 +5563,7 @@ public final class OpenCodeRoot : VBox
                 "reached.");
             ChatMessage finalize;
             finalize.role = "user";
+            finalize.internal = true;
             finalize.content = "You have reached the maximum number of tool " ~
                 "calls. Stop using tools now and answer the user's question " ~
                 "directly with what you have learned so far.";
@@ -5044,7 +5578,7 @@ public final class OpenCodeRoot : VBox
             updateStatus("Finalizing — asking the model to answer…");
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
-            startChatRequest(_current);
+            startChatRequest(_current, false);
             return;
         }
         ++_toolRounds;
@@ -5146,6 +5680,29 @@ public final class OpenCodeRoot : VBox
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
 
+        // Progress-based loop detection: remember the last failure signature
+        // (tool name + first output line) and how many times in a row it has
+        // repeated. Any success is progress and clears it.
+        if (event.toolFailed)
+        {
+            const failSignature =
+                event.toolName ~ "|" ~ firstLineOf(event.text);
+            if (failSignature == _lastFailureSignature)
+                ++_lastFailureRepeatCount;
+            else
+            {
+                _lastFailureSignature = failSignature;
+                _lastFailureRepeatCount = 1;
+            }
+            if (_lastFailureRepeatCount >= failureLoopRepeatThreshold)
+                _failureLoopDetected = true;
+        }
+        else
+        {
+            _lastFailureSignature = "";
+            _lastFailureRepeatCount = 0;
+        }
+
         // Rebuild the column so consecutive context tool results (read/glob/
         // grep) fold into a single "Explored" group and diffs pick up their
         // green/red counters and line-numbered bodies. Tool runs are infrequent
@@ -5164,9 +5721,59 @@ public final class OpenCodeRoot : VBox
             _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
+            if (_failureLoopDetected)
+            {
+                _failureLoopDetected = false;
+                _lastFailureSignature = "";
+                _lastFailureRepeatCount = 0;
+                breakToolLoop(session, "The same tool failure repeated " ~
+                    to!string(failureLoopRepeatThreshold) ~ " times without " ~
+                    "making progress. Do not repeat that command. Explain the " ~
+                    "blocker to the user and either change approach or ask " ~
+                    "how to proceed.");
+                return;
+            }
             if (!_toolContinuationPaused)
-                startChatRequest(_current);
+                startChatRequest(_current, false);
         }
+    }
+
+    /// First non-empty, trimmed line of a tool output, used as the failure
+    /// signature for progress-based loop detection.
+    private static string firstLineOf(string text)
+    {
+        import std.string : splitLines, strip;
+        foreach (line; splitLines(text))
+        {
+            const trimmed = strip(line);
+            if (trimmed.length > 0) return trimmed;
+        }
+        return "";
+    }
+
+    /// Break a detected tool loop: append a hidden control turn that tells the
+    /// model to stop repeating and answer / change approach, then re-send the
+    /// enriched history. Shared by the exact-repeat and repeated-failure paths.
+    private void breakToolLoop(ChatSession* session, string instruction)
+    {
+        ChatMessage recovery;
+        recovery.role = "user";
+        recovery.internal = true;
+        recovery.content = instruction;
+        appendMessage(*session, recovery);
+        markDirty();
+        rebuildMessageColumn();
+        _toolRounds = 0;
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _failureLoopDetected = false;
+        updateStatus("Tool loop detected - asking the model to change approach...");
+        _messagesScroll.follow = true;
+        _messagesScroll.invalidate();
+        if (!_toolContinuationPaused)
+            startChatRequest(_current, false);
     }
 
     // -- sending ----------------------------------------------------------
@@ -5216,6 +5823,9 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _failureLoopDetected = false;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -5367,7 +5977,57 @@ public final class OpenCodeRoot : VBox
         return messages;
     }
 
-    private void startChatRequest(int sessionIndex)
+    /// The id of the user message that opened the turn the user is currently in:
+    /// the last user message on the active path. Keying the clock by it keeps an
+    /// edit/regenerate of an earlier prompt timing the right turn.
+    private string activeTurnUserId(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return "";
+        auto session = &_sessions[sessionIndex];
+        string id;
+        foreach (index; activeMessagePath(*session))
+            if (session.messages[index].role == "user" &&
+                !session.messages[index].internal)
+                id = session.messages[index].id;
+        return id;
+    }
+
+    /// Freeze the current turn clock and store its total. Called once when the
+    /// turn truly ends, never for a tool-continuation round.
+    private void freezeTurnTiming()
+    {
+        if (!_turnTiming) return;
+        if (_turnUserId.length > 0)
+            _turnDurations[_turnUserId] =
+                (MonoTime.currTime - _turnStartedAt).total!"seconds";
+        _turnTiming = false;
+    }
+
+    /// Start (or restart) the turn clock for a user-initiated request.
+    private void beginTurnTiming(int sessionIndex)
+    {
+        _turnStartedAt = MonoTime.currTime;
+        _turnUserId = activeTurnUserId(sessionIndex);
+        _turnTiming = true;
+    }
+
+    /// Attach the turn clock (when one is known) to a freshly built action group
+    /// so its header reads "Worked for 0m 3s" instead of just the summary.
+    private void applyTurnTiming(ToolGroupBubble group, string turnId)
+    {
+        if (group is null || turnId.length == 0) return;
+        if (_turnTiming && turnId == _turnUserId)
+        {
+            group.setTiming(true,
+                (MonoTime.currTime - _turnStartedAt).total!"seconds");
+            return;
+        }
+        if (auto done = turnId in _turnDurations)
+            group.setTiming(false, *done);
+    }
+
+    private void startChatRequest(int sessionIndex, bool userTurn = true)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
@@ -5402,6 +6062,11 @@ public final class OpenCodeRoot : VBox
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
+        // A user-initiated request opens a new turn clock; a tool-continuation
+        // round re-enters here without `userTurn`, so the one clock spans the
+        // whole turn (and one action group owns its tools).
+        if (userTurn)
+            beginTurnTiming(sessionIndex);
         updateStatus("Generating…");
         // Fill the request round-trip immediately: the transcript shows a live
         // "waiting" row from the moment Send is pressed until the first event.
@@ -6165,6 +6830,8 @@ public final class OpenCodeRoot : VBox
                 messageJson["time"] = message.time;
             if (message.failed)
                 messageJson["failed"] = true;
+            if (message.internal)
+                messageJson["internal"] = true;
             if (message.totalTokens > 0)
             {
                 messageJson["promptTokens"] = message.promptTokens;
@@ -6258,6 +6925,8 @@ public final class OpenCodeRoot : VBox
                                         message.time = f.str;
                                     if (auto f = "failed" in messageValue.object)
                                         message.failed = f.type == JSONType.true_;
+                                    if (auto f = "internal" in messageValue.object)
+                                        message.internal = f.type == JSONType.true_;
                                     if (auto f = "promptTokens" in messageValue.object)
                                         if (f.type == JSONType.integer)
                                             message.promptTokens = cast(int) f.integer;
@@ -6673,6 +7342,41 @@ public final class OpenCodeRoot : VBox
         if (_current < 0) return 0;
         return cast(int) activeMessagePath(_sessions[_current]).length;
     }
+
+    /// Test-only: whether the empty-conversation intro overlay is showing.
+    public bool introVisibleForTesting() const
+    {
+        return _introOverlay !is null && _introOverlay.visible();
+    }
+
+    /// Test-only: the intro overlay's fade progress (0..1).
+    public double introFadeForTesting() const
+    {
+        return _introOverlay is null ? 0.0 : _introOverlay.fadeForTesting();
+    }
+
+    /// Test-only: the prompt suggestions shown on the empty state.
+    public string[] introSuggestionsForTesting() const
+    {
+        return _introOverlay is null ? null
+            : _introOverlay.suggestionsForTesting();
+    }
+
+    /// Test-only: bounds of the intro suggestion pill at `index`.
+    public Rect introSuggestionBoundsForTesting(int index) const
+    {
+        return _introOverlay is null ? Rect.init
+            : _introOverlay.suggestionBoundsForTesting(index);
+    }
+
+    /// Test-only: click an intro suggestion as a mouse press would.
+    public bool clickIntroSuggestionForTesting(int index)
+    {
+        return _introOverlay !is null &&
+            _introOverlay.clickSuggestionForTesting(index);
+    }
+
+
 
     /// Test-only: total messages stored for the current session, including
     /// abandoned branch runs that are not on the visible path.
@@ -7190,6 +7894,14 @@ public final class OpenCodeRoot : VBox
         beginAssistantMessage();
     }
 
+    /// Test-only: start the turn clock exactly as a user-initiated request does,
+    /// so a smoke test can prove the action-group header times the turn without
+    /// a real network round-trip.
+    public void startTurnClockForTesting()
+    {
+        beginTurnTiming(_current);
+    }
+
     /// Test-only: deliver a streamed reasoning (chain-of-thought) fragment.
     public void streamReasoningForTesting(string text)
     {
@@ -7528,6 +8240,31 @@ public final class OpenCodeRoot : VBox
         return _lastToolRepeatCount;
     }
 
+    /// Test-only: simulate a finished tool call with a given outcome, driving
+    /// the same path as a real toolResult event. Seeds a one-call pending
+    /// batch when none is open so a test can feed repeated failures.
+    public void injectToolResultForTesting(string name, string output,
+        bool failed)
+    {
+        if (_pendingToolCalls.length == 0)
+        {
+            OpenCodeToolCall call;
+            call.id = "call_inject";
+            call.name = name;
+            call.arguments = "{}";
+            _pendingToolCalls = [call];
+            _liveToolCalls = [call];
+            _pendingToolResults = 1;
+        }
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.toolResult;
+        event.toolName = name;
+        event.toolCallId = _pendingToolCalls[0].id;
+        event.text = output;
+        event.toolFailed = failed;
+        applyToolResult(event);
+    }
+
     /// Test-only: a network request is in flight.
     public bool clientBusyForTesting()
     {
@@ -7556,6 +8293,18 @@ public final class OpenCodeRoot : VBox
         foreach (index; activeMessagePath(*session))
             if (session.messages[index].role == "user") ++count;
         return count;
+    }
+
+    /// Test-only: content of the last `user` role message on the active path
+    /// (used to inspect the injected recovery instruction).
+    public string lastUserMessageForTesting()
+    {
+        if (_current < 0) return "";
+        auto session = &_sessions[_current];
+        foreach_reverse (index; activeMessagePath(*session))
+            if (session.messages[index].role == "user")
+                return session.messages[index].content;
+        return "";
     }
 
     /// Test-only: number of `tool` role messages in the current session.
@@ -7665,8 +8414,8 @@ public final class OpenCodeRoot : VBox
         return _messagesScroll.follow;
     }
 
-    /// Test-only: whether the last assistant bubble's thinking block is
-    /// currently collapsed (thinking starts collapsed by default).
+    /// Test-only: whether the last assistant bubble that shows a thinking block
+    /// is currently collapsed (thinking starts collapsed by default).
     public bool lastThinkingCollapsedForTesting()
     {
         const children = messageColumnVisuals();
@@ -7675,12 +8424,13 @@ public final class OpenCodeRoot : VBox
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
             if (bubble.roleForTesting() != "assistant") continue;
+            if (!bubble.hasThinkingForTesting()) continue;
             return bubble.thinkingCollapsedForTesting();
         }
         return false;
     }
 
-    /// Test-only: toggle the last assistant bubble's thinking block.
+    /// Test-only: toggle the last assistant bubble that shows a thinking block.
     public void toggleLastThinkingForTesting()
     {
         const children = messageColumnVisuals();
@@ -7689,6 +8439,7 @@ public final class OpenCodeRoot : VBox
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
             if (bubble.roleForTesting() != "assistant") continue;
+            if (!bubble.hasThinkingForTesting()) continue;
             bubble.toggleThinkingForTesting();
             _messageColumn.invalidate();
             _messagesScroll.invalidate();
