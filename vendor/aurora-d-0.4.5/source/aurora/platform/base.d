@@ -67,6 +67,9 @@ struct WindowOptions
 interface NativeWindowSink
 {
     void onNativeEvent(ref Event event);
+    /** True when a retained control at this client point must receive pointer
+        input even though it overlaps a frameless window's resize margin. */
+    bool onNativeClientControlAt(Point position);
     /** Let a native scroll command activate the retained target before range lookup. */
     void onNativeScrollTarget(PointF position);
     bool onNativePaint();

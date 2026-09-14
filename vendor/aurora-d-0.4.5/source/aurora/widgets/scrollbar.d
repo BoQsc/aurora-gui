@@ -74,6 +74,11 @@ class Scrollbar : Widget
         return _maximum > _minimum;
     }
 
+    override bool claimsBorderlessResizeEdge() const @safe pure nothrow @nogc
+    {
+        return visible() && scrollable();
+    }
+
     override bool nativeVerticalScrollInfo(Point localPosition, out Widget source,
         out int position, out int maximum, out int pageSize)
     {

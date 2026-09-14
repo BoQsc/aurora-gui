@@ -531,6 +531,17 @@ abstract class Widget
         return this;
     }
 
+    /**
+     * Whether this control must win native pointer hit-testing when it overlaps
+     * a borderless window's resize margin. Most content leaves the edge to the
+     * window; narrow edge controls such as scrollbars opt in so half of their
+     * track does not unexpectedly resize the window instead.
+     */
+    bool claimsBorderlessResizeEdge() const @safe pure nothrow @nogc
+    {
+        return false;
+    }
+
     /** Topmost visible popup in this subtree, following normal painter order. */
     PopupSurface topmostPopupSurface()
     {

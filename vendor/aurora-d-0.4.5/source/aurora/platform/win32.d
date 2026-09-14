@@ -2362,6 +2362,21 @@ else version (Windows)
             const onTop = y >= rect.top && y < rect.top + marginY;
             const onBottom = y < rect.bottom && y >= rect.bottom - marginY;
 
+            // Frameless resize margins extend into the client area. A 10 px
+            // scrollbar only 2 px from the right edge therefore used to lose
+            // roughly half its track to HTRIGHT. Let an actual edge control
+            // claim that overlap; the uncovered outer pixels still resize.
+            if (onLeft || onRight || onTop || onBottom)
+            {
+                POINT clientPoint = POINT(x, y);
+                if (ScreenToClient(_hwnd, &clientPoint) != FALSE)
+                {
+                    const logical = _displayScale.physicalToLogical(
+                        Point(clientPoint.x, clientPoint.y));
+                    if (sink.onNativeClientControlAt(logical)) return HTCLIENT;
+                }
+            }
+
             if (onTop && onLeft) return HTTOPLEFT;
             if (onTop && onRight) return HTTOPRIGHT;
             if (onBottom && onLeft) return HTBOTTOMLEFT;

@@ -847,6 +847,17 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         synchronizeNativeScrollTarget(targetAt(logical), logical);
     }
 
+    override bool onNativeClientControlAt(Point position)
+    {
+        auto target = targetAt(position);
+        while (target !is null)
+        {
+            if (target.claimsBorderlessResizeEdge()) return true;
+            target = target.parent();
+        }
+        return false;
+    }
+
     private void handleResize(ref Event event)
     {
         DisplayScale scale = event.displayScale;

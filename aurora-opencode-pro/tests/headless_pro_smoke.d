@@ -2127,6 +2127,20 @@ int main(string[] args)
         assert(scrollRange > 0,
             "tall transcript should be scrollable, range=" ~
             to!string(scrollRange));
+        // A frameless Windows resize margin overlaps the right side of the
+        // client area. Aurora must let the retained scrollbar claim its own
+        // pixels, or roughly half of this narrow track resizes the window.
+        auto transcriptScroll = cast(ScrollView) findById(root, "oc-scroll");
+        assert(transcriptScroll !is null &&
+            transcriptScroll.verticalScrollbar().visible(),
+            "tall transcript scrollbar should be visible");
+        auto edgeScrollbar = transcriptScroll.verticalScrollbar();
+        const edgePoint = edgeScrollbar.localToGlobal(Point(
+            edgeScrollbar.bounds().width / 2,
+            edgeScrollbar.bounds().height / 2));
+        assert(window.onNativeClientControlAt(edgePoint),
+            "borderless resize hit-test stole the scrollbar's track");
+        writeln("Scrollbar wins over overlapping frameless resize margin");
         root.scrollToForTesting(0);
         root.tickTree(0.02);
         assert(!root.followForTesting(),
