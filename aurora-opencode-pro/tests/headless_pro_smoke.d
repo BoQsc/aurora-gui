@@ -1834,6 +1834,24 @@ int main(string[] args)
         writeln("Reasoning re-expand shapes=", reshaped);
     }
 
+    // Restart: a Restart button in the toolbar, and a request that persists
+    // state and hands the rebuild to a detached helper before closing the
+    // window. The request is not exercised here (it would spawn a real build
+    // and close the window under the test); the button wiring and the gating
+    // predicates are.
+    {
+        auto restartButton = requireWidget!Button(root, "oc-restart");
+        assert(restartButton.text() == "Restart"d,
+            "Restart button must be labelled Restart");
+        assert(!root.restartPendingForTesting(),
+            "a restart must not be pending before one is requested");
+        // This test binary is built into build\ inside the package, so the
+        // executable does have a DUB recipe above it and can rebuild in place.
+        assert(root.canRebuildForTesting(),
+            "the packaged build should be able to rebuild itself");
+        writeln("Restart button present; rebuild-in-place available");
+    }
+
     root.shutdownClient();
     window.close();
     try rmdirRecurse(stateDir);

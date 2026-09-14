@@ -7,6 +7,7 @@ import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
+import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     executeTool, nativeOnlyToolDefinitions, previewToolDiff;
@@ -16,9 +17,10 @@ import std.algorithm : canFind;
 import std.array : appender;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : exists, mkdirRecurse, readText, write;
+import std.file : exists, mkdirRecurse, readText, thisExePath, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildPath;
+import std.process : thisProcessID;
 import std.string : strip, toLower;
 import std.utf : toUTF16z, toUTF32;
 version (Windows)
@@ -680,7 +682,7 @@ private final class MessageBubble : Widget
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast(FontFace) theme().uiFont;
-        options.pixelSize = fontPixelSize(2);
+        options.pixelSize = opencodeFontBase;
         options.maxWidth = maxInt(1, width);
         options.wrap = true;
         ++shapeCount;
@@ -704,15 +706,15 @@ private final class MessageBubble : Widget
             return Size(0, 0);
         }
         const innerWidth = maxInt(24, available.width - 2 * padH);
-        const pixelSize = fontPixelSize(2);
+        const pixelSize = opencodeFontBase;
         int height = 2 * padV;
         if (_thinking.length > 0)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
             // Use the tool header's height so a collapsed "Thinking" row and a
-            // collapsed "Shell"/"Read" row are exactly the same height; the old
-            // `fontPixelSize(1) + 4` was 2 px shorter, so a mixed stack had
-            // uneven gaps.
+            // collapsed "Shell"/"Read" row are exactly the same height; a
+            // header sized from a different text tier opened uneven gaps in a
+            // mixed stack.
             height += toolHeaderHeight();
             if (!_thinkingCollapsed)
                 height += shapedThinking(innerWidth).measuredSize().height + gap;
@@ -972,7 +974,7 @@ private final class MessageBubble : Widget
 
     private static int toolHeaderHeight()
     {
-        return fontPixelSize(2) + 2;
+        return opencodeFontBase + 2;
     }
 
     private static string padLeft(int value, int width)
@@ -1003,7 +1005,7 @@ private final class MessageBubble : Widget
     {
         TextLayoutOptions options;
         options.role = FontRole.monospace;
-        options.pixelSize = fontPixelSize(2);
+        options.pixelSize = opencodeFontBase;
         options.maxWidth = 100_000;
         options.wrap = false;
         ++shapeCount;
@@ -1100,7 +1102,7 @@ private final class MessageBubble : Widget
             _toolLineHeight = reference.measuredSize().height;
         }
         if (_toolLineHeight <= 0)
-            _toolLineHeight = fontPixelSize(2) + 2;
+            _toolLineHeight = opencodeFontBase + 2;
         _toolLinesHeight = cast(int) (_toolLines.length * _toolLineHeight);
         return _toolLinesHeight;
     }
@@ -1849,7 +1851,7 @@ private final class LiveToolRow : Widget
 
     private int rowHeight()
     {
-        return 2 * padV + fontPixelSize(2) + 2;
+        return 2 * padV + opencodeFontBase + 2;
     }
 
     private string rowText() const
@@ -1965,7 +1967,7 @@ private final class ActivityRow : Widget
     {
         // Match every other single-line transcript row (Thinking / tool /
         // group / live) so the activity row keeps the same gap as the rest.
-        return 2 * padV + fontPixelSize(2) + 2;
+        return 2 * padV + opencodeFontBase + 2;
     }
 
     protected override void onTick(double deltaSeconds)
@@ -2073,7 +2075,7 @@ private final class ToolGroupBubble : Widget
 
     private int headerHeight()
     {
-        return fontPixelSize(2) + 2;
+        return opencodeFontBase + 2;
     }
 
     private string headerText()
@@ -2973,6 +2975,11 @@ public final class OpenCodeRoot : VBox
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
 
+    // Restart: rebuild the package with DUB and relaunch the app. A detached
+    // helper does the work after this window closes (see auroraopencode.restart);
+    // the pending flag keeps the transcript live until the helper is started.
+    private bool _restartPending;
+
     this(GuiWindow window)
     {
         super(0);
@@ -3003,6 +3010,56 @@ public final class OpenCodeRoot : VBox
     public void shutdownClient()
     {
         _client.closeSession();
+    }
+
+    /// Test-only: whether a restart has been requested and the window is about
+    /// to close for the rebuild helper.
+    public bool restartPendingForTesting() const
+    {
+        return _restartPending;
+    }
+
+    /// Test-only: whether this build can rebuild itself in place (the
+    /// executable lives under a DUB package). A deployed copy outside a
+    /// package can still relaunch, but there is nothing for DUB to build.
+    public bool canRebuildForTesting() const
+    {
+        return planRestart(opencodeStateDirectory(), true, thisProcessID,
+            thisExePath()).workingDir.length > 0;
+    }
+
+    /// Rebuild the package with DUB and relaunch the app.
+    ///
+    /// The rebuild cannot happen in-process: DUB must overwrite the running
+    /// executable, which Windows keeps locked until we exit. So a detached
+    /// helper is started first; it waits for this process to disappear, runs
+    /// the build, and relaunches the binary. State is persisted before the
+    /// window closes so the new instance restores where we left off.
+    ///
+    /// `rebuild` is false for a plain relaunch (no DUB step), the only option
+    /// when the executable sits outside a package.
+    public void requestRestart(bool rebuild = true)
+    {
+        if (_restartPending) return;
+        _restartPending = true;
+        updateStatus(rebuild
+            ? "Restarting: rebuilding with DUB, then relaunching..."
+            : "Restarting...");
+
+        // Flush every piece of state the new instance reads on startup.
+        persistState();
+        saveProjects(_projectState);
+        _client.closeSession();
+
+        auto plan = planRestart(opencodeStateDirectory(), rebuild,
+            thisProcessID, thisExePath());
+        if (!launchRestart(plan))
+        {
+            _restartPending = false;
+            updateStatus("Restart failed: could not start the restart helper.");
+            return;
+        }
+        _window.close();
     }
 
     /// The stock CheckBox reserves a fixed 12 px per character, which leaves a
@@ -3098,6 +3155,12 @@ public final class OpenCodeRoot : VBox
 
         auto settingsButton = toolbar.add(new Button("Settings", IconKind.settings));
         settingsButton.onClick = delegate() { showSettingsDialog(); };
+
+        // Rebuild the package with DUB and relaunch. The window closes first so
+        // DUB can overwrite the running .exe.
+        auto restartButton = toolbar.add(new Button("Restart", IconKind.refresh));
+        restartButton.setId("oc-restart");
+        restartButton.onClick = delegate() { requestRestart(true); };
 
         _keyBadge = toolbar.add(new Label(""));
         _keyBadge.setId("oc-key");
