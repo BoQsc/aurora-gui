@@ -1389,6 +1389,21 @@ int main(string[] args)
         writeln("Worked-for separator precedes final answer and freezes");
     }
 
+    // A quick direct response did not perform reasoning or tool work. Matching
+    // Codex, it stays clean instead of putting "Worked for 0s" above every
+    // ordinary assistant message.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Answer directly"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.streamContentForTesting("A direct answer.");
+        root.finishStreamForTesting();
+        assert(root.turnCompletionTextsForTesting().length == 0,
+            "plain direct answer unexpectedly received a Worked-for separator");
+        writeln("Direct answers omit the Worked-for separator");
+    }
+
     // Nesting: the tool results render as children of the assistant turn that
     // requested them (at the same left edge, not stepped in), and they must
     // actually take layout space. The

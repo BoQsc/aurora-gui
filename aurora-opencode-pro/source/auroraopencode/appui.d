@@ -4683,10 +4683,12 @@ public final class OpenCodeRoot : VBox
                 }
             }
         }
-        // Map every user turn to its last prose assistant message. Once a turn
-        // is settled, its elapsed-work separator belongs immediately before
-        // this final answer (and never inside an earlier action group).
+        // Map every user turn to its last prose assistant message and remember
+        // whether that turn contained actual agent work. Codex deliberately
+        // omits "Worked for" on a plain direct answer; reasoning or tool use is
+        // what makes the completion boundary useful rather than visual noise.
         size_t[string] finalAssistantByTurn;
+        bool[string] actualWorkByTurn;
         string scannedTurn;
         foreach (index; path)
         {
@@ -4697,6 +4699,10 @@ public final class OpenCodeRoot : VBox
                 scannedTurn = candidate.id;
                 continue;
             }
+            if (scannedTurn.length > 0 && candidate.role == "assistant" &&
+                (candidate.reasoning.length > 0 ||
+                 candidate.toolCalls.length > 0))
+                actualWorkByTurn[scannedTurn] = true;
             if (scannedTurn.length > 0 && candidate.role == "assistant" &&
                 candidate.toolCalls.length == 0)
                 finalAssistantByTurn[scannedTurn] = index;
@@ -4756,8 +4762,9 @@ public final class OpenCodeRoot : VBox
                 {
                     auto finalIndex = openTurn in finalAssistantByTurn;
                     auto duration = openTurn in _turnDurations;
+                    auto didWork = openTurn in actualWorkByTurn;
                     if (finalIndex !is null && *finalIndex == index &&
-                        duration !is null)
+                        duration !is null && didWork !is null && *didWork)
                         _messageColumn.add(
                             new TurnCompletionSeparator(*duration));
                 }
