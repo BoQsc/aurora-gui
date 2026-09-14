@@ -1246,8 +1246,44 @@ int main(string[] args)
     assert(root.firstToolGroupCollapsedForTesting(),
         "context group did not collapse again");
     assert(driver.paint(), "Collapsed context group did not repaint");
-    window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
-    writeln("Context tools fold into a collapsible Explored group");
+        window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
+        writeln("Context tools fold into a collapsible Explored group");
+
+    // Nesting: the tool results render as indented children of the assistant
+    // turn that requested them, and they must actually take layout space. The
+    // base VBox sizes children from layoutHints and a plain VBox never
+    // publishes its measured size, so a nested tool row was laid out at zero
+    // height and the action "disappeared" the moment it became a record.
+    {
+        root.newChatForTesting();
+        root.addConversationForTestingWithReasoning(["user", "assistant"],
+            ["check notes", "I'll read the notes."], [null, "reasoning"]);
+        OpenCodeToolCall nestedCall;
+        nestedCall.id = "call_nest_1";
+        nestedCall.name = "read";
+        nestedCall.arguments = `{"filePath":"notes.txt"}`;
+        root.injectToolCallsForTesting([nestedCall]);
+        const nestDeadline = Clock.currTime + 5.seconds;
+        while (root.toolMessageCountForTesting() < 1 &&
+            Clock.currTime < nestDeadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(20.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == 1,
+            "nested read tool did not produce a result");
+        assert(driver.paint(), "Nested tool column did not paint");
+        // Visual order: [user, assistant, nested tool].
+        const assistantX = root.bubbleBoundsForTesting(1).x;
+        assert(root.bubbleVisibleForTesting(2),
+            "nested tool node must be visible");
+        const nested = root.bubbleBoundsForTesting(2);
+        assert(nested.height > 0,
+            "nested tool node must take layout space");
+        assert(nested.x == assistantX + 16,
+            "nested tool node must be indented under its turn");
+        writeln("Tool results nest under the assistant turn with a real height");
+    }
 
     // Live diff counters: while the model streams a file-mutating tool's
     // arguments, the in-progress row must show a provisional `+N -M` that
@@ -1474,6 +1510,31 @@ int main(string[] args)
         window.saveScreenshot("build\\uniform-row-pitch.ppm");
         writeln("Collapsed rows share a uniform pitch (height=", expected,
             ", gap=6)");
+    }
+
+    // The Regenerate/RETRY pill is 18 px tall; reserving only a text line
+    // (17 px) left it flush against — overlapping — the reply text ("no top
+    // padding"). The latest reply must grow by the pill height + a 6 px gap.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant", "assistant"],
+            ["q", "same reply", "same reply"]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "footer reserve repaint failed");
+        assert(root.bubbleActionForTesting(1) == "",
+            "only the latest reply carries the pill");
+        assert(root.bubbleActionForTesting(2) == "Regenerate",
+            "latest reply missing the Regenerate pill");
+        const plain = root.bubbleHeightForTesting(1);
+        const withPill = root.bubbleHeightForTesting(2);
+        assert(withPill == plain + 25,
+            "Regenerate footer reserve wrong: " ~ to!string(withPill) ~
+            " vs " ~ to!string(plain));
+        // The pill sits fully inside the bubble, clear of the reply text.
+        const pill = root.bubbleActionBoundsForTesting(2);
+        assert(pill.height == 18 && pill.bottom() <= withPill,
+            "Regenerate pill must fit inside the reply bubble");
+        writeln("Regenerate pill reserves a footer with a top gap");
     }
 
     // Real transcript shape: collapsed tool rows interleaved with assistant

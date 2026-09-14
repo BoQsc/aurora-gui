@@ -749,8 +749,7 @@ private final class MessageBubble : Widget
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
-        if (footerVisible())
-            height += fontPixelSize(1) + 4;
+        height += footerReserve();
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
         // VBox layout sizes children from layoutHints, not from the intrinsic
@@ -1469,6 +1468,21 @@ private final class MessageBubble : Widget
             _versionTotal > 1;
     }
 
+    /// Added height below the reply for the bottom-aligned footer. The
+    /// Regenerate/Retry pill and the `‹ n/m ›` branch chevrons are 18 px tall
+    /// and anchored at `height - padV - 19`; reserving only a text line
+    /// (`fontPixelSize(1) + 4` = 17 px) left the pill touching — even
+    /// overlapping — the last line of the reply, which read as "no top
+    /// padding". Reserve the pill plus a 6 px gap so it clears the text the
+    /// same way the reply clears its collapsed `Thinking` header.
+    private int footerReserve() const
+    {
+        if (!footerVisible()) return 0;
+        if (_actionLabel.length > 0 || _versionTotal > 1)
+            return 19 + 6;
+        return fontPixelSize(1) + 4;
+    }
+
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
         if (!footerVisible()) return;
@@ -1769,6 +1783,26 @@ private static string basenameOf(string path)
     foreach (index, ch; path)
         if (ch == '/' || ch == '\\') cut = index + 1;
     return path[cut .. $];
+}
+
+/// A vertical container that nests an assistant turn's tool results beneath it.
+/// The base `Box.onMeasure` only *returns* its size; the parent VBox lays out
+/// children from their layout hints, so without publishing the measured size
+/// here the nest is given zero height and its tool rows never become visible.
+private final class TurnNest : VBox
+{
+    this(Insets padding)
+    {
+        super(6, padding);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const result = super.onMeasure(available);
+        layoutHints().preferredWidth = result.width;
+        layoutHints().preferredHeight = result.height;
+        return result;
+    }
 }
 
 /// A lightweight in-progress tool row (Edit / Write / Delete / Shell) shown
@@ -3717,8 +3751,19 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    /// Horizontal inset for a tool result nested under the assistant turn that
+    /// requested it, so a call reads as a sub-node of the reply.
+    private static immutable int toolNestIndent = 16;
+
     private void rebuildMessageColumn()
     {
+        // A rebuild discards the column's children; detach the two reused
+        // widgets first so a nested parent (a turn container) does not leave
+        // them attached and reporting visible after they are dropped.
+        if (_activityRow !is null && _activityRow.parent() !is null)
+            _activityRow.parent().remove(_activityRow);
+        if (_streamBubble !is null && _streamBubble.parent() !is null)
+            _streamBubble.parent().remove(_streamBubble);
         _messageColumn.clearChildren();
         if (_current < 0) return;
         const session = &_sessions[_current];
@@ -3740,16 +3785,116 @@ public final class OpenCodeRoot : VBox
         // footer. Computed once per rebuild rather than per bubble.
         size_t[] versionPositions, versionTotals;
         computeSiblingVersions(*session, versionPositions, versionTotals);
+
+        // Nesting: a `tool` result belongs to the assistant turn that requested
+        // it. Match each result's `toolCallId` to the assistant whose `toolCalls`
+        // names it, so results render as indented children of that turn instead
+        // of as top-level siblings. `owner[slot]` is the owning slot
+        // (size_t.max = orphan, kept top level).
+        auto owner = new size_t[](path.length);
+        foreach (ref o; owner) o = size_t.max;
+        foreach (slot, index; path)
+        {
+            const message = session.messages[index];
+            if (message.role != "assistant" || message.toolCalls.length == 0)
+                continue;
+            foreach (call; message.toolCalls)
+            {
+                if (call.id.length == 0) continue;
+                foreach (childSlot; slot + 1 .. path.length)
+                {
+                    const candidate = session.messages[path[childSlot]];
+                    if (candidate.role == "tool" &&
+                        candidate.toolCallId == call.id)
+                    {
+                        owner[childSlot] = slot;
+                        break;
+                    }
+                }
+            }
+        }
+        // In-flight rows (streamed tool arguments, running tools, activity) and
+        // the streaming reply belong to the newest assistant turn; render them
+        // nested in that turn instead of pinning them to the bottom.
+        const bool isLive = (_activityRow !is null && _activityRow.hasLabel()) ||
+            _preparingToolCalls.length > 0 || _liveToolCalls.length > 0;
+        size_t liveHostSlot = size_t.max;
+        if (isLive)
+            foreach_reverse (slot, index; path)
+                if (session.messages[index].role == "assistant")
+                {
+                    liveHostSlot = slot;
+                    break;
+                }
+        bool liveRowsAdded = false;
+
         size_t slot = 0;
         while (slot < path.length)
         {
             const index = path[slot];
-            if (isContextTool(session.messages[index]))
+            const message = session.messages[index];
+
+            // Owned results render as children of their assistant turn.
+            if (owner[slot] != size_t.max)
             {
-                // Fold a run of two or more context tools into one foldable
-                // "Explored" row; a lone read stays a plain "Read" part.
+                ++slot;
+                continue;
+            }
+
+            if (message.role == "assistant")
+            {
+                if (_streamBubble !is null &&
+                    _streamBubble.messageIndex() == cast(int) index)
+                {
+                    // Re-add the live reply instead of a fresh bubble so a
+                    // rebuild during streaming does not drop in-flight text.
+                    _messageColumn.add(_streamBubble);
+                }
+                else
+                {
+                    _messageColumn.add(buildMessageBubble(index, message,
+                        latestAssistantIndex, versionPositions, versionTotals));
+                }
+                // The turn's tool results, in the order the model requested them.
+                size_t[] childSlots;
+                foreach (call; message.toolCalls)
+                {
+                    if (call.id.length == 0) continue;
+                    foreach (childSlot; slot + 1 .. path.length)
+                    {
+                        if (owner[childSlot] != slot) continue;
+                        if (session.messages[path[childSlot]].toolCallId ==
+                            call.id)
+                        {
+                            childSlots ~= childSlot;
+                            break;
+                        }
+                    }
+                }
+                if (childSlots.length > 0 || slot == liveHostSlot)
+                {
+                    Insets nestPad;
+                    nestPad.left = toolNestIndent;
+                    auto nest = new TurnNest(nestPad);
+                    addToolSlots(nest, childSlots, path, *session,
+                        latestAssistantIndex, versionPositions, versionTotals);
+                    if (slot == liveHostSlot)
+                    {
+                        addLiveToolRows(nest);
+                        liveRowsAdded = true;
+                    }
+                    _messageColumn.add(nest);
+                }
+                ++slot;
+                continue;
+            }
+
+            // Fold a run of two or more context tools into one foldable
+            // "Explored" row; a lone read stays a plain "Read" part.
+            if (isContextTool(message))
+            {
                 size_t end = slot;
-                while (end < path.length &&
+                while (end < path.length && owner[end] == size_t.max &&
                     isContextTool(session.messages[path[end]]))
                     ++end;
                 if (end - slot >= 2)
@@ -3774,8 +3919,6 @@ public final class OpenCodeRoot : VBox
             if (_streamBubble !is null &&
                 _streamBubble.messageIndex() == cast(int) index)
             {
-                // Re-add the live reply instead of a fresh bubble so a rebuild
-                // during streaming does not drop in-flight text.
                 _messageColumn.add(_streamBubble);
                 ++slot;
                 continue;
@@ -3785,86 +3928,140 @@ public final class OpenCodeRoot : VBox
                 versionPositions, versionTotals));
             ++slot;
         }
-        // Tool calls the model has named but whose arguments are still streaming:
-        // show them as in-progress rows so the reply does not look stalled while
-        // a large payload (a whole file for `write`) is generated.
-        if (_preparingToolCalls.length > 0)
-        {
-            foreach (call; _preparingToolCalls)
-            {
-                if (call.name.length == 0) continue;
-                auto row = new LiveToolRow(humanToolProgressTitle(call.name),
-                    humanToolSubtitle(call.name, call.arguments));
-                // Live `+N -M`: while the arguments stream, show a provisional
-                // diff so a large write/edit grows its counters in real time.
-                int adds, dels;
-                if (previewToolDiff(call.name, call.arguments, adds, dels))
-                    row.setDiff(adds, dels);
-                row.onSizeChanged = delegate()
-                {
-                    _messageColumn.invalidate();
-                    _messagesScroll.invalidate();
-                };
-                _messageColumn.add(row);
-            }
-        }
-        // Live rows while tool calls are still running: context tools fold into
-        // the aggregated "Exploring" row, and every other tool (Edit / Write /
-        // Delete / Shell) gets its own in-progress row so the user can see what
-        // is happening while it executes — after an edit the file (and its line
-        // numbers) may have shifted, so the real diff is only known once the
-        // tool reports back.
-        if (_liveToolCalls.length > 0)
-        {
-            int liveReads, liveSearches;
-            foreach (call; _liveToolCalls)
-            {
-                if (call.name == "read") ++liveReads;
-                else if (call.name == "glob" || call.name == "grep")
-                    ++liveSearches;
-            }
-            if (liveReads + liveSearches > 0)
-            {
-                auto live = new ToolGroupBubble(null, true);
-                live.setLiveCounts(liveReads, liveSearches);
-                live.onSizeChanged = delegate()
-                {
-                    _messageColumn.invalidate();
-                    _messagesScroll.invalidate();
-                };
-                _messageColumn.add(live);
-            }
-            foreach (call; _liveToolCalls)
-            {
-                if (call.name == "read" || call.name == "glob" ||
-                    call.name == "grep")
-                    continue;
-                auto row = new LiveToolRow(humanToolTitle(call.name),
-                    humanToolSubtitle(call.name, call.arguments));
-                // The arguments are complete here, so the provisional diff is
-                // exact; it bridges the gap until the result reports back.
-                int adds, dels;
-                if (previewToolDiff(call.name, call.arguments, adds, dels))
-                    row.setDiff(adds, dels);
-                row.onSizeChanged = delegate()
-                {
-                    _messageColumn.invalidate();
-                    _messagesScroll.invalidate();
-                };
-                _messageColumn.add(row);
-            }
-        }
-        // The live activity row is always last so the eye lands on it while the
-        // assistant works (waiting for the first token, thinking, writing, or
-        // running tools). It bridges the gaps that otherwise look frozen.
-        if (_activityRow !is null && _activityRow.hasLabel())
-            _messageColumn.add(_activityRow);
+        // Live rows with no assistant turn to nest under (e.g. a tool progress
+        // event before any reply exists) stay at the end of the column.
+        if (isLive && !liveRowsAdded)
+            addLiveToolRows(_messageColumn);
         _messagesScroll.follow = true;
         _messageColumn.invalidate();
         // The column is a retained layer; let the ScrollView re-measure and
         // update the content height / auto-follow after the message set changes.
         _messagesScroll.invalidate();
         refreshBubbleActions();
+    }
+
+    /// Every transcript widget in visual reading order, flattening an assistant
+    /// turn's nested container so tests and the action-pill pass see tools and
+    /// replies in order regardless of nesting depth.
+    private Widget[] messageColumnVisuals()
+    {
+        Widget[] result;
+        foreach (child; _messageColumn.children())
+        {
+            if (auto nest = cast(VBox) child)
+                foreach (inner; nest.children()) result ~= inner;
+            else
+                result ~= child;
+        }
+        return result;
+    }
+
+    /// Add a turn's owned tool results to `target`, folding consecutive
+    /// read/glob/grep results into one "Explored" row exactly like the
+    /// top-level path does.
+    private void addToolSlots(VBox target, const(size_t)[] slots,
+        const(size_t)[] path, ref const ChatSession session,
+        int latestAssistantIndex, size_t[] versionPositions,
+        size_t[] versionTotals)
+    {
+        size_t i = 0;
+        while (i < slots.length)
+        {
+            const index = path[slots[i]];
+            if (isContextTool(session.messages[index]))
+            {
+                size_t end = i;
+                while (end < slots.length &&
+                    isContextTool(session.messages[path[slots[end]]]))
+                    ++end;
+                if (end - i >= 2)
+                {
+                    MessageBubble[] parts;
+                    foreach (member; i .. end)
+                        parts ~= buildMessageBubble(path[slots[member]],
+                            session.messages[path[slots[member]]],
+                            latestAssistantIndex, versionPositions,
+                            versionTotals);
+                    auto group = new ToolGroupBubble(parts);
+                    group.onSizeChanged = delegate()
+                    {
+                        _messageColumn.invalidate();
+                        _messagesScroll.invalidate();
+                    };
+                    target.add(group);
+                    i = end;
+                    continue;
+                }
+            }
+            target.add(buildMessageBubble(index, session.messages[index],
+                latestAssistantIndex, versionPositions, versionTotals));
+            ++i;
+        }
+    }
+
+    /// Add the in-flight tool rows (streamed arguments, running tools) and the
+    /// activity row to `target` — either a turn's nested container or the
+    /// column when there is no assistant turn to nest under.
+    private void addLiveToolRows(VBox target)
+    {
+        // Tool calls the model has named but whose arguments are still
+        // streaming: show them as in-progress rows so the reply does not look
+        // stalled while a large payload (a whole file for `write`) streams.
+        foreach (call; _preparingToolCalls)
+        {
+            if (call.name.length == 0) continue;
+            auto row = new LiveToolRow(humanToolProgressTitle(call.name),
+                humanToolSubtitle(call.name, call.arguments));
+            int adds, dels;
+            if (previewToolDiff(call.name, call.arguments, adds, dels))
+                row.setDiff(adds, dels);
+            row.onSizeChanged = delegate()
+            {
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+            };
+            target.add(row);
+        }
+        // Context tools fold into the aggregated "Exploring" row, and every
+        // other tool (Edit / Write / Delete / Shell) gets its own in-progress
+        // row so the user can see what is happening while it executes.
+        int liveReads, liveSearches;
+        foreach (call; _liveToolCalls)
+        {
+            if (call.name == "read") ++liveReads;
+            else if (call.name == "glob" || call.name == "grep")
+                ++liveSearches;
+        }
+        if (liveReads + liveSearches > 0)
+        {
+            auto live = new ToolGroupBubble(null, true);
+            live.setLiveCounts(liveReads, liveSearches);
+            live.onSizeChanged = delegate()
+            {
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+            };
+            target.add(live);
+        }
+        foreach (call; _liveToolCalls)
+        {
+            if (call.name == "read" || call.name == "glob" ||
+                call.name == "grep")
+                continue;
+            auto row = new LiveToolRow(humanToolTitle(call.name),
+                humanToolSubtitle(call.name, call.arguments));
+            int adds, dels;
+            if (previewToolDiff(call.name, call.arguments, adds, dels))
+                row.setDiff(adds, dels);
+            row.onSizeChanged = delegate()
+            {
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+            };
+            target.add(row);
+        }
+        if (_activityRow !is null && _activityRow.hasLabel())
+            target.add(_activityRow);
     }
 
     /// True for the read-only context tools that fold into an "Explored" group.
@@ -3981,7 +4178,7 @@ public final class OpenCodeRoot : VBox
     private void refreshBubbleActions()
     {
         if (_current < 0) return;
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (children.length == 0) return;
         const session = &_sessions[_current];
 
@@ -5971,7 +6168,7 @@ public final class OpenCodeRoot : VBox
     /// message).
     public bool invokeBubbleActionForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return false;
         auto bubble = cast(MessageBubble) children[cast(size_t) index];
         return bubble !is null && bubble.invokeActionForTesting();
@@ -5980,7 +6177,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: the message bubble at child `index` (null when out of range).
     private MessageBubble messageBubbleForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return null;
         return cast(MessageBubble) children[cast(size_t) index];
     }
@@ -6047,7 +6244,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: whether the bubble at `index` shows token usage text.
     public bool bubbleHasUsageForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return false;
         auto bubble = cast(MessageBubble) children[cast(size_t) index];
         return bubble !is null && bubble.usageTextForTesting().length > 0;
@@ -6056,7 +6253,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: whether the bubble at `index` is hidden (zero-size slot).
     public bool bubbleHiddenForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return false;
         auto bubble = cast(MessageBubble) children[cast(size_t) index];
         return bubble !is null && bubble.hiddenForTesting();
@@ -6065,24 +6262,30 @@ public final class OpenCodeRoot : VBox
     /// Test-only: the current laid-out height of the bubble at `index`.
     public int bubbleHeightForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return 0;
         return children[cast(size_t) index].bounds().height;
     }
 
-    /// Test-only: the message-column bounds of the bubble at `index` (hidden
-    /// bubbles keep a slot but are excluded from layout).
+    /// Test-only: the message-column-relative bounds of the bubble at `index`
+    /// (hidden bubbles keep a slot but are excluded from layout). Returned
+    /// relative to the column rather than the window so nesting (which shifts a
+    /// child's absolute origin) cannot skew row-pitch measurements.
     public Rect bubbleBoundsForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return Rect.init;
-        return children[cast(size_t) index].bounds();
+        const child = children[cast(size_t) index];
+        const origin = child.globalOrigin();
+        const base = _messageColumn.globalOrigin();
+        return Rect(origin.x - base.x, origin.y - base.y,
+            child.bounds().width, child.bounds().height);
     }
 
     /// Test-only: whether the bubble at `index` takes part in layout/painting.
     public bool bubbleVisibleForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return false;
         return children[cast(size_t) index].visible();
     }
@@ -6197,7 +6400,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: action-pill label on the last bubble ("" when none).
     public string lastBubbleActionForTesting()
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (children.length == 0) return "";
         auto bubble = cast(MessageBubble) children[$ - 1];
         return bubble is null ? "" : bubble.actionLabelForTesting();
@@ -6206,7 +6409,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: action-pill label on the bubble at `index`.
     public string bubbleActionForTesting(int index)
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         if (index < 0 || index >= cast(int) children.length) return "";
         auto bubble = cast(MessageBubble) children[cast(size_t) index];
         return bubble is null ? "" : bubble.actionLabelForTesting();
@@ -6309,7 +6512,7 @@ public final class OpenCodeRoot : VBox
     public string[] liveToolRowTextsForTesting()
     {
         string[] labels;
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto row = cast(LiveToolRow) child)
                 labels ~= row.textForTesting();
         return labels;
@@ -6320,7 +6523,7 @@ public final class OpenCodeRoot : VBox
     public string[] liveToolRowDiffTextsForTesting()
     {
         string[] labels;
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto row = cast(LiveToolRow) child)
                 labels ~= (row.diffAdditionsForTesting() > 0 ||
                     row.diffDeletionsForTesting() > 0
@@ -6574,7 +6777,7 @@ public final class OpenCodeRoot : VBox
     private MessageBubble[] toolBubblesForTesting()
     {
         MessageBubble[] result;
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
         {
             if (auto group = cast(ToolGroupBubble) child)
             {
@@ -6622,7 +6825,7 @@ public final class OpenCodeRoot : VBox
     /// currently collapsed (thinking starts collapsed by default).
     public bool lastThinkingCollapsedForTesting()
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         foreach_reverse (child; children)
         {
             auto bubble = cast(MessageBubble) child;
@@ -6636,7 +6839,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: toggle the last assistant bubble's thinking block.
     public void toggleLastThinkingForTesting()
     {
-        const children = _messageColumn.children();
+        const children = messageColumnVisuals();
         foreach_reverse (child; children)
         {
             auto bubble = cast(MessageBubble) child;
@@ -6675,7 +6878,7 @@ public final class OpenCodeRoot : VBox
     public int contextGroupCountForTesting()
     {
         int count;
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (cast(ToolGroupBubble) child !is null) ++count;
         return count;
     }
@@ -6683,7 +6886,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: whether the first folded context group starts collapsed.
     public bool firstToolGroupCollapsedForTesting()
     {
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child)
                 return group.collapsedForTesting();
         return false;
@@ -6693,7 +6896,7 @@ public final class OpenCodeRoot : VBox
     /// reflow the scroll view, exactly as a header click would.
     public void toggleFirstToolGroupForTesting()
     {
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child)
             {
                 group.toggle();
@@ -6706,7 +6909,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: number of tool parts folded inside the first context group.
     public int firstToolGroupPartCountForTesting()
     {
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child)
                 return group.partCount();
         return 0;

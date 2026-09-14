@@ -89,6 +89,76 @@ uniform-gap guards; screenshots `gap-g14.png` / `gap-g20.png` in `%TEMP%\opencod
 show the progression, and only `gap-g20.png` has equal whitespace above/below the
 answer.
 
+## Pro: nest tool results under the assistant turn; fix "appears then disappears" (2026-09-14)
+
+**Complaint.** "why the flow is horrible, it appears and disappears instead of
+doing good thing and staying as a record of action." Tools ran and their result
+records existed in `sessions.json` (verified with `dump42.py`: assistant turn
+with `toolCalls` → matching `tool` role message via `toolCallId`) but no
+`▸ Shell` / `▸ Write` row was painted. The live row appeared during execution
+and then vanished when it became the record.
+
+**Root cause (diagnosed, not guessed).** `_messageColumn` is a framework `VBox`.
+`Box.onMeasure` only *returns* its size; `Box.onLayout` sizes each child from
+`child.layoutHints().preferredHeight` (falling back to `minHeight`). Widgets like
+`MessageBubble` publish their measured size into `layoutHints()` inside
+`onMeasure` (see the comment at appui.d:756), but a plain `VBox` does **not**.
+The nesting feature wraps each assistant turn's tools in a new container, so the
+container measured its children yet the column gave the container **zero
+height** — the tool rows were laid out at 0 px and never painted. Evidence: a
+temporary `logInfo` in `rebuildMessageColumn` showed the tree was correct
+(`NEST ... kids=1` for each owned `tool`, `tool` owned by the right slot) while
+`%TEMP%\opencode\nest-*.png` showed nothing between the `Thinking` headers.
+
+**Fix.**
+- New `TurnNest : VBox` overrides `onMeasure` to publish the measured size into
+  `layoutHints().preferredWidth/Height` (mirrors `MessageBubble`). The turn
+  container is now `new TurnNest(nestPad)` instead of `new VBox(6, nestPad)`.
+- `rebuildMessageColumn` maps each `tool` message to the assistant turn whose
+  `toolCalls[].id` matches its `toolCallId` (`owner[]`), renders the turn bubble
+  then an indented `TurnNest` (left inset `toolNestIndent = 16`) containing the
+  owned results in call order, and skips owned results at top level. Orphans
+  stay top level and still fold into the `Explored` group.
+- Live rows (`_preparingToolCalls`, `_liveToolCalls`, `_activityRow`) render
+  inside the newest assistant turn's nest when one exists, so the in-progress
+  row occupies the exact slot the finished record will — no jump, no flash —
+  with a column-end fallback when there is no assistant turn yet.
+- `messageColumnVisuals()` flattens the nest for every
+  `_messageColumn.children()` consumer (action-pill refresh + all test hooks);
+  `bubbleBoundsForTesting` now returns **column-relative** bounds via
+  `globalOrigin()` minus the column origin, so nesting cannot skew row-pitch
+  measurements.
+
+**Verification.** New smoke guard
+`Tool results nest under the assistant turn with a real height` asserts the
+nested tool is visible, has height > 0, and sits at `assistant.x + 16`. Pro smoke
+EXIT=0 (all steps). Live build (killed + rebuilt + one relaunch) shows
+`▸ Shell list`, `▸ Write video-uploads.html  +365 -0`, `▸ Shell ping` indented
+under their turns (`nest-fixed-01.png`), vs the empty pre-fix render.
+
+## Pro: Regenerate pill had no top padding (2026-09-14)
+
+**Complaint.** "WHy regenerate button have no top padding or margin."
+
+**Root cause.** The `Regenerate`/`Retry` pill and the `‹ n/m ›` branch chevrons
+are 18 px tall and drawn at `y = height - padV - 19`, but `onMeasure` reserved
+only a text line for the footer (`fontPixelSize(1) + 4` = 17 px). The gap between
+the reply's last text line and the pill is therefore `reserve - 19`, i.e.
+**-2 px** with the old reserve — the pill sat flush on (overlapping) the reply.
+
+**Fix.** `MessageBubble.footerReserve()` returns `19 + 6` (= 25 px) when the
+footer holds the action pill or branch nav (still `fontPixelSize(1) + 4` for a
+usage-only footer), so the pill keeps a 6 px gap above it while its own 7 px
+bottom inset is preserved. `onMeasure` now adds `footerReserve()`.
+
+**Verification.** New smoke guard `Regenerate pill reserves a footer with a top
+gap`: same reply text, latest reply (pill) is exactly `plain + 25` px tall and
+the pill fits inside the bubble (`bubbleActionBoundsForTesting`). Uniform-pitch
+and reply/tool-gap guards still pass (they end on a tool row, so no pill is
+reserved). Live: `regen-gap-01.png` shows the gap above `Regenerate`.
+
+
+
 ## Pro tool-round cap (2026-09-13)
 
 The "You have reached the maximum number of tool calls..." message is generated

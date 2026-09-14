@@ -1,5 +1,47 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: Regenerate pill had no top padding/margin (fixed)
+
+User: "WHy regenerate button have no top padding or margin."
+
+- [x] **Diagnosis**: the pill/version chevrons are 18 px tall and anchored at
+      `height - padV - 19`, but `MessageBubble.onMeasure` reserved only a text
+      line (`fontPixelSize(1) + 4` = 17 px). Gap above the pill = `reserve - 19`
+      = **-2 px** → the pill touched/overlapped the reply text.
+- [x] **Fix**: `footerReserve()` returns `19 + 6` (25 px) when the footer has the
+      action pill or branch nav; usage-only footers keep 17 px.
+- [x] **Verified**: new smoke guard `Regenerate pill reserves a footer with a top
+      gap` (latest reply == plain reply + 25 px; `bubbleActionBoundsForTesting`
+      fits inside); Pro smoke EXIT=0; live `regen-gap-01.png` shows the gap.
+      Rebuilt + relaunched exactly one instance.
+
+## 2026-09-14 - Pro: tool rows "appear then disappear" instead of staying a record (fixed)
+
+User: "why the flow is horrible, it appears and disappears instead of doing good
+thing and staying as a record of action. current is horrible."
+
+- [x] **Diagnosis (root cause, with evidence)**: the tool result records were
+      present (`sessions.json` session "hey": assistant turn with `toolCalls` →
+      matching `tool` message via `toolCallId`) but **not painted**. A temporary
+      `logInfo` in `rebuildMessageColumn` proved the widget tree was correct
+      (`NEST ... kids=1` per owned tool) while the render showed nothing. Cause:
+      the new per-turn nesting container was a bare `VBox`; unlike
+      `MessageBubble`, `Box.onMeasure` does not publish its size into
+      `layoutHints()`, and `Box.onLayout` sizes children from those hints — so
+      the column gave the container 0 px and its tool rows had no height. That is
+      why the live row showed during execution and "disappeared" as a record.
+- [x] **Fix**: added `TurnNest : VBox` that publishes its measured size in
+      `onMeasure`; owned tool results nest (indent 16 px) under the assistant
+      turn that requested them, live rows render in that same slot, orphans stay
+      top level, `messageColumnVisuals()` flattens the nest for every consumer,
+      and `bubbleBoundsForTesting` is now column-relative.
+- [x] **Verified**: new smoke guard `Tool results nest under the assistant turn
+      with a real height` (visible, height > 0, x == assistant.x + 16); Pro smoke
+      EXIT=0. Live: rebuilt, killed old PID, relaunched exactly one
+      (`nest-fixed-01.png` shows `▸ Shell list`, `▸ Write video-uploads.html
+      +365 -0`, `▸ Shell ping` indented under their turns). See
+      `testing_progress_and_methods.md`.
+
 ## 2026-09-14 - Pro: gap inconsistency between collapsed Thinking / Shell rows (fixed)
 
 User (screenshots, twice): the collapsed `▸ Thinking` and `▸ Shell powershell`
