@@ -9309,5 +9309,103 @@ above the prompt instead of after it`. Reverted after confirming.
 `Reply with exactly: ok` with its `ok` reply directly below it, after the previous
 exchange — chronological order holds.
 
+## Aurora OpenCode Pro tools: correctness/efficiency fixes (2026-09-14)
+
+Scope: `aurora-opencode-pro/source/auroraopencode/tools.d` only (no public API
+change), driven by a review against upstream opencode's `read`/`edit`/`write`/
+`glob`/`grep`. Only correctness/efficiency/performance issues were touched.
+
+1. **`truncateOutput` split multi-byte UTF-8.** It cut at a raw byte index, so a
+   cap falling inside a multi-byte character produced invalid UTF-8 in the tool
+   result. New `utf8SafeCut()` trims to the last complete UTF-8 sequence; the
+   truncation marker is unchanged.
+2. **`grep` `include` was a literal suffix test.** `"*.d"` could never match a
+   real file name, so the documented filter rejected everything. New
+   `fileMatchesInclude()` matches the base name as a glob (reusing
+   `globToRegex`), with a bare extension/suffix (`d`, `.d`, `main.d`) as a
+   fallback.
+3. **`read` loaded whole files.** It now reads at most `maxOutputBytes + 4`
+   bytes (`readFileCapped`, bounded `File.rawRead`) unless the file is small
+   enough for `readText`, and falls back to a lenient bounded read for non-UTF-8
+   files instead of erroring.
+4. **Console decode mishandled UTF-8.** `runProcess` mapped every byte to its own
+   code point, turning valid UTF-8 output into mojibake. New
+   `decodeBytesLenient()` keeps bytes as-is when they validate as UTF-8 and only
+   falls back to the per-byte mapping for legacy OEM output (the existing `dir`
+   OEM regression still passes).
+5. **`edit` accepted `oldString == newString`.** It rewrote identical bytes and
+   reported success; it now returns a clear error.
+
+**How to test.**
+```
+cd aurora-opencode-pro
+dmd -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+build\tools-test.exe
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+New `tools_test.d` guards: `read caps large files and survives non-UTF-8 bytes`
+(60 KB of `é` truncated to a valid boundary; Latin-1 bytes read leniently),
+`edit rejects identical old/new strings`, and
+`grep include is a glob (and accepts a bare extension)` (a `.d` file matches
+`include:"*.d"`, a `.txt` file does not; `include:".txt"` matches).
+
+**Result (2026-09-14).** `tools-test.exe` EXIT=0 with all new guards;
+`headless-pro-smoke.exe` EXIT=0 (`Aurora OpenCode Pro headless smoke test
+passed.`). No GUI process was killed/relaunched because only tool internals
+changed and the smoke build confirms `appui.d` still compiles against them.
+
+## Aurora OpenCode Pro tools: feature parity with upstream opencode (2026-09-14)
+
+Second pass, still scoped to correctness/efficiency/performance. The upstream
+behaviours that were missing (permissions/approval layer deliberately excluded —
+that is a security feature, not a perf/correctness one) are now implemented:
+
+1. **`grep` returns matching lines, not just paths.** `runGrep` streams each file
+   with `File.byLine` and emits `path:line: text` (1-indexed), capped at 200
+   matches with a "capped" footer. Lines longer than 300 chars are truncated on
+   a UTF-8 boundary. This removes the model's need to re-`read` every hit. The
+   `include` glob filter still applies.
+2. **`edit` fuzzy fallback.** When the exact `oldString` is absent, a
+   whitespace/indentation-tolerant match (`lineTrimmedEditMatches`) is tried: it
+   compares each line after `strip`, reconstructs the exact original block (using
+   the file's own CRLF-vs-LF newline) and replaces it verbatim. Still fails when
+   the fuzzy anchor is absent or matches more than one place (unless
+   `replaceAll:true`). The result line notes `[whitespace-tolerant match]`.
+3. **`read` offset/limit + line numbers.** New `readLineWindow` streams the file
+   and returns numbered lines (`N: text`), honouring `offset` (1-indexed) and
+   `limit`, with a footer `(Showing lines X-Y. Use offset=Z to continue.)` or
+   `. End of file.`. The byte budget counts the `N: ` prefixes so the rendered
+   output stays under `maxOutputBytes` (40 KB). Lines over 2000 chars get
+   `…(line truncated)`. Non-UTF-8 lines are decoded leniently, so read output is
+   always valid UTF-8. `offset` past EOF is an error.
+4. **Deterministic context compaction.** `appui.d`'s `compactRequestMessages`
+   runs after `buildRequestMessages` in `startChatRequest`. When the estimated
+   request (chars/4) exceeds 60% of `contextLimitForModel(_settings.model)`, it
+   elides the content of older `tool` messages (newest 4 kept) and then older
+   non-tool turns, never changing role/`toolCallId`/`toolCalls`, never touching
+   the system prompt, the first user turn, or the last 8 messages. No model call.
+
+System-prompt and tool-schema descriptions were updated to match (read
+offset/limit, grep lines, edit uniqueness wording).
+
+**How to test.** Same two commands as above. New/updated guards:
+- `tools_test.d`: `read pages, numbers lines, caps long lines, survives
+  non-UTF-8 bytes` (line numbers, `offset`/`limit`, past-EOF error, 80 KB file
+  pages with `Use offset=`, 5000-char line truncates, Latin-1 stays valid UTF-8);
+  `edit tolerates indentation drift but rejects ambiguity`; grep asserts the
+  `README.md:1: aurora tools test` snippet form.
+- `headless_pro_smoke.d`: read result contains `1: hello tool world`; grep result
+  contains `notes.txt:1: hello tool world`; and
+  `Compaction elides old tool outputs and preserves tool pairing` (12×20 KB tool
+  outputs, compacted at an 8 K limit: all 12 replies survive with their
+  `toolCallId`, at least one is elided, pairing intact, request shrinks).
+
+**Result (2026-09-14).** `tools-test.exe` EXIT=0, `headless-pro-smoke.exe` EXIT=0
+(`Aurora OpenCode Pro headless smoke test passed.`). App rebuilt
+(`dub build --build=release --compiler=dmd --force`); the running instance
+(PID 25312) was killed and exactly one new instance launched (PID 24940,
+confirmed via `tasklist`).
+
 
 

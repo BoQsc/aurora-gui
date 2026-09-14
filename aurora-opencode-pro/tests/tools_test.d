@@ -3,11 +3,13 @@ module auroraopencode_pro_tools_test;
 import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.tools : builtinToolDefinitions, executeTool,
     nativeOnlyToolDefinitions, resolveToolPath, toolSteeringPrompt;
+import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : indexOf;
+import std.utf : validate;
 
 private OpenCodeToolCall makeCall(string name, string args)
 {
@@ -27,12 +29,92 @@ int main()
     write(buildPath(dir, "src", "main.d"), "import std.stdio;\nvoid main() {}\n");
     write(buildPath(dir, "README.md"), "aurora tools test\n");
 
-    // read a file from the workspace (relative path)
+    // read a file from the workspace (relative path), prefixed with 1-indexed
+    // line numbers so the model has stable edit anchors.
     auto readResult = executeTool(makeCall("read",
         `{"filePath":"src/main.d"}`), dir);
     assert(!readResult.failed, "read failed: " ~ readResult.output);
     assert(readResult.output.indexOf("void main") >= 0,
         "read did not return file contents");
+    assert(readResult.output.indexOf("1: import std.stdio;") >= 0,
+        "read did not prefix line numbers: " ~ readResult.output);
+
+    // offset/limit page through a file without dumping all of it.
+    auto pageRead = executeTool(makeCall("read",
+        `{"filePath":"src/main.d","offset":2,"limit":1}`), dir);
+    assert(!pageRead.failed, "paged read failed: " ~ pageRead.output);
+    assert(pageRead.output.indexOf("2: void main() {}") >= 0,
+        "paged read returned the wrong line: " ~ pageRead.output);
+    assert(pageRead.output.indexOf("1: import") < 0,
+        "paged read leaked earlier lines: " ~ pageRead.output);
+    auto pastEnd = executeTool(makeCall("read",
+        `{"filePath":"src/main.d","offset":99}`), dir);
+    assert(pastEnd.failed, "offset past EOF should fail");
+
+    // Reading a file past the output cap pages with a continuation hint
+    // instead of splitting a multibyte character (a raw byte cut used to
+    // corrupt UTF-8).
+    auto wide = replicate("é\n", 40_000); // 80 000 bytes across 40 000 lines
+    write(buildPath(dir, "wide.txt"), wide);
+    auto wideRead = executeTool(makeCall("read",
+        `{"filePath":"wide.txt"}`), dir);
+    assert(!wideRead.failed, "wide read failed: " ~ wideRead.output);
+    assert(wideRead.output.indexOf("Use offset=") >= 0,
+        "wide read did not offer continuation");
+    assert(wideRead.output.length < 60_000,
+        "wide read was not bounded to the output cap");
+    try validate(wideRead.output);
+    catch (Exception error)
+        assert(false, "paged read is not valid UTF-8: " ~ error.msg);
+
+    // A single over-long line is truncated with a marker rather than eating
+    // the whole output budget.
+    write(buildPath(dir, "oneline.txt"), replicate("x", 5_000));
+    auto oneLineRead = executeTool(makeCall("read",
+        `{"filePath":"oneline.txt"}`), dir);
+    assert(!oneLineRead.failed, "one-line read failed: " ~ oneLineRead.output);
+    assert(oneLineRead.output.indexOf("(line truncated)") >= 0,
+        "over-long line was not truncated: " ~ oneLineRead.output);
+
+    // A non-UTF-8 file is decoded leniently instead of failing the read, and
+    // the result is still valid UTF-8 (safe to persist into the session).
+    auto latinBytes = cast(ubyte[])"caf\xE9-latin1".dup;
+    write(buildPath(dir, "latin1.txt"), latinBytes);
+    auto latinRead = executeTool(makeCall("read",
+        `{"filePath":"latin1.txt"}`), dir);
+    assert(!latinRead.failed, "latin1 read failed: " ~ latinRead.output);
+    try validate(latinRead.output);
+    catch (Exception error)
+        assert(false, "lenient read is not valid UTF-8: " ~ error.msg);
+    assert(latinRead.output.indexOf("latin1") >= 0,
+        "lenient read lost the file contents: " ~ latinRead.output);
+    writeln("read pages, numbers lines, caps long lines, survives non-UTF-8 bytes");
+
+    // edit rejects an identical oldString/newString instead of rewriting the
+    // same bytes and claiming success.
+    auto sameEdit = executeTool(makeCall("edit",
+        `{"filePath":"README.md","oldString":"aurora tools test","newString":"aurora tools test"}`),
+        dir);
+    assert(sameEdit.failed, "identical edit should fail");
+    writeln("edit rejects identical old/new strings");
+
+    // edit falls back to a whitespace-tolerant match when the anchor differs
+    // only in indentation (the exact text is absent), instead of failing.
+    write(buildPath(dir, "fuzzy.txt"), "void f()\n{\n    return one;\n}\n");
+    auto fuzzyEdit = executeTool(makeCall("edit",
+        `{"filePath":"fuzzy.txt","oldString":"\treturn one;","newString":"    return two;"}`),
+        dir);
+    assert(!fuzzyEdit.failed, "fuzzy edit failed: " ~ fuzzyEdit.output);
+    assert(readText(buildPath(dir, "fuzzy.txt")).indexOf("return two;") >= 0,
+        "fuzzy edit did not apply: " ~ readText(buildPath(dir, "fuzzy.txt")));
+
+    // An ambiguous fuzzy anchor still fails instead of editing an arbitrary
+    // one of the matches.
+    write(buildPath(dir, "dup.txt"), "  alpha\n    alpha\n");
+    auto ambiguousEdit = executeTool(makeCall("edit",
+        `{"filePath":"dup.txt","oldString":"\talpha","newString":"beta"}`), dir);
+    assert(ambiguousEdit.failed, "ambiguous fuzzy edit should fail");
+    writeln("edit tolerates indentation drift but rejects ambiguity");
 
     // write a new file then read it back
     auto writeResult = executeTool(makeCall("write",
@@ -76,6 +158,29 @@ int main()
     assert(!grepResult.failed, "grep failed: " ~ grepResult.output);
     assert(grepResult.output.indexOf("README.md") >= 0,
         "grep did not find the matching file");
+    assert(grepResult.output.indexOf("README.md:1: aurora tools test") >= 0,
+        "grep did not return the matching line with a line number: " ~
+        grepResult.output);
+
+    // grep honors the documented glob `include` filter. The old filter was a
+    // literal suffix test, so "*.d" could never match a real file name.
+    write(buildPath(dir, "src", "extra.d"), "needle-marker\n");
+    write(buildPath(dir, "src", "extra.txt"), "needle-marker\n");
+    auto grepInclude = executeTool(makeCall("grep",
+        `{"pattern":"needle-marker","include":"*.d"}`), dir);
+    assert(!grepInclude.failed, "grep include failed: " ~ grepInclude.output);
+    assert(grepInclude.output.indexOf("extra.d") >= 0,
+        "grep include *.d did not match a .d file: " ~ grepInclude.output);
+    assert(grepInclude.output.indexOf("extra.txt") < 0,
+        "grep include *.d incorrectly matched a .txt file: " ~
+        grepInclude.output);
+    // A bare extension is accepted too.
+    auto grepExt = executeTool(makeCall("grep",
+        `{"pattern":"needle-marker","include":".txt"}`), dir);
+    assert(!grepExt.failed, "grep include .txt failed: " ~ grepExt.output);
+    assert(grepExt.output.indexOf("extra.txt") >= 0,
+        "grep include .txt did not match: " ~ grepExt.output);
+    writeln("grep include is a glob (and accepts a bare extension)");
 
     // bash echo round-trips through the shell
     auto bashResult = executeTool(makeCall("bash",

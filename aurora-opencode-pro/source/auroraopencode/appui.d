@@ -5072,6 +5072,71 @@ public final class OpenCodeRoot : VBox
     /// tool_calls message", HTTP 400), so keep the calls only when the full
     /// contiguous set of replies is present; otherwise downgrade the assistant
     /// to a plain message and drop the orphan tool replies.
+    /// Deterministically shrink an oversized request so it fits the model's
+    /// context window: older tool outputs (the bulk of long agent loops) are
+    /// elided first, then older non-tool turns. Tool-call/reply pairing is
+    /// preserved (role + toolCallId never change), the system prompt, the first
+    /// user turn and the most recent exchanges are never elided. This is a
+    /// cheap safety valve, not a summariser — it never calls the model.
+    private static ChatRequestMessage[] compactRequestMessages(
+        ChatRequestMessage[] messages, int contextLimit)
+    {
+        if (contextLimit <= 0 || messages.length == 0) return messages;
+        // Rough token estimate (~4 chars/token). Begin eliding at 60% of the
+        // window so there is headroom for the response and tool schemas.
+        const size_t budget = cast(size_t) contextLimit * 4 * 6 / 10;
+        size_t total;
+        foreach (m; messages) total += m.content.length + 16;
+        if (total <= budget) return messages;
+
+        auto result = messages.dup;
+        immutable toolNote =
+            "(earlier tool output elided to fit the context window)";
+        immutable msgNote =
+            "(earlier message elided to fit the context window)";
+
+        // Pass 1: elide older tool results, keeping the newest few intact.
+        enum size_t keepRecentTools = 4;
+        size_t[] toolIndexes;
+        foreach (i, m; result)
+            if (m.role == "tool") toolIndexes ~= i;
+        if (toolIndexes.length > keepRecentTools)
+        {
+            foreach (idx; toolIndexes[0 .. $ - keepRecentTools])
+            {
+                if (total <= budget) break;
+                if (result[idx].content.length <= toolNote.length) continue;
+                total -= result[idx].content.length - toolNote.length;
+                result[idx].content = toolNote;
+            }
+        }
+
+        // Pass 2: elide older non-tool turns, protecting the system prompt,
+        // the first user turn and the most recent exchanges.
+        enum size_t protectTail = 8;
+        if (total > budget)
+        {
+            size_t protectHead;
+            foreach (i, m; result)
+            {
+                protectHead = i + 1;
+                if (m.role != "system") break;
+            }
+            foreach (i, m; result)
+            {
+                if (total <= budget) break;
+                if (i < protectHead) continue;
+                if (i + protectTail >= result.length) continue;
+                if (m.role == "system" || m.role == "tool") continue;
+                if (i == protectHead && m.role == "user") continue;
+                if (m.content.length <= msgNote.length) continue;
+                total -= m.content.length - msgNote.length;
+                result[i].content = msgNote;
+            }
+        }
+        return result;
+    }
+
     private static ChatRequestMessage[] buildRequestMessages(
         const ref ChatSession session)
     {
@@ -5161,7 +5226,8 @@ public final class OpenCodeRoot : VBox
                 workspace, platform);
             messages ~= systemPrompt;
         }
-        messages ~= buildRequestMessages(*session);
+        messages ~= compactRequestMessages(buildRequestMessages(*session),
+            contextLimitForModel(_settings.model));
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
             tools = _settings.legacyTools
@@ -7005,6 +7071,16 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return null;
         return buildRequestMessages(_sessions[_current]);
+    }
+
+    /// Test-only: the compacted outgoing list for the current session at the
+    /// given context limit (what `startChatRequest` would send).
+    public ChatRequestMessage[] compactedRequestMessagesForTesting(
+        int contextLimit)
+    {
+        if (_current < 0) return null;
+        return compactRequestMessages(buildRequestMessages(_sessions[_current]),
+            contextLimit);
     }
 
     /// Test-only: append an assistant message carrying `tool_calls` and no

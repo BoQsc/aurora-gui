@@ -3,6 +3,28 @@ module auroraopencode.titlebar;
 import aurora;
 import auroraopencode.core : opencodeBackground, opencodeMuted,
     opencodePressed, opencodeSelection, opencodeText, opencodeTitleBarHeight;
+import std.datetime : SysTime;
+import std.file : thisExePath, timeLastModified;
+import std.format : format;
+
+/// `YYYY-MM-DD HH:MM` timestamp of when the running executable was linked.
+/// Read from the exe's own last-write time so it always matches the binary the
+/// user is actually running (a compile-time constant would instead report the
+/// source file's modification time).
+private string executableBuildStamp()
+{
+    try
+    {
+        const built = timeLastModified(thisExePath()).toLocalTime();
+        return format("%04d-%02d-%02d %02d:%02d",
+            built.year, cast(int) built.month, built.day,
+            built.hour, built.minute);
+    }
+    catch (Exception)
+    {
+        return "";
+    }
+}
 
 /**
  * The Aurora OpenCode Pro titlebar.
@@ -37,11 +59,16 @@ public final class OpenCodeTitleBar : TitleBar
     this(GuiWindow window)
     {
         _window = window;
-        // The app identity sits at the left of the band; the merged toolbar
-        // still fills the rest. The title region is pinned to a compact width
-        // so it never claims the 2/5 auto-allocation and squeeze the toolbar.
-        setTitle("Aurora OpenCode");
-        setTitleWidth(150);
+        // The app identity and the exe's build date/time sit at the left of the
+        // band; the merged toolbar still fills the rest. The title region is
+        // sized to the measured text (not the 2/5 auto-allocation) so it never
+        // squeezes the toolbar.
+        const stamp = executableBuildStamp();
+        const title = stamp.length > 0
+            ? "Aurora OpenCode  " ~ stamp
+            : "Aurora OpenCode";
+        setTitle(title);
+        setTitleWidth(measuredTitleWidth(title));
         setIcon(IconKind.terminal);
         setBarHeight(titleBarHeight);
         layoutHints().preferredHeight = titleBarHeight;
@@ -60,6 +87,23 @@ public final class OpenCodeTitleBar : TitleBar
         onDragMoved = &moveDrag;
         onSnapChanged = &broadcastSnapPreview;
         onSnapApplied = &applySnap;
+    }
+
+    /// Width that fits `text` at the caption font plus a small side pad, so the
+    /// title region stays as compact as the content allows.
+    private int measuredTitleWidth(string text)
+    {
+        import std.utf : toUTF32;
+
+        const palette = theme();
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast(FontFace) palette.uiFont;
+        options.pixelSize = fontPixelSize(palette.fontScale);
+        options.wrap = false;
+        const measured = fontSystem().textEngine.layout(toUTF32(text), options)
+            .measuredSize();
+        return maxInt(120, measured.width + 16);
     }
 
     /// Re-apply the app's dark opencode palette.

@@ -1,5 +1,30 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: tool features vs upstream opencode (read paging / grep lines / fuzzy edit / compaction)
+
+Review against upstream `anomalyco/opencode` `read`/`edit`/`grep`/compaction, then
+implemented the missing behaviours (correctness/efficiency/performance only):
+
+- [x] **`grep` returned only file paths.** Now streams each file and returns
+      `path:line: text` (200-match cap, long lines truncated on a UTF-8
+      boundary). The `include` glob still applies.
+- [x] **`edit` had no fuzzy fallback.** When the exact anchor is absent it now
+      matches line-trimmed (indentation-tolerant), reconstructs the exact block
+      with the file's own newline, and still fails on a missing/ambiguous anchor.
+- [x] **`read` had no paging.** Now returns `N: text` line numbers with
+      `offset`/`limit`, a continuation footer, a 2000-char per-line cap, and
+      always-valid-UTF-8 output; offset past EOF errors.
+- [x] **No context management.** Added deterministic `compactRequestMessages`
+      (in `startChatRequest`): near the model's window it elides older tool
+      outputs (newest 4 kept), then older turns, preserving tool-call pairing and
+      the system prompt/first user/last 8 messages. No model call.
+- [x] **Permissions/approval layer deliberately not implemented** — security, not
+      a correctness/perf gap; called out explicitly.
+- [x] Verified: `tools-test.exe` EXIT=0, `headless-pro-smoke.exe` EXIT=0 (new
+      guards for read paging/line numbers, grep snippets, fuzzy edit, and
+      compaction). Rebuilt + killed old PID + relaunched exactly one (PID 24940).
+      Details in `testing_progress_and_methods.md`.
+
 ## 2026-09-14 - Pro: flow audit — error corrupted the prompt, unnamed tool masked the row (fixed)
 
 Follow-up to the "waiting row" fix, auditing the rest of the client→transcript

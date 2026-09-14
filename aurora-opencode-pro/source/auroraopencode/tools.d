@@ -5,7 +5,8 @@ import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
     write, mkdirRecurse, remove, rmdirRecurse, tempDir, getSize,
     timeLastModified;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : buildNormalizedPath, buildPath, expandTilde, isAbsolute;
+import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
+    isAbsolute;
 import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin;
@@ -130,8 +131,10 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         editToolDefinition(),
         OpenCodeToolDef(
             "read",
-            "Read the contents of a text file from the workspace.",
-            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"}},"required":["filePath"]}`
+            "Read a text file from the workspace, one line per line, prefixed " ~
+            "with its 1-indexed line number. Use `offset`/`limit` to page " ~
+            "through large files.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"offset":{"type":"integer","description":"1-indexed line to start from (default 1)"},"limit":{"type":"integer","description":"Maximum number of lines to return (default: all, up to the output cap)"}},"required":["filePath"]}`
         ),
         OpenCodeToolDef(
             "write",
@@ -148,7 +151,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         OpenCodeToolDef(
             "grep",
             "Search file contents in the workspace with a regular expression. " ~
-            "Returns matching file paths.",
+            "Returns matching lines as `path:line: text` (first 200 matches).",
             `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
         ),
     ];
@@ -174,8 +177,10 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         editToolDefinition(),
         OpenCodeToolDef(
             "read",
-            "Read the contents of a text file from the workspace.",
-            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"}},"required":["filePath"]}`
+            "Read a text file from the workspace, one line per line, prefixed " ~
+            "with its 1-indexed line number. Use `offset`/`limit` to page " ~
+            "through large files.",
+            `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"offset":{"type":"integer","description":"1-indexed line to start from (default 1)"},"limit":{"type":"integer","description":"Maximum number of lines to return (default: all, up to the output cap)"}},"required":["filePath"]}`
         ),
         OpenCodeToolDef(
             "write",
@@ -192,7 +197,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         OpenCodeToolDef(
             "grep",
             "Search file contents in the workspace with a regular expression. " ~
-            "Returns matching file paths.",
+            "Returns matching lines as `path:line: text` (first 200 matches).",
             `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
         ),
     ];
@@ -275,8 +280,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("Call a tool by name with a JSON object of arguments. Pass " ~
         "workspace-relative (or absolute) paths and never guess file " ~
         "contents; read a file before you change it.\n");
-    builder.put("- `read` {\"filePath\":\"src/main.d\"} — print a text file so " ~
-        "you can inspect it.\n");
+    builder.put("- `read` {\"filePath\":\"src/main.d\"} — print a text file with " ~
+        "1-indexed line numbers so you can inspect it; pass \"offset\" and " ~
+        "\"limit\" to page through a large file.\n");
     builder.put("- `write` {\"filePath\":\"notes.txt\",\"content\":\"...\"} — " ~
         "create or fully overwrite a file (parent directories are made for " ~
         "you).\n");
@@ -290,7 +296,7 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "directories matching a glob pattern.\n");
     builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"} " ~
         "— regular-expression search of file contents; returns matching " ~
-        "paths.\n");
+        "lines as path:line: text.\n");
     builder.put("- `remove` {\"path\":\"build\"} — delete a file or directory " ~
         "tree.\n");
     builder.put("- `dshell` {\"command\":\"list\",\"path\":\"src\"} — the native " ~
@@ -556,10 +562,68 @@ public string resolveToolPath(string value, string workspace)
 private int maxOutputLines = 400;
 private int maxOutputBytes = 40_000;
 
+/// Decode raw bytes as UTF-8 when they are valid UTF-8, otherwise map each
+/// byte to its own code point and UTF-8 encode it. Console tools on Windows
+/// may emit the OEM codepage (invalid UTF-8) while modern tools emit UTF-8;
+/// this keeps both readable and always returns valid UTF-8, so the text is
+/// safe to persist into a JSON session file.
+private string decodeBytesLenient(const(ubyte)[] bytes)
+{
+    if (bytes.length == 0) return "";
+    try
+    {
+        import std.utf : validate;
+        validate(cast(string) bytes);
+        return cast(string) bytes.dup;
+    }
+    catch (Exception) {}
+    auto chars = new dchar[](bytes.length);
+    foreach (index; 0 .. bytes.length)
+        chars[index] = cast(dchar) bytes[index];
+    return toUTF8(chars);
+}
+
+/// Length of the longest prefix of `bytes` that does not end in the middle of
+/// a UTF-8 sequence, so a byte-capped read/truncation never splits a multi-byte
+/// character (which would yield invalid UTF-8). Returns 0 for empty input.
+private size_t utf8SafeCut(const(ubyte)[] bytes)
+{
+    size_t index = bytes.length;
+    while (index > 0 && (bytes[index - 1] & 0xC0) == 0x80)
+        --index;
+    if (index == 0) return 0;
+    const lead = bytes[index - 1];
+    const size_t need = lead < 0x80 ? 1
+        : (lead & 0xE0) == 0xC0 ? 2
+        : (lead & 0xF0) == 0xE0 ? 3
+        : (lead & 0xF8) == 0xF0 ? 4
+        : 1;
+    if (index - 1 + need <= bytes.length) return bytes.length;
+    return index - 1;
+}
+
 private string truncateOutput(string text)
 {
     if (text.length <= maxOutputBytes) return text;
-    return text[0 .. maxOutputBytes] ~ "\n…(output truncated)";
+    const safe = utf8SafeCut(cast(const(ubyte)[]) text[0 .. maxOutputBytes]);
+    return text[0 .. safe] ~ "\n…(output truncated)";
+}
+
+/// Read at most `cap` bytes from a file and decode them leniently. Avoids
+/// materialising an arbitrarily large file just to show its first screenful.
+private string readFileCapped(string path, size_t cap)
+{
+    auto file = File(path, "rb");
+    scope (exit) collectException(file.close());
+    auto buffer = new ubyte[cap];
+    size_t total;
+    while (total < buffer.length)
+    {
+        const got = file.rawRead(buffer[total .. $]).length;
+        if (got == 0) break;
+        total += got;
+    }
+    return decodeBytesLenient(buffer[0 .. total]);
 }
 
 /// Resolve the requested shell to the argv the platform should invoke.
@@ -748,17 +812,11 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     {
         try
         {
-            // Read raw bytes and decode leniently: console tools emit the OEM
-            // codepage, which is not valid UTF-8. Strict decoding would throw
-            // and the output would be swallowed as "(no output)". Map each
-            // byte to its own code point and UTF-8 encode it, so the result is
-            // always valid UTF-8 and safe to persist into JSON sessions.
-            auto raw = read(outPath);
-            auto bytes = cast(ubyte[]) raw;
-            auto chars = new dchar[](bytes.length);
-            for (size_t index; index < bytes.length; ++index)
-                chars[index] = cast(dchar) bytes[index];
-            output = toUTF8(chars);
+            // Decode the captured bytes leniently: prefer valid UTF-8 (modern
+            // console tools, git with a UTF-8 locale) and fall back to a
+            // per-byte mapping for legacy OEM-codepage output. Either way the
+            // result is valid UTF-8 and safe to persist into JSON sessions.
+            output = decodeBytesLenient(cast(const(ubyte)[]) read(outPath));
         }
         catch (Exception) {}
         try remove(outPath);
@@ -785,17 +843,85 @@ private bool tryOpenOutput(string outPath, out File outFile, string toolName)
     }
 }
 
+/// A window of lines read from a file, for the `read` tool's paging.
+private struct LineWindow
+{
+    string[] lines;    // decoded lines, terminators stripped, line numbers implicit
+    size_t firstLine;  // 1-indexed number of lines[0]
+    size_t lastLine;   // 1-indexed number of the last emitted line (0 if none)
+    size_t totalLines; // total lines in the file (all scanned even when paging)
+    bool hasMore;      // stopped at `limit`/byte cap before the end of the file
+}
+
+/// Longest line body the `read` tool returns before truncating that line.
+private enum size_t maxLineChars = 2000;
+
+/// Stream a file line-by-line and return at most `limit` lines starting at
+/// 1-indexed `offset`, capped at `maxBytes` of line content. Lines are read
+/// through `File.byLine`, so a huge file is never materialised in memory.
+/// `totalLines` still reports the real line count because scanning continues
+/// past `offset` to the end of file.
+private LineWindow readLineWindow(string path, size_t offset, size_t limit,
+    size_t maxBytes)
+{
+    LineWindow window;
+    window.firstLine = offset;
+    auto file = File(path, "r");
+    scope (exit) collectException(file.close());
+    size_t lineNo;
+    size_t bytes;
+    foreach (rawLine; file.byLine())
+    {
+        ++lineNo;
+        window.totalLines = lineNo;
+        if (lineNo < offset) continue;
+        // `byLine` already strips the terminator; decode leniently so a
+        // non-UTF-8 file still yields valid UTF-8 line text.
+        string line = decodeBytesLenient(cast(const(ubyte)[]) rawLine);
+        if (line.length > maxLineChars)
+            line = line[0 .. utf8SafeCut(
+                cast(const(ubyte)[]) line[0 .. maxLineChars])] ~
+                " …(line truncated)";
+        // Count the rendered `N: ` prefix too, so the byte budget tracks the
+        // real output size for line-number-heavy reads.
+        const prefix = to!string(lineNo).length + 2;
+        if (bytes + prefix + line.length + 1 > maxBytes)
+        {
+            window.hasMore = true;
+            break;
+        }
+        window.lines ~= line;
+        bytes += prefix + line.length + 1;
+        if (limit > 0 && window.lines.length >= limit)
+        {
+            window.hasMore = true;
+            break;
+        }
+    }
+    if (window.lines.length > 0)
+        window.lastLine = window.firstLine + window.lines.length - 1;
+    return window;
+}
+
 private ToolExecution runRead(string args, string workspace)
 {
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
     string filePath;
+    size_t offset = 1;
+    size_t limit;
     if (value.type == JSONType.object)
     {
         if (auto field = "filePath" in value.object)
             if (field.type == JSONType.string)
                 filePath = field.str;
+        if (auto field = "offset" in value.object)
+            if (field.type == JSONType.integer && field.integer > 0)
+                offset = cast(size_t) field.integer;
+        if (auto field = "limit" in value.object)
+            if (field.type == JSONType.integer && field.integer > 0)
+                limit = cast(size_t) field.integer;
     }
     if (filePath.length == 0)
         return ToolExecution("read",
@@ -803,12 +929,40 @@ private ToolExecution runRead(string args, string workspace)
     const path = resolveToolPath(filePath, workspace);
     if (!exists(path) || !isFile(path))
         return ToolExecution("read", "Error: file not found: " ~ path, true);
-    string text;
-    try text = readText(path);
-    catch (Exception error)
-        return ToolExecution("read", "Error: could not read file: " ~
-            error.msg, true);
-    return ToolExecution("read", truncateOutput(text), false);
+
+    // Numbered line window (line numbers give the model stable edit anchors).
+    // Leave headroom under the byte cap for the `N: ` prefixes and the footer.
+    LineWindow window;
+    try window = readLineWindow(path, offset, limit,
+        maxOutputBytes > 8192 ? maxOutputBytes - 8192 : maxOutputBytes);
+    catch (Exception)
+    {
+        // Not readable as text (e.g. non-UTF-8 bytes): fall back to a bounded
+        // raw read rather than failing outright.
+        string text;
+        try text = readFileCapped(path, maxOutputBytes + 4);
+        catch (Exception error)
+            return ToolExecution("read", "Error: could not read file: " ~
+                error.msg, true);
+        return ToolExecution("read", truncateOutput(text), false);
+    }
+    if (window.lines.length == 0)
+    {
+        if (offset > 1)
+            return ToolExecution("read", "Error: offset " ~ to!string(offset) ~
+                " is out of range (file has " ~
+                to!string(window.totalLines) ~ " lines).", true);
+        return ToolExecution("read", "", false);
+    }
+    auto builder = appender!string();
+    foreach (i, line; window.lines)
+        builder.put(to!string(window.firstLine + i) ~ ": " ~ line ~ "\n");
+    builder.put("\n(Showing lines " ~ to!string(window.firstLine) ~ "-" ~
+        to!string(window.lastLine) ~
+        (window.hasMore
+            ? ". Use offset=" ~ to!string(window.lastLine + 1) ~ " to continue.)"
+            : ". End of file.)") ~ "\n");
+    return ToolExecution("read", truncateOutput(builder.data), false);
 }
 
 private ToolExecution runWrite(string args, string workspace)
@@ -857,6 +1011,49 @@ private ToolExecution runWrite(string args, string workspace)
     return result;
 }
 
+/// Fuzzy fallback for `edit`: candidate substrings of `content` that match
+/// `find` after ignoring each line's leading/trailing whitespace, so an edit
+/// still lands when the model's anchor differs only by indentation or trailing
+/// spaces. The returned strings are the exact text in `content`, so the caller
+/// replaces them verbatim; the block is rejoined with the newline `content`
+/// actually uses so the substring is really present.
+private string[] lineTrimmedEditMatches(string content, string find)
+{
+    import std.string : splitLines;
+
+    string[] matches;
+    auto contentLines = splitLines(content);
+    auto findLines = splitLines(find);
+    if (findLines.length > 0 && findLines[$ - 1].length == 0)
+        findLines = findLines[0 .. $ - 1];
+    if (findLines.length == 0 || contentLines.length < findLines.length)
+        return matches;
+    const newline = indexOf(content, "\r\n") >= 0 ? "\r\n" : "\n";
+    foreach (i; 0 .. contentLines.length - findLines.length + 1)
+    {
+        bool matched = true;
+        foreach (j; 0 .. findLines.length)
+        {
+            if (strip(contentLines[i + j]) != strip(findLines[j]))
+            {
+                matched = false;
+                break;
+            }
+        }
+        if (matched)
+        {
+            auto builder = appender!string();
+            foreach (k; i .. i + findLines.length)
+            {
+                if (k > i) builder.put(newline);
+                builder.put(contentLines[k]);
+            }
+            matches ~= builder.data;
+        }
+    }
+    return matches;
+}
+
 /// The D-native `edit` tool: replace an exact `oldString` with `newString` in a
 /// file, then report a unified diff. Fails when the anchor is missing or (by
 /// default) ambiguous, so edits never silently change the wrong place.
@@ -892,6 +1089,10 @@ private ToolExecution runEdit(string args, string workspace)
         return ToolExecution("edit",
             "Error: edit requires `filePath`, `oldString` and `newString`.",
             true);
+    if (oldString == newString)
+        return ToolExecution("edit",
+            "Error: `oldString` and `newString` are identical; nothing to " ~
+            "change.", true);
     const path = resolveToolPath(filePath, workspace);
     if (!exists(path) || !isFile(path))
         return ToolExecution("edit", "Error: file not found: " ~ path, true);
@@ -911,9 +1112,6 @@ private ToolExecution runEdit(string args, string workspace)
         ++occurrences;
         searchFrom = at + oldString.length;
     }
-    if (occurrences == 0)
-        return ToolExecution("edit",
-            "Error: `oldString` was not found in " ~ path ~ ".", true);
     if (occurrences > 1 && !replaceAll)
         return ToolExecution("edit", "Error: `oldString` appears " ~
             to!string(occurrences) ~ " times in " ~ path ~
@@ -921,7 +1119,62 @@ private ToolExecution runEdit(string args, string workspace)
             true);
 
     string updated;
-    if (replaceAll)
+    bool fuzzyUsed;
+    if (occurrences == 0)
+    {
+        // Exact anchor missing: accept a whitespace/indentation-tolerant match
+        // (still required to be unique unless replaceAll), so a valid edit is
+        // not rejected just because the quoted block drifted slightly.
+        string[] candidates;
+        foreach (candidate; lineTrimmedEditMatches(previous, oldString))
+        {
+            if (previous.indexOf(candidate) < 0) continue;
+            bool duplicate;
+            foreach (seen; candidates)
+                if (seen == candidate)
+                {
+                    duplicate = true;
+                    break;
+                }
+            if (!duplicate) candidates ~= candidate;
+        }
+        size_t matchesInFile;
+        foreach (candidate; candidates)
+        {
+            size_t from;
+            while (true)
+            {
+                const at = previous.indexOf(candidate, from);
+                if (at < 0) break;
+                ++matchesInFile;
+                from = at + candidate.length;
+            }
+        }
+        if (matchesInFile == 0)
+            return ToolExecution("edit",
+                "Error: `oldString` was not found in " ~ path ~ ". Check the " ~
+                "exact text (including indentation) or read the file again.",
+                true);
+        if (matchesInFile > 1 && !replaceAll)
+            return ToolExecution("edit", "Error: `oldString` appears " ~
+                to!string(matchesInFile) ~ " times in " ~ path ~
+                "; add more context to make it unique or set replaceAll=true.",
+                true);
+        fuzzyUsed = true;
+        if (replaceAll)
+        {
+            updated = previous;
+            foreach (candidate; candidates)
+                updated = updated.replace(candidate, newString);
+        }
+        else
+        {
+            const at = previous.indexOf(candidates[0]);
+            updated = previous[0 .. at] ~ newString ~
+                previous[at + candidates[0].length .. $];
+        }
+    }
+    else if (replaceAll)
         updated = previous.replace(oldString, newString);
     else
     {
@@ -937,9 +1190,11 @@ private ToolExecution runEdit(string args, string workspace)
     auto diff = computeTextDiff(previous, updated);
     ToolExecution result;
     result.name = "edit";
-    result.output = "Edited " ~ path ~ " (" ~
-        to!string(replaceAll ? occurrences : 1) ~
-        (replaceAll && occurrences > 1 ? " replacements" : " replacement") ~
+    result.output = "Edited " ~ path ~
+        (fuzzyUsed ? " (whitespace-tolerant match)" : "") ~ " (" ~
+        (fuzzyUsed ? "1" : to!string(replaceAll ? occurrences : 1)) ~
+        (replaceAll && !fuzzyUsed && occurrences > 1
+            ? " replacements" : " replacement") ~
         ", +" ~ to!string(diff.additions) ~ " -" ~ to!string(diff.deletions) ~
         ").";
     result.additions = diff.additions;
@@ -1150,28 +1405,55 @@ private ToolExecution runGrep(string args, string workspace)
         return ToolExecution("grep", "Error: invalid pattern: " ~ error.msg,
             true);
 
+    // Return matching lines (`path:line: text`) rather than just file paths, so
+    // the model does not have to re-read every hit to see the surrounding code.
+    // Files are streamed line-by-line, so a huge file never has to be loaded
+    // whole just to find the first match. A match that spans multiple lines is
+    // not reported (grep is line-based, matching ripgrep's default behaviour).
+    enum size_t maxHits = 200;
+    enum size_t maxLineChars = 300;
     string[] hits;
-    foreach (entry; dirEntries(workspace, SpanMode.breadth))
+    bool capped;
+    outer: foreach (entry; dirEntries(workspace, SpanMode.breadth))
     {
         if (!entry.isFile) continue;
         if (include.length > 0 &&
-            !endsWith(entry.name, include))
+            !fileMatchesInclude(baseName(entry.name), include))
             continue;
+        File file;
+        try file = File(entry.name, "r");
+        catch (Exception) continue;
+        scope (exit) collectException(file.close());
+        size_t lineNo;
         try
         {
-            const text = readText(entry.name);
-            if (!matchFirst(text, re).empty)
-                hits ~= entry.name;
+            foreach (line; file.byLine())
+            {
+                ++lineNo;
+                if (matchFirst(line, re).empty) continue;
+                string display =
+                    decodeBytesLenient(cast(const(ubyte)[]) line);
+                if (display.length > maxLineChars)
+                    display = display[0 .. utf8SafeCut(
+                        cast(const(ubyte)[]) display[0 .. maxLineChars])] ~ "…";
+                hits ~= entry.name ~ ":" ~ to!string(lineNo) ~ ": " ~ display;
+                if (hits.length >= maxHits)
+                {
+                    capped = true;
+                    break outer;
+                }
+            }
         }
         catch (Exception) {}
-        if (hits.length >= 200) break;
     }
-    hits.sort();
     if (hits.length == 0)
         return ToolExecution("grep", "No matches for: " ~ pattern, false);
     auto builder = appender!string();
     foreach (hit; hits)
         builder.put(hit ~ "\n");
+    if (capped)
+        builder.put("(Results capped at " ~ to!string(maxHits) ~
+            " matches — narrow the pattern or include filter.)\n");
     return ToolExecution("grep", truncateOutput(builder.data), false);
 }
 
@@ -1179,6 +1461,22 @@ private bool endsWith(string value, string suffix)
 {
     return value.length >= suffix.length &&
         value[$ - suffix.length .. $] == suffix;
+}
+
+/// True when a file name satisfies the grep `include` filter. The filter is
+/// documented as a glob (e.g. `*.d`), but a bare extension or suffix (`d`,
+/// `.d`, `main.d`) is also accepted as a convenience. Matching against the
+/// name (not the full path) means `*.d` works regardless of directory depth;
+/// the previous suffix test only matched a literal `*.d` never found in a name.
+private bool fileMatchesInclude(string fileName, string include)
+{
+    if (include.length == 0) return true;
+    try
+    {
+        if (!matchFirst(fileName, globToRegex(include)).empty) return true;
+    }
+    catch (Exception) {}
+    return endsWith(fileName, include);
 }
 
 /// Execute a single tool call against the workspace directory. The result is

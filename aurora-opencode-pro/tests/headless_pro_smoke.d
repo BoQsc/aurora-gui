@@ -726,6 +726,52 @@ int main(string[] args)
         "A valid tool exchange was dropped by the sanitizer");
     writeln("Outgoing request keeps a fully-answered tool exchange");
 
+    // Compaction: an oversized history elides the oldest tool outputs (keeping
+    // the newest few and every tool-call/reply pair) so the request fits the
+    // model window instead of overflowing it.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["big job"]);
+    import std.array : replicate;
+    const bigOutput = replicate("x", 20_000);
+    foreach (i; 0 .. 12)
+    {
+        const id = "call_big_" ~ to!string(i);
+        root.appendDanglingToolCallsForTesting(id);
+        root.appendToolReplyForTesting(id, bigOutput);
+    }
+    root.addConversationForTesting(["assistant"], ["done"]);
+    auto fat = root.requestMessagesForTesting();
+    size_t fatBytes;
+    foreach (m; fat) fatBytes += m.content.length;
+    assert(fatBytes > 200_000, "compaction fixture was not large enough");
+    auto slim = root.compactedRequestMessagesForTesting(8_000);
+    size_t slimBytes;
+    int toolCount, elided;
+    bool sawPair;
+    foreach (i, m; slim)
+    {
+        slimBytes += m.content.length;
+        if (m.role == "tool")
+        {
+            ++toolCount;
+            assert(m.toolCallId.length > 0,
+                "compaction dropped a tool reply's toolCallId");
+            if (m.content.indexOf("elided") >= 0) ++elided;
+        }
+        if (m.role == "assistant" && m.toolCalls.length == 1)
+        {
+            sawPair = true;
+            assert(i + 1 < slim.length && slim[i + 1].role == "tool",
+                "compaction broke tool-call/reply pairing");
+        }
+    }
+    assert(toolCount == 12,
+        "compaction dropped tool messages instead of eliding their content");
+    assert(elided >= 1, "compaction did not elide any tool output");
+    assert(sawPair, "compaction dropped the tool-call messages");
+    assert(slimBytes < fatBytes, "compaction did not shrink the request");
+    writeln("Compaction elides old tool outputs and preserves tool pairing");
+
     // Streaming progress: the client must announce a tool by name as soon as
     // the name appears (arguments still streaming), so the UI can show
     // "Writing page.html ..." instead of looking stalled for several seconds.
@@ -934,16 +980,23 @@ int main(string[] args)
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),
         "The merged custom titlebar should own the top band");
-    assert(root.titleBarTitleForTesting() == "Aurora OpenCode",
+    const titleText = root.titleBarTitleForTesting();
+    assert(titleText.indexOf("Aurora OpenCode") == 0,
         "The titlebar should show 'Aurora OpenCode' at its left, got '" ~
-        root.titleBarTitleForTesting() ~ "'");
-    // The title region is a compact fixed strip, not the default 2/5 of the
-    // band, so the merged toolbar keeps its room.
+        titleText ~ "'");
+    // ...followed by the exe's build date/time, e.g. "2026-09-14 16:40".
+    import std.regex : matchFirst, regex;
+    assert(!matchFirst(titleText,
+        regex(r"^Aurora OpenCode  \d{4}-\d{2}-\d{2} \d{2}:\d{2}$")).empty,
+        "The titlebar should append the exe build date/time, got '" ~
+        titleText ~ "'");
+    // The title region is sized to its measured content, not the default 2/5 of
+    // the band, so the merged toolbar keeps its room.
     assert(root.titleBarTitleWidthForTesting() > 0 &&
-        root.titleBarTitleWidthForTesting() <= 200,
+        root.titleBarTitleWidthForTesting() <= 320,
         "The title region should be a compact fixed width, got " ~
         to!string(root.titleBarTitleWidthForTesting()));
-    writeln("Titlebar left title: ", root.titleBarTitleForTesting());
+    writeln("Titlebar left title: ", titleText);
     assert(root.projectsRailCollapsedForTesting(),
         "Project rail should start collapsed");
     assert(root.projectsRailWidthForTesting() <= 48,
@@ -1209,8 +1262,13 @@ int main(string[] args)
     assert(root.toolResultForTesting(0).indexOf("hello tool world") >= 0,
         "read tool did not return the file contents: " ~
         root.toolResultForTesting(0));
+    assert(root.toolResultForTesting(0).indexOf("1: hello tool world") >= 0,
+        "read tool did not number lines: " ~ root.toolResultForTesting(0));
     assert(root.toolResultForTesting(1).indexOf("notes.txt") >= 0,
         "grep tool did not find the matching file");
+    assert(root.toolResultForTesting(1).indexOf("notes.txt:1: hello tool world") >= 0,
+        "grep tool did not return a line-numbered snippet: " ~
+        root.toolResultForTesting(1));
     assert(root.toolResultForTesting(2).indexOf("run-args-ok") >= 0,
         "run tool did not execute: " ~ root.toolResultForTesting(2));
     // Regression: a JSON argv array must render as a readable command line,
