@@ -725,6 +725,11 @@ final class OpenCodeClient
                 toolList.array ~= toolJson;
             }
             root["tools"] = toolList;
+            // Match Codex's request contract: let the model return independent
+            // tool calls in one response instead of paying for a fresh model
+            // round-trip for every read/search. The Pro runtime still decides
+            // which calls are actually safe to execute concurrently.
+            root["parallel_tool_calls"] = true;
         }
         root["stream"] = true;
         // CommandCode accepts low|medium|high|xhigh|max and rejects the old

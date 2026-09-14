@@ -10,7 +10,8 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
-    executeTool, nativeOnlyToolDefinitions, partialStringArg, previewToolDiff;
+    executeTool, nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
+    ToolExecution;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -5619,24 +5620,90 @@ public final class OpenCodeRoot : VBox
 
     /// Worker thread body: execute each tool in the batch and push the results
     /// back into the client event queue, which the UI drains on the next tick.
+    /// Consecutive read-only calls run together; mutating or process-launching
+    /// calls are exclusive and retain model order. Results are also published
+    /// in model order, not completion order, so parallelism cannot reshuffle
+    /// the transcript.
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
         const(OpenCodeToolCall)[] calls, string workspace)
     {
-        foreach (call; calls)
+        size_t slot;
+        while (slot < calls.length)
         {
-            auto execution = executeTool(call, workspace);
-            OpenCodeEvent result;
-            result.kind = OpenCodeEventKind.toolResult;
-            result.text = execution.output;
-            result.toolName = call.name;
-            result.toolCallId = call.id;
-            result.toolFailed = execution.failed;
-            result.diffAdditions = execution.additions;
-            result.diffDeletions = execution.deletions;
-            result.diffText = execution.diff;
-            result.reasoning = false;
-            client.pushLocalEvent(result);
+            if (!toolSupportsParallel(calls[slot]))
+            {
+                publishToolResult(client, calls[slot],
+                    executeTool(calls[slot], workspace));
+                ++slot;
+                continue;
+            }
+
+            // Only a contiguous read-only lane is concurrent. An edit/write/
+            // patch/run acts as a barrier, so a later read can observe it and
+            // two workspace mutations can never race each other.
+            size_t end = slot + 1;
+            while (end < calls.length && toolSupportsParallel(calls[end]))
+                ++end;
+            ParallelToolJob[] jobs;
+            Thread[] workers;
+            foreach (call; calls[slot .. end])
+            {
+                auto job = new ParallelToolJob(call, workspace);
+                jobs ~= job;
+                auto worker = new Thread(&job.run);
+                worker.isDaemon = true;
+                workers ~= worker;
+                worker.start();
+            }
+            foreach (worker; workers) worker.join();
+            foreach (job; jobs)
+                publishToolResult(client, job.call, job.execution);
+            slot = end;
         }
+    }
+
+    /// Explicit allow-list, like Codex's per-tool `supports_parallel` metadata.
+    /// Unknown tools default to exclusive. `dshell` only exposes where/list/
+    /// info and is therefore read-only; process execution and all file-changing
+    /// tools deliberately stay out of this list.
+    private static bool toolSupportsParallel(const ref OpenCodeToolCall call)
+    {
+        return call.name == "read" || call.name == "glob" ||
+            call.name == "grep" || call.name == "dshell";
+    }
+
+    private static final class ParallelToolJob
+    {
+        OpenCodeToolCall call;
+        string workspace;
+        ToolExecution execution;
+
+        this(const ref OpenCodeToolCall source, string workspace)
+        {
+            this.call = source;
+            this.workspace = workspace;
+        }
+
+        void run()
+        {
+            execution = executeTool(call, workspace);
+        }
+    }
+
+    private static void publishToolResult(OpenCodeClient client,
+        const ref OpenCodeToolCall call, const ToolExecution execution)
+    {
+        OpenCodeEvent result;
+        result.kind = OpenCodeEventKind.toolResult;
+        result.text = execution.output;
+        result.toolName = call.name;
+        result.toolCallId = call.id;
+        result.toolFailed = execution.failed;
+        result.diffAdditions = execution.additions;
+        result.diffDeletions = execution.deletions;
+        result.diffText = execution.diff;
+        result.reasoning = false;
+        client.pushLocalEvent(result);
     }
 
     /// A tool finished executing: append a `tool` role message with its output

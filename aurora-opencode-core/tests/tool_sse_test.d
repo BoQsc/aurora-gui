@@ -91,6 +91,8 @@ private void assertRequestBody()
     assert(tools !is null && tools.type == JSONType.array,
         "Body missing tools array");
     assert(tools.array.length == 1, "Expected one tool definition");
+    assert(value.object["parallel_tool_calls"].type == JSONType.true_,
+        "Tool-enabled request did not permit parallel tool calls");
     auto funcDef = "function" in tools.array[0].object;
     assert(funcDef !is null && funcDef.type == JSONType.object,
         "Tool definition missing function");
@@ -127,6 +129,8 @@ private void assertPlainBody()
         "deepseek/deepseek-v4.1-flash", true);
     auto value = parseJSON(body);
     assert(("tools" in value.object) is null, "Plain chat sent tools");
+    assert(("parallel_tool_calls" in value.object) is null,
+        "Plain chat sent a tool-only request option");
     writeln("Plain chat body stays tool-free");
     client.closeSession();
 }
