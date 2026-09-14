@@ -1,27 +1,43 @@
 # Aurora Cut todo / complaints log
 
-## 2026-09-13 - Pro: gap inconsistency between collapsed Thinking / Shell rows (fixed)
+## 2026-09-14 - Pro: gap inconsistency between collapsed Thinking / Shell rows (fixed)
 
-User (screenshot): the collapsed `▸ Thinking` and `▸ Shell powershell` rows in
-a transcript had alternately large and tight vertical gaps.
+User (screenshots, twice): the collapsed `▸ Thinking` and `▸ Shell powershell`
+rows in a transcript had alternately large and tight vertical gaps — still
+present after a first partial fix.
 
-- [x] **Diagnosis**: two row-height mismatches in `aurora-opencode-pro/.../appui.d`
-      (1) the collapsed Thinking header reserved 17 px vs the tool header's 19 px;
-      (2) a reasoning-only assistant wrapper (the tool-call request) still
-      reserved the 17 px timestamp footer while tool rows skip the footer, so it
-      measured 46 px next to 31 px tool rows; (3) `ActivityRow` was 35 px vs the
-      shared 31 px. Measured: Thinking `2*6+17=29`, Shell `2*6+19=31`, wrapper
-      with footer `2*6+17+17=46`, Activity `2*6+17+6=35`.
-- [x] **Fix**: Thinking header uses `toolHeaderHeight()`; new
-      `MessageBubble.footerVisible()` drops the footer for one-line assistant
-      headers (real replies/pills/usage/branch nav keep it); `ActivityRow`
-      unified to 31 px and centred on the row.
-- [x] **Verified**: Pro smoke EXIT=0 with the new `Collapsed rows share a
-      uniform pitch` step (`height=31, gap=6`); negative runs (footer skip
-      disabled → `31 vs 48`; header unification reverted → `31 vs 29`) both
-      fire. Rebuilt, launched exactly one `aurora-opencode-pro.exe`. See
-      `testing_progress_and_methods.md` "uneven gaps between collapsed
-      Thinking / Shell rows".
+- [x] **Diagnosis (measured with the real session shape)**: three row-height
+      mismatches in `aurora-opencode-pro/.../appui.d` — (1) collapsed Thinking
+      header 17 px vs tool header 19 px; (2) `ActivityRow` 35 px vs the shared
+      31 px; (3) **the real culprit**: `MessageBubble` reserved a 17 px meta
+      footer whenever `_time` was set, and every restored message has a `time`,
+      so each assistant reply/user turn grew 17 px taller than the collapsed
+      rows around it (reply **68 px** vs tool row **31 px**). `drawFooter`
+      prints the time right-aligned, so a cropped screenshot shows only a wide
+      blank band.
+- [x] **Fix**: Thinking header uses `toolHeaderHeight()`; `footerVisible()`
+      reserves the footer only for `_usageText`/`_actionLabel`/`_versionTotal>1`
+      (a bare timestamp no longer does); `ActivityRow` unified to 31 px and
+      centred on the row.
+- [x] **Verified**: Pro smoke EXIT=0 with two new guards — `Collapsed rows share
+      a uniform pitch` and `Replies and tool rows share one gap (no timestamp
+      band)`; negative run (time reservation restored) fires. Screenshot
+      `uniform-row-pitch-replies.png` shows no timestamp band.
+- [x] **Bonus (pre-existing flake, root-caused)**: `Re-expanding a tool output
+      re-shaped rows: 28` / scroll-snap failures were caused by the doom-loop
+      test's async tool workers rebuilding the column mid-test; the recovery
+      path now honours `_toolContinuationPaused` and the smoke drains the
+      workers. 10/10 consecutive green runs.
+- [x] Rebuilt `dub build --compiler=dmd --force`, launched exactly one
+      `aurora-opencode-pro.exe`. See `testing_progress_and_methods.md`.
+- [x] **Follow-up (user, screenshot, twice)**: answer text was not centred under
+      its own collapsed `Thinking` header — it hugged the header (~19 px) while the
+      next collapsed row was far (~38 px). Added `thinkingContentGap` in
+      `MessageBubble` (honoured by both `onMeasure` + `onPaint`). Measured the
+      tunable: increasing the gap lowers the answer only, so the next-row distance
+      is fixed at 39 px → centre needs gap **20** (header→answer 38 px == next-row
+      39 px; whitespace 30/29). Smoke EXIT=0; `gap-g20.png`. Rebuilt + relaunched
+      exactly one instance.
 
 ## 2026-09-13 - Pro: "maximum number of tool calls" cap too low (fixed)
 

@@ -113,6 +113,12 @@ private final class MessageBubble : Widget
     private static immutable int padH = 10;
     private static immutable int padV = 6;
     private static immutable int gap = 4;
+    // Breathing room between a collapsed "Thinking" header and the answer text
+    // that follows it. The header and its reply share one bubble, so without this
+    // the answer hugged the header: at 8 px it sat ~26 px below the header but
+    // ~39 px above the next collapsed row. 20 px makes the two distances equal so
+    // the answer looks vertically centred between the header and the next row.
+    private static immutable int thinkingContentGap = 20;
 
     private string _role;
     private dstring _thinking;
@@ -722,6 +728,8 @@ private final class MessageBubble : Widget
         }
         else if (_role == "assistant")
         {
+            if (_thinking.length > 0 && _content.length > 0)
+                height += thinkingContentGap;
             if (_content.length > 0)
                 height += cast(int) markdownFor(innerWidth).height;
             else if (_streaming)
@@ -809,6 +817,9 @@ private final class MessageBubble : Widget
         _linkRects.length = 0;
         _linkUrls.length = 0;
         _selSegments.length = 0;
+
+        if (_thinking.length > 0 && _content.length > 0)
+            y += thinkingContentGap;
 
         const contentY = y;
 
@@ -1442,25 +1453,20 @@ private final class MessageBubble : Widget
 
     /// Whether this bubble reserves (and draws) the one-line meta footer.
     ///
-    /// Tool parts carry no footer: the header already names the tool and its
-    /// subtitle, and the diff counters sit in the header itself.
+    /// The footer is reserved only for real bottom-aligned meta: the token
+    /// usage line, the Regenerate/Retry pill or the `‹ n/m ›` branch switcher.
     ///
-    /// Tool-call wrappers (an assistant message with reasoning but no answer
-    /// text — the collapsed "Thinking" + "Shell" stack) also drop it. Reserving
-    /// the timestamp's line made those rows `fontPixelSize(1) + 4` px taller
-    /// than the tool rows they sit between, so a stack of collapsed rows had
-    /// alternating tall/short gaps. A real reply (answer text), an action pill,
-    /// token usage or branch nav still reserves the footer.
+    /// A bare timestamp must NOT reserve it. Every restored message carries a
+    /// `time`, so reserving a line for it made each assistant reply and user
+    /// turn `fontPixelSize(1) + 4` px taller than the collapsed Thinking / tool
+    /// rows around them; the transcript then read as alternating tight and wide
+    /// gaps (a reply measured 68 px against a tool row's 31 px). The time is
+    /// still drawn when the footer is shown for usage / action / branch nav.
     private bool footerVisible() const
     {
         if (_role == "tool") return false;
-        if (_usageText.length > 0 || _actionLabel.length > 0 ||
-            _versionTotal > 1)
-            return true;
-        if (_time.length == 0) return false;
-        if (_role == "assistant" && _content.length == 0 && !_failed)
-            return false;
-        return true;
+        return _usageText.length > 0 || _actionLabel.length > 0 ||
+            _versionTotal > 1;
     }
 
     private void drawFooter(ref Canvas canvas, int width, int height)
@@ -4355,7 +4361,8 @@ public final class OpenCodeRoot : VBox
             updateStatus("Tool loop detected — asking the model to answer…");
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
-            startChatRequest(_current);
+            if (!_toolContinuationPaused)
+                startChatRequest(_current);
             return;
         }
 
@@ -6488,6 +6495,24 @@ public final class OpenCodeRoot : VBox
     public int toolRepeatCountForTesting()
     {
         return _lastToolRepeatCount;
+    }
+
+    /// Test-only: a network request is in flight.
+    public bool clientBusyForTesting()
+    {
+        return _client !is null && _client.busy();
+    }
+
+    /// Test-only: tool calls injected but not yet reported back.
+    public int pendingToolResultsForTesting() const
+    {
+        return _pendingToolResults;
+    }
+
+    /// Test-only: tool calls still marked "running" on the live row.
+    public int liveToolCallCountForTesting() const
+    {
+        return cast(int) _liveToolCalls.length;
     }
 
     /// Test-only: number of `user` role messages (used to detect the injected

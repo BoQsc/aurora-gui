@@ -1,57 +1,93 @@
 # Testing Progress and Methods (Aurora Cut)
 
-## Pro: uneven gaps between collapsed Thinking / Shell rows (2026-09-13)
+## Pro: uneven gaps between collapsed Thinking / Shell rows (2026-09-14)
 
-**Complaint (user screenshot).** A stack of collapsed transcript rows
-(`▸ Thinking`, `▸ Shell powershell`, …) had alternating tall/short vertical
-gaps instead of a uniform column rhythm.
+**Complaint (user screenshots).** A transcript of collapsed `▸ Thinking` /
+`▸ Shell powershell` rows interleaved with one-line assistant replies had
+alternating tight/wide vertical gaps.
 
-**Root cause (measured, not guessed).** Two independent row-height mismatches,
-both in Pro `appui.d`:
+**Root cause (measured, not guessed).** Three row-height mismatches in Pro
+`appui.d`, all competing with the Column's constant 6 px spacing:
 
-1. The collapsed Thinking header reserved `fontPixelSize(1) + 4` = **17 px while
-   the tool/Shell header reserved `toolHeaderHeight()` = `fontPixelSize(2) + 2`
-   = 19 px. With the Column constant 6 px spacing, a Thinking-only row was
-   `2*6 + 17 = 29` and a Shell row `2*6 + 19 = 31` — a 2 px jitter.
-2. Worse: a reasoning-only assistant wrapper (content empty, reasoning set —
-   the message that requested a tool) still reserved the one-line meta footer
-   (`fontPixelSize(1) + 4` = 17 px) for its timestamp, so it measured
-   `2*6 + 17 + 17 = 46` while the adjacent tool rows measured 31. Tool rows skip
-   the footer (`drawFooter`/measure returned early for `_role == "tool"`), so the
-   gap after every Thinking wrapper was 15 px larger than after every Shell row.
-3. `ActivityRow.rowHeight()` was `2*padV + fontPixelSize(2) + 6` = **35** (and
-   its content was centred with a double-counted `padV`), 4 px taller than the
-   31 px used by MessageBubble tool / ToolGroupBubble / LiveToolRow.
+1. The collapsed Thinking header reserved `fontPixelSize(1) + 4` = 17 px while
+   the tool/Shell header reserved `toolHeaderHeight()` = 19 px → Thinking row 29
+   vs Shell row 31.
+2. `ActivityRow.rowHeight()` was `2*padV + fontPixelSize(2) + 6` = 35 (content
+   centred with a double-counted `padV`).
+3. **The dominant one:** `MessageBubble` reserved a one-line meta footer
+   (`fontPixelSize(1) + 4` = 17 px) whenever `_time` was set. Every restored
+   message carries a `time`, so every assistant reply (and user turn) grew 17 px
+   taller than the collapsed rows around it — measured with the real session
+   shape: assistant reply **68 px** vs tool row **31 px**. `drawFooter` prints
+   the time right-aligned at the bubble's right edge; a cropped screenshot shows
+   only a wide blank band, which is what the user saw.
 
 **Fix (Pro `appui.d` only).**
-- Thinking header height now uses `toolHeaderHeight()` in both `onMeasure` and
-  `onPaint`, so Thinking == Shell == 31 px.
-- New `MessageBubble.footerVisible()` predicate used by `onMeasure` and
-  `drawFooter`: a one-line assistant header (`_content.length == 0`, not failed)
-  no longer reserves the footer; real replies (answer text), action pills, token
-  usage and branch nav still do.
-- `ActivityRow.rowHeight()` now `2*padV + fontPixelSize(2) + 2` = 31 and the dot
-  / label are centred on the row (`h/2`), removing the double-counted `padV`.
+- Thinking header height now uses `toolHeaderHeight()` in `onMeasure` + `onPaint`
+  → Thinking == Shell == 31.
+- `footerVisible()` reserves the footer only for real bottom-aligned meta
+  (`_usageText`, `_actionLabel`, `_versionTotal > 1`); a bare timestamp no longer
+  reserves it. `drawFooter` still draws the time whenever the footer is shown.
+- `ActivityRow.rowHeight()` → `2*padV + fontPixelSize(2) + 2` = 31, dot/label
+  centred on the row (`h/2`).
 
-**Test hook:** `setMessageTimeForTesting(index, time)` stamps a timestamp so the
-smoke can exercise the footer path (default test conversations carry no time).
+**Test hooks:** `setMessageTimeForTesting(index, time)`; plus
+`clientBusyForTesting`, `pendingToolResultsForTesting`,
+`liveToolCallCountForTesting` (drain async before the cache test — see below).
 
-**Regression guard (Pro smoke).** New step `Collapsed rows share a uniform
-pitch`: a fresh chat `[user, assistant(reasoning), tool, assistant(reasoning),
-tool]` gets a timestamp on every row, then the smoke asserts all four one-line
-rows have equal height and consecutive bounds are exactly 6 px apart, and dumps
-`aurora-opencode-pro/build/uniform-row-pitch.ppm` (convert with
-`python -c "from PIL import Image;Image.open('uniform-row-pitch.ppm').save('uniform-row-pitch.png')"`).
+**Regression guards (Pro smoke).**
+- `Collapsed rows share a uniform pitch`: `[user, assistant(reasoning), tool,
+  assistant(reasoning), tool]` with timestamps on every row → all one-line rows
+  equal height, bounds 6 px apart (`build/uniform-row-pitch.ppm`).
+- `Replies and tool rows share one gap`: the real shape `[tool,
+  assistant(reasoning+content), tool, assistant(reasoning+content), tool]`.
+  Records heights, stamps a `time` on every row, and asserts no height changed —
+  a bare timestamp must add no height (`build/uniform-row-pitch-replies.ppm`).
 
-Negative proof (reverting only one half fails the guard):
-- footer skip removed → `one-line rows have different heights: index 2 = 31 vs 48`
-- header unified removed → `one-line rows have different heights: index 2 = 31 vs 29`
+Negative proofs:
+- footer reservation re-enabled for `_time` → `one-line rows have different
+  heights: index 2 = 31 vs 48`.
+- before the `time` fix the reply row measured 51 → 68 px once `time` was set.
 
-**Result (2026-09-13):** Pro smoke EXIT=0 incl. the new step
-(`Collapsed rows share a uniform pitch (height=31, gap=6)`); rebuilt with
-`dub build --compiler=dmd --force`; launched exactly one
-`aurora-opencode-pro.exe`. Live capture `%TEMP%\opencode\gap-fixed-live.png`;
-the guard screenshot `uniform-row-pitch.png` shows the uniform stack.
+**Flaky-test fix (pre-existing).** `Re-expanding a tool output re-shaped rows: 28`
+and `Expanding a tool output snapped the scroll down` failed intermittently on
+the *unmodified* tree too. Cause: the doom-loop test's `injectToolCallsForTesting`
+runs real local tool workers and a follow-up request; their events reached
+`applyToolResult()` → `rebuildMessageColumn()` in the middle of the later
+cache/scroll tests, discarding the tool-row cache. Fixes: (a) the doom-loop
+recovery path now honours `_toolContinuationPaused` (test-only flag) before
+`startChatRequest`; (b) the smoke drains the injected workers before the cache
+block via the hooks above. Verified 10/10 consecutive green runs.
+
+**Result (2026-09-14):** Pro smoke EXIT=0 (10/10) including both new guards;
+`dub build --compiler=dmd --force`; exactly one `aurora-opencode-pro.exe`
+relaunched. `uniform-row-pitch-replies.png` shows the reply/tool stack with no
+timestamp band.
+
+**Follow-up — answer text not centred under its collapsed header (2026-09-14).**
+After the footer fix the *between-row* pitch was uniform (37 px ink-top to
+ink-top), but the user noticed the answer text sat much closer to its own
+collapsed `Thinking` header than to the next collapsed row: header + body are one
+bubble with **no internal gap**. Fix: added `thinkingContentGap` in
+`MessageBubble`, applied in `onMeasure` (assistant with both `_thinking` and
+`_content`) and in `onPaint` (`y += thinkingContentGap` under the same condition)
+so measure and paint stay in lock-step.
+
+Tuning (measured with `bands.py` on `build/uniform-row-pitch-replies.ppm`, 1200px
+render). Key fact: growing the gap only moves the answer down — the distance to
+the *next* row is fixed by the content height + `padV` + column spacing, so it
+stays 39 px. The answer is centred when header→answer == answer→next-row == 39:
+
+| gap | header→answer | answer→next row | whitespace above/below |
+|----:|--------------:|----------------:|-----------------------:|
+|  8  |      26 px    |      39 px      |      18 / 28           |
+| 14  |      32 px    |      39 px      |      24 / 29           |
+| 20  |      38 px    |      39 px      |      30 / 29  ← centred |
+
+Final: **`thinkingContentGap = 20`**. Verified Pro smoke EXIT=0 incl. both
+uniform-gap guards; screenshots `gap-g14.png` / `gap-g20.png` in `%TEMP%\opencode`
+show the progression, and only `gap-g20.png` has equal whitespace above/below the
+answer.
 
 ## Pro tool-round cap (2026-09-13)
 

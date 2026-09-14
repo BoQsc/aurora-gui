@@ -1476,6 +1476,51 @@ int main(string[] args)
             ", gap=6)");
     }
 
+    // Real transcript shape: collapsed tool rows interleaved with assistant
+    // replies that carry reasoning + answer text, exactly like a restored
+    // session (tools and replies alternate). Every restored message has a
+    // `time`, but a bare timestamp must not reserve the footer line, or each
+    // reply grows `fontPixelSize(1) + 4` px taller than the tool rows around it
+    // and the transcript reads as alternating tight/wide gaps.
+    {
+        root.newChatForTesting();
+        root.addConversationForTestingWithReasoning(
+            ["tool", "assistant", "tool", "assistant", "tool"],
+            ["shell out",
+             "Both windows are up — old PID 27208 never touched, new fixed build PID 7216.",
+             "shell out",
+             "Both still running. Final check of the patched class to confirm it's self-consistent:",
+             "shell out"],
+            [null, "reasoning one", null, "reasoning two", null]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "reply/tool repaint failed");
+        int[5] bare;
+        foreach (i; 0 .. 5)
+            bare[i] = root.bubbleHeightForTesting(i);
+        // Stamp a timestamp on every row, as a restored session does.
+        foreach (i; 0 .. 5)
+            root.setMessageTimeForTesting(i, "18:38");
+        root.tickTree(0.02);
+        assert(driver.paint(), "reply/tool repaint (time) failed");
+        foreach (i; 0 .. 5)
+            assert(root.bubbleHeightForTesting(i) == bare[i],
+                "a bare timestamp added phantom height to row " ~ to!string(i) ~
+                " (" ~ to!string(bare[i]) ~ " -> " ~
+                to!string(root.bubbleHeightForTesting(i)) ~ ")");
+        // Collapsed tool rows keep one pitch, and every bubble boundary sits
+        // exactly one column spacing from the next.
+        foreach (i; 0 .. 4)
+        {
+            const a = root.bubbleBoundsForTesting(i);
+            const b = root.bubbleBoundsForTesting(i + 1);
+            assert(b.y - (a.y + a.height) == 6,
+                "rows are not one column spacing apart at index " ~
+                to!string(i));
+        }
+        window.saveScreenshot("build\\uniform-row-pitch-replies.ppm");
+        writeln("Replies and tool rows share one gap (no timestamp band)");
+    }
+
     // Doom-loop recovery: repeating the same tool call with identical input
     // must break the loop and inject a recovery message asking for an answer,
     // instead of running tools forever until the round cap.
@@ -1499,6 +1544,28 @@ int main(string[] args)
     assert(root.toolRepeatCountForTesting() == 0,
         "Doom-loop recovery did not reset the repeat counter");
     writeln("Doom-loop recovery breaks repeated identical tool calls");
+
+    // The doom-loop injections run real local tool workers and a follow-up
+    // request. Drain their queued events here; otherwise one lands in the
+    // middle of the cache/perf block below and calls rebuildMessageColumn(),
+    // discarding the tool-row cache and making "re-expand shaped 0 rows" flaky.
+    const toolSettleDeadline = Clock.currTime + 5.seconds;
+    while (Clock.currTime < toolSettleDeadline &&
+        (root.pendingToolResultsForTesting() > 0 ||
+         root.liveToolCallCountForTesting() > 0 ||
+         root.clientBusyForTesting()))
+    {
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
+    }
+    foreach (i; 0 .. 3)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(10.msecs);
+    }
+    assert(root.pendingToolResultsForTesting() <= 0 &&
+        root.liveToolCallCountForTesting() == 0,
+        "injected tool workers did not settle before the cache test");
 
     // Tool outputs start collapsed (a compact header) and expand on click.
     assert(root.firstToolBubbleCollapsedForTesting(),
