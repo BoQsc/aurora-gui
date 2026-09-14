@@ -9047,5 +9047,145 @@ static one. Pass = `Aurora OpenCode Pro headless smoke test passed.`
 --compiler=dmd --force`; killed the old Pro instance and relaunched exactly one;
 `pro-after-thinking-fix.png` captured.
 
+## Aurora OpenCode Pro: transcript "flow all over the place" — scroll yank + collapsed-state reset (2026-09-14)
+
+**Complaint.** "flow is all over the place for messages, always changing always
+something appears disappears for no reason. no consistency no stability."
+
+**Root cause (three defects, `aurora-opencode-pro/source/auroraopencode/appui.d`).**
+
+1. **Scroll yank.** `rebuildMessageColumn()` ended with
+   `_messagesScroll.follow = true` unconditionally. The column is rebuilt on
+   every throttled tool-argument delta (`aurora-opencode-core/.../opencode_client.d`
+   `_toolProgressIntervalMs = 120`; ~8x/s while a `write` body streams), on every
+   `setActivity`/`clearActivity` enter/leave, and once per tool result. So every
+   rebuild forced auto-follow back on and a reader who had scrolled up was yanked
+   to the bottom, repeatedly, mid-stream.
+2. **Expand state reset.** `buildMessageBubble` always created a fresh
+   `MessageBubble` with defaults `_collapsed = true` / `_thinkingCollapsed = true`,
+   so a tool output or reasoning block the user opened snapped shut on the next
+   rebuild.
+3. **Live-row blink.** `handleToolCalls` rebuilt once with `_preparingToolCalls`
+   cleared and `_liveToolCalls` still empty, then rebuilt again after setting
+   `_liveToolCalls`; the live row disappeared for the frames between the two.
+
+**Fix.**
+
+- Removed the forced `_messagesScroll.follow = true` from `rebuildMessageColumn`.
+  `onLayout` still auto-follows while `follow` is true; the append paths
+  (`addUserBubble`, `beginAssistantMessage`, doom-loop/finalize) set `follow =
+  true` when a jump is actually wanted, so appending still scrolls and a
+  scrolled-up reader is left alone.
+- Persist per-bubble expand state in `_collapsedTool`/`_thinkingCollapsed` keyed
+  by the globally-unique `ChatMessage.id`; `buildMessageBubble` re-applies it
+  (before wiring the callback) and the `onSizeChanged` callback records it.
+- Publish `_pendingToolCalls`/`_liveToolCalls`/`_pendingToolResults` before
+  `setActivity` and rebuild once, so the preparing rows become running rows in a
+  single pass (no intermediate empty frame).
+
+**Test hooks added.** `rebuildForTesting()` (forces a full `rebuildMessageColumn`
+exactly as a throttled delta does), `followForTesting()` (reads
+`_messagesScroll.follow`).
+
+**How to test (Pro smoke).**
+
+- Guard `Rebuild keeps scroll position and expanded tool outputs`: builds a
+  deliberately tall transcript (8 question/reply pairs + a `read` tool message),
+  scrolls to the bottom to read the range, scrolls to the top (disengages
+  follow), expands the first tool output, then calls `rebuildForTesting()` and
+  asserts the tool output is still expanded, the scroll was not yanked
+  (`scrollY <= 4`), and follow stayed off. Then scrolls back to the bottom and
+  asserts follow re-engages and a rebuild stays pinned there.
+- The Thinking-block test also forces a rebuild right after expanding and asserts
+  `!lastThinkingCollapsedForTesting()`.
+- Pass = `Aurora OpenCode Pro headless smoke test passed.`
+
+**Negative proof.** Re-adding `_messagesScroll.follow = true;` to
+`rebuildMessageColumn` makes the guard fire: `a rebuild yanked the scroll to
+1328` (assertion in `tests/headless_pro_smoke.d`). Reverted after confirming.
+
+**Note (test isolation).** `newChat()` does not reset `follow`; subsequent tests
+that append and expect the bottom rely on the append paths. The new guard leaves
+the view scrolled back to the bottom, which also restored `Large tool output
+expand ink` to its previous value (47128) — a useful canary that auto-follow was
+not over-corrected.
+
+**Result (2026-09-14):** Pro smoke EXIT=0 (incl. the two new guards); rebuilt with
+`dub build --compiler=dmd --force`; killed the old Pro instance and relaunched
+exactly one (`stab-after.png`).
+
+## Aurora OpenCode Pro: transcript order — one "Thinking" per exchange, every round kept (2026-09-14)
+
+**Complaint.** "i think the ordering of things in messages was bad too make better
+ordering of appearance maybe remove redundancy or merge into functionality so the
+chat is clean but still looks responsive and informative." Then: "we want
+stability, consistency and all things must be available for user to check it out."
+
+**Root cause (two redundancies, `aurora-opencode-pro/source/auroraopencode/appui.d`).**
+
+1. **One `▸ Thinking` per tool round.** An exchange is persisted as one assistant
+   message per tool round (assistant → tool → assistant → tool → … → answer). Each
+   round carried reasoning, and `buildMessageBubble` rendered a reasoning header on
+   every one. Session "hey" showed three `▸ Thinking` rows interleaved with two
+   tool rows for a single user prompt — it read as several unrelated blocks.
+2. **Phase row duplicated the live tool rows.** `handleToolCallProgress` set the
+   activity row to `Preparing tools…` and `handleToolCalls` set `Running N tool…`
+   while the live tool rows (`▸ Write page.html …`) already named each call, so
+   both were shown at once.
+
+**Fix (merge — nothing hidden).**
+
+- `rebuildMessageColumn` walks each **exchange** (the assistant turns between two
+  user prompts), concatenates every round's reasoning in order (separated by a
+  blank line), and attaches the whole chain-of-thought to the exchange's last
+  settled assistant turn as ONE collapsible `▸ Thinking` block. A tool-request
+  turn's reasoning is never dropped — it lives inside that block. The live reply
+  is excluded so it can stream its own reasoning without duplicating the block.
+- `buildMessageBubble` takes the merged `thinkingText`; `showThinking` is simply
+  `thinkingText.length > 0`. A tool-request wrapper is hidden only when it has no
+  prose AND nothing to show (`message.content.length == 0 && thinkingText.length ==
+  0 && toolCalls.length > 0`), so the host turn that carries the merged block stays
+  visible.
+- `activityRowWanted()` (label present AND `_preparingToolCalls.length == 0` AND
+  `_liveToolCalls.length == 0`) gates both `setActivity`'s presence check and the
+  final `target.add(_activityRow)` in `addLiveToolRows`. `handleToolCallProgress`
+  and `handleToolCalls` now `clearActivity()` instead of labelling it, so the phase
+  row is hidden while tool rows speak and returns via `startChatRequest`'s
+  `Waiting for the model…` between rounds.
+
+**Test hooks added.** `MessageBubble.hasThinkingForTesting()`,
+`MessageBubble.thinkingTextForTesting()`, `root.thinkingTextForTesting()`,
+`appendToolRequestTurnForTesting(reasoning, callId, name, args)`,
+`thinkingHeaderCountForTesting()`.
+
+**How to test (Pro smoke).**
+
+- Guard `One Thinking header per exchange (all rounds merged)`: builds
+  user → tool-request(read) → tool-reply → tool-request(write) → tool-reply →
+  answer(reasoning) and asserts `thinkingHeaderCountForTesting() == 1` **and** that
+  `thinkingTextForTesting()` contains every round's reasoning in order (so the
+  merge did not drop anything); saves
+  `%TEMP%\aurora-opencode-exchange-shots\one-thinking-per-exchange.ppm`.
+- Guard `Live phase row shows only when no live tool row does`: with no live rows,
+  `setActivityForTesting` shows/updates/clears the row; after
+  `injectToolProgressForTesting`, the phase row stays hidden and a live tool row is
+  shown instead.
+- Guard `Collapsed rows share a uniform pitch`: rewritten to the realistic nested
+  shape (user → tool-request + Thinking → tool reply → user → reasoning-only
+  answer → user) so a `▸ Thinking` header and a `▸ Shell` row still share height
+  28 and sit 6 px apart. The trailing user keeps the Regenerate pill footer from
+  inflating the last one-line row.
+- Pass = `Aurora OpenCode Pro headless smoke test passed.`
+
+**Negative proof.** Restoring a per-round reasoning header makes the exchange guard
+fire: `Expected one Thinking header for the exchange, got 3`. Reverted after
+confirming.
+
+**Result (2026-09-14):** Pro smoke EXIT=0 (all 60+ checks); rebuilt with
+`dub build --compiler=dmd --force`; killed the old Pro instance and relaunched
+exactly one (PID 19488); live screenshot `merge-after.png` shows session "hey"'s
+`save it into file` exchange as five tool rows followed by a single `▸ Thinking`
+block holding every round's reasoning, above the answer.
+
 
 

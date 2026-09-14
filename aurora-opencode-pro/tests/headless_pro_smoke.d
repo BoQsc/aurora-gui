@@ -368,6 +368,13 @@ int main(string[] args)
     assert(driver.paint(), "Expanded thinking did not repaint");
     assert(!root.lastThinkingCollapsedForTesting(),
         "Thinking block did not expand on toggle");
+    // Regression: a mid-stream rebuild must not snap the reasoning block shut
+    // again (the column is rebuilt on every throttled stream event).
+    root.rebuildForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "Rebuild did not repaint after expanding thinking");
+    assert(!root.lastThinkingCollapsedForTesting(),
+        "A rebuild collapsed the thinking block the user expanded");
     root.toggleLastThinkingForTesting();
     root.tickTree(0.02);
     assert(driver.paint(), "Collapsed thinking did not repaint");
@@ -1346,39 +1353,80 @@ int main(string[] args)
         writeln("Live tool rows grow +N -M as arguments stream");
     }
 
-    // Live activity row: while the assistant works — before the first token,
-    // while reasoning, and between tool rounds — the transcript must end with a
-    // pulsing "what is going on" row so the chat never looks frozen. The row
-    // shows the phase text, updates as the phase changes, and clears the moment
-    // work stops.
+    // Live phase indicator: the generic activity row covers the gaps where no
+    // live tool row exists (before the first token, between tool rounds). While
+    // tool rows are streaming or running it is intentionally suppressed — those
+    // rows already say what is happening, so showing both was redundant noise.
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Do something"]);
         assert(!root.activityVisibleForTesting(),
             "Activity row appeared before any work started");
-        // A tool-call progress event must label the row "Preparing tools…".
+        // With nothing else to show, the phase row renders and updates in place.
+        root.setActivityForTesting("Waiting for the model…");
+        assert(root.activityVisibleForTesting(),
+            "Activity row did not appear when there was nothing else to show");
+        assert(root.activityTextForTesting() == "Waiting for the model…",
+            "Activity row shows the wrong phase: " ~
+            root.activityTextForTesting());
+        root.setActivityForTesting("Thinking…");
+        assert(root.activityTextForTesting() == "Thinking…",
+            "Activity row did not update its phase");
+        root.clearActivityForTesting();
+        assert(!root.activityVisibleForTesting(),
+            "Activity row did not clear when work stopped");
+        // A tool-call progress event shows a live tool row instead of the phase
+        // row: the phase row must stay suppressed and not duplicate it.
         OpenCodeToolCall prep;
         prep.name = "write";
         prep.arguments = `{"filePath":"page.html","content":"<html>`;
         root.injectToolProgressForTesting([prep]);
-        assert(root.activityVisibleForTesting(),
-            "Activity row did not appear while preparing tools");
-        assert(root.activityTextForTesting() == "Preparing tools…",
-            "Activity row shows the wrong phase: " ~
-            root.activityTextForTesting());
-        assert(driver.paint(), "Activity row did not paint");
+        assert(root.liveToolRowTextsForTesting().length == 1,
+            "Expected a live tool row while the arguments stream");
+        assert(!root.activityVisibleForTesting(),
+            "Activity row duplicated the live tool row");
+        assert(driver.paint(), "Live tool row did not paint");
         const actShots = buildPath(tempDir(), "aurora-opencode-live-shots");
         if (!exists(actShots)) mkdirRecurse(actShots);
-        window.saveScreenshot(buildPath(actShots, "activity-preparing.ppm"));
-        // A phase change updates the same row in place.
-        root.setActivityForTesting("Running 2 tools…");
-        assert(root.activityTextForTesting() == "Running 2 tools…",
-            "Activity row did not update its phase");
-        // Clearing removes it from the transcript.
-        root.clearActivityForTesting();
-        assert(!root.activityVisibleForTesting(),
-            "Activity row did not clear when work stopped");
-        writeln("Live activity row shows the phase and clears when done");
+        window.saveScreenshot(buildPath(actShots, "live-tool-row-no-phase.ppm"));
+        writeln("Live phase row shows only when no live tool row does");
+    }
+
+    // Regression: one exchange must show a single "Thinking" block. The model
+    // reasons once per tool round, so a multi-round exchange used to stack one
+    // "▸ Thinking" per round next to the tool rows, reading as several unrelated
+    // blocks. Every round's reasoning is now merged into one block on the
+    // answering turn, and nothing is dropped.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Do the work"]);
+        root.appendToolRequestTurnForTesting("I should read the file first.",
+            "call-1", "read", `{"filePath":"a.txt"}`);
+        root.appendToolReplyForTesting("call-1", "file body\n");
+        root.appendToolRequestTurnForTesting("I should write the result.",
+            "call-2", "write", `{"filePath":"out.txt","content":"hi"}`);
+        root.appendToolReplyForTesting("call-2", "Wrote out.txt (+1 -0).");
+        root.addConversationForTestingWithReasoning(["assistant"],
+            ["Done — I read a.txt and wrote out.txt."], ["Now I can answer."]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "Multi-round exchange paint failed");
+        assert(root.thinkingHeaderCountForTesting() == 1,
+            "Expected one Thinking header for the exchange, got " ~
+            to!string(root.thinkingHeaderCountForTesting()));
+        // The single block still holds every round's reasoning, in order.
+        const merged = root.thinkingTextForTesting();
+        const firstAt = merged.indexOf("I should read the file first.");
+        const secondAt = merged.indexOf("I should write the result.");
+        const answerAt = merged.indexOf("Now I can answer.");
+        assert(firstAt >= 0 && secondAt > firstAt && answerAt > secondAt,
+            "Merged Thinking block dropped or reordered a round: " ~ merged);
+        root.toggleLastThinkingForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Expanded merged Thinking did not paint");
+        const exShots = buildPath(tempDir(), "aurora-opencode-exchange-shots");
+        if (!exists(exShots)) mkdirRecurse(exShots);
+        window.saveScreenshot(buildPath(exShots, "one-thinking-per-exchange.ppm"));
+        writeln("One Thinking header per exchange (all rounds merged)");
     }
 
     // Regression: a reasoning-only stream must print "Thinking" once (the
@@ -1525,26 +1573,36 @@ int main(string[] args)
             "hidden wrapper added phantom spacing");
     }
 
-    // A stack of collapsed one-line rows must share one pitch. A reasoning-only
-    // assistant "Thinking" wrapper and a tool "Shell" row are both single-line
-    // headers; the assistant rows used to reserve an extra timestamp footer
-    // (and a 2 px shorter header), so their gaps alternated tall/short — the
-    // uneven spacing seen in the screenshot. Every one-line row must now measure
-    // the same height and sit exactly one column spacing apart.
+    // A stack of collapsed one-line rows must share one pitch. A reasoning
+    // "Thinking" header and a tool "Shell" row are both single-line headers; the
+    // assistant rows used to reserve an extra timestamp footer (and a 2 px
+    // shorter header), so their gaps alternated tall/short — the uneven spacing
+    // seen in the screenshot. Every one-line row must now measure the same
+    // height and sit exactly one column spacing apart. Each exchange's reasoning
+    // is merged into a single block, so build two exchanges: one whose
+    // tool-request turn carries the block above its tool row, and one whose
+    // answer is reasoning-only.
     {
         root.newChatForTesting();
-        root.addConversationForTestingWithReasoning(
-            ["user", "assistant", "tool", "assistant", "tool"],
-            ["go", "", "shell out", "", "shell out"],
-            [null, "reasoning one", null, "reasoning two", null]);
-        foreach (i; 1 .. 5)
-            root.setMessageTimeForTesting(i, "12:34");
+        root.addConversationForTesting(["user"], ["go"]);
+        root.appendToolRequestTurnForTesting("reasoning one", "call-1", "dshell",
+            `{"command":"echo hi"}`);
+        root.appendToolReplyForTesting("call-1", "shell out");
+        root.addConversationForTesting(["user"], ["again"]);
+        root.addConversationForTestingWithReasoning(["assistant"], [""],
+            ["reasoning two"]);
+        // Trailing user keeps the last assistant reply from being the "latest"
+        // one, so no Regenerate pill footer inflates a one-line row.
+        root.addConversationForTesting(["user"], ["done"]);
         root.tickTree(0.02);
         assert(driver.paint(), "Uniform-pitch repaint failed");
-        assert(root.messageCountForTesting() == 5,
+        const int rowCount = root.messageCountForTesting();
+        assert(rowCount == 6,
             "uniform-pitch scenario built the wrong column");
-        const expected = root.bubbleHeightForTesting(1);
-        foreach (i; 1 .. 5)
+        // Visual rows: [user, Thinking, tool row, user, Thinking, user]; compare
+        // the one-line assistant headers (1, 4) against the tool row (2).
+        const expected = root.bubbleHeightForTesting(2);
+        foreach (i; [cast(int) 1, 2, 4])
         {
             assert(root.bubbleHeightForTesting(i) == expected,
                 "one-line rows have different heights: index " ~
@@ -1552,12 +1610,12 @@ int main(string[] args)
                 to!string(root.bubbleHeightForTesting(i)) ~ " vs " ~
                 to!string(expected));
         }
-        foreach (i; 1 .. 4)
+        foreach (i; 0 .. rowCount - 1)
         {
             const a = root.bubbleBoundsForTesting(i);
             const b = root.bubbleBoundsForTesting(i + 1);
             assert(b.y - (a.y + a.height) == 6,
-                "one-line rows are not one column spacing apart at index " ~
+                "rows are not one column spacing apart at index " ~
                 to!string(i));
         }
         window.saveScreenshot("build\\uniform-row-pitch.ppm");
@@ -1730,6 +1788,71 @@ int main(string[] args)
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
     writeln("Collapse screenshots: ", shotDir);
+
+    // Regression: a mid-stream column rebuild (a throttled tool-argument delta
+    // calls rebuildMessageColumn many times a second) must neither yank a
+    // reader who scrolled up back to the bottom nor snap shut an output the
+    // user expanded. Build a deliberately tall transcript so the view is
+    // actually scrollable, then scroll to the top and force a rebuild.
+    {
+        root.newChatForTesting();
+        import std.array : appender;
+        auto body = appender!string();
+        foreach (i; 0 .. 14)
+            body.put("Filler line " ~ to!string(i) ~
+                " padding the transcript so it overflows the viewport.\n");
+        foreach (i; 0 .. 8)
+        {
+            root.addConversationForTesting(["user"],
+                ["Question " ~ to!string(i)]);
+            root.addConversationForTesting(["assistant"], [body.data]);
+        }
+        root.appendToolMessageForTesting("read", "tool body\n",
+            `{"filePath":"tall.txt"}`, 0, 0, "");
+        root.tickTree(0.02);
+        assert(driver.paint(), "Tall transcript paint failed");
+        root.scrollToForTesting(int.max);
+        root.tickTree(0.02);
+        const scrollRange = root.scrollYForTesting();
+        assert(scrollRange > 0,
+            "tall transcript should be scrollable, range=" ~
+            to!string(scrollRange));
+        root.scrollToForTesting(0);
+        root.tickTree(0.02);
+        assert(!root.followForTesting(),
+            "scrolling to the top should have disengaged auto-follow");
+        assert(root.firstToolBubbleCollapsedForTesting(),
+            "tool output should start collapsed");
+        root.toggleFirstToolBubbleForTesting();
+        root.tickTree(0.02);
+        assert(!root.firstToolBubbleCollapsedForTesting(),
+            "tool output did not expand before the rebuild test");
+        root.rebuildForTesting();
+        root.tickTree(0.02);
+        assert(driver.paint(), "Rebuild did not repaint");
+        assert(!root.firstToolBubbleCollapsedForTesting(),
+            "a rebuild collapsed the tool output the user had expanded");
+        assert(root.scrollYForTesting() <= 4,
+            "a rebuild yanked the scroll to " ~
+            to!string(root.scrollYForTesting()));
+        assert(!root.followForTesting(),
+            "a rebuild re-engaged auto-follow after the user scrolled up");
+        // Conversely, a reader who is at the bottom keeps following: removing the
+        // forced follow must not disable auto-follow for new content. Leave the
+        // view at the bottom so later tests start from the auto-follow state.
+        root.scrollToForTesting(int.max);
+        root.tickTree(0.02);
+        assert(root.followForTesting(),
+            "scrolling to the bottom should re-engage auto-follow");
+        const bottom = root.scrollYForTesting();
+        root.rebuildForTesting();
+        root.tickTree(0.02);
+        assert(root.followForTesting(),
+            "a rebuild at the bottom should keep auto-follow engaged");
+        assert(root.scrollYForTesting() == bottom,
+            "a rebuild at the bottom should stay pinned to the bottom");
+    }
+    writeln("Rebuild keeps scroll position and expanded tool outputs");
 
     // Read bodies survive a restart: their text is persisted and the restored
     // Explored group still expands to render the read output (the reported

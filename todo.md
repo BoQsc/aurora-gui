@@ -1,5 +1,81 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: transcript order — one "Thinking" per exchange, all rounds kept (fixed)
+
+User: "i think the ordering of things in messages was bad too make better ordering
+of appearance maybe remove redundancy or merge into functionality so the chat is
+clean but still looks responsive and informative." Then: "we want stability,
+consistency and all things must be available for user to check it out."
+
+- [x] **Diagnosis (redundancy, with evidence)**: a single exchange is persisted
+      as many assistant messages (one per tool round). Each carried its own
+      reasoning, so `buildMessageBubble` rendered a `▸ Thinking` header per round —
+      session "hey" showed **three** `▸ Thinking` rows around two tool rows,
+      reading as unrelated blocks. Separately, the generic phase row
+      (`● Preparing tools…` / `● Running N tools…`) duplicated the live tool rows
+      that already name each call.
+- [x] **Fix (merge, nothing hidden)**: `rebuildMessageColumn` now walks each
+      exchange (the assistant turns between two user prompts), concatenates every
+      round's reasoning in order, and attaches the whole chain-of-thought to the
+      exchange's last settled assistant turn as ONE collapsible `▸ Thinking`
+      block. A tool-request turn's reasoning is no longer dropped — it lives in
+      that block. The live reply is excluded so it streams its own reasoning
+      without duplication.
+- [x] **Fix (no duplicate phase row)**: suppress the phase row whenever a live
+      tool row exists (`activityRowWanted()` gates both `setActivity` and
+      `addLiveToolRows`); the phase row returns for the gaps with nothing else to
+      show (before the first token, between rounds).
+- [x] **Fix (visibility)**: a tool-request wrapper is hidden only when it has no
+      prose AND no reasoning to show (`thinkingText.length == 0`), so the host
+      turn stays visible to carry the merged block.
+- [x] **Verified**: guard `One Thinking header per exchange (all rounds merged)`
+      asserts `thinkingHeaderCountForTesting() == 1` **and** that the single
+      block's text contains every round's reasoning in order
+      (`thinkingTextForTesting()`). Rewrote the uniform-pitch guard to the realistic
+      nested shape (Thinking header vs tool row share height 28, gap 6). Pro smoke
+      EXIT=0 (all 60+ checks). Negative run (per-round headers restored) fires
+      `Expected one Thinking header for the exchange, got 3`. Live screenshot
+      `merge-after.png` (session "hey", 5 tool rows → 1 block). Rebuilt + killed
+      old PID + relaunched exactly one (PID 19488).
+- [x] **Availability confirmed**: every round's reasoning is inside the block;
+      nothing is hidden from the user.
+
+## 2026-09-14 - Pro: transcript "flow all over the place" — scroll yank + collapsed-state reset (fixed)
+
+User: "flow is all over the place for messages, always changing always something
+appears disappears for no reason. no consistency no stability."
+
+- [x] **Diagnosis (root causes, with evidence)**:
+      1. **Scroll yank.** `rebuildMessageColumn()` ended with
+         `_messagesScroll.follow = true` unconditionally. The column is rebuilt
+         on every throttled tool-argument delta (`opencode_client.d`
+         `_toolProgressIntervalMs = 120`, so up to ~8x/s while a `write` body
+         streams), on every `setActivity`/`clearActivity` enter/leave, and per
+         tool result. Each rebuild forced auto-follow back on, so a reader who
+         scrolled up was yanked to the bottom repeatedly.
+      2. **Expand state reset.** `buildMessageBubble` always created a fresh
+         `MessageBubble` (`_collapsed = true`, `_thinkingCollapsed = true`), so a
+         tool output or reasoning block the user opened snapped shut on the next
+         rebuild.
+      3. **Live-row blink.** `handleToolCalls` rebuilt once with
+         `_preparingToolCalls` cleared and `_liveToolCalls` still empty, then
+         rebuilt again after setting `_liveToolCalls` — the live row vanished for
+         one frame between the two.
+- [x] **Fix**: drop the forced `follow = true` from `rebuildMessageColumn` (the
+      append paths — `addUserBubble`, `beginAssistantMessage`, doom-loop/finalize —
+      still set it when a jump is wanted); persist each bubble's expand state in
+      `_collapsedTool`/`_thinkingCollapsed` keyed by the globally-unique
+      `ChatMessage.id` and re-apply it in `buildMessageBubble`; publish
+      `_pendingToolCalls`/`_liveToolCalls`/`_pendingToolResults` before touching
+      the activity row and rebuild once, removing the intermediate rebuild.
+- [x] **Verified**: new smoke guard `Rebuild keeps scroll position and expanded
+      tool outputs` (tall transcript; scroll to top, expand a tool output, force a
+      rebuild → still expanded, scroll not yanked, follow stays off; scroll to
+      bottom → follow re-engages and a rebuild stays pinned). New reasoning
+      rebuild guard in the Thinking block test. Negative run (forced follow
+      restored) fires `a rebuild yanked the scroll to 1328`. Pro smoke EXIT=0;
+      rebuilt + killed old PID + relaunched exactly one (`stab-after.png`).
+
 ## 2026-09-14 - Pro: duplicate "Thinking" rows + cursor with no text (fixed)
 
 User (screenshot): "why this is duplicate and why we have cursor appear while no

@@ -348,6 +348,12 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Current collapsed state (used to persist the user's expand choice).
+    bool collapsed() const
+    {
+        return _collapsed;
+    }
+
     /// Fired when the bubble's measured size changes (collapse/expand), so the
     /// message column can re-layout and the scroll view can re-measure.
     void delegate() onSizeChanged;
@@ -385,6 +391,12 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Current thinking-block collapsed state (used to persist the choice).
+    bool thinkingCollapsed() const
+    {
+        return _thinkingCollapsed;
+    }
+
     /// Mark whether the assistant is still working, so the thinking header can
     /// animate a pulsing "Thinking…" indicator. Called from the root's tick.
     void setThinkingLive(bool value)
@@ -409,6 +421,20 @@ private final class MessageBubble : Widget
     public bool thinkingCollapsedForTesting()
     {
         return _thinkingCollapsed;
+    }
+
+    /// Test-only: whether a reasoning header is present on this bubble.
+    public bool hasThinkingForTesting() const
+    {
+        return _thinking.length > 0;
+    }
+
+    /// Test-only: the reasoning text held in this bubble's Thinking block, so a
+    /// test can prove every tool round's reasoning is preserved when it is
+    /// merged into one block per exchange.
+    public string thinkingTextForTesting() const
+    {
+        return to!string(_thinking);
     }
 
     /// Test-only: toggle the thinking block like a click would.
@@ -2918,6 +2944,12 @@ public final class OpenCodeRoot : VBox
     // the assistant works. Retained across rebuilds so its pulse and elapsed
     // clock keep running; the column re-adds it whenever a label is set.
     private ActivityRow _activityRow;
+    // UI-only expand state, keyed by the globally-unique message id. The
+    // transcript is rebuilt from scratch as the reply and its tools stream, so
+    // without this a tool output or reasoning block the user opened would snap
+    // shut again on the next rebuild (looks like content randomly vanishing).
+    private bool[string] _collapsedTool;
+    private bool[string] _thinkingCollapsed;
     private PopupOverlay _activePopup;
 
     // Tool loop: the model may request tool calls, the app executes them, and
@@ -3842,6 +3874,47 @@ public final class OpenCodeRoot : VBox
         size_t[] versionPositions, versionTotals;
         computeSiblingVersions(*session, versionPositions, versionTotals);
 
+        // Reasoning streams once per tool round, but one exchange — the
+        // assistant turns between two user prompts — is one answer to the user.
+        // Keep every round's reasoning available while presenting it once: the
+        // exchange's last settled assistant turn carries a single collapsible
+        // "Thinking" block holding all of the rounds' reasoning, instead of a
+        // separate header per round. The live reply is excluded because it
+        // streams its own reasoning live (and would otherwise duplicate it).
+        auto thinkingText = new string[](path.length);
+        for (size_t start = 0; start < path.length; )
+        {
+            size_t end = start;
+            while (end < path.length &&
+                session.messages[path[end]].role != "user")
+                ++end;
+            size_t host = size_t.max;
+            foreach_reverse (slot; start .. end)
+            {
+                if (session.messages[path[slot]].role != "assistant")
+                    continue;
+                if (_streamBubble !is null &&
+                    _streamBubble.messageIndex() == cast(int) path[slot])
+                    continue;
+                host = slot;
+                break;
+            }
+            if (host != size_t.max)
+            {
+                string combined;
+                foreach (slot; start .. end)
+                {
+                    const reasoning = session.messages[path[slot]].reasoning;
+                    if (reasoning.length == 0) continue;
+                    if (combined.length > 0) combined ~= "\n\n";
+                    combined ~= reasoning;
+                }
+                thinkingText[host] = combined;
+            }
+            if (end >= path.length) break;
+            start = end + 1; // `end` is the user message opening the next one.
+        }
+
         // Nesting: a `tool` result belongs to the assistant turn that requested
         // it. Match each result's `toolCallId` to the assistant whose `toolCalls`
         // names it, so results render as indented children of that turn instead
@@ -3909,7 +3982,8 @@ public final class OpenCodeRoot : VBox
                 else
                 {
                     _messageColumn.add(buildMessageBubble(index, message,
-                        latestAssistantIndex, versionPositions, versionTotals));
+                        latestAssistantIndex, versionPositions, versionTotals,
+                        thinkingText[slot]));
                 }
                 // The turn's tool results, in the order the model requested them.
                 size_t[] childSlots;
@@ -3988,7 +4062,11 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(_messageColumn);
-        _messagesScroll.follow = true;
+        // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
+        // happens many times while a reply and its tools stream (e.g. every
+        // throttled tool-argument delta), and forcing follow each time yanked a
+        // reader who had scrolled up back to the bottom. Callers that append a
+        // new message already turn follow on when a jump is actually wanted.
         _messageColumn.invalidate();
         // The column is a retained layer; let the ScrollView re-measure and
         // update the content height / auto-follow after the message set changes.
@@ -4116,7 +4194,7 @@ public final class OpenCodeRoot : VBox
             };
             target.add(row);
         }
-        if (_activityRow !is null && _activityRow.hasLabel())
+        if (activityRowWanted())
             target.add(_activityRow);
     }
 
@@ -4164,7 +4242,8 @@ public final class OpenCodeRoot : VBox
     /// paths in rebuildMessageColumn.
     private MessageBubble buildMessageBubble(size_t index,
         ref const ChatMessage message, int latestAssistantIndex,
-        size_t[] versionPositions, size_t[] versionTotals)
+        size_t[] versionPositions, size_t[] versionTotals,
+        string thinkingText = "")
     {
         auto bubble = new MessageBubble();
         bubble.setRole(message.role);
@@ -4178,10 +4257,13 @@ public final class OpenCodeRoot : VBox
                 versionAction(index, -1), versionAction(index, +1));
         }
         bubble.setContent(message.content);
-        // A tool-call wrapper with no content/reasoning is not a visible
-        // reply; keep its slot (for index mapping) but collapse it away.
+        // A tool-call wrapper with no prose and no reasoning to show is not a
+        // visible reply; keep its slot (for index mapping) but collapse it away.
+        // Its reasoning is not lost: it was merged into the exchange's single
+        // Thinking block (see rebuildMessageColumn), so the tool rows underneath
+        // carry the whole turn.
         if (message.role == "assistant" && message.toolCalls.length > 0 &&
-            message.content.length == 0 && message.reasoning.length == 0 &&
+            message.content.length == 0 && thinkingText.length == 0 &&
             !message.failed)
         {
             bubble.setHidden(true);
@@ -4193,18 +4275,40 @@ public final class OpenCodeRoot : VBox
         if (message.role == "tool")
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 message.toolDiff);
-        if (message.role == "tool")
+        // The reasoning passed in is the whole exchange's chain of thought,
+        // already merged across its tool rounds, so a multi-round exchange shows
+        // exactly one expandable "Thinking" block instead of a header per round.
+        // Nothing is dropped: every round's reasoning is inside it.
+        const showThinking = thinkingText.length > 0;
+        if (showThinking)
+            bubble.setThinking(thinkingText);
+        // Re-apply the user's expand choices before wiring the change callback:
+        // a rebuild while the assistant is still streaming must not collapse a
+        // tool output or reasoning block the user opened.
+        const persistId = message.id;
+        if (persistId.length > 0)
+        {
+            if (auto saved = persistId in _collapsedTool)
+                bubble.setCollapsed(*saved);
+            if (auto saved = persistId in _thinkingCollapsed)
+                bubble.setThinkingCollapsed(*saved);
+        }
+        if (message.role == "tool" || showThinking)
         {
             // Expanding/collapsing changes the bubble height; re-measure
-            // the column WITHOUT snapping the scroll to the bottom.
+            // the column WITHOUT snapping the scroll to the bottom, and
+            // remember the choice so the next rebuild preserves it.
             bubble.onSizeChanged = delegate()
             {
+                if (persistId.length > 0)
+                {
+                    _collapsedTool[persistId] = bubble.collapsed();
+                    _thinkingCollapsed[persistId] = bubble.thinkingCollapsed();
+                }
                 _messageColumn.invalidate();
                 _messagesScroll.invalidate();
             };
         }
-        if (message.reasoning.length > 0)
-            bubble.setThinking(message.reasoning);
         if (message.time.length > 0)
             bubble.setTime(message.time);
         if (message.failed)
@@ -4515,8 +4619,9 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Show (or update) the in-flow activity row. It fills the gaps where the
-    /// transcript would otherwise look frozen: before the first token, while
-    /// reasoning, while tool arguments stream, and between tool rounds. A
+    /// transcript would otherwise look frozen: before the first token and
+    /// between tool rounds. While live tool rows exist they already say what is
+    /// happening, so the row is suppressed rather than duplicating them. A
     /// non-empty label pins the row to the end of the column; an empty one
     /// removes it.
     private void setActivity(string label)
@@ -4526,11 +4631,20 @@ public final class OpenCodeRoot : VBox
         _activityRow.setLabel(label);
         _activityRow.setLive(label.length > 0);
         if (_current < 0) return;
-        const present = label.length > 0;
+        const present = activityRowWanted();
         // Only rebuild when the row enters or leaves the transcript; a phase
         // change within the same row is a cheap invalidate.
         if (wasPresent != present) rebuildMessageColumn();
         else _activityRow.invalidate();
+    }
+
+    /// Whether the phase row should currently be part of the transcript. It is
+    /// shown only when it has a label and there is no live tool row to speak for
+    /// the current step (a live row plus the phase row was pure redundancy).
+    private bool activityRowWanted() const
+    {
+        return _activityRow !is null && _activityRow.hasLabel() &&
+            _preparingToolCalls.length == 0 && _liveToolCalls.length == 0;
     }
 
     /// Remove the in-flow activity row (reply finished, failed or cancelled).
@@ -4553,7 +4667,10 @@ public final class OpenCodeRoot : VBox
         if (event.toolCalls.length == 0) return;
         _preparingToolCalls = event.toolCalls.dup;
         updateStatus("Preparing tools…");
-        setActivity("Preparing tools…");
+        // The live per-tool rows already say what is being prepared, so the
+        // generic phase row would only duplicate them. Drop it; it comes back
+        // when the next round waits on the model with no live rows to show.
+        clearActivity();
         rebuildMessageColumn();
     }
 
@@ -4585,10 +4702,6 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
-        // Rebuild so the tool-call wrapper re-renders: an assistant message
-        // with tool requests and no content/reasoning becomes a hidden slot,
-        // not a visible empty bubble.
-        rebuildMessageColumn();
         markDirty();
 
         // Doom-loop recovery: the same tool call repeated with identical input
@@ -4617,6 +4730,9 @@ public final class OpenCodeRoot : VBox
                 "have already learned.";
             appendMessage(*session, recovery);
             markDirty();
+            // Re-render the wrapper (now a hidden slot) and the recovery prompt
+            // in one pass; there is no live row for this path.
+            rebuildMessageColumn();
             _toolRounds = 0;
             _lastToolSignature = "";
             _lastToolRepeatCount = 0;
@@ -4641,6 +4757,9 @@ public final class OpenCodeRoot : VBox
                 "directly with what you have learned so far.";
             appendMessage(*session, finalize);
             markDirty();
+            // Re-render the wrapper (now a hidden slot) and the finalizing
+            // prompt in one pass; there is no live row for this path.
+            rebuildMessageColumn();
             _toolRounds = 0;
             _lastToolSignature = "";
             _lastToolRepeatCount = 0;
@@ -4652,13 +4771,17 @@ public final class OpenCodeRoot : VBox
         }
         ++_toolRounds;
         const toolCount = event.toolCalls.length;
-        updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
-        setActivity("Running " ~ to!string(toolCount) ~
-            (toolCount == 1 ? " tool…" : " tools…"));
-
+        // Publish the running calls before the rebuild: it must already show the
+        // live rows, otherwise they blink out for one frame.
         _pendingToolCalls = event.toolCalls.dup;
         _liveToolCalls = event.toolCalls.dup;
         _pendingToolResults = cast(int) event.toolCalls.length;
+        updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
+        // Each running call already gets its own live row (or the aggregated
+        // "Exploring" row for context tools), so the generic phase row is
+        // redundant; hide it while the tool rows speak for themselves.
+        clearActivity();
+
         // Show the live "Exploring" row while the context tools are running.
         rebuildMessageColumn();
         const sessionIndex = _current;
@@ -6692,6 +6815,52 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
     }
 
+    /// Test-only: append an assistant turn that only requested tools (reasoning
+    /// + `toolCalls`, no prose), exactly as a tool-loop round is persisted.
+    public void appendToolRequestTurnForTesting(string reasoning, string callId,
+        string name, string args)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "assistant";
+        message.reasoning = reasoning;
+        message.toolCalls = [OpenCodeToolCall(callId, name, args)];
+        message.time = currentTimestamp();
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+    }
+
+    /// Test-only: the number of visible reasoning headers in the transcript, so
+    /// a test can prove one exchange shows a single "Thinking" (tool rounds are
+    /// merged into one block instead of one header per round).
+    public int thinkingHeaderCountForTesting()
+    {
+        int count;
+        foreach (child; messageColumnVisuals())
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.hasThinkingForTesting() && !bubble.hiddenForTesting())
+                ++count;
+        }
+        return count;
+    }
+
+    /// Test-only: the text of the first visible "Thinking" block, so a test can
+    /// prove a merged block still contains every round's reasoning.
+    public string thinkingTextForTesting()
+    {
+        foreach (child; messageColumnVisuals())
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null) continue;
+            if (bubble.hasThinkingForTesting() && !bubble.hiddenForTesting())
+                return bubble.thinkingTextForTesting();
+        }
+        return "";
+    }
+
     /// Test-only: the sanitized outgoing message list for the current session
     /// (the exact history `startChatRequest` would send, minus the system
     /// prompt and tool definitions).
@@ -6922,6 +7091,21 @@ public final class OpenCodeRoot : VBox
     public void scrollToForTesting(int value)
     {
         _messagesScroll.setScrollY(value);
+    }
+
+    /// Test-only: force a full transcript rebuild, exactly as a throttled
+    /// tool-argument delta does mid-stream, so a test can prove rebuilds keep
+    /// the reader's scroll position and expand choices.
+    public void rebuildForTesting()
+    {
+        rebuildMessageColumn();
+        _messagesScroll.invalidate();
+    }
+
+    /// Test-only: whether the transcript is currently auto-following the bottom.
+    public bool followForTesting()
+    {
+        return _messagesScroll.follow;
     }
 
     /// Test-only: whether the last assistant bubble's thinking block is
