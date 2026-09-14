@@ -1,5 +1,45 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: "do it the Codex way" — persistent collapsible action groups (not fake indicators)
+
+**Complaint (user).** "on codex I see 'edited a file', 'edited a file, ran
+commands', 'edited files, ran commands', 'ran commands'. it would group up. These
+would be collapsables in the chat. Not fake indicators that dissapear like
+'writing'. We don't want fake indicators for such things. I like codex way let's
+do it codex way."
+
+**Diagnosis.** A turn's tool results rendered as one `MessageBubble` per tool
+(context tools folded only when there were ≥2 consecutive read/glob/grep). A
+separate transient aggregate `LiveToolRow` rebuilt itself on every streamed
+delta, so in-flight work stacked rows that kept appearing and scrolling, and the
+phase word ("Writing…") was a transient indicator that vanished at completion.
+
+**Fix (Codex way).** Every turn's tools now fold into ONE persistent, collapsible
+`ToolGroupBubble` whose header is a natural-language summary
+(`actionGroupSummary`): "Edited a file", "Edited a file, ran commands", "Edited 2
+files", "Ran 3 commands", "Explored 2 files", combined in that order and
+capitalised. While tools are in flight the header reads in the present tense
+("Editing a file, running a command"); each in-flight call is its own child row
+with its streamed body preview and a provisional `+N -M`, and the group flips to
+past tense when the turn settles. No transient/fake indicator row remains.
+
+- [x] `tools.d`: `partialStringArg` made `public` (tolerant streamed-JSON extractor).
+- [x] `appui.d`: added `humanToolDetail()` (write→content, edit→newString,
+      shell→command) and `actionGroupSummary(toolNames, live)`.
+- [x] `ToolGroupBubble` rewritten: `Widget[]` children, natural-language header,
+      `collapseKey` + `onCollapseChanged` (expand state survives the many streamed
+      rebuilds via `_groupCollapsed`), `addPart()`, `setLive()`.
+- [x] `LiveToolRow` rewritten as an in-flight child (per-call title/subtitle +
+      streamed body preview + provisional diff); removed the aggregate row and
+      `syncLiveRow`.
+- [x] `addToolSlots` folds ALL of a turn's slots into one group and returns it;
+      `addLiveToolRows(group, target, key)` appends the in-flight children.
+- [x] Smoke guards rewritten: "A turn's tools fold into one collapsible action
+      group" (header "Ran a command, explored 2 files"), "In-flight tools render
+      as children of one live action group" (header "Editing a file, running a
+      command, exploring a file"). `tests/headless_pro_smoke.d` EXIT=0.
+      Details in `testing_progress_and_methods.md`.
+
 ## 2026-09-14 - Pro: "it said writing… but only thinking was left after writing disappeared"
 
 **Complaint (user).** "why in the messages it said writing... but all then was

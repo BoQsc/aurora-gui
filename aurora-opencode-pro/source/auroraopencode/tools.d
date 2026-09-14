@@ -1608,7 +1608,7 @@ private string extractPartialJsonString(string body, string key)
 /// The value of a string argument, preferring an exact `parseJSON` (the whole
 /// tool call has arrived) and falling back to the tolerant partial extractor
 /// (still streaming).
-private string partialStringArg(string argsJson, string key)
+public string partialStringArg(string argsJson, string key)
 {
     JSONValue value;
     try value = parseJSON(argsJson);

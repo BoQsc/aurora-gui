@@ -1292,27 +1292,34 @@ int main(string[] args)
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
 
-    // Context grouping: the read+grep run folds into a single "Explored" row
-    // while the shell command stays its own part.
+    // Codex-style action group: the turn's read+grep+run fold into ONE
+    // collapsible whose header summarises the whole turn, instead of a context
+    // group plus a separate shell bubble.
     assert(root.contextGroupCountForTesting() == 1,
-        "read+grep run did not fold into one context group");
-    assert(root.firstToolGroupPartCountForTesting() == 2,
-        "context group should contain the two context tool parts");
+        "the turn's tools did not fold into one action group");
+    assert(root.firstToolGroupPartCountForTesting() == 3,
+        "action group should contain all three tool parts");
+    auto groupHeaders = root.toolGroupHeaderTextsForTesting();
+    assert(groupHeaders.length == 1 &&
+        groupHeaders[0].indexOf("Ran a command") >= 0 &&
+        groupHeaders[0].indexOf("explored 2 files") >= 0,
+        "action group header should summarise the turn: " ~
+        (groupHeaders.length ? groupHeaders[0] : "<none>"));
     assert(root.firstToolGroupCollapsedForTesting(),
-        "context group should start collapsed");
+        "action group should start collapsed");
     root.toggleFirstToolGroupForTesting();
     assert(!root.firstToolGroupCollapsedForTesting(),
-        "context group did not expand on toggle");
-    assert(driver.paint(), "Expanded context group did not repaint");
+        "action group did not expand on toggle");
+    assert(driver.paint(), "Expanded action group did not repaint");
     const toolShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
     if (!exists(toolShots)) mkdirRecurse(toolShots);
     window.saveScreenshot(buildPath(toolShots, "explored-expanded.ppm"));
     root.toggleFirstToolGroupForTesting();
     assert(root.firstToolGroupCollapsedForTesting(),
-        "context group did not collapse again");
-    assert(driver.paint(), "Collapsed context group did not repaint");
+        "action group did not collapse again");
+    assert(driver.paint(), "Collapsed action group did not repaint");
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
-        writeln("Context tools fold into a collapsible Explored group");
+        writeln("A turn's tools fold into one collapsible action group");
 
     // Nesting: the tool results render as children of the assistant turn that
     // requested them (at the same left edge, not stepped in), and they must
@@ -1511,10 +1518,10 @@ int main(string[] args)
         writeln("Live token count grows on the Thinking header and stays");
     }
 
-    // Grouping: a burst of in-flight tools must read as ONE line (the active
-    // tool, a count of the rest, the provisional diff) instead of a stack of
-    // rows that keep appearing and scrolling the transcript. The clock keeps
-    // running so the user can tell work is progressing.
+    // Codex-style live group: each in-flight tool is its own child row under
+    // one action group whose header speaks in the present tense while the tools
+    // run. The rows carry the streamed body so the user sees progress, and they
+    // settle into the turn's record as results arrive.
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Do many things"]);
@@ -1527,23 +1534,27 @@ int main(string[] args)
         three.arguments = `{"filePath":"y.txt"}`;
         root.injectToolProgressForTesting([one, two, three]);
         auto rows = root.liveToolRowTextsForTesting();
-        assert(rows.length == 1,
-            "Expected one aggregated live row, got " ~ to!string(rows.length));
-        assert(rows[0].indexOf("+2 more") >= 0,
-            "Aggregate live row did not count the other tools: " ~ rows[0]);
+        assert(rows.length == 3,
+            "Expected one live row per in-flight tool, got " ~
+            to!string(rows.length));
+        auto liveHeaders = root.toolGroupHeaderTextsForTesting();
+        assert(liveHeaders.length == 1 &&
+            liveHeaders[0].indexOf("Editing a file") >= 0 &&
+            liveHeaders[0].indexOf("running a command") >= 0 &&
+            liveHeaders[0].indexOf("exploring a file") >= 0,
+            "Live action group header is wrong: " ~
+            (liveHeaders.length ? liveHeaders[0] : "(none)"));
         auto diffs = root.liveToolRowDiffTextsForTesting();
-        assert(diffs.length == 1 && diffs[0] == "+2 -0",
-            "Aggregate live row diff is wrong: " ~
-            (diffs.length ? diffs[0] : "(none)"));
-        // The elapsed suffix appears once a whole second has ticked.
-        root.tickTree(1.2);
-        rows = root.liveToolRowTextsForTesting();
-        assert(rows[0].indexOf("1s") >= 0,
-            "Aggregate live row is missing the elapsed seconds: " ~ rows[0]);
-        assert(driver.paint(), "Aggregated live row did not paint");
-        writeln("In-flight tools group into one animated row: ", rows[0]);
-        // An early unnamed tool must not mask a later named one and leave the
-        // aggregate stuck on the generic "Preparing".
+        assert(diffs.length == 3,
+            "Expected a diff slot per live row, got " ~ to!string(diffs.length));
+        auto previews = root.liveToolRowPreviewsForTesting();
+        assert(previews.length == 3 && previews[1].indexOf("a\nb") >= 0,
+            "Live write row did not preview the streamed body: " ~
+            (previews.length > 1 ? previews[1] : "(none)"));
+        assert(driver.paint(), "Live action group did not paint");
+        writeln("In-flight tools render as children of one live action group: ",
+            liveHeaders[0]);
+        // An unnamed tool must not render as a blank row.
         OpenCodeToolCall blank, named;
         blank.name = "";
         blank.arguments = `{}`;
@@ -1552,7 +1563,7 @@ int main(string[] args)
         root.injectToolProgressForTesting([blank, named]);
         auto rows2 = root.liveToolRowTextsForTesting();
         assert(rows2.length == 1 && rows2[0].indexOf("Writing") >= 0,
-            "Unnamed tool masked the named one: " ~
+            "Unnamed tool did not collapse to the named one: " ~
             (rows2.length ? rows2[0] : "(none)"));
         writeln("Unnamed tool does not mask the named one: ", rows2[0]);
     }

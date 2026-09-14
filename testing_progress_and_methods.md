@@ -1,5 +1,56 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: Codex-style persistent collapsible action groups (2026-09-14)
+
+**Complaint (user).** "on codex I see 'edited a file', 'edited a file, ran
+commands', 'edited files, ran commands', 'ran commands'. it would group up.
+These would be collapsables in the chat. Not fake indicators that dissapear like
+'writing'. We don't want fake indicators for such things. I like codex way let's
+do it codex way."
+
+**Change (Pro `appui.d` + `tools.d`).**
+- Every turn's owned tool results now fold into ONE persistent, collapsible
+  `ToolGroupBubble` (previously one `MessageBubble` per tool, with context tools
+  folded only in runs of ≥2). `addToolSlots(...)` builds the group, wires it and
+  returns it; the live path appends to it.
+- Header = `actionGroupSummary(toolNames, live)` — a natural-language summary in
+  Codex's order: edits ("Edited a file" / "Edited N files"), commands ("Ran a
+  command" / "Ran N commands"), explores ("Explored a file" / "Explored N files"),
+  joined with ", " and capitalised; fallback "Worked"/"Working". `live` selects
+  the present participle ("Editing a file, running a command").
+- `LiveToolRow` is now a per-call in-flight child of the group: `setSummary(name,
+  title, subtitle)`, `setDetail(...)` (streamed body: write→content,
+  edit→newString, shell→command; from `humanToolDetail` via the now-public
+  `partialStringArg`), and a provisional `+N -M` from `previewToolDiff`. The old
+  single aggregate row + `syncLiveRow` were deleted, so nothing "appears and
+  disappears": rows are present while running and become the record on settle.
+- Expand state persists across the many streamed column rebuilds via
+  `ToolGroupBubble.collapseKey` + `onCollapseChanged` and `OpenCodeRoot._
+  groupCollapsed`; `wireToolGroup` re-applies it.
+
+**Test hooks (Pro `appui.d`).** `toolGroupHeaderTextsForTesting()` (every group's
+"▸/▾ <summary>"); `ToolGroupBubble.headerTextForTesting()`/`partCount()`;
+`liveToolRowTextsForTesting()` / `liveToolRowDiffTextsForTesting()` /
+`liveToolRowPreviewsForTesting()` now recurse into a group's children;
+`columnDebugForTesting()` prints `GROUP <header> parts=N`; `toolBubblesForTesting()`
+recurses into group parts.
+
+**How to run / evidence.**
+```
+dub build --compiler=dmd --force --build=release          (workdir aurora-opencode-pro)
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib ^
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe            # EXIT=0
+```
+Result: smoke passes, including "A turn's tools fold into one collapsible action
+group" (header printed `▸ Ran a command, explored 2 files`; 3 parts; starts
+collapsed; toggles) and "In-flight tools render as children of one live action
+group: ▸ Editing a file, running a command, exploring a file" (three live rows,
+diff slots, the write row previews its streamed body). Screenshots from the run:
+`%TEMP%\aurora-opencode-tool-shots\explored-expanded.ppm` /
+`explored-collapsed.ppm`.
+
 ## Pro: replace the vanishing "Writing…" row with a live token count on the Thinking header (2026-09-14)
 
 **Complaint (continued).** After "Writing…" disappeared only `▸ Thinking` was
