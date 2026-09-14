@@ -1456,6 +1456,61 @@ int main(string[] args)
         writeln("Live phase row shows only when no live tool row does");
     }
 
+    // Live token counter: while the reply streams (reasoning, then answer) the
+    // Thinking header shows an output-token count that only grows, and it stays
+    // after the turn completes. The generic "Writing…" phase word is gone, so
+    // nothing vanishes at completion and reads like a file write.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Explain something"]);
+        root.beginStreamForTesting();
+        assert(root.streamLiveTokensForTesting() == 0,
+            "Token count appeared before any token streamed");
+        assert(root.activityVisibleForTesting(),
+            "The pre-token wait row should still show");
+        root.streamReasoningForTesting("Let me think about this carefully.");
+        root.tickTree(0.02);
+        const long afterReasoning = root.streamLiveTokensForTesting();
+        assert(afterReasoning > 0,
+            "Reasoning did not start the live token counter");
+        const string header = root.streamThinkingHeaderTextForTesting();
+        assert(header.indexOf("Thinking") >= 0 && header.indexOf("tokens") >= 0,
+            "Thinking header lacks the token count: " ~ header);
+        assert(root.activityTextForTesting().indexOf("Writing") < 0,
+            "The 'Writing…' phase word is still in the transcript");
+        assert(!root.activityVisibleForTesting(),
+            "The wait row must be dropped once the header speaks");
+        assert(driver.paint(), "Streaming header did not paint");
+        root.streamContentForTesting("Here is the explanation, in full detail.");
+        root.tickTree(0.02);
+        const long afterContent = root.streamLiveTokensForTesting();
+        assert(afterContent > afterReasoning,
+            "Token count did not grow with the answer: " ~
+            to!string(afterReasoning) ~ " -> " ~ to!string(afterContent));
+        // The provider's exact completion count replaces the local estimate.
+        const int exactCompletion = cast(int) afterContent + 500;
+        root.feedUsageForTesting(100, exactCompletion, exactCompletion + 100);
+        assert(root.streamLiveTokensForTesting() == exactCompletion,
+            "Exact completion tokens did not replace the estimate");
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        assert(!root.activityVisibleForTesting(),
+            "Completion left the activity row behind");
+        const long finalTokens = root.lastAssistantLiveTokensForTesting();
+        assert(finalTokens == exactCompletion,
+            "The final token count did not persist on the reply: " ~
+            to!string(finalTokens));
+        const string finalHeader =
+            root.lastAssistantThinkingHeaderTextForTesting();
+        assert(finalHeader.indexOf("tokens") >= 0,
+            "The completed reply lost its token count: " ~ finalHeader);
+        assert(driver.paint(), "Completed counted header did not paint");
+        const tokenShots = buildPath(tempDir(), "aurora-opencode-token-shots");
+        if (!exists(tokenShots)) mkdirRecurse(tokenShots);
+        window.saveScreenshot(buildPath(tokenShots, "live-token-counter.ppm"));
+        writeln("Live token count grows on the Thinking header and stays");
+    }
+
     // Grouping: a burst of in-flight tools must read as ONE line (the active
     // tool, a count of the rest, the provisional diff) instead of a stack of
     // rows that keep appearing and scrolling the transcript. The clock keeps

@@ -1,5 +1,39 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-14 - Pro: "it said writing… but only thinking was left after writing disappeared"
+
+**Complaint (user).** "why in the messages it said writing... but all then was
+left was thinking after writing disappeared. I don't understand what is going on"
+
+**Diagnosis (code + evidence, no guessing).** The transient word "Writing…" is
+the generic phase spinner (`ActivityRow`), NOT a file-write record:
+
+- `startChatRequest` → `setActivity("Waiting for the model…")` (appui.d:5244).
+- `appendStreamDelta` answer branch → `setActivity("Writing…")` (appui.d:4628);
+  reasoning branch clears it (appui.d:4621).
+- `finishAssistantMessage` → `clearActivity()` (appui.d:4639), which removes the
+  row (appui.d:4764). The permanent `▸ Thinking` that is left is the collapsed
+  reasoning header built in `buildMessageBubble` (appui.d:4382).
+
+The actual write/edit/run record is a separate `tool` bubble appended by
+`applyToolResult` (appui.d:4947) and nested under its assistant turn by
+`rebuildMessageColumn` (appui.d:3986-4090). Evidence: dumped the real
+"how are you" session (`sessions.json`, 131 messages) via the new
+`OpenCodeRoot.columnDebugForTesting()` — **every one of the tool results renders
+visible** (0 hidden/zero-size tool bubbles); the only hidden rows are the 39
+assistant tool-call wrappers (`buildMessageBubble` appui.d:4365-4370), which is
+intended. Nothing is lost.
+
+So: the phase spinner disappears when the reply completes; the answer text and
+all tool records persist. The wording "Writing…" is easy to mistake for a file
+write, and the collapsed `▸ Thinking` header is what remains directly above the
+answer.
+
+- [x] Diagnosed and proven with `tests/pro_flow_repro.d` (multi-round write/edit
+      exchange) + `columnDebugForTesting()`; not a data-loss bug.
+- [ ] Open: decide whether to relabel the generic phase row (e.g. "Writing
+      reply…") or otherwise de-confuse it from a file write. Awaiting direction.
+
 ## 2026-09-14 - Pro: tool features vs upstream opencode (read paging / grep lines / fuzzy edit / compaction)
 
 Review against upstream `anomalyco/opencode` `read`/`edit`/`grep`/compaction, then

@@ -1,5 +1,50 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: "writing disappeared, only thinking left" — phase row vs record (2026-09-14)
+
+**Complaint (user).** "it said writing... but all then was left was thinking
+after writing disappeared. I don't understand what is going on."
+
+**Finding.** No message or tool record is lost. "Writing…" is the transient
+generic phase spinner (`ActivityRow`), removed when the reply completes; the
+`▸ Thinking` header left behind is the collapsed reasoning block. The permanent
+write/edit/run record is a separate nested `tool` bubble. Code:
+`setActivity("Writing…")` appui.d:4628; `finishAssistantMessage`→`clearActivity`
+appui.d:4639/4764; record appended in `applyToolResult` appui.d:4947 and nested
+by `rebuildMessageColumn` appui.d:3986-4090; header built at appui.d:4382.
+
+**How to test / inspect (new tools added this session).**
+
+- `OpenCodeRoot.columnDebugForTesting()` (appui.d) returns one line per flattened
+  transcript visual: role, `hidden`, `think`, content length/snippet, tool name,
+  and `vis`/`h`. `MessageBubble.contentSnippetForTesting()` /
+  `toolNameForTesting()` / `contentLengthForTesting()` back it.
+- `OpenCodeRoot.finishStreamForTesting()` drives the `done` path so a headless
+  test can dump the post-completion column.
+- Standalone repro `aurora-opencode-pro/tests/pro_flow_repro.d`:
+  - `build\pro-flow-repro.exe` runs a scripted multi-round write/edit exchange
+    and dumps the column after every phase (begin → reasoning → content →
+    tool-call progress → running → result → next round → final answer →
+    finish). Observed: the `ACTROW Writing…` vanishes at `finish`, while every
+    `tool` bubble stays `vis=1`.
+  - `build\pro-flow-repro.exe real` loads the live `%APPDATA%\Aurora OpenCode\
+    sessions.json`, selects the "how are you" session, and dumps its column.
+    Result: **all tool results visible; 0 hidden tool bubbles**; 39 hidden
+    assistant tool-call wrappers (intended, appui.d:4365).
+
+Build/run:
+
+```
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\pro_flow_repro.d user32.lib ^
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\pro-flow-repro.exe
+build\pro-flow-repro.exe
+build\pro-flow-repro.exe real
+```
+
+Open item: whether to relabel the generic phase row so it cannot be read as a
+file write (see `todo.md`).
+
 ## Pro: uneven gaps between collapsed Thinking / Shell rows (2026-09-14)
 
 **Complaint (user screenshots).** A transcript of collapsed `▸ Thinking` /

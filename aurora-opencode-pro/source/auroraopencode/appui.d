@@ -130,6 +130,13 @@ private final class MessageBubble : Widget
     private string _error;
     private string _time;
     private string _usageText;
+    // Live output-token count mirrored onto the Thinking header. It grows as
+    // tokens stream (a local estimate refined by the provider's exact usage) and
+    // stays after the turn ends, so the active row shows a number that only
+    // increases instead of a phase word that vanishes and reads like a file
+    // write.
+    private long _liveTokens;
+    private bool _tokensLive;
     private int _messageIndex;
     private bool _hidden;
 
@@ -317,6 +324,25 @@ private final class MessageBubble : Widget
         return _role;
     }
 
+    /// Test-only: how many codepoints of answer content this bubble holds.
+    public int contentLengthForTesting() const
+    {
+        return cast(int) _content.length;
+    }
+
+    /// Test-only: the bubble's tool name ("" for a prose bubble).
+    public string toolNameForTesting() const
+    {
+        return _toolName;
+    }
+
+    /// Test-only: a short prefix of the bubble's answer content.
+    public string contentSnippetForTesting() const
+    {
+        const full = to!string(_content);
+        return full.length <= 40 ? full : full[0 .. 40] ~ "…";
+    }
+
     void setToolName(string name)
     {
         _toolName = name;
@@ -410,7 +436,7 @@ private final class MessageBubble : Widget
     /// assistant is streaming; only repaints when the indicator phase changes.
     void tickThinking(double deltaSeconds)
     {
-        if (!_thinkingLive) return;
+        if (!_thinkingLive && !_tokensLive) return;
         const phase = cast(int) (_thinkingElapsed * 2);
         _thinkingElapsed += deltaSeconds;
         const next = cast(int) (_thinkingElapsed * 2);
@@ -499,6 +525,23 @@ private final class MessageBubble : Widget
     public string usageTextForTesting()
     {
         return _usageText;
+    }
+
+    /// Set the live/final output-token count shown on the Thinking header.
+    /// `live` keeps the pulsing indicator running while the reply streams; the
+    /// last value is kept after completion.
+    void setLiveTokens(long tokens, bool live)
+    {
+        if (_liveTokens == tokens && _tokensLive == live) return;
+        _liveTokens = tokens;
+        _tokensLive = live;
+        invalidate();
+    }
+
+    /// Test-only: the live/final token count held by this bubble.
+    public long liveTokensForTesting() const
+    {
+        return _liveTokens;
     }
 
     void setAction(string label, void delegate() callback)
@@ -1176,28 +1219,46 @@ private final class MessageBubble : Widget
         return count * rowH;
     }
 
-    /// Slim thinking header: `▸ Thinking` when collapsed (pulsing `▌` while
-    /// the assistant is still working), `▾ Thinking` when expanded. Clicking
-    /// toggles the full reasoning text.
-    private void drawThinkingHeader(ref Canvas canvas, int innerWidth, int top)
+    /// Compose the Thinking header line: `▸ Thinking`, the live/final token
+    /// count once any token has arrived, and the pulsing `▌`/`▐` while the
+    /// assistant is still working.
+    private string thinkingHeaderText() const
     {
         const toggle = _thinkingCollapsed ? "▸" : "▾";
         string text = toggle ~ " Thinking";
-        if (_thinkingLive)
+        if (_liveTokens > 0)
+            text ~= "  " ~ formatThousands(cast(int) _liveTokens) ~ " tokens";
+        if (_thinkingLive || _tokensLive)
         {
             // Pulsing indicator: cycle between ▌ and ▐ every half second.
             const phase = cast(int) (_thinkingElapsed * 2) & 1;
             text ~= phase == 0 ? " ▌" : " ▐";
         }
-        auto layout = canvas.layoutText(toUTF32(text), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, maxInt(1, innerWidth), true);
+        return text;
+    }
+
+    /// Test-only: the exact Thinking header line as drawn.
+    public string thinkingHeaderTextForTesting() const
+    {
+        return thinkingHeaderText();
+    }
+
+    /// Slim thinking header: `▸ Thinking` when collapsed (pulsing `▌` while
+    /// the assistant is still working, plus the live token count), `▾ Thinking`
+    /// when expanded. Clicking toggles the full reasoning text.
+    private void drawThinkingHeader(ref Canvas canvas, int innerWidth, int top)
+    {
+        const live = _thinkingLive || _tokensLive;
+        auto layout = canvas.layoutText(toUTF32(thinkingHeaderText()), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont, maxInt(1, innerWidth),
+            true);
         const h = layout.measuredSize().height;
         _thinkingRect = Rect(padH, top, maxInt(1, innerWidth), h);
         // No chip background: reasoning is a single muted line ("▸ Thinking")
         // that expands in place, like ReasoningHeader in the original opencode
         // (session/index.tsx) rather than a filled button.
         canvas.drawLayout(Point(padH, top), layout,
-            _thinkingLive ? opencodeAccent :
+            live ? opencodeAccent :
             (_thinkingHover ? opencodeText : opencodeMuted));
     }
 
@@ -1984,12 +2045,12 @@ private final class LiveToolRow : Widget
 
 /// A small always-visible "what is going on" row that sits at the end of the
 /// conversation while the assistant is busy. It shows a pulsing dot, the
-/// current phase ("Waiting for the model…", "Thinking…", "Writing…",
-/// "Running 2 tools…") and the elapsed seconds. It fills the gaps where the
-/// transcript would otherwise look frozen: after a prompt is sent (before the
-/// first token), between tool rounds, and while a long reasoning or file body
-/// streams. The dot is drawn rather than a glyph so it never depends on font
-/// coverage.
+/// current phase ("Waiting for the model…", "Thinking…", "Running 2 tools…")
+/// and the elapsed seconds. It fills the gaps where the transcript would
+/// otherwise look frozen: after a prompt is sent (before the first token) and
+/// between tool rounds. Once text streams, the reply's own Thinking header
+/// carries the progress (a live token count) and this row is dropped. The dot is
+/// drawn rather than a glyph so it never depends on font coverage.
 private final class ActivityRow : Widget
 {
     private string _label;
@@ -2996,6 +3057,13 @@ public final class OpenCodeRoot : VBox
     private int[] _sessionIndices;
     private string _filterText;
     private string _lastUsageText;
+    // Live output-token counter for the in-flight reply. The provider usually
+    // reports exact `usage` only at/near the end of the stream, so the UI counts
+    // a local estimate from the streamed bytes and swaps in the provider's exact
+    // completion count when it arrives. Rendered on the live reply's Thinking
+    // header and kept after the turn completes.
+    private long _liveOutputBytes;
+    private long _liveOutputTokens;
     private bool _suppressDoneStatus;
     // Index (into the current session's `messages`) of a user prompt the user
     // chose to edit. Send replaces it with a sibling branch so the original
@@ -4426,6 +4494,10 @@ public final class OpenCodeRoot : VBox
             bubble.setUsageText(" • " ~
                 formatThousands(message.totalTokens) ~ " tokens");
         }
+        // Persist the output-token count on the Thinking header for any turn
+        // that produced one, so it survives a column rebuild.
+        if (message.completionTokens > 0)
+            bubble.setLiveTokens(message.completionTokens, false);
         return bubble;
     }
 
@@ -4571,6 +4643,9 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return;
         _preparingToolCalls.length = 0;
+        // Each assistant turn counts its own output from zero.
+        _liveOutputBytes = 0;
+        _liveOutputTokens = 0;
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
@@ -4585,8 +4660,11 @@ public final class OpenCodeRoot : VBox
         // instead of orphaning it.
         _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
         // The request headers are in; the model is now thinking or about to
-        // emit its first token. Keep the in-flow row honest about the phase.
-        setActivity(_settings.thinking ? "Thinking…" : "Writing…");
+        // emit its first token. Keep the in-flow row honest about the phase
+        // without the "Writing…" wording, which read like a file write and
+        // vanished at completion (the Thinking header's token count now carries
+        // that progress signal).
+        setActivity(_settings.thinking ? "Thinking…" : "Waiting for the model…");
         // Rebuild rather than appending the bubble directly: a row already
         // pinned for a previous phase (e.g. "Waiting for the model…") would
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
@@ -4606,10 +4684,11 @@ public final class OpenCodeRoot : VBox
             updateStatus("Generating…");
         }
         // Reasoning and answer text are different phases. Reasoning is shown by
-        // the in-bubble "▸ Thinking" header, which pulses while it streams, so
-        // the out-of-bubble activity row is dropped to avoid printing "Thinking"
-        // twice. Once answer text starts, the header stops pulsing and the
-        // activity row takes over as the "Writing…" phase indicator.
+        // the in-bubble "▸ Thinking" header, which pulses while it streams. The
+        // header also carries a live output-token count that keeps climbing for
+        // BOTH phases and is kept after the turn ends; the generic phase word
+        // ("Writing…") was dropped because it vanished at completion and read
+        // like a file write.
         auto session = &_sessions[_current];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
@@ -4618,6 +4697,7 @@ public final class OpenCodeRoot : VBox
             message.reasoning ~= text;
             _streamBubble.appendThinking(text);
             _streamBubble.setThinkingLive(true);
+            // The header now speaks for this phase; drop "Waiting for the model…".
             clearActivity();
         }
         else
@@ -4625,8 +4705,16 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setThinkingLive(false);
             message.content ~= text;
             _streamBubble.appendContent(text);
-            setActivity("Writing…");
+            // Drop the "Waiting for the model…" row now that the answer itself
+            // is visibly streaming (no "Writing…" replacement any more).
+            clearActivity();
         }
+        // Advance the live token counter with an ~4-bytes-per-token estimate;
+        // the provider's exact completion count replaces it via `usage`/`done`.
+        _liveOutputBytes += cast(long) text.length;
+        const estimate = (_liveOutputBytes + 3) / 4;
+        if (estimate > _liveOutputTokens) _liveOutputTokens = estimate;
+        _streamBubble.setLiveTokens(_liveOutputTokens, true);
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
         _messagesScroll.invalidate();
@@ -4639,6 +4727,12 @@ public final class OpenCodeRoot : VBox
         clearActivity();
         if (_streamBubble !is null)
         {
+            // Settle the final count (exact when the provider reported it) and
+            // stop the pulse; the header keeps the number so the row stays
+            // meaningful after the phase indicator is gone.
+            if (completionTokens > _liveOutputTokens)
+                _liveOutputTokens = completionTokens;
+            _streamBubble.setLiveTokens(_liveOutputTokens, false);
             _streamBubble.setThinkingLive(false);
             _streamBubble.setStreaming(false);
             _streamBubble = null;
@@ -6203,10 +6297,18 @@ public final class OpenCodeRoot : VBox
                     // The provider reports live token usage while streaming;
                     // surface it on the growing reply and the context meter.
                     // The stream bubble is always the latest assistant reply.
-                    if (_streamBubble !is null && event.totalTokens > 0)
-                        _streamBubble.setUsageText(
-                            " • " ~ formatThousands(event.totalTokens) ~
-                            " tokens");
+                    // The exact completion count replaces the local estimate on
+                    // the Thinking header; the total goes in the footer.
+                    if (event.completionTokens > _liveOutputTokens)
+                        _liveOutputTokens = event.completionTokens;
+                    if (_streamBubble !is null)
+                    {
+                        _streamBubble.setLiveTokens(_liveOutputTokens, true);
+                        if (event.totalTokens > 0)
+                            _streamBubble.setUsageText(
+                                " • " ~ formatThousands(event.totalTokens) ~
+                                " tokens");
+                    }
                     if (_usageBadge !is null)
                     {
                         _usageBadge.setUsage(event.promptTokens,
@@ -6620,9 +6722,13 @@ public final class OpenCodeRoot : VBox
         event.promptTokens = prompt;
         event.completionTokens = completion;
         event.totalTokens = total;
+        if (completion > _liveOutputTokens) _liveOutputTokens = completion;
         if (_streamBubble !is null)
+        {
+            _streamBubble.setLiveTokens(_liveOutputTokens, true);
             _streamBubble.setUsageText(" • " ~ formatThousands(total) ~
                 " tokens");
+        }
     }
 
     /// Test-only: whether the bubble at `index` shows token usage text.
@@ -6970,6 +7076,68 @@ public final class OpenCodeRoot : VBox
         appendStreamDelta(text, false);
     }
 
+    /// Test-only: finish the live assistant turn exactly as a `done` event does
+    /// (clears the phase row, drops the streaming flag).
+    public void finishStreamForTesting()
+    {
+        finishAssistantMessage(false);
+    }
+
+    /// Test-only: the live output-token count of the streaming reply (0 when
+    /// nothing is streaming).
+    public long streamLiveTokensForTesting()
+    {
+        return _streamBubble is null ? 0 : _streamBubble.liveTokensForTesting();
+    }
+
+    /// Test-only: the exact Thinking header line of the streaming reply.
+    public string streamThinkingHeaderTextForTesting()
+    {
+        return _streamBubble is null ? ""
+            : _streamBubble.thinkingHeaderTextForTesting();
+    }
+
+    /// Test-only: the live/final token count on the flattened bubble at `index`.
+    public long bubbleLiveTokensForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? 0 : bubble.liveTokensForTesting();
+    }
+
+    /// Test-only: the Thinking header line of the flattened bubble at `index`.
+    public string bubbleThinkingHeaderTextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? "" : bubble.thinkingHeaderTextForTesting();
+    }
+
+    /// Test-only: the most recent assistant reply bubble in the column (null
+    /// when there is none).
+    private MessageBubble lastAssistantBubbleForTesting()
+    {
+        MessageBubble found;
+        foreach (child; messageColumnVisuals())
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble.roleForTesting() == "assistant")
+                    found = bubble;
+        return found;
+    }
+
+    /// Test-only: the live/final token count on the most recent assistant reply
+    /// in the column (0 when there is none).
+    public long lastAssistantLiveTokensForTesting()
+    {
+        auto bubble = lastAssistantBubbleForTesting();
+        return bubble is null ? 0 : bubble.liveTokensForTesting();
+    }
+
+    /// Test-only: the Thinking header line of the most recent assistant reply.
+    public string lastAssistantThinkingHeaderTextForTesting()
+    {
+        auto bubble = lastAssistantBubbleForTesting();
+        return bubble is null ? "" : bubble.thinkingHeaderTextForTesting();
+    }
+
     /// Test-only: visual index of the live activity row in the flattened
     /// transcript (-1 when absent). Proves the phase row renders AFTER the live
     /// reply it describes, never above it.
@@ -6986,6 +7154,44 @@ public final class OpenCodeRoot : VBox
     public int messageColumnVisualCountForTesting()
     {
         return cast(int) messageColumnVisuals().length;
+    }
+
+    /// Test-only: one human-readable line per flattened transcript visual (id,
+    /// role, hidden flag, whether it shows a Thinking header, content length,
+    /// live/activity text, visibility and laid-out height), so a test can prove
+    /// exactly what the column shows at each streaming phase.
+    public string[] columnDebugForTesting()
+    {
+        string[] lines;
+        foreach (i, child; messageColumnVisuals())
+        {
+            string desc = to!string(i) ~ ":";
+            if (auto bubble = cast(MessageBubble) child)
+            {
+                desc ~= "bubble role=" ~ bubble.roleForTesting() ~
+                    " hidden=" ~ (bubble.hiddenForTesting() ? "1" : "0") ~
+                    " think=" ~ (bubble.hasThinkingForTesting() ? "1" : "0") ~
+                    " content=" ~ to!string(bubble.contentLengthForTesting());
+                if (bubble.liveTokensForTesting() > 0)
+                    desc ~= " tokens=" ~
+                        to!string(bubble.liveTokensForTesting());
+                if (bubble.toolNameForTesting().length > 0)
+                    desc ~= " tool=" ~ bubble.toolNameForTesting();
+                if (bubble.contentLengthForTesting() > 0)
+                    desc ~= " txt=\"" ~
+                        bubble.contentSnippetForTesting() ~ "\"";
+            }
+            else if (auto row = cast(LiveToolRow) child)
+                desc ~= "LIVEROW " ~ row.textForTesting();
+            else if (auto act = cast(ActivityRow) child)
+                desc ~= "ACTROW " ~ act.textForTesting();
+            else
+                desc ~= child.id();
+            desc ~= " vis=" ~ (child.visible() ? "1" : "0") ~
+                " h=" ~ to!string(child.bounds().height);
+            lines ~= desc;
+        }
+        return lines;
     }
 
     /// Test-only: inject a tool-call progress event (the model is still
