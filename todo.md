@@ -31,8 +31,16 @@ answer.
 
 - [x] Diagnosed and proven with `tests/pro_flow_repro.d` (multi-round write/edit
       exchange) + `columnDebugForTesting()`; not a data-loss bug.
-- [ ] Open: decide whether to relabel the generic phase row (e.g. "Writing
-      reply…") or otherwise de-confuse it from a file write. Awaiting direction.
+- [x] **Resolved:** the transient "Writing…" phase word is gone. The active
+      reply's `▸ Thinking` header now shows a live output-token count that only
+      grows (a local ~4-bytes/token estimate, replaced by the provider's exact
+      `completion_tokens` when it arrives) and stays after the turn ends, so
+      nothing vanishes and reads like a file write. `setActivity("Writing…")`
+      removed from both `appendStreamDelta` and `beginAssistantMessage`
+      (appui.d); the pre-token "Waiting for the model…" row is dropped on the
+      first reasoning/answer delta. Smoke guard: "Live token count grows on the
+      Thinking header and stays" in `tests/headless_pro_smoke.d` (EXIT=0).
+      Details in `testing_progress_and_methods.md`.
 
 ## 2026-09-14 - Pro: tool features vs upstream opencode (read paging / grep lines / fuzzy edit / compaction)
 

@@ -1,5 +1,54 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Pro: replace the vanishing "Writing…" row with a live token count on the Thinking header (2026-09-14)
+
+**Complaint (continued).** After "Writing…" disappeared only `▸ Thinking` was
+left, so the user could not tell what was happening and the word read like a file
+write. Direction: show a **live token count that increases** near the collapsible
+that is doing the work, instead of the transient phase word.
+
+**Change (Pro `appui.d` only).**
+- `MessageBubble` holds `_liveTokens`/`_tokensLive`; `setLiveTokens(long,bool)`
+  drives them. `thinkingHeaderText()` composes `▸ Thinking  <N> tokens` plus the
+  pulsing `▌`/`▐` while `_thinkingLive || _tokensLive`; `drawThinkingHeader`
+  draws it. `tickThinking` now pulses for the token counter too.
+- `OpenCodeRoot._liveOutputBytes`/`_liveOutputTokens` count the in-flight reply.
+  `appendStreamDelta` adds each delta's byte length and shows `(bytes+3)/4` as a
+  running estimate; the `usage` handler and `finishAssistantMessage` replace it
+  with the provider's exact `completion_tokens` (never decrease). Reset to 0 in
+  `beginAssistantMessage`. `buildMessageBubble` restores `message.completionTokens`
+  onto the header so the count survives a rebuild / restart.
+- `setActivity("Writing…")` is gone from both `appendStreamDelta` and
+  `beginAssistantMessage` (which now uses `"Waiting for the model…"` when
+  thinking is off). The "Waiting for the model…" row is cleared as soon as the
+  first reasoning OR answer delta arrives.
+
+**Why an estimate.** Most providers stream no `usage` until the final chunk
+(`captureUsage`, `aurora-opencode-core/.../opencode_client.d`), so an exact live
+count is impossible mid-stream; the estimate is replaced by the exact value.
+
+**Test hooks (Pro `appui.d`).** `MessageBubble.liveTokensForTesting()` /
+`thinkingHeaderTextForTesting()`; `OpenCodeRoot.streamLiveTokensForTesting()`,
+`streamThinkingHeaderTextForTesting()`, `bubbleLiveTokensForTesting(index)`,
+`bubbleThinkingHeaderTextForTesting(index)`, `lastAssistantLiveTokensForTesting()`,
+`lastAssistantThinkingHeaderTextForTesting()`; `columnDebugForTesting()` now
+prints `tokens=N` per bubble.
+
+**How to run.**
+```
+dub build --compiler=dmd --force --build=release          (workdir aurora-opencode-pro)
+dmd -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib ^
+  gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe            # EXIT=0
+build\pro-flow-repro.exe                # phase dump: no ACTROW "Writing…"
+```
+Result: smoke passes including "Live token count grows on the Thinking header and
+stays"; the repro's phase dump now shows `think=1 tokens=9` after the reasoning
+stream → `tokens=21` after the content stream → `tokens=12` still on the settled
+reply after `finish`, with no `ACTROW Writing…` at any phase. Screenshot from the
+test: `%TEMP%\aurora-opencode-token-shots\live-token-counter.ppm`.
+
 ## Pro: "writing disappeared, only thinking left" — phase row vs record (2026-09-14)
 
 **Complaint (user).** "it said writing... but all then was left was thinking

@@ -4741,7 +4741,7 @@ public final class OpenCodeRoot : VBox
         {
             auto message = &_sessions[_current].messages[$ - 1];
             if (message.time.length == 0) message.time = currentTimestamp();
-            if (totalTokens > 0)
+            if (completionTokens > 0 || totalTokens > 0)
             {
                 message.promptTokens = promptTokens;
                 message.completionTokens = completionTokens;
