@@ -135,11 +135,37 @@ private void assertPlainBody()
     client.closeSession();
 }
 
+/// llama-server's conventional local endpoint uses HTTP, needs no key, and
+/// accepts reasoning_effort=none for Qwen's non-thinking mode.
+private void assertLlamaServerCompatibility()
+{
+    auto client = new OpenCodeClient("http://127.0.0.1:8080/v1", "");
+    assert(!client.secureTransportForTesting(client.baseUrl()),
+        "local llama-server was incorrectly forced through TLS");
+    assert(client.secureTransportForTesting("https://example.com/v1"),
+        "HTTPS provider lost TLS transport");
+
+    ChatRequestMessage user;
+    user.role = "user";
+    user.content = "Hi";
+    auto off = parseJSON(client.buildBodyForTesting([user], null,
+        "qwen-local", false));
+    assert(off.object["reasoning_effort"].str == "none",
+        "local Thinking=off did not disable llama-server reasoning");
+    auto on = parseJSON(client.buildBodyForTesting([user], null,
+        "qwen-local", true));
+    assert(on.object["reasoning_effort"].str == "high",
+        "local Thinking=on did not request reasoning");
+    writeln("llama-server HTTP and reasoning compatibility serialize correctly");
+    client.closeSession();
+}
+
 int main()
 {
     assertToolCallFixture();
     assertRequestBody();
     assertPlainBody();
+    assertLlamaServerCompatibility();
     writeln("aurora-opencode-core tool SSE tests passed.");
     return 0;
 }

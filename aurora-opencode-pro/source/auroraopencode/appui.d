@@ -6298,8 +6298,7 @@ public final class OpenCodeRoot : VBox
         keyField.layoutHints().flex = 1.0;
 
         auto hint = content.add(new Label(
-            "Key loads from your settings file, OPENCODE_API_KEY, or the " ~
-            "opencode-api server key file by default."));
+            "llama-server: http://127.0.0.1:8080/v1 (API key may be blank)."));
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
@@ -6495,8 +6494,9 @@ public final class OpenCodeRoot : VBox
     private void updateKeyBadge()
     {
         const hasKey = _settings.apiKey.length > 0;
-        _keyBadge.setText(hasKey ? "Key set" : "No key");
-        _keyBadge.setColor(hasKey ? opencodeKeyOk : opencodeKeyMissing);
+        const local = isLoopbackApiBaseUrl(_settings.baseUrl);
+        _keyBadge.setText(hasKey ? "Key set" : local ? "Local API" : "No key");
+        _keyBadge.setColor(hasKey || local ? opencodeKeyOk : opencodeKeyMissing);
     }
 
     private void updateStatus(string text)

@@ -18,7 +18,7 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
-    OpenCodeToolDef;
+    OpenCodeToolDef, isLoopbackApiBaseUrl;
 import auroraopencode.logging : logError;
 
 /** Kinds of events the client delivers to the UI thread. */
@@ -59,6 +59,7 @@ private struct HttpTarget
     string host;
     ushort port;
     string path;
+    bool secure;
 }
 
 private enum DWORD defaultConnectTimeoutMs = 30_000;
@@ -97,7 +98,15 @@ private HttpTarget parseHttpTarget(string baseUrl, string suffix)
 
     string path = pathPart.length == 0 ? "" : pathPart;
     if (path.length > 0 && path[$ - 1] == '/') path = path[0 .. $ - 1];
-    return HttpTarget(host, port, path ~ suffix);
+    return HttpTarget(host, port, path ~ suffix, scheme == "https");
+}
+
+private DWORD requestFlags(const ref HttpTarget target)
+{
+    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+        INTERNET_FLAG_PRAGMA_NOCACHE;
+    if (target.secure) flags |= INTERNET_FLAG_SECURE;
+    return flags;
 }
 
 private bool startsWithAscii(string value, string prefix)
@@ -427,7 +436,8 @@ final class OpenCodeClient
         try
         {
             const target = parseHttpTarget(_baseUrl, "/chat/completions");
-            const body = buildChatBody(messages, tools, model, thinking);
+            const body = buildChatBody(messages, tools, model, thinking,
+                _baseUrl);
             _streamReasoning = "";
             _streamContent = "";
             _streamToolCalls.length = 0;
@@ -447,8 +457,7 @@ final class OpenCodeClient
                 throw new Exception("Could not connect to " ~ target.host);
             scope (exit) InternetCloseHandle(connection);
 
-            const flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD |
-                INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
+            const flags = requestFlags(target);
             auto request = HttpOpenRequestW(connection, "POST"w.ptr,
                 toUTF16z(target.path), null, null, null, flags, 0);
             if (request is null)
@@ -464,9 +473,10 @@ final class OpenCodeClient
                 InternetCloseHandle(request);
             }
 
-            const headers = "User-Agent: " ~ clientUserAgent ~
-                "\r\nAuthorization: Bearer " ~ _apiKey ~
-                "\r\nContent-Type: application/json\r\n" ~
+            string headers = "User-Agent: " ~ clientUserAgent ~ "\r\n";
+            if (_apiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
             auto bodyBytes = cast(ubyte[]) body.dup;
             if (!HttpSendRequestW(request, toUTF16z(headers), -1,
@@ -602,7 +612,13 @@ final class OpenCodeClient
     public string buildBodyForTesting(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking)
     {
-        return buildChatBody(messages, tools, model, thinking);
+        return buildChatBody(messages, tools, model, thinking, _baseUrl);
+    }
+
+    /// Test-only: verify URL transport selection without opening a connection.
+    public bool secureTransportForTesting(string baseUrl)
+    {
+        return parseHttpTarget(baseUrl, "/models").secure;
     }
 
     private void runModelsRequest()
@@ -620,8 +636,7 @@ final class OpenCodeClient
                 throw new Exception("Could not connect to " ~ target.host);
             scope (exit) InternetCloseHandle(connection);
 
-            const flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD |
-                INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_PRAGMA_NOCACHE;
+            const flags = requestFlags(target);
             auto request = HttpOpenRequestW(connection, "GET"w.ptr,
                 toUTF16z(target.path), null, null, null, flags, 0);
             if (request is null)
@@ -637,8 +652,9 @@ final class OpenCodeClient
                 InternetCloseHandle(request);
             }
 
-            const headers = "User-Agent: " ~ clientUserAgent ~
-                "\r\nAuthorization: Bearer " ~ _apiKey ~ "\r\n";
+            string headers = "User-Agent: " ~ clientUserAgent ~ "\r\n";
+            if (_apiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
             if (!HttpSendRequestW(request, toUTF16z(headers), -1, null, 0))
                 throw new Exception("Could not open the models URL (" ~
                     wininetErrorText(GetLastError()) ~ ").");
@@ -701,7 +717,8 @@ final class OpenCodeClient
     }
 
     private static string buildChatBody(const(ChatRequestMessage)[] messages,
-        const(OpenCodeToolDef)[] tools, string model, bool thinking)
+        const(OpenCodeToolDef)[] tools, string model, bool thinking,
+        string baseUrl)
     {
         JSONValue root;
         root["model"] = model;
@@ -732,10 +749,11 @@ final class OpenCodeClient
             root["parallel_tool_calls"] = true;
         }
         root["stream"] = true;
-        // CommandCode accepts low|medium|high|xhigh|max and rejects the old
-        // "none" value. Map the Thinking checkbox onto that scale: on asks for
-        // deep reasoning, off the lightest available effort.
-        root["reasoning_effort"] = thinking ? "high" : "low";
+        // CommandCode rejects "none", while current llama-server accepts it
+        // and uses it to disable thinking in hybrid Qwen templates. Keep the
+        // hosted DeepSeek behavior unchanged and make the local checkbox exact.
+        root["reasoning_effort"] = thinking ? "high" :
+            (isLoopbackApiBaseUrl(baseUrl) ? "none" : "low");
         return root.toString();
     }
 

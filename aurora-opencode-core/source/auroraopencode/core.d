@@ -8,7 +8,7 @@ import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : environment;
-import std.string : strip;
+import std.string : strip, toLower;
 
 // ---------------------------------------------------------------------------
 // Shared defaults for the OpenAI-compatible opencode API mirror.
@@ -40,6 +40,25 @@ public immutable string[] defaultModels = [
     "google/gemini-3.8-flash",
     "tencent/hy3-paid"
 ];
+
+/// True for the conventional local OpenAI-compatible endpoints used by
+/// llama-server and similar desktop runtimes. Local servers normally do not
+/// require an API key and commonly use plain HTTP.
+public bool isLoopbackApiBaseUrl(string value)
+{
+    value = value.strip().toLower();
+    foreach (prefix; ["http://localhost", "http://127.0.0.1",
+        "http://[::1]", "https://localhost", "https://127.0.0.1",
+        "https://[::1]"])
+    {
+        if (value.length < prefix.length || value[0 .. prefix.length] != prefix)
+            continue;
+        if (value.length == prefix.length || value[prefix.length] == ':' ||
+            value[prefix.length] == '/')
+            return true;
+    }
+    return false;
+}
 
 private immutable string[] defaultKeyFileCandidates = [
     "C:/Users/Windows10_new/Documents/web_webserver/domains/opencode-api/data/key.txt",
@@ -582,6 +601,7 @@ private string readDefaultKeyFile()
 public Settings loadSettings()
 {
     Settings settings;
+    bool apiKeyWasConfigured;
     const path = buildPath(opencodeStateDirectory(), "settings.json");
     if (exists(path))
     {
@@ -595,7 +615,13 @@ public Settings loadSettings()
                         settings.baseUrl = found.str;
                 if (auto found = "apiKey" in value.object)
                     if (found.type == JSONType.string)
+                    {
                         settings.apiKey = found.str;
+                        // An explicitly blank key is meaningful for a local
+                        // llama-server. Do not silently replace it with the
+                        // user's unrelated CommandCode credential on restart.
+                        apiKeyWasConfigured = true;
+                    }
                 if (auto found = "model" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.model = found.str;
@@ -625,9 +651,11 @@ public Settings loadSettings()
             logError("failed to load settings: " ~ error.msg);
         }
     }
-    if (settings.apiKey.length == 0)
+    const allowBlankLocalKey = apiKeyWasConfigured &&
+        isLoopbackApiBaseUrl(settings.baseUrl);
+    if (!allowBlankLocalKey && settings.apiKey.length == 0)
         settings.apiKey = environment.get("OPENCODE_API_KEY");
-    if (settings.apiKey.length == 0)
+    if (!allowBlankLocalKey && settings.apiKey.length == 0)
         settings.apiKey = readDefaultKeyFile();
     if (settings.model.length == 0) settings.model = defaultModel;
     foreach (legacy; legacyBaseUrls)
