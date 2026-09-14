@@ -1322,10 +1322,9 @@ int main(string[] args)
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
         writeln("A turn's tools fold into one collapsible action group");
 
-    // Turn timer: the one action group header reports how long the turn ran —
-    // "Working for 0m 2s" while it is still live, "Worked for 0m 2s" once it
-    // settles — and the settled total freezes (later ticks must not keep adding
-    // seconds to a finished turn).
+    // Turn timer: Codex renders "Worked for …" as a horizontal completion
+    // boundary immediately ABOVE the final answer. It must not be embedded in
+    // an earlier action-group header, which reverses the visual relationship.
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Time this turn"]);
@@ -1345,29 +1344,49 @@ int main(string[] args)
         }
         assert(root.toolMessageCountForTesting() == 1,
             "timed tool did not produce a result");
-        // Advance the clock the way the frame tick does while the turn runs.
+        // The live action group describes only the action, never elapsed time.
         root.tickTree(2.1);
         auto timedHeaders = root.toolGroupHeaderTextsForTesting();
         assert(timedHeaders.length == 1 &&
-            timedHeaders[0].indexOf("Working for 0m 2s") >= 0,
-            "live action group is missing the running timer: " ~
+            timedHeaders[0].indexOf("Working for") < 0 &&
+            timedHeaders[0].indexOf("Worked for") < 0,
+            "elapsed time leaked into the action group: " ~
             (timedHeaders.length ? timedHeaders[0] : "(none)"));
         assert(driver.paint(), "Timed live action group did not paint");
-        // Completing the turn freezes the total (the settled value comes from
-        // the wall clock, so just require the past-tense header here).
+
+        // Stream the final answer, then settle the turn. The rebuild must place
+        // the completion boundary between the action group and this answer.
+        root.beginStreamForTesting();
+        root.streamContentForTesting("Done.");
         root.finishStreamForTesting();
-        auto doneHeaders = root.toolGroupHeaderTextsForTesting();
-        assert(doneHeaders.length == 1 &&
-            doneHeaders[0].indexOf("Worked for") >= 0,
-            "settled action group is missing the frozen timer: " ~
-            (doneHeaders.length ? doneHeaders[0] : "(none)"));
+        auto doneSeparators = root.turnCompletionTextsForTesting();
+        assert(doneSeparators.length == 1 &&
+            doneSeparators[0].indexOf("Worked for ") == 0,
+            "settled turn is missing its completion separator");
+        int groupIndex = -1;
+        int separatorIndex = -1;
+        int answerIndex = -1;
+        foreach (i, line; root.columnDebugForTesting())
+        {
+            if (line.indexOf("GROUP ") >= 0) groupIndex = cast(int) i;
+            if (line.indexOf("SEPARATOR Worked for ") >= 0)
+                separatorIndex = cast(int) i;
+            if (line.indexOf("bubble role=assistant") >= 0 &&
+                line.indexOf(`txt="Done."`) >= 0)
+                answerIndex = cast(int) i;
+        }
+        assert(groupIndex >= 0 && separatorIndex > groupIndex &&
+            answerIndex > separatorIndex,
+            "expected action group -> Worked for separator -> final answer");
         // More ticks must not change a finished turn's total.
         root.tickTree(5.0);
-        auto frozenHeaders = root.toolGroupHeaderTextsForTesting();
-        assert(frozenHeaders.length == 1 && frozenHeaders[0] == doneHeaders[0],
-            "the settled timer kept ticking: " ~ frozenHeaders[0] ~
-            " vs " ~ doneHeaders[0]);
-        writeln("Action group header times the turn and freezes at completion");
+        auto frozenSeparators = root.turnCompletionTextsForTesting();
+        assert(frozenSeparators.length == 1 &&
+            frozenSeparators[0] == doneSeparators[0],
+            "the settled timer kept ticking");
+        assert(driver.paint(), "Worked-for completion separator did not paint");
+        window.saveScreenshot(buildPath(toolShots, "worked-for-separator.ppm"));
+        writeln("Worked-for separator precedes final answer and freezes");
     }
 
     // Nesting: the tool results render as children of the assistant turn that

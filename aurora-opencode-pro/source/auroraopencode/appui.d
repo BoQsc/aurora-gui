@@ -2023,13 +2023,17 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
     return capitalizeFirst(summary);
 }
 
-/// Format an elapsed turn duration the way the action-group header shows it,
-/// e.g. "0m 3s" / "1m 07s" / "12m 04s". Whole seconds; never negative.
+/// Format an elapsed turn duration like Codex's completion separator: compact
+/// seconds below a minute, then zero-padded seconds ("8s", "1m 07s").
+/// Whole seconds; never negative.
 private string formatTurnDuration(double seconds)
 {
     if (seconds < 0) seconds = 0;
     const total = cast(long) seconds;
-    return to!string(total / 60) ~ "m " ~ to!string(total % 60) ~ "s";
+    if (total < 60) return to!string(total) ~ "s";
+    const remainder = total % 60;
+    return to!string(total / 60) ~ "m " ~
+        (remainder < 10 ? "0" : "") ~ to!string(remainder) ~ "s";
 }
 
 /// A vertical container that nests an assistant turn's tool results beneath it.
@@ -2349,7 +2353,61 @@ private final class ActivityRow : Widget
 }
 
 // ---------------------------------------------------------------------------
-// Context tool group (Pro): one foldable "Explored" row for a run of reads
+// Turn completion separator (Pro): Codex-style elapsed-work boundary
+// ---------------------------------------------------------------------------
+
+/// A durable boundary between the agent's working transcript and its final
+/// answer. Keeping this separate from ToolGroupBubble is important: putting
+/// "Worked for …" in an action header makes the elapsed time appear after the
+/// preceding prose instead of immediately above the answer it introduces.
+private final class TurnCompletionSeparator : Widget
+{
+    private static immutable int padH = 10;
+    private static immutable int height = 30;
+    private double _elapsedSeconds;
+
+    this(double elapsedSeconds)
+    {
+        _elapsedSeconds = elapsedSeconds < 0 ? 0 : elapsedSeconds;
+    }
+
+    string textForTesting() const
+    {
+        return "Worked for " ~ formatTurnDuration(_elapsedSeconds);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const available = maxInt(1, width - 2 * padH);
+        auto layout = canvas.layoutText(toUTF32(textForTesting()), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont, available, false);
+        const labelWidth = cast(int) layout.width;
+        const labelHeight = cast(int) layout.height;
+        const gap = 8;
+        const leadWidth = 20;
+        const centerY = height / 2;
+        const textX = padH + leadWidth + gap;
+        const textY = maxInt(0, (height - labelHeight) / 2);
+
+        canvas.fillRect(Rect(padH, centerY, leadWidth, 1), opencodeBorder);
+        canvas.drawLayout(Point(textX, textY), layout, opencodeMuted);
+        const tailX = textX + labelWidth + gap;
+        if (tailX < width - padH)
+            canvas.fillRect(Rect(tailX, centerY, width - padH - tailX, 1),
+                opencodeBorder);
+    }
+}
+
+// Action tool group (Pro): one foldable row for an assistant round's tools
 // ---------------------------------------------------------------------------
 
 /// A foldable group of consecutive context tool calls (Read / Glob / Grep),
@@ -2381,15 +2439,6 @@ private final class ToolGroupBubble : Widget
     // header reads in the present tense ("Editing a file, running commands")
     // and flips to the past tense once every tool has reported back.
     private bool _live;
-
-    // Turn clock, shown as the header prefix ("Worked for 0m 3s"). `timed` is
-    // false for a restored turn whose duration was never observed, so the
-    // header then carries only the action summary. `timing` keeps the clock
-    // running between column rebuilds; the root re-supplies the authoritative
-    // elapsed on every rebuild, so the ticking here never drifts.
-    private bool _timed;
-    private bool _timing;
-    private double _elapsedSeconds;
 
     // Optional persistence key so an expanded group stays expanded across the
     // many column rebuilds that happen while a reply streams.
@@ -2460,27 +2509,6 @@ private final class ToolGroupBubble : Widget
         invalidate();
     }
 
-    /// Attach the turn clock to the header. `live` keeps it running (the header
-    /// reads "Working for 0m 3s"); a settled group shows the frozen total
-    /// ("Worked for 0m 3s"). Called on every rebuild with the root's
-    /// authoritative elapsed so the clock cannot drift.
-    void setTiming(bool live, double elapsedSeconds)
-    {
-        _timed = true;
-        _timing = live;
-        _elapsedSeconds = elapsedSeconds < 0 ? 0 : elapsedSeconds;
-        invalidate();
-    }
-
-    protected override void onTick(double deltaSeconds)
-    {
-        if (!_timing) return;
-        const int before = cast(int) _elapsedSeconds;
-        _elapsedSeconds += deltaSeconds;
-        // Repaint only when the visible second changes.
-        if (cast(int) _elapsedSeconds != before) invalidate();
-    }
-
     private int headerHeight()
     {
         return opencodeFontBase + 2;
@@ -2488,13 +2516,8 @@ private final class ToolGroupBubble : Widget
 
     private string headerText() const
     {
-        const bool working = _timing || _live;
-        auto summary = actionGroupSummary(childToolNames(), working);
-        string head = summary;
-        if (_timed)
-            head = (working ? "Working for " : "Worked for ") ~
-                formatTurnDuration(_elapsedSeconds) ~ " · " ~ summary;
-        return (_collapsed ? "▸" : "▾") ~ " " ~ head;
+        auto summary = actionGroupSummary(childToolNames(), _live);
+        return (_collapsed ? "▸" : "▾") ~ " " ~ summary;
     }
 
     protected override Size onMeasure(Size available)
@@ -4640,8 +4663,24 @@ public final class OpenCodeRoot : VBox
                 }
             }
         }
-        // User turn id, so the first action group of the turn can carry the
-        // turn timer ("Worked for …"). Later rounds' groups stay untimed.
+        // Map every user turn to its last prose assistant message. Once a turn
+        // is settled, its elapsed-work separator belongs immediately before
+        // this final answer (and never inside an earlier action group).
+        size_t[string] finalAssistantByTurn;
+        string scannedTurn;
+        foreach (index; path)
+        {
+            const candidate = session.messages[index];
+            if (candidate.internal) continue;
+            if (candidate.role == "user")
+            {
+                scannedTurn = candidate.id;
+                continue;
+            }
+            if (scannedTurn.length > 0 && candidate.role == "assistant" &&
+                candidate.toolCalls.length == 0)
+                finalAssistantByTurn[scannedTurn] = index;
+        }
         string openTurn = "";
 
         // In-flight rows (streamed tool arguments, running tools, activity) and
@@ -4663,8 +4702,6 @@ public final class OpenCodeRoot : VBox
                 break;
             }
         bool liveRowsAdded = false;
-        bool turnTimingApplied = false;
-
         size_t slot = 0;
         while (slot < path.length)
         {
@@ -4681,13 +4718,10 @@ public final class OpenCodeRoot : VBox
                 continue;
             }
 
-            // A user prompt opens a new turn; its first action group carries the
-            // turn timer, later rounds' groups stay untimed.
+            // A user prompt opens a new turn. Its settled clock is rendered at
+            // the final-answer boundary below.
             if (message.role == "user")
-            {
                 openTurn = message.id;
-                turnTimingApplied = false;
-            }
 
             // Owned results render as children of their assistant turn.
             if (owner[slot] != size_t.max)
@@ -4698,6 +4732,15 @@ public final class OpenCodeRoot : VBox
 
             if (message.role == "assistant")
             {
+                if (openTurn.length > 0 && message.toolCalls.length == 0)
+                {
+                    auto finalIndex = openTurn in finalAssistantByTurn;
+                    auto duration = openTurn in _turnDurations;
+                    if (finalIndex !is null && *finalIndex == index &&
+                        duration !is null)
+                        _messageColumn.add(
+                            new TurnCompletionSeparator(*duration));
+                }
                 if (_streamBubble !is null &&
                     _streamBubble.messageIndex() == cast(int) index)
                 {
@@ -4744,13 +4787,6 @@ public final class OpenCodeRoot : VBox
                         group = addLiveToolRows(group, nest,
                             "assistant:" ~ session.messages[path[slot]].id);
                         liveRowsAdded = true;
-                    }
-                    // The turn timer rides on the turn's first action group.
-                    if (!turnTimingApplied && openTurn.length > 0 &&
-                        group !is null)
-                    {
-                        applyTurnTiming(group, openTurn);
-                        turnTimingApplied = true;
                     }
                     _messageColumn.add(nest);
                 }
@@ -5311,8 +5347,8 @@ public final class OpenCodeRoot : VBox
     {
         _preparingToolCalls.length = 0;
         clearActivity();
-        // The turn is over: freeze the header clock before the rebuild that
-        // settles the action group, so its header shows the final total.
+        // The turn is over: freeze its clock before rebuilding so the durable
+        // completion separator appears immediately above the final answer.
         freezeTurnTiming();
         if (_streamBubble !is null)
         {
@@ -6077,21 +6113,6 @@ public final class OpenCodeRoot : VBox
         _turnStartedAt = MonoTime.currTime;
         _turnUserId = activeTurnUserId(sessionIndex);
         _turnTiming = true;
-    }
-
-    /// Attach the turn clock (when one is known) to a freshly built action group
-    /// so its header reads "Worked for 0m 3s" instead of just the summary.
-    private void applyTurnTiming(ToolGroupBubble group, string turnId)
-    {
-        if (group is null || turnId.length == 0) return;
-        if (_turnTiming && turnId == _turnUserId)
-        {
-            group.setTiming(true,
-                (MonoTime.currTime - _turnStartedAt).total!"seconds");
-            return;
-        }
-        if (auto done = turnId in _turnDurations)
-            group.setTiming(false, *done);
     }
 
     private void startChatRequest(int sessionIndex, bool userTurn = true)
@@ -7962,8 +7983,8 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Test-only: start the turn clock exactly as a user-initiated request does,
-    /// so a smoke test can prove the action-group header times the turn without
-    /// a real network round-trip.
+    /// so a smoke test can prove the final-answer separator times the turn
+    /// without a real network round-trip.
     public void startTurnClockForTesting()
     {
         beginTurnTiming(_current);
@@ -8061,6 +8082,16 @@ public final class OpenCodeRoot : VBox
         return cast(int) messageColumnVisuals().length;
     }
 
+    /// Test-only: settled turn-boundary labels in transcript order.
+    public string[] turnCompletionTextsForTesting()
+    {
+        string[] texts;
+        foreach (child; messageColumnVisuals())
+            if (auto separator = cast(TurnCompletionSeparator) child)
+                texts ~= separator.textForTesting();
+        return texts;
+    }
+
     /// Test-only: one human-readable line per flattened transcript visual (id,
     /// role, hidden flag, whether it shows a Thinking header, content length,
     /// live/activity text, visibility and laid-out height), so a test can prove
@@ -8089,6 +8120,8 @@ public final class OpenCodeRoot : VBox
             else if (auto group = cast(ToolGroupBubble) child)
                 desc ~= "GROUP " ~ group.headerTextForTesting() ~
                     " parts=" ~ to!string(group.partCount());
+            else if (auto separator = cast(TurnCompletionSeparator) child)
+                desc ~= "SEPARATOR " ~ separator.textForTesting();
             else if (auto row = cast(LiveToolRow) child)
                 desc ~= "LIVEROW " ~ row.textForTesting();
             else if (auto act = cast(ActivityRow) child)
