@@ -352,6 +352,32 @@ struct Canvas
         if (_fonts is null) _fonts = FontSystem.sharedInstance();
         foreach (positioned; layout.glyphs)
         {
+            // A glyph whose face failed to resolve has nothing to draw from,
+            // and every branch below dereferences it. Skipping it loses one
+            // glyph; dereferencing it took the whole process down here. The
+            // frequency is logged once, because a layout that reaches this
+            // point has an inconsistency upstream that is worth seeing.
+            if (positioned.font is null)
+            {
+                version (Windows)
+                {
+                    import core.stdc.stdio : fclose, fflush, fopen, fwrite;
+                    static __gshared bool reported;
+                    if (!reported)
+                    {
+                        reported = true;
+                        const line = "aurora: drawLayout skipped a glyph with " ~
+                            "no font face\n";
+                        if (auto file = fopen("aurora-nullfont.log\0", "a"))
+                        {
+                            fwrite(line.ptr, 1, line.length, file);
+                            fflush(file);
+                            fclose(file);
+                        }
+                    }
+                }
+                continue;
+            }
             if (_drawList !is null)
             {
                 // Layout remains in 96-DPI logical units. Rasterize at the
