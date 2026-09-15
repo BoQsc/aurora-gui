@@ -3,6 +3,7 @@ module app;
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
+import auroraopencode.crashguard : installCrashHandler, runGuarded;
 import auroraopencode.logging : logLaunch;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
@@ -99,6 +100,15 @@ private Widget findById(Widget widget, string requestedId)
 int main(string[] args)
 {
     enableNativeTextRendering();
+    // Install before anything else so a crash during window/UI construction is
+    // still recorded in <stateDir>/logs/errors.log.
+    installCrashHandler();
+    return runGuarded(() => runApp(args));
+}
+
+/// The real entry point; wrapped by `main` so any uncaught Throwable is logged.
+private int runApp(string[] args)
+{
     if (args.length >= 3 && args[1] == "--screenshot")
         return runScreenshot(args[2], false, "");
     if (args.length >= 4 && args[1] == "--screenshot-chat")
