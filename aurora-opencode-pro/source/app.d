@@ -3,7 +3,8 @@ module app;
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
-import auroraopencode.crashguard : installCrashHandler, runGuarded;
+import auroraopencode.crashguard : installCrashHandler, runGuarded,
+    runResolveCrashMode;
 import auroraopencode.logging : logLaunch;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
@@ -103,6 +104,9 @@ int main(string[] args)
     // Install before anything else so a crash during window/UI construction is
     // still recorded in <stateDir>/logs/errors.log.
     installCrashHandler();
+    // `--resolve-crash` is how the crash handler asks a fresh copy of this
+    // build to name a faulting address while its symbols still match.
+    if (runResolveCrashMode(args)) return 0;
     return runGuarded(() => runApp(args));
 }
 

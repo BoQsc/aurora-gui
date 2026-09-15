@@ -11,6 +11,9 @@ if errorlevel 1 (
     exit /b 1
 )
 pushd "%~dp0" >nul
+echo Building the restart helper...
+REM See RUN-WINDOWS.bat: the app's Restart button uses this standalone tool.
+dub build --config=rebuilder --build=release >nul 2>nul
 echo Starting Aurora OpenCode with the software renderer...
 set AURORA_RENDERER=software
 dub run --build=release

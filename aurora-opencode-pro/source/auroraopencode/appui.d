@@ -3,6 +3,7 @@ module auroraopencode.appui;
 import aurora;
 import auroraopencode.core;
 import auroraopencode.logging : logError, setLogDirectory;
+import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
@@ -18,7 +19,10 @@ import std.algorithm : canFind;
 import std.array : appender;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : exists, mkdirRecurse, readText, thisExePath, write;
+// `remove` is aliased because this module's widget base class declares its own
+// `remove(Widget child)`, which otherwise wins name lookup inside the class.
+import std.file : exists, fileRemove = remove, mkdirRecurse, readText, rename,
+    thisExePath, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
@@ -4638,6 +4642,11 @@ public final class OpenCodeRoot : VBox
 
     private void rebuildMessageColumn()
     {
+        // A full message-column rebuild is the heaviest thing the UI does and
+        // the most likely place for a fault, so record it before the work. A
+        // crash here then names this step rather than leaving only an address.
+        noteActivity("rebuildMessageColumn sessions=" ~ to!string(_sessions.length) ~
+            " current=" ~ to!string(_current));
         // A rebuild discards the column's children; detach the two reused
         // widgets first so a nested parent (a turn container) does not leave
         // them attached and reporting visible after they are dropped.
@@ -7279,10 +7288,30 @@ public final class OpenCodeRoot : VBox
         }
         catch (Exception error)
         {
-            logError("restore sessions failed: " ~ error.msg);
-            _sessions.length = 0;
-            _current = -1;
+            // Sessions are appended one at a time as they parse, so a failure
+            // part-way through still leaves the earlier ones in `_sessions`.
+            // Clearing the list here would turn one unreadable byte into the
+            // loss of every conversation, so keep what parsed and move the
+            // unreadable file aside instead.
+            logError("restore sessions failed after " ~
+                to!string(_sessions.length) ~ " sessions: " ~ error.msg);
+            quarantineSessionsFile(path);
         }
+    }
+
+    /// Move an unreadable sessions file aside so the next launch starts clean
+    /// without destroying the bytes that caused the failure.
+    private void quarantineSessionsFile(string path)
+    {
+        const broken = path ~ ".bad";
+        try
+        {
+            if (exists(broken)) fileRemove(broken);
+            rename(path, broken);
+            logError("unreadable sessions file moved to " ~ broken);
+        }
+        catch (Exception moveError)
+            logError("could not move the sessions file aside: " ~ moveError.msg);
     }
 
     // -- tick -------------------------------------------------------------

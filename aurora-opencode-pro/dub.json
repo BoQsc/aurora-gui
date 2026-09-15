@@ -18,6 +18,30 @@
       "path": "../aurora-opencode-core"
     }
   },
+  "configurations": [
+    {
+      "name": "application",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-pro",
+      "mainSourceFile": "source/app.d"
+    },
+    {
+      "name": "rebuilder",
+      "targetType": "executable",
+      "targetName": "aurora-rebuilder",
+      "mainSourceFile": "tools/rebuilder.d",
+      "sourcePaths": [
+        "tools"
+      ],
+      "excludedSourceFiles": [
+        "source/**"
+      ],
+      "targetPath": "bin",
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE"
+      ]
+    }
+  ],
   "libs-windows": [
     "user32",
     "gdi32",

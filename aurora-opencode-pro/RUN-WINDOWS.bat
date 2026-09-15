@@ -11,6 +11,11 @@ if errorlevel 1 (
     exit /b 1
 )
 pushd "%~dp0" >nul
+echo Building the restart helper...
+REM The app's Restart button hands the rebuild to this standalone tool, so it
+REM has to exist before the app needs it. Failure here is not fatal: the app
+REM falls back to its generated PowerShell helper.
+dub build --config=rebuilder --build=release >nul 2>nul
 echo Starting Aurora OpenCode...
 dub run --build=release
 set "code=%errorlevel%"

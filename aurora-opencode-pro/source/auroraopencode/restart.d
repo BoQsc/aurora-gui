@@ -200,8 +200,50 @@ string restartScript(in RestartPlan plan)
 /// The argv for the detached helper process.
 string[] restartHelperArgv(in RestartPlan plan)
 {
-    const script = helperScriptOverride.length > 0
-        ? helperScriptOverride : restartScript(plan);
+    // Tests replace the helper body directly.
+    if (helperScriptOverride.length > 0)
+        return scriptArgv(helperScriptOverride);
+    // Prefer the standalone rebuilder when it has been built. It needs no
+    // PowerShell, no inline script and no quoting, and it keeps working when
+    // the UI it is rebuilding is broken - which is exactly when a restart is
+    // wanted. The generated script below remains as the fallback for a tree
+    // where the tool has not been built yet.
+    const helper = rebuilderPath(plan);
+    if (helper.length > 0)
+        return rebuilderArgv(plan, helper);
+    return scriptArgv(restartScript(plan));
+}
+
+/// The standalone rebuilder's location: `bin/aurora-rebuilder.exe` in the
+/// package directory, or "" when it has not been built.
+string rebuilderPath(in RestartPlan plan)
+{
+    if (plan.workingDir.length == 0) return "";
+    const candidate = buildPath(plan.workingDir, "bin", "aurora-rebuilder.exe");
+    return exists(candidate) ? candidate : "";
+}
+
+private string[] rebuilderArgv(in RestartPlan plan, string helper)
+{
+    string[] argv = [helper, "--exe", plan.exePath];
+    if (plan.workingDir.length > 0)
+        argv ~= ["--dir", plan.workingDir];
+    if (plan.logPath.length > 0)
+        argv ~= ["--log", plan.logPath];
+    argv ~= ["--pid", to!string(plan.waitPid)];
+    // `--run` keeps the restarted app as the helper's child, so the helper can
+    // record how it ended. A fail-fast death (heap corruption, stack cookie,
+    // abort) never reaches the app's own exception filter, so the app cannot
+    // report it and the log stops mid-sentence; the exit code seen by the
+    // parent is the only record of those.
+    argv ~= "--run";
+    if (!plan.rebuild)
+        argv ~= "--no-rebuild";
+    return argv;
+}
+
+private string[] scriptArgv(string script)
+{
     version (Windows)
         return ["powershell", "-NoProfile", "-NonInteractive",
             "-WindowStyle", "Hidden", "-Command", script];

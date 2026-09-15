@@ -1,9 +1,10 @@
 module auroraopencode.logging;
 
+import core.stdc.stdio : fclose, fflush, fopen, fwrite;
 import core.sync.mutex : Mutex;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : append, mkdirRecurse;
+import std.file : mkdirRecurse;
 import std.path : buildPath;
 
 // ---------------------------------------------------------------------------
@@ -56,20 +57,38 @@ private void writeLine(string level, string message)
     _logMutex.lock();
     scope (exit) _logMutex.unlock();
     if (_logsDir.length == 0) return;
+    // Each entry is appended and flushed before the handle closes. The point
+    // of this file is to outlive a crash, so the write must not be left in a
+    // buffer: the entry written just before a crash is the one that says what
+    // the process was doing when it died.
     try
     {
         try mkdirRecurse(_logsDir);
         catch (Exception) {}
-        auto now = Clock.currTime;
-        string pad2(int value)
-        {
-            return value < 10 ? "0" ~ to!string(value) : to!string(value);
-        }
-        const stamp = to!string(now.year) ~ "-" ~ pad2(cast(int) now.month) ~
-            "-" ~ pad2(now.day) ~ " " ~ pad2(now.hour) ~ ":" ~
-            pad2(now.minute) ~ ":" ~ pad2(now.second);
-        append(buildPath(_logsDir, "errors.log"),
-            stamp ~ " [" ~ level ~ "] " ~ message ~ "\n");
+        auto file = fopen((logFilePath() ~ "\0").ptr, "ab");
+        if (file is null) return;
+        scope (exit) fclose(file);
+        const line = timestamp() ~ " [" ~ level ~ "] " ~ message ~ "\n";
+        fwrite(line.ptr, 1, line.length, file);
+        fflush(file);
     }
-    catch (Exception) {}
+    catch (Throwable) {}
+}
+
+/// The file every entry is appended to.
+private string logFilePath()
+{
+    return buildPath(_logsDir, "errors.log");
+}
+
+private string timestamp()
+{
+    auto now = Clock.currTime;
+    string pad2(int value)
+    {
+        return value < 10 ? "0" ~ to!string(value) : to!string(value);
+    }
+    return to!string(now.year) ~ "-" ~ pad2(cast(int) now.month) ~
+        "-" ~ pad2(now.day) ~ " " ~ pad2(now.hour) ~ ":" ~
+        pad2(now.minute) ~ ":" ~ pad2(now.second);
 }
