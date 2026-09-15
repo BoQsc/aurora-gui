@@ -903,8 +903,27 @@ final class TextLayoutEngine
         }
         lineClusters.sort!((a, b)
         {
-            if (a.xMin != b.xMin) return a.xMin < b.xMin;
-            if (a.xMax != b.xMax) return a.xMax < b.xMax;
+            // Coordinates must be compared through a NaN-safe key. A NaN is
+            // neither less than, equal to, nor greater than any value, so the
+            // raw comparisons below make the ordering non-transitive: with one
+            // NaN present, a < b and b < a can both be false while a and b
+            // differ from other members inconsistently. `sort` requires a
+            // strict weak ordering and computes its partition indices from
+            // that assumption, so an inconsistent comparator drives it past the
+            // end of the array - which surfaced as an ArrayIndexError deep in
+            // quicksort, aborting the whole app mid-paint. Treating an unknown
+            // coordinate as furthest right keeps the order total.
+            import std.math : isNaN;
+            double minKey(double value)
+            {
+                return isNaN(value) ? double.infinity : value;
+            }
+            const aMin = minKey(a.xMin);
+            const bMin = minKey(b.xMin);
+            if (aMin != bMin) return aMin < bMin;
+            const aMax = minKey(a.xMax);
+            const bMax = minKey(b.xMax);
+            if (aMax != bMax) return aMax < bMax;
             return a.logicalStart < b.logicalStart;
         });
         result.visualClusters ~= lineClusters;

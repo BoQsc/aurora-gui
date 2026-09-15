@@ -774,7 +774,19 @@ private final class MessageBubble : Widget
         options.maxWidth = maxInt(1, width);
         options.wrap = true;
         ++shapeCount;
-        return fontSystem().textEngine.layout(text, options);
+        // Shaping a bubble is the deepest and most fragile work the UI does,
+        // and it runs inside a paint. An `Error` escaping here aborts the whole
+        // process - a malformed message could take the app down while the user
+        // was simply reading it. A bubble that cannot be shaped returns no
+        // layout: the text is not drawn, the app stays up, and the reason is
+        // recorded.
+        try
+            return fontSystem().textEngine.layout(text, options);
+        catch (Throwable error)
+        {
+            logError("message shaping failed: " ~ error.toString());
+            return null;
+        }
     }
 
     /// Width of the right-aligned user bubble: capped at ~68% of the column so
@@ -3799,7 +3811,10 @@ public final class OpenCodeRoot : VBox
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
-        if (_stateDirty) persistState();
+        // Persist on the way out regardless of the debounce flag: a reply that
+        // arrived moments before the window closed is otherwise lost, which is
+        // why the last message could vanish across a restart.
+        persistState();
         _client.closeSession();
     }
 
@@ -7077,12 +7092,45 @@ public final class OpenCodeRoot : VBox
             list.array ~= sessionToJson(session);
         root["sessions"] = list;
         root["current"] = _current;
-        try write(buildPath(opencodeStateDirectory(), "sessions.json"),
-            root.toString());
+        const path = buildPath(opencodeStateDirectory(), "sessions.json");
+        try writeFileAtomically(path, root.toString());
         catch (Exception error)
         {
             logError("persist sessions failed: " ~ error.msg);
         }
+    }
+
+    /**
+     * Replace a file's contents without ever leaving it half-written.
+     *
+     * A plain write truncates first, so being killed part-way through leaves a
+     * truncated file - which is how a crash or a restart could cost the whole
+     * conversation history: the next start read the partial file, failed to
+     * parse it, and (before that was fixed) discarded every session. Writing to
+     * a temporary file and renaming it over the target makes the replacement
+     * atomic: the target is either the old file or the new one, never a
+     * fragment of either. The previous contents are kept as `.bak` so a damaged
+     * primary still has a readable fallback.
+     */
+    private static void writeFileAtomically(string path, string contents)
+    {
+        const temporary = path ~ ".tmp";
+        write(temporary, contents);
+        if (exists(path))
+        {
+            const backup = path ~ ".bak";
+            try
+            {
+                if (exists(backup)) fileRemove(backup);
+                rename(path, backup);
+            }
+            catch (Exception)
+            {
+                // A missing backup is not a reason to fail the save; the
+                // rename below still replaces the primary.
+            }
+        }
+        rename(temporary, path);
     }
 
     private static JSONValue sessionToJson(const ref ChatSession session)

@@ -191,9 +191,16 @@ private void resolvePreviousCrashImpl(StackTrace)() nothrow
         // banner, and skip anything already resolved.
         const tail = text[index .. $];
         // Skip a crash that has already been dealt with, so an old entry does
-        // not re-report on every launch and bury the next real one.
+        // not re-report on every launch and bury the next real one. The
+        // unhandled-death variants are included because the most recent crash
+        // is not always a native one: an uncaught `Error` carries its own
+        // symbolized trace, and leaving it unrecognised made the warning below
+        // repeat at every startup.
         if (tail.indexOf("crash resolver:") >= 0 ||
-            tail.indexOf("native fault stack") >= 0)
+            tail.indexOf("previous crash resolved:") >= 0 ||
+            tail.indexOf("previous crash was from build") >= 0 ||
+            tail.indexOf("native fault stack") >= 0 ||
+            tail.indexOf("uncaught ") >= 0)
             return;
         const at = tail.indexOf(crashAddressMarker);
         if (at < 0) return;
