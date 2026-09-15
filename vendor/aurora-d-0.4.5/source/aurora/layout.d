@@ -94,7 +94,13 @@ class Box : Panel
     {
         Widget[] visibleChildren;
         foreach (child; children())
-            if (child.visible() && !child.layoutHints().excludeFromLayout)
+            // A null entry must not reach this loop. Measuring runs inside a
+            // paint, so dereferencing one here takes the whole process down
+            // rather than failing a layout, and the fault names only this line,
+            // saying nothing about how the null entered the child list.
+            // Skipping it keeps the tree measurable.
+            if (child !is null && child.visible() &&
+                !child.layoutHints().excludeFromLayout)
                 visibleChildren ~= child;
 
         const horizontal = _orientation == Orientation.horizontal;

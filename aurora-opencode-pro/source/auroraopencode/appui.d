@@ -22,7 +22,7 @@ import std.datetime : Clock;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
 import std.file : exists, fileRemove = remove, mkdirRecurse, readText, rename,
-    thisExePath, write;
+    thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
@@ -7075,7 +7075,49 @@ public final class OpenCodeRoot : VBox
     {
         _stateDirty = true;
         _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
+        // A copy is written the instant state changes, ahead of the debounced
+        // save and independent of any orderly shutdown. The app can die from a
+        // fault that no handler sees, so the conversation on disk must always
+        // already be current rather than waiting for a shutdown that may never
+        // run. This is the data the next start restores.
+        persistRecoveryState();
     }
+
+    /**
+     * Write the newest state to the durable copy the next start reads.
+     *
+     * Kept deliberately separate from `persistState`: this one runs at the
+     * moment a message changes, so it must not do anything that can block or
+     * throw into the UI path. A failure here is logged and dropped, leaving
+     * the previous copy - and the debounced save - as the fallback.
+     */
+    private void persistRecoveryState()
+    {
+        if (_recoveryBlocked) return;
+        try
+        {
+            ensureStateDirectory();
+            JSONValue root;
+            JSONValue list = JSONValue(string[].init);
+            foreach (session; _sessions)
+                list.array ~= sessionToJson(session);
+            root["sessions"] = list;
+            root["current"] = _current;
+            writeFileAtomically(
+                buildPath(opencodeStateDirectory(), "sessions.recovery.json"),
+                root.toString());
+        }
+        catch (Throwable error)
+        {
+            // One failure disables the copy for this run rather than letting a
+            // broken path retry on every message.
+            _recoveryBlocked = true;
+            try logError("recovery save failed: " ~ error.toString());
+            catch (Throwable) {}
+        }
+    }
+
+    private bool _recoveryBlocked;
 
     private void saveSettingsNow()
     {
@@ -7208,7 +7250,15 @@ public final class OpenCodeRoot : VBox
     private void restoreSessions()
     {
         _sessions.length = 0;
-        const path = buildPath(opencodeStateDirectory(), "sessions.json");
+        string path = buildPath(opencodeStateDirectory(), "sessions.json");
+        // Prefer the per-message recovery copy when it is newer than the last
+        // debounced save: that means the process died before it could write
+        // the primary file, and the recovery copy is the more complete one.
+        const recovery = buildPath(opencodeStateDirectory(),
+            "sessions.recovery.json");
+        if (exists(recovery) &&
+            (!exists(path) || timeLastModified(recovery) > timeLastModified(path)))
+            path = recovery;
         if (!exists(path)) return;
         try
         {

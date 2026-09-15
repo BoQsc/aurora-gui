@@ -47,26 +47,6 @@ private struct Options
     /// Launch the app as a child and wait for it, recording how it ended
     /// instead of detaching. See `runAndReport`.
     bool run;
-    /// Launch the app now and rebuild when it exits; see `--reopen`.
-    bool reopen;
-}
-
-/// Delete leftover symbol/sidecar files from a previous build.
-///
-/// They are only meaningful for the build that produced them, and leaving them
-/// beside a fresh .exe makes the app's startup symbol audit report a mismatch
-/// that no longer describes anything real.
-private void purgeStaleSymbols(in Options options)
-{
-    if (options.exePath.length == 0) return;
-    auto stem = options.exePath[0 .. $ - 4]; // drop ".exe"
-    foreach (ext; [".exe.trace", ".map"])
-    {
-        const stale = stem ~ ext;
-        if (exists(stale))
-            try remove(stale);
-            catch (Exception) {}
-    }
 }
 
 /// Name a process exit code. `0xC0000005` and friends are the exception codes
@@ -152,7 +132,6 @@ private Options parseArgs(string[] args)
         else if (arg == "--build") options.buildType = take();
         else if (arg == "--no-rebuild") options.rebuild = false;
         else if (arg == "--run") options.run = true;
-        else if (arg == "--reopen") options.reopen = true;
         else if (arg == "--pid")
         {
             const value = take();
@@ -260,40 +239,12 @@ int main(string[] args)
             "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--run]");
         stderr.writeln("  --run      launch the app as a child and record its " ~
             "exit code (names fail-fast deaths the app cannot report)");
-        stderr.writeln("  --reopen   relaunch the app now, then rebuild when " ~
-            "it exits: lets an already-running app trigger a rebuild");
         return 2;
     }
 
     if (options.waitPid != 0)
         appendLine(options.logPath, "waiting for process " ~
             to!string(options.waitPid) ~ " to exit");
-
-    if (options.reopen)
-    {
-        // Launch the app (or a second copy of it) now, then rebuild the moment
-        // that process ends. On the next start the new build is in place.
-        // Stale symbols from the previous build are removed first, so the
-        // app's startup audit does not report a mismatch that no longer means
-        // anything.
-        appendLine(options.logPath, "reopen: launching the app before rebuilding");
-        if (!launchApp(options))
-        {
-            appendLine(options.logPath, "reopen: launch failed; rebuilding anyway");
-        }
-        Thread.sleep(2.seconds);
-        if (!waitForUnlock(options.exePath, options.timeoutSeconds))
-        {
-            appendLine(options.logPath, "reopen: app did not exit; rebuild aborted");
-            return 0;
-        }
-        purgeStaleSymbols(options);
-        appendLine(options.logPath, "reopen: app exited; rebuilding");
-        const rebuilt = runBuild(options);
-        appendLine(options.logPath, rebuilt ? "rebuild complete; relaunching"
-            : "rebuild FAILED");
-        return launchApp(options) ? 0 : 1;
-    }
 
     if (!waitForUnlock(options.exePath, options.timeoutSeconds))
     {

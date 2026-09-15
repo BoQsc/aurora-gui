@@ -1,23 +1,25 @@
 @echo off
+REM Start Aurora OpenCode under the watchdog.
+REM
+REM There is exactly one place that builds this app: the in-app Restart button,
+REM which hands the work to bin\aurora-rebuilder.exe. This launcher therefore
+REM does not build anything itself - doing so was a second copy of the same
+REM operation that could disagree with the first.
+REM
+REM The app is started as the rebuilder's child (--run) rather than directly,
+REM because a fail-fast death (heap corruption, stack cookie, abort) never
+REM reaches the app's exception filter: the app cannot report it, and the log
+REM just stops. Only a parent sees the exit code, and that code names the
+REM cause. Remove --run to launch the app unwatched.
 setlocal
-set "repo=%~dp0.."
-if not exist "%repo%\vendor\aurora-d-0.4.5\dub.json" (
-    echo ERROR: Aurora-D package was not found at "%repo%\vendor\aurora-d-0.4.5".
-    exit /b 1
-)
-where dub >nul 2>nul
-if errorlevel 1 (
-    echo ERROR: DUB was not found on PATH. Install DMD or LDC with DUB first.
-    exit /b 1
-)
 pushd "%~dp0" >nul
-echo Building the restart helper...
-REM The app's Restart button hands the rebuild to this standalone tool, so it
-REM has to exist before the app needs it. Failure here is not fatal: the app
-REM falls back to its generated PowerShell helper.
-dub build --config=rebuilder --build=release >nul 2>nul
+if not exist "bin\aurora-rebuilder.exe" (
+    echo ERROR: bin\aurora-rebuilder.exe is missing.
+    echo Build it once with: dub build --config=rebuilder --build=release
+    popd >nul
+    exit /b 1
+)
 echo Starting Aurora OpenCode...
-dub run --build=release
-set "code=%errorlevel%"
+bin\aurora-rebuilder.exe --exe "%~dp0aurora-opencode-pro.exe" --dir "%~dp0." --log "%APPDATA%\Aurora OpenCode\restart.log" --no-rebuild --run
 popd >nul
-exit /b %code%
+exit /b %errorlevel%

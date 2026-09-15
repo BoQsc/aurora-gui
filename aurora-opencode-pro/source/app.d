@@ -131,7 +131,11 @@ private int runApp(string[] args)
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
     logLaunch("Aurora OpenCode Pro");
-    const exitCode = window.run();
-    root.shutdownClient();
-    return exitCode;
+    // Shut down on every exit path, not just a clean window close. An
+    // uncaught `Error` unwinds straight past the code after `run()` and lands
+    // in `runGuarded`, so the state was never written whenever the app died
+    // mid-conversation - the reason the last message was missing after a
+    // restart. `scope (exit)` runs on the error path too.
+    scope (exit) root.shutdownClient();
+    return window.run();
 }

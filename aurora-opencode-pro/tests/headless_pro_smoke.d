@@ -14,7 +14,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
     parseMarkdown;
-import auroraopencode.restart : planRestart, restartScriptForTesting;
+import auroraopencode.restart : planRestart, restartHelperArgv;
 import auroraopencode.tools : previewToolDiff;
 import core.time : msecs, seconds;
 import core.thread : Thread;
@@ -2463,17 +2463,29 @@ int main(string[] args)
             "the packaged build should be able to rebuild itself");
         auto restartPlan = planRestart(stateDir, true, 12345,
             buildPath(stateDir, "package", "aurora-opencode-pro.exe"));
+        // Restart hands the work to the standalone rebuilder, so the argv it
+        // would spawn is what is inspected: one implementation, one caller.
         auto scriptedPlan = restartPlan;
-        // The synthetic executable has no recipe ancestor; point the plan at
-        // the real package solely for deterministic script inspection.
         scriptedPlan.workingDir = buildPath("C:\\", "repo with spaces");
-        const restartScript = restartScriptForTesting(scriptedPlan);
-        assert(restartScript.indexOf(
-                "dub run --build=release --force") >= 0,
-            "Restart must let DUB rebuild and launch the app: " ~
-            restartScript);
-        assert(restartScript.indexOf("dub build --build=release") < 0,
-            "Restart still separates build from launch");
+        const helperArgv = restartHelperArgv(scriptedPlan);
+        if (helperArgv.length > 0)
+        {
+            const helperLine = helperArgv.join(" ");
+            assert(helperLine.indexOf("aurora-rebuilder.exe") >= 0,
+                "Restart must use the standalone rebuilder: " ~ helperLine);
+            assert(helperLine.indexOf("--rebuild") < 0 &&
+                helperLine.indexOf("--no-rebuild") < 0,
+                "a rebuild was requested, so no --no-rebuild flag belongs " ~
+                "in the argv: " ~ helperLine);
+            assert(helperLine.indexOf("repo with spaces") >= 0,
+                "the package directory must be passed through verbatim: " ~
+                helperLine);
+            assert(helperLine.indexOf("--run") >= 0,
+                "the relaunched app is watched so its exit code is " ~
+                "recorded: " ~ helperLine);
+        }
+        else
+            writeln("Restart helper not built; argv inspection skipped");
         writeln("Restart button present; rebuild-in-place available");
     }
 
