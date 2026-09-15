@@ -26,10 +26,12 @@ module rebuilder;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
-import std.file : append, exists, mkdirRecurse, remove;
+import std.datetime : Clock;
+import std.file : append, exists, mkdirRecurse, readText;
 import std.path : buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
+import std.string : indexOf, lastIndexOf, strip;
 
 private struct Options
 {
@@ -47,6 +49,108 @@ private struct Options
     /// Launch the app as a child and wait for it, recording how it ended
     /// instead of detaching. See `runAndReport`.
     bool run;
+    /// Keep the app running: relaunch it after an unexpected exit rather than
+    /// leaving the user with nothing. See `superviseApp`.
+    bool supervise;
+    /// Give up after this many unexpected exits, so a crash at startup does
+    /// not become an endless restart loop.
+    int maxRestarts = 5;
+}
+
+/// Where unexpected exits are summarised, alongside the app's own log.
+private string notePath(in Options options)
+{
+    if (options.logPath.length == 0) return "";
+    return buildPath(dirName(options.logPath), "unexpected-exits.log");
+}
+
+/**
+ * Record an unexpected exit in one place, in a form meant to be read.
+ *
+ * The crash handler, when it runs at all, writes into the app's log among
+ * hundreds of ordinary lines. This file holds only the events that ended the
+ * app without being asked to, newest last, so the question "what happened
+ * while I was not looking" has a short answer.
+ */
+private void noteUnexpectedExit(in Options options, int code, int restartNumber)
+{
+    const path = notePath(options);
+    if (path.length == 0) return;
+    string text;
+    text ~= "\n=== unexpected exit ===\n";
+    text ~= "time:        " ~ to!string(Clock.currTime) ~ "\n";
+    text ~= "exit code:   " ~ to!string(code) ~ " (" ~ hex(cast(uint) code) ~
+        ": " ~ describeExitCode(code) ~ ")\n";
+    text ~= "restart:     " ~ to!string(restartNumber) ~ " of " ~
+        to!string(options.maxRestarts) ~ "\n";
+    text ~= "executable:  " ~ options.exePath ~ "\n";
+    text ~= "activity:    " ~ recentActivity(options) ~ "\n";
+    appendLine(path, text);
+    // Mirrored into the app's log as a single line, so the two files agree on
+    // when the app went down.
+    appendLine(options.logPath, "unexpected exit " ~ to!string(code) ~ " (" ~
+        describeExitCode(code) ~ "); restarting");
+}
+
+/**
+ * The last `activity:` marker the app wrote, which names the step it was
+ * executing when it died. The app records these precisely because a native
+ * fault carries no trace of its own.
+ */
+private string recentActivity(in Options options)
+{
+    if (options.logPath.length == 0 || !exists(options.logPath)) return "unknown";
+    try
+    {
+        const text = readText(options.logPath);
+        const index = text.lastIndexOf("activity: ");
+        if (index < 0) return "none recorded";
+        auto tail = text[index + "activity: ".length .. $];
+        const stop = tail.indexOf('\n');
+        if (stop >= 0) tail = tail[0 .. stop];
+        return strip(tail);
+    }
+    catch (Exception)
+        return "unreadable";
+}
+
+/**
+ * Run the app, and run it again if it stops without being asked to.
+ *
+ * A clean exit code means the window was closed on purpose and the supervisor
+ * stops there. Anything else is an unexpected end - a crash, a fail-fast
+ * abort, a kill - and leaving the app closed makes the user the one who has to
+ * notice and restart it. Instead it is restarted, the event is written to
+ * `unexpected-exits.log` with the exit code and the last recorded activity,
+ * and the cycle repeats up to `maxRestarts` times so a permanent fault cannot
+ * spin forever.
+ */
+private int superviseApp(in Options options)
+{
+    int restart = 0;
+    while (true)
+    {
+        const code = runAndReport(options);
+        if (code == 0)
+        {
+            appendLine(options.logPath, "clean exit; supervisor stopping");
+            return 0;
+        }
+        ++restart;
+        noteUnexpectedExit(options, code, restart);
+        if (restart > options.maxRestarts)
+        {
+            appendLine(options.logPath, "giving up after " ~
+                to!string(options.maxRestarts) ~ " unexpected exits; see " ~
+                notePath(options));
+            return code;
+        }
+        // A short pause keeps a fault that fires during startup from filling
+        // the disk with process launches.
+        Thread.sleep(2.seconds);
+        appendLine(options.logPath, "restarting (" ~ to!string(restart) ~ "/" ~
+            to!string(options.maxRestarts) ~ ")");
+    }
 }
 
 /// Name a process exit code. `0xC0000005` and friends are the exception codes
@@ -132,6 +236,13 @@ private Options parseArgs(string[] args)
         else if (arg == "--build") options.buildType = take();
         else if (arg == "--no-rebuild") options.rebuild = false;
         else if (arg == "--run") options.run = true;
+        else if (arg == "--supervise") options.supervise = true;
+        else if (arg == "--max-restarts")
+        {
+            const value = take();
+            try options.maxRestarts = to!int(value);
+            catch (Exception) {}
+        }
         else if (arg == "--pid")
         {
             const value = take();
@@ -236,9 +347,12 @@ int main(string[] args)
     {
         stderr.writeln("usage: aurora-rebuilder --exe <app.exe> " ~
             "[--dir <packageDir>] [--log <logPath>] [--pid <pid>] " ~
-            "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--run]");
+            "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--run] " ~
+            "[--supervise] [--max-restarts <n>]");
         stderr.writeln("  --run      launch the app as a child and record its " ~
             "exit code (names fail-fast deaths the app cannot report)");
+        stderr.writeln("  --supervise  run the app and reopen it after an " ~
+            "unexpected exit, recording what happened in unexpected-exits.log");
         return 2;
     }
 
@@ -268,6 +382,7 @@ int main(string[] args)
         appendLine(options.logPath, "rebuild skipped; relaunching as built");
 
     appendLine(options.logPath, "relaunching " ~ options.exePath);
+    if (options.supervise) return superviseApp(options);
     if (options.run) return runAndReport(options);
     return launchApp(options) ? 0 : 1;
 }

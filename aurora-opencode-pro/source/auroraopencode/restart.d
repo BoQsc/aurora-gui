@@ -90,11 +90,12 @@ string[] restartHelperArgv(in RestartPlan plan)
         argv ~= ["--log", plan.logPath];
     argv ~= ["--pid", to!string(plan.waitPid)];
     // `--run` keeps the restarted app as the helper's child, so the helper can
-    // record how it ended. A fail-fast death (heap corruption, stack cookie,
-    // abort) never reaches the app's own exception filter, so the app cannot
-    // report it and the log stops mid-sentence; the exit code seen by the
-    // parent is the only record of those.
+    // record how it ended; `--supervise` also brings it back after an
+    // unexpected exit and notes the event. The exit code matters because a
+    // fail-fast death never reaches the app's own exception filter, so the
+    // app cannot report it and the log stops mid-sentence.
     argv ~= "--run";
+    argv ~= "--supervise";
     if (!plan.rebuild)
         argv ~= "--no-rebuild";
     return argv;
