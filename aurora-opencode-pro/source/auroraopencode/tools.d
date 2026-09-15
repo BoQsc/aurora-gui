@@ -63,22 +63,22 @@ private string shellUsageNotes(string shell)
             "read/write/glob/grep tools for file access.";
 }
 
-/// The D-native `dshell` tool definition, shared by both tool sets: it covers
-/// the plain directory-introspection operations with short natural-English
-/// words (`where`, `list`, `info`) so conversations stay easy to read. The
-/// schema only advertises the natural words; the legacy abbreviations
-/// (pwd/ls/dir/stat) are still accepted by the dispatcher as a safety net so
-/// calls never fail, but they are deliberately not taught to the model.
+/// The D-native `dshell` tool definition. It exposes short natural-English
+/// operations while legacy abbreviations remain accepted by the dispatcher for
+/// saved conversations. `list` also supports recursive and filtered discovery,
+/// making dshell the one primary model-facing workspace navigator.
 private OpenCodeToolDef dshellToolDefinition()
 {
     return OpenCodeToolDef(
         "dshell",
         "A tiny shell implemented natively in this application (no external " ~
-        "shell). Use short natural words: `where` prints the workspace path, " ~
-        "`list` shows a directory with types and sizes, and `info` shows " ~
-        "file/directory metadata. Prefer this over the bash/cmd/powershell " ~
-        "tool for these operations.",
-        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info"],"description":"The operation: where (workspace path), list (directory listing), info (file metadata)"},"path":{"type":"string","description":"Optional path (relative to the workspace or absolute); defaults to the workspace"}},"required":["command"]}`
+        "shell). `where` prints the workspace path when specifically needed, " ~
+        "`list` discovers files and " ~
+        "directories (optionally recursively or by glob pattern), and `info` " ~
+        "shows metadata. `list` and `info` already return their resolved path, " ~
+        "so do not pair them with `where`. This is the primary tool for " ~
+        "navigating a workspace.",
+        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info"],"description":"Operation: where (workspace path), list (directory discovery), or info (metadata)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"}},"required":["command"]}`
     );
 }
 
@@ -178,13 +178,6 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
         ),
         OpenCodeToolDef(
-            "glob",
-            "List files and directories under a directory matching a glob " ~
-            "pattern (e.g. **/*.d). Defaults to the workspace; set `path` " ~
-            "when the user's target is another directory.",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
-        ),
-        OpenCodeToolDef(
             "grep",
             "Search file contents under a directory with a regular expression. " ~
             "Defaults to the workspace; set `path` when the user's target is " ~
@@ -207,7 +200,10 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "Execute a program directly with an argument list, never through " ~
             "a shell. Use this to run build tools, compilers, git, or any " ~
             "executable. The program name is resolved against PATH; pass " ~
-            "each argument separately (no shell quoting or redirection).",
+            "each argument separately (no shell quoting or redirection). For " ~
+            "DMD, compiler options precede `-run`; everything after the source " ~
+            "file is a runtime argument (example: `-Isource -i -run " ~
+            "source/app.d`).",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["program"]}`
         ),
         dshellToolDefinition(),
@@ -227,13 +223,6 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "Create or overwrite a text file in the workspace. Creates parent " ~
             "directories as needed.",
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
-        ),
-        OpenCodeToolDef(
-            "glob",
-            "List files and directories under a directory matching a glob " ~
-            "pattern (e.g. **/*.d). Defaults to the workspace; set `path` " ~
-            "when the user's target is another directory.",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
         ),
         OpenCodeToolDef(
             "grep",
@@ -290,13 +279,19 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Define success before acting and stop when it is met. If you " ~
         "say you have the full picture or enough information, your next step " ~
         "must be an edit, a focused verification, or the final answer.\n");
+    builder.put("- After a focused verification succeeds, stop and report. Do " ~
+        "not inspect generated files, directory listings, or unrelated checks " ~
+        "unless the verification output identifies a concrete problem.\n");
+    builder.put("- Do not use two tools for the same discovery. In particular, " ~
+        "do not list a directory when the relevant file paths are already " ~
+        "known, and do not follow a successful search with a broader one.\n");
     builder.put("- Treat an explicit path in the user's request as the target. " ~
         "If it differs from the working directory, pass that absolute path to " ~
-        "`read`, `glob`, or `grep`, or use it as `run.workdir`; do not search " ~
+        "`read`, `dshell`, or `grep`, or use it as `run.workdir`; do not search " ~
         "the working directory and assume no files exist.\n");
-    builder.put("- When searching for text or files, prefer `grep` and " ~
-        "`glob` because they are much faster than shelling out; if you do " ~
-        "use a shell, prefer ripgrep (`rg`).\n");
+    builder.put("- Use `dshell list` as the primary way to discover files; set " ~
+        "`recursive` and `pattern` when needed. Use `grep` for file contents. " ~
+        "Do not invoke external listing or search programs.\n");
     builder.put("- Your output is plain text rendered in a chat UI with " ~
         "GitHub-flavored Markdown. Be concise, direct, and active; mirror " ~
         "the user's tone; only use emojis if the user explicitly asks.\n");
@@ -314,6 +309,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "files and hunks in one call, so a whole change costs one round. " ~
         "Use `edit`/`write` when a patch is awkward, and never use " ~
         "`apply_patch` for auto-generated files or bulk search-and-replace.\n");
+    builder.put("- Before applying a patch, include every currently known " ~
+        "requested file change in that one patch. Do not hold back a known " ~
+        "edit for a second mutation round.\n");
     builder.put("- The worktree may be dirty. NEVER revert changes you did " ~
         "not make unless the user explicitly asks; work with them instead. " ~
         "Do not amend commits unless asked.\n");
@@ -337,9 +335,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     {
         builder.put("You have access to tools implemented natively in this " ~
             "application; there is no shell and no bash/cmd/powershell. Use " ~
-            "`dshell` with these natural words only: `where` for the " ~
-            "workspace path, `list` to show a directory, `info` for file " ~
-            "metadata. Use `glob` to list files by pattern, `read` to read " ~
+            "`dshell list` for all file discovery, `dshell info` for metadata, " ~
+            "`dshell where` only when the user specifically asks for the " ~
+            "location, and `read` to read " ~
             "them, `write` to create them, `remove` to delete files or " ~
             "directories, `grep` to search contents, and " ~
             "`run` to execute a program with an explicit argument list. " ~
@@ -350,9 +348,8 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     else
     {
         builder.put("For file and content operations prefer the dedicated " ~
-            "native tools: `dshell` with these natural words only (`where` " ~
-            "for the workspace path, `list` to show a directory, `info` for " ~
-            "file metadata), `glob` to list files by pattern, `read` to read " ~
+            "native tools: `dshell where/list/info` for workspace navigation " ~
+            "and discovery, `read` to read " ~
             "them, `write` to create them, `remove` to delete files or " ~
             "directories, and `grep` to search contents. " ~
             "Never use shell command words such as pwd, ls, dir, or stat for " ~
@@ -360,9 +357,10 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
             "commands, git, package managers, or other executables that the " ~
             "native tools cannot perform.\n");
     }
-    builder.put("When you need information about the workspace, prefer `dshell " ~
-        "where` / `dshell list` over shell commands. Before beginning work, " ~
-        "identify the requested outcome and the smallest evidence needed.\n");
+    builder.put("Use `dshell list` for directory, recursive, and pattern-based " ~
+        "discovery. Its output includes the resolved path, so never pair it " ~
+        "with `dshell where`. Before beginning work, identify the requested outcome and " ~
+        "the smallest evidence needed.\n");
 
     builder.put("\n# Tools\n");
     builder.put("Call a tool by name with a JSON object of arguments. Pass " ~
@@ -391,25 +389,24 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "[{\"step\":\"read the code\",\"status\":\"completed\"}," ~
         "{\"step\":\"write the fix\",\"status\":\"in_progress\"}]} - record " ~
         "and update the task plan so the user can see the steps.\n");
-    builder.put("- `glob` {\"pattern\":\"src/**/*.d\",\"path\":\"C:/repo\"} — " ~
-        "list matching files; `path` is optional and may be absolute.\n");
     builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"," ~
         "\"path\":\"C:/repo\"} — search contents under optional `path`; " ~
         "returns matching lines as path:line: text.\n");
     builder.put("- `remove` {\"path\":\"build\"} — delete a file or directory " ~
         "tree.\n");
-    builder.put("- `dshell` {\"command\":\"list\",\"path\":\"src\"} — the native " ~
-        "natural-word shell: `where` (workspace path), `list` (directory " ~
-        "listing), `info` (file metadata).\n");
+    builder.put("- `dshell` {\"command\":\"list\",\"path\":\"src\"," ~
+        "\"recursive\":true,\"pattern\":\"**/*.d\"} — primary native workspace " ~
+        "navigator: `where`, filtered/recursive `list`, and metadata `info`.\n");
     if (nativeOnly)
-        builder.put("- `run` {\"program\":\"dmd\",\"args\":[\"-run\"," ~
-            "\"app.d\"],\"workdir\":\".\"} — run an executable directly with an " ~
+        builder.put("- `run` {\"program\":\"dmd\",\"args\":[\"-Isource\"," ~
+            "\"-i\",\"-run\",\"source/app.d\"],\"workdir\":\".\"} — run an " ~
+            "executable directly with an " ~
             "argument list; no shell, no quoting or redirection.\n");
     else
         builder.put("- `bash` {\"command\":\"dub build\",\"workdir\":\".\"} — " ~
             "run a shell command. Use only for builds, git, package managers, " ~
             "or executables the native tools cannot handle.\n");
-    builder.put("Workflow: gather context with `read`/`glob`/`grep`, make the " ~
+    builder.put("Workflow: gather context with `dshell`/`read`/`grep`, make the " ~
         "smallest change with `edit` (or `write` for new files or full " ~
         "rewrites), verify with `run`/`bash`, then briefly summarise what " ~
         "changed.\n");
@@ -2192,6 +2189,8 @@ private ToolExecution runDshell(string args, string workspace)
     catch (Exception) value = JSONValue.init;
     string command;
     string path;
+    bool recursive;
+    string pattern;
     if (value.type == JSONType.object)
     {
         if (auto field = "command" in value.object)
@@ -2200,6 +2199,12 @@ private ToolExecution runDshell(string args, string workspace)
         if (auto field = "path" in value.object)
             if (field.type == JSONType.string)
                 path = field.str;
+        if (auto field = "recursive" in value.object)
+            if (field.type == JSONType.true_)
+                recursive = true;
+        if (auto field = "pattern" in value.object)
+            if (field.type == JSONType.string)
+                pattern = field.str;
     }
     if (command.length == 0)
         return ToolExecution("dshell",
@@ -2218,7 +2223,7 @@ private ToolExecution runDshell(string args, string workspace)
         case "list":
         case "ls":
         case "dir":
-            return dshellList(resolved, workspace);
+            return dshellList(resolved, workspace, recursive, pattern);
         case "info":
         case "stat":
             return dshellStat(resolved, workspace);
@@ -2229,39 +2234,75 @@ private ToolExecution runDshell(string args, string workspace)
     }
 }
 
-private ToolExecution dshellList(string path, string workspace)
+private struct DshellListEntry
+{
+    string name;
+    string kind;
+    string size;
+}
+
+private ToolExecution dshellList(string path, string workspace,
+    bool recursive, string pattern)
 {
     if (!exists(path) || !isDir(path))
         return ToolExecution("dshell",
             "Error: not a directory: " ~ path, true);
-    string[] names;
-    string[] kinds;
-    string[] sizes;
+    Regex!(char) patternRegex;
+    if (pattern.length > 0)
+    {
+        try patternRegex = globToRegex(pattern.replace("\\", "/"));
+        catch (Exception error)
+            return ToolExecution("dshell", "Error: invalid list pattern: " ~
+                error.msg, true);
+    }
+    DshellListEntry[] entries;
+    bool capped;
     try
     {
-        foreach (entry; dirEntries(path, SpanMode.shallow))
+        const mode = recursive ? SpanMode.depth : SpanMode.shallow;
+        foreach (entry; dirEntries(path, mode))
         {
-            names ~= entry.name;
-            kinds ~= entry.isDir ? "dir" : "file";
+            string relative = entry.name;
+            if (relative.length >= path.length &&
+                relative[0 .. path.length] == path)
+                relative = relative[path.length .. $];
+            while (relative.length > 0 && (relative[0] == '\\' ||
+                relative[0] == '/'))
+                relative = relative[1 .. $];
+            relative = relative.replace("\\", "/");
+            if (pattern.length > 0 && matchFirst(relative, patternRegex).empty)
+                continue;
+
+            DshellListEntry listed;
+            listed.name = entry.name;
+            listed.kind = entry.isDir ? "dir" : "file";
             if (entry.isDir)
-                sizes ~= "-";
+                listed.size = "-";
             else
             {
-                try sizes ~= to!string(entry.size);
-                catch (Exception) sizes ~= "?";
+                try listed.size = to!string(entry.size);
+                catch (Exception) listed.size = "?";
+            }
+            entries ~= listed;
+            if (entries.length >= 500)
+            {
+                capped = true;
+                break;
             }
         }
     }
     catch (Exception error)
         return ToolExecution("dshell", "Error: could not list directory: " ~
             error.msg, true);
-    names.sort();
+    entries.sort!((a, b) => a.name < b.name);
     auto builder = appender!string();
     builder.put("<path>" ~ path ~ "</path>\n");
     builder.put("<entries>\n");
-    foreach (index; 0 .. names.length)
-        builder.put((kinds[index] == "dir" ? "[d] " : "[f] ") ~
-            names[index] ~ "  (" ~ sizes[index] ~ " bytes)\n");
+    foreach (entry; entries)
+        builder.put((entry.kind == "dir" ? "[d] " : "[f] ") ~
+            entry.name ~ "  (" ~ entry.size ~ " bytes)\n");
+    if (capped)
+        builder.put("(Results capped at 500 entries; narrow path or pattern.)\n");
     builder.put("</entries>\n");
     return ToolExecution("dshell", truncateOutput(builder.data), false);
 }

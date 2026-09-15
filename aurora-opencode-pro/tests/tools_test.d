@@ -273,6 +273,27 @@ int main()
         "dshell list did not tag file entries: " ~ listResult.output);
     assert(listResult.output.indexOf("[d]") >= 0,
         "dshell list did not tag directory entries: " ~ listResult.output);
+    assert(listResult.output.indexOf("[d] " ~ buildPath(dir, "src") ~
+        "  (- bytes)") >= 0,
+        "dshell list detached a directory's metadata while sorting: " ~
+        listResult.output);
+    assert(listResult.output.indexOf("[f] " ~ buildPath(dir, "README.md")) >= 0,
+        "dshell list detached a file's metadata while sorting: " ~
+        listResult.output);
+
+    mkdirRecurse(buildPath(dir, "src", "nested"));
+    write(buildPath(dir, "src", "nested", "extra.d"), "module extra;\n");
+    write(buildPath(dir, "src", "nested", "skip.txt"), "skip\n");
+    auto recursiveList = executeTool(makeCall("dshell",
+        `{"command":"list","recursive":true,"pattern":"**/*.d"}`), dir);
+    assert(!recursiveList.failed,
+        "dshell recursive filtered list failed: " ~ recursiveList.output);
+    assert(recursiveList.output.indexOf("main.d") >= 0 &&
+        recursiveList.output.indexOf("extra.d") >= 0,
+        "dshell recursive list missed matching files: " ~ recursiveList.output);
+    assert(recursiveList.output.indexOf("skip.txt") < 0 &&
+        recursiveList.output.indexOf("README.md") < 0,
+        "dshell list ignored its pattern: " ~ recursiveList.output);
 
     auto infoResult = executeTool(makeCall("dshell",
         `{"command":"info","path":"src/main.d"}`), dir);
@@ -296,29 +317,29 @@ int main()
         "dshell stat alias failed: " ~ aliasStat.output);
     writeln("D-native dshell where / list / info (+ aliases) OK");
 
-    // The advertised dshell schema must teach ONLY the natural words. Legacy
-    // abbreviations stay accepted at runtime but must never be offered to the
-    // model (otherwise it keeps reaching for pwd/ls/stat).
+    // Advertise the three natural operations, never the legacy abbreviations.
     foreach (toolset; [builtinToolDefinitions(), nativeOnlyToolDefinitions()])
     {
+        bool foundDshell;
         foreach (tool; toolset)
         {
             if (tool.name != "dshell") continue;
-            assert(tool.description.indexOf("pwd") < 0,
-                "dshell description must not teach pwd");
-            assert(tool.description.indexOf("ls") < 0,
-                "dshell description must not teach ls");
-            assert(tool.description.indexOf("stat") < 0,
-                "dshell description must not teach stat");
-            assert(tool.parametersJson.indexOf("pwd") < 0,
-                "dshell schema must not advertise pwd");
-            assert(tool.parametersJson.indexOf("\"ls\"") < 0,
-                "dshell schema must not advertise ls");
-            assert(tool.parametersJson.indexOf("\"stat\"") < 0,
-                "dshell schema must not advertise stat");
+            foundDshell = true;
+            assert(tool.parametersJson.indexOf("\"where\"") >= 0 &&
+                tool.parametersJson.indexOf("\"list\"") >= 0 &&
+                tool.parametersJson.indexOf("\"info\"") >= 0,
+                "dshell must advertise all natural operations");
+            assert(tool.parametersJson.indexOf("recursive") >= 0 &&
+                tool.parametersJson.indexOf("pattern") >= 0,
+                "dshell must advertise recursive filtered discovery");
+            assert(tool.parametersJson.indexOf("\"pwd\"") < 0 &&
+                tool.parametersJson.indexOf("\"ls\"") < 0 &&
+                tool.parametersJson.indexOf("\"stat\"") < 0,
+                "dshell must not advertise legacy abbreviations");
         }
+        assert(foundDshell, "toolset must advertise full dshell support");
     }
-    writeln("dshell advertises only the natural words");
+    writeln("dshell advertises full natural operations without legacy aliases");
 
     // Toolset shapes: default has the shell tool, native-only does not.
     auto defaults = builtinToolDefinitions();
@@ -330,6 +351,8 @@ int main()
         if (tool.name == "bash") hasShell = true;
         if (tool.name == "dshell") defaultHasDshell = true;
         if (tool.name == "remove") defaultHasRemove = true;
+        assert(tool.name != "glob",
+            "glob should remain executable but dshell is primary discovery");
     }
     assert(hasShell, "Default toolset must include the shell tool");
     assert(defaultHasDshell, "Default toolset must include dshell");
@@ -346,6 +369,8 @@ int main()
         if (tool.name == "run") hasRun = true;
         if (tool.name == "dshell") nativeHasDshell = true;
         if (tool.name == "remove") nativeHasRemove = true;
+        assert(tool.name != "glob",
+            "native toolset should expose dshell instead of glob");
     }
     assert(!nativeHasShell, "Native toolset must not include the shell tool");
     assert(hasRun, "Native toolset must include the run tool");
@@ -353,10 +378,9 @@ int main()
     assert(nativeHasRemove, "Native toolset must include remove");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
-    assert(toolSteeringPrompt(false).indexOf("where") >= 0,
-        "Default steering prompt must steer toward the natural dshell words");
-    assert(toolSteeringPrompt(true).indexOf("list") >= 0,
-        "Native steering prompt must mention the list operation");
+    assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&
+        toolSteeringPrompt(true).indexOf("dshell") >= 0,
+        "Steering prompts must document dshell");
     assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
         "Native steering prompt must mention the remove tool");
     // The prompt carries the Codex workflow: a plan tool, a multi-file patch
