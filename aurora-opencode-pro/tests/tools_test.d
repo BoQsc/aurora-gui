@@ -8,7 +8,7 @@ import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
 import std.path : buildPath;
 import std.stdio : writeln;
-import std.string : indexOf;
+import std.string : indexOf, replace;
 import std.utf : validate;
 
 private OpenCodeToolCall makeCall(string name, string args)
@@ -181,6 +181,23 @@ int main()
     assert(grepExt.output.indexOf("extra.txt") >= 0,
         "grep include .txt did not match: " ~ grepExt.output);
     writeln("grep include is a glob (and accepts a bare extension)");
+
+    // A chat can belong to the sandbox while the user explicitly names another
+    // repository. Search tools must honor that root instead of silently looking
+    // in the session workspace and sending the model into fallback tool loops.
+    auto otherRoot = buildPath(dir, "other-repo");
+    mkdirRecurse(buildPath(otherRoot, "source"));
+    write(buildPath(otherRoot, "source", "target.d"), "outside-workspace-marker\n");
+    const jsonRoot = otherRoot.replace("\\", "/");
+    auto rootedGlob = executeTool(makeCall("glob",
+        `{"pattern":"**/*.d","path":"` ~ jsonRoot ~ `"}`), dir);
+    assert(!rootedGlob.failed && rootedGlob.output.indexOf("target.d") >= 0,
+        "glob ignored its explicit search root: " ~ rootedGlob.output);
+    auto rootedGrep = executeTool(makeCall("grep",
+        `{"pattern":"outside-workspace-marker","path":"` ~ jsonRoot ~ `"}`), dir);
+    assert(!rootedGrep.failed && rootedGrep.output.indexOf("target.d:1:") >= 0,
+        "grep ignored its explicit search root: " ~ rootedGrep.output);
+    writeln("glob and grep honor an explicit repository root");
 
     // bash echo round-trips through the shell
     auto bashResult = executeTool(makeCall("bash",

@@ -2048,6 +2048,30 @@ int main(string[] args)
         root.lastUserMessageForTesting());
     writeln("Repeated-failure recovery breaks a failing tool loop");
 
+    // Semantically different successful reads used to evade both loop guards.
+    // The eighth non-mutating batch is redirected, and an edit resets the
+    // budget so legitimate implementation can continue.
+    OpenCodeToolCall variedRead;
+    variedRead.name = "read";
+    OpenCodeToolCall progressEdit;
+    progressEdit.name = "edit";
+    assert(!root.recordToolBatchForProgressTesting([progressEdit]),
+        "a mutating batch should reset the exploration budget");
+    foreach (round; 0 .. 7)
+    {
+        variedRead.arguments = `{"filePath":"file-` ~ to!string(round) ~ `.d"}`;
+        assert(!root.recordToolBatchForProgressTesting([variedRead]),
+            "non-progress guard fired before its documented budget");
+    }
+    variedRead.arguments = `{"filePath":"file-7.d"}`;
+    assert(root.recordToolBatchForProgressTesting([variedRead]),
+        "non-progress guard did not stop varied exploration");
+    assert(!root.recordToolBatchForProgressTesting([progressEdit]),
+        "a mutating batch should reset the exploration budget");
+    assert(!root.recordToolBatchForProgressTesting([variedRead]),
+        "exploration budget did not reset after a mutating batch");
+    writeln("Progress guard bounds varied read/search/command loops");
+
     // The doom-loop injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the
     // middle of the cache/perf block below and calls rebuildMessageColumn(),

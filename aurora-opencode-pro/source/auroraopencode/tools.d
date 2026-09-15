@@ -179,15 +179,18 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         ),
         OpenCodeToolDef(
             "glob",
-            "List files and directories under the workspace matching a glob " ~
-            "pattern (e.g. **/*.d).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to the workspace"}},"required":["pattern"]}`
+            "List files and directories under a directory matching a glob " ~
+            "pattern (e.g. **/*.d). Defaults to the workspace; set `path` " ~
+            "when the user's target is another directory.",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
         ),
         OpenCodeToolDef(
             "grep",
-            "Search file contents in the workspace with a regular expression. " ~
+            "Search file contents under a directory with a regular expression. " ~
+            "Defaults to the workspace; set `path` when the user's target is " ~
+            "another directory. " ~
             "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
         ),
     ];
 }
@@ -227,15 +230,18 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         ),
         OpenCodeToolDef(
             "glob",
-            "List files and directories under the workspace matching a glob " ~
-            "pattern (e.g. **/*.d).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to the workspace"}},"required":["pattern"]}`
+            "List files and directories under a directory matching a glob " ~
+            "pattern (e.g. **/*.d). Defaults to the workspace; set `path` " ~
+            "when the user's target is another directory.",
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
         ),
         OpenCodeToolDef(
             "grep",
-            "Search file contents in the workspace with a regular expression. " ~
+            "Search file contents under a directory with a regular expression. " ~
+            "Defaults to the workspace; set `path` when the user's target is " ~
+            "another directory. " ~
             "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"}},"required":["pattern"]}`
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
         ),
     ];
 }
@@ -274,6 +280,20 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("</env>\n");
 
     builder.put("\n## General\n");
+    builder.put("- Work outcome-first. For a change request, start making the " ~
+        "smallest correct change as soon as the relevant code is known; for " ~
+        "an investigation, answer as soon as the evidence supports it.\n");
+    builder.put("- Use the fewest useful tool rounds. Normally use at most two " ~
+        "batched discovery rounds before editing or answering. If one exact " ~
+        "fact is still missing, name it and make one targeted lookup. Do not " ~
+        "reread known code or keep searching merely to gain confidence.\n");
+    builder.put("- Define success before acting and stop when it is met. If you " ~
+        "say you have the full picture or enough information, your next step " ~
+        "must be an edit, a focused verification, or the final answer.\n");
+    builder.put("- Treat an explicit path in the user's request as the target. " ~
+        "If it differs from the working directory, pass that absolute path to " ~
+        "`read`, `glob`, or `grep`, or use it as `run.workdir`; do not search " ~
+        "the working directory and assume no files exist.\n");
     builder.put("- When searching for text or files, prefer `grep` and " ~
         "`glob` because they are much faster than shelling out; if you do " ~
         "use a shell, prefer ripgrep (`rg`).\n");
@@ -342,8 +362,7 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     }
     builder.put("When you need information about the workspace, prefer `dshell " ~
         "where` / `dshell list` over shell commands. Before beginning work, " ~
-        "think about what the task is and what the files are supposed to do " ~
-        "based on the filenames and directory structure.\n");
+        "identify the requested outcome and the smallest evidence needed.\n");
 
     builder.put("\n# Tools\n");
     builder.put("Call a tool by name with a JSON object of arguments. Pass " ~
@@ -372,11 +391,11 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "[{\"step\":\"read the code\",\"status\":\"completed\"}," ~
         "{\"step\":\"write the fix\",\"status\":\"in_progress\"}]} - record " ~
         "and update the task plan so the user can see the steps.\n");
-    builder.put("- `glob` {\"pattern\":\"src/**/*.d\"} — list files and " ~
-        "directories matching a glob pattern.\n");
-    builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"} " ~
-        "— regular-expression search of file contents; returns matching " ~
-        "lines as path:line: text.\n");
+    builder.put("- `glob` {\"pattern\":\"src/**/*.d\",\"path\":\"C:/repo\"} — " ~
+        "list matching files; `path` is optional and may be absolute.\n");
+    builder.put("- `grep` {\"pattern\":\"class\\s+Widget\",\"include\":\"*.d\"," ~
+        "\"path\":\"C:/repo\"} — search contents under optional `path`; " ~
+        "returns matching lines as path:line: text.\n");
     builder.put("- `remove` {\"path\":\"build\"} — delete a file or directory " ~
         "tree.\n");
     builder.put("- `dshell` {\"command\":\"list\",\"path\":\"src\"} — the native " ~
@@ -1820,16 +1839,25 @@ private ToolExecution runGlob(string args, string workspace)
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
     string pattern;
+    string pathArg;
     if (value.type == JSONType.object)
     {
         if (auto field = "pattern" in value.object)
             if (field.type == JSONType.string)
                 pattern = field.str;
+        if (auto field = "path" in value.object)
+            if (field.type == JSONType.string)
+                pathArg = field.str;
     }
     if (pattern.length == 0)
         return ToolExecution("glob",
             "Error: glob requires a `pattern` argument.", true);
 
+    const root = pathArg.length > 0
+        ? resolveToolPath(pathArg, workspace) : workspace;
+    if (!exists(root) || !isDir(root))
+        return ToolExecution("glob", "Error: search directory not found: " ~
+            root, true);
     const normalizedPattern = pattern.replace("\\", "/");
     Regex!(char) re;
     try re = globToRegex(normalizedPattern);
@@ -1842,12 +1870,12 @@ private ToolExecution runGlob(string args, string workspace)
     // against the compiled glob, which correctly handles `**` recursion.
     try
     {
-        foreach (entry; dirEntries(workspace, SpanMode.depth))
+        foreach (entry; dirEntries(root, SpanMode.depth))
         {
             string relative = entry.name;
-            if (relative.length >= workspace.length &&
-                relative[0 .. workspace.length] == workspace)
-                relative = relative[workspace.length .. $];
+            if (relative.length >= root.length &&
+                relative[0 .. root.length] == root)
+                relative = relative[root.length .. $];
             while (relative.length > 0 && (relative[0] == '\\' ||
                 relative[0] == '/'))
                 relative = relative[1 .. $];
@@ -1875,6 +1903,7 @@ private ToolExecution runGrep(string args, string workspace)
     catch (Exception) value = JSONValue.init;
     string pattern;
     string include;
+    string pathArg;
     if (value.type == JSONType.object)
     {
         if (auto field = "pattern" in value.object)
@@ -1883,10 +1912,19 @@ private ToolExecution runGrep(string args, string workspace)
         if (auto field = "include" in value.object)
             if (field.type == JSONType.string)
                 include = field.str;
+        if (auto field = "path" in value.object)
+            if (field.type == JSONType.string)
+                pathArg = field.str;
     }
     if (pattern.length == 0)
         return ToolExecution("grep",
             "Error: grep requires a `pattern` argument.", true);
+
+    const root = pathArg.length > 0
+        ? resolveToolPath(pathArg, workspace) : workspace;
+    if (!exists(root) || !isDir(root))
+        return ToolExecution("grep", "Error: search directory not found: " ~
+            root, true);
 
     Regex!(char) re;
     try re = regex(pattern);
@@ -1903,7 +1941,7 @@ private ToolExecution runGrep(string args, string workspace)
     enum size_t maxLineChars = 300;
     string[] hits;
     bool capped;
-    outer: foreach (entry; dirEntries(workspace, SpanMode.breadth))
+    outer: foreach (entry; dirEntries(root, SpanMode.breadth))
     {
         if (!entry.isFile) continue;
         if (include.length > 0 &&

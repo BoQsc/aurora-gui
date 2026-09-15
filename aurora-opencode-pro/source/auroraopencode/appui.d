@@ -3714,6 +3714,11 @@ public final class OpenCodeRoot : VBox
     private int _lastFailureRepeatCount;
     private bool _failureLoopDetected;
     private static immutable int failureLoopRepeatThreshold = 3;
+    // Successful calls can still form a loop. The latest real-world failure
+    // spent 73 read/search/run rounds without editing or answering, which the
+    // exact-repeat and repeated-error guards could not see.
+    private int _nonProgressToolRounds;
+    private static immutable int maxNonProgressToolRounds = 8;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -4256,6 +4261,7 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
+        _nonProgressToolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
         if (_status !is null) updateStatus("");
@@ -4544,6 +4550,7 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
+        _nonProgressToolRounds = 0;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         clearActivity();
@@ -4571,6 +4578,7 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
+        _nonProgressToolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
@@ -5558,6 +5566,7 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
+        _nonProgressToolRounds = 0;
         clearActivity();
         // Branching away abandons the turn: stop its clock so it cannot keep
         // ticking while another branch is displayed.
@@ -5653,6 +5662,25 @@ public final class OpenCodeRoot : VBox
             _streamBubble = null;
         }
         markDirty();
+
+        // Semantically different successful reads used to evade every guard.
+        // After a bounded evidence budget, skip another non-mutating batch and
+        // require the model to implement, verify, or answer with what it has.
+        if (nonProgressBudgetExhausted(event.toolCalls))
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the exploration budget was exhausted; " ~
+                "use the evidence already gathered.");
+            breakToolLoop(session,
+                "You have spent enough rounds gathering context without " ~
+                "completing the task. Do not do another broad read, search, " ~
+                "plan update, or diagnostic command. Use the evidence already " ~
+                "available now: if the user requested a change, make the " ~
+                "smallest correct edit and run one focused verification; " ~
+                "otherwise answer directly. Only a concrete failure from that " ~
+                "edit or verification justifies another lookup.");
+            return;
+        }
 
         // Doom-loop recovery: the same tool call repeated with identical input
         // means the model is stuck. Break the loop and ask it to answer with
@@ -5760,6 +5788,24 @@ public final class OpenCodeRoot : VBox
         foreach (call; calls)
             builder.put(call.name ~ "(" ~ call.arguments ~ ");");
         return builder.data;
+    }
+
+    /// Reads, searches, plans and commands are evidence, not completion. Count
+    /// their batches across a turn; any workspace mutation opens a fresh budget.
+    private bool nonProgressBudgetExhausted(
+        const(OpenCodeToolCall)[] calls)
+    {
+        foreach (call; calls)
+        {
+            if (call.name == "edit" || call.name == "write" ||
+                call.name == "apply_patch" || call.name == "remove")
+            {
+                _nonProgressToolRounds = 0;
+                return false;
+            }
+        }
+        ++_nonProgressToolRounds;
+        return _nonProgressToolRounds >= maxNonProgressToolRounds;
     }
 
     /// Worker thread body: execute each tool in the batch and push the results
@@ -5993,6 +6039,9 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
+        // Deliberately retain `_nonProgressToolRounds`: after an exploration
+        // recovery, another non-mutating batch is redirected immediately. A
+        // real edit resets the budget in nonProgressBudgetExhausted.
         updateStatus("Tool loop detected - asking the model to change approach...");
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
@@ -6050,6 +6099,7 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
+        _nonProgressToolRounds = 0;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -8527,6 +8577,13 @@ public final class OpenCodeRoot : VBox
     public int toolRepeatCountForTesting()
     {
         return _lastToolRepeatCount;
+    }
+
+    /// Test-only: drive the non-progress classifier without starting workers.
+    public bool recordToolBatchForProgressTesting(
+        const(OpenCodeToolCall)[] calls)
+    {
+        return nonProgressBudgetExhausted(calls);
     }
 
     /// Test-only: simulate a finished tool call with a given outcome, driving
