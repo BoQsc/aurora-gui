@@ -309,6 +309,7 @@ public struct ChatMessage
     int promptTokens;  // usage the API reported for the reply (0 = unknown)
     int completionTokens;
     int totalTokens;
+    int tokensPerSecondTenths; // output throughput; 123 means 12.3 t/s
     OpenCodeToolCall[] toolCalls; // assistant replies that invoked tools
     string toolCallId;  // "tool" role results, links back to an assistant call
     string toolName;    // "tool" role results: which tool produced the output

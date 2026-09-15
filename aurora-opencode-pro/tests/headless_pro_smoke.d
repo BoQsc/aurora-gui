@@ -1571,14 +1571,20 @@ int main(string[] args)
         assert(!root.activityVisibleForTesting(),
             "The wait row must be dropped once the header speaks");
         assert(driver.paint(), "Streaming header did not paint");
+        Thread.sleep(120.msecs);
         root.streamContentForTesting("Here is the explanation, in full detail.");
         root.tickTree(0.02);
         const long afterContent = root.streamLiveTokensForTesting();
         assert(afterContent > afterReasoning,
             "Token count did not grow with the answer: " ~
             to!string(afterReasoning) ~ " -> " ~ to!string(afterContent));
+        assert(root.streamThinkingHeaderTextForTesting().indexOf("t/s") >= 0,
+            "Thinking header lacks live token throughput: " ~
+            root.streamThinkingHeaderTextForTesting());
         // The provider's exact completion count replaces the local estimate.
-        const int exactCompletion = cast(int) afterContent + 500;
+        // Use a smaller exact value to guard against the old max-only behavior,
+        // which refused to correct an estimate that overshot the tokenizer.
+        const int exactCompletion = cast(int) afterContent - 1;
         root.feedUsageForTesting(100, exactCompletion, exactCompletion + 100);
         assert(root.streamLiveTokensForTesting() == exactCompletion,
             "Exact completion tokens did not replace the estimate");

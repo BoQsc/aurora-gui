@@ -107,6 +107,12 @@ private string formatThousands(int value)
     return result;
 }
 
+private string formatTokenRate(int tenths)
+{
+    if (tenths <= 0) return "";
+    return to!string(tenths / 10) ~ "." ~ to!string(tenths % 10) ~ " t/s";
+}
+
 // ---------------------------------------------------------------------------
 // Chat message bubble
 // ---------------------------------------------------------------------------
@@ -137,6 +143,7 @@ private final class MessageBubble : Widget
     // increases instead of a phase word that vanishes and reads like a file
     // write.
     private long _liveTokens;
+    private int _tokenRateTenths;
     private bool _tokensLive;
     private int _messageIndex;
     private bool _hidden;
@@ -536,6 +543,13 @@ private final class MessageBubble : Widget
         if (_liveTokens == tokens && _tokensLive == live) return;
         _liveTokens = tokens;
         _tokensLive = live;
+        invalidate();
+    }
+
+    void setTokenRate(int tenths)
+    {
+        if (_tokenRateTenths == tenths) return;
+        _tokenRateTenths = tenths;
         invalidate();
     }
 
@@ -1229,6 +1243,8 @@ private final class MessageBubble : Widget
         string text = toggle ~ " Thinking";
         if (_liveTokens > 0)
             text ~= "  " ~ formatThousands(cast(int) _liveTokens) ~ " tokens";
+        if (_tokenRateTenths > 0)
+            text ~= "  " ~ formatTokenRate(_tokenRateTenths);
         if (_thinkingLive || _tokensLive)
         {
             // Pulsing indicator: cycle between ▌ and ▐ every half second.
@@ -3621,6 +3637,11 @@ public final class OpenCodeRoot : VBox
     // header and kept after the turn completes.
     private long _liveOutputBytes;
     private long _liveOutputTokens;
+    private int _liveTokenRateTenths;
+    private long _tokenRateBaseTokens;
+    private MonoTime _tokenRateStartedAt;
+    private bool _tokenRateStarted;
+    private int _liveTotalTokens;
     private bool _suppressDoneStatus;
     // Index (into the current session's `messages`) of a user prompt the user
     // chose to edit. Send replaces it with a sibling branch so the original
@@ -5134,15 +5155,23 @@ public final class OpenCodeRoot : VBox
             };
         // Persisted token usage appears only on the latest assistant reply.
         if (cast(int) index == latestAssistantIndex &&
-            message.totalTokens > 0)
+            (message.totalTokens > 0 || message.completionTokens > 0 ||
+             message.tokensPerSecondTenths > 0))
         {
-            bubble.setUsageText(" • " ~
-                formatThousands(message.totalTokens) ~ " tokens");
+            const tokenText = message.totalTokens > 0
+                ? formatThousands(message.totalTokens) ~ " total"
+                : formatThousands(message.completionTokens) ~ " output";
+            bubble.setUsageText(" • " ~ tokenText ~
+                (message.tokensPerSecondTenths > 0 && thinkingText.length == 0
+                    ? " · " ~ formatTokenRate(message.tokensPerSecondTenths)
+                    : ""));
         }
         // Persist the output-token count on the Thinking header for any turn
         // that produced one, so it survives a column rebuild.
         if (message.completionTokens > 0)
             bubble.setLiveTokens(message.completionTokens, false);
+        if (message.tokensPerSecondTenths > 0)
+            bubble.setTokenRate(message.tokensPerSecondTenths);
         return bubble;
     }
 
@@ -5295,6 +5324,10 @@ public final class OpenCodeRoot : VBox
         // Each assistant turn counts its own output from zero.
         _liveOutputBytes = 0;
         _liveOutputTokens = 0;
+        _liveTokenRateTenths = 0;
+        _tokenRateBaseTokens = 0;
+        _tokenRateStarted = false;
+        _liveTotalTokens = 0;
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
@@ -5363,10 +5396,48 @@ public final class OpenCodeRoot : VBox
         _liveOutputBytes += cast(long) text.length;
         const estimate = (_liveOutputBytes + 3) / 4;
         if (estimate > _liveOutputTokens) _liveOutputTokens = estimate;
+        updateLiveTokenRate();
         _streamBubble.setLiveTokens(_liveOutputTokens, true);
+        _streamBubble.setTokenRate(_liveTokenRateTenths);
+        // A reasoning reply already has the compact stats in its Thinking
+        // header. Only reserve the footer for direct replies with no header.
+        if (!_streamBubble.hasThinkingForTesting())
+            _streamBubble.setUsageText(liveTokenStatsText());
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
         _messagesScroll.invalidate();
+    }
+
+    /// Decode throughput begins at the first observed token sample, excluding
+    /// request/connection/model cold-start latency (time-to-first-token).
+    private void updateLiveTokenRate()
+    {
+        const now = MonoTime.currTime;
+        if (!_tokenRateStarted)
+        {
+            _tokenRateStarted = true;
+            _tokenRateStartedAt = now;
+            _tokenRateBaseTokens = _liveOutputTokens;
+            return;
+        }
+        const elapsedMs = (now - _tokenRateStartedAt).total!"msecs";
+        const produced = _liveOutputTokens - _tokenRateBaseTokens;
+        if (elapsedMs >= 100 && produced > 0)
+            _liveTokenRateTenths = cast(int)
+                ((produced * 10_000 + elapsedMs / 2) / elapsedMs);
+    }
+
+    private string liveTokenStatsText() const
+    {
+        string result = " • ";
+        if (_liveTotalTokens > 0)
+            result ~= formatThousands(_liveTotalTokens) ~ " total";
+        else
+            result ~= "~" ~ formatThousands(cast(int) _liveOutputTokens) ~
+                " output";
+        if (_liveTokenRateTenths > 0)
+            result ~= " · " ~ formatTokenRate(_liveTokenRateTenths);
+        return result;
     }
 
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
@@ -5382,9 +5453,13 @@ public final class OpenCodeRoot : VBox
             // Settle the final count (exact when the provider reported it) and
             // stop the pulse; the header keeps the number so the row stays
             // meaningful after the phase indicator is gone.
-            if (completionTokens > _liveOutputTokens)
+            // Provider usage is authoritative even when byte/4 overshot. The
+            // old max-only rule looked monotonic but could leave a wrong count.
+            if (completionTokens > 0)
                 _liveOutputTokens = completionTokens;
+            updateLiveTokenRate();
             _streamBubble.setLiveTokens(_liveOutputTokens, false);
+            _streamBubble.setTokenRate(_liveTokenRateTenths);
             _streamBubble.setThinkingLive(false);
             _streamBubble.setStreaming(false);
             _streamBubble = null;
@@ -5404,6 +5479,7 @@ public final class OpenCodeRoot : VBox
                 message.completionTokens = completionTokens;
                 message.totalTokens = totalTokens;
             }
+            message.tokensPerSecondTenths = _liveTokenRateTenths;
         }
         // The streamed bubble was built for streaming only (no timestamp, usage
         // footer, context menu or collapse wiring). Rebuild so the settled view
@@ -6978,12 +7054,15 @@ public final class OpenCodeRoot : VBox
                 messageJson["failed"] = true;
             if (message.internal)
                 messageJson["internal"] = true;
-            if (message.totalTokens > 0)
+            if (message.totalTokens > 0 || message.completionTokens > 0)
             {
                 messageJson["promptTokens"] = message.promptTokens;
                 messageJson["completionTokens"] = message.completionTokens;
                 messageJson["totalTokens"] = message.totalTokens;
             }
+            if (message.tokensPerSecondTenths > 0)
+                messageJson["tokensPerSecondTenths"] =
+                    message.tokensPerSecondTenths;
             if (message.toolCalls.length > 0)
             {
                 JSONValue calls = JSONValue(string[].init);
@@ -7082,6 +7161,11 @@ public final class OpenCodeRoot : VBox
                                     if (auto f = "totalTokens" in messageValue.object)
                                         if (f.type == JSONType.integer)
                                             message.totalTokens = cast(int) f.integer;
+                                    if (auto f = "tokensPerSecondTenths" in
+                                        messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.tokensPerSecondTenths =
+                                                cast(int) f.integer;
                                     if (auto f = "toolCallId" in messageValue.object)
                                         message.toolCallId = f.str;
                                     if (auto f = "toolName" in messageValue.object)
@@ -7215,15 +7299,16 @@ public final class OpenCodeRoot : VBox
                     // The stream bubble is always the latest assistant reply.
                     // The exact completion count replaces the local estimate on
                     // the Thinking header; the total goes in the footer.
-                    if (event.completionTokens > _liveOutputTokens)
+                    _liveTotalTokens = event.totalTokens;
+                    if (event.completionTokens > 0)
                         _liveOutputTokens = event.completionTokens;
+                    updateLiveTokenRate();
                     if (_streamBubble !is null)
                     {
                         _streamBubble.setLiveTokens(_liveOutputTokens, true);
-                        if (event.totalTokens > 0)
-                            _streamBubble.setUsageText(
-                                " • " ~ formatThousands(event.totalTokens) ~
-                                " tokens");
+                        _streamBubble.setTokenRate(_liveTokenRateTenths);
+                        if (!_streamBubble.hasThinkingForTesting())
+                            _streamBubble.setUsageText(liveTokenStatsText());
                     }
                     if (_usageBadge !is null)
                     {
@@ -7685,12 +7770,15 @@ public final class OpenCodeRoot : VBox
         event.promptTokens = prompt;
         event.completionTokens = completion;
         event.totalTokens = total;
-        if (completion > _liveOutputTokens) _liveOutputTokens = completion;
+        _liveTotalTokens = total;
+        if (completion > 0) _liveOutputTokens = completion;
+        updateLiveTokenRate();
         if (_streamBubble !is null)
         {
             _streamBubble.setLiveTokens(_liveOutputTokens, true);
-            _streamBubble.setUsageText(" • " ~ formatThousands(total) ~
-                " tokens");
+            _streamBubble.setTokenRate(_liveTokenRateTenths);
+            if (!_streamBubble.hasThinkingForTesting())
+                _streamBubble.setUsageText(liveTokenStatsText());
         }
     }
 

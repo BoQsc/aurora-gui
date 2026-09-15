@@ -793,6 +793,12 @@ final class OpenCodeClient
             root["parallel_tool_calls"] = true;
         }
         root["stream"] = true;
+        // Most OpenAI-compatible servers omit usage from streamed chunks unless
+        // explicitly asked. This lets the UI replace its live estimate with the
+        // provider tokenizer's authoritative counts.
+        JSONValue streamOptions;
+        streamOptions["include_usage"] = true;
+        root["stream_options"] = streamOptions;
         // CommandCode rejects "none", while current llama-server accepts it
         // and uses it to disable thinking in hybrid Qwen templates. Keep the
         // hosted DeepSeek behavior unchanged and make the local checkbox exact.
@@ -857,6 +863,16 @@ final class OpenCodeClient
         client.pushLocalEvent(first);
         client.drain(events);
         assert(events.length == 1 && events[0].text == "a");
+
+        ChatRequestMessage message;
+        message.role = "user";
+        message.content = "hello";
+        const body = parseJSON(client.buildBodyForTesting([message], null,
+            "tiny-model", false));
+        const options = "stream_options" in body.object;
+        assert(options !is null && options.type == JSONType.object);
+        const includeUsage = "include_usage" in options.object;
+        assert(includeUsage !is null && includeUsage.type == JSONType.true_);
         client.closeSession();
     }
 
