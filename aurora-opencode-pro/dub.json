@@ -25,11 +25,20 @@
     "wininet"
   ],
   "buildTypes": {
+    "release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline",
+        "debugInfo"
+      ]
+    },
     "portable-release": {
       "buildOptions": [
         "releaseMode",
         "optimize",
-        "inline"
+        "inline",
+        "debugInfo"
       ],
       "dflags-windows-dmd": [
         "-mscrtlib=libcmt"
