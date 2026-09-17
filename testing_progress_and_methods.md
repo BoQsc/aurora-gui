@@ -1,5 +1,26 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: hidden overflow panel now live; which icons really animate (2026-09-17)
+
+**Follow-up (user).** "only task manager was checked and working, others still
+don't."
+
+**Finding.** A probe sampled every tray icon's pixels over ~7 s. On this machine
+**only Task Manager's icon changes**; Steam, Headphones, network, battery,
+Bluetooth, Security, ELAN and Meet Now are static at the OS level (their HICONs
+never change), so there is nothing to animate for them. The app was already
+updating the visible cluster live.
+
+**Real gap fixed.** The overflow ("hidden icons") flyout is a snapshot model, so
+an animating icon in it never updated. `DesktopRoot` now keeps `_hiddenPanel` and
+calls `refreshHiddenPanel()` from the periodic refresh, rebuilding the open panel
+from the live model (skipped while an icon is being dragged out). `HiddenIconsPanel`
+exposes `dragging()` for that.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. `testHiddenPanelRestore`
+now also calls `panel.refresh([...])` with a new `RgbaImage` and asserts the
+panel's `iconImage` was swapped, guarding the live-refresh path.
+
 ## Aurora Desktop: NaN timers froze all tick updates (root cause of no animation) (2026-09-17)
 
 **Complaints (user).** "nothing was done about drag n drop ... into hidden icons"

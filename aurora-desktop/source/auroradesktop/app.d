@@ -486,6 +486,8 @@ final class DesktopRoot : Widget
                         icon.iconImage);
             }
             refreshTray();
+            // Keep an open overflow flyout live too (its model is a snapshot).
+            refreshHiddenPanel();
         }
     }
 
@@ -1370,6 +1372,21 @@ final class DesktopRoot : Widget
             dismissPanel();
         };
         showPanel(PanelKind.hidden, panel, _taskbar.trayIconGlobalBounds(3));
+        _hiddenPanel = panel;
+    }
+
+    /// Rebuild the open overflow panel from the live model so hidden icons keep
+    /// animating while the flyout is open.
+    private void refreshHiddenPanel()
+    {
+        if (_hiddenPanel is null || _panelKind != PanelKind.hidden ||
+            _panelPopup is null || _panelPopup.dismissed() ||
+            _hiddenPanel.dragging())
+            return;
+        NotificationIcon[] hidden;
+        foreach (icon; _taskbar.notifications())
+            if (icon.hidden) hidden ~= icon;
+        _hiddenPanel.refresh(hidden);
     }
 
     private size_t hiddenCount()
@@ -1535,6 +1552,8 @@ final class DesktopRoot : Widget
     }
 
     private PopupOverlay _panelPopup;
+    // Live overflow panel (needs refreshing because its model is a snapshot).
+    private HiddenIconsPanel _hiddenPanel;
     private PopupOverlay _volumePanel;
     private VolumePanel _volumePanelContent;
     private PopupOverlay _wifiPanel;
@@ -1569,6 +1588,7 @@ final class DesktopRoot : Widget
         _volumePanelContent = null;
         _wifiPanel = null;
         _wifiPanelContent = null;
+        _hiddenPanel = null;
         _panelKind = PanelKind.none;
     }
 

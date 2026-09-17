@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: overflow panel live + which icons animate (COMPLETED, verified)
+
+**Complaint (user).** "only task manager was checked and working, others still
+don't."
+
+**Diagnosis.** Sampling every tray icon for ~7 s showed that on this machine
+**only Task Manager's HICON changes**; the rest are static at the OS level, so
+there is nothing to animate for them. The visible cluster already updated live;
+the real gap was the overflow flyout, which held a snapshot.
+
+**Resolution.** `DesktopRoot.refreshNotifications` now also refreshes an open
+overflow panel from the live model (`refreshHiddenPanel`, skipped mid-drag), so
+hidden animating icons stay live too.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED; `testHiddenPanelRestore`
+now asserts `panel.refresh` swaps in an updated icon image.
+
 ## 2026-09-17 - Aurora Desktop: NaN timers froze tick updates (COMPLETED, verified)
 
 **Complaints (user).** "nothing was done about drag n drop functionality for

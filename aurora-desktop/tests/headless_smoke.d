@@ -398,6 +398,19 @@ private void testHiddenPanelRestore()
     if (!menu.dismissed()) menu.dismiss();
     assert(restoredId == 11,
         "Show in tray did not request id 11 (got " ~ to!string(restoredId) ~ ")");
+
+    // The panel is a snapshot model, so `refresh` must swap in updated icons
+    // (used to keep hidden animating icons live while the flyout is open).
+    import aurora.image : RgbaImage;
+    ubyte[] pixels; pixels.length = 8 * 8 * 4;
+    foreach (i; 0 .. 8 * 8) pixels[i * 4 + 3] = 255;
+    auto fresh = new RgbaImage(8, 8, pixels);
+    auto b2 = b;
+    b2.iconImage = fresh;
+    panel.refresh([a, b2]);
+    assert(panel.icons().length == 2);
+    assert(panel.icons()[1].iconImage is fresh,
+        "panel.refresh did not swap in the updated icon image");
 }
 
 int main()

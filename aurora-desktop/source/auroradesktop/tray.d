@@ -388,6 +388,9 @@ final class HiddenIconsPanel : Widget
         return _icons;
     }
 
+    /// True while an icon is being dragged out (skip live refreshes then).
+    bool dragging() const @safe pure nothrow @nogc { return _dragCell >= 0; }
+
     void refresh(NotificationIcon[] icons)
     {
         _icons = icons.dup;
