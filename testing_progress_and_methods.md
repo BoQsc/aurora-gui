@@ -1,5 +1,39 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: task menu (Pin/Unpin, app header) + pinned multi-window preview (2026-09-17)
+
+**Request (user).** Previews should support multi-tab/multi-process apps (Edge)
+and the task right-click menu should match Windows (screenshot: app name,
+Unpin from taskbar, Close window).
+
+**Findings.** Multi-window previews already worked: probing `aurora-desktop`
+(a 3-window app) yielded a `TaskPreview` with 3 tiles. Browser *tab*-level
+previews are not reachable through `PrintWindow` (Edge's single window is one
+tile, like Windows); multiple Edge windows would show multiple tiles. The task
+right-click menu existed but showed "Open/Minimize/Close", not the Windows
+header + Pin/Unpin.
+
+**Implementation.**
+- Widget: `TaskEntry.pinned`, `addPinnedTask(title, icon, launch, key)`,
+  `setEntryPinned`/`entryPinned`, `onPinChanged`, and
+  `setPinnedAppRunning(key, hwnds, titles)` which attaches the live windows of a
+  pinned app so it behaves like a running external task (indicator, cycling,
+  multi-window hover preview) and reverts to a launchable command when closed.
+- `showEntryContextMenu`: external entries now lead with the app-name header,
+  then "Pin to taskbar"/"Unpin from taskbar", Minimize, "Close window",
+  "Close all windows" (groups), then Move left/right; a pinned command entry
+  offers the header + Unpin.
+- App: `PinnedAppState { title, exePath }` persisted in `desktop_state.json`;
+  `restorePinnedApps`, `addPinnedApp`/`removePinnedApp`,
+  `activateOrLaunchApp` (activate a live window or launch the exe);
+  `syncExternalTasks` feeds pinned apps their live windows and drops their
+  separate entries so there is one button per app.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. `testTaskEntryMenu`
+adds a synthetic external task, right-clicks it, asserts the app-name header,
+"Pin to taskbar" and "Close window", invokes Pin and asserts the host was
+notified, then pins the entry and asserts "Unpin from taskbar" appears.
+
 ## Aurora Desktop: hover-preview delay + fade (2026-09-17)
 
 **Request (user).** "add delay and fade animation for showing the hover tasks

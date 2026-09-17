@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: task menu (Pin/Unpin, app header) + multi-window previews (COMPLETED, verified)
+
+**Complaint (user).** "previews do not support display of multi tabs or multi
+process previews. like seen in edge browser etc. also right click menu of tasks
+should be added" (screenshot: app name / Unpin from taskbar / Close window).
+
+**Diagnosis.** Multi-window previews already worked (probed a 3-window app -> 3
+tiles). Browser tab-level previews are not obtainable via `PrintWindow`; Edge's
+single window is one tile (same as Windows). The task menu existed but lacked the
+app-name header and Pin/Unpin.
+
+**Resolution.** Added pinning (persisted `pinnedApps`), the Windows-style task
+menu (app-name header, Pin/Unpin, Close window, Close all windows, Move), and
+`setPinnedAppRunning` so a pinned app keeps its running indicator and
+multi-window hover preview while open, reverting to a launch button when closed.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with a new
+`testTaskEntryMenu`. Multi-window preview confirmed live (3 tiles).
+
 ## 2026-09-17 - Aurora Desktop: hover-preview delay + fade (COMPLETED, verified)
 
 **Request (user).** "add delay and fade animation for showing the hover tasks

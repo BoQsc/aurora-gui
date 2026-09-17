@@ -420,6 +420,15 @@ bool postTrayContextMenu(ulong hwndValue, uint callbackMessage, uint id)
     }
 }
 
+/// Shell icon for an executable path (used by pinned taskbar apps).
+RgbaImage executableIcon(string path)
+{
+    version (Windows)
+        return path.length > 0 ? shellIconForPath(path) : null;
+    else
+        return null;
+}
+
 /// Current caption of an external window ("" when it cannot be read).
 string externalTaskTitle(ulong hwndValue)
 {

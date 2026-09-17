@@ -22,8 +22,17 @@ struct DesktopState
     WindowState[] windows;
     IconState[] icons;
     TaskState[] pinnedTasks;
+    /// Apps pinned to the taskbar (shown even when not running).
+    PinnedAppState[] pinnedApps;
     bool taskbarModernShell = true;
     bool hideSystemCursor = true;
+}
+
+/// A pinned taskbar application (launched from its button when closed).
+struct PinnedAppState
+{
+    string title;
+    string exePath;
 }
 
 /// A window's geometry + visibility so it can be restored across sessions.
@@ -193,6 +202,16 @@ void saveDesktopState(const ref DesktopState state) nothrow
         }
         root["pinnedTasks"] = JSONValue(taskArray);
 
+        JSONValue[] appArray;
+        foreach (a; state.pinnedApps)
+        {
+            JSONValue v;
+            v["title"] = a.title;
+            v["exePath"] = a.exePath;
+            appArray ~= v;
+        }
+        root["pinnedApps"] = JSONValue(appArray);
+
         const path = statePath();
         const tmp = path ~ ".tmp";
         write(tmp, root.toPrettyString() ~ "\n");
@@ -274,6 +293,16 @@ DesktopState loadDesktopState() nothrow
             t.iconName = str(v, "icon");
             t.kind = str(v, "kind");
             result.pinnedTasks ~= t;
+        }
+
+        auto apps = arr(root, "pinnedApps");
+        foreach (v; apps)
+        {
+            if (v.type != JSONType.object) continue;
+            PinnedAppState a;
+            a.title = str(v, "title");
+            a.exePath = str(v, "exePath");
+            result.pinnedApps ~= a;
         }
     }
     catch (Exception)

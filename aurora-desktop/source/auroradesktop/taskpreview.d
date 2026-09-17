@@ -118,6 +118,9 @@ final class TaskPreview : TransientPopup
     /// Current fade opacity (0..1); exposed for tests.
     double opacity() const @safe pure nothrow @nogc { return _opacity; }
 
+    /// Number of window tiles shown (exposed for tests).
+    size_t tileCount() const @safe pure nothrow @nogc { return _tileRects.length; }
+
     override void dismiss()
     {
         if (dismissed() || _opening) return;

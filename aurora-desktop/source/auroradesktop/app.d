@@ -6,21 +6,23 @@ import auroradesktop.calendar : CalendarPopup;
 import auroradesktop.search : SearchPopup;
 import auroradesktop.settings : DesktopSettings, loadDesktopSettings,
     saveDesktopSettings;
-import auroradesktop.store : DesktopState, IconState, TaskState, WindowState,
-    iconKindFromName, iconKindName, loadDesktopState, saveDesktopState;
+import auroradesktop.store : DesktopState, IconState, PinnedAppState, TaskState,
+    WindowState, iconKindFromName, iconKindName, loadDesktopState,
+    saveDesktopState;
 import auroradesktop.taskpreview : TaskPreview;
 import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
     captureExternalThumbnail, closeExternalTask, enumerateExternalTasks,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
-    externalTaskGroupKey, externalTaskIcon, externalTaskMinimized,
-    externalTaskSize, externalTaskTitle, minimizeExternalTask,
-    postTrayContextMenu;
+    executableIcon, externalTaskGroupKey, externalTaskIcon,
+    externalTaskMinimized, externalTaskSize, externalTaskTitle,
+    minimizeExternalTask, postTrayContextMenu;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
     queryWifi;
 import std.algorithm : canFind;
 import std.conv : to;
+import std.path : baseName;
 import std.process : spawnShell;
 import std.string : toLower;
 import std.utf : toUTF8, toUTF32;
@@ -209,6 +211,7 @@ final class DesktopRoot : Widget
             if (onToggleFullscreen !is null) onToggleFullscreen();
         });
         restorePinnedTasks();
+        restorePinnedApps();
         _taskbar.setActiveWindow(_notepadWindow);
 
         _volume = systemVolume();
@@ -236,8 +239,93 @@ final class DesktopRoot : Widget
                 return false;
             return postTrayContextMenu(*hwndPtr, *callbackPtr, *osIdPtr);
         };
+        _taskbar.onPinChanged = delegate(TaskEntryId id, bool pinned)
+        {
+            const index = _taskbar.indexOfEntry(id);
+            if (index < 0) return;
+            const exePath = _taskbar.entryGroupKey(cast(size_t) index);
+            if (exePath.length == 0) return;
+            if (pinned)
+                addPinnedApp(exePath,
+                    toUTF8(_taskbar.entryTitle(cast(size_t) index)));
+            else
+            {
+                removePinnedApp(exePath);
+                _taskbar.removeEntry(id);
+            }
+        };
         refreshNotifications();
         syncExternalTasks();
+    }
+
+    // --- pinned taskbar apps ---------------------------------------------
+    private void restorePinnedApps()
+    {
+        foreach (a; _state.pinnedApps)
+        {
+            if (a.exePath.length == 0) continue;
+            const title = a.title.length > 0 ? a.title : baseName(a.exePath);
+            const exePath = a.exePath;
+            _taskbar.addPinnedTask(title, executableIcon(exePath),
+                delegate() { activateOrLaunchApp(exePath); }, exePath);
+        }
+    }
+
+    private bool isPinnedExe(string exePath)
+    {
+        if (exePath.length == 0) return false;
+        foreach (a; _state.pinnedApps)
+            if (a.exePath == exePath) return true;
+        return false;
+    }
+
+    private void addPinnedApp(string exePath, string title)
+    {
+        if (isPinnedExe(exePath)) return;
+        PinnedAppState app;
+        app.exePath = exePath;
+        app.title = title.length > 0 ? title : baseName(exePath);
+        _state.pinnedApps ~= app;
+        _taskbar.addPinnedTask(app.title, executableIcon(exePath),
+            delegate() { activateOrLaunchApp(exePath); }, exePath);
+        persistState();
+        syncExternalTasks();
+    }
+
+    private void removePinnedApp(string exePath)
+    {
+        PinnedAppState[] kept;
+        foreach (a; _state.pinnedApps)
+            if (a.exePath != exePath) kept ~= a;
+        _state.pinnedApps = kept;
+        persistState();
+        syncExternalTasks();
+    }
+
+    /// Activate a running window of the app, or launch it when none is open.
+    private void activateOrLaunchApp(string exePath)
+    {
+        version (Windows)
+        {
+            foreach (t; enumerateExternalTasks())
+            {
+                auto cached = t.hwnd in _externalGroupKeys;
+                const key = cached !is null ? *cached :
+                    externalTaskGroupKey(t.hwnd);
+                if (key == exePath)
+                {
+                    activateExternalTask(t.hwnd);
+                    return;
+                }
+            }
+            try
+            {
+                spawnShell(exePath);
+            }
+            catch (Exception)
+            {
+            }
+        }
     }
 
     // --- real notification-area (tray) icons -----------------------------
@@ -617,6 +705,7 @@ final class DesktopRoot : Widget
         next.icons = captureIcons();
         next.pinnedTasks = capturePinnedTasks();
         next.pinnedTasks = canonicalPinnedOrder(next.pinnedTasks);
+        next.pinnedApps = _state.pinnedApps;
         _state = next;
         saveDesktopState(next);
     }
@@ -664,8 +753,10 @@ final class DesktopRoot : Widget
         {
             // Live external OS windows are NOT user pins: they come and go with
             // the OS, so persisting them would resurrect them as permanent
-            // (icon-less) command entries on every launch.
+            // (icon-less) command entries on every launch. Pinned apps are
+            // persisted separately in `pinnedApps`.
             if (_taskbar.entryHostHwnd(i) != 0) continue;
+            if (_taskbar.entryPinned(i)) continue;
             TaskState t;
             t.title = toUTF8(_taskbar.entryTitle(i));
             t.iconName = iconKindName(_taskbar.entryIcon(i));
@@ -1220,12 +1311,42 @@ final class DesktopRoot : Widget
             foreach (t; tasks)
             {
                 live[t.hwnd] = true;
+                auto cachedKey = t.hwnd in _externalGroupKeys;
+                _externalGroupKeys[t.hwnd] = cachedKey !is null ? *cachedKey :
+                    externalTaskGroupKey(t.hwnd);
+            }
+
+            // Feed each pinned app its live windows so it keeps a running
+            // indicator and a multi-window hover preview. Any separate external
+            // entry for those windows is removed so there is one button per app.
+            if (_state.pinnedApps.length > 0)
+            {
+                foreach (a; _state.pinnedApps)
+                {
+                    if (a.exePath.length == 0) continue;
+                    ulong[] members;
+                    string[] titles;
+                    foreach (t; tasks)
+                    {
+                        auto g = t.hwnd in _externalGroupKeys;
+                        if (g is null || *g != a.exePath) continue;
+                        members ~= t.hwnd;
+                        titles ~= cleanTaskTitle(t.title);
+                        const index = _taskbar.indexOfExternal(t.hwnd);
+                        if (index >= 0 && !_taskbar.entryPinned(cast(size_t) index))
+                            _taskbar.removeExternal(t.hwnd);
+                    }
+                    _taskbar.setPinnedAppRunning(a.exePath, members, titles);
+                }
+            }
+
+            foreach (t; tasks)
+            {
+                auto cachedKey = t.hwnd in _externalGroupKeys;
+                const groupKey = cachedKey !is null ? *cachedKey : "";
+                if (isPinnedExe(groupKey)) continue;
                 if (_taskbar.indexOfExternal(t.hwnd) < 0)
                 {
-                    auto cachedKey = t.hwnd in _externalGroupKeys;
-                    const groupKey = cachedKey !is null ? *cachedKey :
-                        externalTaskGroupKey(t.hwnd);
-                    _externalGroupKeys[t.hwnd] = groupKey;
                     // `computer` is only a last-resort glyph for a window whose
                     // real icon cannot be resolved; the raster icon normally
                     // replaces it (see below).

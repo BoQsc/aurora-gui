@@ -281,6 +281,70 @@ private void testNotificationBehavior()
         "dragging a notification out of the cluster did not hide it");
 }
 
+// The task-entry context menu must show the app-name header, Pin/Unpin and
+// Close window (Windows taskbar menu).
+private void testTaskEntryMenu()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(640, 260));
+    driver.paint();
+    auto taskbar = root.taskbar;
+    taskbar.addExternalTask(0x1234, "Probe App", IconKind.computer, "probe.exe");
+    driver.paint();
+
+    bool pinRequested;
+    taskbar.onPinChanged = delegate(TaskEntryId id, bool pinned)
+    {
+        if (pinned) pinRequested = true;
+    };
+
+    const bounds = taskbar.entryGlobalBounds(0);
+    driver.rightClick(center(bounds));
+    driver.paint();
+    auto menu = cast(ContextMenu) currentTransientPopup(root);
+    assert(menu !is null, "task right-click did not open a menu");
+    bool hasHeader, hasPin, hasClose;
+    void delegate() pinAction;
+    foreach (item; menu.items())
+    {
+        const label = to!string(item.label);
+        if (label == "Probe App") hasHeader = true;
+        else if (label == "Pin to taskbar")
+        {
+            hasPin = true;
+            pinAction = item.action;
+        }
+        else if (label == "Close window") hasClose = true;
+    }
+    assert(hasHeader, "task menu is missing the app-name header");
+    assert(hasPin, "task menu is missing Pin to taskbar");
+    assert(hasClose, "task menu is missing Close window");
+    assert(pinAction !is null, "Pin to taskbar has no action");
+    pinAction();
+    assert(pinRequested, "Pin to taskbar did not notify the host");
+    menu.dismiss();
+
+    // Once pinned, the same menu offers Unpin.
+    const id = taskbar.entryId(0);
+    assert(taskbar.setEntryPinned(id, true));
+    driver.rightClick(center(bounds));
+    driver.paint();
+    menu = cast(ContextMenu) currentTransientPopup(root);
+    assert(menu !is null);
+    bool hasUnpin;
+    foreach (item; menu.items())
+        if (to!string(item.label) == "Unpin from taskbar") hasUnpin = true;
+    assert(hasUnpin, "pinned task menu is missing Unpin from taskbar");
+    menu.dismiss();
+}
+
 int main()
 {
     WindowOptions options;
@@ -781,6 +845,7 @@ int main()
 
     testTaskDragAnimation();
     testNotificationBehavior();
+    testTaskEntryMenu();
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");

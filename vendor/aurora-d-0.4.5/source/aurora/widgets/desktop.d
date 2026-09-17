@@ -921,6 +921,8 @@ private struct TaskEntry
     /// External OS windows represented by this entry. Empty for ungrouped
     /// entries (where `hostHwnd` is the single window) and for commands/windows.
     ExternalMember[] groupMembers;
+    /// True when this entry is pinned to the taskbar (persists across runs).
+    bool pinned;
 }
 
 private enum int taskDragProxyMargin = 6;
@@ -1212,6 +1214,8 @@ class Taskbar : Widget
      * application's own context menu, which suppresses the generic menu.
      */
     bool delegate(size_t id) onNotificationMenu;
+    /** Fired when a task entry is pinned or unpinned from its context menu. */
+    void delegate(TaskEntryId id, bool pinned) onPinChanged;
     void delegate(int from, int to) onEntryMoved;
     void delegate(int index) onEntryRemoved;
     /** Stable-ID snapshot emitted after every completed order mutation. */
@@ -1723,6 +1727,73 @@ class Taskbar : Widget
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
+    }
+
+    /// Add a pinned application task: a command with a raster icon that
+    /// launches the app when it is not running.
+    void addPinnedTask(string title, RgbaImage iconImage,
+        void delegate() launch, string key = "")
+    {
+        if (_reordering) cancelTaskReorder();
+        TaskEntry entry = makeTaskEntry(allocateEntryId(), null, title,
+            IconKind.none, launch, 0, iconImage, true);
+        entry.pinned = true;
+        entry.groupKey = key;
+        _entries ~= entry;
+        debug assert(taskOrderValid());
+        invalidate();
+        notifyEntryOrderChanged();
+    }
+
+    /**
+     * Attach (or clear) the running windows of a pinned app. While windows are
+     * present the pinned entry behaves like a normal external task (running
+     * indicator, hover preview with one tile per window, click cycling); with
+     * none it is a launchable command again.
+     */
+    bool setPinnedAppRunning(string key, ulong[] hwnds, string[] titles)
+    {
+        if (key.length == 0) return false;
+        const index = indexOfGroupKey(key);
+        if (index < 0) return false;
+        ref TaskEntry entry = _entries[cast(size_t) index];
+        if (hwnds.length == 0)
+        {
+            if (entry.hostHwnd == 0 && entry.groupMembers.length == 0)
+                return false;
+            entry.hostHwnd = 0;
+            entry.groupMembers = null;
+            invalidate();
+            notifyEntryOrderChanged();
+            return true;
+        }
+        ExternalMember[] members;
+        members.reserve(hwnds.length);
+        foreach (i, hwnd; hwnds)
+            members ~= ExternalMember(hwnd,
+                i < titles.length ? toUTF32(titles[i]) : entry.title);
+        entry.groupMembers = members;
+        entry.hostHwnd = hwnds[0];
+        invalidate();
+        notifyEntryOrderChanged();
+        return true;
+    }
+
+    /// Mark an entry pinned/unpinned (persisted by the host).
+    bool setEntryPinned(TaskEntryId id, bool pinned)
+    {
+        const index = indexOfEntry(id);
+        if (index < 0) return false;
+        if (_entries[cast(size_t) index].pinned == pinned) return true;
+        _entries[cast(size_t) index].pinned = pinned;
+        invalidate();
+        notifyEntryOrderChanged();
+        return true;
+    }
+
+    bool entryPinned(size_t index) const @safe pure nothrow @nogc
+    {
+        return index < _entries.length && _entries[index].pinned;
     }
 
     /// Index of the entry holding `groupKey` (external grouping), or -1.
@@ -3605,16 +3676,30 @@ class Taskbar : Widget
         if (entry.hostHwnd != 0)
         {
             // External OS window: route actions to the host (activate/minimize/
-            // close). The host reports live visibility.
+            // close). The host reports live visibility. The first item is the
+            // app/window name header, matching the Windows taskbar menu.
             const hwnd = entry.hostHwnd;
             const visible = onExternalVisible is null ? true :
                 onExternalVisible(hwnd);
-            items ~= ContextMenuItem.command("Open", IconKind.open,
+            items ~= ContextMenuItem.command(toUTF8(entry.title), entry.icon,
                 delegate()
                 {
                     if (onExternalActivate !is null)
                         onExternalActivate(hwnd, false);
                 });
+            items ~= ContextMenuItem.separatorItem();
+            if (entry.pinned)
+                items ~= ContextMenuItem.command("Unpin from taskbar",
+                    IconKind.none, delegate()
+                    {
+                        if (onPinChanged !is null) onPinChanged(id, false);
+                    });
+            else
+                items ~= ContextMenuItem.command("Pin to taskbar", IconKind.none,
+                    delegate()
+                    {
+                        if (onPinChanged !is null) onPinChanged(id, true);
+                    });
             items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
                 delegate()
                 {
@@ -3641,6 +3726,22 @@ class Taskbar : Widget
                             onExternalClose(memberHwnd);
                     });
             }
+        }
+        else if (entry.pinned && entry.command !is null)
+        {
+            // A pinned app that is not currently running: launch it, or unpin.
+            items ~= ContextMenuItem.command(toUTF8(entry.title), entry.icon,
+                delegate()
+                {
+                    const current = indexOfEntry(id);
+                    if (current >= 0) activateEntry(current);
+                });
+            items ~= ContextMenuItem.separatorItem();
+            items ~= ContextMenuItem.command("Unpin from taskbar", IconKind.none,
+                delegate()
+                {
+                    if (onPinChanged !is null) onPinChanged(id, false);
+                });
         }
         else if (entry.window !is null)
         {
