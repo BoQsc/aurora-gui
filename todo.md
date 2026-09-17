@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: hidden-icon restore + WiFi scan status + minimized previews (COMPLETED, verified)
+
+**Complaints (user).** No drag to hidden and back; WiFi slow with no scanning
+indication; minimizing a task stops its preview capturing.
+
+**Resolution.**
+- Hidden overflow panel supports drag-out (mouse capture, release outside) and
+  right-click **Show in tray** to move an icon back to the visible cluster.
+- WiFi panel kicks a scan on open and shows `Scanning for networks... Ns` with a
+  disabled `Scanning...` button until settled; also fixed the
+  `showPanel()`/`dismissPanel()` reference-nulling bug that made refreshes no-op.
+- Minimized windows reuse the last cached thumbnail (captured while visible), so
+  previews keep working after minimizing.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED (new
+`testHiddenPanelRestore`; WiFi panel asserts the scanning indicator). WiFi probe
+shows `Scanning for networks... 8s` + disabled `Scanning...` button on open.
+
 ## 2026-09-17 - Aurora Desktop: task menu (Pin/Unpin, app header) + multi-window previews (COMPLETED, verified)
 
 **Complaint (user).** "previews do not support display of multi tabs or multi

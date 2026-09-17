@@ -1,5 +1,35 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: hidden-icon restore, WiFi scan status, minimized previews (2026-09-17)
+
+**Complaints (user).** (1) No way to drag notification icons to the hidden area
+*and back*. (2) WiFi takes a while to show surrounding networks after opening,
+with no clear scanning indication/interval. (3) Minimizing a task makes its
+preview stop capturing.
+
+**Fixes.**
+1. Hidden overflow panel (`HiddenIconsPanel`): drag a hidden icon out of the
+   panel (mouse capture + release outside) or right-click it -> **Show in tray**
+   to restore it to the visible cluster; the app unhides it, persists the
+   override (via `onNotificationHidden`) and closes the flyout. Visible->hidden
+   already worked by dragging left clear of the cluster.
+2. WiFi: opening the panel calls `startWifiScan()` (kicks `WlanScan`, polls every
+   0.25 s up to 8 s). The status shows `Scanning for networks... Ns` and the
+   Refresh control becomes a disabled `Scanning...` button until the list has
+   been non-empty and stable for ~2 s. Also fixed: `showPanel()` calls
+   `dismissPanel()` (which nulls `_wifiPanelContent`), so the content reference
+   is now bound AFTER showing or every refresh no-op'd.
+3. Minimized previews: `PrintWindow` cannot capture a minimized window (the
+   fallback screen BitBlt is off-screen/black). `syncExternalTasks` now caches
+   the first good thumbnail per visible window, and `captureThumbnailCached`
+   reuses that cached frame whenever a capture is null or content-free (uniformly
+   black). Cache is evicted when the window closes.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. `testHiddenPanelRestore`
+builds an overflow panel, right-clicks a cell, asserts **Show in tray** and that
+it requests the correct id. The WiFi test asserts the panel shows the
+`Scanning...` indicator on open instead of `Refresh`.
+
 ## Aurora Desktop: task menu (Pin/Unpin, app header) + pinned multi-window preview (2026-09-17)
 
 **Request (user).** Previews should support multi-tab/multi-process apps (Edge)

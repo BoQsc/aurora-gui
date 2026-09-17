@@ -2,6 +2,7 @@ module auroradesktop.tray;
 
 import aurora;
 import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
+import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
 import auroradesktop.system : AudioDevice;
 import auroradesktop.wlan : WifiState;
 import std.format : format;
@@ -144,6 +145,7 @@ final class WifiPanel : Widget
     private Button _disconnectButton;
     private WifiState _state;
     private string _feedback;
+    private bool _scanning;
 
     void delegate() onOpenNetworkSettings;
     void delegate(string ssid, string profile, bool secured) onConnect;
@@ -159,10 +161,11 @@ final class WifiPanel : Widget
         rebuild();
     }
 
-    void refresh(WifiState state, string feedback = "")
+    void refresh(WifiState state, string feedback = "", bool scanning = false)
     {
         _state = state;
         _feedback = feedback;
+        _scanning = scanning;
         rebuild();
     }
 
@@ -240,7 +243,10 @@ final class WifiPanel : Widget
 
         auto footer = _column.add(new HBox(8));
         footer.layoutHints().preferredHeight = 34;
-        auto refreshButton = footer.add(new Button("Refresh", IconKind.refresh));
+        auto refreshButton = footer.add(new Button(
+            _scanning ? "Scanning..." : "Refresh", IconKind.refresh));
+        refreshButton.layoutHints().preferredWidth = _scanning ? 118 : 96;
+        refreshButton.setEnabled(!_scanning);
         refreshButton.onClick = delegate()
         {
             if (onRefresh !is null) onRefresh();
@@ -330,6 +336,12 @@ final class HiddenIconsPanel : Widget
     private int _maxColumns = 3;
     private int _hover = -1;
     private int _rows;
+    // Drag-out-to-restore state: dragging a hidden icon out of the panel
+    // unhides it in the visible tray.
+    private int _dragCell = -1;
+    private bool _dragMoved;
+    private bool _dragOutside;
+    private Point _pressLocal;
 
     /// Called when the user clicks a hidden icon (id, label).
     void delegate(size_t id, string label) onIconActivated;
@@ -396,6 +408,9 @@ final class HiddenIconsPanel : Widget
             const cell = cellRect(index);
             if (index == _hover)
                 canvas.fillRoundedRect(cell, 7, palette.buttonHover);
+            if (index == _dragCell && _dragMoved)
+                canvas.drawRoundedRect(cell.inset(1), 7, Color.rgba(0, 0, 0, 0),
+                    palette.accent.withAlpha(210), 2);
             auto iconImage = _icons[cast(size_t) index].iconImage;
             if (iconImage !is null)
             {
@@ -432,16 +447,81 @@ final class HiddenIconsPanel : Widget
             _hover = cell;
             invalidate();
         }
+        if (_dragCell >= 0)
+        {
+            if (!_dragMoved)
+            {
+                const dx = event.position.x - _pressLocal.x;
+                const dy = event.position.y - _pressLocal.y;
+                if (dx * dx + dy * dy >= 36) _dragMoved = true;
+            }
+            const inside = event.position.x >= 0 && event.position.y >= 0 &&
+                event.position.x < bounds().width &&
+                event.position.y < bounds().height;
+            const outside = !inside;
+            if (outside != _dragOutside)
+            {
+                _dragOutside = outside;
+                invalidate();
+            }
+        }
         return true;
     }
 
     override bool onMouseDown(ref Event event)
     {
-        if (event.button != MouseButton.left) return true;
         const cell = cellAt(event.position);
-        if (cell >= 0 && onIconActivated !is null)
-            onIconActivated(_icons[cast(size_t) cell].id,
-                toUTF8(_icons[cast(size_t) cell].label));
+        if (event.button == MouseButton.right)
+        {
+            if (cell >= 0)
+            {
+                const id = _icons[cast(size_t) cell].id;
+                const label = toUTF8(_icons[cast(size_t) cell].label);
+                ContextMenuItem[] items;
+                items ~= ContextMenuItem.command("Show in tray",
+                    IconKind.chevronUp, delegate()
+                    {
+                        if (onIconHidden !is null) onIconHidden(id, false);
+                    });
+                items ~= ContextMenuItem.command(label, IconKind.open,
+                    delegate()
+                    {
+                        if (onIconActivated !is null) onIconActivated(id, label);
+                    });
+                showContextMenu(this, event.globalPosition, items);
+            }
+            return true;
+        }
+        if (event.button != MouseButton.left) return true;
+        _dragCell = cell;
+        _dragMoved = false;
+        _dragOutside = false;
+        _pressLocal = event.position;
+        if (cell >= 0) captureMouse();
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (_dragCell < 0) return false;
+        const cell = _dragCell;
+        const moved = _dragMoved;
+        const outside = _dragOutside;
+        _dragCell = -1;
+        _dragMoved = false;
+        _dragOutside = false;
+        releaseMouse();
+        invalidate();
+        if (cell < 0 || cell >= cast(int) _icons.length) return true;
+        const id = _icons[cast(size_t) cell].id;
+        const label = toUTF8(_icons[cast(size_t) cell].label);
+        if (moved && outside)
+        {
+            // Dropped outside the panel: put it back in the visible tray.
+            if (onIconHidden !is null) onIconHidden(id, false);
+        }
+        else if (!moved && onIconActivated !is null)
+            onIconActivated(id, label);
         return true;
     }
 

@@ -7,6 +7,7 @@ import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
 import auroradesktop.search : SearchPopup;
 import auroradesktop.taskpreview : TaskPreview;
+import auroradesktop.tray : HiddenIconsPanel;
 import std.stdio : writeln, stdout;
 import std.algorithm : canFind;
 import std.conv : to;
@@ -345,6 +346,60 @@ private void testTaskEntryMenu()
     menu.dismiss();
 }
 
+// A hidden icon can be put back into the tray via the overflow panel's
+// right-click "Show in tray" (and drag-out).
+private void testHiddenPanelRestore()
+{
+    WindowOptions options;
+    options.width = 500;
+    options.height = 360;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(500, 360));
+
+    NotificationIcon a;
+    a.id = 11;
+    a.label = toUTF32("Alpha");
+    a.icon = IconKind.file;
+    a.hidden = true;
+    NotificationIcon b;
+    b.id = 22;
+    b.label = toUTF32("Beta");
+    b.icon = IconKind.folder;
+    b.hidden = true;
+    auto panel = new HiddenIconsPanel([a, b]);
+    root.add(panel);
+    panel.setBounds(Rect(10, 10, 220, 220));
+    size_t restoredId;
+    panel.onIconHidden = delegate(size_t id, bool hidden)
+    {
+        if (!hidden) restoredId = id;
+    };
+    driver.paint();
+
+    // Cell 0 is at padding (14,14) with a 44x44 cell.
+    const origin = panel.globalOrigin();
+    const cell0 = Point(origin.x + 14 + 22, origin.y + 14 + 22);
+    driver.rightClick(cell0);
+    driver.paint();
+    auto menu = cast(ContextMenu) currentTransientPopup(root);
+    assert(menu !is null, "hidden icon right-click did not open a menu");
+    bool found;
+    foreach (item; menu.items())
+        if (to!string(item.label) == "Show in tray")
+        {
+            found = true;
+            if (item.action !is null) item.action();
+        }
+    assert(found, "hidden icon menu is missing Show in tray");
+    if (!menu.dismissed()) menu.dismiss();
+    assert(restoredId == 11,
+        "Show in tray did not request id 11 (got " ~ to!string(restoredId) ~ ")");
+}
+
 int main()
 {
     WindowOptions options;
@@ -489,7 +544,10 @@ int main()
         {
             import auroradesktop.wlan : queryWifi;
             const state = queryWifi(); // Must never throw.
-            assert(findButton(popup, "Refresh") !is null);
+            // Opening the panel kicks a scan and shows a clear indicator; the
+            // Refresh control is replaced by a disabled "Scanning..." button.
+            assert(findButton(popup, "Scanning...") !is null,
+                "wifi panel did not show a scanning indicator");
             if (state.available)
             {
                 writeln("wifi: ", state.networks.length, " network(s), connected=",
@@ -846,6 +904,7 @@ int main()
     testTaskDragAnimation();
     testNotificationBehavior();
     testTaskEntryMenu();
+    testHiddenPanelRestore();
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");

@@ -22,6 +22,7 @@ import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
     queryWifi;
 import std.algorithm : canFind;
 import std.conv : to;
+import std.format : format;
 import std.path : baseName;
 import std.process : spawnShell;
 import std.string : toLower;
@@ -808,9 +809,7 @@ final class DesktopRoot : Widget
                     foreach (memberHwnd; members)
                     {
                         if (!externalTaskAlive(memberHwnd)) continue;
-                        auto memberSize = externalTaskSize(memberHwnd);
-                        images ~= captureExternalThumbnail(memberHwnd,
-                            memberSize.width, memberSize.height);
+                        images ~= captureThumbnailCached(memberHwnd);
                         live ~= memberHwnd;
                         captions ~= cleanTaskTitle(externalTaskTitle(memberHwnd));
                     }
@@ -833,9 +832,7 @@ final class DesktopRoot : Widget
                     }
                     if (live.length == 1) target = live[0];
                 }
-                auto size = externalTaskSize(target);
-                auto image = captureExternalThumbnail(target, size.width,
-                    size.height);
+                auto image = captureThumbnailCached(target);
                 if (image is null)
                 {
                     // Fall back to an icon-only preview (no thumbnail).
@@ -1148,13 +1145,12 @@ final class DesktopRoot : Widget
         // the background tick so the surrounding networks appear without a
         // synchronous sleep on the UI thread.
         auto panel = new WifiPanel(queryWifi());
-        _wifiPanelContent = panel;
         panel.onOpenNetworkSettings = delegate()
         {
             dismissPanel();
             systemOpenSettings("ms-settings:network");
         };
-        panel.onRefresh = delegate() { refreshWifiPanel(""); };
+        panel.onRefresh = delegate() { startWifiScan(); };
         panel.onDisconnect = delegate()
         {
             refreshWifiPanel(disconnectWifi() ?
@@ -1167,13 +1163,34 @@ final class DesktopRoot : Widget
             refreshWifiPanel(result.message);
         };
         showPanel(PanelKind.wifi, panel, _taskbar.trayIconGlobalBounds(0));
+        // NB: showPanel() calls dismissPanel(), which clears the cached panel
+        // references, so re-bind them AFTER showing or refreshes no-op.
         _wifiPanel = _panelPopup;
+        _wifiPanelContent = panel;
+        startWifiScan();
+    }
 
+    /// Kick an active scan and start polling the cached list, showing a clear
+    /// "scanning" status until the surrounding networks have settled.
+    private void startWifiScan()
+    {
         kickWifiScan();
+        _wifiScanning = true;
+        _wifiScanElapsed = 0.0;
+        _wifiScanStable = 0.0;
         _wifiPollElapsed = 0.0;
         _wifiPollActive = true;
-        _wifiPollMax = 2.0;   // ~10 polls @ 0.2 s; let the scan finish
+        _wifiPollMax = 8.0;   // give the driver up to ~8 s to finish
         _wifiLastCount = -1;  // force the first poll to count as growth
+        if (_wifiPanelContent !is null)
+            _wifiPanelContent.refresh(queryWifi(), scanningText(), true);
+    }
+
+    private string scanningText() const
+    {
+        const remaining = _wifiPollMax - _wifiScanElapsed;
+        const seconds = remaining > 0 ? cast(int) (remaining + 0.5) : 0;
+        return format("Scanning for networks... %ds", seconds);
     }
 
     // Pull the latest scan into the panel without blocking. Asks Windows to
@@ -1184,30 +1201,47 @@ final class DesktopRoot : Widget
         if (_wifiPanel is null || _wifiPanel.dismissed() ||
             _wifiPanelContent is null)
             return;
-        _wifiPanelContent.refresh(queryWifi(), feedback);
+        _wifiPanelContent.refresh(queryWifi(), feedback, _wifiScanning);
     }
 
     private void pollWifiPanel(double deltaSeconds)
     {
         if (!_wifiPollActive) return;
         _wifiPollElapsed += deltaSeconds;
-        if (_wifiPollElapsed < 0.2) return;
+        if (_wifiScanning) _wifiScanElapsed += deltaSeconds;
+        if (_wifiPollElapsed < 0.25) return;
+        const step = _wifiPollElapsed;
+        _wifiPollElapsed = 0.0;
+
         auto state = queryWifi();
         if (_wifiPanelContent !is null && !_wifiPanel.dismissed())
-            _wifiPanelContent.refresh(state, "");
-        // Keep polling the WHOLE window so the active scan can finish adding
-        // every network (it grows 2 -> 3 -> 5 over ~1s). Stopping at ">1"
-        // froze the list too early. Stop only when the count stops growing or
-        // the poll window runs out.
-        if (cast(int) state.networks.length <= _wifiLastCount ||
-            _wifiPollElapsed >= _wifiPollMax)
+            _wifiPanelContent.refresh(state, _wifiScanning ? scanningText() : "",
+                _wifiScanning);
+
+        if (!_wifiScanning)
         {
             _wifiPollActive = false;
+            return;
+        }
+
+        const count = cast(int) state.networks.length;
+        if (count > _wifiLastCount)
+        {
+            _wifiLastCount = count;
+            _wifiScanStable = 0.0;
         }
         else
+            _wifiScanStable += step;
+
+        // Once a non-empty list has stopped growing for ~2 s, or the scan
+        // window runs out, stop and clear the scanning status.
+        const settled = count > 0 && _wifiScanStable >= 2.0;
+        if (settled || _wifiScanElapsed >= _wifiPollMax)
         {
-            _wifiLastCount = cast(int) state.networks.length;
-            _wifiPollElapsed = 0.0;
+            _wifiScanning = false;
+            _wifiPollActive = false;
+            if (_wifiPanelContent !is null && !_wifiPanel.dismissed())
+                _wifiPanelContent.refresh(state, "", false);
         }
     }
 
@@ -1273,6 +1307,9 @@ final class DesktopRoot : Widget
             _taskbar.setNotificationHidden(id, hidden);
             _tray.hiddenIconCount = hiddenCount();
             _taskbar.setTrayState(_tray);
+            // Show-in-tray / drag-out changes the visible cluster: close the
+            // overflow flyout so the tray update is immediately visible.
+            dismissPanel();
         };
         showPanel(PanelKind.hidden, panel, _taskbar.trayIconGlobalBounds(3));
     }
@@ -1299,6 +1336,35 @@ final class DesktopRoot : Widget
     // Resolved grouping key per hwnd (owning executable path), so grouping only
     // pays the OpenProcess/query cost once per window.
     private string[ulong] _externalGroupKeys;
+    // Last good thumbnail per window. PrintWindow cannot capture a minimized
+    // window, so hovering a minimized task reuses the last frame captured while
+    // it was visible instead of showing black.
+    private RgbaImage[ulong] _thumbnailCache;
+
+    private static bool bitmapHasContent(RgbaImage image)
+    {
+        if (image is null) return false;
+        const px = image.pixels();
+        // A failed capture is uniformly black; sample to stay cheap.
+        for (size_t i = 0; i + 3 < px.length; i += 4 * 7)
+            if (px[i] > 16 || px[i + 1] > 16 || px[i + 2] > 16) return true;
+        return false;
+    }
+
+    /// Capture a window thumbnail, falling back to the last good frame when the
+    /// window is minimized (or the capture failed).
+    private RgbaImage captureThumbnailCached(ulong hwnd)
+    {
+        auto size = externalTaskSize(hwnd);
+        auto image = captureExternalThumbnail(hwnd, size.width, size.height);
+        if (image !is null && bitmapHasContent(image))
+        {
+            _thumbnailCache[hwnd] = image;
+            return image;
+        }
+        auto cached = hwnd in _thumbnailCache;
+        return cached is null ? null : *cached;
+    }
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
     /// closed ones. Existing external entries are kept in their pinned slot.
@@ -1370,6 +1436,18 @@ final class DesktopRoot : Widget
                         _externalIconAttempts[t.hwnd] = cast(ubyte) (tries + 1);
                     }
                 }
+                // Cache a thumbnail while the window is visible so a minimized
+                // task can still show a preview (PrintWindow cannot capture a
+                // minimized window).
+                if (!externalTaskMinimized(t.hwnd) &&
+                    t.hwnd !in _thumbnailCache)
+                {
+                    auto size = externalTaskSize(t.hwnd);
+                    auto image = captureExternalThumbnail(t.hwnd, size.width,
+                        size.height);
+                    if (image !is null && bitmapHasContent(image))
+                        _thumbnailCache[t.hwnd] = image;
+                }
             }
             // Remove entries whose window is gone.
             foreach (hwnd; _externalHwnds)
@@ -1378,6 +1456,7 @@ final class DesktopRoot : Widget
                 _taskbar.removeExternal(hwnd);
                 if (hwnd in _externalIconAttempts) _externalIconAttempts.remove(hwnd);
                 if (hwnd in _externalGroupKeys) _externalGroupKeys.remove(hwnd);
+                if (hwnd in _thumbnailCache) _thumbnailCache.remove(hwnd);
             }
             _externalHwnds.length = 0;
             foreach (t; tasks)
@@ -1551,6 +1630,9 @@ final class DesktopRoot : Widget
     private double _wifiPollElapsed;
     private double _wifiPollMax;
     private bool _wifiPollActive;
+    private bool _wifiScanning;
+    private double _wifiScanElapsed;
+    private double _wifiScanStable;
     private int _wifiLastCount;
 
     // Test-only accessors. Kept on the class (not free functions) so the
