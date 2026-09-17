@@ -397,6 +397,29 @@ string externalTaskGroupKey(ulong hwndValue)
         return "";
 }
 
+/**
+ * Ask an application to open its own tray context menu by posting its tray
+ * callback message with WM_RBUTTONUP (classic NOTIFYICON_VERSION_3 packing:
+ * wParam = notification id, lParam = WM_RBUTTONUP). Returns false when the
+ * callback looks unusable so the caller can show a fallback menu.
+ */
+bool postTrayContextMenu(ulong hwndValue, uint callbackMessage, uint id)
+{
+    version (Windows)
+    {
+        if (hwndValue == 0 || callbackMessage < 0x0400 ||
+            callbackMessage > 0xFFFF)
+            return false;
+        enum UINT WM_RBUTTONUP = 0x0205;
+        return PostMessageW(cast(HWND) hwndValue, callbackMessage,
+            cast(WPARAM) id, cast(LPARAM) WM_RBUTTONUP) != 0;
+    }
+    else
+    {
+        return false;
+    }
+}
+
 /// Current caption of an external window ("" when it cannot be read).
 string externalTaskTitle(ulong hwndValue)
 {
@@ -420,6 +443,8 @@ struct TrayIconInfo
     ulong hwnd;
     /// Notification id within that window (0 when unknown).
     uint id;
+    /// Window message the owner registered for tray callbacks (0 when unknown).
+    uint callbackMessage;
     /// Short label (tooltip first line, else the owning executable name).
     string label;
     /// Full multi-line tooltip text.
@@ -430,6 +455,8 @@ struct TrayIconInfo
     RgbaImage icon;
     /// True when the icon lives in the overflow ("hidden icons") flyout.
     bool hidden;
+    /// True for Windows-provided system icons (network/battery/security/...).
+    bool isSystem;
 }
 
 version (Windows)
@@ -464,6 +491,27 @@ version (Windows)
             if (name[offset] == '.') return name[0 .. offset];
         }
         return name;
+    }
+
+    /// Windows-provided tray icons (network/battery/security/...) that the
+    /// shell may optionally hide behind its own system glyphs.
+    private bool isSystemTrayExecutable(string path)
+    {
+        if (path.length == 0) return false;
+        import std.string : toLower;
+        const name = toLower(baseNameOf(path));
+        switch (name)
+        {
+            case "explorer.exe":
+            case "securityhealthsystray.exe":
+            case "securityhealthservice.exe":
+            case "systemsettings.exe":
+            case "shellexperiencehost.exe":
+            case "startmenuexperiencehost.exe":
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// Read a UTF-16 string from another process ("" on failure).
@@ -557,18 +605,23 @@ version (Windows)
             {
                 ulong ownerHwnd;
                 uint ownerId;
+                uint ownerCallback;
                 ulong iconHandle;
                 foreach (k; 0 .. 8)
                     ownerHwnd |= cast(ulong) header[k] << (8 * k);
                 foreach (k; 0 .. 4)
                     ownerId |= cast(uint) header[8 + k] << (8 * k);
+                foreach (k; 0 .. 4)
+                    ownerCallback |= cast(uint) header[12 + k] << (8 * k);
                 foreach (k; 0 .. 8)
                     iconHandle |= cast(ulong) header[24 + k] << (8 * k);
                 if (ownerHwnd != 0 && IsWindow(cast(HWND) ownerHwnd))
                 {
                     info.hwnd = ownerHwnd;
                     info.id = ownerId;
+                    info.callbackMessage = ownerCallback;
                     info.exePath = processImagePath(cast(HWND) ownerHwnd);
+                    info.isSystem = isSystemTrayExecutable(info.exePath);
                     if (iconHandle != 0)
                         info.icon = iconToRgba(cast(HICON) iconHandle);
                 }

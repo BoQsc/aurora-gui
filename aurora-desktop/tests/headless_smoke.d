@@ -2,6 +2,7 @@ module tests.headless_smoke;
 
 import aurora;
 import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
+import aurora.widgets.contextmenu : ContextMenu;
 import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
 import auroradesktop.search : SearchPopup;
@@ -82,6 +83,17 @@ private Slider findSlider(Widget subtree)
     return null;
 }
 
+// True if the subtree contains a CheckBox control.
+private bool hasCheckBox(Widget subtree)
+{
+    foreach (child; subtree.children())
+    {
+        if (cast(CheckBox) child !is null) return true;
+        if (hasCheckBox(child)) return true;
+    }
+    return false;
+}
+
 // Minimal root hosting only a Taskbar, for pointer-driven drag tests.
 private final class TaskbarRoot : Widget
 {
@@ -158,8 +170,9 @@ private void testTaskDragAnimation()
     driver.mouseUp();
 }
 
-// Dragging a notification icon must reorder the visible cluster.
-private void testNotificationReorder()
+// Notification behaviour: hover code, generic right-click menu, drag reorder,
+// drag-out-to-overflow hide.
+private void testNotificationBehavior()
 {
     WindowOptions options;
     options.width = 640;
@@ -184,9 +197,31 @@ private void testNotificationReorder()
     assert(taskbar.notifications().length == 3);
     assert(taskbar.notifications()[0].id == 1);
 
-    // Drag the first notification onto the third slot.
     const first = center(taskbar.notificationIconGlobalBounds(0));
     const third = center(taskbar.notificationIconGlobalBounds(2));
+
+    // Hover code for the first visible notification.
+    driver.moveTo(first);
+    driver.paint();
+    assert(taskbar.hotRegion() == -10,
+        "notification hover code was " ~ to!string(taskbar.hotRegion()));
+
+    // Right-click opens a menu (label / Move / Hide) when no app menu is set.
+    driver.rightClick(first);
+    driver.paint();
+    auto menu = cast(ContextMenu) currentTransientPopup(root);
+    assert(menu !is null, "notification right-click did not open a menu");
+    bool hasLabel, hasHide;
+    foreach (item; menu.items())
+    {
+        const label = to!string(item.label);
+        if (label == "Notif0") hasLabel = true;
+        if (label == "Hide icon") hasHide = true;
+    }
+    assert(hasLabel && hasHide, "notification menu is missing items");
+    menu.dismiss();
+
+    // Drag the first notification onto the third slot.
     driver.moveTo(first);
     driver.mouseDown();
     driver.moveTo(Point(first.x + 8, first.y));
@@ -200,6 +235,50 @@ private void testNotificationReorder()
     assert(order[0].id == 2 && order[1].id == 3 && order[2].id == 1,
         "notification drag reorder produced " ~ to!string(order[0].id) ~ "," ~
         to!string(order[1].id) ~ "," ~ to!string(order[2].id));
+
+    // In-place icon/label refresh (tray animation) must not reorder or reset.
+    {
+        import aurora.image : RgbaImage;
+        ubyte[] a; a.length = 16 * 16 * 4;
+        ubyte[] b; b.length = 16 * 16 * 4;
+        foreach (i; 0 .. 16 * 16)
+        {
+            a[i * 4 + 3] = 255;
+            b[i * 4 + 3] = 255;
+            b[i * 4 + 0] = 255;
+        }
+        auto imageA = new RgbaImage(16, 16, a);
+        auto imageB = new RgbaImage(16, 16, b);
+        const id = taskbar.notifications()[0].id;
+        taskbar.updateNotification(id, toUTF32("Anim"), imageA);
+        assert(taskbar.notifications()[0].iconImage is imageA,
+            "updateNotification did not set the icon");
+        taskbar.updateNotification(id, toUTF32("Anim2"), imageB);
+        assert(taskbar.notifications()[0].iconImage is imageB,
+            "updateNotification did not replace the icon");
+        assert(taskbar.notifications()[0].label == toUTF32("Anim2"));
+        assert(taskbar.notifications().length == 3,
+            "updateNotification changed the model size");
+    }
+
+    // Dragging a notification clear of the cluster hides it.
+    size_t hiddenCount()
+    {
+        size_t count;
+        foreach (icon; taskbar.notifications())
+            if (icon.hidden) ++count;
+        return count;
+    }
+    const before = hiddenCount();
+    const target = center(taskbar.notificationIconGlobalBounds(0));
+    driver.moveTo(target);
+    driver.mouseDown();
+    driver.moveTo(Point(target.x - 10, target.y));
+    driver.moveTo(Point(target.x - 120, target.y));
+    driver.mouseUp();
+    driver.paint();
+    assert(hiddenCount() == before + 1,
+        "dragging a notification out of the cluster did not hide it");
 }
 
 int main()
@@ -237,53 +316,11 @@ int main()
     foreach (index; 0 .. 4)
         assert(!taskbar.trayIconGlobalBounds(index).empty());
 
-    // The shell registers three notification icons; each visible icon has
-    // global bounds and a hover code in the -10.. block (never a task index).
-    assert(taskbar.notifications().length >= 3,
-        "shell notifications were not registered");
-    int notifSeen;
-    foreach (i, icon; taskbar.notifications())
-    {
-        if (icon.hidden) continue;
-        const nB = taskbar.notificationIconGlobalBounds(i);
-        assert(!nB.empty(), "visible notification has no bounds");
-        driver.moveTo(center(nB));
-        driver.paint();
-        const nHot = taskbar.hotRegion();
-        assert(nHot == -(10 + notifSeen),
-            "notification hover code was " ~ to!string(nHot) ~
-            ", expected " ~ to!string(-(10 + notifSeen)));
-        ++notifSeen;
-    }
-    // Hiding a notification moves it into the overflow and updates the tray.
-    const firstNotif = taskbar.notifications()[0];
-    taskbar.setNotificationHidden(firstNotif.id, true);
-    assert(taskbar.trayState().hiddenIconCount >= 1,
-        "hiding a notification did not update hiddenIconCount");
-
-    // Drag-triggered hide: dragging a visible notification far left hides it.
-    // Find a currently visible notification and drag it left by 80 px.
-    NotificationIcon dragTarget;
-    bool haveTarget;
+    // Notifications are OS-driven (real tray icons); their behavior is covered
+    // deterministically in testNotificationBehavior(). Just ensure the model is
+    // coherent here.
     foreach (icon; taskbar.notifications())
-    {
-        if (!icon.hidden)
-        {
-            dragTarget = icon;
-            haveTarget = true;
-            break;
-        }
-    }
-    if (haveTarget)
-    {
-        const before = taskbar.trayState().hiddenIconCount;
-        driver.drag(center(taskbar.notificationIconGlobalBounds(0)),
-            Point(center(taskbar.notificationIconGlobalBounds(0)).x - 80,
-                center(taskbar.notificationIconGlobalBounds(0)).y), 8);
-        driver.paint();
-        assert(taskbar.trayState().hiddenIconCount == before + 1,
-            "dragging a notification left did not hide it");
-    }
+        assert(icon.label.length > 0, "notification with an empty label");
 
     // Hover must highlight ONLY the targeted item: a tray hover returns a
     // negative tray code (-6..-9), never a task-entry index (>= 0). Prior to
@@ -673,8 +710,63 @@ int main()
             "notification order was reset by the periodic refresh");
     }
 
+    // Empty-taskbar right-click menu: Show the desktop / Task Manager /
+    // Lock the taskbar (checkable) / Taskbar settings.
+    {
+        const menuLastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
+        const menuPoint = Point(
+            minInt(menuLastEntry.right() + 10,
+                taskbar.trayIconGlobalBounds(0).x - 10),
+            menuLastEntry.y + menuLastEntry.height / 2);
+        driver.rightClick(menuPoint);
+        driver.paint();
+        auto menu = cast(ContextMenu) currentTransientPopup(root);
+        assert(menu !is null, "taskbar right-click did not open a context menu");
+        bool hasDesktop, hasTaskMgr, hasLock, hasSettings, lockChecked;
+        void delegate() settingsAction;
+        foreach (item; menu.items())
+        {
+            const label = to!string(item.label);
+            if (label == "Show the desktop" || label == "Restore windows")
+                hasDesktop = true;
+            else if (label == "Task Manager") hasTaskMgr = true;
+            else if (label == "Lock the taskbar")
+            {
+                hasLock = true;
+                lockChecked = item.checked;
+                if (item.action !is null) item.action();
+            }
+            else if (label == "Taskbar settings")
+            {
+                hasSettings = true;
+                settingsAction = item.action;
+            }
+        }
+        assert(hasDesktop, "menu is missing Show the desktop");
+        assert(hasTaskMgr, "menu is missing Task Manager");
+        assert(hasLock, "menu is missing Lock the taskbar");
+        assert(hasSettings, "menu is missing Taskbar settings");
+        assert(!lockChecked, "Lock the taskbar should start unchecked");
+        assert(taskbar.taskbarLocked(), "activating Lock did not lock the taskbar");
+        taskbar.setTaskbarLocked(false);
+
+        // "Taskbar settings" must open a real settings UI with controls.
+        assert(settingsAction !is null, "Taskbar settings has no action");
+        settingsAction();
+        driver.paint();
+        auto settingsPanel = currentTransientPopup(root);
+        assert(settingsPanel !is null, "Taskbar settings did not open a UI");
+        assert(canFind(settingsPanel.classinfo.name, "PopupOverlay"),
+            "Taskbar settings opened the wrong popup: " ~
+            settingsPanel.classinfo.name);
+        assert(hasCheckBox(settingsPanel),
+            "Taskbar settings UI has no controls");
+        settingsPanel.dismiss();
+        driver.paint();
+    }
+
     testTaskDragAnimation();
-    testNotificationReorder();
+    testNotificationBehavior();
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");

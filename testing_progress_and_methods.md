@@ -1,5 +1,81 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: Taskbar Settings UI (2026-09-17)
+
+**Complaint (user).** "taskbar settings are not implemented as ui" — the menu
+item only showed a message.
+
+**Implementation.** `onTaskbarSettings` now calls `openTaskbarSettings()`, which
+builds a VBox flyout (`PanelKind.taskbarSettings`, shown above
+`taskbar.clockBounds()`) with real controls:
+- "Windows shell taskbar (search, tray, date)" -> `setModernShell` +
+  `_settings.modernShell`
+- "Group taskbar buttons by app" -> `setTaskGrouping` + `_settings.groupTasks`
+- "Hide Windows system tray icons" -> `_settings.hideSystemTrayIcons` +
+  `refreshNotifications`
+- "Lock the taskbar" -> `setTaskbarLocked`
+All changes persist via `saveDesktopSettings`.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. The empty-taskbar
+right-click test now invokes the "Taskbar settings" menu action, asserts a
+`PopupOverlay` opened, and that the panel contains at least one `CheckBox`.
+
+## Aurora Desktop: tray animation, system-icon toggle, native tray menu (2026-09-17)
+
+**Request (user).** Optional toggle to hide the original Windows system
+notification icons; make tray icons animate (Task Manager / touchpad were
+frozen); tray icons had no right-click context.
+
+**Diagnosis.** A probe sampled `enumerateTrayIcons` twice 1.8 s apart: Task
+Manager's icon pixels changed (hash differed) while the rest were stable — so
+the OS icons DO animate, but the app skipped updates: its identity key included
+the volatile tooltip, and the refresh compared only id/hidden/label, so
+unchanged-label icons never re-rendered. Right-click did open our generic menu
+(verified with a right-click probe), so the missing piece was the *application's*
+own tray menu.
+
+**Implementation.**
+- Identity key is now `exePath + hwnd + id` (stable; tooltip excluded).
+- `Taskbar.updateNotification(id, label, image)` updates a tray icon in place;
+  the app rebuilds the model only on a structural change (added/removed/reorder/
+  hidden) and otherwise refreshes labels+icons in place every 1 s, so animating
+  icons keep moving without disturbing the order.
+- `DesktopSettings.hideSystemTrayIcons` (default on, `aurora-desktop.ini`) +
+  "Hide Windows system tray icons" checkbox filters explorer/Security/
+  ShellExperienceHost-owned icons while keeping app icons (Task Manager, Steam,
+  ELAN, ...).
+- `postTrayContextMenu(hwnd, callback, id)` posts the app's tray callback with
+  WM_RBUTTONUP (v3 packing); `Taskbar.onNotificationMenu` uses it and suppresses
+  the generic menu when it succeeds, otherwise the generic menu shows.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. `testNotificationBehavior`
+now covers hover code (-10), the generic right-click menu labels, drag reorder,
+in-place `updateNotification` (image/label replaced without resizing the model),
+and drag-out-to-overflow hide. Live: the system-icon filter leaves only app
+icons; `enumerateTrayIcons` was shown to return changed Task Manager pixels.
+
+## Aurora Desktop: taskbar right-click menu (2026-09-17)
+
+**Request (user).** Add the standard taskbar context menu (screenshot: Show the
+desktop / Task Manager / ✓ Lock the taskbar / Taskbar settings).
+
+**Implementation.** `showTaskbarContextMenu` (empty taskbar space) now builds:
+- "Show the desktop" / "Restore windows" -> `toggleShowDesktop()`
+- separator
+- "Task Manager" -> new `onTaskManager` host delegate (the app spawns
+  `taskmgr.exe`)
+- separator
+- `ContextMenuItem.check("Lock the taskbar", _taskbarLocked, ...)`; new
+  `setTaskbarLocked`/`taskbarLocked` state disables task and notification
+  drag-reordering (`beginTaskReorder` returns early, the notification drag never
+  starts) and greys out the Move left/right items.
+- "Taskbar settings" -> existing `onTaskbarSettings`
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. The smoke right-clicks
+computed empty taskbar space, casts the popup to `ContextMenu`, asserts the four
+labels/check items exist, invokes "Lock the taskbar" and asserts
+`taskbar.taskbarLocked()` became true, then unlocks.
+
 ## Aurora Desktop: real tray icons + drag reorder (2026-09-17)
 
 **Request (user).** "Allow to rearrange notification icons by drag. Update and

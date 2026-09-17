@@ -1,5 +1,55 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: Taskbar Settings UI (COMPLETED, verified)
+
+**Complaint (user).** "taskbar settings are not implemented as ui."
+
+**Resolution.** "Taskbar settings" (empty-taskbar / Start right-click menu) now
+opens a real flyout with controls: Windows shell taskbar, group buttons by app,
+hide Windows system tray icons, and lock the taskbar. Each persists to
+`aurora-desktop.ini`.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with a regression that
+invokes the menu action, asserts a `PopupOverlay` opened, and that it contains a
+`CheckBox`.
+
+## 2026-09-17 - Aurora Desktop: tray animation + hide-system toggle + native menu (COMPLETED, verified)
+
+**Complaint (user).** "Let's hide the original windows system notification icons
+optional toggle should be. Also add ability of showing notification icons
+'animation' I see that touchpad notif icon and task manager notif icon is not
+changing, not animating. Also neither of notification icons have their right
+click context."
+
+**Diagnosis.** The OS icons animate (Task Manager pixels change between samples)
+but the app never re-rendered them because its identity key embedded the volatile
+tooltip and its equality check ignored images. Right-click opened our generic
+menu, but not the owning application's own menu.
+
+**Resolution.** Stable key `exePath+hwnd+id`; in-place
+`updateNotification(id,label,image)` every 1 s (structural rebuild only when the
+set/order/hidden changes); `hideSystemTrayIcons` setting + checkbox filters
+Windows system icons (default on); `postTrayContextMenu` asks the app to show its
+own tray menu, falling back to the generic menu.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with new assertions for
+the hover code, right-click menu, in-place icon update, reorder, and
+drag-out-hide. Live: filtered tray shows only app icons; OS icon pixels change
+across refreshes.
+
+## 2026-09-17 - Aurora Desktop: taskbar right-click menu (COMPLETED, verified)
+
+**Request (user).** Add the standard taskbar context menu: Show the desktop /
+Task Manager / Lock the taskbar (checkable) / Taskbar settings.
+
+**Resolution.** The empty-taskbar right-click menu now has exactly those items.
+"Task Manager" calls a new host `onTaskManager` (app spawns `taskmgr.exe`);
+"Lock the taskbar" is a checkable item backed by `setTaskbarLocked`, which
+disables task/notification drag-reordering and greys the Move left/right items.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with a regression that
+opens the menu, asserts all four items, and confirms locking toggles the state.
+
 ## 2026-09-17 - Aurora Desktop: real tray icons + drag reorder (COMPLETED, verified)
 
 **Complaint (user).** "Allow to rearrange notification icons by drag. Update and

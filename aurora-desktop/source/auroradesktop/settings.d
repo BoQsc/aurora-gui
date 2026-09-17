@@ -16,6 +16,10 @@ struct DesktopSettings
     /// Collapse external OS windows of the same application into one taskbar
     /// button (Windows behavior). On by default.
     bool groupTasks = true;
+    /// Hide the Windows-provided system tray icons (network/battery/security/…)
+    /// from the notification cluster. On by default (the shell draws its own
+    /// Wi-Fi / volume / battery glyphs).
+    bool hideSystemTrayIcons = true;
 }
 
 private string settingsPath()
@@ -49,6 +53,12 @@ DesktopSettings loadDesktopSettings() nothrow
                 result.groupTasks = false;
             else if (cleaned == "groupTasks=1" || cleaned == "groupTasks=true")
                 result.groupTasks = true;
+            else if (cleaned == "hideSystemTrayIcons=0" ||
+                cleaned == "hideSystemTrayIcons=false")
+                result.hideSystemTrayIcons = false;
+            else if (cleaned == "hideSystemTrayIcons=1" ||
+                cleaned == "hideSystemTrayIcons=true")
+                result.hideSystemTrayIcons = true;
         }
     }
     catch (Exception)
@@ -65,7 +75,9 @@ void saveDesktopSettings(const ref DesktopSettings settings) nothrow
             "# Aurora Desktop shell choice (written by System Settings).\n" ~
             "modernShell=" ~ (settings.modernShell ? "1" : "0") ~ "\n" ~
             "hideSystemCursor=" ~ (settings.hideSystemCursor ? "1" : "0") ~ "\n" ~
-            "groupTasks=" ~ (settings.groupTasks ? "1" : "0") ~ "\n");
+            "groupTasks=" ~ (settings.groupTasks ? "1" : "0") ~ "\n" ~
+            "hideSystemTrayIcons=" ~ (settings.hideSystemTrayIcons ? "1" : "0") ~
+            "\n");
     }
     catch (Exception)
     {

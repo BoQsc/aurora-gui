@@ -13,7 +13,8 @@ import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
     captureExternalThumbnail, closeExternalTask, enumerateExternalTasks,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
     externalTaskGroupKey, externalTaskIcon, externalTaskMinimized,
-    externalTaskSize, externalTaskTitle, minimizeExternalTask;
+    externalTaskSize, externalTaskTitle, minimizeExternalTask,
+    postTrayContextMenu;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
@@ -131,9 +132,19 @@ final class DesktopRoot : Widget
         {
             if (onToggleFullscreen !is null) onToggleFullscreen();
         };
-        _taskbar.onTaskbarSettings = delegate()
+        _taskbar.onTaskbarSettings = delegate() { openTaskbarSettings(); };
+        _taskbar.onTaskManager = delegate()
         {
-            showMessage("Taskbar buttons can be dragged left or right and opened with right click.");
+            version (Windows)
+            {
+                try
+                {
+                    spawnShell("taskmgr.exe");
+                }
+                catch (Exception)
+                {
+                }
+            }
         };
         _taskbar.onDateTimeSettings = delegate()
         {
@@ -212,6 +223,19 @@ final class DesktopRoot : Widget
                     break;
                 }
         };
+        // Right-click a tray icon: prefer the owning application's own menu by
+        // posting its tray callback; fall back to the generic menu.
+        _taskbar.onNotificationMenu = delegate(size_t id)
+        {
+            const key = notificationKeyForId(id);
+            if (key.length == 0) return false;
+            auto hwndPtr = key in _notificationHwnd;
+            auto callbackPtr = key in _notificationCallback;
+            auto osIdPtr = key in _notificationOsId;
+            if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
+                return false;
+            return postTrayContextMenu(*hwndPtr, *callbackPtr, *osIdPtr);
+        };
         refreshNotifications();
         syncExternalTasks();
     }
@@ -224,12 +248,21 @@ final class DesktopRoot : Widget
     private size_t[string] _notificationIds;
     private size_t _nextNotificationId = 1;
     private bool[string] _notificationHiddenOverride;
+    private ulong[string] _notificationHwnd;
+    private uint[string] _notificationCallback;
+    private uint[string] _notificationOsId;
     private double _notificationRefreshAccumulator;
-    private enum double notificationRefreshSeconds = 2.0;
+    // Poll fast enough that animating tray icons (e.g. Task Manager's CPU
+    // graph) visibly update.
+    private enum double notificationRefreshSeconds = 1.0;
 
+    /// Stable identity for a tray icon: owner + window handle + notification id.
+    /// The tooltip is deliberately excluded because it changes constantly (CPU
+    /// %, battery %), which would otherwise look like a brand-new icon.
     private static string notificationKey(const ref TrayIconInfo info)
     {
-        return info.exePath ~ "\t" ~ to!string(info.id) ~ "\t" ~ info.label;
+        return info.exePath ~ "\t" ~ to!string(info.hwnd) ~ "\t" ~
+            to!string(info.id);
     }
 
     /// Map a stable notification id back to its key ("" when unknown).
@@ -252,6 +285,7 @@ final class DesktopRoot : Widget
             string[] newKeys;
             foreach (icon; icons)
             {
+                if (_settings.hideSystemTrayIcons && icon.isSystem) continue;
                 string key = notificationKey(icon);
                 if (key !in present) newKeys ~= key;
                 present[key] = true;
@@ -297,6 +331,9 @@ final class DesktopRoot : Widget
                     idPtr = key in _notificationIds;
                 }
                 auto hiddenPtr = key in _notificationHiddenOverride;
+                _notificationHwnd[key] = info.hwnd;
+                _notificationCallback[key] = info.callbackMessage;
+                _notificationOsId[key] = info.id;
 
                 NotificationIcon icon;
                 icon.id = *idPtr;
@@ -311,27 +348,33 @@ final class DesktopRoot : Widget
                 desired ~= icon;
             }
 
-            // Only rebuild when something actually changed, so a refresh never
-            // disturbs an in-progress drag or needlessly repaints.
-            const current = _taskbar.notifications();
-            bool same = current.length == desired.length;
-            if (same)
+            // A structural change (icon added/removed/reordered/hidden) rebuilds
+            // the model; otherwise update labels/icons in place so periodically
+            // changing tray icons keep animating without disturbing the order.
+            auto current = _taskbar.notifications();
+            bool structural = current.length != desired.length;
+            if (!structural)
             {
                 foreach (i; 0 .. desired.length)
                 {
                     if (current[i].id != desired[i].id ||
-                        current[i].hidden != desired[i].hidden ||
-                        current[i].label != desired[i].label)
+                        current[i].hidden != desired[i].hidden)
                     {
-                        same = false;
+                        structural = true;
                         break;
                     }
                 }
             }
-            if (!same)
+            if (structural)
             {
                 _taskbar.clearNotifications();
                 foreach (icon; desired) _taskbar.addNotification(icon);
+            }
+            else
+            {
+                foreach (icon; desired)
+                    _taskbar.updateNotification(icon.id, icon.label,
+                        icon.iconImage);
             }
             refreshTray();
         }
@@ -420,6 +463,16 @@ final class DesktopRoot : Widget
             _taskbar.setTaskGrouping(checked);
             _settings.groupTasks = checked;
             saveDesktopSettings(_settings);
+        };
+        auto systemTrayToggle = content.add(new CheckBox(
+            "Hide Windows system tray icons",
+            _settings.hideSystemTrayIcons));
+        systemTrayToggle.onChanged = delegate(bool checked)
+        {
+            _settings.hideSystemTrayIcons = checked;
+            saveDesktopSettings(_settings);
+            _notificationOrder.length = 0;
+            refreshNotifications();
         };
         auto cursorToggle = content.add(new CheckBox(
             "Hide system cursor",
@@ -1067,6 +1120,52 @@ final class DesktopRoot : Widget
         }
     }
 
+    /// The "Taskbar settings" flyout opened from the taskbar context menu.
+    private void openTaskbarSettings()
+    {
+        dismissStartMenu();
+        auto content = new VBox(8, Insets(12));
+        auto heading = content.add(new Label("Taskbar settings"));
+        heading.setScale(2);
+        heading.layoutHints().preferredHeight = 28;
+
+        auto modern = content.add(new CheckBox(
+            "Windows shell taskbar (search, tray, date)",
+            _taskbar.modernShell()));
+        modern.onChanged = delegate(bool checked)
+        {
+            _taskbar.setModernShell(checked);
+            _settings.modernShell = checked;
+            saveDesktopSettings(_settings);
+        };
+        auto group = content.add(new CheckBox(
+            "Group taskbar buttons by app", _taskbar.taskGrouping()));
+        group.onChanged = delegate(bool checked)
+        {
+            _taskbar.setTaskGrouping(checked);
+            _settings.groupTasks = checked;
+            saveDesktopSettings(_settings);
+        };
+        auto systemTray = content.add(new CheckBox(
+            "Hide Windows system tray icons", _settings.hideSystemTrayIcons));
+        systemTray.onChanged = delegate(bool checked)
+        {
+            _settings.hideSystemTrayIcons = checked;
+            saveDesktopSettings(_settings);
+            _notificationOrder.length = 0;
+            refreshNotifications();
+        };
+        auto locked = content.add(new CheckBox(
+            "Lock the taskbar", _taskbar.taskbarLocked()));
+        locked.onChanged = delegate(bool checked)
+        {
+            _taskbar.setTaskbarLocked(checked);
+        };
+        content.add(new Spacer());
+        content.layoutHints().preferredWidth = 340;
+        showPanel(PanelKind.taskbarSettings, content, _taskbar.clockBounds());
+    }
+
     private void openHiddenIconsPanel()
     {
         // Collect the hidden notification icons and render a 3x3 grid overlay.
@@ -1184,7 +1283,7 @@ final class DesktopRoot : Widget
     private WifiPanel _wifiPanelContent;
     // Identifies which tray popup is open so re-clicking its taskbar icon
     // toggles it closed instead of re-opening (Windows tray behavior).
-    private enum PanelKind : ubyte { none, volume, battery, wifi, hidden }
+    private enum PanelKind : ubyte { none, volume, battery, wifi, hidden, taskbarSettings }
     private PanelKind _panelKind = PanelKind.none;
 
     private void showPanel(PanelKind kind, Widget content, Rect anchor)

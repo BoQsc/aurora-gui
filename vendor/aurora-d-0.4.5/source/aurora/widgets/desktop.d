@@ -1188,10 +1188,14 @@ class Taskbar : Widget
      * this to avoid two overlapping flyouts.
      */
     private bool _taskEntryTooltips = true;
+    /** When locked, task/notification drag-reordering is disabled. */
+    private bool _taskbarLocked;
 
     void delegate() onStart;
     void delegate() onShowDesktop;
     void delegate() onTaskbarSettings;
+    /** Launch the OS Task Manager (empty taskbar right-click menu). */
+    void delegate() onTaskManager;
     void delegate() onDateTimeSettings;
     void delegate() onToggleFullscreen;
     void delegate() onVolumeToggle;
@@ -1203,6 +1207,11 @@ class Taskbar : Widget
     void delegate() onSearchClick;
     /** Fired when a notification's hidden state changes (context menu / drag). */
     void delegate(size_t id, bool hidden) onNotificationHidden;
+    /**
+     * Right-click on a notification. Return true when the host opened the
+     * application's own context menu, which suppresses the generic menu.
+     */
+    bool delegate(size_t id) onNotificationMenu;
     void delegate(int from, int to) onEntryMoved;
     void delegate(int index) onEntryRemoved;
     /** Stable-ID snapshot emitted after every completed order mutation. */
@@ -1354,6 +1363,17 @@ class Taskbar : Widget
         hideTooltip();
     }
 
+    /// Whether the taskbar is locked against drag-reordering.
+    bool taskbarLocked() const @safe pure nothrow @nogc { return _taskbarLocked; }
+
+    void setTaskbarLocked(bool value)
+    {
+        if (_taskbarLocked == value) return;
+        if (value && _reordering) cancelTaskReorder();
+        _taskbarLocked = value;
+        invalidate();
+    }
+
     /**
      * Toggle same-app task grouping. Existing external entries are regrouped in
      * place so the change is immediate without a host resync.
@@ -1468,6 +1488,23 @@ class Taskbar : Widget
     {
         _notifications.length = 0;
         invalidate();
+    }
+
+    /// Update a notification's label and raster icon in place (no reorder), so
+    /// periodically changing tray icons stay animated.
+    void updateNotification(size_t id, dstring label, RgbaImage iconImage)
+    {
+        foreach (ref icon; _notifications)
+        {
+            if (icon.id != id) continue;
+            if (icon.label != label || icon.iconImage !is iconImage)
+            {
+                icon.label = label;
+                icon.iconImage = iconImage;
+                invalidate();
+            }
+            return;
+        }
     }
 
     void setNotificationHidden(size_t id, bool hidden)
@@ -2438,6 +2475,7 @@ class Taskbar : Widget
 
     private bool beginTaskReorder(PointF pointer)
     {
+        if (_taskbarLocked) return false;
         if (_entries.length < 2) return false;
         const modelIndex = indexOfEntry(_pressedEntryId);
         if (modelIndex < 0) return false;
@@ -3193,7 +3231,7 @@ class Taskbar : Widget
             // matching the Windows tray gesture.
             const pointer = pointerPosition(event);
             const pressedVisible = _pressed - 200;
-            if (!_notificationDragActive)
+            if (!_notificationDragActive && !_taskbarLocked)
             {
                 const dx = pointer.x - _pressPointer.x;
                 const dy = pointer.y - _pressPointer.y;
@@ -3527,6 +3565,9 @@ class Taskbar : Widget
             if (icon.hidden) continue;
             if (seen == visibleOrder)
             {
+                // Prefer the owning application's own tray menu.
+                if (onNotificationMenu !is null && onNotificationMenu(icon.id))
+                    return;
                 if (icon.showMenu !is null)
                 {
                     icon.showMenu();
@@ -3539,11 +3580,12 @@ class Taskbar : Widget
                 items ~= ContextMenuItem.separatorItem();
                 items ~= ContextMenuItem.command("Move left", IconKind.none,
                     delegate() { moveNotification(visibleOrder, visibleOrder - 1); },
-                    "", visibleOrder > 0);
+                    "", visibleOrder > 0 && !_taskbarLocked);
                 items ~= ContextMenuItem.command("Move right",
                     IconKind.chevronRight,
                     delegate() { moveNotification(visibleOrder, visibleOrder + 1); },
-                    "", visibleOrder + 1 < visibleNotificationCount());
+                    "", visibleOrder + 1 < visibleNotificationCount() &&
+                    !_taskbarLocked);
                 items ~= ContextMenuItem.separatorItem();
                 items ~= ContextMenuItem.command("Hide icon", IconKind.minimize,
                     delegate() { setNotificationHidden(icon.id, true); });
@@ -3640,14 +3682,14 @@ class Taskbar : Widget
             {
                 const current = indexOfEntry(id);
                 if (current > 0) moveEntryInternal(current, current - 1, true);
-            }, "", index > 0);
+            }, "", index > 0 && !_taskbarLocked);
         items ~= ContextMenuItem.command("Move right", IconKind.chevronRight,
             delegate()
             {
                 const current = indexOfEntry(id);
                 if (current >= 0 && current + 1 < cast(int) _entries.length)
                     moveEntryInternal(current, current + 1, true);
-            }, "", index + 1 < cast(int) _entries.length);
+            }, "", index + 1 < cast(int) _entries.length && !_taskbarLocked);
         if (entry.window is null && entry.hostHwnd == 0)
         {
             items ~= ContextMenuItem.separatorItem();
@@ -3682,18 +3724,22 @@ class Taskbar : Widget
         showContextMenu(this, globalPosition, items);
     }
 
+    /// Right-click on empty taskbar space: the standard Windows taskbar menu.
     private void showTaskbarContextMenu(Point globalPosition)
     {
         ContextMenuItem[] items;
         items ~= ContextMenuItem.command(_showDesktopWindows.length == 0 ?
-                "Show desktop" : "Restore windows", IconKind.computer,
+                "Show the desktop" : "Restore windows", IconKind.computer,
             delegate() { toggleShowDesktop(); });
         items ~= ContextMenuItem.separatorItem();
-        items ~= ContextMenuItem.command("Full screen", IconKind.maximize,
+        items ~= ContextMenuItem.command("Task Manager", IconKind.computer,
             delegate()
             {
-                if (onToggleFullscreen !is null) onToggleFullscreen();
-            }, "F11", onToggleFullscreen !is null);
+                if (onTaskManager !is null) onTaskManager();
+            }, "", onTaskManager !is null);
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.check("Lock the taskbar", _taskbarLocked,
+            delegate() { setTaskbarLocked(!_taskbarLocked); });
         items ~= ContextMenuItem.command("Taskbar settings", IconKind.settings,
             delegate()
             {
