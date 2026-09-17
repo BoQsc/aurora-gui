@@ -570,13 +570,27 @@ int main()
     driver.paint();
     const entryCenter = center(entry0);
     driver.moveTo(entryCenter);
-    // The preview appears after a short stable-hover delay.
-    window.onNativeTick(0.12);
+    // The preview appears only after a stable-hover delay.
+    window.onNativeTick(0.29);
+    driver.paint();
+    assert(currentTransientPopup(root) is null,
+        "preview appeared before the hover delay elapsed");
+    // The tiny final tick crosses the delay, so the preview is created and
+    // faded only a little in that same frame.
+    window.onNativeTick(0.02);
     driver.paint();
     auto preview = currentTransientPopup(root);
     assert(preview !is null, "task hover did not open a preview");
     assert(canFind(preview.classinfo.name, "TaskPreview"),
         "task hover opened the wrong popup: " ~ preview.classinfo.name);
+    auto hoverPreview = cast(TaskPreview) preview;
+    assert(hoverPreview !is null, "preview cast failed");
+    assert(hoverPreview.opacity() > 0.0 && hoverPreview.opacity() < 1.0,
+        "preview did not fade in (opacity=" ~
+        to!string(hoverPreview.opacity()) ~ ")");
+    window.onNativeTick(0.2);
+    driver.paint();
+    assert(hoverPreview.opacity() == 1.0, "preview fade did not complete");
     // Regression: a tiny move within the SAME entry must not dismiss it. The
     // preview overlay used to steal hover and flicker the flyout closed/open.
     driver.moveTo(Point(entryCenter.x + 2, entryCenter.y));

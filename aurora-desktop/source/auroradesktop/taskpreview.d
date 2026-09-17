@@ -41,6 +41,10 @@ final class TaskPreview : TransientPopup
     private bool _closeHover;
     private int _hotTile = -1;
     private bool _pointerInside;
+    // Fade-in on show. `_opacity` scales every painted colour's alpha.
+    private double _opacity = 1.0;
+    private bool _fadeActive;
+    private enum double fadeInSeconds = 0.15;
 
     /// Invoked when the X (close) button is clicked.
     void delegate() onCloseRequested;
@@ -99,6 +103,9 @@ final class TaskPreview : TransientPopup
         recalculateLayout();
         requestFocus();
         _opening = false;
+        // Fade in from transparent.
+        _opacity = 0.0;
+        _fadeActive = true;
         invalidate();
         return true;
     }
@@ -108,10 +115,31 @@ final class TaskPreview : TransientPopup
         return parent() !is null && !dismissed();
     }
 
+    /// Current fade opacity (0..1); exposed for tests.
+    double opacity() const @safe pure nothrow @nogc { return _opacity; }
+
     override void dismiss()
     {
         if (dismissed() || _opening) return;
         super.dismiss();
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_fadeActive) return;
+        _opacity += deltaSeconds / fadeInSeconds;
+        if (_opacity >= 1.0)
+        {
+            _opacity = 1.0;
+            _fadeActive = false;
+        }
+        invalidate();
+    }
+
+    /// Scale a colour's alpha by the current fade opacity.
+    private Color fade(Color value) const @safe pure nothrow @nogc
+    {
+        return value.withAlpha(cast(ubyte) (value.a * _opacity + 0.5));
     }
 
     override bool popupContains(Point globalPoint) const @safe pure nothrow @nogc
@@ -227,21 +255,21 @@ final class TaskPreview : TransientPopup
         if (_panelRect.empty()) return;
         const palette = theme();
         canvas.fillRoundedRect(_panelRect.translated(3, 4), 8,
-            Color.rgba(0, 0, 0, 135));
-        canvas.drawRoundedRect(_panelRect, 8, palette.panelElevated,
-            palette.border.withAlpha(230), 1);
+            fade(Color.rgba(0, 0, 0, 135)));
+        canvas.drawRoundedRect(_panelRect, 8, fade(palette.panelElevated),
+            fade(palette.border.withAlpha(230)), 1);
 
         // Title bar.
-        canvas.drawTextInRect(_titleRect, _title, palette.text, 2,
+        canvas.drawTextInRect(_titleRect, _title, fade(palette.text), 2,
             HorizontalAlign.left, VerticalAlign.middle, true);
 
         // X (close) button in the top-right corner.
         if (_closeHover)
             canvas.fillRoundedRect(_closeRect.inset(-2), 4,
-                palette.buttonHover);
+                fade(palette.buttonHover));
         drawIcon(canvas, IconKind.close, _closeRect.inset(3),
-            _closeHover ? Color.rgb(255, 255, 255) : palette.textMuted,
-            palette.accent);
+            fade(_closeHover ? Color.rgb(255, 255, 255) : palette.textMuted),
+            fade(palette.accent));
 
         // Thumbnail tiles (one for a single window, a row for a grouped app).
         foreach (i; 0 .. _tileRects.length)
@@ -249,12 +277,12 @@ final class TaskPreview : TransientPopup
             const tile = _tileRects[i];
             if (i == _hotTile)
                 canvas.drawRoundedRect(tile.inset(-2), 6, Color.rgba(0, 0, 0, 0),
-                    palette.accent.withAlpha(210), 2);
+                    fade(palette.accent.withAlpha(210)), 2);
             RgbaImage image = i < _thumbnails.length ? _thumbnails[i] : null;
             if (image !is null && !tile.empty())
             {
-                canvas.drawRoundedRect(tile, 4, palette.panelBackground,
-                    palette.border.withAlpha(120), 1);
+                canvas.drawRoundedRect(tile, 4, fade(palette.panelBackground),
+                    fade(palette.border.withAlpha(120)), 1);
                 // Fit the image into the tile preserving aspect.
                 const scale = minDouble(
                     cast(double) tile.width / image.width(),
@@ -263,18 +291,20 @@ final class TaskPreview : TransientPopup
                 const dh = maxInt(1, cast(int) (image.height() * scale));
                 const img = Rect(tile.x + (tile.width - dw) / 2,
                     tile.y + (tile.height - dh) / 2, dw, dh);
-                canvas.drawImage(img, image);
+                canvas.drawImage(img, image, image.bounds(),
+                    fade(Color.rgb(255, 255, 255)));
             }
             else
             {
-                canvas.drawTextInRect(tile, "No preview"d, palette.textMuted,
-                    1, HorizontalAlign.center, VerticalAlign.middle, true);
+                canvas.drawTextInRect(tile, "No preview"d,
+                    fade(palette.textMuted), 1, HorizontalAlign.center,
+                    VerticalAlign.middle, true);
             }
             if (i < _tileCaptionRects.length && i < _tileTitles.length &&
                 _tileTitles[i].length > 0)
                 canvas.drawTextInRect(_tileCaptionRects[i], _tileTitles[i],
-                    i == _hotTile ? palette.text :
-                    palette.text.withAlpha(210), 1, HorizontalAlign.center,
+                    fade(i == _hotTile ? palette.text :
+                        palette.text.withAlpha(210)), 1, HorizontalAlign.center,
                     VerticalAlign.middle, true);
         }
     }

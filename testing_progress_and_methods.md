@@ -1,5 +1,23 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: hover-preview delay + fade (2026-09-17)
+
+**Request (user).** "add delay and fade animation for showing the hover tasks
+previews."
+
+**Implementation.**
+- Show delay raised to `previewShowDelaySeconds = 0.3` (the hover-intent timer in
+  `updateTaskPreviewHover`); 0.29 s does not show, the crossing tick does.
+- `TaskPreview` gained a fade-in: `_opacity` starts at 0 on `show()`, advances
+  `delta / fadeInSeconds` (0.15 s) in `onTick`, and every painted colour is
+  passed through `fade(Color)` which scales its alpha (panel, border, title,
+  close button, tile border/background, captions, and the thumbnail via the
+  `drawImage` tint overload). `opacity()` is exposed for tests.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. The preview test now
+asserts no popup at 0.29 s, a popup after crossing 0.3 s, `0 < opacity < 1` on
+the tiny show tick, and `opacity == 1` after 0.2 s more.
+
 ## Aurora Desktop: Taskbar Settings UI (2026-09-17)
 
 **Complaint (user).** "taskbar settings are not implemented as ui" — the menu

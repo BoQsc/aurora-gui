@@ -55,7 +55,7 @@ final class DesktopRoot : Widget
     private double _previewHideDelay;
     private int _previewIndex = -1;
     private bool _taskHovered;
-    private enum double previewShowDelaySeconds = 0.1;
+    private enum double previewShowDelaySeconds = 0.3;
     private enum double previewHideGraceSeconds = 0.35;
 
     /// Called once the host GuiWindow is known (see run()); applies the system

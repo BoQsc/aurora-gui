@@ -1,5 +1,16 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: hover-preview delay + fade (COMPLETED, verified)
+
+**Request (user).** "add delay and fade animation for showing the hover tasks
+previews."
+
+**Resolution.** Task-preview hover delay is 0.3 s and the flyout fades in over
+0.15 s (opacity scales every painted colour including the thumbnail tint).
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED: no popup before the
+delay, popup after it, `0 < opacity < 1` mid-fade, `opacity == 1` when done.
+
 ## 2026-09-17 - Aurora Desktop: Taskbar Settings UI (COMPLETED, verified)
 
 **Complaint (user).** "taskbar settings are not implemented as ui."
