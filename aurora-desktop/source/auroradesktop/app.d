@@ -9,16 +9,19 @@ import auroradesktop.settings : DesktopSettings, loadDesktopSettings,
 import auroradesktop.store : DesktopState, IconState, TaskState, WindowState,
     iconKindFromName, iconKindName, loadDesktopState, saveDesktopState;
 import auroradesktop.taskpreview : TaskPreview;
-import auroradesktop.tasks : ExternalTask, activateExternalTask, captureExternalThumbnail,
-    closeExternalTask, enumerateExternalTasks, excludeWindow, externalTaskAlive,
-    externalTaskFocused, externalTaskGroupKey, externalTaskIcon,
-    externalTaskMinimized, externalTaskSize, externalTaskTitle,
-    minimizeExternalTask;
+import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
+    captureExternalThumbnail, closeExternalTask, enumerateExternalTasks,
+    enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
+    externalTaskGroupKey, externalTaskIcon, externalTaskMinimized,
+    externalTaskSize, externalTaskTitle, minimizeExternalTask;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
     queryWifi;
+import std.algorithm : canFind;
 import std.conv : to;
+import std.process : spawnShell;
+import std.string : toLower;
 import std.utf : toUTF8, toUTF32;
 
 /**
@@ -200,35 +203,165 @@ final class DesktopRoot : Widget
         _volume = systemVolume();
 
         refreshTray();
-        registerNotifications();
+        _taskbar.onNotificationHidden = delegate(size_t id, bool hidden)
+        {
+            foreach (key, value; _notificationIds)
+                if (value == id)
+                {
+                    _notificationHiddenOverride[key] = hidden;
+                    break;
+                }
+        };
+        refreshNotifications();
         syncExternalTasks();
     }
 
-    /// Shell-owned notification icons for the tray cluster. Windows 11's XAML
-    /// taskbar no longer exposes the classic Explorer overflow toolbar with real
-    /// icon metadata (proven zero returns), so these are the shell's own.
-    private void registerNotifications()
+    // --- real notification-area (tray) icons -----------------------------
+    // The shell enumerates the live Windows tray icons (visible + overflow),
+    // preserves the user's drag order across refreshes, and keeps hide/show
+    // overrides. State is keyed by a stable per-icon string.
+    private string[] _notificationOrder;
+    private size_t[string] _notificationIds;
+    private size_t _nextNotificationId = 1;
+    private bool[string] _notificationHiddenOverride;
+    private double _notificationRefreshAccumulator;
+    private enum double notificationRefreshSeconds = 2.0;
+
+    private static string notificationKey(const ref TrayIconInfo info)
     {
-        NotificationIcon icon;
-        icon.id = 1;
-        icon.label = toUTF32("OneDrive");
-        icon.icon = IconKind.drive;
-        icon.action = delegate() { showMessage("OneDrive is up to date."); };
-        _taskbar.addNotification(icon);
+        return info.exePath ~ "\t" ~ to!string(info.id) ~ "\t" ~ info.label;
+    }
 
-        icon = NotificationIcon.init;
-        icon.id = 2;
-        icon.label = toUTF32("Antivirus");
-        icon.icon = IconKind.computer;
-        icon.action = delegate() { showMessage("Protection is on."); };
-        _taskbar.addNotification(icon);
+    /// Map a stable notification id back to its key ("" when unknown).
+    private string notificationKeyForId(size_t id)
+    {
+        foreach (key, value; _notificationIds)
+            if (value == id) return key;
+        return "";
+    }
 
-        icon = NotificationIcon.init;
-        icon.id = 3;
-        icon.label = toUTF32("Messenger");
-        icon.icon = IconKind.terminal;
-        icon.action = delegate() { showMessage("No new messages."); };
-        _taskbar.addNotification(icon);
+    /// Enumerate the real tray icons and publish them to the taskbar.
+    private void refreshNotifications()
+    {
+        version (Windows)
+        {
+            auto icons = enumerateTrayIcons();
+
+            bool[string] present;
+            TrayIconInfo[string] byKey;
+            string[] newKeys;
+            foreach (icon; icons)
+            {
+                string key = notificationKey(icon);
+                if (key !in present) newKeys ~= key;
+                present[key] = true;
+                byKey[key] = icon;
+            }
+
+            // Preserve the user's drag order: start from what the taskbar shows
+            // right now, then any still-present saved keys, then new icons.
+            string[] order;
+            bool[string] seen;
+            foreach (current; _taskbar.notifications())
+            {
+                const key = notificationKeyForId(current.id);
+                if (key.length == 0 || key in seen || key !in present) continue;
+                seen[key] = true;
+                order ~= key;
+            }
+            foreach (key; _notificationOrder)
+            {
+                if (key in seen || key !in present) continue;
+                seen[key] = true;
+                order ~= key;
+            }
+            foreach (key; newKeys)
+            {
+                if (key in seen) continue;
+                seen[key] = true;
+                order ~= key;
+            }
+            _notificationOrder = order;
+
+            // Build the desired model, assigning stable ids.
+            NotificationIcon[] desired;
+            foreach (key; order)
+            {
+                auto found = key in byKey;
+                if (found is null) continue;
+                auto info = *found;
+                auto idPtr = key in _notificationIds;
+                if (idPtr is null)
+                {
+                    _notificationIds[key] = _nextNotificationId++;
+                    idPtr = key in _notificationIds;
+                }
+                auto hiddenPtr = key in _notificationHiddenOverride;
+
+                NotificationIcon icon;
+                icon.id = *idPtr;
+                icon.label = toUTF32(info.label.length > 0 ?
+                    info.label : "Notification");
+                icon.icon = IconKind.settings;
+                icon.iconImage = info.icon;
+                icon.hidden = hiddenPtr !is null ? *hiddenPtr : info.hidden;
+                const exePath = info.exePath;
+                const label = info.label;
+                icon.action = delegate() { activateTrayIcon(exePath, label); };
+                desired ~= icon;
+            }
+
+            // Only rebuild when something actually changed, so a refresh never
+            // disturbs an in-progress drag or needlessly repaints.
+            const current = _taskbar.notifications();
+            bool same = current.length == desired.length;
+            if (same)
+            {
+                foreach (i; 0 .. desired.length)
+                {
+                    if (current[i].id != desired[i].id ||
+                        current[i].hidden != desired[i].hidden ||
+                        current[i].label != desired[i].label)
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+            }
+            if (!same)
+            {
+                _taskbar.clearNotifications();
+                foreach (icon; desired) _taskbar.addNotification(icon);
+            }
+            refreshTray();
+        }
+    }
+
+    /// Best-effort activation of a tray icon: launch the owning app, or show
+    /// its label for Windows-owned components that must not be relaunched.
+    private void activateTrayIcon(string exePath, string label)
+    {
+        version (Windows)
+        {
+            if (exePath.length > 0 && !isSystemExecutable(exePath))
+            {
+                try
+                {
+                    spawnShell(exePath);
+                    return;
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+        showMessage(label.length > 0 ? label : "Notification");
+    }
+
+    private static bool isSystemExecutable(string path)
+    {
+        if (path.length < 12) return false;
+        return toLower(path[0 .. 12]) == "c:\\windows\\";
     }
 
     private void buildNotepadWindow()
@@ -1181,6 +1314,13 @@ final class DesktopRoot : Widget
         {
             _externalTaskAccumulator = 0.0;
             syncExternalTasks();
+        }
+        // Refresh the real tray icons periodically (apps add/remove them).
+        _notificationRefreshAccumulator += deltaSeconds;
+        if (_notificationRefreshAccumulator >= notificationRefreshSeconds)
+        {
+            _notificationRefreshAccumulator = 0.0;
+            refreshNotifications();
         }
     }
 

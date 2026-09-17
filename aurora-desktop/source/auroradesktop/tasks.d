@@ -5,25 +5,27 @@ import aurora.types : Size;
 
 version (Windows)
 {
-    import core.sys.windows.windows : HWND, DWORD, BOOL, LPARAM, UINT,
-        HDC, HGDIOBJ, HBITMAP, RECT, HICON;
+    import core.sys.windows.windows : HWND, DWORD, BOOL, LPARAM, WPARAM, UINT,
+        HDC, HGDIOBJ, HBITMAP, RECT, HICON, SIZE_T, PVOID;
     import core.sys.windows.winuser : EnumWindows, EnumChildWindows, GetWindowTextW,
         GetWindowRect, IsWindowVisible, GetClassNameW, GetDC, ReleaseDC,
         ShowWindow, IsIconic, IsZoomed, SetForegroundWindow, GetForegroundWindow,
-        GetWindow, IsWindow, GW_OWNER, PrintWindow, PostMessageW,
-        SendMessageW, GetIconInfo, GetClassLongPtrW, DrawIconEx, DestroyIcon,
-        ICONINFO;
+        GetWindow, IsWindow, FindWindowW, GW_OWNER, GW_CHILD, GW_HWNDNEXT,
+        PrintWindow, PostMessageW, SendMessageW, GetIconInfo, GetClassLongPtrW,
+        DrawIconEx, DestroyIcon, ICONINFO;
     import core.sys.windows.wingdi : CreateCompatibleDC, CreateCompatibleBitmap,
         SelectObject, DeleteDC, DeleteObject, GetDIBits, DIB_RGB_COLORS,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BitBlt, SRCCOPY,
         GetObjectW, BITMAP;
+    import core.sys.windows.commctrl : TBBUTTON, TB_GETBUTTON, TB_BUTTONCOUNT;
     import core.sys.windows.winbase : GetWindowThreadProcessId, OpenProcess,
-        CloseHandle;
+        CloseHandle, VirtualAllocEx, VirtualFreeEx, ReadProcessMemory;
     import core.sys.windows.shellapi : SHGetFileInfoW, SHFILEINFOW,
         SHGFI_ICON, SHGFI_LARGEICON;
     import core.sys.windows.windef : HBRUSH, HANDLE, LPWSTR;
     import std.utf : toUTF8, toUTF16z;
     import std.algorithm : sort;
+    import std.conv : to;
     import core.stdc.stdlib : malloc, free;
     import core.stdc.string : memcpy;
 
@@ -32,6 +34,15 @@ version (Windows)
     {
         BOOL QueryFullProcessImageNameW(HANDLE, DWORD, LPWSTR, DWORD*);
     }
+
+    enum DWORD PROCESS_VM_OPERATION = 0x0008;
+    enum DWORD PROCESS_VM_READ = 0x0010;
+    enum DWORD PROCESS_QUERY_INFORMATION = 0x0400;
+    enum DWORD MEM_COMMIT = 0x1000;
+    enum DWORD MEM_RESERVE = 0x2000;
+    enum DWORD MEM_RELEASE = 0x8000;
+    enum DWORD PAGE_READWRITE = 0x04;
+    enum UINT TBSTATE_HIDDEN_ = 8;
 }
 
 /// One live top-level OS window to surface in the taskbar.
@@ -399,6 +410,176 @@ string externalTaskTitle(ulong hwndValue)
     else
     {
         return "";
+    }
+}
+
+/// One real notification-area (system tray) icon from the Windows shell.
+struct TrayIconInfo
+{
+    /// Owning application window (0 when unknown).
+    ulong hwnd;
+    /// Notification id within that window (0 when unknown).
+    uint id;
+    /// Short label (tooltip first line, else the owning executable name).
+    string label;
+    /// Full multi-line tooltip text.
+    string tooltip;
+    /// Owning process image path ("" when unknown).
+    string exePath;
+    /// The real 16/20/32 px tray icon (null when it could not be read).
+    RgbaImage icon;
+    /// True when the icon lives in the overflow ("hidden icons") flyout.
+    bool hidden;
+}
+
+version (Windows)
+{
+    private HWND findDescendantByText(HWND parent, string wanted)
+    {
+        for (auto child = GetWindow(parent, GW_CHILD); child !is null;
+            child = GetWindow(child, GW_HWNDNEXT))
+        {
+            wchar[512] buffer;
+            const length = GetWindowTextW(child, buffer.ptr, buffer.length);
+            if (length > 0 && toUtf8Safe(buffer[0 .. length]) == wanted)
+                return child;
+            auto nested = findDescendantByText(child, wanted);
+            if (nested !is null) return nested;
+        }
+        return null;
+    }
+
+    private string firstLine(string value)
+    {
+        foreach (i, c; value)
+            if (c == '\n' || c == '\r') return value[0 .. i];
+        return value;
+    }
+
+    private string stripExtension(string name)
+    {
+        foreach (i; 0 .. name.length)
+        {
+            const offset = name.length - 1 - i;
+            if (name[offset] == '.') return name[0 .. offset];
+        }
+        return name;
+    }
+
+    /// Read a UTF-16 string from another process ("" on failure).
+    private string readRemoteString(HANDLE process, size_t address, size_t chars)
+    {
+        if (address == 0) return "";
+        auto buffer = new wchar[chars];
+        SIZE_T read;
+        if (!ReadProcessMemory(process, cast(const(void)*) address,
+                buffer.ptr, chars * wchar.sizeof, &read))
+            return "";
+        size_t length;
+        while (length < chars && buffer[length] != 0 && length < 200) ++length;
+        return toUtf8Safe(buffer[0 .. length]);
+    }
+
+    /**
+     * Enumerate the real notification-area icons.
+     *
+     * The classic Explorer tray toolbars still exist on Windows 11: the
+     * "User Promoted Notification Area" toolbar holds the visible icons (and
+     * hidden placeholders marked TBSTATE_HIDDEN) and the
+     * "NotifyIconOverflowWindow" toolbar holds the overflow icons. For each
+     * button the undocumented TRAYDATA read from `TBBUTTON.dwData` exposes the
+     * owning HWND (+0), notification id (+8) and HICON (+24), while
+     * `TBBUTTON.iString` points at the tooltip. All reads are validated so a
+     * layout change degrades to fewer icons instead of crashing.
+     */
+    TrayIconInfo[] enumerateTrayIcons()
+    {
+        TrayIconInfo[] result;
+        auto tray = FindWindowW(toUTF16z("Shell_TrayWnd"), null);
+        if (tray !is null)
+        {
+            auto promoted = findDescendantByText(tray,
+                "User Promoted Notification Area");
+            readTrayToolbar(promoted, false, result);
+        }
+        auto overflow = FindWindowW(toUTF16z("NotifyIconOverflowWindow"), null);
+        if (overflow !is null)
+        {
+            auto toolbar = findDescendantByText(overflow,
+                "Overflow Notification Area");
+            readTrayToolbar(toolbar, true, result);
+        }
+        return result;
+    }
+
+    private void readTrayToolbar(HWND toolbar, bool overflow,
+        ref TrayIconInfo[] output)
+    {
+        if (toolbar is null) return;
+        DWORD pid;
+        GetWindowThreadProcessId(toolbar, &pid);
+        if (pid == 0) return;
+        auto process = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ |
+            PROCESS_QUERY_INFORMATION, 0, pid);
+        if (process is null) return;
+        scope (exit) CloseHandle(process);
+
+        const remote = cast(size_t) VirtualAllocEx(process, null, 0x2000,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (remote == 0) return;
+        scope (exit) VirtualFreeEx(process, cast(void*) remote, 0, MEM_RELEASE);
+
+        const count = cast(int) SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0);
+        foreach (i; 0 .. count)
+        {
+            TBBUTTON button;
+            SIZE_T read;
+            if (!SendMessageW(toolbar, TB_GETBUTTON, cast(WPARAM) i,
+                    cast(LPARAM) remote))
+                continue;
+            if (!ReadProcessMemory(process, cast(const(void)*) remote,
+                    &button, TBBUTTON.sizeof, &read))
+                continue;
+            // Hidden placeholders in the promoted toolbar are not real icons.
+            if (!overflow && (button.fsState & TBSTATE_HIDDEN_) != 0)
+                continue;
+
+            TrayIconInfo info;
+            info.hidden = overflow;
+            info.tooltip = readRemoteString(process, cast(size_t) button.iString,
+                256);
+            info.label = firstLine(info.tooltip);
+
+            // TRAYDATA: HWND at +0, uID at +8, HICON at +24.
+            ubyte[56] header;
+            if (ReadProcessMemory(process, cast(const(void)*) button.dwData,
+                    header.ptr, header.length, &read))
+            {
+                ulong ownerHwnd;
+                uint ownerId;
+                ulong iconHandle;
+                foreach (k; 0 .. 8)
+                    ownerHwnd |= cast(ulong) header[k] << (8 * k);
+                foreach (k; 0 .. 4)
+                    ownerId |= cast(uint) header[8 + k] << (8 * k);
+                foreach (k; 0 .. 8)
+                    iconHandle |= cast(ulong) header[24 + k] << (8 * k);
+                if (ownerHwnd != 0 && IsWindow(cast(HWND) ownerHwnd))
+                {
+                    info.hwnd = ownerHwnd;
+                    info.id = ownerId;
+                    info.exePath = processImagePath(cast(HWND) ownerHwnd);
+                    if (iconHandle != 0)
+                        info.icon = iconToRgba(cast(HICON) iconHandle);
+                }
+            }
+
+            if (info.label.length == 0 && info.exePath.length > 0)
+                info.label = stripExtension(baseNameOf(info.exePath));
+            if (info.label.length == 0)
+                info.label = "Notification";
+            output ~= info;
+        }
     }
 }
 

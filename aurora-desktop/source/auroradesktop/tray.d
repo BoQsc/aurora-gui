@@ -323,7 +323,7 @@ final class BatteryPanel : Widget
 
 final class HiddenIconsPanel : Widget
 {
-    private const(NotificationIcon)[] _icons;
+    private NotificationIcon[] _icons;
     private int _cell = 44;
     private int _gap = 8;
     private int _padding = 14;
@@ -336,7 +336,7 @@ final class HiddenIconsPanel : Widget
     /// Called to hide/unhide an icon by id.
     void delegate(size_t id, bool hidden) onIconHidden;
 
-    this(const(NotificationIcon)[] icons)
+    this(NotificationIcon[] icons)
     {
         _icons = icons.dup;
         setComposited(true);
@@ -369,12 +369,12 @@ final class HiddenIconsPanel : Widget
         return -1;
     }
 
-    const(NotificationIcon)[] icons() const @safe pure nothrow @nogc
+    NotificationIcon[] icons() @safe pure nothrow @nogc
     {
         return _icons;
     }
 
-    void refresh(const(NotificationIcon)[] icons)
+    void refresh(NotificationIcon[] icons)
     {
         _icons = icons.dup;
         updateGridMetrics();
@@ -396,8 +396,18 @@ final class HiddenIconsPanel : Widget
             const cell = cellRect(index);
             if (index == _hover)
                 canvas.fillRoundedRect(cell, 7, palette.buttonHover);
-            drawIcon(canvas, _icons[cast(size_t) index].icon,
-                cell.inset(12), palette.text, palette.accent);
+            auto iconImage = _icons[cast(size_t) index].iconImage;
+            if (iconImage !is null)
+            {
+                const iconRect = cell.inset(12);
+                const side = minInt(iconRect.width, iconRect.height);
+                canvas.drawImage(Rect(iconRect.x + (iconRect.width - side) / 2,
+                    iconRect.y + (iconRect.height - side) / 2, side, side),
+                    iconImage);
+            }
+            else
+                drawIcon(canvas, _icons[cast(size_t) index].icon,
+                    cell.inset(12), palette.text, palette.accent);
             canvas.drawTextInRect(Rect(cell.x, cell.bottom() - 16, cell.width, 14),
                 toUTF32(shortLabel(_icons[cast(size_t) index].label)),
                 palette.textMuted, 1, HorizontalAlign.center, VerticalAlign.bottom,
@@ -440,3 +450,4 @@ final class HiddenIconsPanel : Widget
         // Layout is static; the grid is sized by preferred dimensions.
     }
 }
+

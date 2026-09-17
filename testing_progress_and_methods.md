@@ -1,5 +1,54 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: real tray icons + drag reorder (2026-09-17)
+
+**Request (user).** "Allow to rearrange notification icons by drag. Update and
+implement notification icons fully, most are missing and not shown but they
+exist."
+
+**Diagnosis.** The previous code registered three fake shell notifications
+(OneDrive/Antivirus/Messenger) and claimed Windows 11 exposes no real tray
+metadata. That was wrong: a probe of `Shell_TrayWnd` -> `TrayNotifyWnd` ->
+`SysPager` -> `ToolbarWindow32` ("User Promoted Notification Area") found **17
+buttons** and `NotifyIconOverflowWindow` -> "Overflow Notification Area" found
+**4**. Buttons with `fsState & TBSTATE_HIDDEN` are hidden placeholders; the rest
+are the visible icons.
+
+**How the real data is read (probe-verified).** For each toolbar button,
+`TBBUTTON.dwData` points at a TRAYDATA record in explorer's address space:
+- `+0`  HWND owning the icon (`IsWindow` true for every real icon)
+- `+8`  notification id
+- `+24` HICON (validated with `GetIconInfo`; 16/20/32 px)
+`TBBUTTON.iString` is a pointer to the UTF-16 tooltip. Reads use
+`OpenProcess`/`VirtualAllocEx`/`ReadProcessMemory`, are validated, and degrade
+gracefully (no icons) if explorer is elevated or the layout changes. The owning
+executable is resolved via `executablePathForWindow`.
+
+**Implementation.**
+- `tasks.d`: `TrayIconInfo` + `enumerateTrayIcons()` (visible + overflow, real
+  raster icons, tooltips, owner exe).
+- vendor `widgets/desktop.d`: `NotificationIcon.iconImage` painted in the tray
+  and the overflow panel; drag-to-reorder (`moveNotification`) with the pressed
+  icon tracking its stable id; dragging left clear of the cluster hides it;
+  "Move left/right" context items; `onNotificationHidden` callback.
+- `aurora-desktop`: `refreshNotifications()` polls every 2 s, preserves the
+  user's drag order across refreshes, assigns stable ids, keeps hide/show
+  overrides, and activates an icon by launching its owning app.
+
+**How to test.**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_smoke.d -of=build\headless-smoke.exe ^
+  -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib ^
+  -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> ALL PASSED
+```
+The smoke's `testNotificationReorder` adds three synthetic notifications and
+asserts a pointer drag from slot 0 to slot 2 yields id order `2,3,1`. Live
+enumeration was verified with a probe (`enumerateTrayIcons`) and an app probe
+(`DesktopRoot`): 9 icons (Task Manager/Steam/Wi-Fi/Battery/Headphones visible;
+Meet Now/Bluetooth/Windows Security/ELAN in overflow), each with a real image.
+
 ## Aurora Desktop: task hover/preview + drag animation fixed (2026-09-17)
 
 **Complaint (user).** "Fix mouse/cursor targeting bug, most of the time I can't

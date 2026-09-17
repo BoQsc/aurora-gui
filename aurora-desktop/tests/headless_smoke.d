@@ -158,6 +158,50 @@ private void testTaskDragAnimation()
     driver.mouseUp();
 }
 
+// Dragging a notification icon must reorder the visible cluster.
+private void testNotificationReorder()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(640, 260));
+    driver.paint();
+    auto taskbar = root.taskbar;
+    foreach (i; 0 .. 3)
+    {
+        NotificationIcon icon;
+        icon.id = i + 1;
+        icon.label = toUTF32("Notif" ~ to!string(i));
+        icon.icon = IconKind.file;
+        taskbar.addNotification(icon);
+    }
+    driver.paint();
+    assert(taskbar.notifications().length == 3);
+    assert(taskbar.notifications()[0].id == 1);
+
+    // Drag the first notification onto the third slot.
+    const first = center(taskbar.notificationIconGlobalBounds(0));
+    const third = center(taskbar.notificationIconGlobalBounds(2));
+    driver.moveTo(first);
+    driver.mouseDown();
+    driver.moveTo(Point(first.x + 8, first.y));
+    driver.moveTo(Point((first.x + third.x) / 2, first.y));
+    driver.moveTo(third);
+    driver.mouseUp();
+    driver.paint();
+
+    const order = taskbar.notifications();
+    assert(order.length == 3);
+    assert(order[0].id == 2 && order[1].id == 3 && order[2].id == 1,
+        "notification drag reorder produced " ~ to!string(order[0].id) ~ "," ~
+        to!string(order[1].id) ~ "," ~ to!string(order[2].id));
+}
+
 int main()
 {
     WindowOptions options;
@@ -606,7 +650,31 @@ int main()
             "removing the last member must drop the group");
     }
 
+    // The user's notification arrangement must survive the 2 s OS-tray refresh
+    // (the shell reads the live taskbar order instead of snapping back).
+    size_t[] visibleNotificationIds()
+    {
+        size_t[] ids;
+        foreach (icon; taskbar.notifications())
+            if (!icon.hidden) ids ~= icon.id;
+        return ids;
+    }
+    auto visibleBefore = visibleNotificationIds();
+    if (visibleBefore.length >= 3)
+    {
+        assert(taskbar.moveNotification(0, 2));
+        auto visibleMoved = visibleNotificationIds();
+        assert(visibleMoved.length == visibleBefore.length);
+        assert(visibleMoved[2] == visibleBefore[0],
+            "moveNotification did not move the first visible icon to the end");
+        window.onNativeTick(2.1);
+        driver.paint();
+        assert(visibleNotificationIds()[2] == visibleBefore[0],
+            "notification order was reset by the periodic refresh");
+    }
+
     testTaskDragAnimation();
+    testNotificationReorder();
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");

@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: real tray icons + drag reorder (COMPLETED, verified)
+
+**Complaint (user).** "Allow to rearrange notification icons by drag. Update and
+implement notification icons fully, most are missing and not shown but they
+exist."
+
+**Diagnosis.** The shell showed three fake notifications and the code claimed
+Windows 11 exposes no tray metadata. A live probe proved otherwise: the Explorer
+"User Promoted Notification Area" toolbar has 17 buttons and the overflow
+toolbar has 4. Hidden placeholders are marked `TBSTATE_HIDDEN`; the rest are the
+real icons. Their TRAYDATA exposes the owner HWND (+0), id (+8) and real HICON
+(+24), and `iString` points at the tooltip.
+
+**Resolution.** `enumerateTrayIcons()` reads the live tray (validated
+cross-process reads), and the taskbar paints the real raster icons, supports
+drag-to-reorder in the cluster, Move left/right menu items, hide-by-drag into
+the overflow, and a hide/show override callback. The app refreshes every 2 s and
+preserves the user's drag order and overrides.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED including a
+notification drag-reorder regression (ids become 2,3,1). Live probes returned 9
+real icons with 16/20/32 px images. Details in
+`testing_progress_and_methods.md` (2026-09-17 tray section).
+
 ## 2026-09-17 - Aurora Desktop: hover/preview flicker + drag animation (COMPLETED, verified)
 
 **Complaint (user).** "Fix mouse/cursor targeting bug, most of the time I can't

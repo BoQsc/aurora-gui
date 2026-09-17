@@ -955,6 +955,8 @@ struct NotificationIcon
     size_t id;
     dstring label;
     IconKind icon = IconKind.none;
+    /// Real raster icon (e.g. an OS tray icon); null falls back to `icon`.
+    RgbaImage iconImage;
     bool hidden;
     void delegate() action;
     void delegate() showMenu; // right-click context (opened by the app/web)
@@ -1116,6 +1118,11 @@ class Taskbar : Widget
 {
     private TaskEntry[] _entries;
     private NotificationIcon[] _notifications;
+    // Notification drag-reorder state. `_pressed` encodes a pressed
+    // notification as 200 + visible order; the dragged icon is tracked by its
+    // stable id so live reordering cannot lose it.
+    private bool _notificationDragActive;
+    private size_t _notificationDragId;
     private int _pressed = -2;
     private int _hot = -2;
     private int _keyboardIndex = -1;
@@ -1194,6 +1201,8 @@ class Taskbar : Widget
     void delegate() onWifiClick;
     void delegate() onHiddenIconsClick;
     void delegate() onSearchClick;
+    /** Fired when a notification's hidden state changes (context menu / drag). */
+    void delegate(size_t id, bool hidden) onNotificationHidden;
     void delegate(int from, int to) onEntryMoved;
     void delegate(int index) onEntryRemoved;
     /** Stable-ID snapshot emitted after every completed order mutation. */
@@ -1442,7 +1451,9 @@ class Taskbar : Widget
         return _tray;
     }
 
-    const(NotificationIcon)[] notifications() const @safe pure nothrow @nogc
+    /// The notification model. Returned directly (not duplicated) because the
+    /// entries carry an `RgbaImage` reference; callers must treat it read-only.
+    NotificationIcon[] notifications() @safe pure nothrow @nogc
     {
         return _notifications;
     }
@@ -1468,6 +1479,8 @@ class Taskbar : Widget
                 icon.hidden = hidden;
                 _tray.hiddenIconCount = hiddenNotificationCount();
                 invalidate();
+                if (onNotificationHidden !is null)
+                    onNotificationHidden(id, hidden);
                 return;
             }
         }
@@ -2190,22 +2203,97 @@ class Taskbar : Widget
     /// How far (px) a notification must be dragged left before it hides.
     private enum int notificationDragHideDistance = 70;
 
-    private void hideNotification(int visibleOrder)
+    /// Model index of the visible-order notification, or -1.
+    private int modelIndexForVisibleNotification(int visibleOrder) const
     {
+        if (visibleOrder < 0) return -1;
         int seen;
-        foreach (ref icon; _notifications)
+        foreach (i, icon; _notifications)
         {
             if (icon.hidden) continue;
-            if (seen == visibleOrder)
+            if (seen == visibleOrder) return cast(int) i;
+            ++seen;
+        }
+        return -1;
+    }
+
+    /// Visible-order index of a model notification, or -1 when it is hidden.
+    private int visibleIndexForModelNotification(int modelIndex) const
+    {
+        if (modelIndex < 0 || modelIndex >= cast(int) _notifications.length)
+            return -1;
+        int seen;
+        foreach (i, icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (cast(int) i == modelIndex) return seen;
+            ++seen;
+        }
+        return -1;
+    }
+
+    /// Model index of a notification by its stable id, or -1.
+    private int indexOfNotificationId(size_t id) const
+    {
+        foreach (i, icon; _notifications)
+            if (icon.id == id) return cast(int) i;
+        return -1;
+    }
+
+    private int notificationClusterStartX() const @safe pure nothrow @nogc
+    {
+        const first = notificationIconRect(0);
+        return first.empty() ? fixedTrayLeftX() : first.x;
+    }
+
+    /// Visible-order slot nearest a local x (for drag reorder).
+    private int notificationTargetFromX(int localX) const
+    {
+        const count = visibleNotificationCount();
+        if (count <= 0) return -1;
+        const stride = trayIconWidth + trayIconGap;
+        const target = (localX - notificationClusterStartX() + stride / 2) /
+            stride;
+        return clampInt(target, 0, count - 1);
+    }
+
+    /**
+     * Move a visible notification from one visible-order slot to another. The
+     * overflow (hidden) entries keep their model positions; only the relative
+     * order of visible icons changes.
+     */
+    bool moveNotification(int fromVisible, int toVisible)
+    {
+        if (fromVisible == toVisible || fromVisible < 0 || toVisible < 0)
+            return false;
+        const fromModel = modelIndexForVisibleNotification(fromVisible);
+        const toModel = modelIndexForVisibleNotification(toVisible);
+        if (fromModel < 0 || toModel < 0) return false;
+        auto element = _notifications[cast(size_t) fromModel];
+        _notifications = _notifications[0 .. fromModel] ~
+            _notifications[fromModel + 1 .. $];
+        _notifications = _notifications[0 .. toModel] ~ element ~
+            _notifications[toModel .. $];
+        invalidate();
+        return true;
+    }
+
+    private void hideNotification(size_t id)
+    {
+        foreach (ref icon; _notifications)
+        {
+            if (icon.id == id)
             {
                 icon.hidden = true;
                 _tray.hiddenIconCount = hiddenNotificationCount();
                 _pressed = -2;
+                _notificationDragActive = false;
                 releaseMouse();
                 invalidate();
+                if (onNotificationHidden !is null)
+                    onNotificationHidden(id, true);
                 return;
             }
-            ++seen;
         }
     }
 
@@ -2813,8 +2901,11 @@ class Taskbar : Widget
                 canvas.fillRoundedRect(notifRect, 5, palette.taskbarHover);
             const nicon = Rect(notifRect.x + (trayIconWidth - iconSize) / 2,
                 (bounds().height - iconSize) / 2, iconSize, iconSize);
-            drawIcon(canvas, icon.icon, nicon,
-                Color.rgb(245, 248, 252), palette.accent);
+            if (icon.iconImage !is null)
+                canvas.drawImage(nicon, icon.iconImage);
+            else
+                drawIcon(canvas, icon.icon, nicon,
+                    Color.rgb(245, 248, 252), palette.accent);
             ++seen;
         }
 
@@ -3097,14 +3188,41 @@ class Taskbar : Widget
     {
         if (_pressed >= 200)
         {
-            // Drag a visible notification far enough and it moves into the
-            // overflow (hides). Windows lets you drag a tray icon away from the
-            // cluster; we hide it past the entry area.
+            // Drag a notification to reorder it within the cluster. Dragging it
+            // left, clear of the cluster, drops it into the overflow (hides it),
+            // matching the Windows tray gesture.
             const pointer = pointerPosition(event);
-            const dx = pointer.x - _pressPointer.x;
-            const pressedNotif = _pressed - 200;
-            if (dx <= -notificationDragHideDistance)
-                hideNotification(pressedNotif);
+            const pressedVisible = _pressed - 200;
+            if (!_notificationDragActive)
+            {
+                const dx = pointer.x - _pressPointer.x;
+                const dy = pointer.y - _pressPointer.y;
+                if (dx * dx + dy * dy >= 16.0)
+                {
+                    const model = modelIndexForVisibleNotification(pressedVisible);
+                    if (model < 0) return true;
+                    _notificationDragId = _notifications[cast(size_t) model].id;
+                    _notificationDragActive = true;
+                }
+            }
+            if (_notificationDragActive)
+            {
+                if (pointer.x < notificationClusterStartX() - 24)
+                {
+                    hideNotification(_notificationDragId);
+                    return true;
+                }
+                const target = notificationTargetFromX(cast(int) pointer.x);
+                if (target >= 0)
+                {
+                    const model = indexOfNotificationId(_notificationDragId);
+                    const current = visibleIndexForModelNotification(model);
+                    if (current >= 0 && current != target &&
+                        moveNotification(current, target))
+                        _pressed = 200 + target;
+                }
+                invalidate();
+            }
             return true;
         }
         if (_pressed >= 0 && _pressed < 100)
@@ -3278,9 +3396,13 @@ class Taskbar : Widget
         }
         if (pressed >= 200)
         {
-            const notifOrder = pressed - 200;
-            if (notificationHit(event.position) == notifOrder)
-                activateNotification(notifOrder);
+            // A completed drag only reordered (or hid) the icon; do not also
+            // activate it on release.
+            const dragged = _notificationDragActive;
+            _notificationDragActive = false;
+            if (dragged) return true;
+            const notifOrder = notificationHit(event.position);
+            if (notifOrder >= 0) activateNotification(notifOrder);
             return true;
         }
         if (pressed >= 100)
@@ -3412,7 +3534,16 @@ class Taskbar : Widget
                 }
                 ContextMenuItem[] items;
                 items ~= ContextMenuItem.command(toUTF8(icon.label.length > 0 ?
-                    icon.label : "Open"), icon.icon, delegate() { activateNotification(visibleOrder); });
+                    icon.label : "Open"), icon.icon,
+                    delegate() { activateNotification(visibleOrder); });
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Move left", IconKind.none,
+                    delegate() { moveNotification(visibleOrder, visibleOrder - 1); },
+                    "", visibleOrder > 0);
+                items ~= ContextMenuItem.command("Move right",
+                    IconKind.chevronRight,
+                    delegate() { moveNotification(visibleOrder, visibleOrder + 1); },
+                    "", visibleOrder + 1 < visibleNotificationCount());
                 items ~= ContextMenuItem.separatorItem();
                 items ~= ContextMenuItem.command("Hide icon", IconKind.minimize,
                     delegate() { setNotificationHidden(icon.id, true); });
