@@ -227,18 +227,10 @@ final class DesktopRoot : Widget
                     break;
                 }
         };
-        // Right-click a tray icon: prefer the owning application's own menu by
-        // posting its tray callback; fall back to the generic menu.
+        // Ask the owning application to show its own tray menu.
         _taskbar.onNotificationMenu = delegate(size_t id)
         {
-            const key = notificationKeyForId(id);
-            if (key.length == 0) return false;
-            auto hwndPtr = key in _notificationHwnd;
-            auto callbackPtr = key in _notificationCallback;
-            auto osIdPtr = key in _notificationOsId;
-            if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
-                return false;
-            return postTrayContextMenu(*hwndPtr, *callbackPtr, *osIdPtr);
+            return postNotificationAppMenu(id);
         };
         _taskbar.onPinChanged = delegate(TaskEntryId id, bool pinned)
         {
@@ -362,6 +354,29 @@ final class DesktopRoot : Widget
         return "";
     }
 
+    /// Owning executable path of a notification id (from its stable key).
+    private string notificationExeForId(size_t id)
+    {
+        const key = notificationKeyForId(id);
+        foreach (i, c; key)
+            if (c == '\t') return key[0 .. i];
+        return "";
+    }
+
+    /// Ask the owning app to open its tray context menu; false when there is no
+    /// usable callback (the caller then keeps its own menu).
+    private bool postNotificationAppMenu(size_t id)
+    {
+        const key = notificationKeyForId(id);
+        if (key.length == 0) return false;
+        auto hwndPtr = key in _notificationHwnd;
+        auto callbackPtr = key in _notificationCallback;
+        auto osIdPtr = key in _notificationOsId;
+        if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
+            return false;
+        return postTrayContextMenu(*hwndPtr, *callbackPtr, *osIdPtr);
+    }
+
     /// Enumerate the real tray icons and publish them to the taskbar.
     private void refreshNotifications()
     {
@@ -431,6 +446,7 @@ final class DesktopRoot : Widget
                 icon.icon = IconKind.settings;
                 icon.iconImage = info.icon;
                 icon.hidden = hiddenPtr !is null ? *hiddenPtr : info.hidden;
+                icon.system = info.isSystem;
                 const exePath = info.exePath;
                 const label = info.label;
                 icon.action = delegate() { activateTrayIcon(exePath, label); };
@@ -475,7 +491,17 @@ final class DesktopRoot : Widget
     {
         version (Windows)
         {
-            if (exePath.length > 0 && !isSystemExecutable(exePath))
+            if (isSystemExecutable(exePath))
+            {
+                // Windows-owned system icon: open the matching Settings page.
+                const uri = systemSettingsUri(label);
+                if (uri.length > 0)
+                {
+                    systemOpenSettings(uri);
+                    return;
+                }
+            }
+            else if (exePath.length > 0)
             {
                 try
                 {
@@ -488,6 +514,28 @@ final class DesktopRoot : Widget
             }
         }
         showMessage(label.length > 0 ? label : "Notification");
+    }
+
+    /// Best-effort Settings page for a Windows system tray icon's label.
+    private static string systemSettingsUri(string label)
+    {
+        import std.algorithm : canFind;
+        import std.string : toLower;
+        const text = toLower(label);
+        if (text.length == 0) return "";
+        if (canFind(text, "bluetooth")) return "ms-settings:bluetooth";
+        if (canFind(text, "security")) return "windowsdefender:";
+        if (canFind(text, "headphone") || canFind(text, "volume") ||
+            canFind(text, "audio") || canFind(text, "speaker") ||
+            canFind(text, "sound"))
+            return "ms-settings:sound";
+        if (canFind(text, "battery") || canFind(text, "charged"))
+            return "ms-settings:batterysaver";
+        if (canFind(text, "wi-fi") || canFind(text, "wifi") ||
+            canFind(text, "internet") || canFind(text, "network") ||
+            canFind(text, "access"))
+            return "ms-settings:network";
+        return "";
     }
 
     private static bool isSystemExecutable(string path)
@@ -1300,7 +1348,13 @@ final class DesktopRoot : Widget
         auto panel = new HiddenIconsPanel(hidden);
         panel.onIconActivated = delegate(size_t id, string label)
         {
-            showMessage(label ~ " (notification)");
+            // Same as clicking the visible icon: launch the app or open the
+            // matching Windows Settings page.
+            activateTrayIcon(notificationExeForId(id), label);
+        };
+        panel.onIconMenu = delegate(size_t id)
+        {
+            return postNotificationAppMenu(id);
         };
         panel.onIconHidden = delegate(size_t id, bool hidden)
         {

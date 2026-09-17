@@ -1,5 +1,24 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: notification right-click always shows a menu (COMPLETED, verified)
+
+**Complaint (user).** "bluetooth device hidden icon does not have right click
+menu when it should, probably many others too."
+
+**Diagnosis.** The visible-cluster menu was suppressed whenever the host's
+native-menu post returned true (PostMessage success != menu shown), so
+system icons (Bluetooth/network/battery/security) ended up with no menu. The
+overflow panel's menu worked but its label action only showed a placeholder.
+
+**Resolution.** Added `NotificationIcon.system`; the right-click menu is now
+always built (label/Open, Move, Hide), with a non-system "Open app menu" item
+that posts the native menu. The overflow panel's label action now activates the
+app / opens the matching Windows Settings page (Bluetooth etc.).
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED. Live probe:
+right-click menus open for every visible notification and every hidden overflow
+icon (Bluetooth included).
+
 ## 2026-09-17 - Aurora Desktop: hidden-icon restore + WiFi scan status + minimized previews (COMPLETED, verified)
 
 **Complaints (user).** No drag to hidden and back; WiFi slow with no scanning

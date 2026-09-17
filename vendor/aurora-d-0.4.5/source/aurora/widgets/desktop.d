@@ -960,6 +960,8 @@ struct NotificationIcon
     /// Real raster icon (e.g. an OS tray icon); null falls back to `icon`.
     RgbaImage iconImage;
     bool hidden;
+    /// Windows-owned system icon (network/battery/security/...): no app menu.
+    bool system;
     void delegate() action;
     void delegate() showMenu; // right-click context (opened by the app/web)
 }
@@ -3636,18 +3638,26 @@ class Taskbar : Widget
             if (icon.hidden) continue;
             if (seen == visibleOrder)
             {
-                // Prefer the owning application's own tray menu.
-                if (onNotificationMenu !is null && onNotificationMenu(icon.id))
-                    return;
                 if (icon.showMenu !is null)
                 {
                     icon.showMenu();
                     return;
                 }
+                // Always show a menu. For application icons the owning app's
+                // own menu is offered as an item (Windows-owned system icons
+                // have no reachable app menu).
                 ContextMenuItem[] items;
                 items ~= ContextMenuItem.command(toUTF8(icon.label.length > 0 ?
                     icon.label : "Open"), icon.icon,
                     delegate() { activateNotification(visibleOrder); });
+                if (!icon.system && onNotificationMenu !is null)
+                {
+                    items ~= ContextMenuItem.command("Open app menu",
+                        IconKind.chevronRight, delegate()
+                        {
+                            onNotificationMenu(icon.id);
+                        });
+                }
                 items ~= ContextMenuItem.separatorItem();
                 items ~= ContextMenuItem.command("Move left", IconKind.none,
                     delegate() { moveNotification(visibleOrder, visibleOrder - 1); },

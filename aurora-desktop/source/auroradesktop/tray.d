@@ -347,6 +347,8 @@ final class HiddenIconsPanel : Widget
     void delegate(size_t id, string label) onIconActivated;
     /// Called to hide/unhide an icon by id.
     void delegate(size_t id, bool hidden) onIconHidden;
+    /// Open the owning application's own tray menu (returns false if none).
+    bool delegate(size_t id) onIconMenu;
 
     this(NotificationIcon[] icons)
     {
@@ -477,6 +479,7 @@ final class HiddenIconsPanel : Widget
             {
                 const id = _icons[cast(size_t) cell].id;
                 const label = toUTF8(_icons[cast(size_t) cell].label);
+                const system = _icons[cast(size_t) cell].system;
                 ContextMenuItem[] items;
                 items ~= ContextMenuItem.command("Show in tray",
                     IconKind.chevronUp, delegate()
@@ -488,6 +491,12 @@ final class HiddenIconsPanel : Widget
                     {
                         if (onIconActivated !is null) onIconActivated(id, label);
                     });
+                if (!system && onIconMenu !is null)
+                    items ~= ContextMenuItem.command("Open app menu",
+                        IconKind.chevronRight, delegate()
+                        {
+                            onIconMenu(id);
+                        });
                 showContextMenu(this, event.globalPosition, items);
             }
             return true;

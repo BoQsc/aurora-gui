@@ -1,5 +1,37 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: notification right-click always shows a menu (2026-09-17)
+
+**Complaint (user).** "bluetooth device hidden icon does not have right click
+menu when it should, probably many others too."
+
+**Diagnosis.** `NotificationIcon` had no notion of "system", and
+`showNotificationContextMenu` called the host's `onNotificationMenu` first and
+`return`ed if it reported success. The host posts the app's tray callback and
+returns `PostMessage`'s result, which is true merely for queueing — so for
+explorer/system icons (Bluetooth, network, battery, security) the callback was
+posted, ignored by the shell, and our own menu was suppressed → no menu at all.
+The hidden overflow panel's menu did work (verified live for Meet Now, Bluetooth,
+Windows Security, ELAN).
+
+**Fix.**
+- Added `NotificationIcon.system`; the app sets it from `TrayIconInfo.isSystem`.
+- `showNotificationContextMenu` now always builds a menu (label/Open, Move,
+  Hide icon) and, for non-system app icons with a reachable callback, adds an
+  **Open app menu** item that posts the native menu — instead of suppressing the
+  whole menu.
+- Hidden overflow panel: right-click already offered "Show in tray" + label; the
+  label action now really activates the icon (launch the app / open the matching
+  Windows Settings page) instead of showing a placeholder message.
+- `activateTrayIcon` maps system labels to Settings pages (Bluetooth →
+  `ms-settings:bluetooth`, security → `windowsdefender:`, battery, sound,
+  network).
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. Live probes:
+right-clicking every visible notification now opens a menu (Steam shows "Open
+app menu"; system icons show label/Move/Hide); the overflow panel menu opens for
+every hidden icon including Bluetooth.
+
 ## Aurora Desktop: hidden-icon restore, WiFi scan status, minimized previews (2026-09-17)
 
 **Complaints (user).** (1) No way to drag notification icons to the hidden area
