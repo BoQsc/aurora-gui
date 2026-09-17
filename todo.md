@@ -1,5 +1,28 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: NaN timers froze tick updates (COMPLETED, verified)
+
+**Complaints (user).** "nothing was done about drag n drop functionality for
+notif icons back and forth into hidden icons. the notif icons still not able to
+animate."
+
+**Diagnosis.** Drag both ways actually worked (live probe) but had no drop
+target/hint. Animation failure root cause (proven with a gated debug log in the
+real GUI process): the platform's first tick reports **`deltaSeconds = nan`**,
+and `accumulator += nan` makes every timer permanently NaN, so
+`accumulator >= threshold` is always false. This froze notification refresh,
+external-task sync, tray refresh, autosave, clock, and the tooltip delay. D
+floating-point fields also default to NaN.
+
+**Resolution.** (1) Initialised every timer field to `0.0` in `DesktopRoot` and
+`Taskbar`; (2) sanitized the delta in `GuiWindow.onNativeTick` before `tickTree`.
+Added a chevron drop target + hints for notification drag/hide/show. The real GUI
+debug log then showed repeated refreshes and the Task Manager icon hash changing.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with new guards:
+ticking 1.1 s grows `notificationRefreshCountForTesting()`, and a tray tooltip is
+absent at 0.3 s but present past the 0.6 s delay.
+
 ## 2026-09-17 - Aurora Desktop: notification right-click always shows a menu (COMPLETED, verified)
 
 **Complaint (user).** "bluetooth device hidden icon does not have right click

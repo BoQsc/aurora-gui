@@ -733,6 +733,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override void onNativeTick(double deltaSeconds)
     {
+        // The first frame can report a NaN delta (uninitialised performance
+        // counter on some drivers/platforms). A single NaN would poison every
+        // `accumulator += delta` timer for the rest of the session (NaN is
+        // contagious), freezing clocks, animations, autosaves and polling.
+        if (deltaSeconds != deltaSeconds || deltaSeconds < 0.0)
+            deltaSeconds = 0.0;
         // Application ticks can perform arbitrary work (decoding, polling,
         // layout invalidation). Do not let that work run inside Win32's modal
         // border-drag loop; the exact scene catches up after sizing ends.

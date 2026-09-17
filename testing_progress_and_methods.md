@@ -1,5 +1,50 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: NaN timers froze all tick updates (root cause of no animation) (2026-09-17)
+
+**Complaints (user).** "nothing was done about drag n drop ... into hidden icons"
+and "the notif icons still not able to animate".
+
+**Drag diagnosis (both directions DID work, but were undiscoverable).** A live
+probe confirmed visible->hidden (drag left past the cluster) and
+hidden->visible (drag out of the overflow panel) both move the icon. Fix made:
+a real **drop target** — dragging a notification over the **hidden-icons
+chevron** (or below the bar, or clear left) hides it, with an accent highlight on
+the chevron and a "Release to show in tray" hint while dragging out of the panel.
+
+**Animation root cause (the big one).** A gated debug log was added to the
+**real GUI process** (env `AURORA_NOTIF_DEBUG`) writing the notification icon
+hashes each refresh. It showed `refreshNotifications` ran only once (from the
+constructor) and every `---` line was missing, while onTick ran ~60/s with
+`deltaSeconds` ~0.006 — except the **first tick, `deltaSeconds = nan`**. Because
+`accumulator += nan` is NaN and `NaN >= threshold` is always false, a single NaN
+frame poisoned every timer for the whole session:
+- app `DesktopRoot`: notification refresh, external-task sync, 2 s tray refresh,
+  persistent-state autosave, clock accumulator.
+- widget `Taskbar`: `_tooltipHoverSeconds` (tooltips appeared instantly instead
+  of after the delay), `_reorderAnim`.
+Two fixes were required:
+1. Initialise every timer field to `0.0` in `DesktopRoot` and `Taskbar`
+   (`_reorderAnim = 1.0`) — D floating-point fields default to **NaN**.
+2. Sanitize the delta at the source in `GuiWindow.onNativeTick`
+   (`if (delta != delta || delta < 0) delta = 0.0;`) before `tickTree`, because
+   the first platform frame reports NaN.
+After both, the real GUI debug log showed repeated refresh entries with the Task
+Manager "CPU nn%" icon hash changing between them — the tray icon animates.
+
+**How to test.**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_smoke.d -of=build\headless-smoke.exe ^
+  -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib ^
+  -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> ALL PASSED
+```
+New guards: ticking 1.1 s asserts `notificationRefreshCountForTesting()` grew
+(the refresh really runs), and a tray tooltip does NOT appear at 0.3 s but does
+after the 0.6 s delay. A live probe with Task Manager minimized showed the app's
+"CPU nn%" tray icon now updating (OS and app hashes match within one poll).
+
 ## Aurora Desktop: notification right-click always shows a menu (2026-09-17)
 
 **Complaint (user).** "bluetooth device hidden icon does not have right click

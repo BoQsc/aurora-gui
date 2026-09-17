@@ -1127,6 +1127,9 @@ class Taskbar : Widget
     // stable id so live reordering cannot lose it.
     private bool _notificationDragActive;
     private size_t _notificationDragId;
+    // True while a dragged notification is over the hidden-icons chevron (drop
+    // target highlight).
+    private bool _notificationDragOverChevron;
     private int _pressed = -2;
     private int _hot = -2;
     private int _keyboardIndex = -1;
@@ -1140,7 +1143,9 @@ class Taskbar : Widget
     // of jumping, so a dragged task visibly pushes neighbors toward it before
     // they settle into the swapped position. The model order is unchanged by
     // this; it only affects where each neutral task is painted mid-drag.
-    private double _reorderAnim;             // 0..1 within the current slide
+    // NB: D floating-point fields default to NaN, which would make every
+    // `accumulator >= threshold` check permanently false. Always initialise.
+    private double _reorderAnim = 1.0;       // 0..1 within the current slide
     // Fractional (sub-slot) animation coordinates per model index. Keeping them
     // fractional lets a new boundary crossed mid-slide restart from the exact
     // painted position instead of snapping back to a settled slot, so rapid
@@ -1161,7 +1166,7 @@ class Taskbar : Widget
     private FloatingWindow _activeWindow;
     private FloatingWindow[] _showDesktopWindows;
     private TaskbarTooltip _tooltip;
-    private double _tooltipHoverSeconds;
+    private double _tooltipHoverSeconds = 0.0;
     private int _tooltipRegion = -2;   // the _hot code the tooltip is for
     private enum double tooltipDelaySeconds = 0.6;
     private dstring _clock;
@@ -2398,6 +2403,7 @@ class Taskbar : Widget
                 _tray.hiddenIconCount = hiddenNotificationCount();
                 _pressed = -2;
                 _notificationDragActive = false;
+                _notificationDragOverChevron = false;
                 releaseMouse();
                 invalidate();
                 if (onNotificationHidden !is null)
@@ -3045,7 +3051,12 @@ class Taskbar : Widget
         }
 
         const hiddenRect = trayIconRect(3);
-        if (_hot == -9) canvas.fillRoundedRect(hiddenRect, 5, palette.taskbarHover);
+        if (_hot == -9 || _notificationDragOverChevron)
+            canvas.fillRoundedRect(hiddenRect, 5, _notificationDragOverChevron ?
+                palette.accent.withAlpha(150) : palette.taskbarHover);
+        if (_notificationDragOverChevron)
+            canvas.drawRoundedRect(hiddenRect.inset(1), 5,
+                Color.rgba(0, 0, 0, 0), palette.accent, 2);
         drawIcon(canvas, IconKind.chevronUp,
             iconRect.translated((trayIconWidth + trayIconGap) * 3, 0),
             Color.rgb(245, 248, 252), palette.accent);
@@ -3318,12 +3329,25 @@ class Taskbar : Widget
             }
             if (_notificationDragActive)
             {
-                if (pointer.x < notificationClusterStartX() - 24)
+                const origin = preciseGlobalOrigin();
+                const localX = cast(int) (pointer.x - origin.x);
+                const localY = cast(int) (pointer.y - origin.y);
+                // Drop targets: the hidden-icons chevron, below the bar, or
+                // clear left of the cluster all move the icon to the overflow.
+                const overChevron = trayIconRect(3).contains(Point(localX, localY));
+                if (overChevron != _notificationDragOverChevron)
                 {
+                    _notificationDragOverChevron = overChevron;
+                    invalidate();
+                }
+                if (overChevron || localY >= bounds().height ||
+                    localX < notificationClusterStartX() - 24)
+                {
+                    _notificationDragOverChevron = false;
                     hideNotification(_notificationDragId);
                     return true;
                 }
-                const target = notificationTargetFromX(cast(int) pointer.x);
+                const target = notificationTargetFromX(localX);
                 if (target >= 0)
                 {
                     const model = indexOfNotificationId(_notificationDragId);
@@ -3511,6 +3535,7 @@ class Taskbar : Widget
             // activate it on release.
             const dragged = _notificationDragActive;
             _notificationDragActive = false;
+            _notificationDragOverChevron = false;
             if (dragged) return true;
             const notifOrder = notificationHit(event.position);
             if (notifOrder >= 0) activateNotification(notifOrder);

@@ -53,9 +53,9 @@ final class DesktopRoot : Widget
     private TaskPreview _preview;
     // Hover-intent state for task previews (see onTaskHover/onTaskHoverLeave).
     private int _previewWantedIndex = -1;
-    private double _previewWantedDelay;
+    private double _previewWantedDelay = 0.0;
     private bool _previewHidePending;
-    private double _previewHideDelay;
+    private double _previewHideDelay = 0.0;
     private int _previewIndex = -1;
     private bool _taskHovered;
     private enum double previewShowDelaySeconds = 0.3;
@@ -332,7 +332,10 @@ final class DesktopRoot : Widget
     private ulong[string] _notificationHwnd;
     private uint[string] _notificationCallback;
     private uint[string] _notificationOsId;
-    private double _notificationRefreshAccumulator;
+    // NB: D floating-point fields default to NaN, which makes every
+    // `accumulator >= threshold` check permanently false (no tick updates).
+    // Every timer field must be explicitly initialised.
+    private double _notificationRefreshAccumulator = 0.0;
     // Poll fast enough that animating tray icons (e.g. Task Manager's CPU
     // graph) visibly update.
     private enum double notificationRefreshSeconds = 1.0;
@@ -382,6 +385,7 @@ final class DesktopRoot : Widget
     {
         version (Windows)
         {
+            ++_notificationRefreshCount;
             auto icons = enumerateTrayIcons();
 
             bool[string] present;
@@ -1677,21 +1681,28 @@ final class DesktopRoot : Widget
         }
     }
 
-    private double _externalTaskAccumulator;
-
-    private double _stateSaveAccumulator;
-    private double _clockAccumulator;
-    private double _wifiPollElapsed;
-    private double _wifiPollMax;
+    private double _externalTaskAccumulator = 0.0;
+    private double _stateSaveAccumulator = 0.0;
+    private double _clockAccumulator = 0.0;
+    private double _wifiPollElapsed = 0.0;
+    private double _wifiPollMax = 0.0;
     private bool _wifiPollActive;
     private bool _wifiScanning;
-    private double _wifiScanElapsed;
-    private double _wifiScanStable;
+    private double _wifiScanElapsed = 0.0;
+    private double _wifiScanStable = 0.0;
     private int _wifiLastCount;
 
     // Test-only accessors. Kept on the class (not free functions) so the
     // headless smoke can inspect shell state without a running window loop.
     Taskbar taskbarForTesting() @safe pure nothrow @nogc { return _taskbar; }
+
+    // Guards the "D double fields default to NaN" class of bug: the periodic
+    // notification refresh must actually run when ticked.
+    private size_t _notificationRefreshCount;
+    size_t notificationRefreshCountForTesting() const @safe pure nothrow @nogc
+    {
+        return _notificationRefreshCount;
+    }
 
     void refreshTrayForTesting()
     {

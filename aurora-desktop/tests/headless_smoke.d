@@ -441,6 +441,16 @@ int main()
     foreach (icon; taskbar.notifications())
         assert(icon.label.length > 0, "notification with an empty label");
 
+    // Tick-driven notification refresh must actually run, even after a NaN
+    // delta (the real platform's first frame reports NaN, which used to poison
+    // every accumulator and freeze all tick updates including tray animation).
+    const refreshesBefore = root.notificationRefreshCountForTesting();
+    window.onNativeTick(double.nan);
+    window.onNativeTick(1.1);
+    driver.paint();
+    assert(root.notificationRefreshCountForTesting() > refreshesBefore,
+        "notification refresh did not run on tick (NaN timer/delta?)");
+
     // Hover must highlight ONLY the targeted item: a tray hover returns a
     // negative tray code (-6..-9), never a task-entry index (>= 0). Prior to
     // the fix, tray hover codes (0..3) collided with entry indices, so the
@@ -507,6 +517,11 @@ int main()
     // Hovering a tray icon for just past the delay shows a tooltip overlay.
     driver.moveTo(center(taskbar.trayIconGlobalBounds(0)));
     driver.paint();
+    // The delay must be honored (guards D's NaN-default double timers).
+    window.onNativeTick(0.3);
+    driver.paint();
+    assert(countTooltipWidgets(root) == 0,
+        "tooltip appeared before its hover delay");
     writeln("hovering wifi, ticking...");
     placeTooltipForTest(window);  // drive the tooltip timer via a tick
     driver.paint();

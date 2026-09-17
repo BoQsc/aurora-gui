@@ -433,6 +433,11 @@ final class HiddenIconsPanel : Widget
         if (_icons.length == 0)
             canvas.drawTextInRect(full, "No hidden icons"d, palette.textMuted,
                 1, HorizontalAlign.center, VerticalAlign.middle, true);
+        else if (_dragMoved && _dragOutside)
+            canvas.drawTextInRect(
+                Rect(0, full.bottom() - 20, full.width, 18),
+                "Release to show in tray"d, palette.accent, 1,
+                HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
     private static string shortLabel(dstring label)
