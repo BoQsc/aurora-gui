@@ -44,6 +44,15 @@ final class DesktopRoot : Widget
     private bool _hideSystemCursor = true;
     private DesktopState _state;
     private TaskPreview _preview;
+    // Hover-intent state for task previews (see onTaskHover/onTaskHoverLeave).
+    private int _previewWantedIndex = -1;
+    private double _previewWantedDelay;
+    private bool _previewHidePending;
+    private double _previewHideDelay;
+    private int _previewIndex = -1;
+    private bool _taskHovered;
+    private enum double previewShowDelaySeconds = 0.1;
+    private enum double previewHideGraceSeconds = 0.35;
 
     /// Called once the host GuiWindow is known (see run()); applies the system
     /// cursor visibility so startup honors a persisted "hide cursor" choice.
@@ -74,6 +83,9 @@ final class DesktopRoot : Widget
         _settings = loadDesktopSettings();
         _taskbar.setModernShell(_settings.modernShell);
         _taskbar.setTaskGrouping(_settings.groupTasks);
+        // The shell shows rich thumbnail previews on task hover; the taskbar's
+        // own delayed label tooltip would collide with them.
+        _taskbar.setTaskEntryTooltips(false);
         // Load the full session state (window bounds, icon positions, pinned
         // task order). The settings file is separate and kept small.
         _state = loadDesktopState();
@@ -129,8 +141,26 @@ final class DesktopRoot : Widget
         _taskbar.onWifiClick = delegate() { openWifiPanel(); };
         _taskbar.onHiddenIconsClick = delegate() { openHiddenIconsPanel(); };
         _taskbar.onSearchClick = delegate() { openSearch(); };
-        _taskbar.onTaskHover = delegate(int index) { showTaskPreview(index); };
-        _taskbar.onTaskHoverLeave = delegate() { hideTaskPreview(); };
+        // Hover intent: a short stable-hover delay before the preview appears,
+        // then a grace window when the pointer leaves so it can travel from the
+        // task button (or the gap above it) onto the preview without it
+        // flickering. While the pointer is over the preview it never hides.
+        _taskbar.onTaskHover = delegate(int index)
+        {
+            _taskHovered = true;
+            _previewHidePending = false;
+            _previewHideDelay = 0;
+            _previewWantedIndex = index;
+            _previewWantedDelay = 0;
+        };
+        _taskbar.onTaskHoverLeave = delegate()
+        {
+            _taskHovered = false;
+            _previewWantedIndex = -1;
+            _previewWantedDelay = 0;
+            _previewHidePending = true;
+            _previewHideDelay = 0;
+        };
         _taskbar.onEntryOrderChanged = delegate(TaskEntryId[] order)
         {
             persistState();
@@ -482,6 +512,7 @@ final class DesktopRoot : Widget
         string title = toUTF8(_taskbar.entryTitle(cast(size_t) index));
         const entryIcon = _taskbar.entryIcon(cast(size_t) index);
         hideTaskPreview();
+        _previewIndex = index;
         if (hwnd != 0)
         {
             // External OS window: capture a real thumbnail with PrintWindow.
@@ -560,6 +591,53 @@ final class DesktopRoot : Widget
         if (_preview !is null && !_preview.dismissed())
             _preview.dismiss();
         _preview = null;
+        _previewIndex = -1;
+    }
+
+    /**
+     * Advance the hover-intent timers. The preview appears once the pointer
+     * rests on a task for a moment and only hides after a grace window that the
+     * pointer can cancel by moving onto the preview.
+     */
+    private void updateTaskPreviewHover(double deltaSeconds)
+    {
+        if (_previewWantedIndex >= 0)
+        {
+            _previewWantedDelay += deltaSeconds;
+            if (_previewWantedDelay >= previewShowDelaySeconds)
+            {
+                const index = _previewWantedIndex;
+                _previewWantedIndex = -1;
+                if (_previewIndex != index || _preview is null ||
+                    _preview.dismissed())
+                    showTaskPreview(index);
+            }
+        }
+        const preview = _preview;
+        if (preview is null || preview.dismissed())
+        {
+            _previewHidePending = false;
+            _previewHideDelay = 0;
+            return;
+        }
+        // Keep the preview while the pointer is on a task entry, still waiting
+        // to show one, or over the preview panel itself.
+        const keepOpen = _taskHovered || _previewWantedIndex >= 0 ||
+            preview.pointerInside();
+        if (keepOpen)
+        {
+            _previewHidePending = false;
+            _previewHideDelay = 0;
+            return;
+        }
+        _previewHidePending = true;
+        _previewHideDelay += deltaSeconds;
+        if (_previewHideDelay >= previewHideGraceSeconds)
+        {
+            hideTaskPreview();
+            _previewHidePending = false;
+            _previewHideDelay = 0;
+        }
     }
 
 
@@ -1083,6 +1161,7 @@ final class DesktopRoot : Widget
     protected override void onTick(double deltaSeconds)
     {
         super.onTick(deltaSeconds);
+        updateTaskPreviewHover(deltaSeconds);
         _clockAccumulator += deltaSeconds;
         if (_clockAccumulator >= 2.0)
         {

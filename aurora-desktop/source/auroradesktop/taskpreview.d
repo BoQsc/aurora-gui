@@ -40,6 +40,7 @@ final class TaskPreview : TransientPopup
     private bool _opening;
     private bool _closeHover;
     private int _hotTile = -1;
+    private bool _pointerInside;
 
     /// Invoked when the X (close) button is clicked.
     void delegate() onCloseRequested;
@@ -118,6 +119,35 @@ final class TaskPreview : TransientPopup
         const origin = globalOrigin();
         return _panelRect.contains(Point(globalPoint.x - origin.x,
             globalPoint.y - origin.y));
+    }
+
+    /**
+     * The popup overlay spans the whole root for click-away, but it must only
+     * receive hover/clicks over its actual panel. Returning null elsewhere lets
+     * the taskbar beneath keep its hover, so the preview does not flicker and
+     * the pointer can travel from a task button onto the preview.
+     */
+    override Widget hitTest(Point globalPoint)
+    {
+        if (!visible() || !enabled() || _panelRect.empty()) return null;
+        const local = globalToLocal(globalPoint);
+        return _panelRect.contains(local) ? this : null;
+    }
+
+    /// True while the pointer is over the preview panel (see `hitTest`).
+    bool pointerInside() const @safe pure nothrow @nogc
+    {
+        return _pointerInside;
+    }
+
+    protected override void onMouseEnter()
+    {
+        _pointerInside = true;
+    }
+
+    protected override void onMouseLeave()
+    {
+        _pointerInside = false;
     }
 
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)

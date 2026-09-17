@@ -1,5 +1,69 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: task hover/preview + drag animation fixed (2026-09-17)
+
+**Complaint (user).** "Fix mouse/cursor targeting bug, most of the time I can't
+consistently show up by hover the previews of tasks and move mouse/cursor over
+task preview ... task dragging to rearrange feels animated ... hovering over
+tasks is glitching ... look at areas of hover for entire taskbar."
+
+**Diagnosis (reproduced headlessly).** A probe hovered a task entry, moved 2 px
+(inside the same entry), and the preview closed and re-opened (flicker).
+Root cause: `TaskPreview` is a `TransientPopup` whose overlay spans the whole
+root (`overlayFillParent`), so `Widget.hitTest` returned the popup for ANY
+pointer position once shown. The taskbar then got `onMouseLeave` →
+`hideTooltip` → `onTaskHoverLeave` → preview hidden; the next move re-showed it.
+Two secondary issues: the taskbar's own 0.6 s label tooltip also fired for task
+entries and collided with the preview, and there was no grace window to let the
+pointer travel from the button onto the preview.
+
+Drag: `updateTaskReorder` restarted the slide from the settled slot on every
+boundary crossing, so a fast drag snapped instead of chaining (`beginReorderSlide`
+was dead code). The interpolation arrays were integers.
+
+**Fixes.**
+- `TaskPreview.hitTest` now returns the popup only inside `_panelRect` (null
+  elsewhere), so the taskbar keeps hover beneath the flyout; `pointerInside()`
+  tracks `onMouseEnter`/`onMouseLeave`.
+- `DesktopRoot` hover-intent: 100 ms stable-hover show delay + 350 ms hide
+  grace; the preview stays open while the pointer is on a task entry, waiting
+  for a preview, or inside the preview. `_previewIndex` avoids rebuilding the
+  same preview.
+- `Taskbar.setTaskEntryTooltips(false)` (the app calls it) disables the
+  redundant label tooltip on task entries now that a rich preview exists.
+- `Taskbar` reorder animation uses fractional per-entry slots
+  (`_reorderFromSlot`/`_reorderToSlot` doubles, `currentFractionalSlot`); a
+  boundary crossed mid-slide restarts from the exact painted position. Dead
+  `beginReorderSlide` removed. New test accessor `entryPaintedX`.
+
+**How to test.**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_smoke.d -of=build\headless-smoke.exe ^
+  -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib ^
+  -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> ALL PASSED
+```
+The smoke now asserts: hovering a task shows a preview after the delay; a 2 px
+move within the entry keeps the SAME preview; moving onto the panel keeps it
+open and `pointerInside()` is true; leaving hides it after the grace window.
+It also drives a real drag and asserts `entryPaintedX(1)` is strictly between
+its start and settled positions mid-slide (observed 266 -> 253 -> 214), i.e. the
+swap animates rather than snapping. The old "empty taskbar space" assertion was
+made robust (it only passed before because the full-root preview overlay
+accidentally suppressed the hover); it now computes a point right of the last
+entry and left of the tray.
+
+**Live check.** `hover_probe` (temp) against the real `DesktopRoot` prints the
+same sequence: preview shown -> stays on 2 px move -> stays over panel with
+`pointerInside=true` -> closes when far away. App rebuilt and exactly one
+instance relaunched.
+
+**Known pre-existing failure (unchanged):** vendor
+`dub run --config=desktop-shell-test` asserts at `desktop_shell.d:140` (Start
+menu open) before reaching its drag tests; it fails identically on the
+unmodified vendor file.
+
 ## Aurora Desktop: optional taskbar task grouping (default on) (2026-09-17)
 
 **Request (user).** "let's do optional grouping of tasks and set it as default."

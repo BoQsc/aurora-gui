@@ -1,5 +1,29 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: hover/preview flicker + drag animation (COMPLETED, verified)
+
+**Complaint (user).** "Fix mouse/cursor targeting bug, most of the time I can't
+consistently show up by hover the previews of tasks and move mouse/cursor over
+task preview ... task dragging to rearrange feels animated ... hovering over
+tasks is glitching."
+
+**Diagnosis.** The `TaskPreview` transient popup fills the whole root, so its
+`hitTest` captured every pointer position: hovering a task showed the preview,
+the next pixel of movement made the taskbar lose hover and hide it, then the
+next move re-showed it (flicker); the taskbar's delayed label tooltip also
+collided with the preview. Drag rearrangement restarted its slide from settled
+integer slots on each boundary crossing, so it snapped instead of animating.
+
+**Resolution.** Preview hit-testing is limited to its panel and the app uses
+hover-intent (100 ms show delay, 350 ms hide grace, stays open over the panel);
+task-entry label tooltips are disabled while rich previews are used. Reorder
+animation now uses fractional per-entry slots so crossings chain smoothly.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED, including regressions
+for preview persistence on a 2 px move, entering the preview, and animated drag
+interpolation (`entryPaintedX`: 266 -> 253 -> 214). Details in
+`testing_progress_and_methods.md` (2026-09-17 hover/drag section).
+
 ## 2026-09-17 - Aurora Desktop: optional task grouping, default on (COMPLETED, verified)
 
 **Request (user).** "let's do optional grouping of tasks and set it as default."

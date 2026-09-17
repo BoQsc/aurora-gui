@@ -1130,8 +1130,12 @@ class Taskbar : Widget
     // they settle into the swapped position. The model order is unchanged by
     // this; it only affects where each neutral task is painted mid-drag.
     private double _reorderAnim;             // 0..1 within the current slide
-    private int[] _reorderFromSlot;          // per model index, slot at prev boundary
-    private int[] _reorderToSlot;            // per model index, slot at current boundary
+    // Fractional (sub-slot) animation coordinates per model index. Keeping them
+    // fractional lets a new boundary crossed mid-slide restart from the exact
+    // painted position instead of snapping back to a settled slot, so rapid
+    // drags chain smoothly instead of jumping.
+    private double[] _reorderFromSlot;       // per model index, painted slot at restart
+    private double[] _reorderToSlot;         // per model index, target slot
     private bool _reorderAnimActive;
     private enum double reorderAnimSeconds = 0.14;
     private PointF _pressPointer;
@@ -1168,6 +1172,12 @@ class Taskbar : Widget
      * the toggle through System Settings and persists the choice.
      */
     private bool _groupTasks = true;
+    /**
+     * Whether task entries show the small delayed label tooltip. The desktop
+     * app shows a rich thumbnail preview on task hover instead, so it disables
+     * this to avoid two overlapping flyouts.
+     */
+    private bool _taskEntryTooltips = true;
 
     void delegate() onStart;
     void delegate() onShowDesktop;
@@ -1323,6 +1333,14 @@ class Taskbar : Widget
 
     /// Whether same-app external windows are collapsed into one task button.
     bool taskGrouping() const @safe pure nothrow @nogc { return _groupTasks; }
+
+    /// Enable/disable the delayed label tooltip on task entries.
+    void setTaskEntryTooltips(bool value)
+    {
+        if (_taskEntryTooltips == value) return;
+        _taskEntryTooltips = value;
+        hideTooltip();
+    }
 
     /**
      * Toggle same-app task grouping. Existing external entries are regrouped in
@@ -1532,6 +1550,32 @@ class Taskbar : Widget
         const local = entryRect(cast(int) index);
         return Rect(origin.x + local.x, origin.y + local.y,
             local.width, local.height);
+    }
+
+    /**
+     * Local x an entry is painted at right now, including the mid-drag slide
+     * interpolation. This is the visual position, unlike `entryBounds` which is
+     * the model slot; provided for animation tests.
+     */
+    int entryPaintedX(size_t index) const
+    {
+        if (index >= _entries.length) return int.min;
+        const visualSlot = visualSlotForEntry(cast(int) index);
+        if (visualSlot < 0) return int.min;
+        auto rect = entryRect(visualSlot);
+        const draggedModelIndex = indexOfEntry(_dragEntryId);
+        const isDragged = _reordering && cast(int) index == draggedModelIndex;
+        if (_reordering && !isDragged &&
+            _reorderFromSlot.length == _entries.length &&
+            _reorderToSlot.length == _entries.length)
+        {
+            const slot = currentFractionalSlot(cast(int) index);
+            if (slot >= 0.0)
+                rect.x = entriesStartX() +
+                    cast(int) (slot * (entryWidth() + 4) + 0.5);
+        }
+        if (isDragged) rect.x = draggedEntryX(rect);
+        return rect.x;
     }
 
     // Read-only geometry for tests (clock and show-desktop are private). Padded
@@ -2306,8 +2350,8 @@ class Taskbar : Widget
         _dragOriginIndex = modelIndex;
         _dragCurrentIndex = modelIndex;
         // Start settled (no slide) so the entry under the grab doesn't warp.
-        _reorderFromSlot = visualSlotsFor(modelIndex, modelIndex);
-        _reorderToSlot = visualSlotsFor(modelIndex, modelIndex);
+        _reorderFromSlot = fractionalSlotsFor(modelIndex, modelIndex);
+        _reorderToSlot = _reorderFromSlot.dup;
         _reorderAnim = 1.0;
         _reorderAnimActive = false;
         _dragGrabOffset = PointF(
@@ -2399,13 +2443,14 @@ class Taskbar : Widget
         if (target >= 0 && target != _dragCurrentIndex)
         {
             const draggedModelIndex = indexOfEntry(_dragEntryId);
-            // Restart the slide from the CURRENT (possibly mid-flight) layout
-            // rather than the original, so rapid crossings chain smoothly.
+            // Restart the slide from the CURRENT (possibly mid-flight) painted
+            // positions rather than the settled layout, so rapid crossings chain
+            // smoothly instead of jumping backward then forward.
             if (draggedModelIndex >= 0)
-                _reorderFromSlot = visualSlotsFor(_dragCurrentIndex, draggedModelIndex);
+                _reorderFromSlot = currentFractionalSlots();
             _dragCurrentIndex = target;
             if (draggedModelIndex >= 0)
-                _reorderToSlot = visualSlotsFor(target, draggedModelIndex);
+                _reorderToSlot = fractionalSlotsFor(target, draggedModelIndex);
             _reorderAnim = 0.0;
             _reorderAnimActive = true;
             // Only a slot-boundary crossing rebuilds taskbar content. Every
@@ -2448,6 +2493,43 @@ class Taskbar : Widget
         return slots;
     }
 
+    // Fractional version of `visualSlotsFor` (-1 marks the dragged entry).
+    private double[] fractionalSlotsFor(int draggedSlot, int draggedModelIndex) const
+    {
+        const int[] slots = visualSlotsFor(draggedSlot, draggedModelIndex);
+        double[] result;
+        result.length = slots.length;
+        foreach (i, value; slots) result[i] = cast(double) value;
+        return result;
+    }
+
+    // The fractional slot each entry is painted at right now, taking the
+    // in-flight easing into account. Used to restart a slide mid-animation.
+    private double[] currentFractionalSlots() const
+    {
+        const draggedModelIndex = indexOfEntry(_dragEntryId);
+        if (_reorderFromSlot.length != _entries.length ||
+            _reorderToSlot.length != _entries.length || _reorderAnimActive == false)
+            return fractionalSlotsFor(_dragCurrentIndex, draggedModelIndex);
+        auto result = _reorderFromSlot.dup;
+        const t = reorderEase(_reorderAnim);
+        foreach (i; 0 .. result.length)
+            result[i] = result[i] + (_reorderToSlot[i] - result[i]) * t;
+        return result;
+    }
+
+    // Painted fractional slot of one model index during a reorder (-1 = the
+    // dragged entry, which follows the pointer instead of a slot).
+    private double currentFractionalSlot(int modelIndex) const @safe pure nothrow @nogc
+    {
+        if (modelIndex < 0 || modelIndex >= cast(int) _reorderToSlot.length)
+            return -1.0;
+        if (!_reorderAnimActive) return _reorderToSlot[modelIndex];
+        return _reorderFromSlot[modelIndex] +
+            (_reorderToSlot[modelIndex] - _reorderFromSlot[modelIndex]) *
+            reorderEase(_reorderAnim);
+    }
+
     private static double reorderEase(double t) @safe pure nothrow @nogc
     {
         // Ease-in-out so the neighbors first nudge toward the dragged task
@@ -2455,16 +2537,6 @@ class Taskbar : Widget
         if (t <= 0.0) return 0.0;
         if (t >= 1.0) return 1.0;
         return t < 0.5 ? 2.0 * t * t : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 2.0;
-    }
-
-    // Begin (or restart) the slide animation between the current
-    // _dragCurrentIndex layout and `target`, snapshotting the from/to slots.
-    private void beginReorderSlide(int target, int draggedModelIndex)
-    {
-        _reorderFromSlot = visualSlotsFor(_dragCurrentIndex, draggedModelIndex);
-        _reorderToSlot = visualSlotsFor(target, draggedModelIndex);
-        _reorderAnim = 0.0;
-        _reorderAnimActive = true;
     }
 
     private void destroyDragProxy()
@@ -2632,18 +2704,19 @@ class Taskbar : Widget
             const draggedModelIndex = indexOfEntry(_dragEntryId);
             const isDragged = _reordering && cast(int) index == draggedModelIndex;
             Rect rect = entryRect(visualSlot);
-            // Slide-and-swap: during a reorder boundary transition, ease the
-            // entries from their previous slot to the current one.
-            if (_reorderAnimActive && _reorderFromSlot.length == _entries.length &&
-                _reorderToSlot.length == _entries.length &&
-                cast(size_t) index < _reorderFromSlot.length &&
-                _reorderFromSlot[index] >= 0 && _reorderToSlot[index] >= 0)
+            // Slide-and-swap: paint each entry at its fractional slot so a new
+            // boundary crossed mid-slide chains from the exact painted position.
+            if (_reordering && !isDragged &&
+                _reorderFromSlot.length == _entries.length &&
+                _reorderToSlot.length == _entries.length)
             {
-                const from = entryRect(_reorderFromSlot[index]);
-                const to = entryRect(_reorderToSlot[index]);
-                const t = reorderEase(_reorderAnim);
-                const x = from.x + cast(int) ((to.x - from.x) * t + 0.5);
-                rect.x = x;
+                const slot = currentFractionalSlot(cast(int) index);
+                if (slot >= 0.0)
+                {
+                    const width = entryWidth();
+                    rect.x = entriesStartX() +
+                        cast(int) (slot * (width + 4) + 0.5);
+                }
             }
             if (isDragged)
             {
@@ -2792,6 +2865,9 @@ class Taskbar : Widget
         }
         if (code >= 0 && code < cast(int) _entries.length)
         {
+            // The desktop app renders a rich preview for task hover; a second
+            // delayed label on top of it is redundant and visually collides.
+            if (!_taskEntryTooltips) return null;
             const entry = _entries[cast(size_t) code];
             // Lead with the real task name, then a short action hint.
             const name = toUTF32(titleEntry(entry));
@@ -3498,8 +3574,8 @@ class Taskbar : Widget
             {
                 _reorderAnim = 1.0;
                 _reorderAnimActive = false;
-                _reorderFromSlot.length = 0;
-                _reorderToSlot.length = 0;
+                // Settle: the painted position now equals the target slot.
+                _reorderFromSlot = _reorderToSlot;
             }
             invalidate();
         }

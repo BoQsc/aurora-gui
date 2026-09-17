@@ -5,6 +5,7 @@ import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
 import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
 import auroradesktop.search : SearchPopup;
+import auroradesktop.taskpreview : TaskPreview;
 import std.stdio : writeln, stdout;
 import std.algorithm : canFind;
 import std.conv : to;
@@ -79,6 +80,71 @@ private Slider findSlider(Widget subtree)
         if (nested !is null) return nested;
     }
     return null;
+}
+
+// Minimal root hosting only a Taskbar, for pointer-driven drag tests.
+private final class TaskbarRoot : Widget
+{
+    Taskbar taskbar;
+    this()
+    {
+        taskbar = add(new Taskbar());
+    }
+    protected override void onLayout()
+    {
+        taskbar.setBounds(Rect(0, maxInt(0, bounds().height - 52),
+            bounds().width, 52));
+    }
+}
+
+// Dragging a task must ease neighbors into their swapped slot instead of
+// teleporting them: sample an entry's painted x mid-drag and assert it lies
+// strictly between its start and settled positions.
+private void testTaskDragAnimation()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto dragWindow = new GuiWindow(options, Theme.dark());
+    auto dragRoot = new TaskbarRoot();
+    dragWindow.setRoot(dragRoot);
+    auto driver = new UiTestDriver(dragWindow);
+    driver.resize(Size(640, 260));
+    driver.paint();
+    auto taskbar = dragRoot.taskbar;
+    foreach (i; 0 .. 5)
+        taskbar.addCommand("T" ~ to!string(i), IconKind.file, delegate() {});
+    driver.paint();
+
+    const from = center(taskbar.entryGlobalBounds(0));
+    const destination = center(taskbar.entryGlobalBounds(4));
+    driver.moveTo(from);
+    driver.mouseDown();
+    driver.moveTo(Point(from.x + 8, from.y));
+    assert(taskbar.reordering(), "drag did not start");
+    foreach (step; 1 .. 6)
+        driver.moveTo(Point(from.x + (destination.x - from.x) * step / 5,
+            from.y));
+    assert(taskbar.dragTargetIndex() == 4, "drag did not target slot 4");
+
+    const startX = taskbar.entryPaintedX(1);
+    dragWindow.onNativeTick(0.05);
+    driver.paint();
+    const midX = taskbar.entryPaintedX(1);
+    dragWindow.onNativeTick(0.2);
+    driver.paint();
+    const endX = taskbar.entryPaintedX(1);
+
+    assert(endX != startX, "neighbor never moved");
+    assert(midX != startX && midX != endX,
+        "neighbor snapped instead of animating (" ~
+        to!string(startX) ~ " -> " ~ to!string(midX) ~ " -> " ~
+        to!string(endX) ~ ")");
+    const between = (midX > endX && midX < startX) ||
+        (midX < endX && midX > startX);
+    assert(between, "mid-drag neighbor position was not between start and end");
+    driver.mouseUp();
 }
 
 int main()
@@ -191,9 +257,16 @@ int main()
         to!string(taskbar.hotRegion()));
 
     // Empty taskbar space must NOT highlight the start button (or anything).
-    // hitEntry returns -1 for empty space, which is also the start code, so
-    // an empty hover used to light the start button. It must now be -2.
-    driver.moveTo(Point(400, 720));
+    // hitEntry returns -1 for empty space, which is also the start code, so an
+    // empty hover used to light the start button. It must now be -2. Compute a
+    // point right of the last task entry but left of the tray so the check does
+    // not depend on how many OS windows are open.
+    const lastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
+    const trayStart = taskbar.trayIconGlobalBounds(0).x;
+    const emptyPoint = Point(
+        minInt(lastEntry.right() + 10, trayStart - 10),
+        lastEntry.y + lastEntry.height / 2);
+    driver.moveTo(emptyPoint);
     driver.paint();
     assert(taskbar.hotRegion() == -2,
         "empty taskbar space should be no-highlight (-2), got " ~
@@ -403,14 +476,40 @@ int main()
     auto hoverWindow = taskbar.entryWindow(0);
     if (hoverWindow !is null) hoverWindow.restore();
     driver.paint();
-    driver.moveTo(center(entry0));
+    const entryCenter = center(entry0);
+    driver.moveTo(entryCenter);
+    // The preview appears after a short stable-hover delay.
+    window.onNativeTick(0.12);
     driver.paint();
     auto preview = currentTransientPopup(root);
     assert(preview !is null, "task hover did not open a preview");
     assert(canFind(preview.classinfo.name, "TaskPreview"),
         "task hover opened the wrong popup: " ~ preview.classinfo.name);
-    // Moving to empty taskbar space dismisses the preview.
+    // Regression: a tiny move within the SAME entry must not dismiss it. The
+    // preview overlay used to steal hover and flicker the flyout closed/open.
+    driver.moveTo(Point(entryCenter.x + 2, entryCenter.y));
+    window.onNativeTick(0.05);
+    driver.paint();
+    assert(currentTransientPopup(root) is preview,
+        "preview dismissed while still hovering the task");
+    // Regression: moving onto the preview panel keeps it open and interactive.
+    auto taskPreview = cast(TaskPreview) currentTransientPopup(root);
+    assert(taskPreview !is null, "preview cast failed");
+    const panel = taskPreview.panelRect();
+    const panelOrigin = taskPreview.globalOrigin();
+    const panelGlobal = Rect(panelOrigin.x + panel.x, panelOrigin.y + panel.y,
+        panel.width, panel.height);
+    driver.moveTo(center(panelGlobal));
+    window.onNativeTick(0.05);
+    driver.paint();
+    assert(currentTransientPopup(root) is taskPreview,
+        "preview did not stay open while the pointer was over its panel");
+    assert(taskPreview.pointerInside(),
+        "preview did not report the pointer inside");
+    // Moving to empty taskbar space dismisses the preview after the grace
+    // window (long enough for the pointer to travel onto the flyout).
     driver.moveTo(Point(400, 30));
+    window.onNativeTick(0.4);
     driver.paint();
     assert(currentTransientPopup(root) is null,
         "task preview did not dismiss when pointer left the entry");
@@ -495,6 +594,8 @@ int main()
         assert(groupBar.entryCount() == 1,
             "removing the last member must drop the group");
     }
+
+    testTaskDragAnimation();
 
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");
