@@ -1,5 +1,74 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: taskbar task icons rendered (2026-09-17)
+
+**Complaint:** "why there are no icons in tasks of taskbar. we need to render them."
+
+**Root causes (diagnosed live, not guessed).**
+1. `syncExternalTasks()` added live OS windows via
+   `_taskbar.addExternalTask(hwnd, title)` with the default `IconKind.none`.
+   `paintTaskEntry` then called `drawIcon(entry.icon, ...)`, and
+   `IconKind.none` draws nothing => blank 26x26 slots. The real extractor
+   `externalTaskIcon()` in `aurora-desktop/source/auroradesktop/tasks.d` existed
+   but was **never called**, and `TaskEntry.iconImage` (vendor
+   `aurora.widgets.desktop`) was **never set or painted**.
+2. The source tree did not compile at all: `ICONINFO` was imported from
+   `core.sys.windows.wingdi` (it lives in `winuser`), and `iconToRgba` was
+   marked `nothrow` while calling the throwing `RgbaImage` ctor. The on-disk exe
+   (2026-09-04) predated the feature, so the icon work had never been built.
+3. `capturePinnedTasks()` persisted **every** taskbar entry, including live OS
+   windows, as `kind:"command"` / `icon:"none"` in `desktop_state.json`. On the
+   next launch `restorePinnedTasks()` recreated them as permanent icon-less
+   command buttons ("Settings", "*new 855 - Notepad++", the 7-Zip path,
+   "OpenCode", "ChatGPT", "aurora-desktop").
+
+**Fixes.**
+- `tasks.d`: robust `externalTaskIcon` — candidates WM_GETICON big, WM_GETICON
+  small2, class `GCLP_HICON`, class `GCLP_HICONSM`; pick the largest raster that
+  has actual ink (skips 7-Zip's all-transparent class icon); else
+  `SHGetFileInfoW` large icon of the owning exe; UWP windows hosted by
+  ApplicationFrameHost.exe resolve the hosted child process first.
+- vendor `widgets/desktop.d`: `setExternalTaskIcon(hwnd, RgbaImage)` +
+  `externalTaskIconImage`/`externalTaskIconResolved`; `paintTaskEntry` draws the
+  raster (`canvas.drawImage`) in both shell modes, falling back to `IconKind`.
+- `app.d`: `syncExternalTasks` resolves/pushes the icon (bounded 3 retries for
+  apps that set WM_SETICON late), passing `IconKind.computer` only as a
+  last-resort glyph.
+- `store.d`/`app.d`: schema 2. `capturePinnedTasks` skips `hostHwnd != 0` and
+  `restorePinnedTasks` drops schema-1 command pins with `icon:"none"`, so the
+  leaked ghosts self-heal on the first autosave (verified: file rewritten with
+  schema 2 and only the 3 built-in pins).
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` digest for
+  `source/aurora/widgets/desktop.d` regenerated.
+
+**How to test.**
+```
+rem build (KILL the running instance first; the exe is locked)
+taskkill /F /PID <pid>
+dub build --compiler=dmd --force
+
+rem headless smoke (golden regression; also attaches a synthetic magenta icon
+rem to a probe external task and asserts the taskbar rasterizes it)
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_smoke.d -of=build\headless-smoke.exe ^
+  -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib ^
+  -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> "aurora-desktop headless smoke: ALL PASSED"
+```
+Live wiring probe (proves every external entry gets a raster icon): a temporary
+`app_icon_check.d` constructs `DesktopRoot`, prints `entryCount` and per-entry
+`entryHostHwnd` + `externalTaskIconImage`, compiled with the same `-I` set and
+the 7 libs. Verified 2026-09-17: 11 external windows, 11/11 icons (32x32/40x40).
+Taskbar-only pixel check: `aurora-desktop.exe --screenshot build\icons_check.ppm`
+then a PPM reader counts saturated pixels in the bottom 52 rows (gave 4518
+colorful pixels / 111 coarse colors across 14 x-runs).
+
+**Known pre-existing failure (not caused by this work):**
+`dub run --config=desktop-shell-test` (vendor `tests/desktop_shell.d`) asserts at
+line 140 (`menu.open()` after clicking Start). It fails identically on the
+unmodified vendor `desktop.d` (verified by stashing the change), so it is a
+pre-existing Start-menu layout/DPI failure.
+
 ## Pro: paragraph -> collapsible interleave restored; Thinking stays visible (2026-09-14)
 
 **Supersedes** the "Codex-scale turn grouping" method below: the one-group-per-

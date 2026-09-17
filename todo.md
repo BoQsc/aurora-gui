@@ -1,5 +1,36 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: no icons in taskbar tasks (COMPLETED, verified)
+
+**Complaint (user).** "why there are no icons in tasks of taskbar. we need to
+render them."
+
+**Diagnosis.** Two independent defects:
+1. `aurora-desktop/source/auroradesktop/app.d` `syncExternalTasks()` added live
+   OS windows with the default `IconKind.none`; `paintTaskEntry` paints
+   `drawIcon(entry.icon, ...)` and `IconKind.none` draws nothing. The extractor
+   `externalTaskIcon()` in `tasks.d` was never called, and the vendor
+   `TaskEntry.iconImage` field was never set or painted. The source also did not
+   compile (`ICONINFO` imported from `wingdi` instead of `winuser`; `iconToRgba`
+   marked `nothrow` though `RgbaImage`'s ctor throws), so the feature had never
+   been built.
+2. `capturePinnedTasks()` saved every live OS window as a `command` pin with
+   `icon:"none"`, so on the next launch those leaked entries became permanent
+   icon-less taskbar buttons (seen in `desktop_state.json`: "Settings",
+   "*new 855 - Notepad++", the 7-Zip path, "OpenCode", "ChatGPT",
+   "aurora-desktop").
+
+**Resolution.** Real OS icons are now resolved (WM_GETICON big/small2, class
+`GCLP_HICON`/`GCLP_HICONSM`, ink check, exe `SHGetFileInfoW` fallback, UWP
+hosted-process resolution) and painted via `canvas.drawImage`. External windows
+are no longer persisted; schema 2 drops the old leaked pins on first autosave.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with a new synthetic
+magenta-icon paint assertion; live probe: 11/11 external windows got 32x32/40x40
+raster icons; `desktop_state.json` rewritten to schema 2 with only the 3
+built-in pins; app rebuilt and exactly one instance relaunched. Details in
+`testing_progress_and_methods.md` (2026-09-17 section).
+
 ## 2026-09-14 - Pro: restore paragraph -> collapsible interleave; keep Thinking visible
 
 **Complaint (user).** "it just goes on and on reaching limits and never producing

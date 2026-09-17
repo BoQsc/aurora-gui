@@ -415,6 +415,59 @@ int main()
     assert(currentTransientPopup(root) is null,
         "task preview did not dismiss when pointer left the entry");
 
+    // External OS task buttons must paint the window's real raster icon, not
+    // an empty IconKind slot. Attach a synthetic magenta icon to a probe task
+    // and assert the taskbar actually renders it.
+    version (Windows)
+    {
+        import aurora.surface : Surface;
+        import aurora.canvas : Canvas;
+        import aurora.image : RgbaImage;
+
+        auto probeBar = new Taskbar();
+        probeBar.setBounds(Rect(0, 0, 640, 52));
+        const probeHwnd = 0xDEADBEEF;
+        probeBar.addExternalTask(probeHwnd, "Probe");
+        const probeIndex = probeBar.indexOfExternal(probeHwnd);
+        assert(probeIndex >= 0, "external probe entry was not added");
+        enum int side = 26;
+        ubyte[] pixels;
+        pixels.length = side * side * 4;
+        foreach (i; 0 .. side * side)
+        {
+            pixels[i * 4 + 0] = 255;
+            pixels[i * 4 + 1] = 0;
+            pixels[i * 4 + 2] = 255;
+            pixels[i * 4 + 3] = 255;
+        }
+        assert(probeBar.setExternalTaskIcon(probeHwnd,
+                new RgbaImage(side, side, pixels)),
+            "external task icon was not attached");
+        assert(probeBar.externalTaskIconResolved(probeHwnd));
+        auto probeSurface = new Surface(640, 52);
+        probeSurface.clear(Color.rgb(0, 0, 0));
+        auto probeCanvas = Canvas(probeSurface);
+        probeBar.paintTree(probeCanvas);
+        bool foundIcon;
+        foreach (y; 0 .. 52)
+        {
+            foreach (x; 0 .. 640)
+            {
+                const argb = probeSurface.pixel(x, y);
+                const r = (argb >> 16) & 0xff;
+                const g = (argb >> 8) & 0xff;
+                const b = argb & 0xff;
+                if (r > 200 && g < 80 && b > 200)
+                {
+                    foundIcon = true;
+                    break;
+                }
+            }
+            if (foundIcon) break;
+        }
+        assert(foundIcon, "external task raster icon was not painted");
+    }
+
     window.saveScreenshot("build/headless-desktop.ppm");
     writeln("aurora-desktop headless smoke: ALL PASSED");
     return 0;

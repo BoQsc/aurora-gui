@@ -15,7 +15,10 @@ import std.path : baseName, dirName, buildPath;
  */
 struct DesktopState
 {
-    int schema = 1;
+    // Schema 2 stops persisting live external OS windows as pinned tasks and
+    // lets restorePinnedTasks discard the icon-less command pins that schema 1
+    // leaked from them.
+    int schema = 2;
     WindowState[] windows;
     IconState[] icons;
     TaskState[] pinnedTasks;

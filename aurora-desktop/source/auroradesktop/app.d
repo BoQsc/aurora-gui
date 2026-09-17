@@ -11,7 +11,8 @@ import auroradesktop.store : DesktopState, IconState, TaskState, WindowState,
 import auroradesktop.taskpreview : TaskPreview;
 import auroradesktop.tasks : ExternalTask, activateExternalTask, captureExternalThumbnail,
     closeExternalTask, enumerateExternalTasks, excludeWindow, externalTaskAlive,
-    externalTaskFocused, externalTaskMinimized, externalTaskSize, minimizeExternalTask;
+    externalTaskFocused, externalTaskIcon, externalTaskMinimized, externalTaskSize,
+    minimizeExternalTask;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
@@ -272,7 +273,7 @@ final class DesktopRoot : Widget
     private static DesktopState defaultState()
     {
         DesktopState state;
-        state.schema = 1;
+        state.schema = 2;
         state.taskbarModernShell = true;
         state.hideSystemCursor = true;
         WindowState notepad;
@@ -353,6 +354,14 @@ final class DesktopRoot : Widget
         foreach (t; _state.pinnedTasks)
         {
             if (t.title in seen) continue;
+            // Drop pins an older build leaked from live OS windows: they are
+            // recreated by syncExternalTasks and must not become permanent
+            // icon-less command buttons. Schema < 2 is the build that captured
+            // every live window as a "command" pin with no icon, so those are
+            // discarded on the first launch after the upgrade.
+            if (t.kind == "external") continue;
+            if (_state.schema < 2 && t.kind == "command" && t.iconName == "none")
+                continue;
             if (t.kind == "command")
             {
                 _taskbar.addCommand(t.title, iconKindFromName(t.iconName),
@@ -374,7 +383,7 @@ final class DesktopRoot : Widget
     private void persistState()
     {
         DesktopState next;
-        next.schema = 1;
+        next.schema = 2;
         next.taskbarModernShell = _taskbar.modernShell();
         next.hideSystemCursor = _hideSystemCursor;
         next.windows = captureWindows();
@@ -426,6 +435,10 @@ final class DesktopRoot : Widget
         TaskState[] result;
         foreach (i; 0 .. _taskbar.entryCount())
         {
+            // Live external OS windows are NOT user pins: they come and go with
+            // the OS, so persisting them would resurrect them as permanent
+            // (icon-less) command entries on every launch.
+            if (_taskbar.entryHostHwnd(i) != 0) continue;
             TaskState t;
             t.title = toUTF8(_taskbar.entryTitle(i));
             t.iconName = iconKindName(_taskbar.entryIcon(i));
@@ -830,6 +843,8 @@ final class DesktopRoot : Widget
 
     // hwnds currently shown as external taskbar entries, for the poll diff.
     private ulong[] _externalHwnds;
+    // Bounded per-window icon-resolution attempts (see syncExternalTasks).
+    private ubyte[ulong] _externalIconAttempts;
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
     /// closed ones. Existing external entries are kept in their pinned slot.
@@ -843,13 +858,37 @@ final class DesktopRoot : Widget
             {
                 live[t.hwnd] = true;
                 if (_taskbar.indexOfExternal(t.hwnd) < 0)
-                    _taskbar.addExternalTask(t.hwnd, cleanTaskTitle(t.title));
+                {
+                    // `computer` is only a last-resort glyph for a window whose
+                    // real icon cannot be resolved; the raster icon normally
+                    // replaces it (see below).
+                    _taskbar.addExternalTask(t.hwnd, cleanTaskTitle(t.title),
+                        IconKind.computer);
+                    _externalIconAttempts[t.hwnd] = 0;
+                }
+                // Resolve the real OS icon and hand it to the taskbar so the
+                // entry paints it instead of an IconKind placeholder. Some apps
+                // publish WM_SETICON a moment after the window appears, so a
+                // null result is retried a few times (iconHasInk/executable
+                // fallback make a permanent null rare).
+                if (_taskbar.externalTaskIconImage(t.hwnd) is null)
+                {
+                    auto attempted = t.hwnd in _externalIconAttempts;
+                    const tries = attempted is null ? cast(ubyte) 0 : *attempted;
+                    if (tries < 3)
+                    {
+                        _taskbar.setExternalTaskIcon(t.hwnd,
+                            externalTaskIcon(t.hwnd));
+                        _externalIconAttempts[t.hwnd] = cast(ubyte) (tries + 1);
+                    }
+                }
             }
             // Remove entries whose window is gone.
             foreach (hwnd; _externalHwnds)
             {
                 if (hwnd in live) continue;
                 _taskbar.removeExternal(hwnd);
+                if (hwnd in _externalIconAttempts) _externalIconAttempts.remove(hwnd);
             }
             _externalHwnds.length = 0;
             foreach (t; tasks)

@@ -222,6 +222,7 @@ The patched Aurora modules are:
 - `aurora.widgets.splitpane`: immediate subtree relayout while dragging and bounded child sizing.
 - `aurora.widgets.contextmenu`: cursor-adjacent top-left anchoring, compact 22-pixel rows, reduced menu width, and scrolling for long menus near window edges.
 - `aurora.widgets.texteditor`: direct canvas-title mode, per-editor font/size/color, shared title effects, content measurement, caret/selection/hit testing, and non-scrolling live-title editing.
+- `aurora.widgets.desktop`: `Taskbar` external OS-window entries (keyed by `hostHwnd`, live visibility/focus callbacks, activate/minimize/close) plus `setExternalTaskIcon`/`externalTaskIconImage`/`externalTaskIconResolved`; `paintTaskEntry` draws the real straight-alpha raster icon (Windows taskbar behavior) with the `IconKind` glyph only as fallback.
 - `aurora.canvas`, `aurora.render.drawlist`, `aurora.render.software`, and `aurora.render.vulkan`: retained RGB24 image commands used for internal video preview. The software renderer provides exact-size RGB-to-ARGB conversion and fixed-point nearest/bilinear scaling. The Vulkan backend safely skips the CPU-only RGB batch.
 
 `vendor/aurora-d-0.4.5/MANIFEST.sha256` is regenerated from the vendored files after these changes, so it validates the exact source shipped with Aurora Cut rather than the untouched upstream archive.

@@ -7,20 +7,31 @@ version (Windows)
 {
     import core.sys.windows.windows : HWND, DWORD, BOOL, LPARAM, UINT,
         HDC, HGDIOBJ, HBITMAP, RECT, HICON;
-    import core.sys.windows.winuser : EnumWindows, GetWindowTextW,
+    import core.sys.windows.winuser : EnumWindows, EnumChildWindows, GetWindowTextW,
         GetWindowRect, IsWindowVisible, GetClassNameW, GetDC, ReleaseDC,
         ShowWindow, IsIconic, IsZoomed, SetForegroundWindow, GetForegroundWindow,
         GetWindow, IsWindow, GW_OWNER, PrintWindow, PostMessageW,
-        SendMessageW, GetIconInfo, GetClassLongPtrW, DrawIconEx;
+        SendMessageW, GetIconInfo, GetClassLongPtrW, DrawIconEx, DestroyIcon,
+        ICONINFO;
     import core.sys.windows.wingdi : CreateCompatibleDC, CreateCompatibleBitmap,
         SelectObject, DeleteDC, DeleteObject, GetDIBits, DIB_RGB_COLORS,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BitBlt, SRCCOPY,
-        ICONINFO, GetObjectW, BITMAP;
-    import core.sys.windows.windef : HBRUSH;
-    import std.utf : toUTF8;
+        GetObjectW, BITMAP;
+    import core.sys.windows.winbase : GetWindowThreadProcessId, OpenProcess,
+        CloseHandle;
+    import core.sys.windows.shellapi : SHGetFileInfoW, SHFILEINFOW,
+        SHGFI_ICON, SHGFI_LARGEICON;
+    import core.sys.windows.windef : HBRUSH, HANDLE, LPWSTR;
+    import std.utf : toUTF8, toUTF16z;
     import std.algorithm : sort;
     import core.stdc.stdlib : malloc, free;
     import core.stdc.string : memcpy;
+
+    // QueryFullProcessImageNameW is not bound by druntime, so declare it here.
+    extern (Windows) nothrow @nogc
+    {
+        BOOL QueryFullProcessImageNameW(HANDLE, DWORD, LPWSTR, DWORD*);
+    }
 }
 
 /// One live top-level OS window to surface in the taskbar.
@@ -310,26 +321,50 @@ RgbaImage captureExternalThumbnail(ulong hwndValue, int width, int height)
     }
 }
 
-/// Extract a window's small icon as a straight-alpha RGBA image. Tries
-/// WM_GETICON (per-window small then big), then the class small icon. Returns
-/// null if no usable icon can be formed.
+/**
+ * Extract a window's icon as a straight-alpha RGBA image.
+ *
+ * Probe order (verified live against real apps): WM_GETICON big, WM_GETICON
+ * small2, class big (GCLP_HICON), class small (GCLP_HICONSM). The largest
+ * usable raster wins so the 26 px taskbar slot is not upscaled from a 16 px
+ * icon. If the window publishes no icon at all (or only an all-transparent
+ * one, e.g. 7-Zip's frame) the owning executable's shell icon is used, which
+ * also fixes UWP windows hosted by ApplicationFrameHost.exe by resolving the
+ * hosted child process instead. Returns null when nothing usable exists.
+ */
 RgbaImage externalTaskIcon(ulong hwndValue)
 {
     version (Windows)
     {
         auto hwnd = cast(HWND) hwndValue;
         enum UINT WM_GETICON = 0x007F;
-        enum int ICON_SMALL2 = 2;
         enum int ICON_BIG = 1;
+        enum int ICON_SMALL2 = 2;
+        enum int GCLP_HICON = -14;
         enum int GCLP_HICONSM = -34;
 
-        HICON icon = cast(HICON) SendMessageW(hwnd, WM_GETICON, ICON_SMALL2, 0);
-        if (icon is null)
-            icon = cast(HICON) SendMessageW(hwnd, WM_GETICON, ICON_BIG, 0);
-        if (icon is null)
-            icon = cast(HICON) GetClassLongPtrW(hwnd, GCLP_HICONSM);
-        if (icon is null) return null;
-        return iconToRgba(icon);
+        HICON[4] candidates = [
+            cast(HICON) SendMessageW(hwnd, WM_GETICON, ICON_BIG, 0),
+            cast(HICON) SendMessageW(hwnd, WM_GETICON, ICON_SMALL2, 0),
+            cast(HICON) GetClassLongPtrW(hwnd, GCLP_HICON),
+            cast(HICON) GetClassLongPtrW(hwnd, GCLP_HICONSM)
+        ];
+
+        RgbaImage best;
+        foreach (candidate; candidates)
+        {
+            if (candidate is null) continue;
+            auto image = iconToRgba(candidate);
+            if (image is null || !iconHasInk(image)) continue;
+            if (best is null || image.width() > best.width())
+                best = image;
+        }
+        if (best !is null) return best;
+
+        // No usable window icon: fall back to the owning executable's shell
+        // icon (SHGetFileInfoW asks the shell for the real, tagged icon).
+        const path = executablePathForWindow(hwnd);
+        return path.length > 0 ? shellIconForPath(path) : null;
     }
     else
     {
@@ -339,7 +374,105 @@ RgbaImage externalTaskIcon(ulong hwndValue)
 
 version (Windows)
 {
-    private RgbaImage iconToRgba(HICON icon) nothrow
+    /// True when an icon actually contains a visible (non-zero alpha) pixel.
+    private bool iconHasInk(RgbaImage image)
+    {
+        if (image is null) return false;
+        const pixels = image.pixels();
+        for (size_t i = 3; i < pixels.length; i += 4)
+            if (pixels[i] != 0) return true;
+        return false;
+    }
+
+    /**
+     * Full path of the process owning `hwnd`. UWP windows are hosted by
+     * ApplicationFrameHost.exe, whose icon is generic, so for those the hosted
+     * child process (e.g. SystemSettings.exe) is returned instead.
+     */
+    private string executablePathForWindow(HWND hwnd) nothrow
+    {
+        const owner = processImagePath(hwnd);
+        if (owner.length == 0) return "";
+        if (baseNameOf(owner) == "ApplicationFrameHost.exe")
+        {
+            auto hosted = hostedChildProcessPath(hwnd, owner);
+            if (hosted.length > 0) return hosted;
+        }
+        return owner;
+    }
+
+    private struct ChildSearch
+    {
+        string parentPath;
+        string found;
+    }
+
+    private extern(Windows) BOOL childSearchCallback(HWND hwnd, LPARAM context)
+        nothrow
+    {
+        auto search = cast(ChildSearch*) context;
+        const path = processImagePath(hwnd);
+        if (path.length > 0 && path != search.parentPath &&
+            search.found.length == 0)
+        {
+            search.found = path;
+            return 0;
+        }
+        return 1;
+    }
+
+    private string hostedChildProcessPath(HWND hwnd, string parentPath) nothrow
+    {
+        ChildSearch search;
+        search.parentPath = parentPath;
+        EnumChildWindows(hwnd, &childSearchCallback, cast(LPARAM) &search);
+        return search.found;
+    }
+
+    private string processImagePath(HWND hwnd) nothrow
+    {
+        DWORD pid;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == 0) return "";
+        // PROCESS_QUERY_LIMITED_INFORMATION works without elevation for
+        // windows owned by the current user.
+        auto process = OpenProcess(0x1000, 0, pid);
+        if (process is null) return "";
+        scope (exit) CloseHandle(process);
+        wchar[1024] buffer;
+        buffer[0] = 0;
+        DWORD length = buffer.length;
+        if (!QueryFullProcessImageNameW(process, 0, buffer.ptr, &length))
+            return "";
+        return toUtf8Safe(buffer[0 .. length]);
+    }
+
+    private string baseNameOf(string path) nothrow
+    {
+        foreach (i; 0 .. path.length)
+        {
+            const offset = path.length - 1 - i;
+            if (path[offset] == '\\' || path[offset] == '/')
+                return path[offset + 1 .. $];
+        }
+        return path;
+    }
+
+    /// The shell's large (32 px) icon for an executable/file path.
+    private RgbaImage shellIconForPath(string path)
+    {
+        SHFILEINFOW info;
+        const result = SHGetFileInfoW(toUTF16z(path), 0, &info,
+            SHFILEINFOW.sizeof, SHGFI_ICON | SHGFI_LARGEICON);
+        if (result == 0 || info.hIcon is null) return null;
+        scope (exit) DestroyIcon(info.hIcon);
+        return iconToRgba(info.hIcon);
+    }
+}
+
+version (Windows)
+{
+    private RgbaImage iconToRgba(HICON icon)
     {
         ICONINFO info;
         if (!GetIconInfo(icon, &info)) return null;

@@ -904,6 +904,9 @@ private struct TaskEntry
     ulong hostHwnd;
     /// Real raster icon for an external OS window (null = fall back to `icon`).
     RgbaImage iconImage;
+    /// True once the host has attempted to resolve the raster icon, so a window
+    /// that genuinely has none is not retried on every sync pass.
+    bool iconResolved;
 }
 
 private enum int taskDragProxyMargin = 6;
@@ -1459,7 +1462,8 @@ class Taskbar : Widget
             invalidate();
             return;
         }
-        _entries ~= TaskEntry(allocateEntryId(), window, toUTF32(title), icon, null, 0);
+        _entries ~= TaskEntry(allocateEntryId(), window, toUTF32(title), icon,
+            null, 0, null, true);
         if (_activeWindow is null && window !is null && window.visible())
             _activeWindow = window;
         debug assert(taskOrderValid());
@@ -1470,7 +1474,8 @@ class Taskbar : Widget
     void addCommand(string title, IconKind icon, void delegate() command)
     {
         if (_reordering) cancelTaskReorder();
-        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, command, 0);
+        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, command,
+            0, null, true);
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
@@ -1495,10 +1500,42 @@ class Taskbar : Widget
             }
         }
         _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, null,
-            hostHwnd);
+            hostHwnd, null, false);
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
+    }
+
+    /**
+     * Attach (or clear) the real raster icon for an external OS window task.
+     * The desktop app resolves the icon with Win32 and pushes it here; when it
+     * is null the entry falls back to its `IconKind`. Returns true when the
+     * stored icon actually changed.
+     */
+    bool setExternalTaskIcon(ulong hostHwnd, RgbaImage image)
+    {
+        const index = indexOfExternal(hostHwnd);
+        if (index < 0) return false;
+        ref TaskEntry entry = _entries[cast(size_t) index];
+        if (entry.iconImage is image && entry.iconResolved) return false;
+        entry.iconImage = image;
+        entry.iconResolved = true;
+        invalidate();
+        return true;
+    }
+
+    /// Whether the canonical icon for an external task has been resolved.
+    bool externalTaskIconResolved(ulong hostHwnd) @safe pure nothrow @nogc
+    {
+        const index = indexOfExternal(hostHwnd);
+        return index >= 0 && _entries[cast(size_t) index].iconResolved;
+    }
+
+    /// The attached raster icon for an external task (null when none).
+    RgbaImage externalTaskIconImage(ulong hostHwnd) @safe pure nothrow @nogc
+    {
+        const index = indexOfExternal(hostHwnd);
+        return index >= 0 ? _entries[cast(size_t) index].iconImage : null;
     }
 
     int indexOfExternal(ulong hostHwnd) const @safe pure nothrow @nogc
@@ -2202,8 +2239,12 @@ class Taskbar : Widget
         {
             // Previous labeled look: icon at the left, title text, and a
             // full-width running indicator.
-            drawIcon(canvas, entry.icon, Rect(rect.x + 8, rect.y + 7, 24, 24),
-                Color.rgb(245, 248, 252), palette.accent);
+            if (entry.iconImage !is null)
+                canvas.drawImage(Rect(rect.x + 8, rect.y + 7, 24, 24),
+                    entry.iconImage);
+            else
+                drawIcon(canvas, entry.icon, Rect(rect.x + 8, rect.y + 7, 24, 24),
+                    Color.rgb(245, 248, 252), palette.accent);
             canvas.drawTextInRect(Rect(rect.x + 38, rect.y,
                     maxInt(0, rect.width - 44), rect.height), entry.title,
                 Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
@@ -2216,9 +2257,13 @@ class Taskbar : Widget
                     active ? palette.accent : palette.textMuted);
             return;
         }
-        drawIcon(canvas, entry.icon,
-            Rect(iconX, iconY, taskIconSize, taskIconSize),
-            Color.rgb(245, 248, 252), palette.accent);
+        if (entry.iconImage !is null)
+            canvas.drawImage(Rect(iconX, iconY, taskIconSize, taskIconSize),
+                entry.iconImage);
+        else
+            drawIcon(canvas, entry.icon,
+                Rect(iconX, iconY, taskIconSize, taskIconSize),
+                Color.rgb(245, 248, 252), palette.accent);
         const hasWindow = entry.window !is null || entry.hostHwnd != 0;
         if (hasWindow)
         {
