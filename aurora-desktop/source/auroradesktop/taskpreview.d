@@ -20,31 +20,41 @@ import std.utf : toUTF32;
 final class TaskPreview : TransientPopup
 {
     private dstring _title;
-    private RgbaImage _thumbnail;
+    // One tile per previewed window. A single-window task has one tile; a
+    // grouped app shows one tile per window in a row.
+    private RgbaImage[] _thumbnails;
+    private ulong[] _hwnds;          // per-tile external hwnd (0 = in-shell)
+    private dstring[] _tileTitles;   // per-tile caption
     private Rect _panelRect;
     private Rect _titleRect;
-    private Rect _imageRect;
+    private Rect[] _tileRects;
+    private Rect[] _tileCaptionRects;
     private Rect _closeRect;
     private Rect _anchorGlobal;
     private int _margin = 8;
     private int _gap = 6;
     private int _titleHeight = 30;
-    private int _panelWidth = 224;
+    private int _tileWidth = 200;
     private int _panelHeight = 168;
+    private int _captionHeight = 18;
     private bool _opening;
     private bool _closeHover;
+    private int _hotTile = -1;
 
     /// Invoked when the X (close) button is clicked.
     void delegate() onCloseRequested;
     /// Invoked when the preview body is clicked (click-to-focus the task).
     void delegate() onActivate;
+    /// Invoked when a specific grouped window's tile is clicked.
+    void delegate(ulong hwnd) onActivateHwnd;
 
     this(FloatingWindow window, Widget content, string title, IconKind icon)
     {
         super();
         setCursor(CursorKind.arrow);
         _title = toUTF32(title);
-        _thumbnail = renderThumbnail(content, window.size());
+        auto image = renderThumbnail(content, window.size());
+        if (image !is null) _thumbnails ~= image;
     }
 
     /// Build a preview from an already-captured image (external OS window).
@@ -53,7 +63,19 @@ final class TaskPreview : TransientPopup
         super();
         setCursor(CursorKind.arrow);
         _title = toUTF32(title);
-        _thumbnail = thumbnail;
+        if (thumbnail !is null) _thumbnails ~= thumbnail;
+    }
+
+    /// Build a grouped preview: one tile per external window of the same app.
+    this(string title, RgbaImage[] thumbnails, ulong[] hwnds,
+        string[] captions)
+    {
+        super();
+        setCursor(CursorKind.arrow);
+        _title = toUTF32(title);
+        _thumbnails = thumbnails;
+        _hwnds = hwnds;
+        foreach (caption; captions) _tileTitles ~= toUTF32(caption);
     }
 
     Rect panelRect() const @safe pure nothrow @nogc
@@ -106,18 +128,32 @@ final class TaskPreview : TransientPopup
 
     private void recalculateLayout()
     {
+        const tileCount = maxInt(1, cast(int) _thumbnails.length);
         if (bounds().width <= 0 || bounds().height <= 0)
         {
             _panelRect = Rect.init;
             _titleRect = Rect.init;
-            _imageRect = Rect.init;
+            _tileRects = null;
+            _tileCaptionRects = null;
             _closeRect = Rect.init;
             return;
         }
         const availableWidth = maxInt(1, bounds().width - _margin * 2);
         const availableHeight = maxInt(1, bounds().height - _margin * 2);
-        const width = minInt(_panelWidth, availableWidth);
+
+        const padding = 10;
+        // Fit every tile in a row; shrink the tiles when the screen cannot hold
+        // the nominal width (Windows grows the flyout, then scrolls; here we
+        // shrink so grouped windows always stay reachable).
+        int tileWidth = _tileWidth;
+        const maxContent = availableWidth - padding * 2 - _gap * (tileCount - 1);
+        if (maxContent < tileWidth * tileCount)
+            tileWidth = maxInt(72, maxContent / tileCount);
+        const desiredWidth = padding * 2 + tileWidth * tileCount +
+            _gap * (tileCount - 1);
+        const width = minInt(desiredWidth, availableWidth);
         const height = minInt(_panelHeight, availableHeight);
+
         const rootOrigin = globalOrigin();
         const anchor = Rect(_anchorGlobal.x - rootOrigin.x,
             _anchorGlobal.y - rootOrigin.y, _anchorGlobal.width,
@@ -130,16 +166,30 @@ final class TaskPreview : TransientPopup
         y = clampInt(y, _margin, maxInt(_margin, bounds().height - height - _margin));
         _panelRect = Rect(x, y, width, height);
 
-        const padding = 10;
         _titleRect = Rect(_panelRect.x + padding, _panelRect.y + padding,
             _panelRect.width - padding * 2, _titleHeight);
-        _imageRect = Rect(_panelRect.x + padding, _titleRect.bottom() + 6,
-            _panelRect.width - padding * 2,
-            _panelRect.bottom() - _titleRect.bottom() - padding - 6);
         const closeSize = 16;
         _closeRect = Rect(_titleRect.right() - closeSize - 4,
             _titleRect.y + (_titleRect.height - closeSize) / 2,
             closeSize, closeSize);
+
+        const contentY = _titleRect.bottom() + 6;
+        const contentHeight = maxInt(1, _panelRect.bottom() - padding - contentY);
+        const usable = maxInt(1, _panelRect.width - padding * 2 -
+            _gap * (tileCount - 1));
+        const actualTile = maxInt(1, usable / tileCount);
+        // A single-window preview gets the full content height (its title is
+        // already in the popup header); a group reserves a caption row per tile.
+        const captionH = tileCount > 1 ? _captionHeight : 0;
+        _tileRects.length = tileCount;
+        _tileCaptionRects.length = tileCount;
+        foreach (i; 0 .. tileCount)
+        {
+            const tx = _panelRect.x + padding + i * (actualTile + _gap);
+            _tileCaptionRects[i] = Rect(tx, contentY, actualTile, captionH);
+            _tileRects[i] = Rect(tx, contentY + captionH, actualTile,
+                maxInt(1, contentHeight - captionH));
+        }
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -163,34 +213,56 @@ final class TaskPreview : TransientPopup
             _closeHover ? Color.rgb(255, 255, 255) : palette.textMuted,
             palette.accent);
 
-        // Thumbnail image.
-        if (_thumbnail !is null && !_imageRect.empty())
+        // Thumbnail tiles (one for a single window, a row for a grouped app).
+        foreach (i; 0 .. _tileRects.length)
         {
-            canvas.drawRoundedRect(_imageRect, 4, palette.panelBackground,
-                palette.border.withAlpha(120), 1);
-            // Fit the image into the image rect preserving aspect.
-            const scale = minDouble(
-                cast(double) _imageRect.width / _thumbnail.width(),
-                cast(double) _imageRect.height / _thumbnail.height());
-            const dw = maxInt(1, cast(int) (_thumbnail.width() * scale));
-            const dh = maxInt(1, cast(int) (_thumbnail.height() * scale));
-            const img = Rect(_imageRect.x + (_imageRect.width - dw) / 2,
-                _imageRect.y + (_imageRect.height - dh) / 2, dw, dh);
-            canvas.drawImage(img, _thumbnail);
-        }
-        else
-        {
-            canvas.drawTextInRect(_imageRect, "No preview"d, palette.textMuted,
-                1, HorizontalAlign.center, VerticalAlign.middle, true);
+            const tile = _tileRects[i];
+            if (i == _hotTile)
+                canvas.drawRoundedRect(tile.inset(-2), 6, Color.rgba(0, 0, 0, 0),
+                    palette.accent.withAlpha(210), 2);
+            RgbaImage image = i < _thumbnails.length ? _thumbnails[i] : null;
+            if (image !is null && !tile.empty())
+            {
+                canvas.drawRoundedRect(tile, 4, palette.panelBackground,
+                    palette.border.withAlpha(120), 1);
+                // Fit the image into the tile preserving aspect.
+                const scale = minDouble(
+                    cast(double) tile.width / image.width(),
+                    cast(double) tile.height / image.height());
+                const dw = maxInt(1, cast(int) (image.width() * scale));
+                const dh = maxInt(1, cast(int) (image.height() * scale));
+                const img = Rect(tile.x + (tile.width - dw) / 2,
+                    tile.y + (tile.height - dh) / 2, dw, dh);
+                canvas.drawImage(img, image);
+            }
+            else
+            {
+                canvas.drawTextInRect(tile, "No preview"d, palette.textMuted,
+                    1, HorizontalAlign.center, VerticalAlign.middle, true);
+            }
+            if (i < _tileCaptionRects.length && i < _tileTitles.length &&
+                _tileTitles[i].length > 0)
+                canvas.drawTextInRect(_tileCaptionRects[i], _tileTitles[i],
+                    i == _hotTile ? palette.text :
+                    palette.text.withAlpha(210), 1, HorizontalAlign.center,
+                    VerticalAlign.middle, true);
         }
     }
 
     override bool onMouseMove(ref Event event)
     {
-        const hover = _closeRect.contains(event.position);
-        if (hover != _closeHover)
+        const closeHover = _closeRect.contains(event.position);
+        int hot = -1;
+        foreach (i; 0 .. _tileRects.length)
+            if (_tileRects[i].contains(event.position))
+            {
+                hot = cast(int) i;
+                break;
+            }
+        if (closeHover != _closeHover || hot != _hotTile)
         {
-            _closeHover = hover;
+            _closeHover = closeHover;
+            _hotTile = hot;
             invalidate();
         }
         return true;
@@ -212,9 +284,13 @@ final class TaskPreview : TransientPopup
             dismiss();
             return true;
         }
-        if (_imageRect.contains(event.position))
+        foreach (i; 0 .. _tileRects.length)
         {
-            if (onActivate !is null) onActivate();
+            if (!_tileRects[i].contains(event.position)) continue;
+            if (i < _hwnds.length && _hwnds[i] != 0 && onActivateHwnd !is null)
+                onActivateHwnd(_hwnds[i]);
+            else if (onActivate !is null)
+                onActivate();
             dismiss();
             return true;
         }

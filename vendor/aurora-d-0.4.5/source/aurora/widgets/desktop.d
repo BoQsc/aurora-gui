@@ -891,6 +891,13 @@ class FloatingWindow : Widget
 alias TaskEntryId = ulong;
 enum TaskEntryId invalidTaskEntryId = 0;
 
+/** One OS window inside an external task entry (a group can hold several). */
+private struct ExternalMember
+{
+    ulong hwnd;
+    dstring title;
+}
+
 private struct TaskEntry
 {
     TaskEntryId id;
@@ -901,12 +908,19 @@ private struct TaskEntry
     /// Non-zero when this entry maps to an external OS top-level window rather
     /// than an in-shell FloatingWindow. When set, window is null and clicks are
     /// routed to the OS (activate/minimize) via the taskbar's host callbacks.
+    /// For a grouped entry this is the primary (active) member.
     ulong hostHwnd;
     /// Real raster icon for an external OS window (null = fall back to `icon`).
     RgbaImage iconImage;
     /// True once the host has attempted to resolve the raster icon, so a window
     /// that genuinely has none is not retried on every sync pass.
     bool iconResolved;
+    /// Grouping key for an external OS task ("" = never grouped). Windows of the
+    /// same application collapse into one button while task grouping is on.
+    string groupKey;
+    /// External OS windows represented by this entry. Empty for ungrouped
+    /// entries (where `hostHwnd` is the single window) and for commands/windows.
+    ExternalMember[] groupMembers;
 }
 
 private enum int taskDragProxyMargin = 6;
@@ -1148,6 +1162,12 @@ class Taskbar : Widget
      * this through System Settings and persists the choice.
      */
     private bool _modernShell = true;
+    /**
+     * Whether external OS windows of the same application collapse into one
+     * taskbar button (Windows behavior). On by default; the desktop app exposes
+     * the toggle through System Settings and persists the choice.
+     */
+    private bool _groupTasks = true;
 
     void delegate() onStart;
     void delegate() onShowDesktop;
@@ -1301,6 +1321,101 @@ class Taskbar : Widget
         invalidate();
     }
 
+    /// Whether same-app external windows are collapsed into one task button.
+    bool taskGrouping() const @safe pure nothrow @nogc { return _groupTasks; }
+
+    /**
+     * Toggle same-app task grouping. Existing external entries are regrouped in
+     * place so the change is immediate without a host resync.
+     */
+    void setTaskGrouping(bool value)
+    {
+        if (_groupTasks == value) return;
+        if (_reordering) cancelTaskReorder();
+        _groupTasks = value;
+        regroupExternalTasks();
+        invalidate();
+        notifyEntryOrderChanged();
+    }
+
+    /// Merge (enable) or split (disable) external entries by their group key.
+    private void regroupExternalTasks()
+    {
+        if (_groupTasks)
+        {
+            TaskEntry[] merged;
+            string[] seenGroups;
+            int[] groupSlot; // index into `merged` for each seenGroups entry
+            foreach (entry; _entries)
+            {
+                if (entry.hostHwnd == 0 || entry.groupKey.length == 0)
+                {
+                    merged ~= entry;
+                    continue;
+                }
+                const existing = seenGroups.length > 0 ?
+                    indexOfString(seenGroups, entry.groupKey) : -1;
+                if (existing < 0)
+                {
+                    seenGroups ~= entry.groupKey;
+                    groupSlot ~= cast(int) merged.length;
+                    merged ~= entry;
+                    continue;
+                }
+                ref TaskEntry target = merged[cast(size_t) groupSlot[cast(size_t) existing]];
+                if (target.groupMembers.length == 0 && target.hostHwnd != 0)
+                    target.groupMembers ~= ExternalMember(target.hostHwnd,
+                        target.title);
+                foreach (member; entry.groupMembers)
+                    if (!containsHwnd(target.groupMembers, member.hwnd))
+                        target.groupMembers ~= member;
+                // Keep the most recently added group's primary/caption.
+                target.hostHwnd = entry.hostHwnd;
+                target.title = entry.title;
+                if (entry.iconImage !is null) target.iconImage = entry.iconImage;
+                target.iconResolved = target.iconResolved || entry.iconResolved;
+            }
+            _entries = merged;
+        }
+        else
+        {
+            TaskEntry[] split;
+            foreach (entry; _entries)
+            {
+                if (entry.groupMembers.length <= 1)
+                {
+                    // Normalize single-member groups so index lookups stay easy.
+                    if (entry.groupMembers.length == 1)
+                    {
+                        entry.hostHwnd = entry.groupMembers[0].hwnd;
+                        entry.title = entry.groupMembers[0].title;
+                    }
+                    split ~= entry;
+                    continue;
+                }
+                foreach (member; entry.groupMembers)
+                {
+                    TaskEntry single = makeTaskEntry(allocateEntryId(), null,
+                        "", entry.icon, null, member.hwnd, entry.iconImage,
+                        entry.iconResolved);
+                    single.title = member.title;
+                    single.groupKey = entry.groupKey;
+                    single.groupMembers = [member];
+                    split ~= single;
+                }
+            }
+            _entries = split;
+        }
+    }
+
+    private static int indexOfString(const(string)[] values, string needle)
+        @safe pure nothrow @nogc
+    {
+        foreach (index, value; values)
+            if (value == needle) return cast(int) index;
+        return -1;
+    }
+
     const(SystemTrayState) trayState() const @safe pure nothrow @nogc
     {
         return _tray;
@@ -1451,6 +1566,32 @@ class Taskbar : Widget
         return result;
     }
 
+    /// Build a TaskEntry field by field so adding fields cannot silently shift
+    /// positional constructor arguments.
+    private TaskEntry makeTaskEntry(TaskEntryId id, FloatingWindow window,
+        string title, IconKind icon, void delegate() command, ulong hostHwnd,
+        RgbaImage iconImage, bool iconResolved)
+    {
+        TaskEntry entry;
+        entry.id = id;
+        entry.window = window;
+        entry.title = toUTF32(title);
+        entry.icon = icon;
+        entry.command = command;
+        entry.hostHwnd = hostHwnd;
+        entry.iconImage = iconImage;
+        entry.iconResolved = iconResolved;
+        return entry;
+    }
+
+    private static bool containsHwnd(const(ExternalMember)[] members,
+        ulong hwnd) @safe pure nothrow @nogc
+    {
+        foreach (member; members)
+            if (member.hwnd == hwnd) return true;
+        return false;
+    }
+
     void addWindow(FloatingWindow window, string title, IconKind icon)
     {
         if (_reordering) cancelTaskReorder();
@@ -1462,7 +1603,7 @@ class Taskbar : Widget
             invalidate();
             return;
         }
-        _entries ~= TaskEntry(allocateEntryId(), window, toUTF32(title), icon,
+        _entries ~= makeTaskEntry(allocateEntryId(), window, title, icon,
             null, 0, null, true);
         if (_activeWindow is null && window !is null && window.visible())
             _activeWindow = window;
@@ -1474,21 +1615,62 @@ class Taskbar : Widget
     void addCommand(string title, IconKind icon, void delegate() command)
     {
         if (_reordering) cancelTaskReorder();
-        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, command,
+        _entries ~= makeTaskEntry(allocateEntryId(), null, title, icon, command,
             0, null, true);
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
     }
 
+    /// Index of the entry holding `groupKey` (external grouping), or -1.
+    private int indexOfGroupKey(string groupKey) const @safe pure nothrow @nogc
+    {
+        if (groupKey.length == 0) return -1;
+        foreach (index, entry; _entries)
+            if (entry.groupKey == groupKey) return cast(int) index;
+        return -1;
+    }
+
     /// Add (or update) an external OS top-level window task. The entry is keyed
-    /// by hostHwnd; repeated calls refresh its title without duplicating.
-    void addExternalTask(ulong hostHwnd, string title, IconKind icon = IconKind.none)
+    /// by hostHwnd; repeated calls refresh its title without duplicating. When
+    /// task grouping is on and `groupKey` is non-empty, every window sharing the
+    /// key is held by a single entry and `hostHwnd` becomes the primary member.
+    void addExternalTask(ulong hostHwnd, string title,
+        IconKind icon = IconKind.none, string groupKey = "")
     {
         if (_reordering) cancelTaskReorder();
+
+        if (_groupTasks && groupKey.length > 0)
+        {
+            const groupIndex = indexOfGroupKey(groupKey);
+            if (groupIndex >= 0)
+            {
+                ref TaskEntry group = _entries[cast(size_t) groupIndex];
+                if (!containsHwnd(group.groupMembers, hostHwnd))
+                    group.groupMembers ~= ExternalMember(hostHwnd,
+                        toUTF32(title));
+                else
+                    foreach (ref member; group.groupMembers)
+                        if (member.hwnd == hostHwnd) member.title = toUTF32(title);
+                // The most recently added window becomes the primary so the
+                // button and its caption track the window just focused.
+                const changed = group.hostHwnd != hostHwnd ||
+                    toUTF32(title) != group.title;
+                group.hostHwnd = hostHwnd;
+                group.title = toUTF32(title);
+                if (changed)
+                {
+                    invalidate();
+                    notifyEntryOrderChanged();
+                }
+                return;
+            }
+        }
+
         foreach (ref entry; _entries)
         {
-            if (entry.hostHwnd == hostHwnd)
+            if (containsHwnd(entry.groupMembers, hostHwnd) ||
+                (entry.groupMembers.length == 0 && entry.hostHwnd == hostHwnd))
             {
                 if (toUTF32(title) != entry.title)
                 {
@@ -1499,8 +1681,12 @@ class Taskbar : Widget
                 return;
             }
         }
-        _entries ~= TaskEntry(allocateEntryId(), null, toUTF32(title), icon, null,
-            hostHwnd, null, false);
+
+        TaskEntry entry = makeTaskEntry(allocateEntryId(), null, title, icon,
+            null, hostHwnd, null, false);
+        entry.groupKey = groupKey;
+        entry.groupMembers = [ExternalMember(hostHwnd, toUTF32(title))];
+        _entries ~= entry;
         debug assert(taskOrderValid());
         invalidate();
         notifyEntryOrderChanged();
@@ -1541,7 +1727,9 @@ class Taskbar : Widget
     int indexOfExternal(ulong hostHwnd) const @safe pure nothrow @nogc
     {
         foreach (index, entry; _entries)
-            if (entry.hostHwnd == hostHwnd) return cast(int) index;
+            if (entry.hostHwnd == hostHwnd ||
+                containsHwnd(entry.groupMembers, hostHwnd))
+                return cast(int) index;
         return -1;
     }
 
@@ -1550,10 +1738,61 @@ class Taskbar : Widget
         return index < _entries.length ? _entries[index].hostHwnd : 0;
     }
 
+    /// Every external window hwnd held by an entry (single window or group).
+    ulong[] entryHostHwnds(size_t index) const
+    {
+        ulong[] result;
+        if (index >= _entries.length) return result;
+        const entry = _entries[index];
+        if (entry.groupMembers.length > 0)
+        {
+            result.reserve(entry.groupMembers.length);
+            foreach (member; entry.groupMembers) result ~= member.hwnd;
+        }
+        else if (entry.hostHwnd != 0)
+            result ~= entry.hostHwnd;
+        return result;
+    }
+
+    /// Number of external windows held by an entry (0 for commands/windows).
+    size_t entryHostHwndCount(size_t index) const @safe pure nothrow @nogc
+    {
+        if (index >= _entries.length) return 0;
+        const entry = _entries[index];
+        if (entry.groupMembers.length > 0) return entry.groupMembers.length;
+        return entry.hostHwnd != 0 ? 1 : 0;
+    }
+
+    /// Grouping key of an entry ("" when it is not an external grouped task).
+    string entryGroupKey(size_t index) const @safe pure nothrow @nogc
+    {
+        return index < _entries.length ? _entries[index].groupKey : "";
+    }
+
     bool removeExternal(ulong hostHwnd)
     {
         const index = indexOfExternal(hostHwnd);
-        return index >= 0 && removeEntry(index);
+        if (index < 0) return false;
+        ref TaskEntry entry = _entries[cast(size_t) index];
+        if (entry.groupMembers.length > 1)
+        {
+            // Keep the group alive, drop just this member. The primary moves to
+            // the first surviving window.
+            ExternalMember[] remaining;
+            remaining.reserve(entry.groupMembers.length - 1);
+            foreach (member; entry.groupMembers)
+                if (member.hwnd != hostHwnd) remaining ~= member;
+            entry.groupMembers = remaining;
+            if (entry.hostHwnd == hostHwnd)
+            {
+                entry.hostHwnd = remaining[0].hwnd;
+                entry.title = remaining[0].title;
+            }
+            invalidate();
+            notifyEntryOrderChanged();
+            return true;
+        }
+        return removeEntry(index);
     }
 
     int indexOfWindow(FloatingWindow window) const @safe pure nothrow @nogc
@@ -1989,8 +2228,32 @@ class Taskbar : Widget
         }
         else if (entry.hostHwnd != 0)
         {
-            // External OS window task: toggle via the host (activate+restore or
-            // minimize). The host reports the window's visibility.
+            // External OS window task. Ungrouped: toggle via the host
+            // (activate+restore or minimize), the host reports visibility.
+            // Grouped: rotate to the next window so repeated clicks cycle the
+            // app's windows, and never minimize (Windows grouped behavior).
+            if (entry.groupMembers.length > 1)
+            {
+                ulong target = entry.hostHwnd;
+                int focused = -1;
+                foreach (i, member; entry.groupMembers)
+                {
+                    if (onExternalFocused !is null &&
+                        onExternalFocused(member.hwnd))
+                    {
+                        focused = cast(int) i;
+                        break;
+                    }
+                }
+                if (focused >= 0)
+                    target = entry.groupMembers[
+                        (focused + 1) % cast(int) entry.groupMembers.length].hwnd;
+                if (onExternalActivate !is null)
+                    onExternalActivate(target, false);
+                _activeWindow = null;
+                invalidate();
+                return;
+            }
             const visible = onExternalVisible is null ? true :
                 onExternalVisible(entry.hostHwnd);
             if (visible)
@@ -2216,12 +2479,11 @@ class Taskbar : Widget
     {
         const palette = theme();
         // For external OS windows the live state comes from the host; for
-        // in-shell windows it is the FloatingWindow's visibility + focus.
-        bool externalVisible;
-        if (entry.hostHwnd != 0 && onExternalVisible !is null)
-            externalVisible = onExternalVisible(entry.hostHwnd);
-        const active = entry.hostHwnd != 0 ?
-            externalTaskFocusedState(entry.hostHwnd) :
+        // in-shell windows it is the FloatingWindow's visibility + focus. A
+        // grouped entry counts as visible/focused when ANY member is.
+        const external = entry.hostHwnd != 0;
+        const externalVisible = external && entryExternalVisible(entry);
+        const active = external ? entryExternalFocused(entry) :
             entry.window !is null && entry.window is _activeWindow &&
             entry.window.visible();
         const pressedId = stateEntryId(_pressed);
@@ -2245,11 +2507,12 @@ class Taskbar : Widget
             else
                 drawIcon(canvas, entry.icon, Rect(rect.x + 8, rect.y + 7, 24, 24),
                     Color.rgb(245, 248, 252), palette.accent);
+            paintGroupBadge(canvas, entry, Rect(rect.x + 8, rect.y + 7, 24, 24));
             canvas.drawTextInRect(Rect(rect.x + 38, rect.y,
                     maxInt(0, rect.width - 44), rect.height), entry.title,
                 Color.rgb(245, 248, 252), 1, HorizontalAlign.left,
                 VerticalAlign.middle, true);
-            const classicVisible = entry.hostHwnd != 0 ? externalVisible :
+            const classicVisible = external ? externalVisible :
                 entry.window !is null && entry.window.visible();
             if (classicVisible)
                 canvas.fillRect(Rect(rect.x + 8, rect.bottom() - 3,
@@ -2264,6 +2527,8 @@ class Taskbar : Widget
             drawIcon(canvas, entry.icon,
                 Rect(iconX, iconY, taskIconSize, taskIconSize),
                 Color.rgb(245, 248, 252), palette.accent);
+        paintGroupBadge(canvas, entry,
+            Rect(iconX, iconY, taskIconSize, taskIconSize));
         const hasWindow = entry.window !is null || entry.hostHwnd != 0;
         if (hasWindow)
         {
@@ -2271,7 +2536,7 @@ class Taskbar : Widget
             //  - active (focused + visible): solid accent
             //  - running but unfocused: muted
             //  - minimized (window exists, not visible): dimmed/dotted
-            const minimized = entry.hostHwnd != 0 ? !externalVisible :
+            const minimized = external ? !externalVisible :
                 !entry.window.visible();
             const underlineWidth = 16;
             const underlineX = rect.x + (rect.width - underlineWidth) / 2;
@@ -2285,6 +2550,53 @@ class Taskbar : Widget
                 canvas.fillRect(Rect(underlineX, rect.bottom() - 4,
                     underlineWidth, 2), palette.textMuted);
         }
+    }
+
+    /// Draw a small count chip on a grouped task's icon (Windows groups show a
+    /// subtle stack; the count makes the number of windows explicit).
+    private void paintGroupBadge(ref Canvas canvas, const ref TaskEntry entry,
+        Rect iconRect)
+    {
+        const count = entry.groupMembers.length;
+        if (count <= 1) return;
+        const palette = theme();
+        const text = toUTF32(format("%d", cast(int) count));
+        const badgeWidth = count < 10 ? 13 : 18;
+        const badge = Rect(iconRect.right() - badgeWidth + 2,
+            iconRect.bottom() - 11, badgeWidth, 13);
+        canvas.fillRoundedRect(badge, 6, palette.accent);
+        canvas.drawRoundedRect(badge, 6, Color.rgba(0, 0, 0, 0),
+            Color.rgba(0, 0, 0, 90), 1);
+        canvas.drawTextInRect(badge, text, Color.rgb(255, 255, 255), 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    /// Whether any window of an external entry is visible (not minimized).
+    private bool entryExternalVisible(const ref TaskEntry entry) const
+    {
+        if (entry.hostHwnd == 0) return false;
+        if (entry.groupMembers.length > 1)
+        {
+            foreach (member; entry.groupMembers)
+                if (onExternalVisible !is null && onExternalVisible(member.hwnd))
+                    return true;
+            return false;
+        }
+        return onExternalVisible is null ? true : onExternalVisible(entry.hostHwnd);
+    }
+
+    /// Whether any window of an external entry is the foreground window.
+    private bool entryExternalFocused(const ref TaskEntry entry) const
+    {
+        if (entry.hostHwnd == 0) return false;
+        if (entry.groupMembers.length > 1)
+        {
+            foreach (member; entry.groupMembers)
+                if (onExternalFocused !is null && onExternalFocused(member.hwnd))
+                    return true;
+            return false;
+        }
+        return onExternalFocused !is null && onExternalFocused(entry.hostHwnd);
     }
 
     /// Whether an external OS window is the focused/foreground window.
@@ -3054,6 +3366,20 @@ class Taskbar : Widget
                 {
                     if (onExternalClose !is null) onExternalClose(hwnd);
                 }, "Alt+F4");
+            if (entry.groupMembers.length > 1)
+            {
+                ulong[] groupHwnds;
+                groupHwnds.reserve(entry.groupMembers.length);
+                foreach (member; entry.groupMembers)
+                    groupHwnds ~= member.hwnd;
+                items ~= ContextMenuItem.command("Close all windows",
+                    IconKind.close, delegate()
+                    {
+                        if (onExternalClose is null) return;
+                        foreach (memberHwnd; groupHwnds)
+                            onExternalClose(memberHwnd);
+                    });
+            }
         }
         else if (entry.window !is null)
         {

@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: optional task grouping, default on (COMPLETED, verified)
+
+**Request (user).** "let's do optional grouping of tasks and set it as default."
+
+**Resolution.** The taskbar now groups external OS windows of the same
+application into one button by default (Windows behavior): `Taskbar` entries can
+hold several `ExternalMember` windows, painted with a count badge; clicking a
+group rotates through its windows; the context menu offers "Close all windows";
+the hover preview shows one captioned tile per window and clicking a tile
+activates it. Grouping is optional via `DesktopSettings.groupTasks` (persisted
+in `aurora-desktop.ini`, default true) with a "Group taskbar buttons by app"
+checkbox in System Settings.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED with new assertions
+for merge/split/add/remove; live probe on 2026-09-17 merged 11 external windows
+into 6 buttons (2 cmd, 2 Edge, 3 explorer each one button). Details in
+`testing_progress_and_methods.md` (2026-09-17 grouping section).
+
 ## 2026-09-17 - Aurora Desktop: no icons in taskbar tasks (COMPLETED, verified)
 
 **Complaint (user).** "why there are no icons in tasks of taskbar. we need to

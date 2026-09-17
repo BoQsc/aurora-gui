@@ -372,6 +372,36 @@ RgbaImage externalTaskIcon(ulong hwndValue)
     }
 }
 
+/**
+ * Stable grouping key for an external task: the owning executable path, so
+ * every window of the same application collapses into one taskbar button.
+ * UWP host frames resolve to the hosted app's process (see
+ * `externalTaskIcon`). Returns "" when the owner cannot be determined.
+ */
+string externalTaskGroupKey(ulong hwndValue)
+{
+    version (Windows)
+        return executablePathForWindow(cast(HWND) hwndValue);
+    else
+        return "";
+}
+
+/// Current caption of an external window ("" when it cannot be read).
+string externalTaskTitle(ulong hwndValue)
+{
+    version (Windows)
+    {
+        wchar[512] buffer;
+        const length = GetWindowTextW(cast(HWND) hwndValue, buffer.ptr,
+            buffer.length);
+        return length > 0 ? toUtf8Safe(buffer[0 .. length]) : "";
+    }
+    else
+    {
+        return "";
+    }
+}
+
 version (Windows)
 {
     /// True when an icon actually contains a visible (non-zero alpha) pixel.

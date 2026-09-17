@@ -466,6 +466,34 @@ int main()
             if (foundIcon) break;
         }
         assert(foundIcon, "external task raster icon was not painted");
+
+        // Task grouping: same-app external windows collapse into one button and
+        // the toggle splits/merges them without a host resync.
+        auto groupBar = new Taskbar();
+        groupBar.setBounds(Rect(0, 0, 640, 52));
+        assert(groupBar.taskGrouping(), "task grouping should default to on");
+        groupBar.addExternalTask(0x1111, "App A - 1", IconKind.computer, "appA");
+        groupBar.addExternalTask(0x2222, "App A - 2", IconKind.computer, "appA");
+        groupBar.addExternalTask(0x3333, "App B", IconKind.computer, "appB");
+        const groupIndex = groupBar.indexOfExternal(0x1111);
+        assert(groupIndex >= 0);
+        assert(groupBar.indexOfExternal(0x2222) == groupIndex,
+            "same-app window did not join its group");
+        assert(groupBar.entryHostHwndCount(cast(size_t) groupIndex) == 2);
+        assert(groupBar.entryCount() == 2, "expected one task button per app");
+        groupBar.setTaskGrouping(false);
+        assert(groupBar.entryCount() == 3, "disabling grouping must split tasks");
+        assert(groupBar.indexOfExternal(0x1111) !=
+            groupBar.indexOfExternal(0x2222));
+        groupBar.setTaskGrouping(true);
+        assert(groupBar.entryCount() == 2, "re-enabling grouping must merge tasks");
+        assert(groupBar.removeExternal(0x2222));
+        assert(groupBar.entryCount() == 2,
+            "removing one member must keep the group alive");
+        assert(groupBar.entryHostHwndCount(groupBar.indexOfExternal(0x1111)) == 1);
+        assert(groupBar.removeExternal(0x1111));
+        assert(groupBar.entryCount() == 1,
+            "removing the last member must drop the group");
     }
 
     window.saveScreenshot("build/headless-desktop.ppm");

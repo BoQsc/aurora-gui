@@ -13,6 +13,9 @@ struct DesktopSettings
 {
     bool modernShell = true;
     bool hideSystemCursor = true;
+    /// Collapse external OS windows of the same application into one taskbar
+    /// button (Windows behavior). On by default.
+    bool groupTasks = true;
 }
 
 private string settingsPath()
@@ -42,6 +45,10 @@ DesktopSettings loadDesktopSettings() nothrow
             else if (cleaned == "hideSystemCursor=1" ||
                 cleaned == "hideSystemCursor=true")
                 result.hideSystemCursor = true;
+            else if (cleaned == "groupTasks=0" || cleaned == "groupTasks=false")
+                result.groupTasks = false;
+            else if (cleaned == "groupTasks=1" || cleaned == "groupTasks=true")
+                result.groupTasks = true;
         }
     }
     catch (Exception)
@@ -57,7 +64,8 @@ void saveDesktopSettings(const ref DesktopSettings settings) nothrow
         write(settingsPath(),
             "# Aurora Desktop shell choice (written by System Settings).\n" ~
             "modernShell=" ~ (settings.modernShell ? "1" : "0") ~ "\n" ~
-            "hideSystemCursor=" ~ (settings.hideSystemCursor ? "1" : "0") ~ "\n");
+            "hideSystemCursor=" ~ (settings.hideSystemCursor ? "1" : "0") ~ "\n" ~
+            "groupTasks=" ~ (settings.groupTasks ? "1" : "0") ~ "\n");
     }
     catch (Exception)
     {

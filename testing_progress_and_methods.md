@@ -1,5 +1,49 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: optional taskbar task grouping (default on) (2026-09-17)
+
+**Request (user).** "let's do optional grouping of tasks and set it as default."
+
+**What changed.**
+- Vendor `aurora.widgets.desktop` (`Taskbar`): `TaskEntry` now carries a
+  `groupKey` and an `ExternalMember[] groupMembers`; an entry can represent
+  several OS windows of the same app. `setTaskGrouping(bool)`/`taskGrouping()`
+  (default **on**), `indexOfExternal` searches members, `removeExternal` drops a
+  single member and keeps the group until the last window closes,
+  `regroupExternalTasks()` merges/splits in place, and accessors
+  `entryHostHwnds`/`entryHostHwndCount`/`entryHostTitles`/`entryGroupKey` were
+  added.
+- Painting: `paintTaskEntry` shows the app icon plus a count badge for groups
+  and treats a group as active/visible when ANY member is. Clicking a grouped
+  button rotates to the next member (focused member -> next, else the primary);
+  the context menu gains "Close all windows".
+- `aurora-desktop`: `externalTaskGroupKey(hwnd)` (owning executable path, with
+  UWP ApplicationFrameHost -> hosted child process) is resolved once per window
+  and passed to `addExternalTask`. `TaskPreview` now lays out one tile per
+  grouped window (caption + thumbnail) and clicking a tile activates that
+  window. `DesktopSettings.groupTasks` (default true) is persisted in
+  `aurora-desktop.ini` and exposed as a "Group taskbar buttons by app" checkbox
+  in System Settings.
+
+**How to test (automated).**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
+  tests\headless_smoke.d -of=build\headless-smoke.exe ^
+  -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib ^
+  -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> ALL PASSED
+```
+The smoke asserts: grouping defaults on; two same-key windows collapse to one
+entry with `entryHostHwndCount == 2`; disabling splits to one entry per window;
+re-enabling merges; removing one member keeps the group and removing the last
+drops it.
+
+**Live check.** A temporary `group_check.d` constructs `DesktopRoot` and prints
+each entry's member count + group key. On 2026-09-17 it merged 2 cmd.exe -> one
+button, 2 Edge windows -> one button, 3 explorer windows -> one button (11
+external windows became 6 buttons). App rebuilt and exactly one instance
+relaunched.
+
 ## Aurora Desktop: taskbar task icons rendered (2026-09-17)
 
 **Complaint:** "why there are no icons in tasks of taskbar. we need to render them."

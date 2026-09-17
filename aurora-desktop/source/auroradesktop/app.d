@@ -11,7 +11,8 @@ import auroradesktop.store : DesktopState, IconState, TaskState, WindowState,
 import auroradesktop.taskpreview : TaskPreview;
 import auroradesktop.tasks : ExternalTask, activateExternalTask, captureExternalThumbnail,
     closeExternalTask, enumerateExternalTasks, excludeWindow, externalTaskAlive,
-    externalTaskFocused, externalTaskIcon, externalTaskMinimized, externalTaskSize,
+    externalTaskFocused, externalTaskGroupKey, externalTaskIcon,
+    externalTaskMinimized, externalTaskSize, externalTaskTitle,
     minimizeExternalTask;
 import auroradesktop.system;
 import auroradesktop.tray;
@@ -72,6 +73,7 @@ final class DesktopRoot : Widget
         // previous classic taskbar). Defaults to the new shell.
         _settings = loadDesktopSettings();
         _taskbar.setModernShell(_settings.modernShell);
+        _taskbar.setTaskGrouping(_settings.groupTasks);
         // Load the full session state (window bounds, icon positions, pinned
         // task order). The settings file is separate and kept small.
         _state = loadDesktopState();
@@ -245,6 +247,15 @@ final class DesktopRoot : Widget
         {
             _taskbar.setModernShell(checked);
             _settings.modernShell = checked;
+            saveDesktopSettings(_settings);
+        };
+        auto groupToggle = content.add(new CheckBox(
+            "Group taskbar buttons by app",
+            _taskbar.taskGrouping()));
+        groupToggle.onChanged = delegate(bool checked)
+        {
+            _taskbar.setTaskGrouping(checked);
+            _settings.groupTasks = checked;
             saveDesktopSettings(_settings);
         };
         auto cursorToggle = content.add(new CheckBox(
@@ -476,8 +487,47 @@ final class DesktopRoot : Widget
             // External OS window: capture a real thumbnail with PrintWindow.
             version (Windows)
             {
-                auto size = externalTaskSize(hwnd);
-                auto image = captureExternalThumbnail(hwnd, size.width, size.height);
+                // A grouped app shows one tile per window so the user can pick
+                // the window instead of cycling blindly. Dead members can linger
+                // for up to one sync tick, so filter to live windows first.
+                auto members = _taskbar.entryHostHwnds(cast(size_t) index);
+                ulong target = hwnd;
+                if (members.length > 1)
+                {
+                    RgbaImage[] images;
+                    ulong[] live;
+                    string[] captions;
+                    foreach (memberHwnd; members)
+                    {
+                        if (!externalTaskAlive(memberHwnd)) continue;
+                        auto memberSize = externalTaskSize(memberHwnd);
+                        images ~= captureExternalThumbnail(memberHwnd,
+                            memberSize.width, memberSize.height);
+                        live ~= memberHwnd;
+                        captions ~= cleanTaskTitle(externalTaskTitle(memberHwnd));
+                    }
+                    if (live.length > 1)
+                    {
+                        auto preview = new TaskPreview(title, images, live,
+                            captions);
+                        preview.onCloseRequested = delegate()
+                        {
+                            closeExternalTask(hwnd);
+                        };
+                        preview.onActivateHwnd = delegate(ulong memberHwnd)
+                        {
+                            activateExternalTask(memberHwnd);
+                        };
+                        if (preview.show(_taskbar,
+                                _taskbar.entryGlobalBounds(cast(size_t) index)))
+                            _preview = preview;
+                        return;
+                    }
+                    if (live.length == 1) target = live[0];
+                }
+                auto size = externalTaskSize(target);
+                auto image = captureExternalThumbnail(target, size.width,
+                    size.height);
                 if (image is null)
                 {
                     // Fall back to an icon-only preview (no thumbnail).
@@ -486,9 +536,9 @@ final class DesktopRoot : Widget
                 auto preview = new TaskPreview(title, image);
                 preview.onCloseRequested = delegate()
                 {
-                    closeExternalTask(hwnd);
+                    closeExternalTask(target);
                 };
-                preview.onActivate = delegate() { activateExternalTask(hwnd); };
+                preview.onActivate = delegate() { activateExternalTask(target); };
                 if (preview.show(_taskbar,
                         _taskbar.entryGlobalBounds(cast(size_t) index)))
                     _preview = preview;
@@ -845,6 +895,9 @@ final class DesktopRoot : Widget
     private ulong[] _externalHwnds;
     // Bounded per-window icon-resolution attempts (see syncExternalTasks).
     private ubyte[ulong] _externalIconAttempts;
+    // Resolved grouping key per hwnd (owning executable path), so grouping only
+    // pays the OpenProcess/query cost once per window.
+    private string[ulong] _externalGroupKeys;
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
     /// closed ones. Existing external entries are kept in their pinned slot.
@@ -859,11 +912,15 @@ final class DesktopRoot : Widget
                 live[t.hwnd] = true;
                 if (_taskbar.indexOfExternal(t.hwnd) < 0)
                 {
+                    auto cachedKey = t.hwnd in _externalGroupKeys;
+                    const groupKey = cachedKey !is null ? *cachedKey :
+                        externalTaskGroupKey(t.hwnd);
+                    _externalGroupKeys[t.hwnd] = groupKey;
                     // `computer` is only a last-resort glyph for a window whose
                     // real icon cannot be resolved; the raster icon normally
                     // replaces it (see below).
                     _taskbar.addExternalTask(t.hwnd, cleanTaskTitle(t.title),
-                        IconKind.computer);
+                        IconKind.computer, groupKey);
                     _externalIconAttempts[t.hwnd] = 0;
                 }
                 // Resolve the real OS icon and hand it to the taskbar so the
@@ -889,6 +946,7 @@ final class DesktopRoot : Widget
                 if (hwnd in live) continue;
                 _taskbar.removeExternal(hwnd);
                 if (hwnd in _externalIconAttempts) _externalIconAttempts.remove(hwnd);
+                if (hwnd in _externalGroupKeys) _externalGroupKeys.remove(hwnd);
             }
             _externalHwnds.length = 0;
             foreach (t; tasks)
