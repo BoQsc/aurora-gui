@@ -19,10 +19,16 @@ hover-intent (100 ms show delay, 350 ms hide grace, stays open over the panel);
 task-entry label tooltips are disabled while rich previews are used. Reorder
 animation now uses fractional per-entry slots so crossings chain smoothly.
 
+**Follow-up (user):** "it always lags before swapping tasks by drag." The
+dragged task is painted in-row but the taskbar layer was only invalidated on a
+slot-boundary crossing, so it looked stuck and jumped when it swapped. Fixed by
+invalidating on every reorder sample; regression asserts `paintGeneration()`
+increases on a 2 px in-slot move (verified to fail with the fix removed).
+
 **Verification.** `build\headless-smoke.exe` -> ALL PASSED, including regressions
-for preview persistence on a 2 px move, entering the preview, and animated drag
-interpolation (`entryPaintedX`: 266 -> 253 -> 214). Details in
-`testing_progress_and_methods.md` (2026-09-17 hover/drag section).
+for preview persistence on a 2 px move, entering the preview, animated drag
+interpolation (`entryPaintedX`: 266 -> 253 -> 214), and in-slot drag repaint.
+Details in `testing_progress_and_methods.md` (2026-09-17 hover/drag section).
 
 ## 2026-09-17 - Aurora Desktop: optional task grouping, default on (COMPLETED, verified)
 

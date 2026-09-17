@@ -123,6 +123,17 @@ private void testTaskDragAnimation()
     driver.mouseDown();
     driver.moveTo(Point(from.x + 8, from.y));
     assert(taskbar.reordering(), "drag did not start");
+    driver.paint();
+    // Dragging WITHIN a slot (no boundary crossing) must still rebuild the
+    // taskbar layer so the task follows the pointer; it used to look stuck and
+    // only jump when it swapped.
+    const paintBefore = taskbar.paintGeneration();
+    driver.moveTo(Point(from.x + 10, from.y));
+    driver.paint();
+    assert(taskbar.dragTargetIndex() == 0,
+        "a 10px in-slot move should not have swapped yet");
+    assert(taskbar.paintGeneration() > paintBefore,
+        "taskbar did not repaint while dragging within a slot");
     foreach (step; 1 .. 6)
         driver.moveTo(Point(from.x + (destination.x - from.x) * step / 5,
             from.y));

@@ -1137,6 +1137,9 @@ class Taskbar : Widget
     private double[] _reorderFromSlot;       // per model index, painted slot at restart
     private double[] _reorderToSlot;         // per model index, target slot
     private bool _reorderAnimActive;
+    // Monotonic count of taskbar content paints. Tests use it to prove the
+    // retained layer actually rebuilt (e.g. while dragging within a slot).
+    private size_t _paintGeneration;
     private enum double reorderAnimSeconds = 0.14;
     private PointF _pressPointer;
     private PointF _dragGrabOffset;
@@ -1550,6 +1553,12 @@ class Taskbar : Widget
         const local = entryRect(cast(int) index);
         return Rect(origin.x + local.x, origin.y + local.y,
             local.width, local.height);
+    }
+
+    /// Monotonic taskbar content-paint count (tests: layer actually rebuilt).
+    size_t paintGeneration() const @safe pure nothrow @nogc
+    {
+        return _paintGeneration;
     }
 
     /**
@@ -2438,7 +2447,13 @@ class Taskbar : Widget
     private bool updateTaskReorder(PointF pointer, bool requestFrame)
     {
         if (!_reordering) return false;
-        bool changed = updateDragProxyPosition(pointer, requestFrame);
+        updateDragProxyPosition(pointer, requestFrame);
+        // The dragged task is painted in-row and the floating proxy is hidden,
+        // so the taskbar layer MUST be rebuilt on every pointer sample. Without
+        // this the task looks stuck and only jumps when a slot boundary is
+        // crossed ("lags before swapping").
+        invalidate();
+        bool changed = true;
         const target = targetIndexFromPointer(pointer);
         if (target >= 0 && target != _dragCurrentIndex)
         {
@@ -2453,10 +2468,6 @@ class Taskbar : Widget
                 _reorderToSlot = fractionalSlotsFor(target, draggedModelIndex);
             _reorderAnim = 0.0;
             _reorderAnimActive = true;
-            // Only a slot-boundary crossing rebuilds taskbar content. Every
-            // in-slot pointer sample is a transform-only proxy update.
-            invalidate();
-            changed = true;
         }
         return changed;
     }
@@ -2679,6 +2690,7 @@ class Taskbar : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
+        ++_paintGeneration;
         const palette = theme();
         const full = Rect(0, 0, bounds().width, bounds().height);
         canvas.fillRect(full, palette.taskbar);

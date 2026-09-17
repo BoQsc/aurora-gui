@@ -36,6 +36,19 @@ was dead code). The interpolation arrays were integers.
   boundary crossed mid-slide restarts from the exact painted position. Dead
   `beginReorderSlide` removed. New test accessor `entryPaintedX`.
 
+**Follow-up (same day): "it always lags before swapping tasks by drag".** The
+dragged task is painted *in-row* while the floating proxy is hidden
+(`_dragProxy.setVisible(false)`), but `updateTaskReorder` only invalidated the
+taskbar on a slot-boundary crossing, and a late-latched sample only updates
+layer transforms. So the retained taskbar layer never rebuilt while the pointer
+moved within a slot: the task looked stuck and jumped when it finally swapped.
+Fixed by calling `invalidate()` on every reorder sample (the taskbar layer must
+rebuild to follow the pointer). Regression: `testTaskDragAnimation` records
+`paintGeneration()`, moves 2 px within the same slot, and asserts the taskbar
+repainted (`paintGeneration` increased) while `dragTargetIndex()` stayed 0.
+Proven by temporarily commenting the `invalidate()`: the assertion then fails
+with "taskbar did not repaint while dragging within a slot".
+
 **How to test.**
 ```
 dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source ^
