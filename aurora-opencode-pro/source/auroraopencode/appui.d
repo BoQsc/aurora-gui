@@ -2,7 +2,7 @@ module auroraopencode.appui;
 
 import aurora;
 import auroraopencode.core;
-import auroraopencode.logging : logError, setLogDirectory;
+import auroraopencode.logging : logError, logInfo, setLogDirectory;
 import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     paintMarkdown, parseMarkdown;
@@ -3726,6 +3726,11 @@ public final class OpenCodeRoot : VBox
     private Settings _settings;
     private ChatSession[] _sessions;
     private int _current = -1;
+    // Rebuilding every bubble in a runaway transcript can allocate hundreds of
+    // megabytes and was the trigger shared by the recent layout/markdown access
+    // violations. Keep the full graph in storage, but materialize it in pages.
+    private size_t _visibleMessageLimit = messageHistoryPageSize;
+    private static immutable size_t messageHistoryPageSize = 120;
     private string[] _models = defaultModels.dup;
 
     private ProjectState _projectState;
@@ -3854,7 +3859,7 @@ public final class OpenCodeRoot : VBox
     // spent 73 read/search/run rounds without editing or answering, which the
     // exact-repeat and repeated-error guards could not see.
     private int _nonProgressToolRounds;
-    private static immutable int maxNonProgressToolRounds = 8;
+    private static immutable int maxNonProgressToolRounds = 5;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -3930,6 +3935,78 @@ public final class OpenCodeRoot : VBox
         updateSendButton();
         _client.fetchModels();
         _input.requestFocus();
+        prepareResumeAfterCrash();
+    }
+
+    // -- resume after an unexpected shutdown ------------------------------
+
+    /// Ticks to wait after startup before continuing, so the restored
+    /// conversation has been laid out before it is extended.
+    private static immutable int resumeDelayTicks = 3;
+
+    private int _resumeCountdown;
+    private string _resumePrompt;
+
+    private static string activeTurnMarkerPath()
+    {
+        return buildPath(opencodeStateDirectory(), "turn-active");
+    }
+
+    /// Distinguish a crash during agent work from an unrelated idle UI crash.
+    /// The supervisor resumes only when this marker survives an interrupted
+    /// turn, avoiding an unsolicited API request after every abnormal exit.
+    private static void setTurnActiveMarker(bool active)
+    {
+        const path = activeTurnMarkerPath();
+        if (active)
+        {
+            try write(path, "active\n");
+            catch (Exception error)
+                logError("could not mark active turn: " ~ error.msg);
+        }
+        else if (exists(path))
+        {
+            try fileRemove(path);
+            catch (Exception) {}
+        }
+    }
+
+    /**
+     * Continue the conversation after an unexpected shutdown.
+     *
+     * The app cannot detect its own crash - the deaths that matter bypass the
+     * exception filter entirely, so nothing in-process runs - and so the
+     * supervisor records the event for the next start to find. When that record
+     * is present, the conversation is reopened, a note explaining how the
+     * process ended is added to it, and the request is resumed, so a crash
+     * costs a delay rather than the turn.
+     */
+    private void prepareResumeAfterCrash()
+    {
+        const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
+        if (!exists(path)) return;
+        string cause;
+        try
+        {
+            auto value = parseJSON(readText(path));
+            if (auto field = "cause" in value.object)
+                cause = field.str;
+        }
+        catch (Exception error)
+            logError("resume note unreadable: " ~ error.msg);
+        // Consumed once: a single crash must not replay on every later launch.
+        try fileRemove(path);
+        catch (Exception) {}
+        if (_current < 0)
+        {
+            logInfo("resume skipped: no conversation to continue");
+            return;
+        }
+        _resumePrompt = "The application closed unexpectedly (" ~
+            (cause.length > 0 ? cause : "cause unknown") ~
+            "). Continue from where you left off.";
+        _resumeCountdown = resumeDelayTicks;
+        logInfo("resume queued for the restored conversation");
     }
 
     /// Test-only / shutdown hook: release the shared network session.
@@ -4681,6 +4758,7 @@ public final class OpenCodeRoot : VBox
         session.projectId = activeProjectId();
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
+        _visibleMessageLimit = messageHistoryPageSize;
         _streamBubble = null;
         _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
@@ -4709,6 +4787,7 @@ public final class OpenCodeRoot : VBox
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
         _current = index;
+        _visibleMessageLimit = messageHistoryPageSize;
         _streamBubble = null;
         _editMessageIndex = -1;
         _pendingToolCalls.length = 0;
@@ -4800,7 +4879,24 @@ public final class OpenCodeRoot : VBox
             return;
         }
         const session = &_sessions[_current];
-        const path = activeMessagePath(*session);
+        const fullPath = activeMessagePath(*session);
+        const hiddenCount = fullPath.length > _visibleMessageLimit
+            ? fullPath.length - _visibleMessageLimit : 0;
+        const path = hiddenCount > 0 ? fullPath[hiddenCount .. $] : fullPath;
+        if (hiddenCount > 0)
+        {
+            const nextPage = hiddenCount < messageHistoryPageSize
+                ? hiddenCount : messageHistoryPageSize;
+            auto older = new Button("Load " ~ to!string(nextPage) ~
+                " older messages");
+            older.onClick = delegate()
+            {
+                _visibleMessageLimit += messageHistoryPageSize;
+                rebuildMessageColumn();
+                _messagesScroll.invalidate();
+            };
+            _messageColumn.add(older);
+        }
         // Only the latest real assistant reply shows its token usage in the
         // footer. Tool-call wrappers (empty content + tool requests) never do.
         int latestAssistantIndex = -1;
@@ -5612,6 +5708,7 @@ public final class OpenCodeRoot : VBox
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
         int completionTokens = 0, int totalTokens = 0)
     {
+        setTurnActiveMarker(false);
         _preparingToolCalls.length = 0;
         clearActivity();
         // The turn is over: freeze its clock before rebuilding so the durable
@@ -5673,6 +5770,7 @@ public final class OpenCodeRoot : VBox
 
     private void failAssistantMessage(string error)
     {
+        setTurnActiveMarker(false);
         _preparingToolCalls.length = 0;
         freezeTurnTiming();
         if (_current < 0)
@@ -5715,6 +5813,7 @@ public final class OpenCodeRoot : VBox
     /// run cannot append to the newly selected branch.
     private void cancelPendingTools()
     {
+        setTurnActiveMarker(false);
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
         _pendingToolCalls.length = 0;
@@ -5952,7 +6051,9 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Reads, searches, plans and commands are evidence, not completion. Count
-    /// their batches across a turn; any workspace mutation opens a fresh budget.
+    /// their batches across a turn. Merely requesting a mutation is not progress:
+    /// the worker may reject it, the process may die, or the user may interrupt
+    /// before it executes. Only applyToolResult credits a successful mutation.
     private bool nonProgressBudgetExhausted(
         const(OpenCodeToolCall)[] calls)
     {
@@ -5960,10 +6061,7 @@ public final class OpenCodeRoot : VBox
         {
             if (call.name == "edit" || call.name == "write" ||
                 call.name == "apply_patch" || call.name == "remove")
-            {
-                _nonProgressToolRounds = 0;
                 return false;
-            }
         }
         ++_nonProgressToolRounds;
         return _nonProgressToolRounds >= maxNonProgressToolRounds;
@@ -6111,6 +6209,14 @@ public final class OpenCodeRoot : VBox
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
 
+        // Credit actual progress only after a workspace mutation succeeds. The
+        // old pre-execution reset let endless failed edits buy fresh exploration
+        // budgets, which is exactly what the long crash-recovery transcript did.
+        if (!event.toolFailed && (event.toolName == "edit" ||
+            event.toolName == "write" || event.toolName == "apply_patch" ||
+            event.toolName == "remove"))
+            _nonProgressToolRounds = 0;
+
         // Progress-based loop detection: remember the last failure signature
         // (tool name + first output line) and how many times in a row it has
         // repeated. Any success is progress and clears it.
@@ -6202,7 +6308,7 @@ public final class OpenCodeRoot : VBox
         _failureLoopDetected = false;
         // Deliberately retain `_nonProgressToolRounds`: after an exploration
         // recovery, another non-mutating batch is redirected immediately. A
-        // real edit resets the budget in nonProgressBudgetExhausted.
+        // successfully completed edit resets the budget in applyToolResult.
         updateStatus("Tool loop detected - asking the model to change approach...");
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
@@ -6281,21 +6387,104 @@ public final class OpenCodeRoot : VBox
     /// tool_calls message", HTTP 400), so keep the calls only when the full
     /// contiguous set of replies is present; otherwise downgrade the assistant
     /// to a plain message and drop the orphan tool replies.
-    /// Deterministically shrink an oversized request so it fits the model's
-    /// context window: older tool outputs (the bulk of long agent loops) are
-    /// elided first, then older non-tool turns. Tool-call/reply pairing is
-    /// preserved (role + toolCallId never change), the system prompt, the first
-    /// user turn and the most recent exchanges are never elided. This is a
-    /// cheap safety valve, not a summariser — it never calls the model.
+    private static size_t requestMessageBytes(
+        const(ChatRequestMessage)[] messages)
+    {
+        size_t total;
+        foreach (m; messages)
+        {
+            total += m.role.length + m.content.length + m.toolCallId.length + 16;
+            foreach (call; m.toolCalls)
+                total += call.name.length + call.arguments.length + 16;
+        }
+        return total;
+    }
+
+    /// Remove old, completed tool-call envelopes instead of replaying hundreds
+    /// of stale calls on every continuation. The real user/assistant dialogue
+    /// remains intact and the newest tool groups remain verbatim. A compact
+    /// system note tells the model what was removed so omission cannot be
+    /// mistaken for work that never happened.
+    private static ChatRequestMessage[] collapseCompletedToolHistory(
+        ChatRequestMessage[] messages)
+    {
+        enum size_t keepRecentToolGroups = 8;
+        size_t groupCount;
+        foreach (m; messages)
+            if (m.role == "assistant" && m.toolCalls.length > 0)
+                ++groupCount;
+        if (groupCount <= keepRecentToolGroups) return messages;
+
+        const collapseCount = groupCount - keepRecentToolGroups;
+        int[string] callCounts;
+        string[] callOrder;
+        size_t seenGroups;
+        foreach (m; messages)
+        {
+            if (m.role != "assistant" || m.toolCalls.length == 0) continue;
+            if (seenGroups++ >= collapseCount) break;
+            foreach (call; m.toolCalls)
+            {
+                if (call.name !in callCounts) callOrder ~= call.name;
+                ++callCounts[call.name];
+            }
+        }
+
+        auto noteText = appender!string();
+        noteText.put("Earlier completed tool activity was compacted (" ~
+            to!string(collapseCount) ~ " rounds: ");
+        foreach (i, name; callOrder)
+        {
+            if (i > 0) noteText.put(", ");
+            noteText.put(name ~ " x" ~ to!string(callCounts[name]));
+        }
+        noteText.put("). Do not repeat old exploration merely because its " ~
+            "raw output is omitted. The current workspace contains successful " ~
+            "changes; make only a targeted lookup when an exact fact is needed.");
+        ChatRequestMessage note;
+        note.role = "system";
+        note.content = noteText.data;
+
+        ChatRequestMessage[] result;
+        bool inserted;
+        size_t collapsed;
+        size_t slot;
+        while (slot < messages.length)
+        {
+            auto m = messages[slot];
+            if (collapsed < collapseCount && m.role == "assistant" &&
+                m.toolCalls.length > 0)
+            {
+                if (!inserted)
+                {
+                    result ~= note;
+                    inserted = true;
+                }
+                ++collapsed;
+                ++slot;
+                while (slot < messages.length && messages[slot].role == "tool")
+                    ++slot;
+                continue;
+            }
+            result ~= m;
+            ++slot;
+        }
+        return result;
+    }
+
+    /// Deterministically shrink a request so it fits the model's context
+    /// window. Structural tool-history compaction runs on every request to avoid
+    /// quadratic token replay; oversized remaining content is then elided.
     private static ChatRequestMessage[] compactRequestMessages(
         ChatRequestMessage[] messages, int contextLimit)
     {
-        if (contextLimit <= 0 || messages.length == 0) return messages;
+        if (messages.length == 0) return messages;
+        messages = collapseCompletedToolHistory(messages);
+        if (contextLimit <= 0) return messages;
         // Rough token estimate (~4 chars/token). Begin eliding at 60% of the
         // window so there is headroom for the response and tool schemas.
         const size_t budget = cast(size_t) contextLimit * 4 * 6 / 10;
-        size_t total;
-        foreach (m; messages) total += m.content.length + 16;
+        size_t total = requestMessageBytes(messages);
         if (total <= budget) return messages;
 
         auto result = messages.dup;
@@ -6492,7 +6681,10 @@ public final class OpenCodeRoot : VBox
         // round re-enters here without `userTurn`, so the one clock spans the
         // whole turn (and one action group owns its tools).
         if (userTurn)
+        {
             beginTurnTiming(sessionIndex);
+            setTurnActiveMarker(true);
+        }
         updateStatus("Generating…");
         // Fill the request round-trip immediately: the transcript shows a live
         // "waiting" row from the moment Send is pressed until the first event.
@@ -7682,6 +7874,29 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        // Resume after an unexpected shutdown, once the restored transcript has
+        // been laid out. Sending earlier would extend a conversation whose
+        // widgets are not built yet.
+        if (_resumeCountdown > 0 && --_resumeCountdown == 0 &&
+            _resumePrompt.length > 0)
+        {
+            const prompt = _resumePrompt;
+            _resumePrompt = "";
+            logInfo("resuming after an unexpected shutdown");
+            if (_current >= 0)
+            {
+                ChatMessage recovery;
+                recovery.role = "user";
+                recovery.internal = true;
+                recovery.content = prompt;
+                recovery.time = currentTimestamp();
+                appendMessage(_sessions[_current], recovery);
+                markDirty();
+                startChatRequest(_current);
+            }
+            updateStatus("Resuming after an unexpected shutdown…");
+        }
+
         // Hover-intent delay for the context tooltip.
         if (_usageTooltipPending && !_usageTooltipOpen)
         {
@@ -8729,6 +8944,21 @@ public final class OpenCodeRoot : VBox
     public int messageColumnVisualCountForTesting()
     {
         return cast(int) messageColumnVisuals().length;
+    }
+
+    /// Test-only: messages retained in the graph but not materialized in the
+    /// current transcript page.
+    public size_t hiddenHistoryCountForTesting()
+    {
+        if (_current < 0) return 0;
+        const count = activeMessagePath(_sessions[_current]).length;
+        return count > _visibleMessageLimit ? count - _visibleMessageLimit : 0;
+    }
+
+    public void loadOlderHistoryForTesting()
+    {
+        _visibleMessageLimit += messageHistoryPageSize;
+        rebuildMessageColumn();
     }
 
     /// Test-only: settled turn-boundary labels in transcript order.

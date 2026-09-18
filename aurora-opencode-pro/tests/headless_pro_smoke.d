@@ -26,7 +26,7 @@ import std.conv : to;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.process : environment;
-import std.string : indexOf;
+import std.string : indexOf, join;
 import std.utf : toUTF32;
 
 /// Guard against the experimental TrueType `natural` hinter, whose grid
@@ -779,9 +779,9 @@ int main(string[] args)
         "A valid tool exchange was dropped by the sanitizer");
     writeln("Outgoing request keeps a fully-answered tool exchange");
 
-    // Compaction: an oversized history elides the oldest tool outputs (keeping
-    // the newest few and every tool-call/reply pair) so the request fits the
-    // model window instead of overflowing it.
+    // Compaction: old completed tool envelopes are structurally collapsed even
+    // before the hard context limit. Replaying every stale call on every round
+    // is quadratic; only the newest eight exact pairs need to remain.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["big job"]);
     import std.array : replicate;
@@ -799,7 +799,7 @@ int main(string[] args)
     assert(fatBytes > 200_000, "compaction fixture was not large enough");
     auto slim = root.compactedRequestMessagesForTesting(8_000);
     size_t slimBytes;
-    int toolCount, elided;
+    int toolCount, compactNotes;
     bool sawPair;
     foreach (i, m; slim)
     {
@@ -809,8 +809,9 @@ int main(string[] args)
             ++toolCount;
             assert(m.toolCallId.length > 0,
                 "compaction dropped a tool reply's toolCallId");
-            if (m.content.indexOf("elided") >= 0) ++elided;
         }
+        if (m.role == "system" && m.content.indexOf("compacted") >= 0)
+            ++compactNotes;
         if (m.role == "assistant" && m.toolCalls.length == 1)
         {
             sawPair = true;
@@ -818,12 +819,35 @@ int main(string[] args)
                 "compaction broke tool-call/reply pairing");
         }
     }
-    assert(toolCount == 12,
-        "compaction dropped tool messages instead of eliding their content");
-    assert(elided >= 1, "compaction did not elide any tool output");
+    assert(toolCount == 8,
+        "compaction did not retain exactly the newest eight tool groups");
+    assert(compactNotes == 1,
+        "compaction did not replace old tool groups with one control note");
     assert(sawPair, "compaction dropped the tool-call messages");
     assert(slimBytes < fatBytes, "compaction did not shrink the request");
-    writeln("Compaction elides old tool outputs and preserves tool pairing");
+    writeln("Compaction bounds old tool history and preserves recent pairing");
+
+    // Long transcripts stay complete in the message graph but only the newest
+    // page is materialized. This prevents a pathological chat from allocating
+    // hundreds of MB during startup; older pages remain available on demand.
+    root.newChatForTesting();
+    string[] longRoles, longContents;
+    foreach (i; 0 .. 250)
+    {
+        longRoles ~= "assistant";
+        longContents ~= "history " ~ to!string(i);
+    }
+    root.addConversationForTesting(longRoles, longContents);
+    assert(root.hiddenHistoryCountForTesting() == 130,
+        "initial history page did not cap materialized messages");
+    assert(root.messageColumnVisualCountForTesting() == 121,
+        "history page should contain one loader plus 120 messages");
+    root.loadOlderHistoryForTesting();
+    assert(root.hiddenHistoryCountForTesting() == 10,
+        "loading older history did not advance by one page");
+    assert(root.requestMessagesForTesting().length == 250,
+        "UI paging incorrectly removed stored/request history");
+    writeln("Long transcripts render lazily without dropping history");
 
     // Streaming progress: the client must announce a tool by name as soon as
     // the name appears (arguments still streaming), so the UI can show
@@ -2211,27 +2235,29 @@ int main(string[] args)
     writeln("Repeated-failure recovery breaks a failing tool loop");
 
     // Semantically different successful reads used to evade both loop guards.
-    // The eighth non-mutating batch is redirected, and an edit resets the
-    // budget so legitimate implementation can continue.
+    // The fifth non-mutating batch is redirected. Merely requesting an edit
+    // cannot reset the counter; only a successful mutation result can.
     OpenCodeToolCall variedRead;
     variedRead.name = "read";
     OpenCodeToolCall progressEdit;
     progressEdit.name = "edit";
-    assert(!root.recordToolBatchForProgressTesting([progressEdit]),
-        "a mutating batch should reset the exploration budget");
-    foreach (round; 0 .. 7)
+    root.injectToolResultForTesting("edit", "Done", false);
+    foreach (round; 0 .. 4)
     {
         variedRead.arguments = `{"filePath":"file-` ~ to!string(round) ~ `.d"}`;
         assert(!root.recordToolBatchForProgressTesting([variedRead]),
             "non-progress guard fired before its documented budget");
     }
-    variedRead.arguments = `{"filePath":"file-7.d"}`;
+    variedRead.arguments = `{"filePath":"file-4.d"}`;
     assert(root.recordToolBatchForProgressTesting([variedRead]),
         "non-progress guard did not stop varied exploration");
     assert(!root.recordToolBatchForProgressTesting([progressEdit]),
-        "a mutating batch should reset the exploration budget");
+        "a mutating request should be allowed to execute");
+    assert(root.recordToolBatchForProgressTesting([variedRead]),
+        "an unexecuted mutation incorrectly reset the exploration budget");
+    root.injectToolResultForTesting("edit", "Done", false);
     assert(!root.recordToolBatchForProgressTesting([variedRead]),
-        "exploration budget did not reset after a mutating batch");
+        "a successful mutation did not reset the exploration budget");
     writeln("Progress guard bounds varied read/search/command loops");
 
     // The doom-loop injections run real local tool workers and a follow-up

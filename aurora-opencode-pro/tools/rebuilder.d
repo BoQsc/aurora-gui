@@ -27,11 +27,20 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : append, exists, mkdirRecurse, readText;
+import std.file : append, exists, mkdirRecurse, readText, write;
 import std.path : buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
 import std.string : indexOf, lastIndexOf, replace, strip;
+
+version (Windows)
+    import core.sys.windows.windows : CloseHandle, CreateMutexW, HANDLE,
+        ReleaseMutex, WaitForSingleObject;
+version (Windows)
+    import std.utf : toUTF16z;
+
+import progresswindow : closeProgressWindow, openProgressWindow, setProgress;
+
 
 private struct Options
 {
@@ -94,6 +103,43 @@ private void noteUnexpectedExit(in Options options, int code, int restartNumber)
     // when the app went down.
     appendLine(options.logPath, "unexpected exit " ~ to!string(code) ~ " (" ~
         describeExitCode(code) ~ "); restarting");
+    requestResume(options, code);
+}
+
+/**
+ * Leave a note asking the next start to pick the conversation back up.
+ *
+ * The app cannot ask for this itself: the deaths that matter are the ones it
+ * never gets to handle. The supervisor is the one process that observes them,
+ * so it writes the request, and the app consumes it on startup and continues
+ * the chat where it stopped. The file is the whole interface between the two,
+ * which keeps a crash-and-resume independent of anything held in memory.
+ */
+private void requestResume(in Options options, int code)
+{
+    if (options.logPath.length == 0) return;
+    // Idle crashes should reopen the app, but must not silently spend another
+    // model request. The app owns this marker and removes it on done/error/stop.
+    if (!exists(buildPath(dirName(options.logPath), "turn-active"))) return;
+    const path = buildPath(dirName(options.logPath), "restart-resume.json");
+    string json;
+    json ~= "{\n";
+    json ~= "  \"time\": " ~ jsonString(to!string(Clock.currTime)) ~ ",\n";
+    json ~= "  \"exitCode\": " ~ to!string(code) ~ ",\n";
+    json ~= "  \"cause\": " ~ jsonString(describeExitCode(code)) ~ ",\n";
+    json ~= "  \"activity\": " ~ jsonString(recentActivity(options)) ~ "\n";
+    json ~= "}\n";
+    try write(path, json);
+    catch (Exception error)
+        appendLine(options.logPath, "could not write the resume request: " ~
+            error.msg);
+}
+
+private string jsonString(string value)
+{
+    return "\"" ~ value.replace("\\", "\\\\").replace("\"", "\\\"")
+        .replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t") ~
+        "\"";
 }
 
 /**
@@ -153,6 +199,12 @@ private int superviseApp(in Options options)
     int restart = 0;
     while (true)
     {
+        if (!exists(options.exePath))
+        {
+            appendLine(options.logPath,
+                "executable missing; supervisor stopping instead of looping");
+            return 2;
+        }
         const code = runAndReport(options);
         if (code == 0)
         {
@@ -161,7 +213,7 @@ private int superviseApp(in Options options)
         }
         ++restart;
         noteUnexpectedExit(options, code, restart);
-        if (restart > options.maxRestarts)
+        if (restart >= options.maxRestarts)
         {
             appendLine(options.logPath, "giving up after " ~
                 to!string(options.maxRestarts) ~ " unexpected exits; see " ~
@@ -251,6 +303,9 @@ private string hex(uint value)
 private int runAndReport(in Options options)
 {
     appendLine(options.logPath, "running " ~ options.exePath);
+    // The app has the window while it runs, so the helper's own window is put
+    // away: two windows and one of them stale would be worse than none.
+    closeProgressWindow();
     try
     {
         auto pid = spawnProcess([options.exePath], stdin, stdout, stderr, null,
@@ -259,6 +314,15 @@ private int runAndReport(in Options options)
         const code = wait(pid);
         appendLine(options.logPath, "app exited: " ~ to!string(code) ~ " (" ~
             hex(cast(uint) code) ~ ": " ~ describeExitCode(code) ~ ")");
+        // An unexpected end is reported on screen as well as in the log: the
+        // app vanishing with no explanation is what makes a crash look random.
+        if (code != 0)
+        {
+            openProgressWindow("Aurora OpenCode - restarting");
+            setProgress("The app stopped unexpectedly. Restarting...",
+                "exit code " ~ to!string(code) ~ " (" ~
+                describeExitCode(code) ~ ")", -1.0);
+        }
         return code;
     }
     catch (Exception error)
@@ -401,6 +465,16 @@ private bool launchApp(in Options options)
 int main(string[] args)
 {
     const options = parseArgs(args);
+    version (Windows) HANDLE supervisorMutex;
+    scope (exit)
+    {
+        version (Windows)
+            if (supervisorMutex !is null)
+            {
+                ReleaseMutex(supervisorMutex);
+                CloseHandle(supervisorMutex);
+            }
+    }
     if (options.exePath.length == 0)
     {
         stderr.writeln("usage: aurora-rebuilder --exe <app.exe> " ~
@@ -414,14 +488,51 @@ int main(string[] args)
         return 2;
     }
 
+    // One parent must own the app. Multiple supervisors race to relaunch it and
+    // turn one crash into several processes and several restart loops.
+    version (Windows)
+    if (options.supervise)
+    {
+        supervisorMutex = CreateMutexW(null, 0,
+            toUTF16z("Local\\AuroraOpenCodeSupervisor"));
+        // An in-app restart is launched before the current app exits. Its old
+        // supervisor releases ownership immediately after that clean exit, so
+        // this successor may wait briefly. Unsolicited duplicate launchers do
+        // not wait and simply leave the existing owner alone.
+        const waitMs = options.waitPid != 0 ? 30_000 : 0;
+        const waitResult = supervisorMutex is null ? uint.max :
+            WaitForSingleObject(supervisorMutex, waitMs);
+        if (waitResult != 0 && waitResult != 0x80) // object / abandoned
+        {
+            if (supervisorMutex !is null)
+            {
+                CloseHandle(supervisorMutex);
+                supervisorMutex = null;
+            }
+            appendLine(options.logPath,
+                "another supervisor already owns the app; exiting");
+            return 0;
+        }
+    }
+
+    // A visible window for the whole operation. The app is closed for most of
+    // this, so without it the restart looks like nothing happened - or like
+    // the app simply failed to come back.
+    version (Windows) openProgressWindow("Aurora OpenCode - maintenance");
+    scope (exit) closeProgressWindow();
+
     if (options.waitPid != 0)
+    {
         appendLine(options.logPath, "waiting for process " ~
             to!string(options.waitPid) ~ " to exit");
+        setProgress("Waiting for the app to close...", "", -1.0);
+    }
 
     if (!waitForUnlock(options.exePath, options.timeoutSeconds))
     {
         // Still locked: the app is alive and this restart would be a duplicate.
         appendLine(options.logPath, "app did not exit; restart aborted");
+        setProgress("The app did not close; restart aborted", "", 1.0);
         return 0;
     }
 
@@ -432,9 +543,13 @@ int main(string[] args)
     {
         appendLine(options.logPath, "rebuilding: dub build --force --build=" ~
             options.buildType);
+        setProgress("Rebuilding...", "dub build --build=" ~ options.buildType,
+            -1.0);
         const rebuilt = runBuild(options);
         appendLine(options.logPath, rebuilt ? "build succeeded"
             : "build FAILED; relaunching the previous binary");
+        setProgress(rebuilt ? "Rebuild finished. Starting..."
+            : "Rebuild failed; starting the previous build", "", 1.0);
     }
     else
         appendLine(options.logPath, "rebuild skipped; relaunching as built");

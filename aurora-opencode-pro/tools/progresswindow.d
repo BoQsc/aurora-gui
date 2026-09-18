@@ -149,6 +149,13 @@ private extern (Windows) LRESULT progressProc(HWND hwnd, UINT message,
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_TIMER:
+            // Repainted on a timer so the unknown-duration sweep keeps moving.
+            // A bar that only repaints when something calls setProgress looks
+            // identical to a hung tool during a long, silent step - which is
+            // exactly the state this window exists to rule out.
+            InvalidateRect(hwnd, null, TRUE);
+            return 0;
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -198,6 +205,7 @@ private void runWindowThread()
     _hwnd = hwnd;
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    SetTimer(hwnd, 1, 120, null);
 
     MSG message;
     while (GetMessageW(&message, null, 0, 0) > 0)
