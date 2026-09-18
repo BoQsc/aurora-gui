@@ -1,5 +1,23 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: tray icons rendered soft (raw pixels + DPI size) (COMPLETED, verified)
+
+**Complaint (user).** Native system notification icons look poorly rendered;
+maybe we underutilize the Aurora renderer.
+
+**Diagnosis.** Not the renderer (correct bilinear + straight alpha). Two causes:
+(1) `iconToRgba` uploaded pixels that `DrawIconEx` had already alpha-blended onto
+a background, darkening/softening edges; (2) at 120 DPI the 18-logical tray slot
+= 22.5 px, upscaling the 16/20 px HICONs (Windows uses 16 logical).
+
+**Resolution.** Read the icon's own colour bitmap directly (`hbmColor` +
+`GetDIBits`) for exact straight-alpha pixels, keeping DrawIconEx + AND-mask only
+as the legacy fallback; set the tray glyph to 16 logical so 20 px icons render
+1:1 at 125% DPI.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED; alpha probe: every
+icon `maxA=255` and Steam's colours are no longer altered by GDI blending.
+
 ## 2026-09-17 - Aurora Desktop: legacy tray icons were invisible (ELAN touchpad) (COMPLETED, verified)
 
 **Complaint (user).** "elan doesn't show icon at all and it's animated."

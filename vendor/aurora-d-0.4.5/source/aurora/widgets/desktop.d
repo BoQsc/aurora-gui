@@ -3003,7 +3003,10 @@ class Taskbar : Widget
     {
         const palette = theme();
         const trayLeft = fixedTrayLeftX();
-        const iconSize = 18;
+        // Windows tray glyph size. 16 logical maps to the OS's 20 px tray icon
+        // at 125% DPI, so 20 px raster icons render 1:1 (crisp) instead of
+        // being upscaled.
+        const iconSize = 16;
         const iconRect = Rect(trayLeft + (trayIconWidth - iconSize) / 2,
             (bounds().height - iconSize) / 2, iconSize, iconSize);
 

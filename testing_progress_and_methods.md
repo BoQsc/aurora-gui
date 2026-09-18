@@ -1,5 +1,31 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: tray icon render quality (raw icon bitmap + DPI-matched size) (2026-09-17)
+
+**Question (user).** "are notification icons of native system icons slightly
+rendered poorly by Aurora? deeper problem or underutilizing the renderer?"
+
+**Findings.**
+1. The renderer is not the problem: the software bilinear path does a correct
+   4-tap resample with straight alpha, and Vulkan uses R8G8B8A8_UNORM with
+   linear/nearest samplers.
+2. Real cause A — **source pixels were altered before upload**: `iconToRgba`
+   drew the HICON with `DrawIconEx(DI_NORMAL)` onto a background, which
+   alpha-blends and can darken/soften anti-aliased edges, then read that back.
+   Fixed by reading the icon's own colour bitmap (`GetIconInfo.hbmColor`) via
+   `GetDIBits` directly and using those exact straight-alpha pixels; the
+   DrawIconEx+AND-mask path is now only the fallback for mask-based icons
+   (e.g. ELAN).
+3. Real cause B — **DPI upscaling**: the app runs at 120 DPI (125%), so an
+   18-logical tray slot = 22.5 px, upscaling the 16/20 px HICONs. Windows uses a
+   16-logical tray glyph. Set `iconSize = 16` in `paintTray`, so at 125% it maps
+   to exactly 20 px and 20 px source icons render 1:1 (crisp). 16 px sources are
+   upscaled like Windows does; 32 px sources downsample cleanly.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. The alpha probe now
+shows every icon with `maxA=255`, and the direct-read path changed Steam's
+coloured-pixel count (DrawIconEx blending was altering colours).
+
 ## Aurora Desktop: legacy tray icons rendered invisible (ELAN touchpad) (2026-09-17)
 
 **Complaint (user).** "elan doesn't show icon at all and it's animated."

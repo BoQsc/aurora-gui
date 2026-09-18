@@ -763,6 +763,52 @@ version (Windows)
         const w = bm.bmWidth > 0 ? bm.bmWidth : 16;
         const h = bm.bmHeight > 0 ? bm.bmHeight : 16;
 
+        // Preferred: read the icon's own colour bitmap directly. DrawIconEx
+        // alpha-blends the icon onto a background, which darkens/softens the
+        // anti-aliased edges; the raw DIB keeps the exact straight-alpha pixels
+        // (sharp and solid), and lets the renderer do the only scaling.
+        if (info.hbmColor !is null)
+        {
+            auto rawDc = GetDC(null);
+            if (rawDc !is null)
+            {
+                BITMAPINFO rbi;
+                rbi.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+                rbi.bmiHeader.biWidth = w;
+                rbi.bmiHeader.biHeight = -h;
+                rbi.bmiHeader.biPlanes = 1;
+                rbi.bmiHeader.biBitCount = 32;
+                rbi.bmiHeader.biCompression = BI_RGB;
+                auto colorPixels = cast(uint*) malloc(cast(size_t) w * h * 4 + 4);
+                if (colorPixels !is null)
+                {
+                    ubyte[] direct;
+                    bool directAlpha;
+                    if (GetDIBits(rawDc, info.hbmColor, 0, h, colorPixels, &rbi,
+                            DIB_RGB_COLORS) > 0)
+                    {
+                        direct.length = cast(size_t) w * h * 4;
+                        const directCount = cast(size_t) w * h;
+                        foreach (i; 0 .. directCount)
+                        {
+                            const argb = colorPixels[i];
+                            const t = i * 4;
+                            direct[t + 0] = cast(ubyte) ((argb >> 16) & 0xff);
+                            direct[t + 1] = cast(ubyte) ((argb >> 8) & 0xff);
+                            direct[t + 2] = cast(ubyte) (argb & 0xff);
+                            direct[t + 3] = cast(ubyte) ((argb >> 24) & 0xff);
+                            if (direct[t + 3] != 0) directAlpha = true;
+                        }
+                    }
+                    free(colorPixels);
+                    ReleaseDC(null, rawDc);
+                    if (directAlpha) return new RgbaImage(w, h, direct);
+                }
+                else
+                    ReleaseDC(null, rawDc);
+            }
+        }
+
         auto dc = GetDC(null);
         if (dc is null) return null;
         auto memDc = CreateCompatibleDC(dc);
