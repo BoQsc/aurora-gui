@@ -4,6 +4,27 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode Pro action-group diff counters (2026-09-18)
+
+**What changed.** The folded action-group header (`ToolGroupBubble`, the
+`▸ Editing a file, running a command` row) now shows the aggregate `+N -M` on
+its right edge, so the added/removed lines are visible without expanding the
+nested tool rows. The counters come from `diffTotals()`, which sums each child's
+`diffAdditionsForTesting()`/`diffDeletionsForTesting()` (both `MessageBubble`
+and `LiveToolRow`), so they grow live as arguments stream.
+
+**How to test.**
+- Headless smoke: the settled case asserts
+  `totalToolGroupAdditionsForTesting() >= toolDiffAdditionsForTesting(0)` and
+  the same for deletions after an `edit` tool result; the streaming case asserts
+  `totalToolGroupAdditionsForTesting() >= 3` while a `write` body streams, then
+  `>= 2` / `>= 1` for a streamed `edit` preview.
+- To eyeball it, run the tool loop and look at the folded group row: the green
+  `+N` and red `-M` sit at the right edge of the header, before and after
+  expansion.
+- Build/run: Pro smoke command in the sections below; pass = `Aurora OpenCode
+  Pro headless smoke test passed.`
+
 ## Aurora OpenCode Ctrl+C / Ctrl+V (2026-09-18)
 
 **Composer copy/paste already worked.** `ChatInput : TextArea` gets

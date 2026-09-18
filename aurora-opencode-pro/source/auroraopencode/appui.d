@@ -2587,6 +2587,43 @@ private final class ToolGroupBubble : Widget
         return (_collapsed ? "▸" : "▾") ~ " " ~ summary;
     }
 
+    /// Sum the child rows' added/removed line counts so the group header can
+    /// show them without the user expanding the nested tools.
+    private void diffTotals(out int additions, out int deletions)
+    {
+        additions = 0;
+        deletions = 0;
+        foreach (part; _parts)
+        {
+            if (auto bubble = cast(MessageBubble) part)
+            {
+                additions += bubble.diffAdditionsForTesting();
+                deletions += bubble.diffDeletionsForTesting();
+            }
+            else if (auto row = cast(LiveToolRow) part)
+            {
+                additions += row.diffAdditionsForTesting();
+                deletions += row.diffDeletionsForTesting();
+            }
+        }
+    }
+
+    /// Test-only: aggregate `+N` of the group's children.
+    public int diffAdditionsForTesting()
+    {
+        int additions, deletions;
+        diffTotals(additions, deletions);
+        return additions;
+    }
+
+    /// Test-only: aggregate `-M` of the group's children.
+    public int diffDeletionsForTesting()
+    {
+        int additions, deletions;
+        diffTotals(additions, deletions);
+        return deletions;
+    }
+
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
@@ -2625,13 +2662,41 @@ private final class ToolGroupBubble : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         const h = headerHeight();
-        const available = maxInt(1, bounds().width - 2 * padH);
-        _headerRect = Rect(padH, padV, available, h);
+        const innerWidth = maxInt(1, bounds().width - 2 * padH);
+        _headerRect = Rect(padH, padV, innerWidth, h);
+
+        // Aggregate the children's diff counters so the user sees the added and
+        // removed line counts on the right edge of the collapsed group header,
+        // updating live as the tools stream.
+        int additions, deletions;
+        diffTotals(additions, deletions);
+        int statsWidth;
+        TextLayout addLayout, delLayout;
+        if (additions > 0 || deletions > 0)
+        {
+            addLayout = canvas.layoutText(toUTF32("+" ~ to!string(additions)),
+                1, FontRole.monospace, null, 200, false);
+            delLayout = canvas.layoutText(toUTF32("-" ~ to!string(deletions)),
+                1, FontRole.monospace, null, 200, false);
+            statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+        }
+
+        const textWidth = maxInt(1, innerWidth - statsWidth -
+            (statsWidth > 0 ? 8 : 0));
         auto layout = canvas.layoutText(toUTF32(headerText()), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, available, false);
-        auto labelCanvas = canvas.clipped(Rect(padH, padV, available, h));
+            cast(FontFace) theme().uiFont, textWidth, false);
+        auto labelCanvas = canvas.clipped(Rect(padH, padV, textWidth, h));
         labelCanvas.drawLayout(Point(padH, padV), layout,
             _hover ? opencodeText : opencodeMuted);
+
+        if (statsWidth > 0)
+        {
+            const x = padH + innerWidth - statsWidth;
+            const sy = padV + (h - cast(int) addLayout.height) / 2;
+            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
+            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+                delLayout, opencodeDiffDelete);
+        }
     }
 
     override bool onMouseDown(ref Event event)
@@ -9224,6 +9289,27 @@ public final class OpenCodeRoot : VBox
             if (auto group = cast(ToolGroupBubble) child)
                 return group.partCount();
         return 0;
+    }
+
+    /// Test-only: aggregate `+N` across every action-group header (the counters
+    /// shown on the right edge of a collapsed group).
+    public int totalToolGroupAdditionsForTesting()
+    {
+        int total;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                total += group.diffAdditionsForTesting();
+        return total;
+    }
+
+    /// Test-only: aggregate `-M` across every action-group header.
+    public int totalToolGroupDeletionsForTesting()
+    {
+        int total;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                total += group.diffDeletionsForTesting();
+        return total;
     }
 
     /// Test-only: the green additions counter for the `tool` bubble at `n`.

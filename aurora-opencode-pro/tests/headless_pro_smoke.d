@@ -1589,6 +1589,10 @@ int main(string[] args)
             "Live write row missing");
         assert(diffs[0] == "+3 -0",
             "Live write counters wrong: " ~ diffs[0]);
+        // The collapsed action-group header aggregates the provisional counts
+        // too, so they stay visible without expanding the group.
+        assert(root.totalToolGroupAdditionsForTesting() >= 3,
+            "live action-group header did not show the streamed +N");
         assert(driver.paint(), "Live write row did not paint");
         // More of the file body streams in: counters must grow.
         prep.arguments =
@@ -1606,6 +1610,9 @@ int main(string[] args)
         diffs = root.liveToolRowDiffTextsForTesting();
         assert(diffs.length == 1 && diffs[0] == "+2 -1",
             "Live edit counters wrong: " ~ diffs[0]);
+        assert(root.totalToolGroupAdditionsForTesting() >= 2 &&
+            root.totalToolGroupDeletionsForTesting() >= 1,
+            "live action-group header did not aggregate the edit preview");
         assert(driver.paint(), "Live edit row did not paint");
         writeln("Live tool rows grow +N -M as arguments stream");
     }
@@ -1929,6 +1936,17 @@ int main(string[] args)
         "edit diff should report at least one added line");
     assert(root.toolDiffDeletionsForTesting(0) >= 1,
         "edit diff should report at least one deleted line");
+    // The collapsed action-group header must show the aggregate +N -M on its
+    // right edge, so the added/removed lines are visible without expanding the
+    // nested tools.
+    assert(root.totalToolGroupAdditionsForTesting() >=
+        root.toolDiffAdditionsForTesting(0) &&
+        root.totalToolGroupDeletionsForTesting() >=
+        root.toolDiffDeletionsForTesting(0),
+        "action-group header did not aggregate the edit diff");
+    writeln("Action-group header shows aggregate +",
+        root.totalToolGroupAdditionsForTesting(), " -",
+        root.totalToolGroupDeletionsForTesting(), " while collapsed");
     assert(root.firstToolBubbleCollapsedForTesting(),
         "edit diff part should start collapsed");
     root.toggleFirstToolBubbleForTesting();

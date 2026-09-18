@@ -1,5 +1,30 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora OpenCode Pro: aggregate +N -M on the collapsed action-group header (DONE, verified)
+
+**Request (user).** "editing thing does not show to the right side the added and
+removed lines. Could you move it there so user would not need to open nested to
+see the things going on: lines added removed in real time."
+
+**Finding.** The per-tool rows already right-aligned the counters: the settled
+tool header (`MessageBubble.drawToolHeader`) and the in-flight `LiveToolRow`
+both layout `+N` / `-M` in monospace green/red on the right edge. The collapsed
+**action-group** header (`ToolGroupBubble`, "▸ Editing a file, running a
+command") drew only its summary, so the totals were hidden until the user
+expanded the nested tools.
+
+**Fix (`aurora-opencode-pro/appui.d`).** `ToolGroupBubble.diffTotals()` sums its
+children's counters (both settled `MessageBubble` and live `LiveToolRow`), and
+`onPaint` reserves the stats width and draws a right-aligned `+N -M` on the
+group header. It updates live as arguments stream and after results settle, and
+is visible even while the group is collapsed. Test hooks
+`totalToolGroupAdditionsForTesting()` / `totalToolGroupDeletionsForTesting()`.
+
+**Verification.** Pro smoke: `Action-group header shows aggregate +1 -1 while
+collapsed` (settled edit), plus the live assertions in the streaming test (a
+live write shows `+3`, then a live edit preview shows `+2 -1` aggregated on the
+header). Pro smoke PASS; release rebuilt and relaunched as exactly one instance.
+
 ## 2026-09-18 - Aurora OpenCode: Ctrl+C / Ctrl+V copy & paste (DONE, verified)
 
 **Request (user).** "add key combinations like ctrl C and ctrl v so we can do
