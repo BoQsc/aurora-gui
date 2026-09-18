@@ -1,5 +1,22 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: legacy tray icons were invisible (ELAN touchpad) (COMPLETED, verified)
+
+**Complaint (user).** "elan doesn't show icon at all and it's animated."
+
+**Diagnosis.** Alpha-stats probe showed the ELAN icon rasterized with
+`opaque=0 maxA=0` (RGB present, alpha all zero) so `drawImage` drew nothing.
+`DrawIconEx` onto a `CreateCompatibleBitmap` yields no alpha for mask-based
+legacy icons.
+
+**Resolution.** `iconToRgba` now derives alpha from the icon AND mask
+(`hbmMask`: 1 = transparent, 0 = opaque) when the DIB has no alpha. ELAN now
+reports `opaque=936 maxA=255` and renders. Combined with the live overflow-panel
+refresh, it also updates when Windows changes it.
+
+**Verification.** Alpha probe: all icons `maxA=255`. `build\headless-smoke.exe`
+-> ALL PASSED.
+
 ## 2026-09-17 - Aurora Desktop: overflow panel live + which icons animate (COMPLETED, verified)
 
 **Complaint (user).** "only task manager was checked and working, others still

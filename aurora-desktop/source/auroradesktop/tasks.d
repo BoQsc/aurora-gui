@@ -806,6 +806,7 @@ version (Windows)
         ubyte[] rgba;
         rgba.length = cast(size_t) w * cast(size_t) h * 4;
         const count = cast(size_t) w * cast(size_t) h;
+        bool anyAlpha;
         foreach (i; 0 .. count)
         {
             const argb = raw[i];
@@ -814,8 +815,34 @@ version (Windows)
             rgba[t + 1] = cast(ubyte) ((argb >> 8) & 0xff);
             rgba[t + 2] = cast(ubyte) (argb & 0xff);
             rgba[t + 3] = cast(ubyte) ((argb >> 24) & 0xff);
+            if (rgba[t + 3] != 0) anyAlpha = true;
         }
         free(raw);
+
+        // DrawIconEx onto a compatible bitmap produces no alpha channel for
+        // legacy (mask-based) icons, leaving them fully transparent and thus
+        // invisible. Recover alpha from the AND mask: 1 = transparent,
+        // 0 = opaque.
+        if (!anyAlpha && info.hbmColor !is null && info.hbmMask !is null)
+        {
+            auto maskDc = GetDC(null);
+            if (maskDc !is null)
+            {
+                auto maskRaw = cast(uint*) malloc(count * 4 + 4);
+                if (maskRaw !is null)
+                {
+                    if (GetDIBits(maskDc, info.hbmMask, 0, h, maskRaw, &bi,
+                            DIB_RGB_COLORS) > 0)
+                    {
+                        foreach (i; 0 .. count)
+                            rgba[i * 4 + 3] =
+                                (maskRaw[i] & 0x00ffffff) != 0 ? 0 : 255;
+                    }
+                    free(maskRaw);
+                }
+                ReleaseDC(null, maskDc);
+            }
+        }
         return new RgbaImage(w, h, rgba);
     }
 }

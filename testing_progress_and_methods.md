@@ -1,5 +1,35 @@
 # Testing Progress and Methods (Aurora Cut)
 
+## Aurora Desktop: legacy tray icons rendered invisible (ELAN touchpad) (2026-09-17)
+
+**Complaint (user).** "elan doesn't show icon at all and it's animated."
+
+**Diagnosis.** A probe printed per-icon alpha stats. Every real icon had
+alpha > 0 except ELAN:
+
+```
+H 32x32 opaque=0 partial=0 transp=1024 maxA=0 colored=140 "ELAN Pointing Device"
+```
+
+The RGB was correct but the alpha channel was all zero, so `drawImage` painted
+nothing. Cause: `DrawIconEx` onto a **CreateCompatibleBitmap** (a DDB) produces
+no alpha channel for mask-based (legacy) icons; `GetDIBits` then returns alpha 0
+everywhere. Modern 32-bpp icons carry alpha and were fine.
+
+**Fix.** `tasks.d iconToRgba`: if the DIB has no non-zero alpha and the icon has
+an AND mask (`GetIconInfo.hbmMask`), read the mask as 32-bpp and derive alpha
+(AND-mask bit 1 = transparent, 0 = opaque). After the fix the ELAN icon is
+`opaque=936 maxA=255` and renders.
+
+**How to test.**
+```
+dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source tests\tray_alpha_probe.d ^
+  -of=build\tray_alpha_probe.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib ^
+  -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+```
+(probe source kept in `%TEMP%\opencode`); every icon must report `maxA=255`.
+`build\headless-smoke.exe` -> ALL PASSED.
+
 ## Aurora Desktop: hidden overflow panel now live; which icons really animate (2026-09-17)
 
 **Follow-up (user).** "only task manager was checked and working, others still
