@@ -442,13 +442,29 @@ version (Windows)
         // fault handler must not call `opencodeStateDirectory` (it reads the
         // environment and allocates) while the heap may be suspect.
         try
-            rawCrashPath = buildPath(opencodeStateDirectory(), "logs",
-                "native-crash.log");
+        {
+            const logsDir = buildPath(opencodeStateDirectory(), "logs");
+            // Create the directory here, at startup, instead of relying on the
+            // dump setup as a side effect. When this directory is missing at
+            // fault time the raw `fopen` fails and the crash writes nothing -
+            // exactly the "exit code but no report" failure we keep hitting.
+            if (!exists(logsDir)) mkdirRecurse(logsDir);
+            rawCrashPath = buildPath(logsDir, "native-crash.log");
+        }
+        catch (Throwable) {}
+        // Fallback next to the executable, whose directory always exists, so a
+        // report cannot be lost just because the state directory is missing or
+        // unwritable when the fault fires.
+        try
+            rawCrashFallback = buildPath(dirName(thisExePath()), "native-crash.log");
         catch (Throwable) {}
     }
 
     /// NUL-terminated go-to file for the raw fault write, resolved at startup.
     private __gshared string rawCrashPath;
+
+    /// Fallback crash-log path, next to the executable, resolved at startup.
+    private __gshared string rawCrashFallback;
 
     /**
      * Append one line with raw C stdio, bypassing the logger entirely.
@@ -463,10 +479,18 @@ version (Windows)
     {
         try
         {
-            if (rawCrashPath.length == 0) return;
-            import core.stdc.stdio : fclose, fflush, fopen, fwrite;
-            auto path = rawCrashPath ~ "\0";
-            auto file = fopen(path.ptr, "a");
+            import core.stdc.stdio : FILE, fclose, fflush, fopen, fwrite;
+            FILE* file = null;
+            if (rawCrashPath.length != 0)
+            {
+                auto path = rawCrashPath ~ "\0";
+                file = fopen(path.ptr, "a");
+            }
+            if (file is null && rawCrashFallback.length != 0)
+            {
+                auto path = rawCrashFallback ~ "\0";
+                file = fopen(path.ptr, "a");
+            }
             if (file is null) return;
             fwrite(line.ptr, 1, line.length, file);
             fflush(file);
@@ -560,6 +584,13 @@ version (Windows)
             mkdirRecurse(dumpDir);
         }
         catch (Throwable) {}
+        if (dumpDir.length == 0)
+            try
+            {
+                dumpDir = buildPath(dirName(thisExePath()), "dumps");
+                mkdirRecurse(dumpDir);
+            }
+            catch (Throwable) {}
         try
         {
             dbghelpModule = LoadLibraryA("dbghelp.dll\0");
@@ -661,6 +692,14 @@ version (Windows)
         try AddVectoredExceptionHandler(1, &vectoredCrashHandler);
         catch (Throwable) {}
         try SetUnhandledExceptionFilter(&nativeCrashFilter);
+        catch (Throwable) {}
+        // Prove capture is armed. With this line present at every start, the
+        // absence of a crash report is a genuine failure to capture, not a path
+        // that was never set up - which is what made every earlier crash
+        // indistinguishable from "no crash happened".
+        try
+            writeRawCrashLine("--- crash capture armed " ~
+                Clock.currTime().toISOExtString() ~ " ---\n");
         catch (Throwable) {}
     }
 

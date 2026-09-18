@@ -7171,7 +7171,11 @@ public final class OpenCodeRoot : VBox
 
     private void updateSendButton()
     {
-        const busy = _client.busy();
+        // The button must reflect the whole turn, not just an in-flight
+        // request: between tool rounds no request is streaming, so keying on
+        // the client alone flips "Stop" back to "Send" while the agent is
+        // still working. `_turnTiming` spans the turn and survives those gaps.
+        const busy = _client.busy() || _turnTiming;
         _sendButton.setText(busy ? "Stop" : "Send");
         _sendButton.setAccent(!busy);
     }

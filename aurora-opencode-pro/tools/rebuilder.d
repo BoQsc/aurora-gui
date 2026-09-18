@@ -465,6 +465,11 @@ private bool launchApp(in Options options)
 int main(string[] args)
 {
     const options = parseArgs(args);
+    // Show the progress window before any guard can return early. The mutex
+    // check below (and the missing-executable check) used to `return` before
+    // the window was created, so a restart that could not proceed looked like
+    // nothing happened at all - no window, no rebuild, no relaunch.
+    version (Windows) openProgressWindow("Aurora OpenCode - maintenance");
     version (Windows) HANDLE supervisorMutex;
     scope (exit)
     {
@@ -515,11 +520,12 @@ int main(string[] args)
         }
     }
 
-    // A visible window for the whole operation. The app is closed for most of
-    // this, so without it the restart looks like nothing happened - or like
-    // the app simply failed to come back.
-    version (Windows) openProgressWindow("Aurora OpenCode - maintenance");
-    scope (exit) closeProgressWindow();
+    // The window itself was opened above, before any guard could return early;
+    // here we only arrange for it to be closed again on the way out.
+    scope (exit)
+    {
+        version (Windows) closeProgressWindow();
+    }
 
     if (options.waitPid != 0)
     {
