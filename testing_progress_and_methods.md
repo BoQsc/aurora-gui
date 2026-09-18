@@ -47,6 +47,22 @@ Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
 (guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
 the window. Win+D / Show desktop / taskbar all stay restored.
 
+**Cursor disappears while dragging (fixed 2026-09-18).** Root cause: the
+synchronized-drag pointer hid the native OS cursor (`SetCursor(null)` via
+`setPointerVisible(false)`) but the Aurora replacement overlay is only composited
+when `_systemCursorVisible` is true, and the shell's default mapping disabled
+it. Guard added in `beginSynchronizedPointer()` (require
+`_systemCursorVisible`), `setSystemCursorVisible()` re-syncs mid-drag, and
+`aurora-desktop` sets `options.synchronizedDragPointer = false` so the native
+cursor is never hidden. **How to test without eyeballing:** hold a real drag
+(SendInput down + moves) and call `GetCursorInfo`; assert
+`(flags & CURSOR_SHOWING) != 0` before, during, and after. Probe:
+`C:\Users\WINDOW~2\AppData\Local\Temp\opencode\cursor_test.ps1`.
+Note: `aurora-desktop.ini` is resolved relative to the process working
+directory, so launching from a different cwd silently changes settings (this is
+how the cursor setting flipped to its default) - always launch from the package
+root.
+
 **Off-screen stranding (a real "frozen screen" cause).** A healthy, ticking app
 can still look frozen if its top-level window is stranded off-screen after a
 display-scaling change. Symptom: `GetWindowRect` reports something like

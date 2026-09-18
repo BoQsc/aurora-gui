@@ -509,7 +509,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void beginSynchronizedPointer()
     {
-        if (!_options.lowLatency || !_options.synchronizedDragPointer ||
+        // Hide the native cursor ONLY when the Aurora-rendered overlay will
+        // actually replace it: the overlay is gated on _systemCursorVisible in
+        // ensureScene(). Hiding the native cursor while the overlay is disabled
+        // makes the mouse vanish for the whole drag.
+        if (!_systemCursorVisible ||
+            !_options.lowLatency || !_options.synchronizedDragPointer ||
             _captured is null || !_captured.wantsContinuousPointerFrames() ||
             _native is null || !_native.setPointerVisible(false))
             return;
@@ -552,6 +557,13 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         if (_systemCursorVisible == value) return;
         _systemCursorVisible = value;
+        // Toggling the overlay mid-drag must keep exactly one cursor visible:
+        // turning it off restores the native cursor; turning it on hands the
+        // drag back to the Aurora-rendered pointer.
+        if (!value)
+            endSynchronizedPointer();
+        else
+            beginSynchronizedPointer();
         requestFrame();
     }
 

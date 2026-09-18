@@ -301,6 +301,14 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   the shell cannot be stranded by any minimize path.
 - `aurora-desktop` enables it in `DesktopRoot.setShellWindow`. Other Aurora apps
   are unaffected (default off).
+- `window.d`: `beginSynchronizedPointer()` no longer hides the native cursor
+  unless the Aurora cursor overlay is actually enabled (`_systemCursorVisible`),
+  because `ensureScene` only draws the overlay in that case; otherwise the drag
+  left the OS cursor hidden with no replacement (the mouse vanished until
+  release). `setSystemCursorVisible()` now ends/starts the synchronized pointer
+  when toggled mid-drag so exactly one cursor stays visible. Additionally
+  `aurora-desktop` sets `options.synchronizedDragPointer = false`, so the shell
+  always keeps the native OS cursor and no drag can hide it.
 - Added `PlatformWindow.keepWindowOnScreen()` (`platform/win32.d`): a
   `WM_DPICHANGED` / `WM_DISPLAYCHANGE` / restore can otherwise leave a window
   almost entirely off-screen (only a sliver reachable) after display scaling

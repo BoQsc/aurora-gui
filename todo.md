@@ -1,5 +1,37 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: mouse disappears while dragging icons/windows (FIXED)
+
+**Complaint (user).** "WHY MOUSE DISAPPEARS ONCE I START DRAGGING TASKBARK ICONS
+OR WINDOWS".
+
+**Root cause (code path, no guessing).** `GuiWindow.beginSynchronizedPointer()`
+(`window.d`) calls `NativeWindow.setPointerVisible(false)`, which on Win32 runs
+`SetCursor(null)` and hides the OS cursor for the whole gesture, then draws
+Aurora's own cursor layer instead. But that overlay is gated in `ensureScene`
+on `_systemCursorVisible`, while `beginSynchronizedPointer` did NOT check it.
+The app maps the "Hide system cursor" setting as
+`setSystemCursorVisible(!_hideSystemCursor)`, and `hideSystemCursor` defaults to
+true (also whenever `aurora-desktop.ini` is not in the process working
+directory, since `settingsPath()` is CWD-relative). So in the default/off mode a
+drag hid the native cursor and drew nothing -> the mouse vanished until release.
+
+**Fix (two layers).**
+- Platform (`vendor/aurora-d-0.4.5/source/aurora/window.d`):
+  `beginSynchronizedPointer()` now refuses to hide the native cursor unless
+  `_systemCursorVisible` is true (i.e. the Aurora overlay will actually be
+  drawn), and `setSystemCursorVisible()` ends/starts the synchronized pointer
+  when toggled mid-drag so exactly one cursor stays visible.
+- App (`aurora-desktop/source/auroradesktop/app.d`):
+  `options.synchronizedDragPointer = false` - the shell always keeps the native
+  OS cursor, so no drag can ever hide it. `setPointerVisible(false)` is now
+  unreachable for this app.
+
+**Verification.** `dub build` OK; `build\headless-smoke.exe` -> ALL PASSED. Live
+probe (`GetCursorInfo`) during a floating-window drag: `cursorShowing=True`
+throughout (`before`/`during-drag`/`after-release`). `_pointerVisible` can only
+be cleared via the synchronized-pointer path, which the app now opts out of.
+
 ## 2026-09-18 - Aurora Desktop: window stranded off-screen (blocking a corner) (FIXED, verified)
 
 **Complaint (user).** "you keep on blocking my screen with this non working

@@ -1859,6 +1859,10 @@ int run(string[] args)
     options.title = "Aurora Desktop";
     options.width = 1280;
     options.height = 760;
+    // Never hide the native cursor during a drag: this shell relies on the
+    // OS cursor, and any gap between hiding it and drawing a replacement makes
+    // the mouse vanish for the whole gesture (dragging taskbar icons/windows).
+    options.synchronizedDragPointer = false;
     bool screenshot;
     string screenshotPath;
     foreach (index, arg; args)
