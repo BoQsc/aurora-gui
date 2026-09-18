@@ -342,3 +342,31 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   prevent-minimize restore. Windows that stay reachable are not moved.
 - `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `base.d`, `win32.d`
   and `window.d`.
+
+## Aurora desktop shell: hover, resize, paging, wallpaper, real desktop (2026-09-18)
+
+- `widget.d` / `window.d` / `widgets/popup.d`: hover is now popup-aware via
+  `Widget.hitTestHover` + `hoverTransparentAt`, used by `GuiWindow.updateHover`.
+  A root-spanning popup overlay (flyout/calendar/tray panel) is hover-transparent
+  outside its panel so the taskbar underneath keeps hover and task previews still
+  appear while a flyout is open. Clicks keep using `hitTest` for click-away
+  dismissal. `TaskPreview` overrides it to its panel only, so it still dismisses
+  when the pointer leaves (the base version would have kept it hovered forever).
+- `widgets/desktop.d`: `FloatingWindow` edge/corner resizing (bitmask 1 left /
+  2 right / 4 top / 8 bottom, 5 px border, per-edge resize cursors, minimum size
+  from `layoutHints`, clamped to the parent). Caption-button clicks are skipped
+  and maximized windows are not resizable.
+- `widgets/desktop.d`: `DesktopIcon` can draw a raster icon
+  (`setIconImage` / `iconImage`). The host passes the real shell icon
+  (`tasks.d fileIcon` -> `SHGetFileInfoW`) for real Desktop-folder items.
+- `widgets/desktop.d`: `DesktopSurface.setWallpaper(RgbaImage)` cover-fits an
+  image behind the icons (falls back to the gradient when none is set).
+- `widgets/desktop.d`: taskbar `Taskbar` task paging. When entries exceed the
+  track (capacity reserves the tray cluster plus a separator gap) only the
+  current page has bounds and up/down chevrons page through them; drag-reorder
+  is disabled while paging. A 1 px separator is drawn left of the tray cluster.
+- `widgets/desktop.d`: "Show desktop" latches via `_desktopShown` instead of
+  `_showDesktopWindows.length`, so the host minimizing external OS windows is
+  reversible even when the shell has no in-shell windows.
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `widget.d`,
+  `widgets/desktop.d`, `widgets/popup.d` and `window.d`.

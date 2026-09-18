@@ -165,6 +165,15 @@ final class TaskPreview : TransientPopup
         return _panelRect.contains(local) ? this : null;
     }
 
+    /// Hover uses the same panel-only test: outside the panel the pointer must
+    /// reach the taskbar underneath (and clear this preview's pointerInside so
+    /// it dismisses). The base hitTestHover would otherwise return this overlay
+    /// everywhere, because it spans the whole root for click-away dismissal.
+    override Widget hitTestHover(Point globalPoint)
+    {
+        return hitTest(globalPoint);
+    }
+
     /// True while the pointer is over the preview panel (see `hitTest`).
     bool pointerInside() const @safe pure nothrow @nogc
     {

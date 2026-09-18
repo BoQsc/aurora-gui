@@ -334,6 +334,15 @@ class PopupOverlay : TransientPopup
         return true;
     }
 
+    // The overlay spans the whole window so it can catch click-away dismissal,
+    // but it must not swallow hover: outside its panel the widget underneath
+    // (the taskbar) should still get hover so task previews keep working while
+    // a flyout is open.
+    override bool hoverTransparentAt(Point localPoint) const @safe pure nothrow @nogc
+    {
+        return !_panelRect.contains(localPoint);
+    }
+
     override bool onMouseWheel(ref Event event)
     {
         return true;

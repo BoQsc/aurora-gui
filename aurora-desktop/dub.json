@@ -21,7 +21,8 @@
     "wininet",
     "wlanapi",
     "ole32",
-    "powrprof"
+    "powrprof",
+    "comdlg32"
   ],
   "buildTypes": {
     "portable-release": {

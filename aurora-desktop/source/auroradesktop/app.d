@@ -3,6 +3,7 @@ module auroradesktop.app;
 import aurora;
 import aurora.widgets.desktop : SystemTrayState, NotificationIcon, TaskEntryId;
 import auroradesktop.calendar : CalendarPopup;
+import auroradesktop.desktopfiles : enumerateDesktopEntries;
 import auroradesktop.search : SearchPopup;
 import auroradesktop.settings : DesktopSettings, loadDesktopSettings,
     saveDesktopSettings;
@@ -14,17 +15,19 @@ import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
     captureExternalThumbnail, closeExternalTask, enumerateExternalTasks,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
     executableIcon, externalTaskGroupKey, externalTaskIcon,
-    externalTaskMinimized, externalTaskSize, externalTaskTitle,
+    externalTaskMinimized, externalTaskSize, externalTaskTitle, fileIcon,
     minimizeExternalTask, postTrayContextMenu, postTrayDoubleClick,
-    postTrayPrimaryClick;
+    postTrayPrimaryClick, restoreExternalTask;
 import auroradesktop.inputlang : InputLanguage, activateInputLanguage,
     activeInputLanguage, inputLanguageAbbrev, inputLanguageName,
     inputLanguages;
 import auroradesktop.system;
 import auroradesktop.tray;
+import auroradesktop.wallpaper : chooseWallpaperFile, currentWallpaperPath,
+    loadWallpaperImage, setWallpaper;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
     queryWifi;
-import std.algorithm : canFind;
+import std.algorithm : canFind, endsWith;
 import std.conv : to;
 import std.format : format;
 import std.path : baseName;
@@ -123,21 +126,57 @@ final class DesktopRoot : Widget
         configureDesktopIcon(notepadIcon);
         configureDesktopIcon(computerIcon);
         configureDesktopIcon(trashIcon, false);
-        _desktop.onRefresh = delegate() { showMessage("Desktop refreshed."); };
+        // Show the real Windows Desktop contents (files, shortcuts, folders)
+        // so the shell matches the user's actual desktop; double-click opens the
+        // item through the shell.
+        foreach (entry; enumerateDesktopEntries())
+        {
+            const path = entry.path;
+            const iconKind = entry.directory ? IconKind.folder :
+                iconKindForFile(entry.name);
+            auto item = _desktop.addIcon(entry.name, iconKind,
+                delegate() { openDesktopEntry(path); });
+            auto shellIcon = fileIcon(path);
+            if (shellIcon !is null) item.setIconImage(shellIcon);
+            configureDesktopIcon(item);
+        }
+        _desktop.onRefresh = delegate()
+        {
+            reloadDesktopEntries();
+            showMessage("Desktop refreshed.");
+        };
         _desktop.onNewItem = delegate() { createDocumentShortcut(); };
         _desktop.onDisplaySettings = delegate() { showWindow(_systemWindow); };
-        _desktop.onPersonalize = delegate()
-        {
-            showMessage("Wallpaper and theme settings are available in Settings.");
-        };
+        _desktop.onPersonalize = delegate() { chooseAndApplyWallpaper(); };
 
         buildNotepadWindow();
         buildSystemWindow();
         restoreWindowState();
         restoreIconPositions();
+        // Paint the user's real Windows wallpaper behind the desktop icons.
+        auto wallpaperImage = loadWallpaperImage(currentWallpaperPath());
+        if (wallpaperImage !is null) _desktop.setWallpaper(wallpaperImage);
 
         _taskbar.onStart = delegate() { toggleStartMenu(); };
-        _taskbar.onShowDesktop = delegate() { };
+        // Show Desktop must affect the real running programs, not just the
+        // in-shell windows: minimize every visible external window and restore
+        // exactly those when toggled back.
+        _taskbar.onShowDesktop = delegate()
+        {
+            _desktopMinimizedHwnds.length = 0;
+            foreach (t; enumerateExternalTasks())
+            {
+                if (externalTaskMinimized(t.hwnd)) continue;
+                minimizeExternalTask(t.hwnd);
+                _desktopMinimizedHwnds ~= t.hwnd;
+            }
+        };
+        _taskbar.onRestoreDesktop = delegate()
+        {
+            foreach (hwnd; _desktopMinimizedHwnds)
+                if (externalTaskAlive(hwnd)) restoreExternalTask(hwnd);
+            _desktopMinimizedHwnds.length = 0;
+        };
         _taskbar.onToggleFullscreen = delegate()
         {
             if (onToggleFullscreen !is null) onToggleFullscreen();
@@ -224,10 +263,8 @@ final class DesktopRoot : Widget
 
         _taskbar.addWindow(_notepadWindow, "Notepad", IconKind.notepad);
         _taskbar.addWindow(_systemWindow, "System", IconKind.computer);
-        _taskbar.addCommand("Full screen", IconKind.maximize, delegate()
-        {
-            if (onToggleFullscreen !is null) onToggleFullscreen();
-        });
+        // "Full screen" lives in the Start menu (small system command) rather
+        // than taking a permanent taskbar button.
         restorePinnedTasks();
         restorePinnedApps();
         _taskbar.setActiveWindow(_notepadWindow);
@@ -432,13 +469,23 @@ final class DesktopRoot : Widget
         return postTrayDoubleClick(*hwndPtr, *callbackPtr, *osIdPtr);
     }
 
-    /// Double-clicking a tray icon: replay the native double-click on the owning
-    /// app; fall back to the single-click behavior when there is no handler.
+    /// Double-clicking a tray icon opens the owning application, exactly like
+    /// double-clicking its icon in the Windows notification area. Replaying the
+    /// owner's raw tray callback is unreliable: the message packing depends on
+    /// the NOTIFYICON_VERSION the app registered, and a mis-packed message can
+    /// wake an unrelated handler (observed: Task Manager's icon opening the
+    /// ELAN touchpad app). Activating the owner's own window cannot reach a
+    /// different app.
     private void invokeTrayDoubleClick(size_t id, string label)
     {
         version (Windows)
         {
-            if (postNotificationDoubleClick(id)) return;
+            const exePath = notificationExeForId(id);
+            if (exePath.length > 0)
+            {
+                activateOrLaunchApp(exePath);
+                return;
+            }
         }
         invokeTrayIcon(id, label);
     }
@@ -633,8 +680,7 @@ final class DesktopRoot : Widget
     /// Best-effort Settings page for a Windows system tray icon's label.
     private static string systemSettingsUri(string label)
     {
-        import std.algorithm : canFind;
-        import std.string : toLower;
+import std.string : toLower;
         const text = toLower(label);
         if (text.length == 0) return "";
         if (canFind(text, "bluetooth")) return "ms-settings:bluetooth";
@@ -1143,6 +1189,85 @@ final class DesktopRoot : Widget
         _desktop.alignIconsToGrid();
     }
 
+    /// Open a real desktop item (file/folder/shortcut) with the shell.
+    private void openDesktopEntry(string path)
+    {
+        try
+        {
+            spawnShell(path);
+        }
+        catch (Exception)
+        {
+            showMessage("Could not open " ~ baseName(path));
+        }
+    }
+
+    /// Pick a glyph for a file by its extension.
+    private static IconKind iconKindForFile(string name)
+    {
+        const lower = name.toLower;
+        foreach (extension; [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+            ".ico", ".tif", ".tiff"])
+            if (lower.endsWith(extension)) return IconKind.image;
+        foreach (extension; [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".wma"])
+            if (lower.endsWith(extension)) return IconKind.music;
+        foreach (extension; [".txt", ".md", ".log", ".ini", ".json", ".xml",
+            ".csv", ".rtf"])
+            if (lower.endsWith(extension)) return IconKind.newDocument;
+        return IconKind.file;
+    }
+
+    /// Let the user pick an image and use it as the wallpaper (also applied to
+    /// the Windows desktop so the choice persists outside Aurora).
+    private void chooseAndApplyWallpaper()
+    {
+        version (Windows)
+        {
+            import aurora.platform.select : PlatformWindow;
+            import core.sys.windows.windef : HWND;
+            HWND owner;
+            if (_window !is null)
+            {
+                auto native = cast(PlatformWindow) _window.nativeWindow();
+                if (native !is null) owner = cast(HWND) native.hwnd();
+            }
+            const chosen = chooseWallpaperFile(owner);
+            if (chosen.length == 0) return;
+            const applied = setWallpaper(chosen);
+            auto image = loadWallpaperImage(chosen);
+            if (image !is null) _desktop.setWallpaper(image);
+            showMessage(applied ? "Wallpaper updated." :
+                "Could not set the Windows wallpaper.");
+        }
+        else
+        {
+            showMessage("Wallpaper is only supported on Windows.");
+        }
+    }
+
+    /// Re-scan the real Desktop folders and add any items not already shown.
+    private void reloadDesktopEntries()
+    {
+        bool[string] present;
+        for (size_t i = 0; i < _desktop.iconCount(); ++i)
+        {
+            auto existing = _desktop.iconAt(i);
+            if (existing !is null) present[toUTF8(existing.text())] = true;
+        }
+        foreach (entry; enumerateDesktopEntries())
+        {
+            if (entry.name in present) continue;
+            const path = entry.path;
+            const iconKind = entry.directory ? IconKind.folder :
+                iconKindForFile(entry.name);
+            auto item = _desktop.addIcon(entry.name, iconKind,
+                delegate() { openDesktopEntry(path); });
+            auto shellIcon = fileIcon(path);
+            if (shellIcon !is null) item.setIconImage(shellIcon);
+            configureDesktopIcon(item);
+        }
+    }
+
     private StartMenu createStartMenu()
     {
         auto menu = new StartMenu(_taskbar);
@@ -1574,6 +1699,8 @@ final class DesktopRoot : Widget
     // Last external window the shell activated (or that was foreground), so a
     // second taskbar click on it minimizes instead of re-activating.
     private ulong _activeExternalHwnd;
+    // Real windows hidden by Show Desktop, restored when it is toggled back.
+    private ulong[] _desktopMinimizedHwnds;
     // Bounded per-window icon-resolution attempts (see syncExternalTasks).
     private ubyte[ulong] _externalIconAttempts;
     // Resolved grouping key per hwnd (owning executable path), so grouping only
@@ -1598,6 +1725,11 @@ final class DesktopRoot : Widget
     /// window is minimized (or the capture failed).
     private RgbaImage captureThumbnailCached(ulong hwnd)
     {
+        // Return an already-captured frame immediately so showing a preview on
+        // hover is instant (Windows-like); the periodic sync keeps it fresh.
+        // Only pay for a synchronous capture when we have nothing to show.
+        auto cached = hwnd in _thumbnailCache;
+        if (cached !is null) return *cached;
         auto size = externalTaskSize(hwnd);
         auto image = captureExternalThumbnail(hwnd, size.width, size.height);
         if (image !is null && bitmapHasContent(image))
@@ -1605,8 +1737,7 @@ final class DesktopRoot : Widget
             _thumbnailCache[hwnd] = image;
             return image;
         }
-        auto cached = hwnd in _thumbnailCache;
-        return cached is null ? null : *cached;
+        return null;
     }
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
@@ -1693,11 +1824,10 @@ final class DesktopRoot : Widget
                         _externalIconAttempts[t.hwnd] = cast(ubyte) (tries + 1);
                     }
                 }
-                // Cache a thumbnail while the window is visible so a minimized
-                // task can still show a preview (PrintWindow cannot capture a
-                // minimized window).
-                if (!externalTaskMinimized(t.hwnd) &&
-                    t.hwnd !in _thumbnailCache)
+                // Refresh a thumbnail while the window is visible so previews
+                // are near-live and a minimized task can still show its last
+                // frame (PrintWindow cannot capture a minimized window).
+                if (!externalTaskMinimized(t.hwnd))
                 {
                     auto size = externalTaskSize(t.hwnd);
                     auto image = captureExternalThumbnail(t.hwnd, size.width,

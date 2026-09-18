@@ -10,6 +10,8 @@ version (Windows)
     import core.sys.windows.winuser : EnumWindows, EnumChildWindows, GetWindowTextW,
         GetWindowRect, IsWindowVisible, GetClassNameW, GetDC, ReleaseDC,
         ShowWindow, IsIconic, IsZoomed, SetForegroundWindow, GetForegroundWindow,
+        SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        AttachThreadInput, BringWindowToTop, SetActiveWindow,
         GetWindow, IsWindow, FindWindowW, GW_OWNER, GW_CHILD, GW_HWNDNEXT,
         PrintWindow, PostMessageW, SendMessageW, GetIconInfo, GetClassLongPtrW,
         DrawIconEx, DestroyIcon, ICONINFO;
@@ -19,7 +21,8 @@ version (Windows)
         GetObjectW, BITMAP;
     import core.sys.windows.commctrl : TBBUTTON, TB_GETBUTTON, TB_BUTTONCOUNT;
     import core.sys.windows.winbase : GetWindowThreadProcessId, OpenProcess,
-        CloseHandle, VirtualAllocEx, VirtualFreeEx, ReadProcessMemory;
+        CloseHandle, VirtualAllocEx, VirtualFreeEx, ReadProcessMemory,
+        GetCurrentThreadId;
     import core.sys.windows.shellapi : SHGetFileInfoW, SHFILEINFOW,
         SHGFI_ICON, SHGFI_LARGEICON;
     import core.sys.windows.windef : HBRUSH, HANDLE, LPWSTR;
@@ -178,13 +181,48 @@ ExternalTask[] enumerateExternalTasks()
 }
 
 /// Bring an external window to the foreground and restore it if minimized.
+///
+/// A plain SetForegroundWindow is unreliable: Windows' foreground lock can
+/// ignore it and leave the OS taskbar focused instead of the target app. The
+/// AttachThreadInput dance (plus raising the window) is the standard workaround
+/// and is what actually makes the program come up.
 void activateExternalTask(ulong hwndValue)
 {
     version (Windows)
     {
         auto hwnd = cast(HWND) hwndValue;
         if (IsIconic(hwnd)) ShowWindow(hwnd, 9 /* SW_RESTORE */);
+        if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, 5 /* SW_SHOW */);
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        auto targetThread = GetWindowThreadProcessId(hwnd, null);
+        auto thisThread = GetCurrentThreadId();
+        auto foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(),
+            null);
+        bool attachedTarget = targetThread != 0 && targetThread != thisThread &&
+            AttachThreadInput(thisThread, targetThread, 1) != 0;
+        bool attachedForeground = foregroundThread != 0 &&
+            foregroundThread != thisThread &&
+            foregroundThread != targetThread &&
+            AttachThreadInput(thisThread, foregroundThread, 1) != 0;
+        BringWindowToTop(hwnd);
         SetForegroundWindow(hwnd);
+        SetActiveWindow(hwnd);
+        if (attachedForeground)
+            AttachThreadInput(thisThread, foregroundThread, 0);
+        if (attachedTarget)
+            AttachThreadInput(thisThread, targetThread, 0);
+    }
+}
+
+/// Restore an external window without forcing it to the foreground (used when
+/// un-doing Show Desktop).
+void restoreExternalTask(ulong hwndValue)
+{
+    version (Windows)
+    {
+        auto hwnd = cast(HWND) hwndValue;
+        if (IsIconic(hwnd)) ShowWindow(hwnd, 9 /* SW_RESTORE */);
     }
 }
 
@@ -494,6 +532,15 @@ bool postTrayContextMenu(ulong hwndValue, uint callbackMessage, uint id)
 
 /// Shell icon for an executable path (used by pinned taskbar apps).
 RgbaImage executableIcon(string path)
+{
+    version (Windows)
+        return path.length > 0 ? shellIconForPath(path) : null;
+    else
+        return null;
+}
+
+/// Shell icon for any filesystem path (file, folder or shortcut).
+RgbaImage fileIcon(string path)
 {
     version (Windows)
         return path.length > 0 ? shellIconForPath(path) : null;

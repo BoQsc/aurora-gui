@@ -1397,7 +1397,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void updateHover(Point point)
     {
-        auto next = targetAt(point);
+        // Hover uses the popup-aware hit test so an open flyout does not block
+        // taskbar/task hover outside its panel (clicks still use hitTest).
+        auto next = _root is null ? null : _root.hitTestHover(point);
         synchronizeNativeScrollTarget(next, point);
         if (next is _hovered) return;
         if (_hovered !is null) _hovered.setHoveredInternal(false);

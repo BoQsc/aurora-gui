@@ -1,7 +1,8 @@
 module tests.headless_smoke;
 
 import aurora;
-import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
+import aurora.widgets.desktop : SystemTrayState, NotificationIcon,
+    DesktopSurface, FloatingWindow;
 import aurora.widgets.contextmenu : ContextMenu;
 import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
@@ -124,20 +125,134 @@ private final class TaskbarRoot : Widget
     }
 }
 
+// Floating windows must be resizable by dragging their edges and corners.
+private void testWindowResize()
+{
+    WindowOptions options;
+    options.width = 800;
+    options.height = 600;
+    options.renderer = RendererPreference.software;
+    auto resizeWindow = new GuiWindow(options, Theme.dark());
+    auto surface = new DesktopSurface();
+    resizeWindow.setRoot(surface);
+    auto driver = new UiTestDriver(resizeWindow);
+    driver.resize(Size(800, 600));
+    driver.paint();
+
+    auto win = surface.add(new FloatingWindow("Resize", IconKind.file));
+    win.setBounds(Rect(200, 150, 300, 200));
+    driver.paint();
+    assert(win.bounds().width == 300 && win.bounds().height == 200,
+        "resize test window did not take its initial bounds");
+
+    // Right edge drag widens the window.
+    driver.drag(Point(499, 250), Point(579, 250));
+    assert(win.bounds().width > 300,
+        "right-edge drag did not widen the window (w=" ~
+        to!string(win.bounds().width) ~ ")");
+
+    // Bottom edge drag increases the height.
+    const beforeHeight = win.bounds().height;
+    driver.drag(Point(300, 349), Point(300, 429));
+    assert(win.bounds().height > beforeHeight,
+        "bottom-edge drag did not grow the window height");
+
+    // Top-left corner drag moves and grows the window.
+    const before = win.bounds();
+    driver.drag(Point(before.x, before.y), Point(before.x - 40, before.y - 30));
+    assert(win.bounds().x < before.x && win.bounds().y < before.y,
+        "top-left corner drag did not move the window edge");
+    assert(win.bounds().width > before.width ||
+        win.bounds().x + win.bounds().width > before.x + before.width,
+        "top-left corner drag did not grow the window");
+}
+
+// Show desktop must remain latched even when there are no in-shell windows, so
+// a second toggle restores (the host may have minimized external OS windows).
+private void testShowDesktopToggle()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto showWindow = new GuiWindow(options, Theme.dark());
+    auto showRoot = new TaskbarRoot();
+    showWindow.setRoot(showRoot);
+    auto driver = new UiTestDriver(showWindow);
+    driver.resize(Size(640, 260));
+    driver.paint();
+    auto taskbar = showRoot.taskbar;
+
+    assert(!taskbar.desktopShown(), "show desktop started latched");
+    taskbar.showDesktop();
+    assert(taskbar.desktopShown(),
+        "show desktop did not latch with no in-shell windows");
+    taskbar.toggleShowDesktop();
+    assert(!taskbar.desktopShown(),
+        "second show-desktop toggle did not restore");
+}
+
+// More tasks than fit must page with the up/down chevrons, and only the tasks
+// on the current page may have bounds.
+private void testTaskPaging()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto paneWindow = new GuiWindow(options, Theme.dark());
+    auto paneRoot = new TaskbarRoot();
+    paneWindow.setRoot(paneRoot);
+    auto driver = new UiTestDriver(paneWindow);
+    driver.resize(Size(640, 260));
+    driver.paint();
+    auto taskbar = paneRoot.taskbar;
+    foreach (i; 0 .. 6)
+        taskbar.addCommand("P" ~ to!string(i), IconKind.file, delegate() {});
+    driver.paint();
+
+    assert(taskbar.pagingActive(), "taskbar did not detect task overflow");
+    assert(taskbar.taskPageCount() > 1,
+        "overflow taskbar reported a single page");
+    assert(!taskbar.entryGlobalBounds(0).empty(),
+        "page 0 should show its first task");
+    assert(taskbar.entryGlobalBounds(5).empty(),
+        "last task should be off-page initially");
+
+    const origin = taskbar.globalOrigin();
+    const down = taskbar.pagingDownBounds();
+    assert(!down.empty(), "no paging-down chevron when tasks overflow");
+    driver.click(Point(origin.x + down.x + down.width / 2,
+        origin.y + down.y + down.height / 2));
+    driver.paint();
+    assert(taskbar.taskPage() == 1,
+        "down chevron did not advance the task page");
+
+    const up = taskbar.pagingUpBounds();
+    assert(!up.empty(), "no paging-up chevron when tasks overflow");
+    driver.click(Point(origin.x + up.x + up.width / 2,
+        origin.y + up.y + up.height / 2));
+    driver.paint();
+    assert(taskbar.taskPage() == 0,
+        "up chevron did not return to the first task page");
+}
+
 // Dragging a task must ease neighbors into their swapped slot instead of
 // teleporting them: sample an entry's painted x mid-drag and assert it lies
 // strictly between its start and settled positions.
 private void testTaskDragAnimation()
 {
     WindowOptions options;
-    options.width = 640;
+    // Wide enough that five 48px task buttons fit without paging: this test
+    // exercises drag-reorder, not overflow.
+    options.width = 1280;
     options.height = 260;
     options.renderer = RendererPreference.software;
     auto dragWindow = new GuiWindow(options, Theme.dark());
     auto dragRoot = new TaskbarRoot();
     dragWindow.setRoot(dragRoot);
     auto driver = new UiTestDriver(dragWindow);
-    driver.resize(Size(640, 260));
+    driver.resize(Size(1280, 260));
     driver.paint();
     auto taskbar = dragRoot.taskbar;
     foreach (i; 0 .. 5)
@@ -1071,6 +1186,9 @@ int main()
         driver.paint();
     }
 
+    testWindowResize();
+    testShowDesktopToggle();
+    testTaskPaging();
     testTaskDragAnimation();
     testNotificationBehavior();
     testTrayClickAction();

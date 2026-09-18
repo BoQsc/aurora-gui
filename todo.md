@@ -42,6 +42,71 @@ No ribbon selection on the desktop."
 re-digested for `desktop.d` and `window.d`; live captures for double-click,
 marquee, hover and calendar. One instance running.
 
+## 2026-09-18 - Aurora Desktop: ten shell requests - real desktop, wallpaper, show-desktop, task raise, preview perf, resize, paging (DONE, verified)
+
+**Requests (user).** (1) Tray double-click opened the wrong app (ELAN); (2)
+desktop should show the real Desktop-folder contents; (3) Show Desktop must
+affect real programs; (4) clicking a task must raise the real program; (5)
+task previews are slow versus Windows; (6) no way to change the wallpaper; (7)
+move the Full-screen button off the taskbar; (8) windows are not resizable; (9)
+taskbar needs a separator before the tray and upstream/downstream paging with
+up/down arrows; (10) task hover breaks while any flyout/popup is open.
+
+**Fixes.**
+1. Tray double-click: `invokeTrayDoubleClick` now resolves the tray icon's
+   owning executable and `activateOrLaunchApp()` (raise its window, or launch it
+   when closed) instead of replaying raw tray messages to the wrong target.
+2. Real desktop items: new `aurora-desktop/source/auroradesktop/desktopfiles.d`
+   enumerates `%USERPROFILE%\Desktop` and `%PUBLIC%\Desktop` (skipping hidden /
+   system / `desktop.ini`) and app.d adds each as a `DesktopIcon`; each draws the
+   real shell icon via a new public `fileIcon(path)` (tasks.d -> SHGetFileInfoW)
+   and opens through `spawnShell`. Refresh re-scans. Verified live: the desktop
+   shows the actual shortcuts/files with their real icons.
+3. Show Desktop: `DesktopSurface` gained `onRestoreDesktop` + a `_desktopShown`
+   latch (an empty in-shell window list must no longer mean "restored", because
+   the host also minimizes external OS windows). app.d minimizes every visible
+   `enumerateExternalTasks()` window into `_desktopMinimizedHwnds` on show and
+   restores exactly those on restore. Probe minimized 22/22 real windows and
+   restored 21/22 (the one miss was a window that refused to restore).
+4. Task click raises the real program: `activateExternalTask` now shows the
+   window, `SetWindowPos(HWND_TOP, SWP_SHOWWINDOW)`, does the
+   `AttachThreadInput` dance, then `BringWindowToTop` + `SetForegroundWindow` +
+   `SetActiveWindow`. Probe: activate -> foreground=target, minimize -> restore
+   -> focused all true.
+5. Preview perf: `captureThumbnailCached` returns the cached frame immediately
+   (instant hover) and only captures synchronously when nothing is cached; the
+   1 s sync now refreshes visible windows' thumbnails so previews stay near-live.
+6. Wallpaper: new `aurora-desktop/source/auroradesktop/wallpaper.d` reads
+   `SPI_GETDESKWALLPAPER`, applies `SPI_SETDESKWALLPAPER`, and decodes any image
+   (JPEG/PNG/BMP/GIF) through GDI+ (`GdiplusStartup` / `GdipCreateBitmapFromFile`
+   / `GdipCreateHBITMAPFromBitmap` with `extern(Windows)` aliases and a non-null
+   output buffer; dimensions from `GetObjectW`). `DesktopSurface.setWallpaper`
+   cover-fits it behind the icons; Personalize opens a file picker. Verified
+   live: the castle wallpaper now paints behind the icons.
+7. Full-screen: the redundant taskbar context entry was removed (the Start menu
+   still has "Full screen (F11)").
+8. Resizable windows: `FloatingWindow` gained edge/corner resize (bitmask 1
+   left / 2 right / 4 top / 8 bottom, 5 px border, per-edge cursors, min size
+   from layout hints, clamped to the parent). Headless test drags the right,
+   bottom and top-left edges and asserts the bounds change.
+9. Taskbar: a separator line is drawn left of the tray cluster, and when tasks
+   exceed the track the task row pages with up/down chevrons (capacity reserves
+   the tray + separator; off-page entries return empty bounds and reorder is
+   disabled while paging). Headless test asserts overflow, off-page empty
+   bounds, and both chevrons change the page.
+10. Hover with a popup open: `Widget.hitTestHover` + `hoverTransparentAt`, used
+    by `GuiWindow.updateHover`; `PopupOverlay` is hover-transparent outside its
+    panel and `TaskPreview` hovers only over its panel (so it still dismisses
+    when the pointer leaves). Fixes task hover while a flyout is open without
+    the earlier preview-dismissal regression.
+
+**Verification.** `dub build` OK; `headless-smoke.exe` -> ALL PASSED (added
+`testWindowResize`, `testShowDesktopToggle`, `testTaskPaging`); probes
+`activate_probe.exe`, `showdesk_probe.exe`, `wallpaper_probe.exe` PASS; live
+captures show the real desktop icons, the castle wallpaper, the tray separator
+and the paging chevrons. Manifest re-digested for `widget.d`, `desktop.d`,
+`popup.d`, `window.d`. One instance running (build stamp matches).
+
 ## 2026-09-18 - Aurora Desktop: double-click on a tray icon did nothing (FIXED, verified)
 
 **Complaint (user).** "why I can't double click taskmanager notification icon

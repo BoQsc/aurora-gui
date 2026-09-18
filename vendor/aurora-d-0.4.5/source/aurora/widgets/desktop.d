@@ -18,6 +18,9 @@ class DesktopIcon : Widget
 {
     private dstring _text;
     private IconKind _icon;
+    // Optional raster icon (e.g. the real shell icon of a Desktop file). When
+    // set it replaces the drawn IconKind glyph.
+    private RgbaImage _iconImage;
     private bool _selected;
     private bool _pressed;
     private bool _dragging;
@@ -69,6 +72,16 @@ class DesktopIcon : Widget
         invalidate();
     }
 
+    /// Set a raster icon (null to fall back to the IconKind glyph).
+    void setIconImage(RgbaImage image)
+    {
+        if (_iconImage is image) return;
+        _iconImage = image;
+        invalidate();
+    }
+
+    RgbaImage iconImage() @safe pure nothrow @nogc { return _iconImage; }
+
     void setSelected(bool value)
     {
         if (_selected == value) return;
@@ -110,7 +123,11 @@ class DesktopIcon : Widget
                 palette.accent, 2);
         const iconRect = Rect((bounds().width - 44) / 2,
             7 + (_pressed && !_dragging ? 1 : 0), 44, 44);
-        drawIcon(canvas, _icon, iconRect, Color.rgb(245, 247, 250), palette.accent);
+        if (_iconImage !is null)
+            canvas.drawImage(iconRect, _iconImage);
+        else
+            drawIcon(canvas, _icon, iconRect, Color.rgb(245, 247, 250),
+                palette.accent);
         canvas.drawTextInRect(Rect(3, 56, maxInt(0, bounds().width - 6),
                 bounds().height - 58), _text, Color.rgb(255, 255, 255), 1,
             HorizontalAlign.center, VerticalAlign.top, true);
@@ -244,6 +261,8 @@ class DesktopSurface : Widget
     private bool _marqueeActive;
     private Point _marqueeStart;
     private Point _marqueeCurrent;
+    // Optional desktop wallpaper painted behind the icons.
+    private RgbaImage _wallpaper;
 
     bool delegate(DesktopIcon source, DesktopIcon target) onIconDropped;
     void delegate(DesktopIcon icon) onIconMoved;
@@ -259,6 +278,15 @@ class DesktopSurface : Widget
 
     size_t iconCount() const @safe pure nothrow @nogc { return _icons.length; }
     bool alignToGrid() const @safe pure nothrow @nogc { return _alignToGrid; }
+
+    /// Set (or clear, passing null) the wallpaper painted behind the icons.
+    void setWallpaper(RgbaImage image)
+    {
+        _wallpaper = image;
+        invalidate();
+    }
+
+    RgbaImage wallpaper() @safe pure nothrow @nogc { return _wallpaper; }
 
     DesktopIcon iconAt(size_t index) @safe pure nothrow @nogc
     {
@@ -547,13 +575,35 @@ class DesktopSurface : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         const full = Rect(0, 0, bounds().width, bounds().height);
-        canvas.fillVerticalGradient(full, Color.fromHex(0x152848), Color.fromHex(0x315d7d));
-        canvas.fillCircle(Point(bounds().width - 130, 110), 90,
-            Color.rgba(255, 255, 255, 14));
-        canvas.fillCircle(Point(bounds().width - 58, 190), 46,
-            Color.rgba(88, 189, 255, 20));
-        canvas.fillCircle(Point(bounds().width / 2, bounds().height + 100),
-            maxInt(180, bounds().width / 3), Color.rgba(70, 160, 210, 22));
+        if (_wallpaper !is null && _wallpaper.width > 0 && _wallpaper.height > 0)
+        {
+            // Cover the surface: scale uniformly and centre-crop the overflow
+            // so the image is never distorted.
+            const destinationWidth = maxInt(1, full.width);
+            const destinationHeight = maxInt(1, full.height);
+            const scaleX = cast(double) destinationWidth / _wallpaper.width;
+            const scaleY = cast(double) destinationHeight / _wallpaper.height;
+            const scale = scaleX > scaleY ? scaleX : scaleY;
+            const sourceWidth = minInt(_wallpaper.width,
+                maxInt(1, cast(int) (destinationWidth / scale)));
+            const sourceHeight = minInt(_wallpaper.height,
+                maxInt(1, cast(int) (destinationHeight / scale)));
+            const sourceX = (_wallpaper.width - sourceWidth) / 2;
+            const sourceY = (_wallpaper.height - sourceHeight) / 2;
+            canvas.drawImage(full, _wallpaper,
+                Rect(sourceX, sourceY, sourceWidth, sourceHeight));
+        }
+        else
+        {
+            canvas.fillVerticalGradient(full, Color.fromHex(0x152848),
+                Color.fromHex(0x315d7d));
+            canvas.fillCircle(Point(bounds().width - 130, 110), 90,
+                Color.rgba(255, 255, 255, 14));
+            canvas.fillCircle(Point(bounds().width - 58, 190), 46,
+                Color.rgba(88, 189, 255, 20));
+            canvas.fillCircle(Point(bounds().width / 2, bounds().height + 100),
+                maxInt(180, bounds().width / 3), Color.rgba(70, 160, 210, 22));
+        }
         if (_marqueeActive)
         {
             const rect = marqueeRect();
@@ -666,6 +716,11 @@ class FloatingWindow : Widget
     private int _pressedControl;
     private bool _maximized;
     private Rect _restoreBounds;
+    // Edge-drag resize state. Bitmask: 1 left, 2 right, 4 top, 8 bottom.
+    private int _resizeEdge;
+    private PointF _resizeStartPointer;
+    private Rect _resizeStartBounds;
+    private enum int resizeBorder = 5;
 
     void delegate(FloatingWindow window) onActivated;
     void delegate(FloatingWindow window) onClosed;
@@ -771,6 +826,31 @@ class FloatingWindow : Widget
         return 0;
     }
 
+    /// Which window edge/corner the point grabs for resizing, or 0.
+    private int resizeEdgeAt(Point point) const @safe pure nothrow @nogc
+    {
+        if (_maximized) return 0;
+        int edge;
+        if (point.x <= resizeBorder) edge |= 1;
+        else if (point.x >= bounds().width - resizeBorder - 1) edge |= 2;
+        if (point.y <= resizeBorder) edge |= 4;
+        else if (point.y >= bounds().height - resizeBorder - 1) edge |= 8;
+        // Never steal a caption button's click.
+        if (edge != 0 && controlAt(point) != 0) return 0;
+        return edge;
+    }
+
+    private static CursorKind cursorForEdge(int edge) @safe pure nothrow @nogc
+    {
+        if (edge == (1 | 4) || edge == (2 | 8))
+            return CursorKind.resizeDiagonalNWSE;
+        if (edge == (2 | 4) || edge == (1 | 8))
+            return CursorKind.resizeDiagonalNESW;
+        if (edge & 3) return CursorKind.resizeHorizontal;
+        if (edge & 12) return CursorKind.resizeVertical;
+        return CursorKind.arrow;
+    }
+
     protected override void onLayout()
     {
         if (_content !is null)
@@ -858,6 +938,16 @@ class FloatingWindow : Widget
             invalidate();
             return true;
         }
+        const edge = resizeEdgeAt(event.position);
+        if (edge != 0)
+        {
+            _resizeEdge = edge;
+            _resizeStartPointer = pointerPosition(event);
+            _resizeStartBounds = bounds();
+            setCursor(cursorForEdge(edge));
+            captureMouse();
+            return true;
+        }
         if (event.position.y < _titleHeight)
         {
             if (event.clickCount >= 2)
@@ -879,22 +969,65 @@ class FloatingWindow : Widget
 
     override bool onPointerLatch(PointF globalPosition)
     {
+        if (_resizeEdge != 0) return updateResize(globalPosition, false);
         return _dragging && updateDrag(globalPosition, false);
     }
 
     override bool wantsContinuousPointerFrames() const @safe pure nothrow @nogc
     {
-        return _dragging;
+        return _dragging || _resizeEdge != 0;
     }
 
     override bool onMouseMove(ref Event event)
     {
+        if (_resizeEdge != 0)
+        {
+            updateResize(pointerPosition(event), true);
+            return true;
+        }
         if (_dragging)
         {
             updateDrag(pointerPosition(event), true);
             return true;
         }
+        if (_pressedControl == 0)
+            setCursor(cursorForEdge(resizeEdgeAt(event.position)));
         return _pressedControl != 0;
+    }
+
+    private bool updateResize(PointF pointer, bool requestFrame)
+    {
+        const dx = pointer.x - _resizeStartPointer.x;
+        const dy = pointer.y - _resizeStartPointer.y;
+        const start = _resizeStartBounds;
+        const minWidth = maxInt(80, layoutHints().minWidth);
+        const minHeight = maxInt(60, layoutHints().minHeight);
+        int left = start.x;
+        int top = start.y;
+        int right = start.x + start.width;
+        int bottom = start.y + start.height;
+        if (_resizeEdge & 1)
+            left = minInt(cast(int) (start.x + dx + 0.5), right - minWidth);
+        if (_resizeEdge & 2)
+            right = maxInt(cast(int) (start.x + start.width + dx + 0.5),
+                left + minWidth);
+        if (_resizeEdge & 4)
+            top = minInt(cast(int) (start.y + dy + 0.5), bottom - minHeight);
+        if (_resizeEdge & 8)
+            bottom = maxInt(cast(int) (start.y + start.height + dy + 0.5),
+                top + minHeight);
+        if (parent() !is null)
+        {
+            left = maxInt(0, left);
+            top = maxInt(0, top);
+            right = minInt(parent().bounds().width, right);
+            bottom = minInt(parent().bounds().height, bottom);
+        }
+        auto rect = Rect(left, top, maxInt(minWidth, right - left),
+            maxInt(minHeight, bottom - top));
+        if (rect == bounds()) return false;
+        setBounds(rect);
+        return true;
     }
 
     private bool updateDrag(PointF pointer, bool requestFrame)
@@ -923,6 +1056,13 @@ class FloatingWindow : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
+        if (_resizeEdge != 0)
+        {
+            _resizeEdge = 0;
+            releaseMouse();
+            setCursor(CursorKind.arrow);
+            return true;
+        }
         if (_dragging)
         {
             updateDrag(pointerPosition(event), true);
@@ -1233,6 +1373,8 @@ private final class TaskbarTooltip : Widget
 class Taskbar : Widget
 {
     private TaskEntry[] _entries;
+    // Current page of the task track when there are more tasks than fit.
+    private int _taskPage;
     private NotificationIcon[] _notifications;
     // Notification drag-reorder state. `_pressed` encodes a pressed
     // notification as 200 + visible order; the dragged icon is tracked by its
@@ -1288,6 +1430,10 @@ class Taskbar : Widget
     private bool _startMenuOpen;
     private FloatingWindow _activeWindow;
     private FloatingWindow[] _showDesktopWindows;
+    // True while "Show desktop" is active. Tracked separately from
+    // _showDesktopWindows because the host may also minimize external OS
+    // windows via onShowDesktop, so an empty list must not imply "restored".
+    private bool _desktopShown;
     private TaskbarTooltip _tooltip;
     private double _tooltipHoverSeconds = 0.0;
     private int _tooltipRegion = -2;   // the _hot code the tooltip is for
@@ -1325,6 +1471,8 @@ class Taskbar : Widget
 
     void delegate() onStart;
     void delegate() onShowDesktop;
+    /// Fired when the desktop is restored (Show Desktop toggled back).
+    void delegate() onRestoreDesktop;
     void delegate() onTaskbarSettings;
     /** Launch the OS Task Manager (empty taskbar right-click menu). */
     void delegate() onTaskManager;
@@ -1768,7 +1916,7 @@ class Taskbar : Widget
         {
             const slot = currentFractionalSlot(cast(int) index);
             if (slot >= 0.0)
-                rect.x = entriesStartX() +
+                rect.x = taskTrackX() +
                     cast(int) (slot * (entryWidth() + 4) + 0.5);
         }
         if (isDragged) rect.x = draggedEntryX(rect);
@@ -2285,6 +2433,7 @@ class Taskbar : Widget
             }
         }
         _activeWindow = null;
+        _desktopShown = true;
         invalidate();
         if (onShowDesktop !is null) onShowDesktop();
     }
@@ -2301,13 +2450,21 @@ class Taskbar : Widget
                 _activeWindow = window;
             }
         }
+        _desktopShown = false;
         invalidate();
+        if (onRestoreDesktop !is null) onRestoreDesktop();
     }
 
     void toggleShowDesktop()
     {
-        if (_showDesktopWindows.length == 0) showDesktop();
+        if (!_desktopShown) showDesktop();
         else restoreDesktop();
+    }
+
+    /// Whether "Show desktop" is currently active (test/introspection).
+    bool desktopShown() const @safe pure nothrow @nogc
+    {
+        return _desktopShown;
     }
 
     private Rect startRect() const @safe pure nothrow @nogc
@@ -2611,10 +2768,113 @@ class Taskbar : Widget
         return taskIconSlotWidth;
     }
 
+    // Left/right room kept clear of the notification cluster so a separator
+    // line and the task track never collide with the tray.
+    private enum int taskSeparatorGap = 10;
+    private enum int taskPagingArrowWidth = 18;
+    private enum int taskPagingArrowGap = 4;
+    private enum int taskPagingUpHot = -20;
+    private enum int taskPagingDownHot = -21;
+
+    /// How many task slots fit before the notification cluster. `withArrows`
+    /// reserves the width used by the paging chevrons when tasks overflow.
+    private int taskCapacity(bool withArrows) const @safe pure nothrow @nogc
+    {
+        if (_entries.length == 0) return 1;
+        const stride = entryWidth() + 4;
+        if (stride <= 0) return 1;
+        int left = entriesStartX();
+        if (withArrows) left += taskPagingArrowWidth + taskPagingArrowGap;
+        const available = maxInt(0, trayLeftX() - taskSeparatorGap - left);
+        return maxInt(1, available / stride);
+    }
+
+    private bool tasksOverflow() const @safe pure nothrow @nogc
+    {
+        return _modernShell &&
+            cast(int) _entries.length > taskCapacity(false);
+    }
+
+    private int visibleTaskCapacity() const @safe pure nothrow @nogc
+    {
+        return taskCapacity(tasksOverflow());
+    }
+
+    int taskPageCount() const @safe pure nothrow @nogc
+    {
+        if (!tasksOverflow()) return 1;
+        const capacity = visibleTaskCapacity();
+        return maxInt(1, (cast(int) _entries.length + capacity - 1) / capacity);
+    }
+
+    // --- Overflow paging introspection (tests) --------------------------
+    /// True when there are more task entries than fit on the task track.
+    bool pagingActive() const @safe pure nothrow @nogc
+    {
+        return tasksOverflow();
+    }
+
+    /// Current overflow page (0-based).
+    int taskPage() const @safe pure nothrow @nogc { return _taskPage; }
+    /// Local rect of the "previous tasks" chevron.
+    Rect pagingUpBounds() const @safe pure nothrow @nogc
+    {
+        return taskPagingUpRect();
+    }
+    /// Local rect of the "more tasks" chevron.
+    Rect pagingDownBounds() const @safe pure nothrow @nogc
+    {
+        return taskPagingDownRect();
+    }
+
+    private int taskPageOffset() const @safe pure nothrow @nogc
+    {
+        return _taskPage * visibleTaskCapacity();
+    }
+
+    /// Local x where the visible task track starts (after the chevrons when
+    /// paging is active).
+    private int taskTrackX() const @safe pure nothrow @nogc
+    {
+        if (!tasksOverflow()) return entriesStartX();
+        return entriesStartX() + taskPagingArrowWidth + taskPagingArrowGap;
+    }
+
+    private Rect taskPagingUpRect() const @safe pure nothrow @nogc
+    {
+        if (!tasksOverflow()) return Rect.init;
+        return Rect(entriesStartX(), 3, taskPagingArrowWidth,
+            maxInt(1, bounds().height / 2 - 5));
+    }
+
+    private Rect taskPagingDownRect() const @safe pure nothrow @nogc
+    {
+        if (!tasksOverflow()) return Rect.init;
+        return Rect(entriesStartX(), bounds().height / 2 + 2,
+            taskPagingArrowWidth, maxInt(1, bounds().height / 2 - 5));
+    }
+
+    /// Page through the task track when more tasks exist than fit in the row.
+    private void pageTasks(int delta)
+    {
+        const pages = taskPageCount();
+        const next = clampInt(_taskPage + delta, 0, pages - 1);
+        if (next == _taskPage) return;
+        _taskPage = next;
+        hideTooltip();
+        invalidate();
+    }
+
     private Rect entryRect(int index) const @safe pure nothrow @nogc
     {
         const width = entryWidth();
-        return Rect(entriesStartX() + index * (width + 4), 6, width,
+        int slot = index;
+        if (tasksOverflow())
+        {
+            slot = index - taskPageOffset();
+            if (slot < 0 || slot >= visibleTaskCapacity()) return Rect.init;
+        }
+        return Rect(taskTrackX() + slot * (width + 4), 6, width,
             maxInt(1, bounds().height - 12));
     }
 
@@ -2625,7 +2885,7 @@ class Taskbar : Widget
     {
         const origin = preciseGlobalOrigin();
         double x = _dragPointerPosition.x - origin.x - _dragGrabOffset.x;
-        const left = cast(double) entriesStartX();
+        const left = cast(double) taskTrackX();
         const right = cast(double) trayLeftX() - base.width;
         if (x < left) x = left;
         if (x > right) x = right;
@@ -2827,7 +3087,7 @@ class Taskbar : Widget
         const origin = preciseGlobalOrigin();
         const proxyCenter = pointer.x - origin.x - _dragGrabOffset.x +
             cast(double) width * 0.5;
-        const firstCenter = cast(double) entriesStartX() +
+        const firstCenter = cast(double) taskTrackX() +
             cast(double) width * 0.5;
         int target = clampInt(_dragCurrentIndex, 0,
             cast(int) _entries.length - 1);
@@ -3095,6 +3355,9 @@ class Taskbar : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         ++_paintGeneration;
+        const pageCount = taskPageCount();
+        if (_taskPage >= pageCount) _taskPage = pageCount - 1;
+        if (_taskPage < 0) _taskPage = 0;
         const palette = theme();
         const full = Rect(0, 0, bounds().width, bounds().height);
         canvas.fillRect(full, palette.taskbar);
@@ -3130,7 +3393,7 @@ class Taskbar : Widget
                 if (slot >= 0.0)
                 {
                     const width = entryWidth();
-                    rect.x = entriesStartX() +
+                    rect.x = taskTrackX() +
                         cast(int) (slot * (width + 4) + 0.5);
                 }
             }
@@ -3149,7 +3412,21 @@ class Taskbar : Widget
         }
 
         if (_modernShell)
+        {
+            if (tasksOverflow()) paintTaskPagingArrows(canvas);
+            // Separator between the task track and the tray/notification
+            // cluster (trayLeftX is left of the notifications when any exist,
+            // otherwise left of the fixed glyphs).
+            if (_entries.length > 0)
+            {
+                const separatorX = trayLeftX() - 4;
+                if (separatorX > taskTrackX())
+                    canvas.fillRect(Rect(separatorX, 8, 1,
+                        maxInt(1, bounds().height - 16)),
+                        Color.rgba(255, 255, 255, 40));
+            }
             paintTray(canvas);
+        }
 
         const clock = clockRect();
         if (_hot == -3) canvas.fillRect(clock, palette.taskbarHover.withAlpha(160));
@@ -3174,7 +3451,7 @@ class Taskbar : Widget
         }
 
         const show = showDesktopRect();
-        if (_hot == -4 || _showDesktopWindows.length > 0)
+        if (_hot == -4 || _desktopShown)
             canvas.fillRect(show, palette.accent.withAlpha(150));
         else
             canvas.fillRect(Rect(show.x, 5, 1, maxInt(0, show.height - 10)),
@@ -3196,6 +3473,26 @@ class Taskbar : Widget
         canvas.drawTextInRect(Rect(search.x + 36, search.y,
                 maxInt(0, search.width - 42), search.height), "Search"d,
             palette.textMuted, 1, HorizontalAlign.left, VerticalAlign.middle, true);
+    }
+
+    /// Up/down chevrons that page the task track when tasks overflow.
+    private void paintTaskPagingArrows(ref Canvas canvas)
+    {
+        const palette = theme();
+        const up = taskPagingUpRect();
+        const down = taskPagingDownRect();
+        if (_hot == taskPagingUpHot)
+            canvas.fillRoundedRect(up, 3, palette.taskbarHover);
+        if (_hot == taskPagingDownHot)
+            canvas.fillRoundedRect(down, 3, palette.taskbarHover);
+        const canUp = _taskPage > 0;
+        const canDown = _taskPage < taskPageCount() - 1;
+        drawIcon(canvas, IconKind.chevronUp, up.inset(4),
+            canUp ? Color.rgb(245, 248, 252) : palette.textMuted,
+            palette.accent);
+        drawIcon(canvas, IconKind.chevronDown, down.inset(4),
+            canDown ? Color.rgb(245, 248, 252) : palette.textMuted,
+            palette.accent);
     }
 
     private void paintTray(ref Canvas canvas)
@@ -3289,9 +3586,11 @@ class Taskbar : Widget
     {
         if (code == -1) return "Start"d;
         if (code == -3) return "Date and time"d;
-        if (code == -4) return _showDesktopWindows.length == 0 ?
+        if (code == -4) return !_desktopShown ?
             "Show desktop"d : "Restore windows"d;
         if (code == -5) return "Search"d;
+        if (code == taskPagingUpHot) return "Previous tasks"d;
+        if (code == taskPagingDownHot) return "More tasks"d;
         if (code >= -10 && code <= -6)
         {
             const tray = -6 - code; // 0 wifi, 1 volume, 2 battery, 3 hidden, 4 language
@@ -3351,6 +3650,8 @@ class Taskbar : Widget
         if (code == -3) return clockRect();
         if (code == -4) return showDesktopRect();
         if (code == -5) return searchRect();
+        if (code == taskPagingUpHot) return taskPagingUpRect();
+        if (code == taskPagingDownHot) return taskPagingDownRect();
         if (code >= -10 && code <= -6) return trayIconRect(-6 - code);
         if (code <= -11)
         {
@@ -3511,6 +3812,16 @@ class Taskbar : Widget
         else if (showDesktopRect().contains(event.position)) _pressed = -4;
         else if (clockRect().contains(event.position)) _pressed = -3;
         else if (searchRect().contains(event.position)) _pressed = -5;
+        else if (taskPagingUpRect().contains(event.position))
+        {
+            pageTasks(-1);
+            return true;
+        }
+        else if (taskPagingDownRect().contains(event.position))
+        {
+            pageTasks(1);
+            return true;
+        }
         else if (trayIconHit(event.position) >= 0) _pressed = 100 + trayIconHit(event.position);
         else if (notificationHit(event.position) >= 0)
         {
@@ -3603,7 +3914,7 @@ class Taskbar : Widget
         if (_pressed >= 0 && _pressed < 100)
         {
             const pointer = pointerPosition(event);
-            if (!_reordering)
+            if (!_reordering && !tasksOverflow())
             {
                 const dx = pointer.x - _pressPointer.x;
                 const dy = pointer.y - _pressPointer.y;
@@ -3621,6 +3932,10 @@ class Taskbar : Widget
         else if (showDesktopRect().contains(event.position)) hot = -4;
         else if (clockRect().contains(event.position)) hot = -3;
         else if (searchRect().contains(event.position)) hot = -5;
+        else if (taskPagingUpRect().contains(event.position))
+            hot = taskPagingUpHot;
+        else if (taskPagingDownRect().contains(event.position))
+            hot = taskPagingDownHot;
         else if (notificationHit(event.position) >= 0)
             hot = -(11 + notificationHit(event.position));
         else if (trayIconHit(event.position) >= 0)
@@ -4124,7 +4439,7 @@ class Taskbar : Widget
     private void showTaskbarContextMenu(Point globalPosition)
     {
         ContextMenuItem[] items;
-        items ~= ContextMenuItem.command(_showDesktopWindows.length == 0 ?
+        items ~= ContextMenuItem.command(!_desktopShown ?
                 "Show the desktop" : "Restore windows", IconKind.computer,
             delegate() { toggleShowDesktop(); });
         items ~= ContextMenuItem.separatorItem();

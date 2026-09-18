@@ -532,6 +532,35 @@ abstract class Widget
     }
 
     /**
+     * Hover-only hit test. Unlike hitTest, a widget can declare itself
+     * hover-transparent at a point (see hoverTransparentAt). A transient popup
+     * uses this so it still consumes clicks for click-away dismissal while
+     * letting hover reach the taskbar underneath (otherwise opening any flyout
+     * stopped task previews from appearing).
+     */
+    Widget hitTestHover(Point globalPoint)
+    {
+        if (!_visible || !_enabled) return null;
+        const local = globalToLocal(globalPoint);
+        if (!containsLocal(local)) return null;
+        if (hoverTransparentAt(local)) return null;
+
+        for (size_t i = _children.length; i > 0; --i)
+        {
+            auto child = _children[i - 1];
+            auto hit = child.hitTestHover(globalPoint);
+            if (hit !is null) return hit;
+        }
+        return this;
+    }
+
+    /// Overridden by overlays that must not block hover outside their panel.
+    bool hoverTransparentAt(Point localPoint) const @safe pure nothrow @nogc
+    {
+        return false;
+    }
+
+    /**
      * Whether this control must win native pointer hit-testing when it overlaps
      * a borderless window's resize margin. Most content leaves the edge to the
      * window; narrow edge controls such as scrollbars opt in so half of their
