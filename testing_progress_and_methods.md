@@ -10704,3 +10704,57 @@ the native resize margin), so the Show-desktop path is verified through
 `vendor/aurora-d-0.4.5/MANIFEST.sha256`:
 `Get-FileHash -Algorithm SHA256 <file>` and replace the matching line
 (two spaces before the forward-slash path).
+
+## 2026-09-18 - Aurora Desktop: perf + input-language troubleshooting
+
+**Frame stats (live).** Launch with `AURORA_DESK_STATS=1`; the Aurora titlebar
+then shows `scene=..us render=..us layer=..` (updated every 0.5 s). Read it from
+PowerShell with `(Get-Process aurora-desktop).MainWindowTitle` while driving the
+UI. On this machine the real shell idles at ~3-5 ms/frame (scene <1 ms, Vulkan
+render ~3-4 ms) with 427 desktop icons.
+
+**Reproduce/re-measure the marquee cost deterministically.**
+`desk_root_perf.exe` (temp) builds the real `DesktopRoot` in a software
+`GuiWindow`, times `driver.paint()` over 100 simulated marquee moves, and prints
+`base=`/`layer=` build counts via `window.compositorStats()`. Before the
+overlay fix it was ~44 ms/move with 100 base rebuilds; after it is ~4 ms/move
+with 1 base build. Key lesson: a non-composited surface `invalidate()` per
+pointer sample rebuilds the whole base (layout + wallpaper) and re-composites
+the scene; put moving decorations (marquee band, drag proxy) in their own
+composited layer.
+
+**Local-coordinate click bug.** `Widget.bounds()` is parent-relative while
+`event.position` is widget-local, so `bounds().contains(event.position)` is
+wrong; use `containsLocal(event.position)` (this is what `Button` does). It made
+input-language rows, volume device rows and a WiFi quick-action tile unclickable.
+`testLanguagePanelSelection` in the smoke suite guards it: build a
+`LanguagePanel` with two fake `InputLanguage`s, click the second row, assert
+`onSelect` received its hkl.
+
+**Language activation timing.** `activateInputLanguage` posts
+`WM_INPUTLANGCHANGEREQUEST` to the foreground window; the OS applies it
+asynchronously, so `inputLanguages()` immediately afterwards still reports the
+old active layout. The app now does a short refresh burst. The raw primitive is
+verified by `lang_fg_probe.exe` (create a window, foreground it, activate, then
+re-read: PASS).
+
+**In-process interaction benchmark (do NOT move the user's mouse).**
+```
+aurora-desktop.exe --bench <outfile>
+```
+It drives the retained tree with `aurora.testing.UiTestDriver` (real synthetic
+events through the real Vulkan render path) and writes avg/worst frame times for
+idle paint, icon hover, marquee and selection toggles, plus the compositor
+counters (`frames`, `base`, `layer`, `order`). Current numbers: idle 2.5 ms,
+hover 4.1 ms, marquee 3.8 ms, selection 3.4 ms; `base=1` (no base rebuild during
+interaction). Never use `SetCursorPos`/`mouse_event` for this - it hijacks the
+real cursor and is unreliable.
+
+**Idle CPU sanity check.**
+```
+$p=Get-Process aurora-desktop; $a=$p.TotalProcessorTime; Start-Sleep 4; $p.Refresh();
+($p.TotalProcessorTime-$a).TotalMilliseconds
+```
+~110 ms over 4 s (~2.7% of one core) is healthy. A much higher number means a
+periodic capture/enumeration loop regressed (the classic one was the 1 s
+thumbnail re-capture of every visible window).

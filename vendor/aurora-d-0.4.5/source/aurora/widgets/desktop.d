@@ -243,6 +243,28 @@ class DesktopIcon : Widget
     }
 }
 
+/**
+ * Retained layer that paints only the rubber-band selection rectangle. Keeping
+ * the band in its own composited layer means dragging it does not rebuild the
+ * desktop base (wallpaper + every icon layer), which made marquee selection
+ * crawl on desktops with hundreds of shortcuts.
+ */
+private final class DesktopMarqueeOverlay : Widget
+{
+    this()
+    {
+        setComposited(true);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        if (full.width <= 0 || full.height <= 0) return;
+        canvas.fillRect(full, Color.rgba(88, 189, 255, 46));
+        canvas.strokeRect(full, Color.rgba(120, 200, 255, 200), 1);
+    }
+}
+
 /** Wallpaper-like absolute-position container with retained draggable shortcuts. */
 class DesktopSurface : Widget
 {
@@ -257,10 +279,13 @@ class DesktopSurface : Widget
     private int _gridOriginY = 18;
     private int _gridStepX = 104;
     private int _gridStepY = 104;
-    // Rubber-band (marquee) selection started on empty desktop space.
+    // Rubber-band (marquee) selection started on empty desktop space. The band
+    // itself is painted by a retained overlay so moving it never rebuilds the
+    // desktop base.
     private bool _marqueeActive;
     private Point _marqueeStart;
     private Point _marqueeCurrent;
+    private DesktopMarqueeOverlay _marqueeOverlay;
     // Optional desktop wallpaper painted behind the icons.
     private RgbaImage _wallpaper;
 
@@ -274,6 +299,8 @@ class DesktopSurface : Widget
     this()
     {
         layoutHints().flex = 1.0;
+        _marqueeOverlay = add(new DesktopMarqueeOverlay());
+        _marqueeOverlay.setVisible(false);
     }
 
     size_t iconCount() const @safe pure nothrow @nogc { return _icons.length; }
@@ -315,6 +342,9 @@ class DesktopSurface : Widget
         // Keep all wallpaper shortcuts below floating windows and menus, even
         // when a shortcut is created after those higher-level shell layers.
         moveChildToIndex(item, _icons.length - 1);
+        // The marquee band must stay above every shortcut.
+        if (_marqueeOverlay !is null && _marqueeOverlay.parent() is this)
+            moveChildToIndex(_marqueeOverlay, children().length - 1);
         return item;
     }
 
@@ -604,15 +634,6 @@ class DesktopSurface : Widget
             canvas.fillCircle(Point(bounds().width / 2, bounds().height + 100),
                 maxInt(180, bounds().width / 3), Color.rgba(70, 160, 210, 22));
         }
-        if (_marqueeActive)
-        {
-            const rect = marqueeRect();
-            if (rect.width > 0 && rect.height > 0)
-            {
-                canvas.fillRect(rect, Color.rgba(88, 189, 255, 46));
-                canvas.strokeRect(rect, Color.rgba(120, 200, 255, 200), 1);
-            }
-        }
     }
 
     override bool onMouseDown(ref Event event)
@@ -635,12 +656,19 @@ class DesktopSurface : Widget
         }
         if (event.button != MouseButton.left) return false;
         clearSelection();
-        // Start a rubber-band selection on empty desktop space.
+        // Start a rubber-band selection on empty desktop space. The band is
+        // drawn by the retained overlay, so only that layer is touched while
+        // dragging; the desktop base and icon layers stay cached.
         _marqueeActive = true;
         _marqueeStart = event.position;
         _marqueeCurrent = event.position;
+        if (_marqueeOverlay !is null)
+        {
+            _marqueeOverlay.setBounds(Rect(_marqueeStart.x, _marqueeStart.y,
+                0, 0));
+            _marqueeOverlay.setVisible(true);
+        }
         captureMouse();
-        invalidate();
         return true;
     }
 
@@ -649,7 +677,7 @@ class DesktopSurface : Widget
         if (!_marqueeActive) return false;
         _marqueeCurrent = event.position;
         updateMarqueeSelection();
-        invalidate();
+        updateMarqueeOverlay();
         return true;
     }
 
@@ -660,9 +688,18 @@ class DesktopSurface : Widget
         _marqueeCurrent = event.position;
         updateMarqueeSelection();
         _marqueeActive = false;
+        if (_marqueeOverlay !is null) _marqueeOverlay.setVisible(false);
         releaseMouse();
-        invalidate();
         return true;
+    }
+
+    /// Resize the retained band layer to the current rubber-band rectangle.
+    private void updateMarqueeOverlay()
+    {
+        if (_marqueeOverlay is null) return;
+        const rect = marqueeRect();
+        _marqueeOverlay.setBounds(Rect(rect.x, rect.y,
+            maxInt(1, rect.width), maxInt(1, rect.height)));
     }
 
     private Rect marqueeRect() const @safe pure nothrow @nogc

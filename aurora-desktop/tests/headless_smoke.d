@@ -8,7 +8,9 @@ import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
 import auroradesktop.search : SearchPopup;
 import auroradesktop.taskpreview : TaskPreview;
-import auroradesktop.tray : HiddenIconsPanel, LanguagePanel, VolumePanel;
+import auroradesktop.tray : HiddenIconsPanel, LanguagePanel, LanguageRow,
+    VolumePanel;
+import auroradesktop.inputlang : InputLanguage;
 import auroradesktop.tasks : postTrayContextMenu, postTrayPrimaryClick;
 import std.stdio : writeln, stdout;
 import std.algorithm : canFind;
@@ -165,6 +167,66 @@ private void testWindowResize()
     assert(win.bounds().width > before.width ||
         win.bounds().x + win.bounds().width > before.x + before.width,
         "top-left corner drag did not grow the window");
+}
+
+// Clicking a language row must invoke onSelect; a regression here makes the
+// flyout impossible to use.
+private void testLanguagePanelSelection()
+{
+    WindowOptions options;
+    options.width = 500;
+    options.height = 380;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(500, 380));
+    driver.paint();
+
+    InputLanguage english;
+    english.hkl = 0x409;
+    english.name = "English (United States)";
+    english.keyboard = "US keyboard";
+    english.abbrev = "ENG";
+    english.active = true;
+    InputLanguage lithuanian;
+    lithuanian.hkl = 0x427;
+    lithuanian.name = "Lithuanian (Lithuania)";
+    lithuanian.keyboard = "Lithuanian keyboard";
+    lithuanian.abbrev = "LIT";
+    lithuanian.active = false;
+
+    auto panel = new LanguagePanel([english, lithuanian]);
+    root.add(panel);
+    panel.setBounds(Rect(10, 10, 240, 220));
+    size_t selected;
+    panel.onSelect = delegate(size_t hkl) { selected = hkl; };
+    driver.paint();
+
+    LanguageRow second;
+    int seen;
+    void findRows(Widget widget)
+    {
+        foreach (child; widget.children())
+        {
+            auto row = cast(LanguageRow) child;
+            if (row !is null)
+            {
+                if (seen == 1) second = row;
+                ++seen;
+            }
+            findRows(child);
+        }
+    }
+    findRows(panel);
+    assert(second !is null, "language panel did not build a second row");
+    assert(!second.globalBounds().empty(), "language row has no bounds");
+    driver.click(center(second.globalBounds()));
+    driver.paint();
+    assert(selected == lithuanian.hkl,
+        "clicking a language row did not fire onSelect (selected=" ~
+        to!string(selected) ~ ")");
 }
 
 // Show desktop must remain latched even when there are no in-shell windows, so
@@ -1188,6 +1250,7 @@ int main()
 
     testWindowResize();
     testShowDesktopToggle();
+    testLanguagePanelSelection();
     testTaskPaging();
     testTaskDragAnimation();
     testNotificationBehavior();

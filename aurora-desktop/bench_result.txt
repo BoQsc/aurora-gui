@@ -1,0 +1,6 @@
+renderer=Vulkan icons=427 client=1280x760
+idle-paint         avg=   2.48ms worst=   3.02ms n=30
+icon-hover         avg=   4.11ms worst=   7.33ms n=150
+marquee            avg=   3.76ms worst=   5.91ms n=60
+selection-toggle   avg=   3.35ms worst=  15.60ms n=60
+frames=159 base=1 layer=706 order=3

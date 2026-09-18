@@ -1,5 +1,38 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: "incredibly bad performance" (FIXED, verified)
+
+**Complaint (user).** "What's with the incredibly bad performance problems?"
+after the marquee/language batch.
+
+**Root cause.** A regression from the earlier preview work: `syncExternalTasks`
+(1 s cadence) re-captured a task thumbnail for **every** non-minimized external
+window every tick (`captureExternalThumbnail` = GDI `PrintWindow` into a DIB plus
+a per-pixel RGBA conversion). With ~20-30 visible windows that is tens of
+captures and millions of pixel writes per second on the UI thread - a constant
+stutter.
+
+**Fix.** The cache is seeded once per window; only the task the user is actually
+hovering refreshes its frame (and only when older than 1.5 s). Idle now does no
+thumbnail work. Verified: idle CPU dropped to ~2.7% of one core (4 s sample).
+
+**In-process benchmark (new).** `aurora-desktop.exe --bench <outfile>` drives the
+retained tree through `UiTestDriver` (real synthetic events, the real Vulkan
+render path) and writes per-phase timings - it does NOT move the OS cursor.
+Results on this machine (427 desktop icons, 1280x760):
+```
+idle-paint         avg=   2.48ms worst=   3.02ms
+icon-hover         avg=   4.11ms worst=   7.33ms
+marquee            avg=   3.76ms worst=   5.91ms
+selection-toggle   avg=   3.35ms worst=  15.60ms
+frames=159 base=1 layer=706 order=3
+```
+`base=1` confirms interactions no longer rebuild the desktop base.
+
+**Note.** The earlier probes moved the real system cursor (`SetCursorPos` +
+`mouse_event`); that is intrusive and unreliable and was replaced by the
+in-process `--bench`. Do not drive the shell by moving the user's mouse.
+
 ## 2026-09-18 - Aurora Desktop: six desktop/shell complaints (FIXED)
 
 **User.** "Double clicking desktop icons does nothing. hover highlight does not
@@ -106,6 +139,52 @@ up/down arrows; (10) task hover breaks while any flyout/popup is open.
 captures show the real desktop icons, the castle wallpaper, the tray separator
 and the paging chevrons. Manifest re-digested for `widget.d`, `desktop.d`,
 `popup.d`, `window.d`. One instance running (build stamp matches).
+
+## 2026-09-18 - Aurora Desktop: marquee selection crawling + language impossible to select (FIXED, verified)
+
+**Complaints (user).** "the desktop ribbon selection performance is absolutely
+horrible. Also Impossible to select the language now have to be some kind of
+bug. ... It should feel instant, this is vulkan after all gpu".
+
+**Root cause 1 - marquee.** `DesktopSurface.onMouseMove` called `invalidate()`
+on the whole surface for every pointer sample, and the band was painted by
+`DesktopSurface.onPaint`. With the real Desktop folder now loaded (427 icons)
+each move set the base dirty, re-ran `layoutTree` over the tree and re-recorded
+the base (wallpaper), and forced the compositor to rebuild the scene. Measured
+with `build\desk_root_perf.exe` (real `DesktopRoot`, software renderer):
+**~44 ms per marquee move**, `base=100` base rebuilds over 100 moves.
+
+**Fix 1.** The band is now a retained `DesktopMarqueeOverlay` composited child
+that stays above the icons. Marquee handlers only resize that layer
+(`updateMarqueeOverlay`) and start/stop it; the desktop base and the icon
+layers are untouched while dragging. Same probe after the fix: **~4 ms per
+move, `base=1`** (an 11x improvement). Live app (Vulkan) reports ~3-5 ms/frame.
+Also added opt-in frame stats: run with `AURORA_DESK_STATS=1` and the titlebar
+shows `scene=..us render=..us layer=..`; `GuiWindow.lastSceneMicros()` /
+`lastRenderMicros()` / `lastBaseLayoutMicros()` / `lastBasePaintMicros()` expose
+the numbers.
+
+**Root cause 2 - language.** `LanguageRow` (and two sibling row/tile widgets in
+`tray.d`) tested `bounds().contains(event.position)`. `event.position` is
+already local to the widget, but `bounds()` is parent-relative, so a row placed
+at y=40 never matched a click. Language rows never invoked `onSelect`, so the
+flyout was literally impossible to use. (Same latent bug hit the volume
+device rows and a WiFi quick-action tile.)
+
+**Fix 2.** Use `containsLocal(event.position)` in all three widgets. Also:
+- `onSelect` no longer early-returns on `hkl == activeInputLanguage()`; the
+  panel's highlighted layout and the freshly-read foreground layout can
+  disagree, which silently swallowed clicks. It now always attempts activation.
+- After a selection the app runs a short tray-refresh burst
+  (`_trayBurstRemaining`, ~4 refreshes at 0.15 s) because the OS applies the
+  posted `WM_INPUTLANGCHANGEREQUEST` asynchronously and a single immediate
+  refresh still read the old layout (indicator looked stuck for up to 2 s).
+
+**Verification.** `headless-smoke.exe` -> ALL PASSED, including the new
+`testLanguagePanelSelection` (clicking the second language row must fire
+`onSelect`; it failed before the fix, passes after). `activate_probe.exe` /
+`lang_fg_probe.exe` PASS. Manifest re-digested for `desktop.d` and `window.d`.
+One instance running.
 
 ## 2026-09-18 - Aurora Desktop: double-click on a tray icon did nothing (FIXED, verified)
 

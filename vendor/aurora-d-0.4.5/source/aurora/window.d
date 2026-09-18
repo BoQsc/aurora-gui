@@ -113,6 +113,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private bool _profileNextResizeFrame;
     private long _lastLayoutMicros;
     private long _lastPaintMicros;
+    private long _lastSceneMicros;
+    private long _lastRenderMicros;
     private CompositorStats _compositorStats;
     private RenderBackend _renderer;
     private string _rendererFallbackReason;
@@ -250,6 +252,30 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     void resetCompositorStats() @safe nothrow @nogc
     {
         _compositorStats = CompositorStats.init;
+    }
+
+    /// Micros spent in the last base-tree layout pass (diagnostics/tests).
+    long lastBaseLayoutMicros() const @safe pure nothrow @nogc
+    {
+        return _lastLayoutMicros;
+    }
+
+    /// Micros spent in the last base-tree paint pass (diagnostics/tests).
+    long lastBasePaintMicros() const @safe pure nothrow @nogc
+    {
+        return _lastPaintMicros;
+    }
+
+    /// Micros spent building the last scene (diagnostics/tests).
+    long lastSceneMicros() const @safe pure nothrow @nogc
+    {
+        return _lastSceneMicros;
+    }
+
+    /// Micros spent rendering the last scene (diagnostics/tests).
+    long lastRenderMicros() const @safe pure nothrow @nogc
+    {
+        return _lastRenderMicros;
     }
 
     void setRoot(Widget widget)
@@ -698,6 +724,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         const renderStarted = MonoTime.currTime;
         const completed = renderSceneToNative(_scene);
         const renderMicros = (MonoTime.currTime - renderStarted).total!"usecs";
+        _lastSceneMicros = sceneMicros;
+        _lastRenderMicros = renderMicros;
         if (_nativeResizeActive && exactResizeFrame)
         {
             if (sceneMicros > _maxLiveSceneMicros)

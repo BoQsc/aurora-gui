@@ -31,7 +31,7 @@ import std.algorithm : canFind, endsWith;
 import std.conv : to;
 import std.format : format;
 import std.path : baseName;
-import std.process : spawnShell;
+import std.process : environment, spawnShell;
 import std.string : toLower;
 import std.utf : toUTF8, toUTF32;
 
@@ -396,6 +396,11 @@ final class DesktopRoot : Widget
     // Poll fast enough that animating tray icons (e.g. Task Manager's CPU
     // graph) visibly update.
     private enum double notificationRefreshSeconds = 1.0;
+    // Short post-selection burst of tray refreshes (input-language switch):
+    // the OS applies the layout asynchronously, so a single immediate refresh
+    // still reads the old value.
+    private int _trayBurstRemaining = 0;
+    private double _trayBurstAccumulator = 0.0;
 
     /// Stable identity for a tray icon: owner + window handle + notification id.
     /// The tooltip is deliberately excluded because it changes constantly (CPU
@@ -1017,7 +1022,7 @@ import std.string : toLower;
                     foreach (memberHwnd; members)
                     {
                         if (!externalTaskAlive(memberHwnd)) continue;
-                        images ~= captureThumbnailCached(memberHwnd);
+                        images ~= captureThumbnailCached(memberHwnd, true);
                         live ~= memberHwnd;
                         captions ~= cleanTaskTitle(externalTaskTitle(memberHwnd));
                     }
@@ -1040,7 +1045,7 @@ import std.string : toLower;
                     }
                     if (live.length == 1) target = live[0];
                 }
-                auto image = captureThumbnailCached(target);
+                auto image = captureThumbnailCached(target, true);
                 if (image is null)
                 {
                     // Fall back to an icon-only preview (no thumbnail).
@@ -1461,10 +1466,22 @@ import std.string : toLower;
         };
         panel.onSelect = delegate(size_t hkl)
         {
-            if (hkl == 0 || hkl == activeInputLanguage()) return;
+            if (hkl == 0) return;
+            // Always attempt the activation: the layout the panel highlights
+            // comes from the last enumeration while `activeInputLanguage()`
+            // re-reads the foreground thread, and the two can disagree (e.g.
+            // after the shell gains focus). Early-returning on that comparison
+            // made a row click silently do nothing.
             activateInputLanguage(hkl);
-            // Publishes the new indicator and refreshes the open panel.
+            // The OS applies the change asynchronously (the posted
+            // WM_INPUTLANGCHANGEREQUEST is processed after this returns), so a
+            // single immediate refresh still reads the old layout and the
+            // indicator appears stuck for up to the 2 s tray cadence. Publish
+            // now, then re-read a few times over the next ~0.6 s so the
+            // selection feels instant.
             refreshTray();
+            _trayBurstRemaining = 4;
+            _trayBurstAccumulator = 0.0;
         };
         showPanel(PanelKind.language, panel,
             _taskbar.trayIconGlobalBounds(4));
@@ -1710,6 +1727,12 @@ import std.string : toLower;
     // window, so hovering a minimized task reuses the last frame captured while
     // it was visible instead of showing black.
     private RgbaImage[ulong] _thumbnailCache;
+    // When each cached thumbnail was captured (seconds since app start), so the
+    // hovered task's preview can be refreshed on demand without re-capturing
+    // every window on the periodic sync.
+    private double[ulong] _thumbnailTime;
+    private double _elapsedSeconds = 0.0;
+    private enum double thumbnailRefreshSeconds = 1.5;
 
     private static bool bitmapHasContent(RgbaImage image)
     {
@@ -1723,21 +1746,32 @@ import std.string : toLower;
 
     /// Capture a window thumbnail, falling back to the last good frame when the
     /// window is minimized (or the capture failed).
-    private RgbaImage captureThumbnailCached(ulong hwnd)
+    ///
+    /// `allowRefresh` is only true for the task the user is actually hovering:
+    /// re-capturing every visible window on the 1 s sync cost a full
+    /// PrintWindow + per-pixel conversion per window per second (with dozens of
+    /// windows that is a multi-millisecond stall every tick). The cache is now
+    /// populated once per window and refreshed on demand, so the idle shell does
+    /// no thumbnail work at all.
+    private RgbaImage captureThumbnailCached(ulong hwnd, bool allowRefresh = false)
     {
-        // Return an already-captured frame immediately so showing a preview on
-        // hover is instant (Windows-like); the periodic sync keeps it fresh.
-        // Only pay for a synchronous capture when we have nothing to show.
         auto cached = hwnd in _thumbnailCache;
-        if (cached !is null) return *cached;
+        if (cached !is null)
+        {
+            auto stamp = hwnd in _thumbnailTime;
+            const age = stamp is null ? double.infinity :
+                _elapsedSeconds - *stamp;
+            if (!allowRefresh || age < thumbnailRefreshSeconds) return *cached;
+        }
         auto size = externalTaskSize(hwnd);
         auto image = captureExternalThumbnail(hwnd, size.width, size.height);
         if (image !is null && bitmapHasContent(image))
         {
             _thumbnailCache[hwnd] = image;
+            _thumbnailTime[hwnd] = _elapsedSeconds;
             return image;
         }
-        return null;
+        return cached is null ? null : *cached;
     }
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
@@ -1824,10 +1858,14 @@ import std.string : toLower;
                         _externalIconAttempts[t.hwnd] = cast(ubyte) (tries + 1);
                     }
                 }
-                // Refresh a thumbnail while the window is visible so previews
-                // are near-live and a minimized task can still show its last
-                // frame (PrintWindow cannot capture a minimized window).
-                if (!externalTaskMinimized(t.hwnd))
+                // Seed the thumbnail cache once while the window is visible so a
+                // minimized task can still show its last frame (PrintWindow
+                // cannot capture a minimized window). Do NOT re-capture here on
+                // every sync: that was a full capture per visible window per
+                // second. The hovered task refreshes its own frame on demand
+                // (see captureThumbnailCached).
+                if (!externalTaskMinimized(t.hwnd) &&
+                    t.hwnd !in _thumbnailCache)
                 {
                     auto size = externalTaskSize(t.hwnd);
                     auto image = captureExternalThumbnail(t.hwnd, size.width,
@@ -1844,6 +1882,7 @@ import std.string : toLower;
                 if (hwnd in _externalIconAttempts) _externalIconAttempts.remove(hwnd);
                 if (hwnd in _externalGroupKeys) _externalGroupKeys.remove(hwnd);
                 if (hwnd in _thumbnailCache) _thumbnailCache.remove(hwnd);
+                if (hwnd in _thumbnailTime) _thumbnailTime.remove(hwnd);
             }
             _externalHwnds.length = 0;
             foreach (t; tasks)
@@ -1984,10 +2023,50 @@ import std.string : toLower;
         }
     }
 
+    // Optional frame-time readout for performance diagnosis: set
+    // AURORA_DESK_STATS=1 and the titlebar shows the last scene/render pass
+    // cost. Off by default (and only on Windows).
+    private double _statsTitleAccumulator = 0.0;
+    private void maybeReportFrameStats(double deltaSeconds)
+    {
+        version (Windows)
+        {
+            static int statsEnabled = -1;
+            if (statsEnabled < 0)
+                statsEnabled = environment.get("AURORA_DESK_STATS", "") == "1" ?
+                    1 : 0;
+            if (statsEnabled != 1 || _window is null) return;
+            _statsTitleAccumulator += deltaSeconds;
+            if (_statsTitleAccumulator < 0.5) return;
+            _statsTitleAccumulator = 0.0;
+            const stats = _window.compositorStats();
+            _window.setTitle("Aurora Desktop [scene=" ~
+                to!string(_window.lastSceneMicros()) ~ "us render=" ~
+                to!string(_window.lastRenderMicros()) ~ "us layer=" ~
+                to!string(stats.layerBuilds) ~ " frames=" ~
+                to!string(stats.frames) ~ "]");
+        }
+    }
+
     protected override void onTick(double deltaSeconds)
     {
         super.onTick(deltaSeconds);
+        _elapsedSeconds += deltaSeconds;
         updateTaskPreviewHover(deltaSeconds);
+        maybeReportFrameStats(deltaSeconds);
+        // After an input-language change the OS applies it on its own thread,
+        // so re-read the tray a few times right after the selection instead of
+        // waiting for the 2 s cadence.
+        if (_trayBurstRemaining > 0)
+        {
+            _trayBurstAccumulator += deltaSeconds;
+            if (_trayBurstAccumulator >= 0.15)
+            {
+                _trayBurstAccumulator = 0.0;
+                --_trayBurstRemaining;
+                refreshTray();
+            }
+        }
         _clockAccumulator += deltaSeconds;
         if (_clockAccumulator >= 2.0)
         {
@@ -2044,12 +2123,101 @@ import std.string : toLower;
     {
         refreshTray();
     }
+
+    /// The desktop surface, for in-process benchmarks/tests.
+    DesktopSurface desktopForTesting()
+    {
+        return _desktop;
+    }
 }
 
 /// The taskbar exposes a public tray-icon geometry accessor for app popups.
 // __TIMESTAMP__ is the date+time (to the minute) this source was compiled; it
 // is baked into the binary so the title always shows when this build was made.
 enum string _buildTime = __TIMESTAMP__;
+
+/// In-process interaction benchmark. Drives the retained widget tree directly
+/// through `UiTestDriver` (real synthetic events, the app's own render path)
+/// and writes per-phase frame timings - no OS cursor movement, so it never
+/// hijacks the user's mouse. Enabled with `--bench <outfile>`.
+private void runInteractionBenchmark(GuiWindow window, DesktopRoot root,
+    string outputPath)
+{
+    import aurora.testing : UiTestDriver;
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    import std.file : write;
+    import std.format : format;
+
+    auto clientSize = root.bounds();
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(clientSize.width, clientSize.height));
+    driver.paint();
+    auto surface = root.desktopForTesting();
+    const iconCount = surface.iconCount();
+
+    string report = format("renderer=%s icons=%d client=%sx%s\n",
+        window.rendererName(), iconCount, clientSize.width,
+        clientSize.height);
+
+    void phase(string name, int iterations, scope void delegate(int) body)
+    {
+        long total;
+        long worst;
+        auto sw = StopWatch(AutoStart.no);
+        foreach (i; 0 .. iterations)
+        {
+            sw.reset();
+            sw.start();
+            body(i);
+            const us = sw.peek.total!"usecs";
+            total += us;
+            if (us > worst) worst = us;
+        }
+        report ~= format("%-18s avg=%7.2fms worst=%7.2fms n=%d\n", name,
+            cast(double) total / iterations / 1000.0,
+            cast(double) worst / 1000.0, iterations);
+    }
+
+    phase("idle-paint", 30, (int) { driver.paint(); });
+
+    if (iconCount > 0)
+        phase("icon-hover", cast(int) (iconCount < 150 ? iconCount : 150),
+            (int i)
+            {
+                auto icon = surface.iconAt(cast(size_t) (i % iconCount));
+                if (icon is null) return;
+                const origin = icon.globalOrigin();
+                const bounds = icon.bounds();
+                driver.moveTo(Point(origin.x + bounds.width / 2,
+                    origin.y + bounds.height / 2));
+                driver.paint();
+            });
+
+    phase("marquee", 60, (int i)
+    {
+        if (i == 0)
+        {
+            driver.moveTo(Point(300, 200));
+            driver.mouseDown();
+        }
+        driver.moveTo(Point(300 + i * 8, 200 + i * 6));
+        driver.paint();
+        if (i == 59) driver.mouseUp();
+    });
+
+    if (iconCount > 0)
+        phase("selection-toggle", 60, (int i)
+        {
+            auto icon = surface.iconAt(cast(size_t) (i % iconCount));
+            if (icon !is null) icon.setSelected(i % 2 == 0);
+            driver.paint();
+        });
+
+    const stats = window.compositorStats();
+    report ~= format("frames=%d base=%d layer=%d order=%d\n", stats.frames,
+        stats.baseBuilds, stats.layerBuilds, stats.layerOrderBuilds);
+    write(outputPath, report);
+}
 
 int run(string[] args)
 {
@@ -2063,6 +2231,7 @@ int run(string[] args)
     options.synchronizedDragPointer = false;
     bool screenshot;
     string screenshotPath;
+    string benchPath;
     foreach (index, arg; args)
     {
         if (arg == "--screenshot" && index + 1 < args.length)
@@ -2070,6 +2239,8 @@ int run(string[] args)
             screenshot = true;
             screenshotPath = args[index + 1];
         }
+        else if (arg == "--bench" && index + 1 < args.length)
+            benchPath = args[index + 1];
     }
 
     auto window = new GuiWindow(options, Theme.dark());
@@ -2086,6 +2257,13 @@ int run(string[] args)
         driver.resize(Size(options.width, options.height));
         driver.paint();
         window.saveScreenshot(screenshotPath);
+        window.close();
+        return 0;
+    }
+
+    if (benchPath.length > 0)
+    {
+        runInteractionBenchmark(window, root, benchPath);
         window.close();
         return 0;
     }

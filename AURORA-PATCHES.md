@@ -370,3 +370,11 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   reversible even when the shell has no in-shell windows.
 - `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `widget.d`,
   `widgets/desktop.d`, `widgets/popup.d` and `window.d`.
+- `widgets/desktop.d`: rubber-band selection moved into a retained
+  `DesktopMarqueeOverlay` composited child kept above the icons. Marquee moves
+  now only resize that one layer instead of invalidating the whole
+  `DesktopSurface` (which re-ran layout, repainted the wallpaper and rebuilt the
+  scene every pointer sample - ~44 ms/move with 427 shortcuts; ~4 ms/move now).
+- `window.d`: added `lastSceneMicros()`, `lastRenderMicros()`,
+  `lastBaseLayoutMicros()` and `lastBasePaintMicros()` diagnostics getters.
+  `aurora-desktop` reports them in the titlebar when `AURORA_DESK_STATS=1`.

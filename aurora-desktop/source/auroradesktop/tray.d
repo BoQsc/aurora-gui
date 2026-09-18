@@ -721,7 +721,7 @@ final class QuickToggleTile : Widget
 
     override bool onMouseMove(ref Event event)
     {
-        const hover = bounds().contains(event.position);
+        const hover = containsLocal(event.position);
         if (hover != _hover)
         {
             _hover = hover;
@@ -733,7 +733,7 @@ final class QuickToggleTile : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
-        if (bounds().contains(event.position) && onClick !is null) onClick();
+        if (containsLocal(event.position) && onClick !is null) onClick();
         return true;
     }
 }
@@ -853,7 +853,7 @@ final class WifiNetworkRow : Widget
 
     override bool onMouseMove(ref Event event)
     {
-        const hover = bounds().contains(event.position);
+        const hover = containsLocal(event.position);
         if (hover != _hover)
         {
             _hover = hover;
@@ -865,7 +865,7 @@ final class WifiNetworkRow : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
-        if (bounds().contains(event.position) && onClick !is null) onClick();
+        if (containsLocal(event.position) && onClick !is null) onClick();
         return true;
     }
 }
@@ -916,7 +916,7 @@ final class LanguageRow : Widget
 
     override bool onMouseMove(ref Event event)
     {
-        const hover = bounds().contains(event.position);
+        const hover = containsLocal(event.position);
         if (hover != _hover)
         {
             _hover = hover;
@@ -928,7 +928,7 @@ final class LanguageRow : Widget
     override bool onMouseUp(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
-        if (bounds().contains(event.position) && onClick !is null) onClick();
+        if (containsLocal(event.position) && onClick !is null) onClick();
         return true;
     }
 }
