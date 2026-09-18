@@ -1067,9 +1067,11 @@ private final class MessageBubble : Widget
         labelCanvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
 
-        if (statsWidth > 0)
+if (statsWidth > 0)
         {
-            const x = padH + innerWidth - statsWidth;
+            // Place the +N -M counters directly after the tool text so they sit
+            // next to the message instead of the far right edge.
+            const x = padH + cast(int) layout.width + 8;
             const sy = top + (h - cast(int) addLayout.height) / 2;
             canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
             canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
@@ -2287,16 +2289,18 @@ private final class LiveToolRow : Widget
         }
         const available = maxInt(1, innerWidth - statsWidth -
             (statsWidth > 0 ? 8 : 0));
-        auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
+auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, available, false);
-        canvas.drawLayout(Point(textX, (h - cast(int) layout.height) / 2),
-            layout, opencodeMuted);
+        const sy = (h - cast(int) layout.height) / 2;
+        canvas.drawLayout(Point(textX, sy), layout, opencodeMuted);
         if (statsWidth > 0)
         {
-            const x = padH + innerWidth - statsWidth;
-            const sy = (h - cast(int) addLayout.height) / 2;
-            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
-            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+            // Place the +N -M counters directly after the header text so they
+            // sit next to the tool/edit message instead of the far right edge.
+            const x = textX + cast(int) layout.width + 8;
+            const statSy = (h - cast(int) addLayout.height) / 2;
+            canvas.drawLayout(Point(x, statSy), addLayout, opencodeDiffAdd);
+            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, statSy),
                 delLayout, opencodeDiffDelete);
         }
 
@@ -2704,7 +2708,7 @@ private final class ToolGroupBubble : Widget
 
         if (statsWidth > 0)
         {
-            const x = padH + innerWidth - statsWidth;
+            const x = padH + cast(int) layout.width + 8;
             const sy = padV + (h - cast(int) addLayout.height) / 2;
             canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
             canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
