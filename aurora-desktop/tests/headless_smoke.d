@@ -7,7 +7,8 @@ import aurora.widgets.popup : currentTransientPopup;
 import auroradesktop.app : DesktopRoot;
 import auroradesktop.search : SearchPopup;
 import auroradesktop.taskpreview : TaskPreview;
-import auroradesktop.tray : HiddenIconsPanel;
+import auroradesktop.tray : HiddenIconsPanel, LanguagePanel, VolumePanel;
+import auroradesktop.tasks : postTrayContextMenu, postTrayPrimaryClick;
 import std.stdio : writeln, stdout;
 import std.algorithm : canFind;
 import std.conv : to;
@@ -59,17 +60,30 @@ private Rect globalBounds(Widget widget)
     return Rect(origin.x, origin.y, local.width, local.height);
 }
 
-private Button findButton(Widget subtree, string text)
+// First descendant of the requested widget type (null when absent).
+private T findWidget(T)(Widget subtree)
 {
     foreach (child; subtree.children())
     {
-        auto button = cast(Button) child;
-        if (button !is null && button.text() == toUTF32(text))
-            return button;
-        auto nested = findButton(child, text);
+        if (auto typed = cast(T) child) return typed;
+        auto nested = findWidget!T(child);
         if (nested !is null) return nested;
     }
     return null;
+}
+
+// True when any Button or Label in the subtree contains `needle` in its text.
+private bool widgetHasText(Widget subtree, string needle)
+{
+    foreach (child; subtree.children())
+    {
+        if (auto button = cast(Button) child)
+            if (canFind(to!string(button.text()), needle)) return true;
+        if (auto label = cast(Label) child)
+            if (canFind(to!string(label.text()), needle)) return true;
+        if (widgetHasText(child, needle)) return true;
+    }
+    return false;
 }
 
 private Slider findSlider(Widget subtree)
@@ -204,7 +218,7 @@ private void testNotificationBehavior()
     // Hover code for the first visible notification.
     driver.moveTo(first);
     driver.paint();
-    assert(taskbar.hotRegion() == -10,
+    assert(taskbar.hotRegion() == -11,
         "notification hover code was " ~ to!string(taskbar.hotRegion()));
 
     // Right-click opens a menu (label / Move / Hide) when no app menu is set.
@@ -280,6 +294,58 @@ private void testNotificationBehavior()
     driver.paint();
     assert(hiddenCount() == before + 1,
         "dragging a notification out of the cluster did not hide it");
+}
+
+// A notification's wired action must run on a real left-click (the app maps
+// this to posting the owning application's tray callback). Also checks the
+// Win32 callback post helpers accept only usable (window, message) pairs.
+private void testTrayClickAction()
+{
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(640, 260));
+    auto taskbar = root.taskbar;
+
+    int clicks;
+    foreach (i; 0 .. 3)
+    {
+        NotificationIcon icon;
+        icon.id = i + 1;
+        icon.label = toUTF32("Click" ~ to!string(i));
+        icon.icon = IconKind.file;
+        if (i == 0) icon.action = delegate() { ++clicks; };
+        taskbar.addNotification(icon);
+    }
+    driver.paint();
+
+    driver.click(center(taskbar.notificationIconGlobalBounds(0)));
+    assert(clicks == 1, "left-click did not invoke the notification action");
+    driver.click(center(taskbar.notificationIconGlobalBounds(1)));
+    assert(clicks == 1, "action ran for a notification without one");
+
+    version (Windows)
+    {
+        import core.sys.windows.windows : GetDesktopWindow;
+        assert(!postTrayPrimaryClick(0, 0x0400, 1),
+            "a null owner window must not be posted to");
+        assert(!postTrayPrimaryClick(1, 0x0100, 1),
+            "a non-application message must not be posted");
+        assert(!postTrayPrimaryClick(1, 0x10000, 1),
+            "a message beyond WM range must not be posted");
+        assert(!postTrayContextMenu(0, 0x0400, 1),
+            "a null owner window must not get a context-menu post");
+        const hwnd = cast(ulong) GetDesktopWindow();
+        assert(postTrayPrimaryClick(hwnd, 0x0400, 7),
+            "a valid primary-click callback post returned false");
+        assert(postTrayContextMenu(hwnd, 0x0400, 7),
+            "a valid context-menu callback post returned false");
+    }
 }
 
 // A notification picked up for dragging must show a floating copy that follows
@@ -514,8 +580,9 @@ int main()
     assert(taskbar.entryCount() >= 2);
     assert(!taskbar.startButtonGlobalBounds().empty());
 
-    // Taskbar icon geometry must be non-empty (0=wifi, 1=volume, 2=battery, 3=hidden).
-    foreach (index; 0 .. 4)
+    // Taskbar icon geometry must be non-empty
+    // (0=wifi, 1=volume, 2=battery, 3=hidden, 4=input language).
+    foreach (index; 0 .. 5)
         assert(!taskbar.trayIconGlobalBounds(index).empty());
 
     // Notifications are OS-driven (real tray icons); their behavior is covered
@@ -535,11 +602,11 @@ int main()
         "notification refresh did not run on tick (NaN timer/delta?)");
 
     // Hover must highlight ONLY the targeted item: a tray hover returns a
-    // negative tray code (-6..-9), never a task-entry index (>= 0). Prior to
+    // negative tray code (-6..-10), never a task-entry index (>= 0). Prior to
     // the fix, tray hover codes (0..3) collided with entry indices, so the
     // pointer over a tray icon also highlighted the first task entries.
-    int[int] trayCode = [0: -6, 1: -7, 2: -8, 3: -9];
-    foreach (index; 0 .. 4)
+    int[int] trayCode = [0: -6, 1: -7, 2: -8, 3: -9, 4: -10];
+    foreach (index; 0 .. 5)
     {
         driver.moveTo(center(taskbar.trayIconGlobalBounds(index)));
         driver.paint();
@@ -562,22 +629,14 @@ int main()
 
     // Empty taskbar space must NOT highlight the start button (or anything).
     // hitEntry returns -1 for empty space, which is also the start code, so an
-    // empty hover used to light the start button. It must now be -2. Compute a
-    // point right of the last task entry but left of the tray so the check does
-    // not depend on how many OS windows are open.
-    const lastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
-    // The visible notification cluster sits left of the fixed tray icons, so
-    // the empty gap ends at whichever comes first.
-    int rightLimit = taskbar.trayIconGlobalBounds(0).x;
-    foreach (icon; taskbar.notifications())
-        if (!icon.hidden)
-        {
-            rightLimit = taskbar.notificationIconGlobalBounds(0).x;
-            break;
-        }
+    // empty hover used to light the start button. It must now be -2. Use the
+    // always-empty gap between the clock and the show-desktop strip so the
+    // check does not depend on how many task entries or notifications exist.
+    const emptyClock = taskbar.clockBounds();
+    const emptyShow = taskbar.showDesktopBounds();
     const emptyPoint = Point(
-        minInt(lastEntry.right() + 10, rightLimit - 10),
-        lastEntry.y + lastEntry.height / 2);
+        (emptyClock.x + emptyClock.width + emptyShow.x) / 2,
+        emptyClock.y + emptyClock.height / 2);
     driver.moveTo(emptyPoint);
     driver.paint();
     assert(taskbar.hotRegion() == -2,
@@ -588,6 +647,8 @@ int main()
     root.refreshTrayForTesting();
     const tray = taskbar.trayState();
     assert(tray.volumePercent >= 0 && tray.volumePercent <= 100);
+    assert(tray.languageLabel.length > 0,
+        "the input-language indicator was not published to the tray");
 
     // Clock must be padded from the show-desktop button (gap >= 4 px).
     const clockB = taskbar.clockBounds();
@@ -635,24 +696,24 @@ int main()
     driver.pressKey(Key.escape);
     assert(!taskbar.startMenuOpen());
 
-    // Each tray icon opens its own popup panel (wifi, volume, battery, hidden).
-    string[4] names = ["wifi", "volume", "battery", "hidden"];
-    foreach (index; 0 .. 4)
+    // Each tray icon opens its own popup panel
+    // (wifi, volume, battery, hidden, input language).
+    string[5] names = ["wifi", "volume", "battery", "hidden", "language"];
+    foreach (index; 0 .. 5)
     {
         driver.click(center(taskbar.trayIconGlobalBounds(index)));
         driver.paint();
         auto popup = currentTransientPopup(root);
         assert(popup !is null, "no popup opened for tray icon " ~ names[index]);
         window.saveScreenshot("build/headless-desktop-tray-" ~ names[index] ~ ".ppm");
-        // The WiFi panel must offer a working Refresh control backed by the
+        // The WiFi panel must show a clear scanning indicator backed by the
         // real WLAN query path (which degrades gracefully without hardware).
         if (names[index] == "wifi")
         {
             import auroradesktop.wlan : queryWifi;
             const state = queryWifi(); // Must never throw.
-            // Opening the panel kicks a scan and shows a clear indicator; the
-            // Refresh control is replaced by a disabled "Scanning..." button.
-            assert(findButton(popup, "Scanning...") !is null,
+            // Opening the panel kicks a scan and shows the scanning status.
+            assert(widgetHasText(popup, "Scanning"),
                 "wifi panel did not show a scanning indicator");
             if (state.available)
             {
@@ -679,6 +740,9 @@ int main()
             else
                 writeln("wifi: adapter unavailable (graceful fallback)");
         }
+        if (names[index] == "language")
+            assert(findWidget!LanguagePanel(popup) !is null,
+                "language tray icon did not open the language panel");
         driver.pressKey(Key.escape);
         driver.paint();
         assert(currentTransientPopup(root) is null);
@@ -736,22 +800,21 @@ int main()
         const level = systemVolume();
         assert(level >= 55 && level <= 65,
             "slider did not drive the mixer to ~60");
-        // Mute through the UI button, then restore through Unmute. Mute is
-        // a real mixer flag now, so the level stays while muted bit flips.
+        // Mute through the Windows-style icon-only button, then restore.
+        // Mute is a real mixer flag now, so the level stays while the bit flips.
         import auroradesktop.system : systemMuted;
-        auto muteButton = findButton(volumePopup, "Mute");
-        assert(muteButton !is null, "Mute button not found in volume panel");
+        auto volumePanel = findWidget!VolumePanel(volumePopup);
+        assert(volumePanel !is null, "volume panel widget not found");
+        auto muteButton = volumePanel.muteButtonForTesting();
+        assert(muteButton !is null, "mute button not found in volume panel");
         driver.click(center(globalBounds(muteButton)));
         driver.paint();
         assert(systemMuted(), "mixer was not muted");
-        auto unmuteButton = findButton(volumePopup, "Unmute");
-        assert(unmuteButton !is null, "Unmute button not found after mute");
-        driver.click(center(globalBounds(unmuteButton)));
+        assert(volumePanel.mutedForTesting(), "panel did not track mute");
+        driver.click(center(globalBounds(muteButton)));
         driver.paint();
-        // The button text flips back only if the click ran onClick+update.
-        assert(findButton(volumePopup, "Mute") !is null,
-            "unmute click missed the button");
         assert(!systemMuted(), "mixer was not unmuted");
+        assert(!volumePanel.mutedForTesting(), "panel did not track unmute");
         const restored = systemVolume();
         assert(restored >= 55 && restored <= 65,
             "mixer was not restored to the slider level");
@@ -953,19 +1016,14 @@ int main()
     }
 
     // Empty-taskbar right-click menu: Show the desktop / Task Manager /
-    // Lock the taskbar (checkable) / Taskbar settings.
+    // Lock the taskbar (checkable) / Taskbar settings. Use the always-empty
+    // clock/show-desktop gap so this does not depend on the live task list.
     {
-        const menuLastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
-        int menuRightLimit = taskbar.trayIconGlobalBounds(0).x;
-        foreach (icon; taskbar.notifications())
-            if (!icon.hidden)
-            {
-                menuRightLimit = taskbar.notificationIconGlobalBounds(0).x;
-                break;
-            }
+        const menuClock = taskbar.clockBounds();
+        const menuShow = taskbar.showDesktopBounds();
         const menuPoint = Point(
-            minInt(menuLastEntry.right() + 10, menuRightLimit - 10),
-            menuLastEntry.y + menuLastEntry.height / 2);
+            (menuClock.x + menuClock.width + menuShow.x) / 2,
+            menuClock.y + menuClock.height / 2);
         driver.rightClick(menuPoint);
         driver.paint();
         auto menu = cast(ContextMenu) currentTransientPopup(root);
@@ -1015,6 +1073,7 @@ int main()
 
     testTaskDragAnimation();
     testNotificationBehavior();
+    testTrayClickAction();
     testNotificationDragFloater();
     testTaskEntryMenu();
     testHiddenPanelRestore();

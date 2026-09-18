@@ -1,5 +1,82 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: tray flyouts match Windows (network/battery/volume/language) (COMPLETED, verified)
+
+**Request (user, 4 screenshots).** Show the Windows system-tray flyouts and
+"match Windows": the network/Wi-Fi flyout (connected card, network list,
+Network & Internet settings, Wi-Fi / Airplane mode / Mobile hotspot tiles), the
+battery flyout (battery glyph, 100%, Fully charged, Battery settings, Battery
+saver), the volume flyout (active output device header + chevron, speaker +
+slider + number) and the input-language flyout (ENG English / US keyboard,
+LIT Lithuanian, Language preferences). Also route clicks on the real Windows
+system icons shown in Aurora's cluster to these flyouts.
+
+**Resolution.**
+- **New `inputlang.d`**: `inputLanguages()` enumerates `GetKeyboardLayoutList`,
+  resolves each language's display name (`GetLocaleInfoW`) and keyboard
+  description (KLID -> friendly name), derives the 3-letter indicator
+  (`English` -> `ENG`, `Lithuanian` -> `LIT`), marks the active layout and
+  switches with `WM_INPUTLANGCHANGEREQUEST` + `ActivateKeyboardLayout`.
+- **Vendor `desktop.d`**: `SystemTrayState` gained `languageLabel`/`languageName`;
+  the fixed tray is now 5 glyphs (wifi, volume, battery, hidden, language) with
+  the input indicator drawn as text immediately left of the clock, an
+  `onLanguageClick` callback and matching hover/tooltip codes (tray hovers are
+  now -6..-10; notification hovers shifted to -11..).
+- **`tray.d`**: new shared `TrayPanel` paints the flyout surface (the overlay
+  draws only the shadow, so every panel was transparent before). VolumePanel is
+  now the Windows layout (output-device header + chevron, icon-only mute +
+  slider + number, collapsible device list). BatteryPanel is the battery glyph +
+  large percentage + status + Battery settings + Battery saver. WifiPanel is the
+  connected card (Properties/Disconnect) + network rows with lock glyphs +
+  Network & Internet settings + three quick-toggle tiles. New `LanguagePanel`
+  with `LanguageRow`s and a Language preferences link.
+- **`app.d`**: publishes the language indicator every refresh, opens the language
+  flyout, wires the battery/airplane/hotspot settings links, and
+  `activateTrayIcon` now maps native system-icon labels (network/volume/battery/
+  language) to the matching Aurora flyout instead of opening Settings.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED. New/updated guards:
+all five tray glyphs have bounds and distinct hover codes; the input-language
+indicator is published; a language tray click opens a `LanguagePanel`; the
+volume mute is driven through the new icon button. Software-rendered flyout
+screenshots (`build/headless-desktop-tray-{wifi,volume,battery,language}.png`)
+match the four Windows references. App rebuilt and relaunched as exactly one
+instance (PID 18932). `MANIFEST.sha256` re-digested for the vendor `desktop.d`.
+
+## 2026-09-18 - Aurora Desktop: native tray-icon left-click matches Windows (COMPLETED, verified)
+
+**Request (user).** Screenshots of the Windows notification area (4 images): a
+click on a native tray icon should behave like Windows, not relaunch the app.
+
+**Diagnosis.** The notification left-click action (`activateTrayIcon`) called
+`spawnShell(exePath)`, so clicking an already-running app's tray icon tried to
+start a second copy instead of letting the app handle its own click (restore the
+window, toggle a flyout). The Shell_NotifyIcon contract says that while
+`uVersion` is 0 or `NOTIFYICON_VERSION`, the owner's callback receives
+`wParam = icon id` and `lParam = the mouse message`; Windows therefore posts
+`WM_LBUTTONUP` for a left-click. The shell only ever posted `WM_RBUTTONUP` (for
+the right-click "Open app menu"), never the primary click.
+
+**Resolution.**
+- `tasks.d`: new `postTrayPrimaryClick(hwnd, callback, id)` posts the owner's
+  callback message with `WM_LBUTTONUP`, using the same packing as the existing
+  `postTrayContextMenu`; both share a `usableTrayCallback` guard.
+- `app.d`: the visible icon's action and the overflow panel's label action now
+  go through `invokeTrayIcon(id, label)` -> `postNotificationPrimaryClick` for
+  application icons. Windows system icons (network/battery/security) still open
+  the matching Settings page. When there is no usable callback the fallback now
+  focuses the running app (`activateOrLaunchApp`) instead of unconditionally
+  launching a new process.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED. New
+`testTrayClickAction`: a real left-click invokes the wired icon action (and does
+not fire for an icon without one); `postTrayPrimaryClick`/`postTrayContextMenu`
+reject null/out-of-range callbacks and post successfully to a real HWND. The
+packing is confirmed against the NOTIFYICONDATA contract ("when the uVersion
+member is either 0 or NOTIFYICON_VERSION ... the lParam parameter holds the
+mouse or keyboard message"). App rebuilt (`dub build`) and relaunched as exactly
+one instance (PID 11420).
+
 ## 2026-09-17 - Aurora Desktop: dragged notification floater above the desktop (COMPLETED, verified)
 
 **Complaint (user).** "desktop is on top of dragged notif icon so it hides the

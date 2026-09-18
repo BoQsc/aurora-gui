@@ -397,19 +397,50 @@ string externalTaskGroupKey(ulong hwndValue)
         return "";
 }
 
+/// True when a tray callback looks usable: a real owner window and an
+/// application-defined message (WM_USER range or a RegisterWindowMessage value).
+private bool usableTrayCallback(ulong hwndValue, uint callbackMessage)
+{
+    return hwndValue != 0 && callbackMessage >= 0x0400 &&
+        callbackMessage <= 0xFFFF;
+}
+
+/**
+ * Ask an application to perform its own primary (left-click) tray action by
+ * posting its tray callback message with WM_LBUTTONUP.
+ *
+ * Per the Shell_NotifyIcon contract, while uVersion is 0 or NOTIFYICON_VERSION
+ * (3) the callback carries wParam = notification id and lParam = the mouse
+ * message, so this is exactly what Explorer sends the owning application. The
+ * same packing is used by `postTrayContextMenu`. Returns false when the callback
+ * looks unusable so the caller can activate the app instead.
+ */
+bool postTrayPrimaryClick(ulong hwndValue, uint callbackMessage, uint id)
+{
+    version (Windows)
+    {
+        if (!usableTrayCallback(hwndValue, callbackMessage)) return false;
+        enum UINT WM_LBUTTONUP = 0x0202;
+        return PostMessageW(cast(HWND) hwndValue, callbackMessage,
+            cast(WPARAM) id, cast(LPARAM) WM_LBUTTONUP) != 0;
+    }
+    else
+    {
+        return false;
+    }
+}
+
 /**
  * Ask an application to open its own tray context menu by posting its tray
- * callback message with WM_RBUTTONUP (classic NOTIFYICON_VERSION_3 packing:
- * wParam = notification id, lParam = WM_RBUTTONUP). Returns false when the
- * callback looks unusable so the caller can show a fallback menu.
+ * callback message with WM_RBUTTONUP (classic packing: wParam = notification
+ * id, lParam = WM_RBUTTONUP). Returns false when the callback looks unusable so
+ * the caller can show a fallback menu.
  */
 bool postTrayContextMenu(ulong hwndValue, uint callbackMessage, uint id)
 {
     version (Windows)
     {
-        if (hwndValue == 0 || callbackMessage < 0x0400 ||
-            callbackMessage > 0xFFFF)
-            return false;
+        if (!usableTrayCallback(hwndValue, callbackMessage)) return false;
         enum UINT WM_RBUTTONUP = 0x0205;
         return PostMessageW(cast(HWND) hwndValue, callbackMessage,
             cast(WPARAM) id, cast(LPARAM) WM_RBUTTONUP) != 0;

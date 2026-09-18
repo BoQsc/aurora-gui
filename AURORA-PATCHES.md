@@ -268,3 +268,18 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   `pasteFromClipboard()`, `deleteSelectionCommand()`, and
   `insertTextAtCursor()` (the clipboard/insert/delete primitives were private).
 - Used by `aurora-notepad`'s File/Edit menu bar.
+
+## Taskbar input-language indicator (`aurora.widgets.desktop`)
+
+- `SystemTrayState` gained `languageLabel` (the 3-letter indicator, e.g. `ENG`)
+  and `languageName` (tooltip). `setTrayState` compares them too.
+- The modern tray reserves five fixed glyphs instead of four:
+  `0 wifi, 1 volume, 2 battery, 3 hidden chevron, 4 input language`. Slot 4 is
+  painted as centred text (`canvas.drawTextInRect`) immediately left of the
+  clock, matching the Windows 11 input indicator, and fires the new
+  `onLanguageClick` callback.
+- Hover/hit codes: tray hovers are now `-6..-10` (`-10` = language) and the
+  notification cluster shifted to `-11..`; `trayIconHit` scans `0..5`,
+  `trayIconGlobalBounds` accepts `0..4`, and `tooltipForRegion` /
+  `tooltipAnchorForRegion` map the new range.
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `desktop.d`.

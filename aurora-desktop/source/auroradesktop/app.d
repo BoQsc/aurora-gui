@@ -15,7 +15,10 @@ import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
     executableIcon, externalTaskGroupKey, externalTaskIcon,
     externalTaskMinimized, externalTaskSize, externalTaskTitle,
-    minimizeExternalTask, postTrayContextMenu;
+    minimizeExternalTask, postTrayContextMenu, postTrayPrimaryClick;
+import auroradesktop.inputlang : InputLanguage, activateInputLanguage,
+    activeInputLanguage, inputLanguageAbbrev, inputLanguageName,
+    inputLanguages;
 import auroradesktop.system;
 import auroradesktop.tray;
 import auroradesktop.wlan : connectWifiNetwork, disconnectWifi, kickWifiScan,
@@ -157,6 +160,7 @@ final class DesktopRoot : Widget
         _taskbar.onBatteryClick = delegate() { openBatteryPanel(); };
         _taskbar.onWifiClick = delegate() { openWifiPanel(); };
         _taskbar.onHiddenIconsClick = delegate() { openHiddenIconsPanel(); };
+        _taskbar.onLanguageClick = delegate() { openLanguagePanel(); };
         _taskbar.onSearchClick = delegate() { openSearch(); };
         // Hover intent: a short stable-hover delay before the preview appears,
         // then a grace window when the pointer leaves so it can travel from the
@@ -332,6 +336,9 @@ final class DesktopRoot : Widget
     private ulong[string] _notificationHwnd;
     private uint[string] _notificationCallback;
     private uint[string] _notificationOsId;
+    // True for Windows-provided icons (network/battery/security/...): they have
+    // no reachable application handler, so a left-click opens Settings instead.
+    private bool[string] _notificationSystem;
     // NB: D floating-point fields default to NaN, which makes every
     // `accumulator >= threshold` check permanently false (no tick updates).
     // Every timer field must be explicitly initialised.
@@ -378,6 +385,36 @@ final class DesktopRoot : Widget
         if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
             return false;
         return postTrayContextMenu(*hwndPtr, *callbackPtr, *osIdPtr);
+    }
+
+    /// Ask the owning app to run its primary (left-click) tray action; false
+    /// for Windows system icons or when there is no usable callback.
+    private bool postNotificationPrimaryClick(size_t id)
+    {
+        const key = notificationKeyForId(id);
+        if (key.length == 0) return false;
+        auto systemPtr = key in _notificationSystem;
+        if (systemPtr !is null && *systemPtr) return false;
+        auto hwndPtr = key in _notificationHwnd;
+        auto callbackPtr = key in _notificationCallback;
+        auto osIdPtr = key in _notificationOsId;
+        if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
+            return false;
+        return postTrayPrimaryClick(*hwndPtr, *callbackPtr, *osIdPtr);
+    }
+
+    /// Left-clicking a tray icon the way Windows does: ask the owning
+    /// application to perform its own primary action (restore/open the app,
+    /// toggle its flyout, ...) by posting its tray callback. Windows-owned
+    /// system icons have no reachable handler, so they keep opening the
+    /// matching Settings page.
+    private void invokeTrayIcon(size_t id, string label)
+    {
+        version (Windows)
+        {
+            if (postNotificationPrimaryClick(id)) return;
+        }
+        activateTrayIcon(notificationExeForId(id), label);
     }
 
     /// Enumerate the real tray icons and publish them to the taskbar.
@@ -442,6 +479,7 @@ final class DesktopRoot : Widget
                 _notificationHwnd[key] = info.hwnd;
                 _notificationCallback[key] = info.callbackMessage;
                 _notificationOsId[key] = info.id;
+                _notificationSystem[key] = info.isSystem;
 
                 NotificationIcon icon;
                 icon.id = *idPtr;
@@ -451,9 +489,9 @@ final class DesktopRoot : Widget
                 icon.iconImage = info.icon;
                 icon.hidden = hiddenPtr !is null ? *hiddenPtr : info.hidden;
                 icon.system = info.isSystem;
-                const exePath = info.exePath;
                 const label = info.label;
-                icon.action = delegate() { activateTrayIcon(exePath, label); };
+                const stableId = icon.id;
+                icon.action = delegate() { invokeTrayIcon(stableId, label); };
                 desired ~= icon;
             }
 
@@ -491,15 +529,46 @@ final class DesktopRoot : Widget
         }
     }
 
-    /// Best-effort activation of a tray icon: launch the owning app, or show
-    /// its label for Windows-owned components that must not be relaunched.
+    /// Best-effort activation of a tray icon when the owning app has no usable
+    /// tray callback: focus its running window (or launch it), or open the
+    /// matching Settings page for Windows-owned components.
     private void activateTrayIcon(string exePath, string label)
     {
         version (Windows)
         {
             if (isSystemExecutable(exePath))
             {
-                // Windows-owned system icon: open the matching Settings page.
+                // Windows-owned system icon: open the matching Aurora flyout
+                // (network/battery/volume/input language), like Windows. Fall
+                // back to the matching Settings page for anything not modeled.
+                const lower = toLower(label);
+                if (canFind(lower, "network") || canFind(lower, "wi-fi") ||
+                    canFind(lower, "wifi") || canFind(lower, "internet") ||
+                    canFind(lower, "access"))
+                {
+                    openWifiPanel();
+                    return;
+                }
+                if (canFind(lower, "volume") || canFind(lower, "speaker") ||
+                    canFind(lower, "sound") || canFind(lower, "audio") ||
+                    canFind(lower, "headphone"))
+                {
+                    openVolumePanel();
+                    return;
+                }
+                if (canFind(lower, "battery") || canFind(lower, "charged") ||
+                    canFind(lower, "power"))
+                {
+                    openBatteryPanel();
+                    return;
+                }
+                if (canFind(lower, "language") || canFind(lower, "input") ||
+                    canFind(lower, "keyboard") || canFind(lower, "english") ||
+                    canFind(lower, "lithuanian"))
+                {
+                    openLanguagePanel();
+                    return;
+                }
                 const uri = systemSettingsUri(label);
                 if (uri.length > 0)
                 {
@@ -509,14 +578,11 @@ final class DesktopRoot : Widget
             }
             else if (exePath.length > 0)
             {
-                try
-                {
-                    spawnShell(exePath);
-                    return;
-                }
-                catch (Exception)
-                {
-                }
+                // The owning app registered the icon, so it is already running:
+                // focus its window instead of starting a second instance
+                // (activateOrLaunchApp launches only when no window is open).
+                activateOrLaunchApp(exePath);
+                return;
             }
         }
         showMessage(label.length > 0 ? label : "Notification");
@@ -1152,10 +1218,16 @@ final class DesktopRoot : Widget
         // Preserve the live hidden-icon count (the fresh snapshot's default of 5
         // would otherwise reset it on every 2s refresh).
         next.hiddenIconCount = hiddenCount();
+        // Input-language indicator ("ENG"), like the Windows 11 tray.
+        next.languageLabel = toUTF32(inputLanguageAbbrev());
+        next.languageName = toUTF32(inputLanguageName());
         _tray = next;
         _taskbar.setTrayState(next);
         if (_volumePanel !is null && !_volumePanel.dismissed())
             _volumePanelContent.update(_tray.volumePercent, _muted);
+        if (_languagePanel !is null && !_languagePanel.dismissed() &&
+            _languagePanelContent !is null)
+            _languagePanelContent.update(inputLanguages());
     }
 
     private void openVolumePanel()
@@ -1189,7 +1261,34 @@ final class DesktopRoot : Widget
         refreshSystemStatus(snapshot);
         auto panel = new BatteryPanel(snapshot.hasBattery,
             snapshot.batteryCharging, snapshot.batteryPercent);
+        panel.onOpenBatterySettings = delegate()
+        {
+            dismissPanel();
+            systemOpenSettings("ms-settings:batterysaver");
+        };
         showPanel(PanelKind.battery, panel, _taskbar.trayIconGlobalBounds(2));
+    }
+
+    /// Windows-style input-language flyout: pick an installed keyboard layout.
+    private void openLanguagePanel()
+    {
+        auto panel = new LanguagePanel(inputLanguages());
+        panel.onOpenSettings = delegate()
+        {
+            dismissPanel();
+            systemOpenSettings("ms-settings:regionlanguage");
+        };
+        panel.onSelect = delegate(size_t hkl)
+        {
+            if (hkl == 0 || hkl == activeInputLanguage()) return;
+            activateInputLanguage(hkl);
+            // Publishes the new indicator and refreshes the open panel.
+            refreshTray();
+        };
+        showPanel(PanelKind.language, panel,
+            _taskbar.trayIconGlobalBounds(4));
+        _languagePanel = _panelPopup;
+        _languagePanelContent = panel;
     }
 
     private void openWifiPanel()
@@ -1205,6 +1304,16 @@ final class DesktopRoot : Widget
             systemOpenSettings("ms-settings:network");
         };
         panel.onRefresh = delegate() { startWifiScan(); };
+        panel.onAirplaneMode = delegate()
+        {
+            dismissPanel();
+            systemOpenSettings("ms-settings:network-airplanemode");
+        };
+        panel.onMobileHotspot = delegate()
+        {
+            dismissPanel();
+            systemOpenSettings("ms-settings:network-mobilehotspot");
+        };
         panel.onDisconnect = delegate()
         {
             refreshWifiPanel(disconnectWifi() ?
@@ -1354,9 +1463,9 @@ final class DesktopRoot : Widget
         auto panel = new HiddenIconsPanel(hidden);
         panel.onIconActivated = delegate(size_t id, string label)
         {
-            // Same as clicking the visible icon: launch the app or open the
-            // matching Windows Settings page.
-            activateTrayIcon(notificationExeForId(id), label);
+            // Same as clicking the visible icon: run the owning app's own tray
+            // action, falling back to launch/Settings.
+            invokeTrayIcon(id, label);
         };
         panel.onIconMenu = delegate(size_t id)
         {
@@ -1558,9 +1667,11 @@ final class DesktopRoot : Widget
     private VolumePanel _volumePanelContent;
     private PopupOverlay _wifiPanel;
     private WifiPanel _wifiPanelContent;
+    private PopupOverlay _languagePanel;
+    private LanguagePanel _languagePanelContent;
     // Identifies which tray popup is open so re-clicking its taskbar icon
     // toggles it closed instead of re-opening (Windows tray behavior).
-    private enum PanelKind : ubyte { none, volume, battery, wifi, hidden, taskbarSettings }
+    private enum PanelKind : ubyte { none, volume, battery, wifi, hidden, language, taskbarSettings }
     private PanelKind _panelKind = PanelKind.none;
 
     private void showPanel(PanelKind kind, Widget content, Rect anchor)
@@ -1588,6 +1699,8 @@ final class DesktopRoot : Widget
         _volumePanelContent = null;
         _wifiPanel = null;
         _wifiPanelContent = null;
+        _languagePanel = null;
+        _languagePanelContent = null;
         _hiddenPanel = null;
         _panelKind = PanelKind.none;
     }

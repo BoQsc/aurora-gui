@@ -3,6 +3,7 @@ module auroradesktop.tray;
 import aurora;
 import aurora.widgets.desktop : SystemTrayState, NotificationIcon;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
+import auroradesktop.inputlang : InputLanguage;
 import auroradesktop.system : AudioDevice;
 import auroradesktop.wlan : WifiState;
 import std.format : format;
@@ -10,18 +11,38 @@ import std.utf : toUTF8, toUTF32;
 
 /**
  * Small floating panels opened from the taskbar tray icons (volume, WiFi,
- * battery, hidden notifications). They build reusable content trees and the
- * app wires them into a PopupOverlay anchored to the matching taskbar icon.
+ * battery, hidden notifications, input language). They build reusable content
+ * trees and the app wires them into a PopupOverlay anchored to the matching
+ * taskbar icon.
+ *
+ * The popup overlay paints only the backdrop + drop shadow, so every flyout
+ * must fill its own rounded panel surface.
  */
-final class VolumePanel : Widget
+class TrayPanel : Widget
+{
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        canvas.drawRoundedRect(Rect(0, 0, bounds().width, bounds().height), 8,
+            palette.panelElevated, palette.border.withAlpha(230), 1);
+    }
+}
+
+final class VolumePanel : TrayPanel
 {
     private VBox _column;
-    private VBox _deviceList;
-    private Button[] _deviceButtons;
+    private Label _deviceLabel;
     private Slider _slider;
     private Label _percentLabel;
     private Button _muteButton;
+    private Button _expandButton;
+    private VBox _deviceList;
+    private Button[] _deviceButtons;
+    private AudioDevice[] _devices;
+    private uint _selected;
+    private int _percent;
     private bool _muted;
+    private bool _expanded;
 
     void delegate(int percent) onVolumeSet;
     void delegate() onMuteToggle;
@@ -29,85 +50,108 @@ final class VolumePanel : Widget
 
     this(int percent, bool muted, AudioDevice[] devices, uint selected)
     {
+        _percent = percent;
         _muted = muted;
+        _devices = devices;
+        _selected = selected;
         // Own composited layer: slider drags repaint just this panel instead
-        // of the whole full-window popup overlay (measured 12.8 ms/event
-        // before, mostly full-layer re-raster).
+        // of the whole full-window popup overlay.
         setComposited(true);
+        rebuild();
+    }
+
+    /// Windows 11 volume flyout: the active output device as the header (with a
+    /// chevron to reveal the device picker), then a mute glyph + slider + value.
+    private void rebuild()
+    {
+        if (_column !is null)
+        {
+            remove(_column);
+            _column = null;
+        }
+        _deviceButtons.length = 0;
+
         auto column = new VBox(10, Insets(14));
         _column = column;
         add(column);
 
-        auto header = column.add(new HBox(8));
-        header.layoutHints().preferredHeight = 30;
-        auto title = header.add(new Label("Volume"));
-        title.setScale(2);
-        title.layoutHints().preferredWidth = 110;
-        header.add(new Spacer());
-
-        _slider = column.add(new Slider(0, 100, percent));
-        _slider.layoutHints().preferredWidth = 270;
-        _slider.layoutHints().preferredHeight = 30;
-        _slider.onChanged = delegate(double value)
+        auto header = column.add(new HBox(6));
+        header.layoutHints().preferredHeight = 28;
+        _deviceLabel = header.add(new Label(activeDeviceName()));
+        _deviceLabel.setEllipsis(true);
+        _deviceLabel.layoutHints().flex = 1.0;
+        _expandButton = header.add(new Button("", _expanded ?
+            IconKind.chevronUp : IconKind.chevronDown));
+        _expandButton.setFlat(true);
+        _expandButton.layoutHints().preferredWidth = 30;
+        _expandButton.onClick = delegate()
         {
-            const rounded = cast(int) (value + 0.5);
-            _percentLabel.setText(mutedLabel(rounded));
-            if (onVolumeSet !is null) onVolumeSet(rounded);
+            _expanded = !_expanded;
+            rebuild();
         };
 
-        auto footer = column.add(new HBox(8));
-        footer.layoutHints().preferredHeight = 34;
-        _muteButton = footer.add(new Button(muted ? "Unmute" : "Mute",
-            muted ? IconKind.volumeMuted : IconKind.volume));
+        auto row = column.add(new HBox(10));
+        row.layoutHints().preferredHeight = 44;
+        _muteButton = row.add(new Button("", _muted ?
+            IconKind.volumeMuted : IconKind.volume));
+        _muteButton.setFlat(true);
+        _muteButton.setIconSize(22);
+        _muteButton.layoutHints().preferredWidth = 40;
         _muteButton.onClick = delegate()
         {
             if (onMuteToggle !is null) onMuteToggle();
         };
-        footer.add(new Spacer(1.0));
-        _percentLabel = footer.add(new Label(mutedLabel(percent)));
-        _percentLabel.setColor(theme().textMuted);
+        _slider = row.add(new Slider(0, 100, _percent));
+        _slider.layoutHints().flex = 1.0;
+        _slider.onChanged = delegate(double value)
+        {
+            const rounded = cast(int) (value + 0.5);
+            _percent = rounded;
+            _percentLabel.setText(format("%d", rounded));
+            if (onVolumeSet !is null) onVolumeSet(rounded);
+        };
+        _percentLabel = row.add(new Label(format("%d", _percent)));
+        _percentLabel.setAlignment(HorizontalAlign.right, VerticalAlign.middle);
+        _percentLabel.layoutHints().preferredWidth = 40;
 
-        // Output-device picker: one row per waveOut device, the active one
-        // marked. The slider/mute above always drive the selected device.
-        auto deviceTitle = column.add(new Label("Output device"));
-        deviceTitle.setColor(theme().textMuted);
-        _deviceList = column.add(new VBox(4));
-        rebuildDevices(devices, selected);
+        if (_expanded)
+        {
+            _deviceList = column.add(new VBox(2));
+            foreach (device; _devices)
+            {
+                const captured = device.index;
+                const active = device.index == _selected;
+                auto deviceRow = _deviceList.add(new Button(device.name,
+                    IconKind.volume));
+                deviceRow.setFlat(true);
+                deviceRow.setAccent(active);
+                deviceRow.layoutHints().preferredHeight = 32;
+                deviceRow.onClick = delegate()
+                {
+                    if (onDeviceSelected !is null) onDeviceSelected(captured);
+                };
+                _deviceButtons ~= deviceRow;
+            }
+            const count = cast(int) _deviceButtons.length;
+            _deviceList.layoutHints().preferredHeight = count == 0 ? 0 :
+                count * 32 + (count - 1) * 2;
+        }
+        else
+            _deviceList = null;
 
-        // Header + slider + footer + device title + rows + padding/spacing.
-        // Wide enough for a full 40-char endpoint name plus icon chrome:
-        // 440 px still clipped a ~370 px label, so 460 with real margin.
-        layoutHints().preferredWidth = 460;
-        layoutHints().preferredHeight = 152 + 10 + 24 +
-            _deviceList.layoutHints().preferredHeight;
+        layoutHints().preferredWidth = 380;
+        layoutHints().preferredHeight = 14 * 2 + 28 + 10 + 44 +
+            (_expanded && _deviceList !is null ?
+                10 + _deviceList.layoutHints().preferredHeight : 0);
+        _column.layoutTree();
+        invalidate();
     }
 
-    private void rebuildDevices(AudioDevice[] devices, uint selected)
+    private string activeDeviceName() const
     {
-        foreach (child; _deviceList.children())
-            _deviceList.remove(child);
-        _deviceButtons.length = 0;
-        foreach (device; devices)
-        {
-            const captured = device.index;
-            const active = device.index == selected;
-            auto row = _deviceList.add(new Button(
-                (active ? "> " : "    ") ~ device.name, IconKind.volume));
-            row.layoutHints().preferredHeight = 30;
-            row.setAccent(active);
-            row.onClick = delegate()
-            {
-                if (onDeviceSelected !is null) onDeviceSelected(captured);
-            };
-            _deviceButtons ~= row;
-        }
-        // The inner list is itself a VBox row of the outer column: without an
-        // explicit height the column gives it 0 and every row clips away.
-        const count = cast(int) _deviceButtons.length;
-        _deviceList.layoutHints().preferredHeight =
-            count == 0 ? 0 : count * 30 + (count - 1) * 4;
-        _deviceList.layoutTree();
-        invalidate();
+        foreach (device; _devices)
+            if (device.index == _selected) return device.name;
+        return "Volume";
     }
 
     protected override void onLayout()
@@ -116,27 +160,28 @@ final class VolumePanel : Widget
             _column.setBounds(Rect(0, 0, bounds().width, bounds().height));
     }
 
-    private string mutedLabel(int percent) const
-    {
-        return _muted ? "Muted" : format("%d%%", percent);
-    }
-
     void update(int percent, bool muted)
     {
+        _percent = percent;
         _muted = muted;
         _slider.setValue(percent, false);
-        _percentLabel.setText(mutedLabel(percent));
-        _muteButton.setText(muted ? "Unmute" : "Mute");
+        _percentLabel.setText(format("%d", percent));
         _muteButton.setIcon(muted ? IconKind.volumeMuted : IconKind.volume);
     }
 
     void updateDevices(AudioDevice[] devices, uint selected)
     {
-        rebuildDevices(devices, selected);
+        _devices = devices;
+        _selected = selected;
+        rebuild();
     }
+
+    /// Test hooks: the Windows-style icon-only mute button and its state.
+    Button muteButtonForTesting() @safe pure nothrow @nogc { return _muteButton; }
+    bool mutedForTesting() const @safe pure nothrow @nogc { return _muted; }
 }
 
-final class WifiPanel : Widget
+final class WifiPanel : TrayPanel
 {
     private VBox _column;
     private VBox _networkList;
@@ -151,10 +196,14 @@ final class WifiPanel : Widget
     void delegate(string ssid, string profile, bool secured) onConnect;
     void delegate() onDisconnect;
     void delegate() onRefresh;
+    /// Open the Windows Airplane mode / Mobile hotspot settings pages.
+    void delegate() onAirplaneMode;
+    void delegate() onMobileHotspot;
 
     this(WifiState state)
     {
         _state = state;
+        setComposited(true);
         auto column = new VBox(10, Insets(14));
         _column = column;
         add(column);
@@ -174,40 +223,49 @@ final class WifiPanel : Widget
         foreach (child; _column.children())
             _column.remove(child);
 
-        auto header = _column.add(new HBox(8));
-        header.layoutHints().preferredHeight = 30;
-        auto title = header.add(new Label("Wi-Fi"));
-        title.setScale(2);
-        title.layoutHints().preferredWidth = 110;
-        header.add(new Spacer());
-        _signalLabel = header.add(new Label(_state.connected ?
-            format("%d%%", _state.signal) : "--"));
-        _signalLabel.setColor(theme().textMuted);
-        _signalLabel.setAlignment(HorizontalAlign.right, VerticalAlign.middle);
-        _signalLabel.layoutHints().preferredWidth = 60;
+        const activeSsid = _state.ssid.length > 0 ? _state.ssid : _state.profile;
 
-        _statusLabel = _column.add(new Label(statusText()));
-        _statusLabel.setColor(theme().textMuted);
+        // Windows 11: the connected network is a card at the top with the
+        // "Properties" link and the "Disconnect" button.
+        if (_state.connected)
+        {
+            auto card = _column.add(new WifiConnectedCard(activeSsid, true));
+            card.onDisconnect = delegate()
+            {
+                if (onDisconnect !is null) onDisconnect();
+            };
+            card.onProperties = delegate()
+            {
+                if (onOpenNetworkSettings !is null) onOpenNetworkSettings();
+            };
+        }
 
-        _networkList = _column.add(new VBox(4));
+        const status = _feedback.length > 0 ? _feedback :
+            (_scanning ? "Scanning for networks..." : "");
+        if (status.length > 0)
+        {
+            _statusLabel = _column.add(new Label(status));
+            _statusLabel.setColor(theme().textMuted);
+        }
+        else
+            _statusLabel = null;
+
+        _signalLabel = null;
+        _disconnectButton = null;
+
+        // Available networks: one row each, the connected one marked.
+        _networkList = _column.add(new VBox(2));
         size_t shown;
         foreach (network; _state.networks)
         {
-            if (shown >= 12) break;
+            if (shown >= 8) break;
             const ssid = network.ssid;
             const profile = network.profile;
             const secured = network.secured;
-            const active = _state.connected && ssid == _state.ssid;
-            // Uniform rows; the connected one is marked with a leading check
-            // instead of a full-width accent block (which made the panel look
-            // inconsistent and oversized the icon).
-            auto row = _networkList.add(new Button(
-                (active ? "OK  " : "    ") ~ ssid ~ "  " ~
-                format("%d%%", network.signal) ~
-                (secured ? " (secured)" : ""),
-                IconKind.wifi));
-            row.layoutHints().preferredHeight = 30;
-            row.setIconSize(18);
+            const signal = network.signal;
+            const active = _state.connected && ssid == activeSsid;
+            auto row = _networkList.add(new WifiNetworkRow(ssid, secured,
+                cast(int) signal, active));
             row.onClick = delegate()
             {
                 if (onConnect !is null) onConnect(ssid, profile, secured);
@@ -228,7 +286,7 @@ final class WifiPanel : Widget
             none.setColor(theme().textMuted);
             hasNote = true;
         }
-        else if (_state.networks.length == 0)
+        else if (_state.networks.length == 0 && !_scanning)
         {
             auto none = _networkList.add(new Label("No networks in range."));
             none.setColor(theme().textMuted);
@@ -238,57 +296,53 @@ final class WifiPanel : Widget
         // height or the outer column collapses it to 0 and rows clip away.
         const shownCount = cast(int) shown;
         _networkList.layoutHints().preferredHeight = shownCount == 0 && !hasNote ?
-            0 : shownCount * 30 + (shownCount > 0 ? (shownCount - 1) * 4 : 0) +
-            (hasNote ? (shownCount > 0 ? 4 : 0) + 24 : 0);
+            0 : shownCount * 34 + (shownCount > 0 ? (shownCount - 1) * 2 : 0) +
+            (hasNote ? (shownCount > 0 ? 2 : 0) + 24 : 0);
 
-        auto footer = _column.add(new HBox(8));
-        footer.layoutHints().preferredHeight = 34;
-        auto refreshButton = footer.add(new Button(
-            _scanning ? "Scanning..." : "Refresh", IconKind.refresh));
-        refreshButton.layoutHints().preferredWidth = _scanning ? 118 : 96;
-        refreshButton.setEnabled(!_scanning);
-        refreshButton.onClick = delegate()
-        {
-            if (onRefresh !is null) onRefresh();
-        };
-        if (_state.connected)
-        {
-            _disconnectButton = footer.add(new Button("Disconnect",
-                IconKind.close));
-            _disconnectButton.onClick = delegate()
-            {
-                if (onDisconnect !is null) onDisconnect();
-            };
-        }
-        else
-            _disconnectButton = null;
-        footer.add(new Spacer(1.0));
-
-        auto settings = footer.add(new Button("", IconKind.settings));
-        settings.layoutHints().preferredWidth = 38;
+        // Settings link + explanation, like Windows.
+        auto settings = _column.add(new Button("Network & Internet settings",
+            IconKind.settings));
+        settings.setFlat(true);
+        settings.layoutHints().preferredHeight = 30;
         settings.onClick = delegate()
         {
             if (onOpenNetworkSettings !is null) onOpenNetworkSettings();
         };
+        auto note = _column.add(new Label(
+            "Change settings, such as making a connection metered."));
+        note.setColor(theme().textMuted);
+        note.setPixelSize(13);
 
-        // Header + status + rows + footer + padding/spacing. Wide enough
-        // for a full "SSID 100% (secured)" row plus the footer gear button;
-        // at 300 px both were clipped with ellipsis.
-        layoutHints().preferredWidth = 360;
-        layoutHints().preferredHeight = 30 + 10 + 24 + 10 +
-            _networkList.layoutHints().preferredHeight + 10 + 34 + 28;
+        // Quick toggles: Wi-Fi / Airplane mode / Mobile hotspot.
+        auto tiles = _column.add(new HBox(8));
+        tiles.layoutHints().preferredHeight = 74;
+        auto wifiTile = tiles.add(new QuickToggleTile("Wi-Fi", QuickGlyph.wifi,
+            _state.connected));
+        wifiTile.onClick = delegate()
+        {
+            if (onRefresh !is null) onRefresh();
+        };
+        auto airplaneTile = tiles.add(new QuickToggleTile("Airplane mode",
+            QuickGlyph.airplane, false));
+        airplaneTile.onClick = delegate()
+        {
+            if (onAirplaneMode !is null) onAirplaneMode();
+        };
+        auto hotspotTile = tiles.add(new QuickToggleTile("Mobile hotspot",
+            QuickGlyph.hotspot, false));
+        hotspotTile.onClick = delegate()
+        {
+            if (onMobileHotspot !is null) onMobileHotspot();
+        };
+
+        layoutHints().preferredWidth = 400;
+        layoutHints().preferredHeight = 14 * 2 +
+            (_state.connected ? 96 + 10 : 0) +
+            (status.length > 0 ? 22 + 10 : 0) +
+            _networkList.layoutHints().preferredHeight + 10 + 30 + 6 + 34 +
+            10 + 74;
         _column.layoutTree();
         invalidate();
-    }
-
-    private string statusText() const
-    {
-        if (_feedback.length > 0) return _feedback;
-        if (!_state.available) return "Wi-Fi unavailable";
-        if (_state.connected)
-            return "Connected to " ~ (_state.ssid.length > 0 ? _state.ssid :
-                _state.profile);
-        return "Not connected";
     }
 
     protected override void onLayout()
@@ -298,26 +352,60 @@ final class WifiPanel : Widget
     }
 }
 
-final class BatteryPanel : Widget
+final class BatteryPanel : TrayPanel
 {
     private VBox _column;
 
+    /// Open the Windows battery settings page (link + "Battery saver" tile).
+    void delegate() onOpenBatterySettings;
+
     this(bool hasBattery, bool charging, int percent)
     {
+        setComposited(true);
         auto column = new VBox(10, Insets(14));
         _column = column;
         add(column);
 
-        auto title = column.add(new Label(charging ? "Charging" : "Battery"));
-        title.setScale(2);
-        title.setAlignment(HorizontalAlign.left, VerticalAlign.middle);
+        // Windows 11 battery flyout: a large battery glyph, the percentage in
+        // display type, a charge-status note, then Battery settings + saver.
+        auto top = column.add(new HBox(12));
+        top.layoutHints().preferredHeight = 52;
+        auto glyph = top.add(new Button("",
+            charging ? IconKind.batteryCharging : IconKind.battery));
+        glyph.setFlat(true);
+        glyph.setIconSize(40);
+        glyph.layoutHints().preferredWidth = 56;
+        auto percentLabel = top.add(new Label(hasBattery ?
+            format("%d%%", percent) : "--"));
+        percentLabel.setScale(3);
+        percentLabel.setAlignment(HorizontalAlign.left, VerticalAlign.middle);
+        percentLabel.layoutHints().preferredWidth = 110;
+        auto status = top.add(new Label(hasBattery ?
+            (charging ? "Fully charged" : format("%d%% remaining", percent)) :
+            "No battery detected"));
+        status.setColor(theme().textMuted);
+        status.setAlignment(HorizontalAlign.left, VerticalAlign.middle);
+        status.layoutHints().flex = 1.0;
 
-        auto detail = column.add(new Label(hasBattery ?
-            format("%d%%", percent) : "No battery detected"));
-        detail.setColor(theme().textMuted);
+        auto settings = column.add(new Button("Battery settings",
+            IconKind.settings));
+        settings.setFlat(true);
+        settings.layoutHints().preferredHeight = 34;
+        settings.onClick = delegate()
+        {
+            if (onOpenBatterySettings !is null) onOpenBatterySettings();
+        };
 
-        layoutHints().preferredWidth = 240;
-        layoutHints().preferredHeight = 80;
+        auto saver = column.add(new Button("Battery saver", IconKind.battery));
+        saver.setFlat(true);
+        saver.layoutHints().preferredHeight = 48;
+        saver.onClick = delegate()
+        {
+            if (onOpenBatterySettings !is null) onOpenBatterySettings();
+        };
+
+        layoutHints().preferredWidth = 340;
+        layoutHints().preferredHeight = 14 * 2 + 52 + 10 + 34 + 10 + 48;
     }
 
     protected override void onLayout()
@@ -545,6 +633,364 @@ final class HiddenIconsPanel : Widget
     protected override void onLayout()
     {
         // Layout is static; the grid is sized by preferred dimensions.
+    }
+}
+
+/// Vector glyphs used by the quick-settings tiles. IconKind has no airplane /
+/// hotspot shapes, so they are drawn here (kept next to the tiles).
+enum QuickGlyph : ubyte { wifi, airplane, hotspot }
+
+private void drawQuickGlyph(ref Canvas canvas, QuickGlyph glyph, Rect rect,
+    Color foreground)
+{
+    const scale = maxInt(1, rect.width / 18);
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    final switch (glyph)
+    {
+        case QuickGlyph.wifi:
+            drawIcon(canvas, IconKind.wifi, rect, foreground);
+            break;
+        case QuickGlyph.airplane:
+            // A plane seen from above, nose at the top.
+            canvas.drawLine(Point(cx, cy - 9 * scale), Point(cx, cy + 8 * scale),
+                foreground, 2 * scale);
+            canvas.drawLine(Point(cx - 9 * scale, cy + 2 * scale),
+                Point(cx, cy - scale), foreground, 2 * scale);
+            canvas.drawLine(Point(cx + 9 * scale, cy + 2 * scale),
+                Point(cx, cy - scale), foreground, 2 * scale);
+            canvas.drawLine(Point(cx - 4 * scale, cy + 7 * scale),
+                Point(cx, cy + 5 * scale), foreground, scale);
+            canvas.drawLine(Point(cx + 4 * scale, cy + 7 * scale),
+                Point(cx, cy + 5 * scale), foreground, scale);
+            break;
+        case QuickGlyph.hotspot:
+        {
+            auto clipped = canvas.clipped(rect);
+            const ox = cx - 3 * scale;
+            const oy = cy + 6 * scale;
+            clipped.fillCircle(Point(ox, oy), 2 * scale, foreground);
+            clipped.strokeCircle(Point(ox, oy), 6 * scale, foreground, scale);
+            clipped.strokeCircle(Point(ox, oy), 10 * scale,
+                foreground.withAlpha(170), scale);
+            break;
+        }
+    }
+}
+
+/**
+ * One Windows-11 quick-settings tile (icon above a caption). The tile is
+ * accent-filled while its feature is on.
+ */
+final class QuickToggleTile : Widget
+{
+    private dstring _label;
+    private QuickGlyph _glyph;
+    private bool _active;
+    private bool _hover;
+
+    void delegate() onClick;
+
+    this(string label, QuickGlyph glyph, bool active)
+    {
+        _label = toUTF32(label);
+        _glyph = glyph;
+        _active = active;
+        setComposited(true);
+        layoutHints().flex = 1.0;
+        layoutHints().preferredHeight = 74;
+    }
+
+    bool active() const { return _active; }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        const background = _active ? palette.accent :
+            (_hover ? palette.buttonHover : palette.buttonBackground);
+        canvas.fillRoundedRect(full, 6, background);
+        const foreground = _active ? Color.rgb(255, 255, 255) : palette.text;
+        drawQuickGlyph(canvas, _glyph,
+            Rect(full.x + 10, full.y + 12, 20, 20), foreground);
+        canvas.drawTextInRect(
+            Rect(full.x + 8, full.bottom() - 30, full.width - 14, 24),
+            _label, foreground, 1, HorizontalAlign.left, VerticalAlign.middle,
+            true);
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const hover = bounds().contains(event.position);
+        if (hover != _hover)
+        {
+            _hover = hover;
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (bounds().contains(event.position) && onClick !is null) onClick();
+        return true;
+    }
+}
+
+/// The Windows-11 "connected network" card: name, "Connected, secured",
+/// a Properties link and a Disconnect button.
+final class WifiConnectedCard : Widget
+{
+    private dstring _ssid;
+    private bool _secured;
+    private Rect _propertiesRect;
+    private Rect _disconnectRect;
+
+    void delegate() onDisconnect;
+    void delegate() onProperties;
+
+    this(string ssid, bool secured)
+    {
+        _ssid = toUTF32(ssid);
+        _secured = secured;
+        setComposited(true);
+        layoutHints().preferredHeight = 96;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        canvas.fillRoundedRect(full, 8, palette.accent);
+        const foreground = Color.rgb(255, 255, 255);
+        drawIcon(canvas, IconKind.wifi, Rect(full.x + 12, full.y + 12, 22, 22),
+            foreground);
+        canvas.drawTextInRect(Rect(full.x + 44, full.y + 10, full.width - 56, 24),
+            _ssid, foreground, 2, HorizontalAlign.left, VerticalAlign.middle,
+            true);
+        canvas.drawTextInRect(Rect(full.x + 44, full.y + 34, full.width - 56, 18),
+            _secured ? "Connected, secured"d : "Connected"d,
+            foreground.withAlpha(215), 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+
+        _propertiesRect = Rect(full.x + 44, full.y + 56, 90, 20);
+        canvas.drawTextInRect(_propertiesRect, "Properties"d, foreground, 1,
+            HorizontalAlign.left, VerticalAlign.middle, true);
+        canvas.drawLine(Point(_propertiesRect.x, _propertiesRect.bottom() - 2),
+            Point(_propertiesRect.x + 62, _propertiesRect.bottom() - 2),
+            foreground.withAlpha(190), 1);
+
+        _disconnectRect = Rect(full.right() - 130, full.bottom() - 42, 118, 32);
+        canvas.fillRoundedRect(_disconnectRect, 5, foreground.withAlpha(46));
+        canvas.drawTextInRect(_disconnectRect, "Disconnect"d, foreground, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (_disconnectRect.contains(event.position))
+        {
+            if (onDisconnect !is null) onDisconnect();
+            return true;
+        }
+        if (_propertiesRect.contains(event.position))
+        {
+            if (onProperties !is null) onProperties();
+            return true;
+        }
+        return true;
+    }
+}
+
+/// One available Wi-Fi network row: signal glyph, name and a lock when secured.
+final class WifiNetworkRow : Widget
+{
+    private dstring _ssid;
+    private bool _secured;
+    private int _signal;
+    private bool _active;
+    private bool _hover;
+
+    void delegate() onClick;
+
+    this(string ssid, bool secured, int signal, bool active)
+    {
+        _ssid = toUTF32(ssid);
+        _secured = secured;
+        _signal = signal;
+        _active = active;
+        setComposited(true);
+        layoutHints().preferredHeight = 34;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        if (_hover) canvas.fillRoundedRect(full, 5, palette.buttonHover);
+        const foreground = _active ? palette.accent : palette.text;
+        drawIcon(canvas, IconKind.wifi, Rect(full.x + 8, full.y + 7, 20, 20),
+            foreground);
+        canvas.drawTextInRect(
+            Rect(full.x + 38, full.y, full.width - 76, full.height), _ssid,
+            palette.text, 1, HorizontalAlign.left, VerticalAlign.middle, true);
+        if (_active)
+            canvas.drawTextInRect(
+                Rect(full.right() - 104, full.y, 62, full.height), "connected"d,
+                palette.accent, 1, HorizontalAlign.right, VerticalAlign.middle,
+                true);
+        if (_secured)
+        {
+            // A small padlock (body + shackle).
+            const x = full.right() - 24;
+            const y = full.y + full.height / 2;
+            canvas.strokeCircle(Point(x + 5, y - 2), 4, palette.textMuted, 1);
+            canvas.fillRoundedRect(Rect(x, y, 10, 9), 2, palette.textMuted);
+        }
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const hover = bounds().contains(event.position);
+        if (hover != _hover)
+        {
+            _hover = hover;
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (bounds().contains(event.position) && onClick !is null) onClick();
+        return true;
+    }
+}
+
+/// One input-language row: the three-letter indicator, the language name and
+/// its keyboard layout, with the active language accented.
+final class LanguageRow : Widget
+{
+    private dstring _abbrev;
+    private dstring _name;
+    private dstring _keyboard;
+    private bool _active;
+    private bool _hover;
+
+    void delegate() onClick;
+
+    this(InputLanguage language)
+    {
+        _abbrev = toUTF32(language.abbrev);
+        _name = toUTF32(language.name);
+        _keyboard = toUTF32(language.keyboard);
+        _active = language.active;
+        setComposited(true);
+        layoutHints().preferredHeight = 48;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        if (_active) canvas.fillRoundedRect(full, 5,
+            palette.accent.withAlpha(48));
+        else if (_hover) canvas.fillRoundedRect(full, 5, palette.buttonHover);
+        if (_active)
+            canvas.fillRoundedRect(Rect(full.x + 3, full.y + 8, 3,
+                full.height - 16), 2, palette.accent);
+        const nameColor = _active ? palette.accent : palette.text;
+        canvas.drawTextInRect(Rect(full.x + 14, full.y, 54, full.height),
+            _abbrev, nameColor, 2, HorizontalAlign.left, VerticalAlign.middle,
+            false);
+        canvas.drawTextInRect(Rect(full.x + 74, full.y + 5, full.width - 84, 22),
+            _name, nameColor, 1, HorizontalAlign.left, VerticalAlign.middle,
+            true);
+        canvas.drawTextInRect(Rect(full.x + 74, full.y + 22, full.width - 84, 20),
+            _keyboard, palette.textMuted, 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const hover = bounds().contains(event.position);
+        if (hover != _hover)
+        {
+            _hover = hover;
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (bounds().contains(event.position) && onClick !is null) onClick();
+        return true;
+    }
+}
+
+/// Windows input-language flyout: one row per installed keyboard layout plus a
+/// "Language preferences" link.
+final class LanguagePanel : TrayPanel
+{
+    private VBox _column;
+
+    void delegate() onOpenSettings;
+    void delegate(size_t hkl) onSelect;
+
+    this(InputLanguage[] languages)
+    {
+        setComposited(true);
+        auto column = new VBox(2, Insets(10));
+        _column = column;
+        add(column);
+        rebuild(languages);
+    }
+
+    void update(InputLanguage[] languages)
+    {
+        rebuild(languages);
+    }
+
+    private void rebuild(InputLanguage[] languages)
+    {
+        foreach (child; _column.children())
+            _column.remove(child);
+        foreach (language; languages)
+        {
+            const captured = language.hkl;
+            auto row = _column.add(new LanguageRow(language));
+            row.onClick = delegate()
+            {
+                if (onSelect !is null) onSelect(captured);
+            };
+        }
+        _column.add(new Separator());
+        auto settings = _column.add(new Button("Language preferences",
+            IconKind.settings));
+        settings.setFlat(true);
+        settings.layoutHints().preferredHeight = 40;
+        settings.onClick = delegate()
+        {
+            if (onOpenSettings !is null) onOpenSettings();
+        };
+
+        layoutHints().preferredWidth = 360;
+        const count = cast(int) languages.length;
+        layoutHints().preferredHeight = 10 * 2 +
+            (count == 0 ? 0 : count * 48 + (count - 1) * 2) + 10 + 40;
+        _column.layoutTree();
+        invalidate();
+    }
+
+    protected override void onLayout()
+    {
+        if (_column !is null)
+            _column.setBounds(Rect(0, 0, bounds().width, bounds().height));
     }
 }
 

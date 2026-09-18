@@ -943,6 +943,11 @@ struct SystemTrayState
     int volumePercent = 50;
     bool volumeMuted;
     size_t hiddenIconCount = 5;
+    /// Input-language indicator text (e.g. "ENG"), shown right of the fixed
+    /// glyphs like the Windows 11 input indicator.
+    dstring languageLabel;
+    /// Full input-language name for the hover tooltip ("English (United States)").
+    dstring languageName;
 }
 
 /**
@@ -1263,6 +1268,7 @@ class Taskbar : Widget
     void delegate() onBatteryClick;
     void delegate() onWifiClick;
     void delegate() onHiddenIconsClick;
+    void delegate() onLanguageClick;
     void delegate() onSearchClick;
     /** Fired when a notification's hidden state changes (context menu / drag). */
     void delegate(size_t id, bool hidden) onNotificationHidden;
@@ -1611,7 +1617,9 @@ class Taskbar : Widget
             _tray.batteryPercent != value.batteryPercent ||
             _tray.volumePercent != value.volumePercent ||
             _tray.volumeMuted != value.volumeMuted ||
-            _tray.hiddenIconCount != value.hiddenIconCount)
+            _tray.hiddenIconCount != value.hiddenIconCount ||
+            _tray.languageLabel != value.languageLabel ||
+            _tray.languageName != value.languageName)
         {
             _tray = value;
             invalidate();
@@ -1630,10 +1638,11 @@ class Taskbar : Widget
         return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
     }
 
-    /** Global bounds of one system-tray icon (0=wifi, 1=volume, 2=battery, 3=hidden). */
+    /** Global bounds of one system-tray icon (0=wifi, 1=volume, 2=battery,
+     *  3=hidden, 4=input language). */
     Rect trayIconGlobalBounds(int index) const @safe pure nothrow @nogc
     {
-        if (index < 0 || index >= 4) return Rect.init;
+        if (index < 0 || index >= 5) return Rect.init;
         const origin = globalOrigin();
         const local = trayIconRect(index);
         return Rect(origin.x + local.x, origin.y + local.y, local.width, local.height);
@@ -1642,9 +1651,9 @@ class Taskbar : Widget
     /**
      * The currently hovered taskbar region as a signed code, for tests and
      * accessibility: -1 start, -3 clock, -4 show-desktop, -5 search,
-     * -6..-9 tray icons (wifi/volume/battery/chevron), >= 0 a task entry index,
-     * -2 none. Tray hovers use the negative block so they can never collide
-     * with a task-entry index.
+     * -6..-10 tray icons (wifi/volume/battery/hidden/language), >= 0 a task
+     * entry index, -2 none. Tray hovers use the negative block so they can
+     * never collide with a task-entry index.
      */
     int hotRegion() const @safe pure nothrow @nogc
     {
@@ -2264,7 +2273,7 @@ class Taskbar : Widget
     private enum int trayIconGap = 4;
     // Tray glyph size. 16 logical maps to the OS's 20 px tray icon at 125% DPI.
     private enum int trayGlyphSize = 16;
-    private enum int fixedTrayCount = 4; // wifi, volume, battery, hidden chevron
+    private enum int fixedTrayCount = 5; // wifi, volume, battery, hidden, language
 
     // Right edge of the fixed glyph block (start packing notifications left).
     private int fixedTrayLeftX() const @safe pure nothrow @nogc
@@ -2347,7 +2356,7 @@ class Taskbar : Widget
     private int trayIconHit(Point point) const @safe pure nothrow @nogc
     {
         if (!_modernShell) return -1;
-        foreach (index; 0 .. 4)
+        foreach (index; 0 .. 5)
             if (trayIconRect(index).contains(point)) return index;
         return -1;
     }
@@ -3119,8 +3128,8 @@ class Taskbar : Widget
                 continue;
             }
             const notifRect = notificationIconRect(cast(size_t) seen);
-            // Hover code for notifications: -10.. (see onMouseMove).
-            if (_hot == -(10 + seen))
+            // Hover code for notifications: -11.. (see onMouseMove).
+            if (_hot == -(11 + seen))
                 canvas.fillRoundedRect(notifRect, 5, palette.taskbarHover);
             const nicon = Rect(notifRect.x + (trayIconWidth - iconSize) / 2,
                 (bounds().height - iconSize) / 2, iconSize, iconSize);
@@ -3166,6 +3175,16 @@ class Taskbar : Widget
         drawIcon(canvas, IconKind.chevronUp,
             iconRect.translated((trayIconWidth + trayIconGap) * 3, 0),
             Color.rgb(245, 248, 252), palette.accent);
+
+        // 4: input-language indicator (e.g. "ENG"), immediately left of the
+        // clock like the Windows 11 input indicator.
+        const languageRect = trayIconRect(4);
+        if (_hot == -10) canvas.fillRoundedRect(languageRect, 5, palette.taskbarHover);
+        const languageText = _tray.languageLabel.length > 0 ?
+            _tray.languageLabel : "ENG"d;
+        canvas.drawTextInRect(languageRect, languageText,
+            Color.rgb(245, 248, 252), 1, HorizontalAlign.center,
+            VerticalAlign.middle, true);
     }
 
     // --- Tooltip --------------------------------------------------------
@@ -3180,17 +3199,19 @@ class Taskbar : Widget
         if (code == -4) return _showDesktopWindows.length == 0 ?
             "Show desktop"d : "Restore windows"d;
         if (code == -5) return "Search"d;
-        if (code >= -9 && code <= -6)
+        if (code >= -10 && code <= -6)
         {
-            const tray = -6 - code; // 0 wifi, 1 volume, 2 battery, 3 hidden
+            const tray = -6 - code; // 0 wifi, 1 volume, 2 battery, 3 hidden, 4 language
             if (tray == 0) return "Wi-Fi"d;
             if (tray == 1) return "Volume"d;
             if (tray == 2) return "Battery"d;
             if (tray == 3) return "Hidden icons"d;
+            if (tray == 4) return _tray.languageName.length > 0 ?
+                _tray.languageName : "Input language"d;
         }
-        if (code <= -10)
+        if (code <= -11)
         {
-            const order = -10 - code;
+            const order = -11 - code;
             if (order >= 0 && order < notificationCountForTooltip())
                 return notificationLabelForTooltip(order);
         }
@@ -3237,10 +3258,10 @@ class Taskbar : Widget
         if (code == -3) return clockRect();
         if (code == -4) return showDesktopRect();
         if (code == -5) return searchRect();
-        if (code >= -9 && code <= -6) return trayIconRect(-6 - code);
-        if (code <= -10)
+        if (code >= -10 && code <= -6) return trayIconRect(-6 - code);
+        if (code <= -11)
         {
-            const order = -10 - code;
+            const order = -11 - code;
             if (order >= 0 && order < notificationCountForTooltip())
                 return notificationIconRect(cast(size_t) order);
         }
@@ -3504,9 +3525,9 @@ class Taskbar : Widget
         else if (clockRect().contains(event.position)) hot = -3;
         else if (searchRect().contains(event.position)) hot = -5;
         else if (notificationHit(event.position) >= 0)
-            hot = -(10 + notificationHit(event.position));
+            hot = -(11 + notificationHit(event.position));
         else if (trayIconHit(event.position) >= 0)
-            // Distinct negative codes (-6..-9) so a tray hover can never be
+            // Distinct negative codes (-6..-10) so a tray hover can never be
             // mistaken for a task-entry index (0..N); otherwise the first few
             // entries also highlight when the pointer is over a tray icon.
             hot = -6 - trayIconHit(event.position);
@@ -3689,6 +3710,9 @@ class Taskbar : Widget
                         break;
                     case 3:
                         if (onHiddenIconsClick !is null) onHiddenIconsClick();
+                        break;
+                    case 4:
+                        if (onLanguageClick !is null) onLanguageClick();
                         break;
                     default:
                         break;

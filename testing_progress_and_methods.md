@@ -4,6 +4,95 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora Desktop: Windows-style tray flyouts + input-language indicator (2026-09-18)
+
+**Request (user, 4 screenshots).** The network/Wi-Fi, battery, volume and input
+language Windows flyouts, matched in Aurora; also make the real Windows system
+icons shown in Aurora's cluster open those flyouts.
+
+**What changed.**
+- `auroradesktop/inputlang.d` (new): `inputLanguages()`, `activeInputLanguage()`,
+  `activateInputLanguage()`, `inputLanguageAbbrev()/Name()/Keyboard()`. Uses
+  `GetKeyboardLayoutList`, `GetLocaleInfoW` (`LOCALE_SLANGUAGE` /
+  `LOCALE_SCOUNTRY`), `MAKELCID`, and `WM_INPUTLANGCHANGEREQUEST`. NB:
+  `GetKeyboardLayoutNameW` reports the *calling thread's* layout, not an
+  arbitrary HKL, so the keyboard description is derived from the language id
+  (`format("0000%04x", langid)`) and a KLID table.
+- Vendor `aurora/widgets/desktop.d`: `SystemTrayState.languageLabel/Name`;
+  `fixedTrayCount = 5` (0 wifi, 1 volume, 2 battery, 3 hidden, 4 language);
+  language glyph drawn with `canvas.drawTextInRect` in slot 4 (right of the
+  chevron, immediately left of the clock); `onLanguageClick`; hover codes for
+  trays are -6..-10 and notifications moved to -11.. (both `paintTray` and
+  `onMouseMove`, `tooltipForRegion`, `tooltipAnchorForRegion`);
+  `trayIconGlobalBounds` accepts 0..4.
+- `auroradesktop/tray.d`: shared `TrayPanel` paints the flyout surface (the
+  `PopupOverlay` paints only backdrop + shadow, which is why every panel was
+  transparent before). Volume/Battery/Wifi rebuilt to the Windows layouts and a
+  new `LanguagePanel`/`LanguageRow` added. Custom vector glyphs for the
+  quick-toggle tiles live in `drawQuickGlyph` (IconKind has no airplane /
+  hotspot shapes).
+- `auroradesktop/app.d`: publishes `languageLabel`/`languageName` in
+  `refreshTray()`, refreshes an open language panel, opens it on
+  `onLanguageClick` (anchor `trayIconGlobalBounds(4)`), wires the battery /
+  airplane-mode / mobile-hotspot settings links, and `activateTrayIcon` maps
+  native system-icon labels to the Aurora flyouts before falling back to
+  `ms-settings`.
+
+**How to test (reproducible, software renderer -> reliable pixels).**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d -of=build\headless-smoke.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> "aurora-desktop headless smoke: ALL PASSED"
+ffmpeg -hide_banner -loglevel error -y -i build\headless-desktop-tray-wifi.ppm build\headless-desktop-tray-wifi.png
+ffmpeg -hide_banner -loglevel error -y -i build\headless-desktop-tray-volume.ppm build\headless-desktop-tray-volume.png
+ffmpeg -hide_banner -loglevel error -y -i build\headless-desktop-tray-battery.ppm build\headless-desktop-tray-battery.png
+ffmpeg -hide_banner -loglevel error -y -i build\headless-desktop-tray-language.ppm build\headless-desktop-tray-language.png
+```
+Guards: all five tray glyphs have bounds and hover codes 0:-6 .. 4:-10; the tray
+publishes a non-empty `languageLabel`; clicking glyph 4 opens a `LanguagePanel`;
+the volume mute is driven through the new icon-only button
+(`VolumePanel.muteButtonForTesting()`); the WiFi panel still shows the scanning
+indicator (`widgetHasText(popup, "Scanning")`). The bitmap screenshots were
+inspected against the four Windows references and match.
+
+## Aurora Desktop: native tray-icon left-click (2026-09-18)
+
+**Request (user).** Screenshots of the Windows notification area: clicking a
+native tray icon should behave like Windows (let the owning app react) rather
+than relaunch the app.
+
+**Contract (verified, Microsoft Learn `NOTIFYICONDATAW`).** "When the uVersion
+member is either 0 or NOTIFYICON_VERSION, the wParam parameter of the message
+contains the identifier of the taskbar icon ... The lParam parameter holds the
+mouse or keyboard message associated with the event. For example, when the
+pointer moves over a taskbar icon, lParam is set to WM_MOUSEMOVE." So for
+version 0 and version 3 icons the owner expects `wParam = id`,
+`lParam = WM_LBUTTONUP` for a left-click and `WM_RBUTTONUP` for a right-click
+(`NIN_SELECT`/`NIN_KEYSELECT`/`WM_CONTEXTMENU` are keyboard / version-4 cases).
+This project's own `aurora-stream` tray (`trayicon.d handleTrayCallback`) parses
+exactly this packing.
+
+**Fix.** `tasks.d` gained `postTrayPrimaryClick(hwnd, callbackMessage, id)`
+(posts `WM_LBUTTONUP`) and a shared `usableTrayCallback` guard; the existing
+`postTrayContextMenu` now uses the same guard. `app.d`
+`refreshNotifications` wires each application icon's action to
+`invokeTrayIcon(id,label)`, which posts the primary click via
+`postNotificationPrimaryClick`, keeps the Settings-page behavior for Windows
+system icons (tracked in a new `_notificationSystem` map), and falls back to
+`activateOrLaunchApp` (focus the running window, else launch) when there is no
+usable callback. The overflow panel's label action uses the same path.
+
+**How to test.**
+```
+dmd -i -version=AuroraHeadless -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d -of=build\headless-smoke.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lwinmm.lib -Lwininet.lib -Lwlanapi.lib -Lole32.lib -Lpowrprof.lib
+build\headless-smoke.exe   rem -> "aurora-desktop headless smoke: ALL PASSED"
+```
+`testTrayClickAction` clicks a notification carrying an action and asserts it
+ran exactly once, clicks a notification without an action and asserts nothing
+ran, then checks `postTrayPrimaryClick`/`postTrayContextMenu` reject null and
+out-of-range callbacks and return true when posting to a real HWND
+(`GetDesktopWindow`). Live delivery to a specific third-party app is the user's
+to confirm on click; the packing itself is fixed by the SDK contract above.
+
 ## Aurora Desktop: dragged notification floater clipped by the taskbar (2026-09-17)
 
 **Complaint (user).** "desktop is on top of dragged notif icon so it hides the
