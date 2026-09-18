@@ -108,6 +108,7 @@ final class DesktopRoot : Widget
         _state = loadDesktopState();
         if (_state.windows.length == 0)
             _state = defaultState();
+        startupMark("loadDesktopState done");
         // Hide the Aurora-rendered system cursor per the persisted preference.
         // The DesktopRoot has no direct window reference until run(); the app
         // re-applies this in setShellWindow (see below).
@@ -128,18 +129,12 @@ final class DesktopRoot : Widget
         configureDesktopIcon(trashIcon, false);
         // Show the real Windows Desktop contents (files, shortcuts, folders)
         // so the shell matches the user's actual desktop; double-click opens the
-        // item through the shell.
+        // item through the shell. The real shell icon for each item is fetched
+        // lazily in onTick: SHGetFileInfoW for 400+ files blocked the first
+        // frame for over a second.
         foreach (entry; enumerateDesktopEntries())
-        {
-            const path = entry.path;
-            const iconKind = entry.directory ? IconKind.folder :
-                iconKindForFile(entry.name);
-            auto item = _desktop.addIcon(entry.name, iconKind,
-                delegate() { openDesktopEntry(path); });
-            auto shellIcon = fileIcon(path);
-            if (shellIcon !is null) item.setIconImage(shellIcon);
-            configureDesktopIcon(item);
-        }
+            addDesktopEntry(entry.name, entry.path, entry.directory);
+        startupMark("desktop entries done (icons pending)");
         _desktop.onRefresh = delegate()
         {
             reloadDesktopEntries();
@@ -156,6 +151,7 @@ final class DesktopRoot : Widget
         // Paint the user's real Windows wallpaper behind the desktop icons.
         auto wallpaperImage = loadWallpaperImage(currentWallpaperPath());
         if (wallpaperImage !is null) _desktop.setWallpaper(wallpaperImage);
+        startupMark("windows + wallpaper done");
 
         _taskbar.onStart = delegate() { toggleStartMenu(); };
         // Show Desktop must affect the real running programs, not just the
@@ -270,8 +266,10 @@ final class DesktopRoot : Widget
         _taskbar.setActiveWindow(_notepadWindow);
 
         _volume = systemVolume();
+        startupMark("pinned tasks/apps + volume done");
 
         refreshTray();
+        startupMark("refreshTray done");
         _taskbar.onNotificationHidden = delegate(size_t id, bool hidden)
         {
             foreach (key, value; _notificationIds)
@@ -302,7 +300,9 @@ final class DesktopRoot : Widget
             }
         };
         refreshNotifications();
+        startupMark("refreshNotifications done");
         syncExternalTasks();
+        startupMark("syncExternalTasks done (constructor end)");
     }
 
     // --- pinned taskbar apps ---------------------------------------------
@@ -1250,6 +1250,47 @@ import std.string : toLower;
         }
     }
 
+    // Desktop shortcuts whose real shell icon still has to be fetched. Extracting
+    // these synchronously for 400+ files delayed the first frame by >1 s, so they
+    // are drained a few per frame (see processPendingDesktopIcons).
+    private DesktopIcon[] _pendingIconTargets;
+    private string[] _pendingIconPaths;
+    private size_t _pendingIconCursor;
+
+    /// Add one real Desktop-folder item and queue its shell icon for lazy load.
+    private void addDesktopEntry(string name, string path, bool directory)
+    {
+        const iconKind = directory ? IconKind.folder : iconKindForFile(name);
+        auto item = _desktop.addIcon(name, iconKind,
+            delegate() { openDesktopEntry(path); });
+        _pendingIconTargets ~= item;
+        _pendingIconPaths ~= path;
+        configureDesktopIcon(item);
+    }
+
+    /// Fetch a bounded number of pending shell icons so the shell never stalls.
+    private void processPendingDesktopIcons()
+    {
+        enum int perTick = 8;
+        int processed;
+        while (_pendingIconCursor < _pendingIconPaths.length &&
+            processed < perTick)
+        {
+            const index = _pendingIconCursor++;
+            ++processed;
+            auto target = _pendingIconTargets[index];
+            if (target is null) continue;
+            auto icon = fileIcon(_pendingIconPaths[index]);
+            if (icon !is null) target.setIconImage(icon);
+        }
+        if (_pendingIconCursor >= _pendingIconPaths.length)
+        {
+            _pendingIconTargets.length = 0;
+            _pendingIconPaths.length = 0;
+            _pendingIconCursor = 0;
+        }
+    }
+
     /// Re-scan the real Desktop folders and add any items not already shown.
     private void reloadDesktopEntries()
     {
@@ -1262,14 +1303,7 @@ import std.string : toLower;
         foreach (entry; enumerateDesktopEntries())
         {
             if (entry.name in present) continue;
-            const path = entry.path;
-            const iconKind = entry.directory ? IconKind.folder :
-                iconKindForFile(entry.name);
-            auto item = _desktop.addIcon(entry.name, iconKind,
-                delegate() { openDesktopEntry(path); });
-            auto shellIcon = fileIcon(path);
-            if (shellIcon !is null) item.setIconImage(shellIcon);
-            configureDesktopIcon(item);
+            addDesktopEntry(entry.name, entry.path, entry.directory);
         }
     }
 
@@ -1789,6 +1823,7 @@ import std.string : toLower;
                 _externalGroupKeys[t.hwnd] = cachedKey !is null ? *cachedKey :
                     externalTaskGroupKey(t.hwnd);
             }
+            if (!_startupFirstTickDone) startupMark("sync: group keys");
 
             // Keep "active external window" fresh: while an external window is
             // foreground it is the active one; if it closed or was minimized,
@@ -1827,6 +1862,7 @@ import std.string : toLower;
                     _taskbar.setPinnedAppRunning(a.exePath, members, titles);
                 }
             }
+            if (!_startupFirstTickDone) startupMark("sync: pinned apps");
 
             foreach (t; tasks)
             {
@@ -1874,6 +1910,7 @@ import std.string : toLower;
                         _thumbnailCache[t.hwnd] = image;
                 }
             }
+            if (!_startupFirstTickDone) startupMark("sync: per-task icons/thumbnails");
             // Remove entries whose window is gone.
             foreach (hwnd; _externalHwnds)
             {
@@ -2026,7 +2063,24 @@ import std.string : toLower;
     // Optional frame-time readout for performance diagnosis: set
     // AURORA_DESK_STATS=1 and the titlebar shows the last scene/render pass
     // cost. Off by default (and only on Windows).
+    private bool _startupFirstTickDone;
     private double _statsTitleAccumulator = 0.0;
+    private long _reportMaxSceneMicros;
+    private long _reportMaxRenderMicros;
+    private long _lastSyncMicros;
+    private long _lastNotificationsMicros;
+    private long _lastTrayMicros;
+    private long _lastPersistMicros;
+
+    /// Time a periodic block and return its duration in microseconds.
+    private static long timeBlock(scope void delegate() body)
+    {
+        import core.time : MonoTime;
+        const started = MonoTime.currTime;
+        body();
+        return (MonoTime.currTime - started).total!"usecs";
+    }
+
     private void maybeReportFrameStats(double deltaSeconds)
     {
         version (Windows)
@@ -2036,22 +2090,37 @@ import std.string : toLower;
                 statsEnabled = environment.get("AURORA_DESK_STATS", "") == "1" ?
                     1 : 0;
             if (statsEnabled != 1 || _window is null) return;
+            if (_window.lastSceneMicros() > _reportMaxSceneMicros)
+                _reportMaxSceneMicros = _window.lastSceneMicros();
+            if (_window.lastRenderMicros() > _reportMaxRenderMicros)
+                _reportMaxRenderMicros = _window.lastRenderMicros();
             _statsTitleAccumulator += deltaSeconds;
             if (_statsTitleAccumulator < 0.5) return;
             _statsTitleAccumulator = 0.0;
             const stats = _window.compositorStats();
-            _window.setTitle("Aurora Desktop [scene=" ~
-                to!string(_window.lastSceneMicros()) ~ "us render=" ~
-                to!string(_window.lastRenderMicros()) ~ "us layer=" ~
-                to!string(stats.layerBuilds) ~ " frames=" ~
+            _window.setTitle("Aurora Desktop [maxScene=" ~
+                to!string(_reportMaxSceneMicros / 1000.0) ~ " maxRender=" ~
+                to!string(_reportMaxRenderMicros / 1000.0) ~ " sync=" ~
+                to!string(_lastSyncMicros / 1000.0) ~ " notif=" ~
+                to!string(_lastNotificationsMicros / 1000.0) ~ " tray=" ~
+                to!string(_lastTrayMicros / 1000.0) ~ " persist=" ~
+                to!string(_lastPersistMicros / 1000.0) ~ " frames=" ~
                 to!string(stats.frames) ~ "]");
+            _reportMaxSceneMicros = 0;
+            _reportMaxRenderMicros = 0;
         }
     }
 
     protected override void onTick(double deltaSeconds)
     {
         super.onTick(deltaSeconds);
+        if (!_startupFirstTickDone)
+        {
+            _startupFirstTickDone = true;
+            startupMark("first onTick (window rendering)");
+        }
         _elapsedSeconds += deltaSeconds;
+        processPendingDesktopIcons();
         updateTaskPreviewHover(deltaSeconds);
         maybeReportFrameStats(deltaSeconds);
         // After an input-language change the OS applies it on its own thread,
@@ -2071,28 +2140,28 @@ import std.string : toLower;
         if (_clockAccumulator >= 2.0)
         {
             _clockAccumulator = 0.0;
-            refreshTray();
+            _lastTrayMicros = timeBlock(() { refreshTray(); });
         }
         pollWifiPanel(deltaSeconds);
         _stateSaveAccumulator += deltaSeconds;
         if (_stateSaveAccumulator >= 10.0)
         {
             _stateSaveAccumulator = 0.0;
-            persistState();
+            _lastPersistMicros = timeBlock(() { persistState(); });
         }
         // Sync live external OS tasks into the taskbar every second.
         _externalTaskAccumulator += deltaSeconds;
         if (_externalTaskAccumulator >= 1.0)
         {
             _externalTaskAccumulator = 0.0;
-            syncExternalTasks();
+            _lastSyncMicros = timeBlock(() { syncExternalTasks(); });
         }
         // Refresh the real tray icons periodically (apps add/remove them).
         _notificationRefreshAccumulator += deltaSeconds;
         if (_notificationRefreshAccumulator >= notificationRefreshSeconds)
         {
             _notificationRefreshAccumulator = 0.0;
-            refreshNotifications();
+            _lastNotificationsMicros = timeBlock(() { refreshNotifications(); });
         }
     }
 
@@ -2144,9 +2213,23 @@ private void runInteractionBenchmark(GuiWindow window, DesktopRoot root,
     string outputPath)
 {
     import aurora.testing : UiTestDriver;
+    import aurora.widgets.popup : currentTransientPopup;
+    import aurora.widgets.desktop : FloatingWindow, Taskbar;
+    import auroradesktop.tray : LanguagePanel, LanguageRow;
     import std.datetime.stopwatch : StopWatch, AutoStart;
     import std.file : write;
     import std.format : format;
+
+    T findFirst(T)(Widget widget)
+    {
+        if (cast(T) widget !is null) return cast(T) widget;
+        foreach (child; widget.children())
+        {
+            auto found = findFirst!T(child);
+            if (found !is null) return found;
+        }
+        return null;
+    }
 
     auto clientSize = root.bounds();
     auto driver = new UiTestDriver(window);
@@ -2213,14 +2296,102 @@ private void runInteractionBenchmark(GuiWindow window, DesktopRoot root,
             driver.paint();
         });
 
+    // In-shell window resize: the most recently added interaction and the one
+    // the user reported as non-smooth.
+    auto floating = findFirst!FloatingWindow(root);
+    if (floating !is null)
+    {
+        floating.setBounds(Rect(200, 150, 400, 300));
+        driver.paint();
+        Point resizeStart;
+        phase("window-resize", 60, (int i)
+        {
+            if (i == 0)
+            {
+                const origin = floating.globalOrigin();
+                const bounds = floating.bounds();
+                resizeStart = Point(origin.x + bounds.width - 1,
+                    origin.y + bounds.height - 1);
+                driver.moveTo(resizeStart);
+                driver.mouseDown();
+            }
+            driver.moveTo(Point(resizeStart.x + i * 3, resizeStart.y + i * 2));
+            driver.paint();
+            if (i == 59) driver.mouseUp();
+        });
+        report ~= format("resized window bounds after=%s\n",
+            floating.bounds());
+    }
+
+    // Language flyout: open it through the real tray-icon click path and click
+    // a row - the interaction reported as impossible. No OS cursor involved.
+    {
+        auto taskbar = root.taskbarForTesting();
+        const anchor = taskbar.trayIconGlobalBounds(4);
+        driver.click(Point(anchor.x + anchor.width / 2,
+            anchor.y + anchor.height / 2));
+        driver.paint();
+        auto popup = currentTransientPopup(root);
+        bool fired;
+        bool hadRow;
+        if (popup !is null)
+        {
+            auto panel = findFirst!LanguagePanel(popup);
+            auto row = findFirst!LanguageRow(popup);
+            hadRow = row !is null;
+            if (panel !is null && row !is null)
+            {
+                panel.onSelect = delegate(size_t) { fired = true; };
+                const origin = row.globalOrigin();
+                const bounds = row.bounds();
+                driver.click(Point(origin.x + bounds.width / 2,
+                    origin.y + bounds.height / 2));
+                driver.paint();
+            }
+        }
+        report ~= format("language-row-click: popup=%s row=%s onSelect=%s\n",
+            popup !is null ? "yes" : "no", hadRow ? "yes" : "no",
+            fired ? "yes" : "no");
+    }
+
     const stats = window.compositorStats();
     report ~= format("frames=%d base=%d layer=%d order=%d\n", stats.frames,
         stats.baseBuilds, stats.layerBuilds, stats.layerOrderBuilds);
     write(outputPath, report);
 }
 
+/// When AURORA_DESK_STATS=1, append startup phase timings to
+/// aurora_startup.log so the "window takes N seconds to appear" path can be
+/// profiled without a console.
+version (Windows)
+{
+    private import core.time : MonoTime;
+    private MonoTime _startupClock;
+    private bool _startupClockSet;
+}
+
+private void startupMark(string label)
+{
+    version (Windows)
+    {
+        import std.process : environment;
+        if (environment.get("AURORA_DESK_STATS", "") != "1") return;
+        import std.file : append;
+        import std.format : format;
+        const now = MonoTime.currTime;
+        if (!_startupClockSet)
+        {
+            _startupClock = now;
+            _startupClockSet = true;
+        }
+        append("aurora_startup.log", format("%6d ms  %s\n",
+            (now - _startupClock).total!"msecs", label));
+    }
+}
+
 int run(string[] args)
 {
+    startupMark("run() entered");
     WindowOptions options;
     options.title = "Aurora Desktop";
     options.width = 1280;
@@ -2244,10 +2415,13 @@ int run(string[] args)
     }
 
     auto window = new GuiWindow(options, Theme.dark());
+    startupMark("GuiWindow created");
     auto root = new DesktopRoot();
+    startupMark("DesktopRoot constructed");
     root.onToggleFullscreen = delegate() { window.toggleFullscreen(); };
     window.setRoot(root);
     root.setShellWindow(window);
+    startupMark("root attached");
     window.setTitle(options.title ~ " — " ~ window.rendererName() ~
         " — built " ~ _buildTime);
 
@@ -2270,3 +2444,4 @@ int run(string[] args)
 
     return window.run();
 }
+

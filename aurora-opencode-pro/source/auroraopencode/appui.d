@@ -6340,6 +6340,10 @@ public final class OpenCodeRoot : VBox
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
+        // The OpenCode gateway routes by a stable per-conversation id; it
+        // rejects requests without one. The first message id is stable for
+        // this conversation across turns and restarts.
+        _client.setOpenCodeSession(sessionRoutingKey(*session));
         _client.startChatMessages(messages, tools, _settings.model,
             _settings.thinking, ++_nextRequestId);
         _activeRequestId = _nextRequestId;
@@ -6672,10 +6676,38 @@ public final class OpenCodeRoot : VBox
     private void applyModels(string[] modelIds)
     {
         _models = modelIds.dup;
+        // The OpenCode Go endpoint's /models lists models served over other
+        // API shapes (Anthropic /messages, OpenAI /responses). This client
+        // speaks /chat/completions only, so drop those ids instead of letting
+        // the picker offer a model whose request would fail. Keep the full list
+        // if filtering leaves nothing (an unexpected catalog change).
+        if (isOpenCodeApiBaseUrl(_client.baseUrl()))
+        {
+            string[] chatModels;
+            foreach (model; _models)
+                if (openCodeGoSupportsChatCompletions(model))
+                    chatModels ~= model;
+            if (chatModels.length > 0) _models = chatModels;
+        }
         if (_models.length == 0) _models = defaultModels.dup;
         bool found;
         foreach (model; _models)
             if (model == _settings.model) found = true;
+        if (!found)
+        {
+            // A model saved while the other provider was active can still
+            // identify the same model: CommandCode uses `vendor/model` ids and
+            // OpenCode the bare id. Match on the normalized form rather than
+            // silently jumping to the first model in the list.
+            const wanted = normalizedModelId(_settings.model);
+            foreach (model; _models)
+            {
+                if (normalizedModelId(model) != wanted) continue;
+                _settings.model = model;
+                found = true;
+                break;
+            }
+        }
         if (!found && _models.length > 0)
             _settings.model = _models[0];
         if (!_client.busy())

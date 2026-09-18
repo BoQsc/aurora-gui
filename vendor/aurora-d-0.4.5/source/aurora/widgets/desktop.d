@@ -981,6 +981,9 @@ class FloatingWindow : Widget
             _resizeEdge = edge;
             _resizeStartPointer = pointerPosition(event);
             _resizeStartBounds = bounds();
+            // Stretch the cached layer while dragging: content re-layout is
+            // deferred to the release so resizing stays smooth.
+            setResizeStretch(true);
             setCursor(cursorForEdge(edge));
             captureMouse();
             return true;
@@ -1098,6 +1101,8 @@ class FloatingWindow : Widget
             _resizeEdge = 0;
             releaseMouse();
             setCursor(CursorKind.arrow);
+            // One final layout+paint at the settled size.
+            setResizeStretch(false);
             return true;
         }
         if (_dragging)

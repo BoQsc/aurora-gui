@@ -4,6 +4,60 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode: OpenCode Go endpoint + markdown crash (2026-09-18)
+
+**Context.** The clients were pointed back at the real OpenCode Go gateway
+(`https://opencode.ai/zen/go/v1`) after a CommandCode detour, and the reported
+random crashes of both OpenCode clients were fixed.
+
+**Endpoint contract (verified live 2026-09-18).**
+- `x-opencode-session: <stable id>` is REQUIRED. Without it the gateway answers
+  `MissingSessionID`. The client derives one per conversation from the first
+  message id (`sessionRoutingKey()`), so it survives edits and restarts.
+- A product User-Agent is expected (`aurora-opencode/0.66.9`). The browser UA
+  stays for CommandCode's Cloudflare; `opencode.ai` does not need it.
+- `reasoning_effort` accepts `low`/`high` (Thinking off -> omitted).
+- The catalog serves some models over Anthropic `/messages` or OpenAI
+  `/responses` (grok-4.6, gpt-5.6-luna, muse-spark-1.x-contributor,
+  minimax-m3/m2.7/m2.5, qwen3.8-max/flash, qwen3.7-max/plus, qwen3.6-plus).
+  This client speaks only `/chat/completions`, so
+  `openCodeGoSupportsChatCompletions()` filters them out of the picker.
+- Probe:
+  ```
+  curl -s https://opencode.ai/zen/go/v1/models -H "x-opencode-session: aurora-probe" -H "User-Agent: aurora-opencode/0.66.9"
+  curl -s https://opencode.ai/zen/go/v1/chat/completions -H "x-opencode-session: aurora-probe" -H "Content-Type: application/json" -d "{\"model\":\"deepseek-v4.1-flash\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"say AURORA-ZEN-OK\"}]}"
+  ```
+  Both return OK with the given `sk-...` key.
+
+**Crash root cause and how to test it.** `std.string.indexOf` returns
+`ptrdiff_t`; the inline-link branch in `markdown.d` compared that `-1` sentinel
+against unsigned indices and sliced with it, so `-1` became `size_t.max`. Debug
+builds trap it; release builds (shipped) slice past the array, corrupt the heap
+and later fault inside `MSVCR120.dll` (`memcpy` @ `0x3c369`, `0xc0000005`) at
+unrelated call sites. Reproduce/verify with the standalone fuzzer:
+```
+"C:\D\dmd2\windows\bin64\dmd.exe" -i -Iaurora-opencode-core\source -Ivendor\aurora-d-0.4.5\source md_fuzz.d -of=md_fuzz.exe
+md_fuzz.exe 4000
+```
+Old code: `ArraySliceError ... slice [99 .. 18446744073709551615] extends past
+source array of length 100` at `markdown.d(374)`. Fixed: all 4000 iterations
+pass. The regression is also in `headless_pro_smoke.d`
+(`verifyStrayBracketParsing()`, input `"(a [b)"`).
+
+**How to test the switch.**
+- Core: `dub test` in `aurora-opencode-core` -> "40 modules passed unittests".
+- Pro: `dub build --compiler=dmd --force --build=release` in
+  `aurora-opencode-pro`, then run `build\headless-pro-smoke.exe` -> "Aurora
+  OpenCode Pro headless smoke test passed."
+- Baseline: same in `aurora-opencode`, then `build\headless-smoke.exe` (it makes
+  a real chat request; needs the live key).
+- Settings file: `%APPDATA%\Aurora OpenCode\settings.json` must show
+  `baseUrl = https://opencode.ai/zen/go/v1`, `model = deepseek-v4.1-flash`,
+  and the `sk-...` key; CommandCode backup kept as
+  `settings.commandcode-backup.json`.
+- After any rebuild, kill the running exe and relaunch exactly one from the
+  package root (`dub build` writes the exe to the package root, not `build\`).
+
 ## Aurora Desktop: "frozen" shell was a stuck minimize (2026-09-18)
 
 **Symptom (user).** "entire aurora desktop program is frozen, not the first
@@ -10744,11 +10798,21 @@ aurora-desktop.exe --bench <outfile>
 ```
 It drives the retained tree with `aurora.testing.UiTestDriver` (real synthetic
 events through the real Vulkan render path) and writes avg/worst frame times for
-idle paint, icon hover, marquee and selection toggles, plus the compositor
-counters (`frames`, `base`, `layer`, `order`). Current numbers: idle 2.5 ms,
-hover 4.1 ms, marquee 3.8 ms, selection 3.4 ms; `base=1` (no base rebuild during
-interaction). Never use `SetCursorPos`/`mouse_event` for this - it hijacks the
-real cursor and is unreliable.
+idle paint, icon hover, marquee, selection toggles, in-shell window resize and a
+language-row click, plus the compositor counters (`frames`, `base`, `layer`,
+`order`). Current numbers: idle ~4.6 ms, hover ~6.4 ms, marquee ~6.3 ms,
+selection ~4.9 ms, resize ~4.5 ms; `base=1` (no base rebuild during
+interaction) and `language-row-click: ... onSelect=yes`. Never use
+`SetCursorPos`/`mouse_event` for this - it hijacks the real cursor and is
+unreliable.
+
+**In-shell window live-resize stretch.** `Widget.setResizeStretch(bool)` makes a
+composited layer keep its cached draw list when its bounds change; the renderer
+scales the existing geometry (it is NDC-relative) instead of re-running layout +
+paint. `FloatingWindow` sets it during an edge/corner drag and clears it on
+release (one crisp rebuild). This took resize from 15.6 ms/83 ms avg/worst to
+4.5 ms/7 ms. If you add a resize-like interaction, reuse this instead of calling
+`setBounds` in a loop.
 
 **Idle CPU sanity check.**
 ```

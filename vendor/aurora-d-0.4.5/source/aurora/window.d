@@ -1255,17 +1255,28 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             if (layer.visible() && cache.dirty)
             {
                 cache.dirty = false;
+                // Live-resize stretch: keep the cached content and let the
+                // renderer scale it (layer geometry is NDC-relative, so the new
+                // viewport stretches it) instead of re-running layout + paint on
+                // every pointer sample. The final size rebuilds once the drag
+                // ends and the widget clears the flag.
+                const stretch = layer.resizeStretch() &&
+                    cache.drawList !is null && cache.logicalSize.width > 0 &&
+                    cache.logicalSize.height > 0;
                 cache.logicalSize = logicalSize;
                 cache.framebufferSize = physicalSize;
-                cache.drawList.reset(logicalSize, physicalSize, _displayScale,
-                    Color.rgba(0, 0, 0, 0));
-                layer.layoutTree();
-                auto canvas = Canvas(cache.drawList, logicalSize.width, logicalSize.height)
-                    .translated(-layer.bounds().x, -layer.bounds().y);
-                layer.paintTree(canvas);
-                ++cache.revision;
-                ++_compositorStats.layerBuilds;
-                rebuiltContent = true;
+                if (!stretch)
+                {
+                    cache.drawList.reset(logicalSize, physicalSize, _displayScale,
+                        Color.rgba(0, 0, 0, 0));
+                    layer.layoutTree();
+                    auto canvas = Canvas(cache.drawList, logicalSize.width, logicalSize.height)
+                        .translated(-layer.bounds().x, -layer.bounds().y);
+                    layer.paintTree(canvas);
+                    ++cache.revision;
+                    ++_compositorStats.layerBuilds;
+                    rebuiltContent = true;
+                }
             }
 
             const origin = layer.preciseGlobalOrigin();

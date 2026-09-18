@@ -18,7 +18,7 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
-    OpenCodeToolDef, isLoopbackApiBaseUrl;
+    OpenCodeToolDef, isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
 import auroraopencode.logging : logError;
 
 /** Kinds of events the client delivers to the UI thread. */
@@ -130,11 +130,25 @@ private string wininetErrorText(DWORD code)
     return "WinINet error " ~ to!string(code);
 }
 
-/// The real opencode API sits behind Cloudflare and blocks non-browser clients
-/// (HTTP 1010), so requests identify as a desktop browser.
-private immutable string clientUserAgent =
+/// CommandCode's API (and the legacy opencode-api mirror) sit behind
+/// Cloudflare and block non-browser clients (HTTP 1010), so requests to those
+/// hosts identify as a desktop browser.
+private immutable string clientBrowserUserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " ~
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/// The OpenCode Go gateway explicitly asks clients to identify with their own
+/// product user agent rather than a generic SDK/browser string, and monitors
+/// traffic for abuse. Verified live: this UA is accepted (no Cloudflare 1010),
+/// unlike on the CommandCode host.
+private immutable string clientOpenCodeUserAgent = "aurora-opencode/0.66.9";
+
+/// The user agent to send to `baseUrl`'s host.
+private string userAgentFor(string baseUrl)
+{
+    return isOpenCodeApiBaseUrl(baseUrl)
+        ? clientOpenCodeUserAgent : clientBrowserUserAgent;
+}
 
 /**
  * Minimal OpenAI-compatible chat client over WinINet.
@@ -157,6 +171,10 @@ final class OpenCodeClient
     private bool _sessionClosed;
     private string _baseUrl;
     private string _apiKey;
+    // Stable per-conversation id for the OpenCode Go `x-opencode-session`
+    // routing header. The UI updates it when the active conversation changes;
+    // the constructor value covers requests made before any session exists.
+    private string _opencodeSession;
     private string _streamReasoning;
     private string _streamContent;
     private ulong _streamRequestId;
@@ -187,6 +205,8 @@ final class OpenCodeClient
         _mutex = new Mutex();
         _baseUrl = baseUrl;
         _apiKey = apiKey;
+        _opencodeSession = "aurora-session-" ~
+            to!string(MonoTime.currTime.ticks);
     }
 
     string baseUrl() const @safe pure nothrow @nogc { return _baseUrl; }
@@ -196,6 +216,14 @@ final class OpenCodeClient
     {
         _baseUrl = baseUrl;
         _apiKey = apiKey;
+    }
+
+    /// Set the stable conversation id sent as `x-opencode-session` to the
+    /// OpenCode gateway. Ignored when empty, so a caller without a session
+    /// keeps the constructor's per-run id.
+    void setOpenCodeSession(string value)
+    {
+        if (value.length > 0) _opencodeSession = value;
     }
 
     bool busy()
@@ -505,9 +533,11 @@ final class OpenCodeClient
                 InternetCloseHandle(request);
             }
 
-            string headers = "User-Agent: " ~ clientUserAgent ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
             if (_apiKey.length > 0)
                 headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            if (isOpenCodeApiBaseUrl(_baseUrl))
+                headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
             auto bodyBytes = cast(ubyte[]) body.dup;
@@ -684,9 +714,11 @@ final class OpenCodeClient
                 InternetCloseHandle(request);
             }
 
-            string headers = "User-Agent: " ~ clientUserAgent ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
             if (_apiKey.length > 0)
                 headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            if (isOpenCodeApiBaseUrl(_baseUrl))
+                headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
             if (!HttpSendRequestW(request, toUTF16z(headers), -1, null, 0))
                 throw new Exception("Could not open the models URL (" ~
                     wininetErrorText(GetLastError()) ~ ").");

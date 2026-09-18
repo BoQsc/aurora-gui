@@ -1,5 +1,103 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora OpenCode: back to the real OpenCode Go endpoint + frequent-crash fix (FIXED, verified)
+
+**Requests (user).** Point Aurora OpenCode at the real OpenCode endpoint and key
+(CommandCode postponed until tomorrow), and investigate the frequent crashes of
+`aurora-opencode` / `aurora-opencode-pro`.
+
+**Endpoint switch.** The CommandCode detour (2026-09-13, below) is reverted:
+- `core.d`: `defaultBaseUrl = opencodeGoBaseUrl`
+  (`https://opencode.ai/zen/go/v1`); new `commandcodeBaseUrl` constant keeps the
+  CommandCode mirror available for tomorrow; the Go URL was removed from
+  `legacyBaseUrls` (it is current, not retired).
+- `defaultModel = "deepseek-v4.1-flash"` (bare id, as the Go gateway serves it);
+  `defaultModels` refreshed to the Go chat-completions subset.
+- **The Go gateway rejects requests without a stable `x-opencode-session`
+  header** (`MissingSessionID`) and asks clients to identify with their own
+  product User-Agent. High/low `reasoning_effort` are both accepted. A few Go
+  models are served over `/messages` or `/responses`, which this client cannot
+  speak, so `openCodeGoSupportsChatCompletions()` hides them from the picker.
+- `normalizedModelId()` strips a `vendor/` segment so a model saved under
+  CommandCode (`deepseek/deepseek-v4.1-flash`) is recognized under OpenCode and
+  vice versa; `sessionRoutingKey()` derives a stable per-conversation id from the
+  first message id; `readDefaultKeyFile()` prefers the `opencode-go` provider in
+  `~/.local/share/opencode/auth.json`.
+- `opencode_client.d`: sends `x-opencode-session` and a product UA
+  (`aurora-opencode/0.66.9`) to `opencode.ai` (browser UA retained for
+  CommandCode's Cloudflare).
+- Pro + baseline `appui.d`: `applyModels` filters by
+  `openCodeGoSupportsChatCompletions` and matches via `normalizedModelId`.
+
+**Crash root cause (diagnosed, not guessed).** In `core.d`/`markdown.d` inline
+link parsing, `std.string.indexOf` returns `ptrdiff_t` and `-1` means "not
+found". That sentinel was compared against unsigned indices and used as a slice
+bound, promoting `-1` to `size_t.max`. Release builds (the shipped builds) have
+bounds checks off, so the oversized slice was copied into the run list and
+corrupted the heap; the process then died later inside `MSVCR120.dll`
+(`memcpy`, offset `0x3c369`, `0xc0000005`) at arbitrary call sites
+(`canvas.drawLayout`, `markdown.composeRuns`), which is why the crashes looked
+random. A fuzzer reproduced it deterministically: `ArraySliceError` at
+`markdown.d(374)` — `slice [99 .. 18446744073709551615] extends past source
+array of length 100`.
+
+**Fix.** Validate the signed sentinel (`closeIndex > 0`) and `cast(size_t)`
+before any comparison or slice, for both the `]` and `)` lookups
+(`markdown.d`, link branch).
+
+**Verification.** `dub test` on `aurora-opencode-core` -> "40 modules passed
+unittests"; Pro release build + `headless_pro_smoke.exe` pass (new
+`verifyStrayBracketParsing()` feeds `"(a [b)"` and guards the exact path);
+baseline release + `headless_smoke.exe` pass with a live chat through the new
+endpoint (model button `deepseek-v4.1-flash`). The markdown fuzzer
+(`md_fuzz.exe`, 4000 iterations of pathological Unicode) passes after the fix
+and fails on the old code. Live `curl` of `/models` and `/chat/completions`
+with the session header return OK; the app returned `AURORA-ZEN-OK`. Live
+settings updated to the Go base URL/key/model; backups kept
+(`settings.commandcode-backup.json`, `sessions.pre-crashcheck.bak`). No
+unexpected exit since the fix (the crash cluster was 2026-09-15 09:21-12:16).
+App rebuilt and relaunched as exactly one instance.
+
+## 2026-09-18 - Aurora Desktop: window resize non-smooth + language select (FIXED, verified in-app)
+
+**Complaints (user).** "Impossible to select the language now ... Window resizing
+is incredibly non-smooth, non performant, you have lots of work to do to improve
+performance of entire aurora desktop without breaking anything."
+
+**Language (root cause + fix).** `LanguageRow` (and a volume device row and a
+WiFi quick-action tile) tested `bounds().contains(event.position)`; `bounds()` is
+parent-relative while `event.position` is widget-local, so rows placed below the
+panel origin never matched a click and `onSelect` never fired. Replaced with
+`containsLocal(event.position)`. Also removed the `hkl ==
+activeInputLanguage()` early-return (the panel's highlighted layout and the
+freshly-read foreground layout can disagree) and added a short tray-refresh
+burst so the indicator updates within ~0.15 s instead of waiting for the 2 s
+cadence. **Verified in the real app** by the in-process benchmark:
+`language-row-click: popup=yes row=yes onSelect=yes`. The smoke now also clicks
+a row through the real `PopupOverlay` hosting path (`findWidget!LanguagePanel`
++ `findWidget!LanguageRow`), not a bare panel.
+
+**Resize (root cause + fix).** Every resize pointer sample called
+`FloatingWindow.setBounds`, which re-ran `layoutTree` and re-painted the whole
+window layer (the embedded word-wrapped TextArea reflowed each move). Added a
+compositor live-resize stretch: `Widget.setResizeStretch(true)` keeps the
+already-recorded layer and lets the renderer scale it (layer geometry is
+NDC-relative) instead of rebuilding; the floating window sets it while an
+edge/corner drag is in progress and clears it on release for one crisp rebuild.
+In-process Vulkan benchmark:
+
+```
+window-resize   before: avg=15.61ms worst=83.64ms
+window-resize   after:  avg= 4.54ms worst= 7.01ms
+```
+
+**Full in-process benchmark (after, 427 icons):** idle 4.65ms, icon-hover
+6.36ms, marquee 6.33ms, selection 4.87ms, resize 4.54ms, `base=1`.
+
+**Method note.** All of this is driven in-process with
+`aurora-desktop.exe --bench <outfile>` (real synthetic events via
+`UiTestDriver`, real Vulkan render path). No OS cursor movement.
+
 ## 2026-09-18 - Aurora Desktop: "incredibly bad performance" (FIXED, verified)
 
 **Complaint (user).** "What's with the incredibly bad performance problems?"

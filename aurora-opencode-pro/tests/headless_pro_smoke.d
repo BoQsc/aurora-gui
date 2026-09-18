@@ -18,6 +18,7 @@ import auroraopencode.restart : planRestart, restartHelperArgv;
 import auroraopencode.tools : previewToolDiff;
 import core.time : msecs, seconds;
 import core.thread : Thread;
+import std.array : join;
 import std.datetime : Clock;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir, write;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -175,6 +176,30 @@ private void verifyIncrementalMarkdownCompose()
     }
 }
 
+/// Regression: `std.string.indexOf` returns `ptrdiff_t`, and -1 means "not
+/// found". The inline-link parser compared that sentinel against unsigned
+/// indices and then used it as a slice bound, so a stray `[` with no `]`
+/// (followed later by a `)`) sliced to `size_t.max`. With bounds checks off -
+/// the shipped release build - that oversized slice was copied into the run
+/// list and corrupted the heap; the process then died inside MSVCR120 with no
+/// usable stack. This exact document threw `ArraySliceError` before the fix.
+private void verifyStrayBracketParsing()
+{
+    auto blocks = parseMarkdown("(a [b)"d);
+    auto composition = composeMarkdown(blocks, 400, false);
+    assert(composition.height >= 0.0,
+        "a stray '[' must produce a valid composition");
+
+    // A well-formed link must still parse to a link run with its target.
+    auto linked = composeMarkdown(parseMarkdown("[x](https://opencode.ai)"d),
+        400, false);
+    bool sawLink;
+    foreach (item; linked.items)
+        if (item.target.length > 0) sawLink = true;
+    assert(sawLink, "a well-formed markdown link must still parse");
+    writeln("Stray bracket does not slice past the document");
+}
+
 private Widget findById(Widget widget, string requestedId)
 {
     if (widget is null) return null;
@@ -245,6 +270,7 @@ int main(string[] args)
     verifyNativeTextGlyphs();
     verifyInlineCodePillGlyphs();
     verifyIncrementalMarkdownCompose();
+    verifyStrayBracketParsing();
 
     WindowOptions options;
     options.title = "Aurora OpenCode Pro headless";
@@ -889,8 +915,8 @@ int main(string[] args)
     // Context usage meter: the toolbar badge shows the exact API usage as a
     // percentage of the model's context window, and hovering opens a tooltip
     // with the full breakdown (mirrors the real opencode indicator). The
-    // limit comes from the CommandCode model catalog: deepseek/deepseek-v4.1-flash
-    // has a 1,000,000-token context window.
+    // limit comes from the model catalog: deepseek-v4.1-flash (the OpenCode
+    // gateway id) has a 1,000,000-token context window.
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
     root.recordContextUsageForTesting(240000, 10000, 250000);
     assert(driver.paint(), "Context badge did not paint after usage");
@@ -918,7 +944,9 @@ int main(string[] args)
     const tooltip = root.contextTooltipTextForTesting();
     assert(tooltip.length > 0, "Context tooltip text is empty");
     assert(tooltip.indexOf("Context usage") >= 0, "Tooltip lacks the title");
-    assert(tooltip.indexOf("deepseek/deepseek-v4.1-flash") >= 0,
+    // Matches both the OpenCode id (`deepseek-v4.1-flash`) and a legacy
+    // CommandCode id (`deepseek/deepseek-v4.1-flash`), which contains it.
+    assert(tooltip.indexOf("deepseek-v4.1-flash") >= 0,
         "Tooltip lacks the model");
     assert(tooltip.indexOf("1,000,000") >= 0, "Tooltip lacks the context limit");
     assert(tooltip.indexOf("250,000") >= 0, "Tooltip lacks the used tokens");

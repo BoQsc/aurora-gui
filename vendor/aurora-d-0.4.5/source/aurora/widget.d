@@ -98,6 +98,7 @@ abstract class Widget
     private bool _hovered;
     private bool _composited;
     private bool _compositedOpaque;
+    private bool _resizeStretch;
     private CursorKind _cursor = CursorKind.arrow;
     private string _id;
 
@@ -216,6 +217,27 @@ abstract class Widget
             _host.invalidate();
             _host.invalidateComposition();
         }
+    }
+
+    /**
+     * Live-resize stretch for composited widgets. While set, a size change keeps
+     * the already-recorded layer content and lets the compositor scale it to the
+     * new bounds instead of re-running layout and paint every pointer sample.
+     * The shell's floating windows enable this only while an edge/corner drag is
+     * in progress and clear it on release, when the crisp rebuild happens once.
+     */
+    void setResizeStretch(bool value)
+    {
+        if (_resizeStretch == value) return;
+        _resizeStretch = value;
+        // Clearing the flag must force one final layout+paint at the settled
+        // size, otherwise the stretched frame would stay on screen.
+        if (!value) invalidate();
+    }
+
+    bool resizeStretch() const @safe pure nothrow @nogc
+    {
+        return _resizeStretch;
     }
 
     /**

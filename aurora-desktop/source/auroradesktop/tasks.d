@@ -668,6 +668,14 @@ version (Windows)
      * `TBBUTTON.iString` points at the tooltip. All reads are validated so a
      * layout change degrades to fewer icons instead of crashing.
      */
+    // Steady-state caches for the 1 s tray refresh. An icon's owning executable
+    // and its raster almost never change, but the old code re-ran OpenProcess +
+    // iconToRgba (GDI + a full per-pixel loop) for every icon every second -
+    // the main periodic UI hitch. Keyed by owner window / HICON.
+    private string[ulong] _trayExePathCache;
+    private bool[ulong] _traySystemCache;
+    private RgbaImage[ulong] _trayIconRasterCache;
+
     TrayIconInfo[] enumerateTrayIcons()
     {
         TrayIconInfo[] result;
@@ -748,10 +756,46 @@ version (Windows)
                     info.hwnd = ownerHwnd;
                     info.id = ownerId;
                     info.callbackMessage = ownerCallback;
-                    info.exePath = processImagePath(cast(HWND) ownerHwnd);
-                    info.isSystem = isSystemTrayExecutable(info.exePath);
+                    // Resolve the owning executable once per window: this path
+                    // opens the process and reads its image path, which is too
+                    // expensive to repeat every second for every icon.
+                    if (auto cachedPath = ownerHwnd in _trayExePathCache)
+                        info.exePath = *cachedPath;
+                    else
+                    {
+                        info.exePath = processImagePath(cast(HWND) ownerHwnd);
+                        if (_trayExePathCache.length >= 256)
+                        {
+                            _trayExePathCache = null;
+                            _traySystemCache = null;
+                        }
+                        _trayExePathCache[ownerHwnd] = info.exePath;
+                    }
+                    if (auto cachedSystem = ownerHwnd in _traySystemCache)
+                        info.isSystem = *cachedSystem;
+                    else
+                    {
+                        info.isSystem = isSystemTrayExecutable(info.exePath);
+                        _traySystemCache[ownerHwnd] = info.isSystem;
+                    }
+                    // Re-rasterize only when the icon handle actually changed
+                    // (e.g. Task Manager's animated CPU meter).
                     if (iconHandle != 0)
-                        info.icon = iconToRgba(cast(HICON) iconHandle);
+                    {
+                        if (auto cachedIcon = iconHandle in _trayIconRasterCache)
+                            info.icon = *cachedIcon;
+                        else
+                        {
+                            auto raster = iconToRgba(cast(HICON) iconHandle);
+                            if (raster !is null)
+                            {
+                                if (_trayIconRasterCache.length >= 128)
+                                    _trayIconRasterCache = null;
+                                _trayIconRasterCache[iconHandle] = raster;
+                            }
+                            info.icon = raster;
+                        }
+                    }
                 }
             }
 

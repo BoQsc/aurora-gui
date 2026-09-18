@@ -8,38 +8,126 @@ import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : environment;
-import std.string : strip, toLower;
+import std.string : indexOf, strip, toLower;
 
 // ---------------------------------------------------------------------------
 // Shared defaults for the OpenAI-compatible opencode API mirror.
 // ---------------------------------------------------------------------------
 
-private immutable string defaultBaseUrl = "https://api.commandcode.ai/provider/v1";
+/// The real OpenCode gateway (OpenCode Zen / "Go" plan): the endpoint the
+/// opencode CLI itself talks to. The CLI auth store names this provider
+/// `opencode-go` and authenticates it with an `sk-...` key. This is the
+/// default provider.
+///
+/// NOTES for this endpoint (verified live 2026-09-18, opencode.ai/docs/go):
+///   * every request must carry a stable `x-opencode-session` header or it is
+///     rejected with `MissingSessionID`;
+///   * it asks clients to identify with their own product user agent;
+///   * some catalog models are served over Anthropic `/messages` or OpenAI
+///     `/responses`, not `/chat/completions` (see
+///     `openCodeGoSupportsChatCompletions`).
+public immutable string opencodeGoBaseUrl = "https://opencode.ai/zen/go/v1";
+
+/// CommandCode's OpenAI-compatible mirror of the same model catalog. It is an
+/// alternate provider (postponed as the default on 2026-09-18, see todo.md):
+/// set the API base URL and key back to these values to use it. CommandCode
+/// keys have the `user_...` shape and its Cloudflare front requires a browser
+/// user agent.
+public immutable string commandcodeBaseUrl =
+    "https://api.commandcode.ai/provider/v1";
+
+private immutable string defaultBaseUrl = opencodeGoBaseUrl;
 
 /// Legacy hosts the app used to point at; migrated away so stale saved
 /// settings cannot pin the client to an unreachable or retired provider.
+/// `opencode.ai/zen/go/v1` is deliberately NOT here: it is a live, current
+/// endpoint (the default), not a retired one.
 private immutable string[] legacyBaseUrls = [
-    "https://opencode-api.boqsc.eu",
-    "https://opencode.ai/zen/go/v1"
+    "https://opencode-api.boqsc.eu"
 ];
-public immutable string defaultModel = "deepseek/deepseek-v4.1-flash";
+public immutable string defaultModel = "deepseek-v4.1-flash";
 
+/// Fallback model ids for the OpenCode Go gateway, used until `/models` is
+/// fetched and to rescue a saved model that the provider no longer serves.
+/// Only `/chat/completions` models belong here: this client cannot call the
+/// `/messages` or `/responses` models.
 public immutable string[] defaultModels = [
-    "deepseek/deepseek-v4.1-flash",
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
-    "claude-sonnet-5",
-    "claude-opus-5",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "zai-org/GLM-5.3",
-    "Qwen/Qwen3.8-Max",
-    "moonshotai/Kimi-K3",
-    "MiniMaxAI/MiniMax-M3",
-    "xai/grok-4.6",
-    "google/gemini-3.8-flash",
-    "tencent/hy3-paid"
+    "deepseek-v4.1-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash-vision-exp",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
+    "longcat-2.0",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+    "hy4-preview",
+    "hy3"
 ];
+
+/// The OpenCode Go catalog serves a few models over the Anthropic `/messages`
+/// or OpenAI `/responses` shapes. The Aurora client speaks only
+/// `/chat/completions`, so offering one of those ids in the picker would make
+/// the request fail. Source: the "Endpoints" table in opencode.ai/docs/go
+/// (checked 2026-09-18). Unknown ids are treated as supported so a newly added
+/// chat-completions model is not hidden.
+public bool openCodeGoSupportsChatCompletions(string model)
+{
+    model = model.strip().toLower();
+    switch (model)
+    {
+        case "grok-4.6":
+        case "gpt-5.6-luna":
+        case "muse-spark-1.3-contributor":
+        case "muse-spark-1.2-contributor":
+        case "minimax-m3":
+        case "minimax-m2.7":
+        case "minimax-m2.5":
+        case "qwen3.8-max":
+        case "qwen3.8-flash":
+        case "qwen3.7-max":
+        case "qwen3.7-plus":
+        case "qwen3.6-plus":
+            return false;
+        default:
+            return true;
+    }
+}
+
+/**
+ * Lowercased model id with the `vendor/` segment removed.
+ *
+ * CommandCode serves `vendor/model` ids (`deepseek/deepseek-v4.1-flash`) while
+ * the OpenCode gateway serves the same models bare (`deepseek-v4.1-flash`).
+ * Comparing the normalized forms lets a model saved under one provider be
+ * recognized under the other instead of falling back to the first model in the
+ * list.
+ */
+public string normalizedModelId(string model)
+{
+    model = model.strip().toLower();
+    const slash = model.indexOf('/');
+    if (slash > 0) model = model[slash + 1 .. $];
+    return model;
+}
+
+/// True for any base URL served by the OpenCode gateway (the Go/plan endpoint
+/// and the plain Zen endpoint share the request contract).
+public bool isOpenCodeApiBaseUrl(string value)
+{
+    value = value.strip().toLower();
+    foreach (prefix; ["https://opencode.ai/", "http://opencode.ai/"])
+    {
+        if (value.length >= prefix.length && value[0 .. prefix.length] == prefix)
+            return true;
+    }
+    return false;
+}
 
 /// True for the conventional local OpenAI-compatible endpoints used by
 /// llama-server and similar desktop runtimes. Local servers normally do not
@@ -153,16 +241,46 @@ public int contextLimitForModel(string model)
         case "meta/muse-spark-1.3-contributor":    return 1_048_576;
         case "xai/grok-4.6":                       return 500_000;
         case "xai/grok-4.5":                       return 500_000;
-        // Legacy opencode.ai ids (pre-CommandCode settings files).
-        case "deepseek-v4-flash":  return 1_000_000;
-        case "deepseek-v4-pro":    return 1_000_000;
-        case "qwen3.8-max":        return 1_000_000;
-        case "glm-5.2":            return 1_000_000;
-        case "grok-4.5":           return 500_000;
-        case "kimi-k3":            return 1_048_576;
-        case "minimax-m3":         return 512_000;
-        case "mimo-v2.5-pro":      return 1_048_576;
-        case "hy3":                return 256_000;
+        // OpenCode gateway catalog (unprefixed ids). Values come from the
+        // models.dev catalog for the `opencode` provider where it lists the id,
+        // otherwise from the CommandCode entry with the same model, which is
+        // the same backend. Ids with no evidence keep the conservative
+        // `defaultContextLimit`.
+        case "deepseek-v4.1-flash":       return 1_000_000;
+        case "deepseek-v4-flash":         return 1_000_000;
+        case "deepseek-v4-pro":           return 1_000_000;
+        case "deepseek-v4-flash-free":    return 200_000;
+        case "deepseek-v4-flash-vision-exp": return 1_000_000;
+        case "glm-5.3":                   return 1_000_000;
+        case "glm-5.3-flash":             return 1_000_000;
+        case "glm-5.2":                   return 1_000_000;
+        case "glm-5.1":                   return 204_800;
+        case "glm-5":                     return 204_800;
+        case "kimi-k3":                   return 1_048_576;
+        case "kimi-k2.7-code":            return 262_144;
+        case "kimi-k2.6":                 return 262_144;
+        case "kimi-k2.5":                 return 262_144;
+        case "longcat-2.0":               return 1_000_000;
+        case "mimo-v2.5-pro":             return 1_000_000;
+        case "mimo-v2.5":                 return 1_000_000;
+        case "mimo-v2-pro":               return 1_048_576;
+        case "mimo-v2-omni":              return 262_144;
+        case "minimax-m3":                return 512_000;
+        case "minimax-m2.7":              return 204_800;
+        case "minimax-m2.5":              return 204_800;
+        case "muse-spark-1.3-contributor": return 1_048_576;
+        case "muse-spark-1.2-contributor": return 1_048_576;
+        case "qwen3.8-max":               return 1_000_000;
+        case "qwen3.8-flash":             return 1_000_000;
+        case "qwen3.7-max":               return 1_000_000;
+        case "qwen3.7-plus":              return 1_000_000;
+        case "qwen3.6-plus":              return 262_144;
+        case "qwen3.5-plus":              return 262_144;
+        case "grok-4.6":                  return 500_000;
+        case "grok-4.5":                  return 500_000;
+        case "hy4-preview":               return 1_048_576;
+        case "hy3":                       return 262_144;
+        case "hy3-preview":               return 256_000;
         default:                   return defaultContextLimit;
     }
 }
@@ -356,6 +474,23 @@ public string newMessageId()
 {
     return "m" ~ to!string(Clock.currTime.stdTime) ~ "-" ~
         to!string(messageIdCounter++);
+}
+
+/**
+ * A stable routing key for one conversation, sent as `x-opencode-session` on
+ * every OpenCode gateway request. The gateway uses it to keep prompt caching
+ * and scheduling coherent, and rejects requests without it. The first
+ * message's graph id is stable for the life of the conversation (across
+ * turns, edits and restarts), so it identifies the conversation without the
+ * app having to persist a separate id.
+ */
+public string sessionRoutingKey(const ref ChatSession session)
+{
+    if (session.messages.length > 0 && session.messages[0].id.length > 0)
+        return "aurora-" ~ session.messages[0].id;
+    if (session.activeLeafId.length > 0)
+        return "aurora-" ~ session.activeLeafId;
+    return "aurora-default";
 }
 
 /**
@@ -564,7 +699,9 @@ private string readDefaultKeyFile()
                 auto value = parseJSON(readText(authPath));
                 if (value.type == JSONType.object)
                 {
-                    foreach (provider; ["commandcode", "opencode-go", "deepseek"])
+                    // Prefer the OpenCode gateway credential (the default
+                    // provider); fall back to the alternate providers.
+                    foreach (provider; ["opencode-go", "commandcode", "deepseek"])
                     {
                         if (auto found = provider in value.object)
                         {

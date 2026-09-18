@@ -918,8 +918,21 @@ int main()
                 writeln("wifi: adapter unavailable (graceful fallback)");
         }
         if (names[index] == "language")
-            assert(findWidget!LanguagePanel(popup) !is null,
+        {
+            auto languagePanel = findWidget!LanguagePanel(popup);
+            assert(languagePanel !is null,
                 "language tray icon did not open the language panel");
+            // Click a language row through the REAL popup hosting path (this is
+            // what the user actually interacts with) and require onSelect.
+            size_t selected;
+            languagePanel.onSelect = delegate(size_t hkl) { selected = hkl; };
+            auto row = findWidget!LanguageRow(popup);
+            assert(row !is null, "language panel has no rows");
+            driver.click(center(row.globalBounds()));
+            driver.paint();
+            assert(selected != 0,
+                "clicking a language row in the popup did not fire onSelect");
+        }
         driver.pressKey(Key.escape);
         driver.paint();
         assert(currentTransientPopup(root) is null);

@@ -378,3 +378,11 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
 - `window.d`: added `lastSceneMicros()`, `lastRenderMicros()`,
   `lastBaseLayoutMicros()` and `lastBasePaintMicros()` diagnostics getters.
   `aurora-desktop` reports them in the titlebar when `AURORA_DESK_STATS=1`.
+- `widget.d` / `window.d`: compositor live-resize stretch.
+  `Widget.setResizeStretch(bool)` marks a composited widget whose layer should
+  keep its cached draw list while its bounds change; `ensureScene` then skips the
+  layout+paint rebuild and lets the renderer scale the existing geometry (layer
+  geometry is NDC-relative). Clearing the flag invalidates once for the final
+  crisp rebuild. `widgets/desktop.d` `FloatingWindow` enables it during an
+  edge/corner resize drag and clears it on release; resize dropped from
+  15.6 ms/83 ms avg/worst to 4.5 ms/7 ms.

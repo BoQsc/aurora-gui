@@ -1,6 +1,9 @@
 renderer=Vulkan icons=427 client=1280x760
-idle-paint         avg=   2.48ms worst=   3.02ms n=30
-icon-hover         avg=   4.11ms worst=   7.33ms n=150
-marquee            avg=   3.76ms worst=   5.91ms n=60
-selection-toggle   avg=   3.35ms worst=  15.60ms n=60
-frames=159 base=1 layer=706 order=3
+idle-paint         avg=   4.65ms worst=   9.96ms n=30
+icon-hover         avg=   6.36ms worst=  15.02ms n=150
+marquee            avg=   6.33ms worst=  13.16ms n=60
+selection-toggle   avg=   4.87ms worst=  18.63ms n=60
+window-resize      avg=   4.54ms worst=   7.01ms n=60
+resized window bounds after=Rect(200, 150, 1080, 461)
+language-row-click: popup=yes row=yes onSelect=yes
+frames=222 base=1 layer=705 order=5

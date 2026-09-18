@@ -903,10 +903,32 @@ public final class OpenCodeRoot : VBox
     private void applyModels(string[] modelIds)
     {
         _models = modelIds.dup;
+        // Keep only models this client can call: the OpenCode Go endpoint
+        // serves some over Anthropic /messages or OpenAI /responses.
+        if (isOpenCodeApiBaseUrl(_client.baseUrl()))
+        {
+            string[] chatModels;
+            foreach (model; _models)
+                if (openCodeGoSupportsChatCompletions(model))
+                    chatModels ~= model;
+            if (chatModels.length > 0) _models = chatModels;
+        }
         if (_models.length == 0) _models = defaultModels.dup;
         bool found;
         foreach (model; _models)
             if (model == _settings.model) found = true;
+        if (!found)
+        {
+            // CommandCode ids are `vendor/model`; OpenCode serves bare ids.
+            const wanted = normalizedModelId(_settings.model);
+            foreach (model; _models)
+            {
+                if (normalizedModelId(model) != wanted) continue;
+                _settings.model = model;
+                found = true;
+                break;
+            }
+        }
         if (!found && _models.length > 0)
             _settings.model = _models[0];
         if (!_client.busy())

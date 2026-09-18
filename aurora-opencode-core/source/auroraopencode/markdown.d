@@ -364,22 +364,38 @@ private InlineRun[] parseRuns(dstring text, size_t start, size_t end)
         }
         if (c == '[')
         {
-            const close = indexOf(text, ']', i + 1);
-            if (close > i && close + 1 < end && text[close + 1] == '(')
+            // `std.string.indexOf` returns `ptrdiff_t`, and -1 means "not
+            // found". Comparing that signed sentinel against an unsigned index
+            // promotes -1 to size_t.max, and using it as a slice bound slices
+            // to the end of address space. With bounds checks off in the
+            // release build (the shipped build) that oversized slice was then
+            // copied into the run list, corrupting the heap; the process later
+            // died inside MSVCR120's memcpy with no usable stack. Validate the
+            // sentinel and cast before any comparison or slice.
+            const closeIndex = indexOf(text, ']', i + 1);
+            if (closeIndex > 0)
             {
-                const closeParen = indexOf(text, ')', close + 2);
-                if (closeParen > close && closeParen < end)
+                const close = cast(size_t) closeIndex;
+                if (close > i && close + 1 < end && text[close + 1] == '(')
                 {
-                    flush();
-                    const label = text[i + 1 .. close];
-                    const target = text[close + 2 .. closeParen];
-                    if (label.length > 0 && target.length > 0)
-                        result ~= InlineRun(InlineStyle.link, label.idup,
-                            target.idup);
-                    else
-                        buf ~= text[i .. closeParen + 1];
-                    i = closeParen + 1;
-                    continue;
+                    const closeParenIndex = indexOf(text, ')', close + 2);
+                    if (closeParenIndex > 0)
+                    {
+                        const closeParen = cast(size_t) closeParenIndex;
+                        if (closeParen > close && closeParen < end)
+                        {
+                            flush();
+                            const label = text[i + 1 .. close];
+                            const target = text[close + 2 .. closeParen];
+                            if (label.length > 0 && target.length > 0)
+                                result ~= InlineRun(InlineStyle.link, label.idup,
+                                    target.idup);
+                            else
+                                buf ~= text[i .. closeParen + 1];
+                            i = closeParen + 1;
+                            continue;
+                        }
+                    }
                 }
             }
             buf ~= '[';
