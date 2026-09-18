@@ -53,6 +53,28 @@ Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
 (guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
 the window. Win+D / Show desktop / taskbar all stay restored.
 
+**Desktop icon double-click / marquee / calendar / task-minimize (fixed
+2026-09-18).** Five related shell fixes, all testable without guessing:
+- Double-click: the framework only set `event.clickCount` on mouse-DOWN; the up
+  event defaulted to 1, so `onMouseUp` double-click handlers never fired.
+  `GuiWindow` now republishes the press count on release. Test: post
+  down/up/down/up at a desktop icon's client coords (`Computer` opens System
+  Settings).
+- Marquee: `DesktopSurface` rubber-band selection. Test: post move+down on empty
+  space, several moves across icons, up; the swept icon(s) show selection.
+- Calendar: slide started a full panel-height below rest and crossed the
+  taskbar. Now a 14 px settle with Y clamped. Test: click the clock
+  (client coord for `LIT`/clock area) and capture; the flyout must rest entirely
+  above the taskbar.
+- Task second-click minimize: clicking Aurora's taskbar makes Aurora foreground,
+  so `onExternalFocused` was always false. The app tracks `_activeExternalHwnd`
+  and reports it as focused.
+- Language lag: `refreshTray` enumerated input languages three times per tick;
+  now once, and the flyout skips rebuilds when unchanged.
+Probe capture tool note: pick the LARGEST matching window - a hover tooltip is
+a second top-level window whose title also matches `*Aurora Desktop*` and would
+otherwise be captured instead of the shell.
+
 **Tray notification double-click did nothing (fixed 2026-09-18).** Only a
 single `WM_LBUTTONUP` was posted to the tray owner; Task Manager opens only on
 `WM_LBUTTONDBLCLK`, so two single clicks toggled its CPU meter on/off. Fix:

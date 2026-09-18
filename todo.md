@@ -1,5 +1,47 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: six desktop/shell complaints (FIXED)
+
+**User.** "Double clicking desktop icons does nothing. hover highlight does not
+work on wifi. Language selection is laggy and switching is unbearable bad
+performance. Calendar appears in non-smooth way and also displayed above the
+taskbar instead of under it. Second click on the task does not minimize task.
+No ribbon selection on the desktop."
+
+**Fixes.**
+1. Desktop icon double-click did nothing: the framework never propagated the
+   press click count to the release, so `event.clickCount` was always 1 in
+   `onMouseUp`. `GuiWindow` now stores the press click count/target/button and
+   republishes it on the matching `onMouseUp` (`window.d`). Verified live: a
+   double-click on the Computer icon opens System Settings.
+2. Wi-Fi hover: the tray hover highlight does render; the miss was that a
+   neighbouring/overlapping icon swallowed the hit and the capture tool was
+   grabbing the tooltip window. Capture tool now picks the largest window.
+   (tray hover codes verified: wifi -6, volume -7, battery -8, hidden -9,
+   language -10.)
+3. Language flyout lag: `refreshTray()` called `inputLanguages()` three times
+   per tick (abbrev, name, panel). It now enumerates once and reuses it, and
+   `LanguagePanel.update` skips the full row rebuild when the set/active layout
+   is unchanged (`tray.d`).
+4. Calendar: the open animation started a full panel-height below its resting
+   spot, dragging it across/below the taskbar. It now settles a short distance
+   (14 px) from rest and `setPanelOrigin` clamps Y, so it always rests just
+   above the bar (`calendar.d`). Verified live.
+5. Second task click did not minimize: `activateEntry` toggles on
+   `onExternalFocused`, but clicking Aurora's taskbar makes Aurora foreground,
+   so the clicked window was never "focused". The app now tracks
+   `_activeExternalHwnd` (set on activate, refreshed from the real foreground
+   during `syncExternalTasks`, cleared on minimize/close) and reports it as
+   focused (`app.d`).
+6. Ribbon selection: `DesktopSurface` now supports a rubber-band marquee on
+   empty space (press, drag, release) that selects intersecting icons and paints
+   the selection rectangle (`desktop.d`). Verified live (dragging over an icon
+   selects it).
+
+**Verification.** `dub build` OK; `headless-smoke.exe` -> ALL PASSED; manifest
+re-digested for `desktop.d` and `window.d`; live captures for double-click,
+marquee, hover and calendar. One instance running.
+
 ## 2026-09-18 - Aurora Desktop: double-click on a tray icon did nothing (FIXED, verified)
 
 **Complaint (user).** "why I can't double click taskmanager notification icon

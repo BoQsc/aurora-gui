@@ -240,6 +240,10 @@ class DesktopSurface : Widget
     private int _gridOriginY = 18;
     private int _gridStepX = 104;
     private int _gridStepY = 104;
+    // Rubber-band (marquee) selection started on empty desktop space.
+    private bool _marqueeActive;
+    private Point _marqueeStart;
+    private Point _marqueeCurrent;
 
     bool delegate(DesktopIcon source, DesktopIcon target) onIconDropped;
     void delegate(DesktopIcon icon) onIconMoved;
@@ -550,6 +554,15 @@ class DesktopSurface : Widget
             Color.rgba(88, 189, 255, 20));
         canvas.fillCircle(Point(bounds().width / 2, bounds().height + 100),
             maxInt(180, bounds().width / 3), Color.rgba(70, 160, 210, 22));
+        if (_marqueeActive)
+        {
+            const rect = marqueeRect();
+            if (rect.width > 0 && rect.height > 0)
+            {
+                canvas.fillRect(rect, Color.rgba(88, 189, 255, 46));
+                canvas.strokeRect(rect, Color.rgba(120, 200, 255, 200), 1);
+            }
+        }
     }
 
     override bool onMouseDown(ref Event event)
@@ -572,7 +585,56 @@ class DesktopSurface : Widget
         }
         if (event.button != MouseButton.left) return false;
         clearSelection();
+        // Start a rubber-band selection on empty desktop space.
+        _marqueeActive = true;
+        _marqueeStart = event.position;
+        _marqueeCurrent = event.position;
+        captureMouse();
+        invalidate();
         return true;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        if (!_marqueeActive) return false;
+        _marqueeCurrent = event.position;
+        updateMarqueeSelection();
+        invalidate();
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (!_marqueeActive) return false;
+        if (event.button != MouseButton.left) return false;
+        _marqueeCurrent = event.position;
+        updateMarqueeSelection();
+        _marqueeActive = false;
+        releaseMouse();
+        invalidate();
+        return true;
+    }
+
+    private Rect marqueeRect() const @safe pure nothrow @nogc
+    {
+        const x1 = minInt(_marqueeStart.x, _marqueeCurrent.x);
+        const y1 = minInt(_marqueeStart.y, _marqueeCurrent.y);
+        const x2 = maxInt(_marqueeStart.x, _marqueeCurrent.x);
+        const y2 = maxInt(_marqueeStart.y, _marqueeCurrent.y);
+        return Rect(x1, y1, maxInt(0, x2 - x1), maxInt(0, y2 - y1));
+    }
+
+    private void updateMarqueeSelection()
+    {
+        const rect = marqueeRect();
+        foreach (item; _icons)
+        {
+            if (!item.visible()) continue;
+            const b = item.bounds();
+            const overlaps = !(b.x > rect.x + rect.width || b.x + b.width < rect.x ||
+                b.y > rect.y + rect.height || b.y + b.height < rect.y);
+            item.setSelected(overlaps);
+        }
     }
 
     override bool onKeyDown(ref Event event)

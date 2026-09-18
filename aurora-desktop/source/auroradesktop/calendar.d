@@ -81,11 +81,12 @@ final class CalendarPopup : TransientPopup
         setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
         root.bringChildToFront(this);
         recalculateLayout();
-        // Remember the resting position (above the clock), then start just
-        // below it and slide up. The resting Y must be captured BEFORE the
-        // panel origin is moved, or the animation would target the start.
+        // Remember the resting position (above the clock). The taskbar sits at
+        // the bottom, so sliding up from a full panel-height below would drag
+        // the flyout across (and below) the taskbar. Settle it a short distance
+        // down from the resting spot instead - smooth, and never over the bar.
         _restY = _panelRect.y;
-        _startY = _panelRect.y + _panelHeight;
+        _startY = maxInt(_margin, _panelRect.y - 14);
         setPanelOrigin(Point(_panelRect.x, _startY));
         _anim = 0.0;
         requestFocus();
@@ -129,9 +130,9 @@ final class CalendarPopup : TransientPopup
     {
         int x = clampInt(origin.x, _margin,
             maxInt(_margin, bounds().width - _panelRect.width - _margin));
-        int y = origin.y;
-        _panelRect = Rect(x, cast(int) (origin.y), _panelRect.width,
-            _panelRect.height);
+        int y = clampInt(origin.y, _margin,
+            maxInt(_margin, bounds().height - _panelRect.height - _margin));
+        _panelRect = Rect(x, y, _panelRect.width, _panelRect.height);
         invalidate();
     }
 

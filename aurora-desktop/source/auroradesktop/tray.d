@@ -938,6 +938,7 @@ final class LanguageRow : Widget
 final class LanguagePanel : TrayPanel
 {
     private VBox _column;
+    private InputLanguage[] _languages;
 
     void delegate() onOpenSettings;
     void delegate(size_t hkl) onSelect;
@@ -953,11 +954,29 @@ final class LanguagePanel : TrayPanel
 
     void update(InputLanguage[] languages)
     {
+        // Rebuilding every 2 s churned all row widgets (and repainted the whole
+        // flyout) even when nothing changed, which made the flyout feel laggy.
+        // Only rebuild when the set or the active layout actually changed.
+        if (languages.length == _languages.length)
+        {
+            bool same = true;
+            foreach (i, language; languages)
+            {
+                if (language.hkl != _languages[i].hkl ||
+                    language.active != _languages[i].active)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return;
+        }
         rebuild(languages);
     }
 
     private void rebuild(InputLanguage[] languages)
     {
+        _languages = languages.dup;
         foreach (child; _column.children())
             _column.remove(child);
         foreach (language; languages)

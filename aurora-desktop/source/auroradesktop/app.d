@@ -195,10 +195,14 @@ final class DesktopRoot : Widget
         _taskbar.onExternalActivate = delegate(ulong hwnd, bool minimized)
         {
             activateExternalTask(hwnd);
+            _activeExternalHwnd = hwnd;
         };
         _taskbar.onExternalMinimize = delegate(ulong hwnd)
         {
             minimizeExternalTask(hwnd);
+            // The window is no longer the active one, so the next click on its
+            // task should restore rather than minimize again.
+            if (_activeExternalHwnd == hwnd) _activeExternalHwnd = 0;
         };
         _taskbar.onExternalClose = delegate(ulong hwnd)
         {
@@ -208,9 +212,14 @@ final class DesktopRoot : Widget
         {
             return externalTaskVisibleNow(hwnd);
         };
+        // A taskbar click makes Aurora the foreground window, so the clicked
+        // external window is not GetForegroundWindow at that moment. Treat the
+        // window the shell most recently activated as active so a second click
+        // on its task minimizes it (Windows behavior) instead of re-activating.
         _taskbar.onExternalFocused = delegate(ulong hwnd)
         {
-            return externalTaskFocused(hwnd);
+            return externalTaskFocused(hwnd) ||
+                (hwnd != 0 && hwnd == _activeExternalHwnd);
         };
 
         _taskbar.addWindow(_notepadWindow, "Notepad", IconKind.notepad);
@@ -1251,16 +1260,30 @@ final class DesktopRoot : Widget
         // Preserve the live hidden-icon count (the fresh snapshot's default of 5
         // would otherwise reset it on every 2s refresh).
         next.hiddenIconCount = hiddenCount();
-        // Input-language indicator ("ENG"), like the Windows 11 tray.
-        next.languageLabel = toUTF32(inputLanguageAbbrev());
-        next.languageName = toUTF32(inputLanguageName());
+        // Input-language indicator ("ENG"), like the Windows 11 tray. Enumerate
+        // the installed layouts once and reuse the result for the indicator and
+        // the open flyout (each enumeration runs GetKeyboardLayoutList plus a
+        // GetLocaleInfoW per layout, so calling it three times was the main
+        // per-tick cost behind the laggy language flyout).
+        auto languages = inputLanguages();
+        string abbrev = "ENG";
+        string name;
+        foreach (language; languages)
+            if (language.active)
+            {
+                abbrev = language.abbrev;
+                name = language.name;
+                break;
+            }
+        next.languageLabel = toUTF32(abbrev);
+        next.languageName = toUTF32(name);
         _tray = next;
         _taskbar.setTrayState(next);
         if (_volumePanel !is null && !_volumePanel.dismissed())
             _volumePanelContent.update(_tray.volumePercent, _muted);
         if (_languagePanel !is null && !_languagePanel.dismissed() &&
             _languagePanelContent !is null)
-            _languagePanelContent.update(inputLanguages());
+            _languagePanelContent.update(languages);
     }
 
     private void openVolumePanel()
@@ -1548,6 +1571,9 @@ final class DesktopRoot : Widget
 
     // hwnds currently shown as external taskbar entries, for the poll diff.
     private ulong[] _externalHwnds;
+    // Last external window the shell activated (or that was foreground), so a
+    // second taskbar click on it minimizes instead of re-activating.
+    private ulong _activeExternalHwnd;
     // Bounded per-window icon-resolution attempts (see syncExternalTasks).
     private ubyte[ulong] _externalIconAttempts;
     // Resolved grouping key per hwnd (owning executable path), so grouping only
@@ -1598,6 +1624,20 @@ final class DesktopRoot : Widget
                 _externalGroupKeys[t.hwnd] = cachedKey !is null ? *cachedKey :
                     externalTaskGroupKey(t.hwnd);
             }
+
+            // Keep "active external window" fresh: while an external window is
+            // foreground it is the active one; if it closed or was minimized,
+            // forget it so the next task click restores instead of minimizing.
+            if (_activeExternalHwnd != 0 && (_activeExternalHwnd !in live ||
+                externalTaskMinimized(_activeExternalHwnd)))
+                _activeExternalHwnd = 0;
+            if (_activeExternalHwnd == 0)
+                foreach (t; tasks)
+                    if (externalTaskFocused(t.hwnd))
+                    {
+                        _activeExternalHwnd = t.hwnd;
+                        break;
+                    }
 
             // Feed each pinned app its live windows so it keeps a running
             // indicator and a multi-window hover preview. Any separate external

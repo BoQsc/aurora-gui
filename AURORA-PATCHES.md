@@ -303,6 +303,14 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   but the user must be able to minimize their own desktop window, so the call
   was removed. The policy remains opt-in/unused; stranding is handled by
   `keepWindowOnScreen()`. Other Aurora apps are unaffected (default off).
+- `window.d`: the press click count is now republished on the matching
+  `onMouseUp` (`event.clickCount`), which the platform only set on mouse-down.
+  Widgets that detect double-clicks in `onMouseUp` (desktop icons, list rows)
+  never saw `clickCount >= 2`, so opening a desktop icon by double-click did
+  nothing.
+- `widgets/desktop.d`: `DesktopSurface` gained rubber-band (marquee) selection:
+  press on empty space, drag, release selects intersecting icons and paints the
+  selection rectangle.
 - `widgets/desktop.d`: tray notification icons gained a double-click path.
   `NotificationIcon` has `doubleClickAction`; the taskbar records the press
   click count and routes the second click within the system double-click window

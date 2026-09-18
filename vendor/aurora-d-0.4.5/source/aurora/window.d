@@ -128,6 +128,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private long _lastClickTime;
     private Point _lastClickPosition;
     private int _clickCount;
+    // Click count captured on press, re-published on the matching release so
+    // widgets can detect double-clicks in onMouseUp (e.g. desktop icons, list
+    // rows). Without this the up event kept its default clickCount of 1.
+    private int _pressClickCount = 1;
+    private Widget _pressClickTarget;
+    private MouseButton _pressClickButton;
 
     bool delegate() onCloseRequested;
 
@@ -1518,6 +1524,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         updateHover(event.globalPosition);
         auto target = _captured !is null ? _captured : _hovered;
         updateClickCount(target, event);
+        _pressClickCount = event.clickCount;
+        _pressClickTarget = target;
+        _pressClickButton = event.button;
         if (target !is null)
         {
             auto focusTarget = nearestFocusable(target);
@@ -1538,6 +1547,10 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (_captured is null)
             updateHover(event.globalPosition);
         auto target = _captured !is null ? _captured : _hovered;
+        // Republish the press click count so onMouseUp can detect a double-click
+        // (the platform only sets it on the down event).
+        event.clickCount = target is _pressClickTarget &&
+            event.button == _pressClickButton ? _pressClickCount : 1;
         if (target !is null)
             dispatchToBubble(target, event);
         // A captured widget commonly releases capture from onMouseUp. Refresh
