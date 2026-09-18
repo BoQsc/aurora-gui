@@ -4,6 +4,47 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora Desktop: dragged notification floater clipped by the taskbar (2026-09-17)
+
+**Complaint (user).** "desktop is on top of dragged notif icon so it hides the
+dragged icon."
+
+**Cause.** The floating copy was painted inside `Taskbar.paintTray`, so it was
+clipped to the taskbar's own bounds; anywhere above the bar the desktop showed
+through (and the taskbar's z-order did not extend outside its rect).
+
+**Fix.** Added a root-level `NotificationDragProxy` (like `TaskDragProxy`):
+composited, disabled (transparent to hit-testing), owns the hover plate + icon.
+`Taskbar.beginNotificationDrag` adds it to the root and brings it to front;
+`updateNotificationDragProxy` positions it under the cursor on every sample
+(`onMouseMove` and the late-latched `onPointerLatch`; `wantsContinuousPointerFrames`
+now includes `_notificationDragActive`); it is destroyed on release/hide. The
+in-bar floater paint was removed (the slot keeps its dim placeholder).
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED.
+`testNotificationDragFloater` still asserts the magenta dragged icon is painted
+(now from the root proxy) after painting the whole root.
+
+## Aurora Desktop: dragged notification has no floating copy (2026-09-17)
+
+**Complaint (user).** "the picked up to drag and drop notification icon does not
+appear under cursor."
+
+**Cause.** Notification drag only reordered the model (`moveNotification`); it
+never painted a floating copy, so the icon jumped between slots with nothing
+under the pointer.
+
+**Fix (`Taskbar`).** On drag start, remember the grab offset inside the icon
+(`_notificationDragGrabX/Y`); on every pointer sample store the local pointer
+(`_notificationDragX/Y`). `paintTray` now leaves a dim placeholder in the
+dragged icon's slot and paints a floating copy (hover plate + icon) last, under
+the cursor. Offsets are cleared on release/hide.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED.
+`testNotificationDragFloater` puts a magenta `RgbaImage` on notification 0,
+starts a drag, then paints the whole root into a `Surface` and asserts magenta
+is present (the floating copy), even though the slot is now a dim placeholder.
+
 ## Aurora Desktop: tray icon render quality (raw icon bitmap + DPI-matched size) (2026-09-17)
 
 **Question (user).** "are notification icons of native system icons slightly

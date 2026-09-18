@@ -1,5 +1,32 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora Desktop: dragged notification floater above the desktop (COMPLETED, verified)
+
+**Complaint (user).** "desktop is on top of dragged notif icon so it hides the
+dragged icon."
+
+**Resolution.** Moved the drag floater out of the taskbar's clipped paint into a
+root-level `NotificationDragProxy` (composited, hit-test transparent), positioned
+under the cursor each sample including late-latched frames. It now floats above
+the desktop wherever the cursor goes.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED
+(`testNotificationDragFloater`).
+
+## 2026-09-17 - Aurora Desktop: dragged notification floating copy (COMPLETED, verified)
+
+**Complaint (user).** "the picked up to drag and drop notification icon does not
+appear under cursor."
+
+**Resolution.** Notification drag now paints a floating copy under the cursor
+(grab-offset aware) and leaves a dim placeholder in the source slot; cleared on
+release/hide. Previously only the model was reordered, so nothing followed the
+pointer.
+
+**Verification.** `build\headless-smoke.exe` -> ALL PASSED, with
+`testNotificationDragFloater` asserting a magenta dragged icon is painted while
+dragging.
+
 ## 2026-09-17 - Aurora usage standards doc (COMPLETED)
 
 **Request (user).** "do we need add some document standard way of using aurora so

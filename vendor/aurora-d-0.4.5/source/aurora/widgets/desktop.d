@@ -1037,6 +1037,48 @@ private final class TaskDragProxy : Widget
 }
 
 /**
+ * Root-level floating copy of a notification icon being dragged. It lives on
+ * the root (like the task drag proxy) so it is not clipped to the taskbar and
+ * floats above the desktop wherever the cursor goes.
+ */
+private final class NotificationDragProxy : Widget
+{
+    enum int margin = 2;
+    private RgbaImage _image;
+    private IconKind _icon;
+    private int _size;
+
+    this(RgbaImage image, IconKind icon, int size)
+    {
+        _image = image;
+        _icon = icon;
+        _size = maxInt(1, size);
+        setComposited(true);
+        setEnabled(false);
+        layoutHints().excludeFromLayout = true;
+        layoutHints().allowOverflow = true;
+        setBounds(Rect(0, 0, _size + margin * 2, _size + margin * 2));
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const panel = Rect(0, 0, bounds().width, bounds().height);
+        canvas.fillRoundedRect(panel.translated(1, 2), 5,
+            Color.rgba(0, 0, 0, 110));
+        canvas.fillRoundedRect(panel, 5, palette.taskbarHover);
+        canvas.drawRoundedRect(panel, 5, Color.rgba(0, 0, 0, 0),
+            palette.accent.withAlpha(220), 1);
+        const cell = Rect(margin, margin, _size, _size);
+        if (_image !is null)
+            canvas.drawImage(cell, _image);
+        else
+            drawIcon(canvas, _icon, cell, Color.rgb(245, 248, 252),
+                palette.accent);
+    }
+}
+
+/**
  * A small root-level hover tooltip for the taskbar. Shows a single line of text
  * in a rounded panel just above the hovered taskbar region; it is owned by the
  * Taskbar (added to the root like the drag proxy) and auto-sizes to its text.
@@ -1130,6 +1172,14 @@ class Taskbar : Widget
     // True while a dragged notification is over the hidden-icons chevron (drop
     // target highlight).
     private bool _notificationDragOverChevron;
+    // Local pointer position of the dragged notification and the offset within
+    // the icon where it was grabbed, so a floating copy follows the cursor.
+    private int _notificationDragX = -1;
+    private int _notificationDragY = -1;
+    private int _notificationDragGrabX;
+    private int _notificationDragGrabY;
+    // Root-level floating copy that follows the cursor (not clipped by the bar).
+    private NotificationDragProxy _notificationDragProxy;
     private int _pressed = -2;
     private int _hot = -2;
     private int _keyboardIndex = -1;
@@ -2212,6 +2262,8 @@ class Taskbar : Widget
     private enum int clockWidth = 90;
     private enum int trayIconWidth = 34;
     private enum int trayIconGap = 4;
+    // Tray glyph size. 16 logical maps to the OS's 20 px tray icon at 125% DPI.
+    private enum int trayGlyphSize = 16;
     private enum int fixedTrayCount = 4; // wifi, volume, battery, hidden chevron
 
     // Right edge of the fixed glyph block (start packing notifications left).
@@ -2404,6 +2456,9 @@ class Taskbar : Widget
                 _pressed = -2;
                 _notificationDragActive = false;
                 _notificationDragOverChevron = false;
+                _notificationDragX = -1;
+                _notificationDragY = -1;
+                destroyNotificationDragProxy();
                 releaseMouse();
                 invalidate();
                 if (onNotificationHidden !is null)
@@ -2411,6 +2466,48 @@ class Taskbar : Widget
                 return;
             }
         }
+    }
+
+    /// Create the root-level floating copy for the notification being dragged.
+    private void beginNotificationDrag(PointF pointer)
+    {
+        RgbaImage image;
+        IconKind icon;
+        foreach (n; _notifications)
+            if (n.id == _notificationDragId)
+            {
+                image = n.iconImage;
+                icon = n.icon;
+                break;
+            }
+        destroyNotificationDragProxy();
+        _notificationDragProxy = new NotificationDragProxy(image, icon,
+            trayGlyphSize);
+        auto root = rootWidget();
+        root.add(_notificationDragProxy);
+        root.bringChildToFront(_notificationDragProxy);
+        updateNotificationDragProxy(pointer, true);
+    }
+
+    private bool updateNotificationDragProxy(PointF pointer, bool requestFrame)
+    {
+        if (_notificationDragProxy is null ||
+            _notificationDragProxy.parent() is null)
+            return false;
+        const parentOrigin = _notificationDragProxy.parent().preciseGlobalOrigin();
+        return _notificationDragProxy.setPrecisePosition(PointF(
+            pointer.x - _notificationDragGrabX - NotificationDragProxy.margin -
+                parentOrigin.x,
+            pointer.y - _notificationDragGrabY - NotificationDragProxy.margin -
+                parentOrigin.y), requestFrame);
+    }
+
+    private void destroyNotificationDragProxy()
+    {
+        auto proxy = _notificationDragProxy;
+        _notificationDragProxy = null;
+        if (proxy !is null && proxy.parent() !is null)
+            proxy.parent().remove(proxy);
     }
 
     private Rect entriesRect() const @safe pure nothrow @nogc
@@ -3003,10 +3100,7 @@ class Taskbar : Widget
     {
         const palette = theme();
         const trayLeft = fixedTrayLeftX();
-        // Windows tray glyph size. 16 logical maps to the OS's 20 px tray icon
-        // at 125% DPI, so 20 px raster icons render 1:1 (crisp) instead of
-        // being upscaled.
-        const iconSize = 16;
+        const iconSize = trayGlyphSize;
         const iconRect = Rect(trayLeft + (trayIconWidth - iconSize) / 2,
             (bounds().height - iconSize) / 2, iconSize, iconSize);
 
@@ -3015,6 +3109,15 @@ class Taskbar : Widget
         foreach (icon; _notifications)
         {
             if (icon.hidden) continue;
+            // The dragged icon is painted as a floating copy under the cursor,
+            // leaving a dim placeholder in its slot.
+            if (_notificationDragActive && icon.id == _notificationDragId)
+            {
+                const held = notificationIconRect(cast(size_t) seen);
+                canvas.fillRoundedRect(held, 5, palette.taskbarHover.withAlpha(70));
+                ++seen;
+                continue;
+            }
             const notifRect = notificationIconRect(cast(size_t) seen);
             // Hover code for notifications: -10.. (see onMouseMove).
             if (_hot == -(10 + seen))
@@ -3328,6 +3431,19 @@ class Taskbar : Widget
                     if (model < 0) return true;
                     _notificationDragId = _notifications[cast(size_t) model].id;
                     _notificationDragActive = true;
+                    // Remember where inside the icon the grab happened so the
+                    // floating copy sits under the cursor.
+                    const startOrigin = preciseGlobalOrigin();
+                    const pressLocalX = cast(int) (_pressPointer.x - startOrigin.x);
+                    const pressLocalY = cast(int) (_pressPointer.y - startOrigin.y);
+                    const slot = notificationIconRect(pressedVisible);
+                    _notificationDragGrabX = pressLocalX - (slot.x +
+                        (trayIconWidth - trayGlyphSize) / 2);
+                    _notificationDragGrabY = pressLocalY -
+                        ((bounds().height - trayGlyphSize) / 2);
+                    _notificationDragX = pressLocalX;
+                    _notificationDragY = pressLocalY;
+                    beginNotificationDrag(pointer);
                 }
             }
             if (_notificationDragActive)
@@ -3335,6 +3451,9 @@ class Taskbar : Widget
                 const origin = preciseGlobalOrigin();
                 const localX = cast(int) (pointer.x - origin.x);
                 const localY = cast(int) (pointer.y - origin.y);
+                _notificationDragX = localX;
+                _notificationDragY = localY;
+                updateNotificationDragProxy(pointer, true);
                 // Drop targets: the hidden-icons chevron, below the bar, or
                 // clear left of the cluster all move the icon to the overflow.
                 const overChevron = trayIconRect(3).contains(Point(localX, localY));
@@ -3436,12 +3555,15 @@ class Taskbar : Widget
 
     override bool onPointerLatch(PointF globalPosition)
     {
-        return _reordering ? updateTaskReorder(globalPosition, false) : false;
+        if (_reordering) return updateTaskReorder(globalPosition, false);
+        if (_notificationDragActive)
+            return updateNotificationDragProxy(globalPosition, false);
+        return false;
     }
 
     override bool wantsContinuousPointerFrames() const @safe pure nothrow @nogc
     {
-        return _reordering;
+        return _reordering || _notificationDragActive;
     }
 
     private void cancelTaskReorder()
@@ -3539,6 +3661,9 @@ class Taskbar : Widget
             const dragged = _notificationDragActive;
             _notificationDragActive = false;
             _notificationDragOverChevron = false;
+            _notificationDragX = -1;
+            _notificationDragY = -1;
+            destroyNotificationDragProxy();
             if (dragged) return true;
             const notifOrder = notificationHit(event.position);
             if (notifOrder >= 0) activateNotification(notifOrder);

@@ -282,6 +282,76 @@ private void testNotificationBehavior()
         "dragging a notification out of the cluster did not hide it");
 }
 
+// A notification picked up for dragging must show a floating copy that follows
+// the cursor (the slot is left as a dim placeholder).
+private void testNotificationDragFloater()
+{
+    import aurora.surface : Surface;
+    import aurora.canvas : Canvas;
+    import aurora.image : RgbaImage;
+
+    WindowOptions options;
+    options.width = 640;
+    options.height = 260;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, Theme.dark());
+    auto root = new TaskbarRoot();
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(640, 260));
+    auto taskbar = root.taskbar;
+
+    ubyte[] magenta;
+    magenta.length = 16 * 16 * 4;
+    foreach (i; 0 .. 16 * 16)
+    {
+        magenta[i * 4 + 0] = 255;
+        magenta[i * 4 + 1] = 0;
+        magenta[i * 4 + 2] = 255;
+        magenta[i * 4 + 3] = 255;
+    }
+    foreach (i; 0 .. 3)
+    {
+        NotificationIcon icon;
+        icon.id = i + 1;
+        icon.label = toUTF32("Drag" ~ to!string(i));
+        icon.icon = IconKind.file;
+        if (i == 0) icon.iconImage = new RgbaImage(16, 16, magenta);
+        taskbar.addNotification(icon);
+    }
+    driver.paint();
+
+    const first = center(taskbar.notificationIconGlobalBounds(0));
+    driver.moveTo(first);
+    driver.mouseDown();
+    driver.moveTo(Point(first.x + 30, first.y)); // exceed the drag threshold
+
+    // Paint the whole root (the taskbar sits at y=208, so painting it alone
+    // into a 52px surface would clip everything away).
+    auto surface = new Surface(640, 260);
+    surface.clear(Color.rgb(0, 0, 0));
+    auto canvas = Canvas(surface);
+    root.paintTree(canvas);
+
+    bool found;
+    foreach (y; 0 .. 260)
+    {
+        foreach (x; 0 .. 640)
+        {
+            const argb = surface.pixel(x, y);
+            if (((argb >> 16) & 0xff) > 200 && ((argb >> 8) & 0xff) < 80 &&
+                (argb & 0xff) > 200)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+    }
+    driver.mouseUp();
+    assert(found, "dragged notification has no floating copy under the cursor");
+}
+
 // The task-entry context menu must show the app-name header, Pin/Unpin and
 // Close window (Windows taskbar menu).
 private void testTaskEntryMenu()
@@ -496,9 +566,17 @@ int main()
     // point right of the last task entry but left of the tray so the check does
     // not depend on how many OS windows are open.
     const lastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
-    const trayStart = taskbar.trayIconGlobalBounds(0).x;
+    // The visible notification cluster sits left of the fixed tray icons, so
+    // the empty gap ends at whichever comes first.
+    int rightLimit = taskbar.trayIconGlobalBounds(0).x;
+    foreach (icon; taskbar.notifications())
+        if (!icon.hidden)
+        {
+            rightLimit = taskbar.notificationIconGlobalBounds(0).x;
+            break;
+        }
     const emptyPoint = Point(
-        minInt(lastEntry.right() + 10, trayStart - 10),
+        minInt(lastEntry.right() + 10, rightLimit - 10),
         lastEntry.y + lastEntry.height / 2);
     driver.moveTo(emptyPoint);
     driver.paint();
@@ -878,9 +956,15 @@ int main()
     // Lock the taskbar (checkable) / Taskbar settings.
     {
         const menuLastEntry = taskbar.entryGlobalBounds(taskbar.entryCount() - 1);
+        int menuRightLimit = taskbar.trayIconGlobalBounds(0).x;
+        foreach (icon; taskbar.notifications())
+            if (!icon.hidden)
+            {
+                menuRightLimit = taskbar.notificationIconGlobalBounds(0).x;
+                break;
+            }
         const menuPoint = Point(
-            minInt(menuLastEntry.right() + 10,
-                taskbar.trayIconGlobalBounds(0).x - 10),
+            minInt(menuLastEntry.right() + 10, menuRightLimit - 10),
             menuLastEntry.y + menuLastEntry.height / 2);
         driver.rightClick(menuPoint);
         driver.paint();
@@ -931,6 +1015,7 @@ int main()
 
     testTaskDragAnimation();
     testNotificationBehavior();
+    testNotificationDragFloater();
     testTaskEntryMenu();
     testHiddenPanelRestore();
 
