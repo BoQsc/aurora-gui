@@ -4,7 +4,7 @@ import auroraopencode.core : opencodeStateDirectory;
 import auroraopencode.logging : logError, logInfo, setLogDirectory;
 import std.algorithm : sort, splitter;
 import std.conv : parse, to;
-import std.datetime : SysTime;
+import std.datetime : Clock, SysTime;
 import std.file : copy, dirEntries, exists, mkdirRecurse, readText, remove,
     SpanMode, thisExePath, timeLastModified;
 import std.path : baseName, buildPath, dirName, setExtension;
@@ -59,6 +59,12 @@ private __gshared string _lastActivity;
 /// activity does not become repeated flushed writes.
 private __gshared string _lastLoggedActivity;
 
+/// Throttle state for the per-frame paint markers. Kept in memory only; the
+/// crash handler reads `_lastActivity`, which is never throttled.
+private __gshared SysTime _lastMarkerWrite;
+private __gshared bool _lastMarkerWriteSet;
+private enum double markerWriteIntervalMs = 100.0;
+
 /// Identifies the build the archived symbols belong to, so a crash report can
 /// be matched to the `.pdb` that describes it.
 private __gshared string _buildKey;
@@ -87,7 +93,38 @@ public void noteActivity(string what)
     // identical calls are the same step.
     if (what == _lastLoggedActivity) return;
     _lastLoggedActivity = what;
-    logInfo("activity: " ~ what);
+    // Discrete step markers (rebuilds, events, crash phases - anything not a
+    // per-frame paint marker) are always written: they are few and they are the
+    // ones worth seeing in order. The per-frame paint markers are throttled,
+    // because a repaint storm wrote thousands of identical lines per second and
+    // grew the log to megabytes. The in-memory `_lastActivity` above is never
+    // throttled, so the crash handler still reports the exact last paint.
+    if (!isPerFrameMarker(what) || markerWriteDue())
+        logInfo("activity: " ~ what);
+}
+
+/// Whether a marker fires once per painted frame rather than once per step.
+private bool isPerFrameMarker(string what) pure nothrow @safe @nogc
+{
+    return what.length >= 5 && what[0 .. 5] == "paint";
+}
+
+/// True at most a few times per second, so a repaint storm cannot flood the
+/// log while a slow repaint still gets its step recorded.
+private bool markerWriteDue() nothrow
+{
+    try
+    {
+        const now = Clock.currTime;
+        if (_lastMarkerWriteSet &&
+            (now - _lastMarkerWrite).total!"msecs" < markerWriteIntervalMs)
+            return false;
+        _lastMarkerWrite = now;
+        _lastMarkerWriteSet = true;
+        return true;
+    }
+    catch (Throwable)
+        return true;
 }
 
 /// The last value passed to `noteActivity`, or "" when none was recorded.
@@ -401,11 +438,228 @@ version (Windows)
             if (frameBuffer.length < frameBufferLength)
                 frameBuffer = new ulong[frameBufferLength];
         catch (Throwable) {}
+        // Resolve the raw-crash path now, while the process is healthy. The
+        // fault handler must not call `opencodeStateDirectory` (it reads the
+        // environment and allocates) while the heap may be suspect.
+        try
+            rawCrashPath = buildPath(opencodeStateDirectory(), "logs",
+                "native-crash.log");
+        catch (Throwable) {}
+    }
+
+    /// NUL-terminated go-to file for the raw fault write, resolved at startup.
+    private __gshared string rawCrashPath;
+
+    /**
+     * Append one line with raw C stdio, bypassing the logger entirely.
+     *
+     * `logError` allocates and takes a lock; neither is safe in a handler that
+     * runs while the process is dying, and a failure there is exactly how a
+     * crash ends up with an exit code and no report. This is deliberately the
+     * same minimal fopen/fwrite/fflush/fclose the font code uses for its own
+     * dying-process diagnostics.
+     */
+    private void writeRawCrashLine(string line) nothrow
+    {
+        try
+        {
+            if (rawCrashPath.length == 0) return;
+            import core.stdc.stdio : fclose, fflush, fopen, fwrite;
+            auto path = rawCrashPath ~ "\0";
+            auto file = fopen(path.ptr, "a");
+            if (file is null) return;
+            fwrite(line.ptr, 1, line.length, file);
+            fflush(file);
+            fclose(file);
+        }
+        catch (Throwable) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // Vectored capture (survives a replaced filter)
+    // -----------------------------------------------------------------------
+    // `SetUnhandledExceptionFilter` below is only a *last-chance* filter, and it
+    // is one slot: whichever code installs last wins. The app installs ours
+    // before the window is created, and the GUI layer runs afterwards, so a
+    // replacement there leaves nothing - which is exactly why the 2026-09-18
+    // crashes produced an exit code with no `native crash:` line and no
+    // `native-crash.log`. A *vectored* handler is a different mechanism: it
+    // cannot be replaced, it runs before frame-based handlers and before the
+    // last-chance filter, and it runs on the faulting thread with the stack
+    // still intact. It is installed here as the guarantee, and the last-chance
+    // filter is kept as the fallback.
+
+    /// Raw go-to directory for minidumps, resolved once at startup.
+    private __gshared string dumpDir;
+
+    /// `dbghelp.dll` and its `MiniDumpWriteDump`, resolved at startup so the
+    /// dying handler never loads a DLL or looks up a symbol.
+    private __gshared void* dbghelpModule;
+    /// `BOOL WINAPI MiniDumpWriteDump(...)`; the BOOL return is kept so the
+    /// caller can tell a written dump from a failed one.
+    private __gshared int function(void*, uint, void*, uint, void*, void*, void*)
+        miniDumpWrite;
+
+    /// Guards against re-entry: writing the dump may itself fault, and the
+    /// vectored handler would otherwise run again for that second fault.
+    private __gshared bool crashHandling;
+
+    extern (Windows)
+    {
+        void* AddVectoredExceptionHandler(uint first,
+            LONG function(EXCEPTION_POINTERS*) handler);
+        void* GetCurrentProcess();
+        uint GetCurrentProcessId();
+        uint GetCurrentThreadId();
+        void* CreateFileA(const(char)* name, uint access, uint share, void* security,
+            uint creation, uint flags, void* templateFile);
+        int CloseHandle(void* handle);
+        uint GetTickCount();
+        void* LoadLibraryA(const(char)* name);
+        void* GetProcAddress(void* library, const(char)* name);
+    }
+
+    private enum uint genericWrite = 0x40000000;
+    private enum uint createAlways = 2;
+    private enum uint fileAttributeNormal = 0x80;
+    private enum LONG exceptionContinueSearch = 0;
+
+    /// The minidump exception stream: which thread faulted and the context to
+    /// dump. `clientPointers` is 0 because this dumps its own process.
+    private struct MiniDumpExceptionInfo
+    {
+        uint threadId;
+        EXCEPTION_POINTERS* pointers;
+        int clientPointers;
+    }
+
+    /// Faults worth a dump: the ones that end a process, as opposed to the
+    /// breakpoints and single-steps a debugger or the runtime raises normally.
+    private bool isHardFault(DWORD code)
+    {
+        switch (code)
+        {
+            case 0xC0000005: // access violation
+            case 0xC00000FD: // stack overflow
+            case 0xC000001D: // illegal instruction
+            case 0xC0000094: // integer divide by zero
+            case 0xC0000374: // heap corruption
+            case 0xC0000409: // fail fast
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// Resolve the dump directory and `MiniDumpWriteDump` while healthy.
+    private void prepareDump() nothrow
+    {
+        try
+        {
+            dumpDir = buildPath(opencodeStateDirectory(), "logs", "dumps");
+            mkdirRecurse(dumpDir);
+        }
+        catch (Throwable) {}
+        try
+        {
+            dbghelpModule = LoadLibraryA("dbghelp.dll\0");
+            if (dbghelpModule !is null)
+                miniDumpWrite = cast(int function(void*, uint, void*, uint,
+                    void*, void*, void*))
+                    GetProcAddress(dbghelpModule, "MiniDumpWriteDump\0");
+        }
+        catch (Throwable) {}
+    }
+
+    /**
+     * Write a minidump of the faulting thread to `logs/dumps/crash-<n>.dmp`.
+     *
+     * The address and last activity say *what* happened; a dump says *why*, by
+     * letting a debugger walk the real crash stack against the archived `.pdb`.
+     * It is written from the vectored handler, before unwinding, so the stack
+     * is still whole - which the old last-chance handler could never guarantee.
+     */
+    private void writeMiniDump(EXCEPTION_POINTERS* info) nothrow
+    {
+        try
+        {
+            if (miniDumpWrite is null)
+            {
+                writeRawCrashLine("  dump: skipped (MiniDumpWriteDump unresolved)\n");
+                return;
+            }
+            if (dumpDir.length == 0)
+            {
+                writeRawCrashLine("  dump: skipped (no dump directory)\n");
+                return;
+            }
+            const path = dumpDir ~ "\\crash-" ~
+                toHex(cast(size_t) GetTickCount()) ~ ".dmp";
+            auto name = path ~ "\0";
+            auto file = CreateFileA(name.ptr, genericWrite, 0, null,
+                createAlways, fileAttributeNormal, null);
+            // `CreateFileA` reports failure as INVALID_HANDLE_VALUE, i.e.
+            // `(HANDLE)-1`, not null. Checking only for null let a failed open
+            // fall through to a dump call on a bogus handle - which is how the
+            // first attempt produced a 0-byte file and no explanation.
+            if (file is null || cast(size_t) file == size_t.max)
+            {
+                writeRawCrashLine("  dump: CreateFileA failed for " ~ path ~ "\n");
+                return;
+            }
+            // Record the attempt before the call: `MiniDumpWriteDump` runs in
+            // the dying process and can fail or stall, so the intent has to be
+            // on disk beforehand or a failed dump looks like it never ran.
+            writeRawCrashLine("  dump: writing " ~ path ~ "\n");
+            MiniDumpExceptionInfo exceptionInfo;
+            exceptionInfo.threadId = GetCurrentThreadId();
+            exceptionInfo.pointers = info;
+            exceptionInfo.clientPointers = 0;
+            // MiniDumpNormal (0): the exception stream plus each thread's stack,
+            // which is what resolves the fault against the build's symbols.
+            const ok = miniDumpWrite(GetCurrentProcess(), GetCurrentProcessId(),
+                file, 0, &exceptionInfo, null, null);
+            CloseHandle(file);
+            writeRawCrashLine(ok ? "  dump: ok\n" : "  dump: MiniDumpWriteDump failed\n");
+        }
+        catch (Throwable) {}
+    }
+
+    /**
+     * Vectored handler: runs first, on the faulting thread, for every
+     * exception. Only hard faults are acted on, and only once, so a benign
+     * first-chance exception passes straight through. It records the fault and
+     * a dump, then returns `EXCEPTION_CONTINUE_SEARCH` so normal handling (and
+     * termination) still proceeds.
+     */
+    private extern (Windows) LONG vectoredCrashHandler(EXCEPTION_POINTERS* info)
+    {
+        if (crashHandling) return exceptionContinueSearch;
+        auto record = info !is null ? info.ExceptionRecord : null;
+        if (record is null || !isHardFault(record.ExceptionCode))
+            return exceptionContinueSearch;
+        crashHandling = true;
+        try
+        {
+            writeRawCrashLine("native crash (vectored): code " ~
+                toHex(record.ExceptionCode) ~ " at " ~
+                toHex(cast(size_t) record.ExceptionAddress) ~ "\n  " ~
+                _lastActivity ~ "\n");
+            writeMiniDump(info);
+        }
+        catch (Throwable) {}
+        return exceptionContinueSearch;
     }
 
     private void installNativeFilter() nothrow
     {
         prepareFrameBuffer();
+        prepareDump();
+        // Vectored first: this is the capture that cannot be replaced. The
+        // last-chance filter stays as the fallback for a fault on a thread the
+        // vectored chain does not cover.
+        try AddVectoredExceptionHandler(1, &vectoredCrashHandler);
+        catch (Throwable) {}
         try SetUnhandledExceptionFilter(&nativeCrashFilter);
         catch (Throwable) {}
     }
@@ -417,6 +671,23 @@ version (Windows)
      */
     private extern (Windows) LONG nativeCrashFilter(EXCEPTION_POINTERS* info)
     {
+        // First, write the fault to a dedicated file with raw stdio. The logger
+        // path below takes locks and allocates, and this runs while the process
+        // is dying - the exact moment a lock held by the faulting thread, or a
+        // heap made suspect by the fault, turns the report into nothing. That
+        // is why the 2026-09-18 crashes produced an exit code but no
+        // `native crash:` line at all; this raw write is the backstop that
+        // survives when `logError` cannot run.
+        try
+        {
+            auto record = info !is null ? info.ExceptionRecord : null;
+            const code = record is null ? 0u : record.ExceptionCode;
+            const address = record is null ? size_t(0)
+                : cast(size_t) record.ExceptionAddress;
+            writeRawCrashLine("native crash: code " ~ toHex(code) ~ " at " ~
+                toHex(address) ~ "\n  " ~ _lastActivity ~ "\n");
+        }
+        catch (Throwable) {}
         try
         {
             auto record = info !is null ? info.ExceptionRecord : null;

@@ -863,6 +863,14 @@ private final class MessageBubble : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         if (_hidden) return;
+        // Paint runs no markers of its own, so a fault during composeRuns or
+        // drawLayout had only the preceding rebuild's marker to point at. Naming
+        // the bubble here (role, index, content size) makes the crashing widget
+        // the last thing recorded. `noteActivity` collapses consecutive repeats,
+        // so a steady repaint does not flood the log.
+        noteActivity("MessageBubble.onPaint role=" ~ _role ~ " index=" ~
+            to!string(_messageIndex) ~ " contentLen=" ~
+            to!string(_content.length));
         const palette = theme();
         const width = bounds().width;
         const height = bounds().height;
@@ -902,6 +910,8 @@ private final class MessageBubble : Widget
             if (!_thinkingCollapsed)
             {
                 auto layout = shapedThinking(innerWidth);
+                noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
+                    " width=" ~ to!string(innerWidth));
                 canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
                 y += layout.measuredSize().height + gap;
             }
@@ -938,6 +948,9 @@ private final class MessageBubble : Widget
                 auto composition = markdownFor(innerWidth);
                 if (composition.items.length > 0)
                 {
+                    noteActivity("paintMarkdown index=" ~ to!string(_messageIndex) ~
+                        " items=" ~ to!string(composition.items.length) ~
+                        " width=" ~ to!string(innerWidth));
                     paintMarkdown(canvas, composition, padH, contentY);
                     collectMarkdownTargets(composition, contentY);
                 }
@@ -3884,6 +3897,10 @@ public final class OpenCodeRoot : VBox
     private bool _turnTiming;
     private double[string] _turnDurations;
 
+    // Pro: the "Worked for …" completion separator is still fragile (its
+    // appearance depends on turn-timing key matches and finishing on a prose
+    // reply), so it is opt-in via `Settings.showWorkedFor` and off by default.
+
     // Restart: rebuild the package with DUB and relaunch the app. A detached
     // helper does the work after this window closes (see auroraopencode.restart);
     // the pending flag keeps the transcript live until the helper is started.
@@ -3956,7 +3973,7 @@ public final class OpenCodeRoot : VBox
         if (_restartPending) return;
         _restartPending = true;
         updateStatus(rebuild
-            ? "Restarting: rebuilding with DUB, then relaunching..."
+            ? "Rebuilding with DUB, then relaunching..."
             : "Restarting...");
 
         // Flush every piece of state the new instance reads on startup.
@@ -3969,7 +3986,7 @@ public final class OpenCodeRoot : VBox
         if (!launchRestart(plan))
         {
             _restartPending = false;
-            updateStatus("Restart failed: could not start the restart helper.");
+            updateStatus("Rebuild failed: could not start the restart helper.");
             return;
         }
         _window.close();
@@ -4071,7 +4088,7 @@ public final class OpenCodeRoot : VBox
 
         // Rebuild the package with DUB and relaunch. The window closes first so
         // DUB can overwrite the running .exe.
-        auto restartButton = toolbar.add(new Button("Restart", IconKind.refresh));
+        auto restartButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
         restartButton.setId("oc-restart");
         restartButton.onClick = delegate() { requestRestart(true); };
 
@@ -4894,6 +4911,18 @@ public final class OpenCodeRoot : VBox
             const index = path[slot];
             const message = session.messages[index];
 
+            // A rebuild's per-slot work is where the 2026-09-18 faults landed:
+            // the last marker before the crash was always `rebuildMessageColumn`,
+            // with no `onPaint` after it, so death was in build/measure rather
+            // than paint. Naming the slot and message here makes the last
+            // recorded step the exact one that faulted.
+            noteActivity("rebuild slot=" ~ to!string(slot) ~ "/" ~
+                to!string(path.length) ~ " index=" ~ to!string(index) ~
+                " role=" ~ message.role ~ " toolCalls=" ~
+                to!string(message.toolCalls.length) ~ " internal=" ~
+                to!string(message.internal));
+
+
             // Synthetic control turns (max-rounds / loop recovery) steer the
             // model but are not the user's words: keep them out of the
             // transcript so the UI does not show a fake user prompt at the
@@ -4923,7 +4952,8 @@ public final class OpenCodeRoot : VBox
                     auto finalIndex = openTurn in finalAssistantByTurn;
                     auto duration = openTurn in _turnDurations;
                     auto didWork = openTurn in actualWorkByTurn;
-                    if (finalIndex !is null && *finalIndex == index &&
+                    if (_settings.showWorkedFor &&
+                        finalIndex !is null && *finalIndex == index &&
                         duration !is null && didWork !is null && *didWork)
                         _messageColumn.add(
                             new TurnCompletionSeparator(*duration));
@@ -6692,6 +6722,23 @@ public final class OpenCodeRoot : VBox
         };
         legacyRow.add(legacyTip);
         content.add(legacyRow);
+
+        // "Worked for …" separator: an opt-in display extra. Off by default
+        // because its appearance is unreliable, so it lives here rather than in
+        // the always-on transcript.
+        auto workedRow = new HBox(8);
+        workedRow.layoutHints().preferredHeight = 32;
+        auto workedCheck = new CheckBox("Worked-for separator");
+        workedCheck.setId("oc-workedfor");
+        workedCheck.setChecked(_settings.showWorkedFor, false);
+        workedCheck.onChanged = delegate(bool value)
+        {
+            _settings.showWorkedFor = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        workedRow.add(workedCheck);
+        content.add(workedRow);
 
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
@@ -8880,6 +8927,22 @@ public final class OpenCodeRoot : VBox
     {
         showSettingsDialog();
         return _legacyTooltipAnchor !is null ? _legacyTooltipAnchor.text() : "";
+    }
+
+    /// Test-only: open the settings dialog and return the "Worked-for
+    /// separator" checkbox, or null when absent.
+    public CheckBox workedForCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-workedfor");
+    }
+
+    /// Test-only: toggle the Worked-for separator as the dialog checkbox does,
+    /// without opening the dialog.
+    public void setShowWorkedForForTesting(bool value)
+    {
+        _settings.showWorkedFor = value;
+        if (_current >= 0) rebuildMessageColumn();
     }
 
     /// Test-only: open Settings and report whether the "System prompt" button

@@ -724,6 +724,7 @@ public struct Settings
     bool thinking;
     bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
     bool legacyTools;          // additionally expose the bash/cmd/powershell shell tool; off by default
+    bool showWorkedFor;        // show the "Worked for …" completion separator; off by default
     string workspace;          // working directory the tools run in
 }
 
@@ -891,6 +892,9 @@ public Settings loadSettings()
                 if (auto found = "legacyTools" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.legacyTools = found.type == JSONType.true_;
+                if (auto found = "showWorkedFor" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.showWorkedFor = found.type == JSONType.true_;
                 // Migration: the old "nativeTools" flag was a separate native-only
                 // mode. Native tools are now the default, so a user who had them
                 // ON wants no legacy shell; someone who had them OFF (shell mode)
@@ -953,6 +957,7 @@ public void saveSettings(const ref Settings settings)
     root["thinking"] = settings.thinking;
     root["toolsEnabled"] = settings.toolsEnabled;
     root["legacyTools"] = settings.legacyTools;
+    root["showWorkedFor"] = settings.showWorkedFor;
     root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());

@@ -721,7 +721,13 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
             run.style == InlineStyle.code,
             run.style == InlineStyle.bold ||
             run.style == InlineStyle.boldItalic);
-        if (layout.lines.length == 0) continue;
+        // `shapeOne` returns whatever the shaper produced, and a null layout
+        // dereferenced here took the whole process down mid-repaint (a native
+        // access violation resolving to this function). The widget tree is
+        // already painted when a bubble composes, so a null must be skipped,
+        // not assumed away - the same guard `Box.onMeasure` and
+        // `Canvas.drawLayout` carry for their own null inputs.
+        if (layout is null || layout.lines.length == 0) continue;
         const line = layout.lines[0];
         const w = line.width;
         if (w <= 0) continue;
@@ -744,7 +750,7 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
                     run.style == InlineStyle.code,
                     run.style == InlineStyle.bold ||
                     run.style == InlineStyle.boldItalic);
-                if (remainderLayout.lines.length == 0) break;
+                if (remainderLayout is null || remainderLayout.lines.length == 0) break;
                 const remainderLine = remainderLayout.lines[0];
                 if (x + remainderLine.width <= lineWidth)
                 {
@@ -763,7 +769,7 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
                     run.style == InlineStyle.code,
                     run.style == InlineStyle.bold ||
                     run.style == InlineStyle.boldItalic);
-                if (prefixLayout.lines.length > 0)
+                if (prefixLayout !is null && prefixLayout.lines.length > 0)
                 {
                     const prefixLine = prefixLayout.lines[0];
                     pending ~= PendingText(prefixLayout, run.style, x,
@@ -963,7 +969,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     auto marker = shapeOne(markerText, bodyPx, false, false);
                     const itemHeight = composeRuns(c, block.itemFlowPieces[index],
                         lineWidth, itemTop, mdText, bodyPx, indent);
-                    if (marker.lines.length > 0)
+                    if (marker !is null && marker.lines.length > 0)
                     {
                         MdItem markerItem;
                         markerItem.kind = MdItemKind.text;
@@ -1022,7 +1028,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     if (streaming && c.cursorPx > 0)
     {
         auto cursor = shapeOne("▌"d, c.cursorPx, false, false);
-        if (cursor.lines.length > 0)
+        if (cursor !is null && cursor.lines.length > 0)
         {
             MdItem item;
             item.kind = MdItemKind.text;

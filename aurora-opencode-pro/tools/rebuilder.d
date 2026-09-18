@@ -31,7 +31,7 @@ import std.file : append, exists, mkdirRecurse, readText;
 import std.path : buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
-import std.string : indexOf, lastIndexOf, strip;
+import std.string : indexOf, lastIndexOf, replace, strip;
 
 private struct Options
 {
@@ -85,6 +85,10 @@ private void noteUnexpectedExit(in Options options, int code, int restartNumber)
         to!string(options.maxRestarts) ~ "\n";
     text ~= "executable:  " ~ options.exePath ~ "\n";
     text ~= "activity:    " ~ recentActivity(options) ~ "\n";
+    // The fault itself: a native access-violation line with its address, or an
+    // `uncaught Error:` with a symbolized trace. Without this the summary named
+    // the exit code but not the code that produced it.
+    text ~= "last error:  " ~ recentError(options) ~ "\n";
     appendLine(path, text);
     // Mirrored into the app's log as a single line, so the two files agree on
     // when the app went down.
@@ -93,19 +97,38 @@ private void noteUnexpectedExit(in Options options, int code, int restartNumber)
 }
 
 /**
+ * The app's own log, where its `activity:` markers are written.
+ *
+ * This is a different file from `options.logPath`, which is the supervisor's
+ * `restart.log`. `recentActivity` used to read `options.logPath`, so it always
+ * reported "none recorded" even when the app had recorded exactly which step it
+ * was running - the one field meant to explain an unexpected exit was inert.
+ */
+private string appLogPath(in Options options)
+{
+    if (options.logPath.length == 0) return "";
+    return buildPath(dirName(options.logPath), "logs", "errors.log");
+}
+
+/**
  * The last `activity:` marker the app wrote, which names the step it was
  * executing when it died. The app records these precisely because a native
- * fault carries no trace of its own.
+ * fault carries no trace of its own. The whole timestamped line is returned, so
+ * the exit record can be correlated with the app log by time as well as step.
  */
 private string recentActivity(in Options options)
 {
-    if (options.logPath.length == 0 || !exists(options.logPath)) return "unknown";
+    const appLog = appLogPath(options);
+    if (appLog.length == 0 || !exists(appLog)) return "unknown";
     try
     {
-        const text = readText(options.logPath);
+        const text = readText(appLog);
         const index = text.lastIndexOf("activity: ");
         if (index < 0) return "none recorded";
-        auto tail = text[index + "activity: ".length .. $];
+        // Walk back to the start of the line so the timestamp prefix is kept.
+        const lineStart = lastIndexOf(text[0 .. index], '\n');
+        auto start = lineStart < 0 ? 0 : lineStart + 1;
+        auto tail = text[start .. $];
         const stop = tail.indexOf('\n');
         if (stop >= 0) tail = tail[0 .. stop];
         return strip(tail);
@@ -151,6 +174,33 @@ private int superviseApp(in Options options)
         appendLine(options.logPath, "restarting (" ~ to!string(restart) ~ "/" ~
             to!string(options.maxRestarts) ~ ")");
     }
+}
+
+/**
+ * The last `[ERROR]` line the app wrote, i.e. the crash banner itself: the
+ * `native crash: access violation … at 0x…` line, or the `uncaught Error:` line
+ * for a D `Error`. The address on the native line is resolved against the
+ * archived `.pdb` on the next launch; naming it here makes the exit summary
+ * self-contained instead of pointing at a separate file.
+ */
+private string recentError(in Options options)
+{
+    const appLog = appLogPath(options);
+    if (appLog.length == 0 || !exists(appLog)) return "unknown";
+    try
+    {
+        const text = readText(appLog);
+        const index = text.lastIndexOf("[ERROR]");
+        if (index < 0) return "none recorded";
+        const lineStart = lastIndexOf(text[0 .. index], '\n');
+        auto start = lineStart < 0 ? 0 : lineStart + 1;
+        auto tail = text[start .. $];
+        const stop = tail.indexOf('\n');
+        if (stop >= 0) tail = tail[0 .. stop];
+        return strip(tail);
+    }
+    catch (Exception)
+        return "unreadable";
 }
 
 /// Name a process exit code. `0xC0000005` and friends are the exception codes
@@ -260,12 +310,20 @@ private Options parseArgs(string[] args)
     return options;
 }
 
+/// Wall-clock prefix for one log line. `restart.log` had no timestamps, so an
+/// exit recorded there could not be lined up against the app's own
+/// timestamped `errors.log`; the ISO form here matches that file's format.
+private string timestamp()
+{
+    return Clock.currTime.toLocalTime.toISOExtString.replace("T", " ") ~ " ";
+}
+
 private void appendLine(string logPath, string text)
 {
     if (logPath.length == 0) return;
     try mkdirRecurse(dirName(logPath));
     catch (Exception) {}
-    try append(logPath, text ~ "\n");
+    try append(logPath, timestamp() ~ text ~ "\n");
     catch (Exception) {}
 }
 

@@ -1436,6 +1436,9 @@ int main(string[] args)
     // an earlier action-group header, which reverses the visual relationship.
     {
         root.newChatForTesting();
+        // The separator is opt-in and off by default, so enable it for this
+        // block; the plain-answer block below re-checks the default-off case.
+        root.setShowWorkedForForTesting(true);
         root.addConversationForTesting(["user"], ["Time this turn"]);
         root.addConversationForTesting(["assistant"], [""]);
         root.startTurnClockForTesting();
@@ -1496,6 +1499,38 @@ int main(string[] args)
         assert(driver.paint(), "Worked-for completion separator did not paint");
         window.saveScreenshot(buildPath(toolShots, "worked-for-separator.ppm"));
         writeln("Worked-for separator precedes final answer and freezes");
+    }
+
+    // The separator is opt-in: with the setting off, even a turn that did real
+    // tool work gets no boundary. This is the shipped default.
+    {
+        root.newChatForTesting();
+        root.setShowWorkedForForTesting(false);
+        assert(root.workedForCheckboxForTesting() !is null,
+            "Settings dialog missing the Worked-for checkbox");
+        assert(!root.workedForCheckboxForTesting().checked(),
+            "Worked-for separator should be off by default");
+        root.addConversationForTesting(["user"], ["Time this turn"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        root.startTurnClockForTesting();
+        OpenCodeToolCall offCall;
+        offCall.id = "call_off_1";
+        offCall.name = "read";
+        offCall.arguments = `{"filePath":"notes.txt"}`;
+        root.injectToolCallsForTesting([offCall]);
+        const offDeadline = Clock.currTime + 5.seconds;
+        while (root.toolMessageCountForTesting() < 1 &&
+            Clock.currTime < offDeadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(20.msecs);
+        }
+        root.beginStreamForTesting();
+        root.streamContentForTesting("Done.");
+        root.finishStreamForTesting();
+        assert(root.turnCompletionTextsForTesting().length == 0,
+            "opted-out turn still received a Worked-for separator");
+        writeln("Worked-for separator is off unless enabled in Settings");
     }
 
     // A quick direct response did not perform reasoning or tool work. Matching
