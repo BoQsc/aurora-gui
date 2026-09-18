@@ -69,6 +69,33 @@ final class DesktopRoot : Widget
     private enum double previewShowDelaySeconds = 0.3;
     private enum double previewHideGraceSeconds = 0.35;
 
+    /// Desktop zoom shortcuts: Ctrl+= / Ctrl+plus grows, Ctrl+- shrinks,
+    /// Ctrl+0 resets. Ctrl+wheel is handled by DesktopSurface itself.
+    protected override bool onKeyDown(ref Event event)
+    {
+        if (event.control() && _desktop !is null)
+        {
+            const double current = _desktop.iconScale();
+            // `equal` is the "+/=" key on US layouts.
+            if (event.key == Key.equal)
+            {
+                _desktop.setIconScale(current + 0.1);
+                return true;
+            }
+            if (event.key == Key.minus)
+            {
+                _desktop.setIconScale(current - 0.1);
+                return true;
+            }
+            if (event.key == Key.digit0)
+            {
+                _desktop.setIconScale(1.0);
+                return true;
+            }
+        }
+        return super.onKeyDown(event);
+    }
+
     /// Called once the host GuiWindow is known (see run()); applies the system
     /// cursor visibility so startup honors a persisted "hide cursor" choice.
     void setShellWindow(GuiWindow window)

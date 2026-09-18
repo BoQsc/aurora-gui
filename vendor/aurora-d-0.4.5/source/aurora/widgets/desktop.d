@@ -27,6 +27,7 @@ class DesktopIcon : Widget
     private bool _dropTarget;
     private bool _draggable = true;
     private PointF _pressPointer;
+    private double _scale = 1.0;
 
     void delegate() onActivated;
     void delegate(DesktopIcon icon) onSelected;
@@ -51,6 +52,22 @@ class DesktopIcon : Widget
         layoutHints().preferredWidth = 96;
         layoutHints().preferredHeight = 98;
     }
+
+    /// 0.5..2.0 desktop zoom for this shortcut's glyph and label.
+    void setIconScale(double value)
+    {
+        value = clampDouble(value, 0.5, 2.0);
+        if (value == _scale) return;
+        _scale = value;
+        const width = cast(int) (96 * value + 0.5);
+        const height = cast(int) (98 * value + 0.5);
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        setBounds(Rect(bounds().x, bounds().y, width, height));
+        invalidate();
+    }
+
+    double iconScale() const @safe pure nothrow @nogc { return _scale; }
 
     dstring text() const @safe pure nothrow @nogc { return _text; }
     IconKind iconKind() const @safe pure nothrow @nogc { return _icon; }
@@ -121,16 +138,23 @@ class DesktopIcon : Widget
         if (_dropTarget)
             canvas.drawRoundedRect(full.inset(1), 7, Color.rgba(0, 0, 0, 0),
                 palette.accent, 2);
-        const iconRect = Rect((bounds().width - 44) / 2,
-            7 + (_pressed && !_dragging ? 1 : 0), 44, 44);
+        const iconPx = maxInt(12, cast(int) (44 * _scale + 0.5));
+        const iconY = cast(int) (7 * _scale + 0.5) +
+            (_pressed && !_dragging ? 1 : 0);
+        const iconRect = Rect((bounds().width - iconPx) / 2, iconY, iconPx,
+            iconPx);
         if (_iconImage !is null)
             canvas.drawImage(iconRect, _iconImage);
         else
             drawIcon(canvas, _icon, iconRect, Color.rgb(245, 247, 250),
                 palette.accent);
-        canvas.drawTextInRect(Rect(3, 56, maxInt(0, bounds().width - 6),
-                bounds().height - 58), _text, Color.rgb(255, 255, 255), 1,
-            HorizontalAlign.center, VerticalAlign.top, true);
+        const textY = cast(int) (56 * _scale + 0.5);
+        int labelScale = cast(int) (_scale + 0.5);
+        if (labelScale < 1) labelScale = 1;
+        canvas.drawTextInRect(Rect(3, textY, maxInt(0, bounds().width - 6),
+                maxInt(1, bounds().height - textY)), _text,
+            Color.rgb(255, 255, 255), labelScale, HorizontalAlign.center,
+            VerticalAlign.top, true);
         if (focused())
             canvas.strokeRect(full.inset(1), palette.accent.withAlpha(210), 1);
     }
@@ -288,6 +312,15 @@ class DesktopSurface : Widget
     private DesktopMarqueeOverlay _marqueeOverlay;
     // Optional desktop wallpaper painted behind the icons.
     private RgbaImage _wallpaper;
+    // Desktop zoom (0.5..2.0). Drives the icon glyph, label and grid steps.
+    private double _iconScale = 1.0;
+    // Rows the last auto-arrange produced, so a live resize only re-flows when
+    // the container height actually changes the row count (not every pixel).
+    private int _lastGridRows;
+    private bool _gridRowsValid;
+    // While > 0 the shortcut layers are stretched (zoom preview) instead of
+    // repainted; when it reaches 0 the crisp rebuild happens once.
+    private double _zoomSettleSeconds;
 
     bool delegate(DesktopIcon source, DesktopIcon target) onIconDropped;
     void delegate(DesktopIcon icon) onIconMoved;
@@ -408,14 +441,86 @@ class DesktopSurface : Widget
         }
     }
 
+    private int rowsForHeight(int height) const @safe pure nothrow @nogc
+    {
+        if (height <= _gridOriginY) return 6;
+        return maxInt(1,
+            maxInt(_gridStepY, height - _gridOriginY) / _gridStepY);
+    }
+
     private Point automaticPosition(size_t index) const @safe pure nothrow @nogc
     {
-        const rows = bounds().height <= _gridOriginY ? 6 :
-            maxInt(1, maxInt(_gridStepY, bounds().height - _gridOriginY) / _gridStepY);
+        const rows = rowsForHeight(bounds().height);
         const row = cast(int) (index % cast(size_t) rows);
         const column = cast(int) (index / cast(size_t) rows);
         return Point(_gridOriginX + column * _gridStepX,
             _gridOriginY + row * _gridStepY);
+    }
+
+    /// Current desktop zoom (0.5..2.0).
+    double iconScale() const @safe pure nothrow @nogc { return _iconScale; }
+
+    /// Zoom the desktop shortcuts and labels. The grid steps scale with the
+    /// icons so the same container height fits proportionally more rows, and
+    /// every auto-arranged shortcut re-flows to fill the height.
+    void setIconScale(double value)
+    {
+        value = clampDouble(value, 0.5, 2.0);
+        if (value == _iconScale) return;
+        _iconScale = value;
+        _gridStepX = cast(int) (104 * value + 0.5);
+        _gridStepY = cast(int) (104 * value + 0.5);
+        _gridOriginX = cast(int) (16 * value + 0.5);
+        _gridOriginY = cast(int) (18 * value + 0.5);
+        // Zoom is a preview: stretch each cached shortcut layer while the user
+        // keeps zooming (Ctrl+wheel fires repeatedly) and rebuild crisply once
+        // the zoom settles. Without this every wheel notch rebuilt all layers
+        // (~280 ms with 427 shortcuts).
+        foreach (item; _icons)
+        {
+            item.setResizeStretch(true);
+            item.setIconScale(value);
+        }
+        if (_alignToGrid) arrangeIcons();
+        _zoomSettleSeconds = 0.22;
+        _gridRowsValid = false;
+        // No surface-wide invalidate: the icons are composited layers, so their
+        // own invalidations recompose the frame without repainting the
+        // wallpaper behind them (which cost ~50 ms per zoom step).
+    }
+
+    /// Re-flow the grid when the container size changes so the icons always
+    /// cover the available height. Guarded by the row count so a live resize
+    /// does not rebuild the whole grid on every pixel.
+    protected override void onBoundsChanged()
+    {
+        if (!_alignToGrid || _icons.length == 0) return;
+        const rows = rowsForHeight(bounds().height);
+        if (_gridRowsValid && rows == _lastGridRows) return;
+        _lastGridRows = rows;
+        _gridRowsValid = true;
+        arrangeIcons();
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (_zoomSettleSeconds <= 0.0) return;
+        _zoomSettleSeconds -= deltaSeconds;
+        if (_zoomSettleSeconds > 0.0) return;
+        _zoomSettleSeconds = 0.0;
+        // One crisp rebuild at the settled zoom.
+        foreach (item; _icons)
+            item.setResizeStretch(false);
+    }
+
+    /// Ctrl+wheel zooms the desktop, like Explorer's Ctrl+scroll.
+    override bool onMouseWheel(ref Event event)
+    {
+        if (!event.control()) return false;
+        const step = event.wheelY > 0 ? 0.1 : (event.wheelY < 0 ? -0.1 : 0.0);
+        if (step == 0.0) return false;
+        setIconScale(_iconScale + step);
+        return true;
     }
 
     private void selectIcon(DesktopIcon selected)

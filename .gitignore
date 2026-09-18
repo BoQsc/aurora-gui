@@ -43,3 +43,8 @@ aurora-browser/home.txt
 /aurora-desktop/desktop_state.json.bak
 /aurora-desktop/desktop_state.json.tmp
 /aurora-desktop/desktop_state.err
+
+# API key bundles (secrets; never commit)
+aurora-api-keys.bundle.json
+aurora-api-keys.bundle.enc.json
+*.aurora-keys.json

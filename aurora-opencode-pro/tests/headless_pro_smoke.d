@@ -559,6 +559,32 @@ int main(string[] args)
     dismissContextMenus(root);
     writeln("Message text selection + copy works from the context menu");
 
+    // Keyboard shortcuts: a drag on transcript text focuses the bubble, so
+    // Ctrl+C copies the selection and Ctrl+V pastes it into the composer (the
+    // root hands focus back to the input before pasting).
+    {
+        driver.drag(selOrigin, selEnd);
+        root.tickTree(0.02);
+        assert(driver.paint(), "Keyboard-selection repaint failed");
+        driver.pressKey(Key.c, cast(uint) KeyModifier.control);
+        root.tickTree(0.02);
+        assert(root.copiedMessageTextForTesting(selIndex) == "select this text",
+            "Ctrl+C did not copy the transcript selection: '" ~
+            root.copiedMessageTextForTesting(selIndex) ~ "'");
+        // Clear the composer first so the paste assertion is exact.
+        auto clipInput = requireWidget!TextArea(root, "oc-input");
+        clipInput.setText("");
+        root.tickTree(0.02);
+        driver.pressKey(Key.v, cast(uint) KeyModifier.control);
+        root.tickTree(0.02);
+        assert(clipInput.textUtf8() == "select this text",
+            "Ctrl+V did not paste into the composer: '" ~
+            clipInput.textUtf8() ~ "'");
+        clipInput.setText("");
+        root.tickTree(0.02);
+        writeln("Ctrl+C copies transcript selection and Ctrl+V pastes into composer");
+    }
+
     // Regenerate still works after an edit.
     root.addConversationForTesting(
         ["assistant"], ["A reply that will be regenerated."]);

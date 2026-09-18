@@ -1255,9 +1255,18 @@ public final class OpenCodeRoot : VBox
 
     override bool onKeyDown(ref Event event)
     {
-        if ((event.control() || event.meta()) && event.key == Key.n)
+        const shortcut = event.control() || event.meta();
+        if (shortcut && event.key == Key.n)
         {
             newChat();
+            return true;
+        }
+        if (shortcut && event.key == Key.v)
+        {
+            // Paste from anywhere in the window: focus the composer, then
+            // paste from the system clipboard.
+            _input.requestFocus();
+            _input.pasteFromClipboard();
             return true;
         }
         return false;

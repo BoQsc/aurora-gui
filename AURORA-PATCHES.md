@@ -394,3 +394,23 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   `DesktopRoot` constructor; thumbnails are no longer seeded at startup
   (`seedThumbnails`, one per 2 s, capped at 640 px via `cappedThumbnailSize`).
   First frame went from ~5.4 s to ~2.0 s debug (~1.7 s release).
+- `platform/win32.d`: `WM_NCHITTEST` now returns `HTCLIENT` for the whole client
+  area while `_fullscreen`. Previously a fullscreen window fell through to
+  `DefWindowProc`, which reported `HTVSCROLL` (WS_VSCROLL is set for scroll
+  integration) across the right edge and resize codes at the corners, stealing
+  every click from the taskbar's edge-anchored Show-desktop strip.
+- `widget.d` / `widgets/scrollbar.d` / `window.d` / `widgets/desktop.d`:
+  `Widget.claimsBorderlessResizeEdge` is now position-aware
+  (`claimsBorderlessResizeEdge(Point localPosition)`); `GuiWindow.onNativeClientControlAt`
+  passes the local point. `Taskbar` overrides it to claim the Show-desktop strip
+  and clock so they win the borderless resize margin.
+- `widgets/desktop.d`: desktop grid now follows the container height
+  (`rowsForHeight` + `onBoundsChanged` re-flow, coalesced by row count) and the
+  desktop can be zoomed (`DesktopIcon.setIconScale`, `DesktopSurface.setIconScale`,
+  0.5..2.0, scales glyph/label/grid steps). Zoom marks shortcut layers
+  `setResizeStretch(true)` and clears 0.22 s after the last change so wheel
+  zooming re-composes scaled layers (~4 ms/step) instead of repainting all
+  shortcuts (~280 ms/step).
+- `tasks.d` (app-level, no vendor): background thumbnail worker keeps every
+  task preview warm off the UI thread; the UI only reads `cachedThumbnail`.
+  Vendor manifest re-digested for the five changed vendor files.

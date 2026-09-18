@@ -4,6 +4,49 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode Ctrl+C / Ctrl+V (2026-09-18)
+
+**Composer copy/paste already worked.** `ChatInput : TextArea` gets
+Ctrl+A/C/X/V/Z/Y from the vendor `TextEditor.onKeyDown` (which uses the real
+Windows clipboard via `readSystemClipboardText`/`writeSystemClipboardText`).
+Verify with a headless driver probe: focus `oc-input`, `driver.text(...)`,
+`pressKey(Key.a, control)`, `pressKey(Key.c, control)`, `pressKey(Key.deleteKey)`,
+`pressKey(Key.v, control)`; the text returns. NOTE: a standalone D probe linked
+without `-L/SUBSYSTEM:CONSOLE -L/ENTRY:mainCRTStartup` produces no console
+output (the build defaults to the GUI subsystem).
+
+**Transcript selection copy (the gap).** The bubble was not focusable, so
+Ctrl+C never reached it (the context menu's "Ctrl+C" hint was aspirational).
+`MessageBubble` now calls `setFocusable(true)` + `requestFocus()` when a drag
+starts a selection, and handles Ctrl+C (copy `selectedText()`) / Ctrl+A. The
+root handles Ctrl+V by focusing `oc-input` and calling `pasteFromClipboard()`.
+Smoke coverage: `headless_pro_smoke.d` drags a bubble, presses Ctrl+C and
+asserts `copiedMessageTextForTesting(index)`, then Ctrl+V pastes into the
+composer; `headless_smoke.d` does Ctrl+A/C/Delete/V on the composer.
+
+**How to test.** Pro smoke and baseline smoke build/run as in the sections
+below; look for `Ctrl+C copies transcript selection and Ctrl+V pastes into
+composer` and `Ctrl+A/C/V work in the composer`.
+
+## Aurora API keys script: how to test it (2026-09-18)
+
+`scripts/aurora-api-keys.ps1` is validated without touching real credentials by
+pointing `USERPROFILE`/`APPDATA` at sandbox directories:
+```
+set "USERPROFILE=C:\...\keys-test\src"
+set "APPDATA=C:\...\keys-test\src-appdata"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\aurora-api-keys.ps1 backup -Path C:\...\plain.bundle.json
+powershell ... list    -Path C:\...\plain.bundle.json
+powershell ... backup  -Path C:\...\enc.bundle.json -Password s3cret
+powershell ... install -Path C:\...\enc.bundle.json -Password s3cret   (USERPROFILE/APPDATA = target)
+```
+Checks: auth.json + `.config\opencode\commandcode.key` + `Aurora OpenCode\
+settings.json` match after install; `Select-String 'sk-...'` finds nothing in the
+encrypted bundle; a wrong `-Password` throws "Wrong password or corrupt
+bundle."; installing over a different existing key skips it unless `-Force`;
+every written file gets a `.bak-<timestamp>` sibling. Syntax check:
+`[System.Management.Automation.Language.Parser]::ParseFile(...)`.
+
 ## Aurora OpenCode live provider testing (2026-09-18)
 
 **Provider key probe.** A tiny standalone probe prints each preset's endpoint,
@@ -10983,3 +11026,56 @@ capture placeholder glyphs. `capture_aurora.ps1` picks the largest window whose
 title matches `*Aurora Desktop*`; a freshly launched window that is minimized
 sits at `(-32000,-32000)` - check `IsIconic`/`GetWindowRect` first if the
 capture comes back 129x28.
+
+## 2026-09-18 - Aurora Desktop: D closure-in-loop bug (recurring!), native launch, grid/zoom, previews
+
+**D closures over a loop-body local all see the last value.** This is the
+single highest-value gotcha found so far. Minimal repro (`closure_test.d`):
+```d
+void delegate()[3] handlers;
+foreach (i; 0 .. 3) { const captured = i; handlers[i] = delegate(){ write(captured); }; }
+foreach (h; handlers) h();   // prints "2 2 2", NOT "0 1 2"
+```
+It silently broke, in the real app: input-language rows (every row selected the
+last language), volume device rows, WiFi network rows, pinned taskbar apps, and
+tray notification actions. Rule: **never capture a variable declared inside a
+loop body in a delegate.** Pass the value through a helper *parameter*, which
+gets a fresh frame per call:
+```d
+void bindRow(Row row, size_t hkl) { row.onClick = delegate(){ use(hkl); }; }
+foreach (lang; langs) bindRow(add(new Row(lang)), lang.hkl);
+```
+A scan script (`scan_loop_closures.ps1`) walks `.d` files tracking brace depth
+and reports `delegate(` inside a `foreach`; run it after adding loops that build
+widgets.
+
+**Fullscreen edge hit-testing.** `fs_hittest_probe.d` creates a real
+`GuiWindow`, toggles fullscreen, and `SendMessageW(WM_NCHITTEST, ...)` at edge
+points, printing the HT code. Before the fix fullscreen returned `HTVSCROLL`
+(7) across the right edge and resize codes at the corners, so the taskbar's
+edge-anchored Show-desktop strip (rightmost 16 px) was unclickable; `win32.d`
+now returns `HTCLIENT` for the whole client area while `_fullscreen`. Use this
+probe (not a real mouse) to verify edge hit-testing.
+
+**Native launching.** `systemOpenPath(path)` in `system.d` uses `ShellExecuteW`.
+Never use `std.process.spawnShell` to open a file/app on Windows: it runs
+`%COMSPEC% /c`, spawns a console and mis-parses spaces. `launch_probe.d`
+asserts a missing path returns false and a real exe returns true.
+
+**Desktop grid + zoom.** `DesktopSurface.rowsForHeight` + `onBoundsChanged`
+re-flow auto-arranged shortcuts when the container height changes the row count
+(coalesced). `setIconScale(0.5..2.0)` scales glyph/label/grid steps; app keys are
+Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+wheel. `grid_zoom_probe.d` reports row bottoms
+at several sizes/zooms. Zoom marks shortcut layers `setResizeStretch(true)` and
+clears it 0.22 s after the last change, so each wheel notch re-composes scaled
+layers (~4 ms) and only the settle does a crisp rebuild (was ~280 ms/step).
+
+**Instant previews (background thumbnail worker).** `tasks.d` now owns a
+daemon thread (`startThumbnailWorker`/`setThumbnailTargets`/`requestThumbnail`/
+`cachedThumbnail`). The UI thread NEVER calls PrintWindow; `captureThumbnailCached`
+just reads the cache and asks for a refresh. All shared state is `__gshared`
+(module globals are thread-local by default!) and guarded by a `Mutex`. Start it
+only in `run()` and `stopThumbnailWorker()` after `window.run()`, so tests never
+leave the thread running. `thumb_worker_probe.d` warms all visible windows and
+times reads (expect all visible cached, reads ~µs). Captures are capped at
+480 px via `thumbnailCaptureSize`.

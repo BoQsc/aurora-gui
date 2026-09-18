@@ -1,5 +1,60 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora OpenCode: Ctrl+C / Ctrl+V copy & paste (DONE, verified)
+
+**Request (user).** "add key combinations like ctrl C and ctrl v so we can do
+copy and paste of text in aurora opencode."
+
+**Finding.** The composer (`ChatInput : TextArea`) already handled Ctrl+A/C/X/V/
+Z/Y through the vendor `TextEditor`, including the real OS clipboard (verified
+with a headless `UiTestDriver` probe: type -> Ctrl+A -> Ctrl+C -> Delete ->
+Ctrl+V restores the text). The actual gaps were (a) the transcript selection
+could not be copied by keyboard — the context menu even advertised "Ctrl+C" —
+because the bubble never took focus, and (b) Ctrl+V only worked while the
+composer itself had focus.
+
+**Changes.**
+- `aurora-opencode-pro/appui.d`, `MessageBubble`: on a drag that starts a text
+  selection it now `setFocusable(true)` + `requestFocus()`, and gained
+  `onKeyDown`: Ctrl+C copies `selectedText()` (stored in `_lastClipboardText`
+  for the test) and Ctrl+A selects all.
+- Pro `OpenCodeRoot.onKeyDown`: Ctrl+V focuses the composer and
+  `pasteFromClipboard()` — so after selecting transcript text, Ctrl+V still
+  pastes into the prompt.
+- Baseline `OpenCodeRoot.onKeyDown`: same Ctrl+V paste-from-anywhere.
+- Test hook `copiedMessageTextForTesting(index)`.
+
+**Verification.** Pro smoke: drag-select a bubble -> Ctrl+C copies
+`select this text` -> Ctrl+V pastes it into the composer. Baseline smoke:
+Ctrl+A/C/Delete/V on the composer. Both PASS; Pro + baseline release rebuild;
+app relaunched as exactly one instance.
+
+## 2026-09-18 - API keys backup/installer script (DONE, validated)
+
+**Request (user).** "make a api keys backup/installer script. I want to send api
+keys to other person on another computer."
+
+**Deliverable.** `scripts/aurora-api-keys.ps1` (+ `scripts/aurora-api-keys.cmd`
+wrapper). Actions:
+- `backup [-Path] [-Password]` — collects `~/.local/share/opencode/auth.json`
+  providers, `~/.config/opencode/commandcode.key` and the Aurora
+  `settings.json` provider fields into one bundle.
+- `install -Path [-Password] [-Force]` — writes them on the target machine,
+  backing up every file it touches to `<file>.bak-<timestamp>`.
+- `list -Path [-Password]` — shows what a bundle contains.
+
+Safety: keys are only ever printed masked; `-Password` wraps the bundle in
+AES-256-CBC (PBKDF2-SHA1, 100k iterations, random salt/IV) so it is safe to
+send; an existing different key is skipped unless `-Force`; the JSON is written
+UTF-8 without BOM; a bundle written inside the repo triggers a warning;
+`.gitignore` now excludes `aurora-api-keys.bundle*.json` and `*.aurora-keys.json`.
+
+**Validation (sandboxed `USERPROFILE`/`APPDATA`, fake keys).** Plain and
+encrypted round-trips reproduce auth.json + commandcode.key + settings.json
+byte-for-byte; the encrypted file contains no literal key; a wrong password is
+rejected; `-Force` off skips a conflicting key and on overwrites; every touched
+file gets a `.bak-<timestamp>`.
+
 ## 2026-09-18 - Aurora OpenCode: live testing session, provider-aware key bug fixed (FIXED, verified)
 
 **Trigger (user).** "try to do a few tests with aurora opencode and resolve
@@ -286,6 +341,74 @@ lands on a repaint. The first `refreshNotifications` can be ~135 ms cold.
 `GuiWindow` creation is ~500 ms (Vulkan device/pipeline) and the first frame
 still builds 427 layers; only off-screen-layer culling or a "show the window,
 fill it over ticks" refactor would cut that further.
+
+## 2026-09-18 - Aurora Desktop: fullscreen Show-desktop, language, cmd launching, grid/zoom, instant previews (FIXED, verified)
+
+**User.** "show desktop is not pressable when we are in full screen. We still
+can't press to select other language too. Pressing any kind of desktop icon or
+taskbar icon that is a real program of windows spawns cmd that does nothing. ...
+complete native support of running or launching ... The desktop icons grid ...
+not having any sense of ... its container window so it's not trying to cover the
+entire screen with icons in height. ... add ability to zoom out and zoom in the
+desktop icons ... It still takes a few seconds just to show around 15 previews
+of tasks windows ... I demand instant preview."
+
+**1. Fullscreen Show-desktop unclickable (root cause, not a guess).** A probe
+sent `WM_NCHITTEST` to the real window: in fullscreen the entire right edge
+returned **HTVSCROLL** (7) and the bottom/right returned resize codes, because
+the platform sets `WS_VSCROLL` for scroll integration and (in fullscreen)
+falling through to `DefWindowProc` exposed those non-client regions. The
+taskbar's Show-desktop strip is the rightmost 16 px, so every click was eaten.
+Fix: `win32.d` `WM_NCHITTEST` returns `HTCLIENT` for the whole client area while
+`_fullscreen`, before any decorated/resize logic. Also made
+`Widget.claimsBorderlessResizeEdge` position-aware and had `Taskbar` claim the
+Show-desktop strip + clock, so an undecorated window cannot swallow them either.
+
+**2. Could not select another input language.** The real cause was a D
+closure-capture bug, proved with a 6-line program (0..3 loop prints
+`2 2 2 2`): `LanguagePanel.rebuild` captured `const captured = language.hkl` in
+the loop body, and D reuses that stack slot, so **every row selected the last
+language**. Fixed by passing the hkl through a helper parameter
+(`bindRow`/`bindNetworkRow`/`bindDeviceRow`/`pinnedLauncher`/`trayIconAction`).
+The same bug pattern existed in and was fixed for: the volume device list, the
+WiFi network rows (every row connected to the last network), the pinned
+taskbar apps (every pin launched the last app), and the tray notifications
+(every tray icon invoked the last icon). Probe now prints
+`PASS: every row selects its own language`.
+
+**3. Clicking a real icon spawned a "cmd that does nothing".** Launching used
+`std.process.spawnShell`, which on Windows runs `%COMSPEC% /c` (a console, and
+it mis-parses paths with spaces). Combined with bug 2, every desktop icon opened
+the *last* desktop item. Fix: new `systemOpenPath(path, verb, cwd)` using
+`ShellExecuteW`; all desktop/taskbar/Start/task-manager launches go through it.
+Probe: missing path -> false, `notepad.exe` -> launched, no console.
+
+**4. Icon grid did not fill the container height; add zoom.** `DesktopSurface`
+now recomputes the row count from the live container height
+(`rowsForHeight`) and re-flows auto-arranged shortcuts in `onBoundsChanged`,
+coalesced so a resize only re-flows when the row count actually changes. Added
+`DesktopIcon.setIconScale` + `DesktopSurface.setIconScale` (0.5..2.0): glyph,
+label and grid steps all scale. Shortcuts: **Ctrl+= / Ctrl+- / Ctrl+0**, plus
+**Ctrl+wheel**. Verified in-process (surface height 708 -> 636 bottom with 7
+rows; resize to 460 -> 4 rows; zoom 0.6 fills more rows). Zoom uses the
+live-resize stretch on shortcut layers while the user keeps zooming and rebuilds
+each shortcut once when the zoom settles: **~280 ms -> ~4 ms per step**
+(427 shortcuts).
+
+**5. Task previews were not instant.** Hover captured each window synchronously
+(PrintWindow 15-70 ms), so a grouped app with 15 windows took seconds. Added a
+**background thumbnail worker** (`tasks.d`: `startThumbnailWorker`,
+`setThumbnailTargets`, `requestThumbnail`, `cachedThumbnail`) that keeps a warm
+cache off the UI thread; the UI never captures. The worker warms every live
+window once at startup, refreshes on hover (priority) and does a slow
+round-robin, capturing at most 480 px. Probe: all 21 visible windows cached,
+**every preview read in 4 µs**. Started/stopped only in `run()` so tests never
+leave a daemon thread behind.
+
+**Verification.** `headless-smoke.exe` ALL PASSED; probes above pass; app
+relaunched, one instance, screenshot shows desktop/wallpaper/taskbar/tray/LIT
+intact. Vendor files re-digested: `win32.d`, `widget.d`, `window.d`,
+`widgets/desktop.d`, `widgets/scrollbar.d`.
 
 ## 2026-09-18 - Aurora Desktop: six desktop/shell complaints (FIXED)
 

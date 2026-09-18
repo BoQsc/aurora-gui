@@ -126,6 +126,25 @@ int main(string[] args)
     // Type and send
     input.requestFocus();
     root.tickTree(0.02);
+
+    // Clipboard shortcuts on the composer: Ctrl+A selects, Ctrl+C copies,
+    // Delete removes the selection, Ctrl+V pastes it back.
+    driver.text("clipboard probe");
+    root.tickTree(0.02);
+    driver.pressKey(Key.a, cast(uint) KeyModifier.control);
+    driver.pressKey(Key.c, cast(uint) KeyModifier.control);
+    driver.pressKey(Key.deleteKey);
+    root.tickTree(0.02);
+    assert(input.textUtf8().length == 0,
+        "Ctrl+A + Delete did not clear the composer");
+    driver.pressKey(Key.v, cast(uint) KeyModifier.control);
+    root.tickTree(0.02);
+    assert(input.textUtf8() == "clipboard probe",
+        "Ctrl+V did not paste into the composer: '" ~ input.textUtf8() ~ "'");
+    writeln("Ctrl+A/C/V work in the composer");
+    input.setText("");
+    root.tickTree(0.02);
+
     driver.text("Say exactly: AURORA-OPENCODE-GUI-OK");
     root.tickTree(0.02);
     const typedText = input.textUtf8();

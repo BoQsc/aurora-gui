@@ -199,6 +199,9 @@ private final class MessageBubble : Widget
     private int _selFocusSeg = -1;
     private size_t _selFocusChar;
     private bool _textHover;
+    // Payload of the last Ctrl+C on this bubble, exposed for the smoke test
+    // (the clipboard itself is global state).
+    private string _lastClipboardText;
 
     // Shaped text is expensive and wrapped layouts are never cached by the
     // text engine, so each bubble caches its own layout and reuses it across
@@ -1738,6 +1741,11 @@ private final class MessageBubble : Widget
             _selAnchorChar = charIndex;
             _selFocusSeg = segIndex;
             _selFocusChar = charIndex;
+            // Take keyboard focus so Ctrl+C/Ctrl+A target this bubble rather
+            // than the composer while transcript text is selected. Ctrl+V is
+            // handled by the root, which returns focus to the composer.
+            setFocusable(true);
+            requestFocus();
             captureMouse();
             invalidate();
             return true;
@@ -1756,6 +1764,33 @@ private final class MessageBubble : Widget
             return true;
         }
         return false;
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        const shortcut = event.control() || event.meta();
+        if (shortcut && event.key == Key.c)
+        {
+            if (hasSelection())
+            {
+                const payload = selectedText();
+                copyTextToClipboard(payload);
+                _lastClipboardText = payload;
+            }
+            return true;
+        }
+        if (shortcut && event.key == Key.a)
+        {
+            selectAll();
+            return true;
+        }
+        return super.onKeyDown(event);
+    }
+
+    /// Test-only: the payload this bubble last copied with Ctrl+C.
+    public string lastClipboardTextForTesting() const
+    {
+        return _lastClipboardText;
     }
 
     protected override void onMouseLeave()
@@ -7678,9 +7713,19 @@ public final class OpenCodeRoot : VBox
 
     override bool onKeyDown(ref Event event)
     {
-        if ((event.control() || event.meta()) && event.key == Key.n)
+        const shortcut = event.control() || event.meta();
+        if (shortcut && event.key == Key.n)
         {
             newChat();
+            return true;
+        }
+        if (shortcut && event.key == Key.v)
+        {
+            // Paste into the composer from anywhere in the window. After
+            // selecting transcript text the bubble holds focus, so Ctrl+V must
+            // bring the caret back to the input before pasting.
+            _input.requestFocus();
+            _input.pasteFromClipboard();
             return true;
         }
         return false;
@@ -8035,6 +8080,13 @@ public final class OpenCodeRoot : VBox
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? "" : bubble.selectedText();
+    }
+
+    /// Test-only: the text the message bubble at `index` last copied via Ctrl+C.
+    public string copiedMessageTextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? "" : bubble.lastClipboardTextForTesting();
     }
 
     /// Test-only: the global origin of the first selectable run in the bubble.
