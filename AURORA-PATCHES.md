@@ -301,5 +301,14 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   the shell cannot be stranded by any minimize path.
 - `aurora-desktop` enables it in `DesktopRoot.setShellWindow`. Other Aurora apps
   are unaffected (default off).
+- Added `PlatformWindow.keepWindowOnScreen()` (`platform/win32.d`): a
+  `WM_DPICHANGED` / `WM_DISPLAYCHANGE` / restore can otherwise leave a window
+  almost entirely off-screen (only a sliver reachable) after display scaling
+  changes, so the shell looks frozen and blocks a screen corner indefinitely.
+  When the visible slice falls below `min(width,320) x min(height,200)`, or the
+  caption is outside the nearest work area, the window is re-anchored centered
+  in the work area. Called after startup `ShowWindow`, `WM_EXITSIZEMOVE`,
+  `WM_DPICHANGED`, `WM_DISPLAYCHANGE`, `restore()`, `setVisible(true)`, and the
+  prevent-minimize restore. Windows that stay reachable are not moved.
 - `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `base.d`, `win32.d`
   and `window.d`.

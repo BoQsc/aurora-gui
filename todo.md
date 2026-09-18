@@ -1,5 +1,34 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: window stranded off-screen (blocking a corner) (FIXED, verified)
+
+**Complaint (user).** "you keep on blocking my screen with this non working
+trash of desktop ... fix it now."
+
+**Diagnosis (measured).** The live process was healthy: responding, ticking, and
+its taskbar clock advanced (16:17 -> 16:18). The damage was geometry: after the
+monitor scaling changed 120 -> 96 DPI mid-session, the top-level window ended up
+at `rect=1783,883 1618x997` and later `1204,1038 1294x798` on a 1920x1080
+desktop - only a ~137x197 sliver reachable at the screen corner. A large,
+mostly off-screen window reads exactly like a frozen, screen-blocking app. (I
+had also set the window topmost during earlier testing, which made the corner
+sliver stick above everything; that was my fault, not the app's default.)
+
+**Fix.** Added `PlatformWindow.keepWindowOnScreen()` (`platform/win32.d`): if a
+window keeps less than `min(width,320) x min(height,200)` visible, or its
+caption is not reachable inside the nearest monitor's work area, it re-anchors
+centered in the work area (clamped so the caption is never above/left of it).
+Called after `ShowWindow` at startup, on `WM_EXITSIZEMOVE`, on `WM_DPICHANGED`,
+on `WM_DISPLAYCHANGE`, on `restore()`, on `setVisible(true)`, and on the
+prevent-minimize restore. Windows that keep a healthy, caption-reachable slice
+are left exactly where they are. Other Aurora windows benefit too.
+
+**Verification.** `dub build` OK; `build\headless-smoke.exe` -> ALL PASSED.
+Fresh launch: `rect=78,78 1296x799` (fully on-screen, not topmost); taskbar
+clock advanced 16:17 -> 16:18 across a minute. (My earlier DPI-unaware
+`PrintWindow`/`CopyFromScreen` captures were also misleading: they virtualized
+coordinates. Always `SetProcessDPIAware()` in the probe first.)
+
 ## 2026-09-18 - Aurora Desktop: "frozen entire program" was a stuck minimize (COMPLETED, verified)
 
 **Complaint (user).** "why is it frozen, entire aurora desktop program is frozen,

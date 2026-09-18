@@ -1158,6 +1158,7 @@ else version (Windows)
             if (_largeIcon !is null || _smallIcon !is null)
                 SetTimer(_hwnd, iconRefreshTimerId, 1500, null);
             updateClientSize();
+            keepWindowOnScreen();
             notifyResize();
         }
 
@@ -1586,7 +1587,9 @@ else version (Windows)
         override bool restore()
         {
             if (_hwnd is null) return false;
-            return ShowWindow(_hwnd, SW_RESTORE) != FALSE;
+            const restored = ShowWindow(_hwnd, SW_RESTORE) != FALSE;
+            keepWindowOnScreen();
+            return restored;
         }
 
         override bool setPreventMinimize(bool prevent)
@@ -1595,7 +1598,10 @@ else version (Windows)
             // If the window is already minimized when the policy is turned on,
             // bring it back so the shell is never stranded off-screen.
             if (prevent && _hwnd !is null && _minimized)
+            {
                 ShowWindow(_hwnd, SW_RESTORE);
+                keepWindowOnScreen();
+            }
             return true;
         }
 
@@ -1619,6 +1625,7 @@ else version (Windows)
             ShowWindow(_hwnd, visible ? SW_SHOW : SW_HIDE);
             if (visible)
             {
+                keepWindowOnScreen();
                 // Make the restored surface present immediately instead of
                 // waiting for the next queued frame.
                 _needsPaint = true;
@@ -1867,6 +1874,7 @@ else version (Windows)
                     _inSizeMove = false;
                     _liveResizeMoveOnly = false;
                     updateClientSize();
+                    keepWindowOnScreen();
                     notifyResize();
                     notifyResizeLifecycle(EventType.resizeEnded);
                     invalidate();
@@ -2068,6 +2076,9 @@ else version (Windows)
                     }
                     _inDpiChange = suppressNotification;
                     updateClientSize();
+                    // The OS-suggested rectangle can preserve a position that is
+                    // mostly off-screen; snap it back so the shell stays usable.
+                    keepWindowOnScreen();
                     _needsPaint = true;
                     if (!suppressNotification)
                     {
@@ -2094,6 +2105,10 @@ else version (Windows)
                             updateClientSize();
                             notifyResize();
                         }
+                    }
+                    else
+                    {
+                        keepWindowOnScreen();
                     }
                     invalidate();
                     return 0;
@@ -2615,6 +2630,59 @@ else version (Windows)
         private static int maxIntLocal(int a, int b) @safe pure nothrow @nogc
         {
             return a > b ? a : b;
+        }
+
+        private static int minIntLocal(int a, int b) @safe pure nothrow @nogc
+        {
+            return a < b ? a : b;
+        }
+
+        /**
+         * Keeps the window recoverable inside the nearest monitor's work area.
+         * A change to display scaling or resolution (WM_DPICHANGED /
+         * WM_DISPLAYCHANGE) can otherwise leave a large window almost entirely
+         * off-screen: the shell still runs, but only a sliver (or nothing) is
+         * reachable, which reads to the user as a frozen, screen-blocking app.
+         * A window that keeps a comfortable, caption-reachable slice of itself
+         * inside the work area is left untouched.
+         */
+        private void keepWindowOnScreen() nothrow
+        {
+            if (_hwnd is null || _fullscreen) return;
+            RECT wr;
+            if (!GetWindowRect(_hwnd, &wr)) return;
+            HMONITOR monitor = MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor is null) return;
+            MONITORINFO info;
+            info.cbSize = MONITORINFO.sizeof;
+            if (!GetMonitorInfoW(monitor, &info)) return;
+            const work = info.rcWork;
+            const workWidth = work.right - work.left;
+            const workHeight = work.bottom - work.top;
+            if (workWidth <= 0 || workHeight <= 0) return;
+            int width = wr.right - wr.left;
+            int height = wr.bottom - wr.top;
+            if (width > workWidth) width = workWidth;
+            if (height > workHeight) height = workHeight;
+            const x = wr.left;
+            const y = wr.top;
+            const visibleWidth = minIntLocal(x + width, work.right) -
+                maxIntLocal(x, work.left);
+            const visibleHeight = minIntLocal(y + height, work.bottom) -
+                maxIntLocal(y, work.top);
+            // Accept a window that shows a healthy slice of itself AND whose
+            // caption sits inside the work area; otherwise re-anchor it.
+            const enoughWidth = visibleWidth >= minIntLocal(width, 320);
+            const enoughHeight = visibleHeight >= minIntLocal(height, 200);
+            const captionReachable = y >= work.top - 8 && y <= work.bottom - 40;
+            if (enoughWidth && enoughHeight && captionReachable) return;
+            int newX = work.left + (workWidth - width) / 2;
+            int newY = work.top + (workHeight - height) / 2;
+            // Never leave the caption above/left of the work area.
+            newX = minIntLocal(maxIntLocal(newX, work.left), work.right - width);
+            newY = minIntLocal(maxIntLocal(newY, work.top), work.bottom - height);
+            SetWindowPos(_hwnd, null, newX, newY, width, height,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
 
         private void initializeExtendedScrollInput() nothrow

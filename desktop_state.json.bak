@@ -1,0 +1,62 @@
+{
+    "hideSystemCursor": true,
+    "icons": [
+        {
+            "label": "Notepad",
+            "x": 24,
+            "y": 24
+        },
+        {
+            "label": "Computer",
+            "x": 24,
+            "y": 96
+        },
+        {
+            "label": "Trash",
+            "x": 24,
+            "y": 168
+        }
+    ],
+    "pinnedApps": [],
+    "pinnedTasks": [
+        {
+            "icon": "notepad",
+            "kind": "window",
+            "title": "Notepad"
+        },
+        {
+            "icon": "computer",
+            "kind": "window",
+            "title": "System"
+        },
+        {
+            "icon": "maximize",
+            "kind": "command",
+            "title": "Full screen"
+        }
+    ],
+    "schema": 2,
+    "taskbarModernShell": true,
+    "windows": [
+        {
+            "contentId": "notepad",
+            "height": 380,
+            "maximized": false,
+            "minimized": false,
+            "title": "Notepad",
+            "width": 460,
+            "x": 326,
+            "y": 118
+        },
+        {
+            "contentId": "system",
+            "height": 320,
+            "maximized": false,
+            "minimized": true,
+            "title": "System Settings",
+            "width": 340,
+            "x": 560,
+            "y": 120
+        }
+    ]
+}

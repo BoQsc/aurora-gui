@@ -47,6 +47,19 @@ Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
 (guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
 the window. Win+D / Show desktop / taskbar all stay restored.
 
+**Off-screen stranding (a real "frozen screen" cause).** A healthy, ticking app
+can still look frozen if its top-level window is stranded off-screen after a
+display-scaling change. Symptom: `GetWindowRect` reports something like
+`1783,883 1618x997` on a 1920x1080 desktop (only a corner sliver reachable).
+Confirm with the DPI-aware `wins.ps1` probe. `PlatformWindow.keepWindowOnScreen()`
+now re-anchors such a window centered in the work area on startup, size-move
+exit, `WM_DPICHANGED`, `WM_DISPLAYCHANGE`, restore, show, and the
+prevent-minimize restore. Threshold: keep `min(width,320) x min(height,200)`
+visible and the caption inside the work area, otherwise re-center. To test
+without moving the real window: launch fresh and assert the rect is fully
+on-screen, then capture the clock region twice across a minute boundary and
+confirm it changed.
+
 **CRITICAL measurement pitfall — make the capture probe DPI-aware first.** A
 DPI-unaware PowerShell probe virtualizes coordinates: `GetClientRect` returned
 `1280x760` and `CopyFromScreen` a `1536x864` "screen" while the true physical
