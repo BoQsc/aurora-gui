@@ -1,5 +1,9 @@
 # Testing Progress and Methods (Aurora Cut)
 
+> Reading `AURORA-USAGE-STANDARDS.md` first is required for any Aurora GUI work;
+> it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
+> hit-testing, retained-layer invalidation) that this log kept re-discovering.
+
 ## Aurora Desktop: tray icon render quality (raw icon bitmap + DPI-matched size) (2026-09-17)
 
 **Question (user).** "are notification icons of native system icons slightly

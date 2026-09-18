@@ -1,5 +1,17 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-17 - Aurora usage standards doc (COMPLETED)
+
+**Request (user).** "do we need add some document standard way of using aurora so
+we don't have more like this in the future."
+
+**Done.** Added `AURORA-USAGE-STANDARDS.md`: D/NaN timer traps, raster-icon
+extraction/alpha/DPI, popup hit-testing and hover intent, retained-layer
+invalidation, taskbar/tray identity contracts, Win32 interop rules, verification
+discipline (gated real-process probes; screenshots unreliable on Vulkan), build/
+relaunch discipline, and a new-feature checklist. Referenced from
+`AURORA-PATCHES.md` and this repo's testing log.
+
 ## 2026-09-17 - Aurora Desktop: tray icons rendered soft (raw pixels + DPI size) (COMPLETED, verified)
 
 **Complaint (user).** Native system notification icons look poorly rendered;

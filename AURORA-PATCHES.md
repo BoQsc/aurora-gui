@@ -213,6 +213,11 @@ stretches the last image itself and no proxy frame is presented).
 
 # Aurora-D integration patches
 
+> Before building on Aurora, read `AURORA-USAGE-STANDARDS.md`. It captures the
+> non-obvious Aurora/D pitfalls that have caused repeated bugs (NaN timer fields,
+> pre-blended/invisible raster icons, DPI upscaling, popup overlay stealing
+> hover, retained layers not repainting) and the standard patterns to avoid them.
+
 Aurora Cut vendors the supplied Aurora-D 0.4.5 source and applies a small set of application-level extensions. No replacement GUI or media library is introduced.
 
 The patched Aurora modules are:
