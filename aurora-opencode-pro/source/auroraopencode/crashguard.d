@@ -5,11 +5,13 @@ import auroraopencode.logging : logError, logInfo, setLogDirectory;
 import std.algorithm : sort, splitter;
 import std.conv : parse, to;
 import std.datetime : Clock, SysTime;
-import std.file : copy, dirEntries, exists, mkdirRecurse, readText, remove,
-    SpanMode, thisExePath, timeLastModified;
+import std.file : append, copy, dirEntries, exists, mkdirRecurse, readText,
+    remove, SpanMode, thisExePath, timeLastModified, write;
 import std.path : baseName, buildPath, dirName, setExtension;
 import std.stdio : stderr;
 import std.string : indexOf, lastIndexOf;
+
+
 
 // ---------------------------------------------------------------------------
 // Crash reporting
@@ -432,11 +434,36 @@ version (Windows)
 
     private enum size_t frameBufferLength = 63;
 
+    /// Application frames captured from the last fault, as module-relative
+    /// offsets (RVAs). Reserved at startup for the same reason as
+    /// `frameBuffer`: an offset is ASLR-proof, so it still names the right
+    /// function after the executable has been relocated for the next launch.
+    private __gshared ulong[] faultFrames;
+
+    /// Upper bound on captured frames. The call chain leading to a fault is
+    /// short, so anything beyond this is stack residue rather than a frame.
+    private enum int maxFaultFrames = 48;
+
+    /// How far above RSP the fault-time stack scan looks, in bytes.
+    private enum size_t faultScanLimit = 128 * 1024;
+
+    /// Reserved read buffer for the stack scan, in bytes.
+    private __gshared ubyte[] stackScanBuffer;
+    private enum size_t stackScanChunk = 8192;
+
     private void prepareFrameBuffer() nothrow
     {
         try
             if (frameBuffer.length < frameBufferLength)
                 frameBuffer = new ulong[frameBufferLength];
+        catch (Throwable) {}
+        try
+        {
+            if (faultFrames.length < maxFaultFrames)
+                faultFrames = new ulong[maxFaultFrames];
+            if (stackScanBuffer.length < stackScanChunk)
+                stackScanBuffer = new ubyte[stackScanChunk];
+        }
         catch (Throwable) {}
         // Resolve the raw-crash path now, while the process is healthy. The
         // fault handler must not call `opencodeStateDirectory` (it reads the
@@ -533,6 +560,8 @@ version (Windows)
         void* AddVectoredExceptionHandler(uint first,
             LONG function(EXCEPTION_POINTERS*) handler);
         void* GetCurrentProcess();
+        int ReadProcessMemory(void* process, const(void)* address,
+            void* buffer, size_t size, size_t* read);
         uint GetCurrentProcessId();
         uint GetCurrentThreadId();
         void* CreateFileA(const(char)* name, uint access, uint share, void* security,
@@ -657,6 +686,60 @@ version (Windows)
     }
 
     /**
+     * Record the faulting context for the vectored capture. This runs on the
+     * faulting thread as the process dies, so it uses only the raw writer and
+     * never the logger, and it is fully guarded.
+     */
+    private void writeFaultFrames(EXCEPTION_POINTERS* info) nothrow
+    {
+        try
+        {
+            auto record = info !is null ? info.ExceptionRecord : null;
+            if (record is null)
+            {
+                writeRawCrashLine("  frames: no exception record\n");
+                return;
+            }
+            writeRawCrashLine("  frames: fault at " ~
+                toHex(cast(size_t) record.ExceptionAddress) ~
+                " (code " ~ toHex(record.ExceptionCode) ~ ")\n");
+            // Capture the faulting thread's return addresses. This runs on the
+            // faulting thread itself, so the frames above the handler are the
+            // real call chain that reached the fault. Only bare addresses are
+            // written: symbolizing here would let DbgHelp reach for a symbol
+            // server while the process is dying, which is how a report ends up
+            // logged with an address and no stack. `crashsym/symlookup.exe`
+            // resolves them against the archived .pdb afterwards.
+            //
+            // `CaptureStackBackTrace` (kernel32 -> ntdll
+            // `RtlCaptureStackBackTrace`) is resolved at runtime rather than
+            // linked directly, so the crash path adds no import to the link.
+            import core.sys.windows.winbase : GetModuleHandleA, GetProcAddress;
+            alias CaptureFn = ushort function(uint, uint, void**, uint*);
+            auto kernel = GetModuleHandleA("kernel32.dll\0");
+            auto capture = kernel !is null
+                ? cast(CaptureFn) GetProcAddress(kernel,
+                    "CaptureStackBackTrace\0")
+                : null;
+            if (capture !is null)
+            {
+                enum uint maxFrames = 62;
+                void*[maxFrames] frames;
+                // Skip this function and the vectored handler so frame[0] is
+                // the deepest real caller.
+                const count = capture(2, maxFrames, cast(void**) frames.ptr,
+                    null);
+                foreach (i; 0 .. count)
+                    writeRawCrashLine("  frame[" ~ to!string(i) ~ "]: " ~
+                        toHex(cast(size_t) frames[i]) ~ "\n");
+            }
+            else
+                writeRawCrashLine("  frames: CaptureStackBackTrace unavailable\n");
+        }
+        catch (Throwable) {}
+    }
+
+    /**
      * Vectored handler: runs first, on the faulting thread, for every
      * exception. Only hard faults are acted on, and only once, so a benign
      * first-chance exception passes straight through. It records the fault and
@@ -676,6 +759,10 @@ version (Windows)
                 toHex(record.ExceptionCode) ~ " at " ~
                 toHex(cast(size_t) record.ExceptionAddress) ~ "\n  " ~
                 _lastActivity ~ "\n");
+            // The application frames on the stack name the call into the
+            // failing system code; capture them before the dump attempt, which
+            // may not return.
+            writeFaultFrames(info);
             writeMiniDump(info);
         }
         catch (Throwable) {}

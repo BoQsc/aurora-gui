@@ -7618,22 +7618,32 @@ public final class OpenCodeRoot : VBox
      */
     private static void writeFileAtomically(string path, string contents)
     {
+        // Write the new contents beside the target first: a crash here only
+        // ever risks the temporary file, never the live one.
         const temporary = path ~ ".tmp";
         write(temporary, contents);
+        // Keep the last good copy as `.bak` for recovery, without moving the
+        // primary out of the way. This is best effort; a failure here must not
+        // prevent the save.
         if (exists(path))
         {
             const backup = path ~ ".bak";
             try
             {
                 if (exists(backup)) fileRemove(backup);
-                rename(path, backup);
+                write(backup, readText(path));
             }
             catch (Exception)
             {
-                // A missing backup is not a reason to fail the save; the
-                // rename below still replaces the primary.
+                // A missing backup is not a reason to fail the save.
             }
         }
+        // Install the new contents with a single atomic replace
+        // (MoveFileEx + MOVEFILE_REPLACE_EXISTING, via std.file.rename): the
+        // target is always either the whole old file or the whole new one.
+        // The primary is never renamed away first, so there is no instant at
+        // which it does not exist. That window is what let a crash mid-save
+        // leave no sessions.json at all and blank the conversation list.
         rename(temporary, path);
     }
 
@@ -7712,24 +7722,49 @@ public final class OpenCodeRoot : VBox
     private void restoreSessions()
     {
         _sessions.length = 0;
-        string path = buildPath(opencodeStateDirectory(), "sessions.json");
-        // Prefer the per-message recovery copy when it is newer than the last
-        // debounced save: that means the process died before it could write
-        // the primary file, and the recovery copy is the more complete one.
-        const recovery = buildPath(opencodeStateDirectory(),
-            "sessions.recovery.json");
-        if (exists(recovery) &&
-            (!exists(path) || timeLastModified(recovery) > timeLastModified(path)))
-            path = recovery;
-        if (!exists(path)) return;
+        const dir = opencodeStateDirectory();
+        // Crash-safe saving renames sessions.json through .bak/.tmp in several
+        // steps and also writes a per-message recovery copy, so a crash can
+        // leave the live file holding only the newest conversation while the
+        // rest of the history survives in a sibling snapshot. Load every
+        // snapshot and merge them (keeping the most complete copy of each
+        // conversation) instead of trusting a single file.
+        import std.file : dirEntries, SpanMode;
+        string[] candidates = [
+            buildPath(dir, "sessions.recovery.json"),
+            buildPath(dir, "sessions.json"),
+        ];
         try
         {
-            auto value = parseJSON(readText(path));
-            if (value.type != JSONType.object) return;
-            if (auto found = "sessions" in value.object)
+            import std.algorithm.searching : startsWith;
+            import std.path : baseName;
+            import std.string : indexOf;
+            foreach (entry; dirEntries(dir, SpanMode.breadth))
             {
-                if (found.type == JSONType.array)
+                if (!entry.isFile) continue;
+                const name = baseName(entry.name);
+                if (!name.startsWith("sessions")) continue;
+                if (name.indexOf(".json") < 0) continue;
+                candidates ~= entry.name;
+            }
+        }
+        catch (Exception scanError)
+            logError("could not scan the state directory: " ~ scanError.msg);
+
+        int preferredCurrent = -1;
+        foreach (candidate; candidates)
+        {
+            if (!exists(candidate)) continue;
+            try
+            {
+                auto value = parseJSON(readText(candidate));
+                if (value.type != JSONType.object) continue;
+                if (auto found = "current" in value.object)
+                    if (preferredCurrent < 0)
+                        preferredCurrent = cast(int) found.integer;
+                if (auto found = "sessions" in value.object)
                 {
+                    if (found.type != JSONType.array) continue;
                     foreach (sessionValue; found.array)
                     {
                         if (sessionValue.type != JSONType.object) continue;
@@ -7824,39 +7859,52 @@ public final class OpenCodeRoot : VBox
                         }
                         // Repair/backfill the message graph for sessions saved
                         // before branching existed (or with dangling links).
-                        ensureMessageGraph(session);
-                        _sessions ~= session;
-                    }
-                }
-            }
-            if (auto found = "current" in value.object)
-            {
-                const index = cast(int) found.integer;
-                if (index >= 0 && index < cast(int) _sessions.length)
-                    _current = index;
-            }
-            if (_sessions.length > 0)
-            {
-                if (_current < 0) _current = 0;
-                _settings.model = _sessions[_current].model;
-                _settings.thinking = _sessions[_current].thinking;
-                _modelButton.setText(_settings.model);
-                _thinkingBox.setChecked(_settings.thinking, false);
-                rebuildMessageColumn();
-            }
-            refreshUsageBadge();
+                                        ensureMessageGraph(session);
+                                        mergeRestoredSession(session);
+                                    }
+                                }
+                            }
+                        catch (Exception error)
+                        {
+                            // A single unreadable snapshot must not discard the
+                            // sessions already merged from the other snapshots.
+                            logError("skipping unreadable sessions snapshot " ~
+                                candidate ~ ": " ~ error.msg);
+                        }
         }
-        catch (Exception error)
+        if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
+            _current = preferredCurrent;
+        if (_sessions.length > 0)
         {
-            // Sessions are appended one at a time as they parse, so a failure
-            // part-way through still leaves the earlier ones in `_sessions`.
-            // Clearing the list here would turn one unreadable byte into the
-            // loss of every conversation, so keep what parsed and move the
-            // unreadable file aside instead.
-            logError("restore sessions failed after " ~
-                to!string(_sessions.length) ~ " sessions: " ~ error.msg);
-            quarantineSessionsFile(path);
+            if (_current < 0) _current = 0;
+            _settings.model = _sessions[_current].model;
+            _settings.thinking = _sessions[_current].thinking;
+            _modelButton.setText(_settings.model);
+            _thinkingBox.setChecked(_settings.thinking, false);
+            rebuildMessageColumn();
         }
+        refreshUsageBadge();
+    }
+
+    /// Merge a session parsed from a snapshot into the live list. When the same
+    /// conversation is already present (matched by title and opening message),
+    /// keep whichever copy holds more messages so a partial snapshot can never
+    /// replace a more complete one.
+    private void mergeRestoredSession(ChatSession session)
+    {
+        const firstContent = session.messages.length > 0
+            ? session.messages[0].content : "";
+        foreach (ref existing; _sessions)
+        {
+            if (existing.title != session.title) continue;
+            const existingFirst = existing.messages.length > 0
+                ? existing.messages[0].content : "";
+            if (existingFirst != firstContent) continue;
+            if (session.messages.length > existing.messages.length)
+                existing = session;
+            return;
+        }
+        _sessions ~= session;
     }
 
     /// Move an unreadable sessions file aside so the next launch starts clean
