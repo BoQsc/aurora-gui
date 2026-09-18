@@ -438,6 +438,40 @@ bool postTrayPrimaryClick(ulong hwndValue, uint callbackMessage, uint id)
 }
 
 /**
+ * Ask an application to run its tray DOUBLE-click action by replaying the
+ * Windows double-click sequence (down, up, dblclk, up) on its tray callback.
+ * Apps such as Task Manager toggle their flyout on a single click but open
+ * their main window only on WM_LBUTTONDBLCLK, so two independent single clicks
+ * cancel out and appear to do nothing. Returns false when the callback is
+ * unusable so the caller can fall back to the single-click action.
+ */
+bool postTrayDoubleClick(ulong hwndValue, uint callbackMessage, uint id)
+{
+    version (Windows)
+    {
+        if (!usableTrayCallback(hwndValue, callbackMessage)) return false;
+        enum UINT WM_LBUTTONDOWN = 0x0201;
+        enum UINT WM_LBUTTONUP = 0x0202;
+        enum UINT WM_LBUTTONDBLCLK = 0x0203;
+        auto target = cast(HWND) hwndValue;
+        auto wparam = cast(WPARAM) id;
+        bool ok = PostMessageW(target, callbackMessage, wparam,
+            cast(LPARAM) WM_LBUTTONDOWN) != 0;
+        ok = PostMessageW(target, callbackMessage, wparam,
+            cast(LPARAM) WM_LBUTTONUP) != 0 && ok;
+        ok = PostMessageW(target, callbackMessage, wparam,
+            cast(LPARAM) WM_LBUTTONDBLCLK) != 0 && ok;
+        ok = PostMessageW(target, callbackMessage, wparam,
+            cast(LPARAM) WM_LBUTTONUP) != 0 && ok;
+        return ok;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+/**
  * Ask an application to open its own tray context menu by posting its tray
  * callback message with WM_RBUTTONUP (classic packing: wParam = notification
  * id, lParam = WM_RBUTTONUP). Returns false when the callback looks unusable so

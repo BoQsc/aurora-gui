@@ -969,6 +969,9 @@ struct NotificationIcon
     bool system;
     void delegate() action;
     void delegate() showMenu; // right-click context (opened by the app/web)
+    /// Double-click action. Many tray apps (e.g. Task Manager) open their main
+    /// surface only on a native double-click, not on two single clicks.
+    void delegate() doubleClickAction;
 }
 
 /**
@@ -1186,6 +1189,9 @@ class Taskbar : Widget
     // Root-level floating copy that follows the cursor (not clipped by the bar).
     private NotificationDragProxy _notificationDragProxy;
     private int _pressed = -2;
+    // Click count of the press that is currently held on a notification icon,
+    // so mouse-up can route a double-click to the owner's double-click action.
+    private int _pressedNotificationClickCount;
     private int _hot = -2;
     private int _keyboardIndex = -1;
     private TaskEntryId _pressedEntryId = invalidTaskEntryId;
@@ -2656,6 +2662,26 @@ class Taskbar : Widget
         }
     }
 
+    /// Double-click a visible notification: prefer the owner's double-click
+    /// action, falling back to its single-click action when it has none.
+    private void activateNotificationDoubleClick(int visibleOrder)
+    {
+        int seen;
+        foreach (icon; _notifications)
+        {
+            if (icon.hidden) continue;
+            if (seen == visibleOrder)
+            {
+                if (icon.doubleClickAction !is null)
+                    icon.doubleClickAction();
+                else if (icon.action !is null)
+                    icon.action();
+                return;
+            }
+            ++seen;
+        }
+    }
+
     private Widget rootWidget() @safe pure nothrow @nogc
     {
         Widget result = this;
@@ -3424,7 +3450,11 @@ class Taskbar : Widget
         else if (clockRect().contains(event.position)) _pressed = -3;
         else if (searchRect().contains(event.position)) _pressed = -5;
         else if (trayIconHit(event.position) >= 0) _pressed = 100 + trayIconHit(event.position);
-        else if (notificationHit(event.position) >= 0) _pressed = 200 + notificationHit(event.position);
+        else if (notificationHit(event.position) >= 0)
+        {
+            _pressed = 200 + notificationHit(event.position);
+            _pressedNotificationClickCount = event.clickCount;
+        }
         else _pressed = hitEntry(event.position);
         if (_pressed >= 0 && _pressed < 100)
             _pressedEntryId = _entries[cast(size_t) _pressed].id;
@@ -3692,7 +3722,18 @@ class Taskbar : Widget
             destroyNotificationDragProxy();
             if (dragged) return true;
             const notifOrder = notificationHit(event.position);
-            if (notifOrder >= 0) activateNotification(notifOrder);
+            if (notifOrder >= 0)
+            {
+                // Second click within the system double-click window routes to
+                // the owner's double-click action (Task Manager opens its window
+                // only on a native double-click; two single clicks just toggled
+                // its CPU meter on and off, i.e. did nothing).
+                if (_pressedNotificationClickCount >= 2)
+                    activateNotificationDoubleClick(notifOrder);
+                else
+                    activateNotification(notifOrder);
+            }
+            _pressedNotificationClickCount = 0;
             return true;
         }
         if (pressed >= 100)

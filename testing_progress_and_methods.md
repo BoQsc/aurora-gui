@@ -31,8 +31,14 @@ titles marshal as ANSI and truncate to their first character (`A`).
 system menu, taskbar) and makes `minimize()` a no-op (restoring if already
 minimized). Paths that bypass `WM_SYSCOMMAND` and call `ShowWindow(SW_MINIMIZE)`
 directly land in `WM_SIZE`/`SIZE_MINIMIZED`, which now calls
-`ShowWindow(SW_RESTORE)` (guarded by `_restoringFromMinimize`). `DesktopRoot.setShellWindow`
-enables it. Other apps unaffected.
+`ShowWindow(SW_RESTORE)` (guarded by `_restoringFromMinimize`). Other apps
+unaffected.
+
+**Reverted 2026-09-18 (user): "Why you are not allowing to minimize".**
+`DesktopRoot.setShellWindow` no longer enables it - the desktop window must be
+minimizable. The policy stays opt-in/unused; use `keepWindowOnScreen()` against
+stranding. Verify: `ShowWindow(SW_MINIMIZE)` -> `IsIconic=True`, then
+`ShowWindow(SW_RESTORE)` -> `IsIconic=False`.
 
 **How to test.** `build\headless-smoke.exe` -> ALL PASSED. Live guard checks:
 ```
@@ -46,6 +52,16 @@ Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
 `WM_SIZE`/`SIZE_MINIMIZED` now bounces straight back with `ShowWindow(SW_RESTORE)`
 (guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
 the window. Win+D / Show desktop / taskbar all stay restored.
+
+**Tray notification double-click did nothing (fixed 2026-09-18).** Only a
+single `WM_LBUTTONUP` was posted to the tray owner; Task Manager opens only on
+`WM_LBUTTONDBLCLK`, so two single clicks toggled its CPU meter on/off. Fix:
+`NotificationIcon.doubleClickAction` + taskbar click-count routing +
+`tasks.postTrayDoubleClick` (replays down/up/dblclk/up). Test without touching
+the user's cursor: `build\dblclick_probe.exe` finds a Task Manager window,
+minimizes it, calls `postTrayDoubleClick` on its `taskmgr.exe` tray entry, and
+asserts it is no longer iconic. Source
+`C:\Users\WINDOW~2\AppData\Local\Temp\opencode\dblclick_probe.d`.
 
 **Task button vanishes when clicked (fixed 2026-09-18).** Two coupled bugs:
 (a) `tasks.d enumCallback` dropped any window with `GetWindowRect` height `< 60`

@@ -15,7 +15,8 @@ import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
     executableIcon, externalTaskGroupKey, externalTaskIcon,
     externalTaskMinimized, externalTaskSize, externalTaskTitle,
-    minimizeExternalTask, postTrayContextMenu, postTrayPrimaryClick;
+    minimizeExternalTask, postTrayContextMenu, postTrayDoubleClick,
+    postTrayPrimaryClick;
 import auroradesktop.inputlang : InputLanguage, activateInputLanguage,
     activeInputLanguage, inputLanguageAbbrev, inputLanguageName,
     inputLanguages;
@@ -406,6 +407,33 @@ final class DesktopRoot : Widget
         return postTrayPrimaryClick(*hwndPtr, *callbackPtr, *osIdPtr);
     }
 
+    /// Ask the owning app to run its tray double-click action (Task Manager,
+    /// etc. open only on a native double-click).
+    private bool postNotificationDoubleClick(size_t id)
+    {
+        const key = notificationKeyForId(id);
+        if (key.length == 0) return false;
+        auto systemPtr = key in _notificationSystem;
+        if (systemPtr !is null && *systemPtr) return false;
+        auto hwndPtr = key in _notificationHwnd;
+        auto callbackPtr = key in _notificationCallback;
+        auto osIdPtr = key in _notificationOsId;
+        if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
+            return false;
+        return postTrayDoubleClick(*hwndPtr, *callbackPtr, *osIdPtr);
+    }
+
+    /// Double-clicking a tray icon: replay the native double-click on the owning
+    /// app; fall back to the single-click behavior when there is no handler.
+    private void invokeTrayDoubleClick(size_t id, string label)
+    {
+        version (Windows)
+        {
+            if (postNotificationDoubleClick(id)) return;
+        }
+        invokeTrayIcon(id, label);
+    }
+
     /// Left-clicking a tray icon the way Windows does: ask the owning
     /// application to perform its own primary action (restore/open the app,
     /// toggle its flyout, ...) by posting its tray callback. Windows-owned
@@ -495,6 +523,8 @@ final class DesktopRoot : Widget
                 const label = info.label;
                 const stableId = icon.id;
                 icon.action = delegate() { invokeTrayIcon(stableId, label); };
+                icon.doubleClickAction =
+                    delegate() { invokeTrayDoubleClick(stableId, label); };
                 desired ~= icon;
             }
 

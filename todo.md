@@ -1,5 +1,80 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: double-click on a tray icon did nothing (FIXED, verified)
+
+**Complaint (user).** "why I can't double click taskmanager notification icon
+it does nothing".
+
+**Root cause.** Tray notification clicks only ever posted a single
+`WM_LBUTTONUP` to the owner (`postTrayPrimaryClick`). Task Manager's tray icon
+toggles its CPU meter on a single click and opens its window only on
+`WM_LBUTTONDBLCLK`; two independent single clicks therefore toggled the meter on
+and then off -> net "nothing". The taskbar widget had no double-click path for
+notifications at all (`activateNotification` only had a single action).
+
+**Fix.**
+- `vendor/.../widgets/desktop.d`: `NotificationIcon` gained
+  `doubleClickAction`; the taskbar records the press click count
+  (`_pressedNotificationClickCount = event.clickCount`) and routes a second
+  click within the system double-click window to
+  `activateNotificationDoubleClick` (falls back to the single action when the
+  owner has no double-click action).
+- `aurora-desktop/.../tasks.d`: new `postTrayDoubleClick(hwnd, callback, id)`
+  replays the Windows double-click sequence on the tray callback
+  (`WM_LBUTTONDOWN`, `WM_LBUTTONUP`, `WM_LBUTTONDBLCLK`, `WM_LBUTTONUP`).
+- `aurora-desktop/.../app.d`: `postNotificationDoubleClick` +
+  `invokeTrayDoubleClick`, wired as each notification's `doubleClickAction`.
+
+**Verification.** `dub build` OK; `headless-smoke.exe` -> ALL PASSED. Probe
+`build\dblclick_probe.exe` minimized Task Manager's own window, posted the
+double-click to its tray callback, and it restored: "minimized = true" ->
+"still minimized after double-click = false".
+
+## 2026-09-18 - Aurora Desktop: hide the Windows system tray icons by default (DONE, verified)
+
+**Request (user).** "add another option enabled by default that would make these
+icons hidden since we already have our own made icons" (image: Wi-Fi / battery /
+volume). Clarified: hide the Windows-provided system tray icons that Aurora
+mirrors, keeping Aurora's own glyphs.
+
+**Finding.** The option already exists and already defaults on
+(`DesktopSettings.hideSystemTrayIcons = true`, consumed in
+`refreshNotifications`: `if (_settings.hideSystemTrayIcons && icon.isSystem)
+continue;`). This install's `aurora-desktop.ini` had `hideSystemTrayIcons=0`, so
+they showed. The detector is correct on this machine: a `tray_probe` shows the
+network ("TP-Link_6D90"), battery ("14 min to full charge") and volume
+("Headphones: 24%") icons are owned by `explorer.exe` and flagged
+`isSystem=true`, while third-party icons (Steam/Taskmgr/ELAN) are not.
+
+**Fix.** Set `hideSystemTrayIcons=1` in `aurora-desktop/aurora-desktop.ini`
+(the code default is already true, so fresh installs hide them). Rebuilt not
+needed; relaunched to re-read the ini.
+
+**Verification.** Live taskbar capture after relaunch shows the two remaining
+notification icons (Steam, browser) plus Aurora's own Wi-Fi/volume/battery
+glyphs; the `explorer.exe` network/battery/volume entries are gone. Probe:
+`build\tray_probe.exe` (prints every tray icon with `isSystem`).
+
+## 2026-09-18 - Aurora Desktop: minimize was disabled (REVERTED, verified)
+
+**Complaint (user).** "Why you are not allowing to minimize the aurora desktop."
+
+**Cause.** I had enabled the platform's opt-in prevent-minimize policy in
+`DesktopRoot.setShellWindow` (`_window.setPreventMinimize(true)`) to stop the
+earlier report of the shell being found stuck minimized (which read as
+"frozen"). That over-corrected: it is a normal window the user must be able to
+minimize and restore.
+
+**Fix.** Removed the `setPreventMinimize(true)` call from
+`aurora-desktop/source/auroradesktop/app.d`. The platform policy
+(`NativeWindow.setPreventMinimize` / the `WM_SYSCOMMAND` + `SIZE_MINIMIZED`
+guards) stays available but unused. Minimize now behaves normally; the
+stranding risk is covered by `keepWindowOnScreen()` instead.
+
+**Verification.** `dub build` OK; live `ShowWindow(SW_MINIMIZE)` ->
+`IsIconic=True`, `ShowWindow(SW_RESTORE)` -> `IsIconic=False`. One instance
+relaunched (PID 2764, build 16:48:23).
+
 ## 2026-09-18 - Aurora Desktop: clicking a task made it vanish (FIXED, verified)
 
 **Complaint (user).** "i JUST CLICKED A FEW TASKS AND THEY JUST DISSAPEARED

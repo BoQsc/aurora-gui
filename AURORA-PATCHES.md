@@ -297,10 +297,19 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   restores immediately when enabled on an already-minimized window. Some shell
   paths bypass `WM_SYSCOMMAND` and call `ShowWindow(SW_MINIMIZE)` directly,
   which only reaches the window proc as `WM_SIZE`/`SIZE_MINIMIZED`; that branch
-  now calls `ShowWindow(SW_RESTORE)` (guarded by `_restoringFromMinimize`) so
-  the shell cannot be stranded by any minimize path.
-- `aurora-desktop` enables it in `DesktopRoot.setShellWindow`. Other Aurora apps
-  are unaffected (default off).
+  calls `ShowWindow(SW_RESTORE)` guarded by `_restoringFromMinimize`.
+- NOTE (2026-09-18): `aurora-desktop` no longer enables this. It was turned on
+  in `DesktopRoot.setShellWindow` to stop the shell being found stuck minimized,
+  but the user must be able to minimize their own desktop window, so the call
+  was removed. The policy remains opt-in/unused; stranding is handled by
+  `keepWindowOnScreen()`. Other Aurora apps are unaffected (default off).
+- `widgets/desktop.d`: tray notification icons gained a double-click path.
+  `NotificationIcon` has `doubleClickAction`; the taskbar records the press
+  click count and routes the second click within the system double-click window
+  to it (falling back to the single action). Needed because apps like Task
+  Manager only open on `WM_LBUTTONDBLCLK`, so two single `WM_LBUTTONUP` posts
+  cancelled out. The host replays the native double-click sequence
+  (`tasks.d postTrayDoubleClick` -> down/up/dblclk/up on the tray callback).
 - `widgets/desktop.d`: `activateEntry()` (taskbar task click) now toggles
   minimize-vs-activate on `onExternalFocused` instead of `onExternalVisible`.
   Toggling on visibility minimized every open-but-unfocused window the user
