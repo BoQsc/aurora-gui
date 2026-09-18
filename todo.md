@@ -1,5 +1,64 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora OpenCode: provider selector/editor (OpenCode / CommandCode / Qwen 3.8 27B) (DONE, verified)
+
+**Request (user).** "Add ability to select or edit providers either commandcode,
+opencode or qwen 3.8 27b."
+
+**Data model (`aurora-opencode-core/core.d`).**
+- New public `ProviderPreset { id, name, baseUrl, model }` and
+  `immutable ProviderPreset[] providerPresets` with three entries:
+  - `opencode` / "OpenCode" -> `https://opencode.ai/zen/go/v1`,
+    `deepseek-v4.1-flash`
+  - `commandcode` / "CommandCode" -> `https://api.commandcode.ai/provider/v1`,
+    `deepseek/deepseek-v4.1-flash`
+  - `qwen` / "Qwen 3.8 27B" -> `http://127.0.0.1:8080/v1`, `Qwen/Qwen3.8-27B`
+- `providerPresetIndexForBaseUrl()` (matches a saved endpoint to a preset, -1
+  when hand-edited) and `providerPresetLabel()` (falls back to "Custom").
+- `readProviderKey(providerId)`: per-provider credential lookup.
+  `commandcode` checks `auth.json` `commandcode` then
+  `~/.config/opencode/commandcode.key`; `opencode` checks `opencode-go` then
+  `opencode` then the legacy files; `qwen` returns "" (a local llama-server
+  needs no key, so it must not borrow a cloud credential). `readDefaultKeyFile`
+  now reuses the new `readAuthProviderKey` helper.
+
+**UI (both `aurora-opencode-pro` and `aurora-opencode` Settings dialogs).**
+- A "Provider" dropdown `Button` (id `oc-provider`) opens a
+  `ContextMenuItem[]` via `showContextMenuKeepPopups` — NOT
+  `showContextMenuBelow`, which calls `dismissTransientPopups` and would close
+  the Settings dialog. Choosing a preset fills:
+  - API base URL (id `oc-settings-base`),
+  - API key (id `oc-settings-key`),
+  - Model (new editable field, id `oc-model-field`).
+  Everything stays editable, so a custom endpoint/model is just typing over a
+  preset. Selection is staged; Save commits. Save also sets the active
+  session's model, updates the model button and refreshes the context badge.
+- The preset menu items are built through an instance factory
+  `providerMenuItem(index)` (each item captures its own index; a `static`
+  factory cannot call the instance `applyProviderPreset`, which failed the
+  first build).
+
+**Test hooks + coverage.**
+- `providerPresetNamesForTesting()`, `providerSelectorPresentForTesting()`,
+  `selectProviderForTesting(index)` (returns `baseUrl~"\n"~model`),
+  `providerMenuCountForTesting()` (opens the real `ContextMenu` via the button's
+  `onClick` and counts its items), `chooseProviderFromMenuForTesting(index)`
+  (invokes the item action and returns the filled fields), and a baseline
+  `dismissPopupForTesting()`.
+- Pro smoke: asserts the three names, the picker exists, each preset fills the
+  expected endpoint+model, the dropdown has 3 items, and its CommandCode item
+  fills the fields through the real menu action. Baseline smoke: names + fills.
+- Testing gotcha: `dismissContextMenus` -> `dismissTransientPopups` closes the
+  Settings popup too, so read the fields before dismissing.
+
+**Verification.** `dub test` core -> "40 modules passed unittests"; Pro release
+build + `headless-pro-smoke.exe` PASS ("Provider presets fill the Settings
+endpoint + model"); baseline release build + `headless-smoke.exe` PASS (live
+chat through the OpenCode endpoint still returns the 22-char reply). App
+rebuilt and relaunched as exactly one instance. NOTE: the Qwen preset defaults
+to a local llama-server (`127.0.0.1:8080/v1`, `Qwen/Qwen3.8-27B`) because that
+is the only Qwen 3.8 27B route in this codebase; it is fully editable.
+
 ## 2026-09-18 - Aurora OpenCode: back to the real OpenCode Go endpoint + frequent-crash fix (FIXED, verified)
 
 **Requests (user).** Point Aurora OpenCode at the real OpenCode endpoint and key
@@ -130,6 +189,58 @@ frames=159 base=1 layer=706 order=3
 **Note.** The earlier probes moved the real system cursor (`SetCursorPos` +
 `mouse_event`); that is intrusive and unreliable and was replaced by the
 in-process `--bench`. Do not drive the shell by moving the user's mouse.
+
+## 2026-09-18 - Aurora Desktop: startup was 5.4 s + periodic hitches (FIXED, measured)
+
+**Complaint (user).** "So why we are having a bad performance." After the
+thumbnail-storm fix the shell was still slow to become usable and ticked with
+small hitches.
+
+**How it was measured (no guessing).** `run()` now calls `startupMark(label)`
+which, when `AURORA_DESK_STATS=1`, appends relative phase timings to
+`aurora_startup.log` (marks at `GuiWindow created`, `DesktopRoot constructed`,
+`root attached`, `first onTick`). Constructor marks caught the culprit exactly.
+
+**Original breakdown (debug build).**
+```
+   541 ms  GuiWindow created
+  3593 ms  DesktopRoot constructed   <-- 3.05 s inside the constructor
+  3614 ms  root attached
+  5375 ms  first onTick (window rendering)
+```
+Inside the constructor: shell icon for every one of **424 desktop files**
+(`SHGetFileInfoW` + raster) = **1.25 s**; startup `syncExternalTasks` =
+**0.82 s** of which **0.75 s was PrintWindow thumbnails** for every visible
+window; first render (427 composited icon layers) = **0.83 s**.
+
+**Fixes (all in `aurora-desktop/source/auroradesktop/app.d`).**
+- Desktop shell icons are queued and fetched in `processPendingDesktopIcons`
+  under a **6 ms per-frame time budget** (`addDesktopEntry`). Placeholder glyph
+  shows first, real icon fades in. 424 files: 1.25 s -> ~30 ms in the ctor.
+- Taskbar icons are queued and fetched in `processPendingTaskIcons` under a
+  **4 ms per-frame budget** (was ~250 ms at startup).
+- Thumbnails are **no longer seeded at startup**; `seedThumbnails` captures at
+  most one per 2 s, only while no preview is open, and only for windows whose
+  capture is cheap (`cappedThumbnailSize`, max 640 px). Hover still captures on
+  demand.
+- Captures are capped at 640 px because `PrintWindow` renders the window
+  *scaled into the destination DC* - proven by a probe: capped capture vs
+  nearest-neighbour downscale of the full capture has **MAE 8.1/255** and costs
+  **24 ms vs 71 ms** for a 1936x1056 window.
+
+**Result (same machine, 427 icons).** `DesktopRoot constructed` 2493 -> 1205 ms;
+`first onTick` **5375 -> 2056 ms** (debug). A release build (`dub build -b
+release`) reaches `first onTick` at **~1.74 s**. Early-frame `maxRender`
+spikes fell from 96-151 ms to ~18 ms; steady state `maxRender` ~2.6 ms,
+`maxScene` ~0.7 ms, `notif` ~7-10 ms/s, `tray` ~5 ms/2 s, `persist` ~5-7 ms/10 s.
+Idle CPU **47 ms / 4 s (~1.2% of one core)**. Full smoke suite passes.
+
+**Remaining (not yet done).** `refreshNotifications` still costs ~7-10 ms every
+second (cross-process `TB_GETBUTTON`/`ReadProcessMemory`); it only matters if it
+lands on a repaint. The first `refreshNotifications` can be ~135 ms cold.
+`GuiWindow` creation is ~500 ms (Vulkan device/pipeline) and the first frame
+still builds 427 layers; only off-screen-layer culling or a "show the window,
+fill it over ticks" refactor would cut that further.
 
 ## 2026-09-18 - Aurora Desktop: six desktop/shell complaints (FIXED)
 

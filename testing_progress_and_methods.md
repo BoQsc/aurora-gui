@@ -4,6 +4,68 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode provider selector/editor (2026-09-18)
+
+**What it is.** Settings now has a **Provider** dropdown (OpenCode / CommandCode
+/ Qwen 3.8 27B) that fills three editable fields: API base URL, API key and
+Model. Presets live in `aurora-opencode-core/core.d` as
+`immutable ProviderPreset[] providerPresets`; keys come from
+`readProviderKey(providerId)`.
+
+| Preset | baseUrl | model |
+|---|---|---|
+| OpenCode | `https://opencode.ai/zen/go/v1` | `deepseek-v4.1-flash` |
+| CommandCode | `https://api.commandcode.ai/provider/v1` | `deepseek/deepseek-v4.1-flash` |
+| Qwen 3.8 27B | `http://127.0.0.1:8080/v1` (local llama-server) | `Qwen/Qwen3.8-27B` |
+
+**Key gotcha (UI).** The provider menu must be shown with
+`showContextMenuKeepPopups(owner, point, items)`. `showContextMenuBelow` calls
+`dismissTransientPopups` and closes the Settings `PopupOverlay` the moment the
+dropdown opens. The menu is opened at
+`Point(origin.x, origin.y + button.size().height)`.
+
+**Key gotcha (D).** The context-menu items are built by an **instance** factory
+`providerMenuItem(index)`; a `static` factory cannot call the instance method
+`applyProviderPreset` (compile error: "calling non-static function requires an
+instance").
+
+**Key gotcha (tests).** `dismissContextMenus(owner)` calls
+`dismissTransientPopups`, which closes **every** transient popup including the
+Settings `PopupOverlay`; its `onDismissed` nulls the dialog field members. In a
+test hook that reads the fields after invoking a menu item, read them BEFORE
+`dismissContextMenus` (otherwise it looks like the item did nothing).
+`ContextMenu.items()` returns `const(ContextMenuItem)[]`; `.dup` does not give a
+mutable array (const elements), so call the item action on the const element or
+find the menu via `popupRoot(this).children()`.
+
+**How to test (headless).**
+- Core: `dub test` in `aurora-opencode-core` -> "40 modules passed unittests".
+- Pro smoke asserts the preset list and the filled fields:
+  ```
+  const names = root.providerPresetNamesForTesting();      // 3 names
+  root.providerSelectorPresentForTesting();                // oc-provider exists
+  root.selectProviderForTesting(0);  // "https://opencode.ai/zen/go/v1\ndeepseek-v4.1-flash"
+  root.selectProviderForTesting(1);  // ".../api.commandcode.ai/provider/v1\ndeepseek/deepseek-v4.1-flash"
+  root.selectProviderForTesting(2);  // "http://127.0.0.1:8080/v1\nQwen/Qwen3.8-27B"
+  root.providerMenuCountForTesting();                // 3
+  root.chooseProviderFromMenuForTesting(1);          // drives the real menu
+  ```
+  `providerMenuCountForTesting` opens the button's `ContextMenu` through the real
+  `onClick` and counts items; `chooseProviderFromMenuForTesting` invokes the item
+  action and returns the filled `baseUrl\nmodel`, proving the dropdown (not just
+  `applyProviderPreset`) is wired.
+  Build + run (from `aurora-opencode-pro`):
+  ```
+  "C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+  build\headless-pro-smoke.exe
+  ```
+  Pass = `Aurora OpenCode Pro headless smoke test passed.`
+- Baseline smoke: same three calls plus `dismissPopupForTesting()`; build from
+  `aurora-opencode` with `tests\headless_smoke.d` and run
+  `build\headless-smoke.exe` (it also makes a real chat request).
+- After rebuilding either GUI, kill the running exe and relaunch exactly one
+  from the package root.
+
 ## Aurora OpenCode: OpenCode Go endpoint + markdown crash (2026-09-18)
 
 **Context.** The clients were pointed back at the real OpenCode Go gateway
@@ -10821,4 +10883,52 @@ $p=Get-Process aurora-desktop; $a=$p.TotalProcessorTime; Start-Sleep 4; $p.Refre
 ```
 ~110 ms over 4 s (~2.7% of one core) is healthy. A much higher number means a
 periodic capture/enumeration loop regressed (the classic one was the 1 s
-thumbnail re-capture of every visible window).
+thumbnail re-capture of every visible window). After the lazy-loading work it is
+~47 ms / 4 s (~1.2%).
+
+## 2026-09-18 - Aurora Desktop: how to profile startup and keep it fast
+
+**Startup phase log.** `run()` and the `DesktopRoot` constructor call
+`startupMark("label")`; when `AURORA_DESK_STATS=1` each call appends
+`<relative ms>  <label>` to `aurora_startup.log` (delete the file first). This
+found the two multi-hundred-ms blockers by name instead of guessing:
+```
+$env:AURORA_DESK_STATS='1'
+del /q aurora_startup.log
+Start-Process .\aurora-desktop.exe
+Start-Sleep 12; Get-Content .\aurora_startup.log
+```
+Reference run (debug, 427 desktop icons): `GuiWindow created` ~0.5 s,
+`DesktopRoot constructed` ~1.2 s, `first onTick` ~2.0 s. A release build
+(`dub build -b release`) is ~0.3 s faster to first frame. If you add work to the
+constructor, add a mark next to it.
+
+**Rule: nothing expensive in the constructor in front of the first frame.**
+Shell icon extraction (`SHGetFileInfoW` + `iconToRgba`, ~10 ms/file) and
+`PrintWindow` thumbnails (~20-300 ms/window) are the two classic stalls. Both
+are now queued and drained under a per-frame time budget:
+`processPendingDesktopIcons` (6 ms), `processPendingTaskIcons` (4 ms);
+`seedThumbnails` (one capture per 2 s, paused while a preview is open). Keep new
+shell/COM enumeration out of the ctor and behind a budget like these.
+
+**Thumbnail capture is size-capped.** `cappedThumbnailSize` limits a capture to
+640 px on the long edge. This is safe because `PrintWindow` renders the window
+*scaled into the destination DC* (probe `thumb_cap_probe.d`: capped vs
+nearest-neighbour downscale of the full capture has MAE 8.1/255; 1936x1056
+window: 24 ms capped vs 71 ms full). Never capture at the raw window size for a
+small preview.
+
+**Live stats title.** With `AURORA_DESK_STATS=1` the titlebar shows
+`maxScene/maxRender/sync/notif/tray/persist/frames` (ms, max-of-window for the
+first two). Healthy steady state: maxScene ~0.7, maxRender ~2.6, sync ~0.9,
+notif ~7-10 (1 s cadence), tray ~5 (2 s), persist ~5-7 (10 s).
+
+**Current `--bench` numbers** (427 icons, 1280x760, debug): idle ~3.0 ms,
+hover ~7.1 ms, marquee ~4.5 ms, selection ~3.8 ms, resize ~3.8 ms;
+`base=1`, `language-row-click: popup=yes row=yes onSelect=yes`.
+
+**Screenshot after a launch** must wait for lazy icons (~5 s) or you will
+capture placeholder glyphs. `capture_aurora.ps1` picks the largest window whose
+title matches `*Aurora Desktop*`; a freshly launched window that is minimized
+sits at `(-32000,-32000)` - check `IsIconic`/`GetWindowRect` first if the
+capture comes back 129x28.

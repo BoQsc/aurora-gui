@@ -1230,6 +1230,40 @@ int main(string[] args)
         "Legacy tools tooltip should explain the shell tool: " ~ legacyTip);
     writeln("Legacy tools checkbox + tooltip present in Settings");
 
+    // Provider selector: Settings offers OpenCode / CommandCode / Qwen 3.8
+    // 27B and fills the editable base URL + model for each.
+    const providerNames = root.providerPresetNamesForTesting();
+    assert(providerNames.length == 3, "Expected three provider presets");
+    assert(providerNames[0] == "OpenCode" &&
+        providerNames[1] == "CommandCode" &&
+        providerNames[2] == "Qwen 3.8 27B",
+        "Unexpected provider preset names");
+    assert(root.providerSelectorPresentForTesting(),
+        "Settings dialog missing the Provider picker");
+    const opencodeSelection = root.selectProviderForTesting(0);
+    assert(opencodeSelection ==
+        "https://opencode.ai/zen/go/v1\ndeepseek-v4.1-flash",
+        "OpenCode preset filled the wrong endpoint/model: " ~ opencodeSelection);
+    const commandcodeSelection = root.selectProviderForTesting(1);
+    assert(commandcodeSelection ==
+        "https://api.commandcode.ai/provider/v1\ndeepseek/deepseek-v4.1-flash",
+        "CommandCode preset filled the wrong endpoint/model: " ~
+        commandcodeSelection);
+    const qwenSelection = root.selectProviderForTesting(2);
+    assert(qwenSelection == "http://127.0.0.1:8080/v1\nQwen/Qwen3.8-27B",
+        "Qwen preset filled the wrong endpoint/model: " ~ qwenSelection);
+    // Exercise the real dropdown wiring: opening the Provider context menu
+    // must keep the Settings dialog alive and its item action must fill the
+    // fields (showContextMenuBelow would have closed the dialog).
+    assert(root.providerMenuCountForTesting() == 3,
+        "Provider dropdown should offer three presets");
+    const fromMenu = root.chooseProviderFromMenuForTesting(1);
+    assert(fromMenu ==
+        "https://api.commandcode.ai/provider/v1\ndeepseek/deepseek-v4.1-flash",
+        "Provider dropdown item did not apply CommandCode: " ~ fromMenu);
+    root.dismissPopupForTesting();
+    writeln("Provider presets fill the Settings endpoint + model");
+
     // The system prompt documents every tool (so the model can use them
     // trivially) and Settings can show its full text.
     assert(root.systemPromptButtonPresentForTesting(),

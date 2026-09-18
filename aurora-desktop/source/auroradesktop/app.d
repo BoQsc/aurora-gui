@@ -1268,20 +1268,28 @@ import std.string : toLower;
         configureDesktopIcon(item);
     }
 
-    /// Fetch a bounded number of pending shell icons so the shell never stalls.
+    /// Fetch pending shell icons under a per-frame time budget so the shell
+    /// never stalls: SHGetFileInfoW + raster can cost ~10 ms per file, so a
+    /// fixed count of eight produced visible hitches.
     private void processPendingDesktopIcons()
     {
-        enum int perTick = 8;
-        int processed;
-        while (_pendingIconCursor < _pendingIconPaths.length &&
-            processed < perTick)
+        version (Windows)
         {
-            const index = _pendingIconCursor++;
-            ++processed;
-            auto target = _pendingIconTargets[index];
-            if (target is null) continue;
-            auto icon = fileIcon(_pendingIconPaths[index]);
-            if (icon !is null) target.setIconImage(icon);
+            import core.time : MonoTime;
+            enum long budgetMicros = 6000;
+            const started = MonoTime.currTime;
+            while (_pendingIconCursor < _pendingIconPaths.length)
+            {
+                const index = _pendingIconCursor++;
+                auto target = _pendingIconTargets[index];
+                if (target !is null)
+                {
+                    auto icon = fileIcon(_pendingIconPaths[index]);
+                    if (icon !is null) target.setIconImage(icon);
+                }
+                if ((MonoTime.currTime - started).total!"usecs" >= budgetMicros)
+                    break;
+            }
         }
         if (_pendingIconCursor >= _pendingIconPaths.length)
         {
@@ -1798,7 +1806,9 @@ import std.string : toLower;
             if (!allowRefresh || age < thumbnailRefreshSeconds) return *cached;
         }
         auto size = externalTaskSize(hwnd);
-        auto image = captureExternalThumbnail(hwnd, size.width, size.height);
+        int capWidth, capHeight;
+        cappedThumbnailSize(size.width, size.height, capWidth, capHeight);
+        auto image = captureExternalThumbnail(hwnd, capWidth, capHeight);
         if (image !is null && bitmapHasContent(image))
         {
             _thumbnailCache[hwnd] = image;
@@ -1806,6 +1816,108 @@ import std.string : toLower;
             return image;
         }
         return cached is null ? null : *cached;
+    }
+
+    /// Resolve a bounded number of queued taskbar icons per frame so the real
+    /// icons fade in without a multi-hundred-millisecond stall at startup.
+    private void processPendingTaskIcons()
+    {
+        version (Windows)
+        {
+            import core.time : MonoTime;
+            enum long budgetMicros = 4000;
+            const started = MonoTime.currTime;
+            while (_pendingTaskIconQueue.length > 0)
+            {
+                const hwnd = _pendingTaskIconQueue[0];
+                _pendingTaskIconQueue = _pendingTaskIconQueue[1 .. $];
+                if (hwnd in _pendingTaskIconPending)
+                    _pendingTaskIconPending.remove(hwnd);
+                if (_taskbar.indexOfExternal(hwnd) < 0) continue;
+                if (_taskbar.externalTaskIconImage(hwnd) !is null) continue;
+                auto attempted = hwnd in _externalIconAttempts;
+                const tries = attempted is null ? cast(ubyte) 0 : *attempted;
+                if (tries >= 3) continue;
+                _taskbar.setExternalTaskIcon(hwnd, externalTaskIcon(hwnd));
+                _externalIconAttempts[hwnd] = cast(ubyte) (tries + 1);
+                if ((MonoTime.currTime - started).total!"usecs" >= budgetMicros)
+                    break;
+            }
+        }
+    }
+
+    /// PrintWindow renders the window scaled into the destination device
+    /// context, so requesting a large capture for a small preview only wastes
+    /// work. Fit the capture inside a `maxDimension` box, preserving aspect.
+    private static void cappedThumbnailSize(int fullWidth, int fullHeight,
+        out int width, out int height)
+    {
+        enum int maxDimension = 640;
+        if (fullWidth <= 0 || fullHeight <= 0)
+        {
+            width = 1;
+            height = 1;
+            return;
+        }
+        if (fullWidth <= maxDimension && fullHeight <= maxDimension)
+        {
+            width = fullWidth;
+            height = fullHeight;
+            return;
+        }
+        if (fullWidth >= fullHeight)
+        {
+            width = maxDimension;
+            height = cast(int) (cast(long) fullHeight * maxDimension / fullWidth);
+        }
+        else
+        {
+            height = maxDimension;
+            width = cast(int) (cast(long) fullWidth * maxDimension / fullHeight);
+        }
+        if (width < 1) width = 1;
+        if (height < 1) height = 1;
+    }
+
+    /// Capture at most one queued window thumbnail every `seedInterval`
+    /// seconds. Doing this for every window at once (or every sync) stalled the
+    /// UI; the hover preview still captures its own frame on demand.
+    private void seedThumbnails(double deltaSeconds)
+    {
+        version (Windows)
+        {
+            // Slow and pause-while-previewing: a PrintWindow capture of a large
+            // window can take hundreds of milliseconds, so never churn through
+            // the queue while the user is actively hovering a task.
+            enum double seedInterval = 2.0;
+            _thumbnailSeedElapsed += deltaSeconds;
+            if (_thumbnailSeedElapsed < seedInterval) return;
+            _thumbnailSeedElapsed = 0.0;
+            if (_preview !is null) return;
+            while (_thumbnailSeedQueue.length > 0)
+            {
+                const hwnd = _thumbnailSeedQueue[0];
+                _thumbnailSeedQueue = _thumbnailSeedQueue[1 .. $];
+                if (hwnd in _thumbnailSeedPending)
+                    _thumbnailSeedPending.remove(hwnd);
+                if (_taskbar.indexOfExternal(hwnd) < 0) continue;
+                if (hwnd in _thumbnailCache) continue;
+                if (externalTaskMinimized(hwnd)) continue;
+                auto size = externalTaskSize(hwnd);
+                if (size.width <= 0 || size.height <= 0) continue;
+                int capWidth, capHeight;
+                cappedThumbnailSize(size.width, size.height, capWidth,
+                    capHeight);
+                auto image = captureExternalThumbnail(hwnd, capWidth,
+                    capHeight);
+                if (image !is null && bitmapHasContent(image))
+                {
+                    _thumbnailCache[hwnd] = image;
+                    _thumbnailTime[hwnd] = _elapsedSeconds;
+                }
+                break;
+            }
+        }
     }
 
     /// Diff the live OS task list against the taskbar: add new windows, remove
@@ -1823,7 +1935,6 @@ import std.string : toLower;
                 _externalGroupKeys[t.hwnd] = cachedKey !is null ? *cachedKey :
                     externalTaskGroupKey(t.hwnd);
             }
-            if (!_startupFirstTickDone) startupMark("sync: group keys");
 
             // Keep "active external window" fresh: while an external window is
             // foreground it is the active one; if it closed or was minimized,
@@ -1862,7 +1973,6 @@ import std.string : toLower;
                     _taskbar.setPinnedAppRunning(a.exePath, members, titles);
                 }
             }
-            if (!_startupFirstTickDone) startupMark("sync: pinned apps");
 
             foreach (t; tasks)
             {
@@ -1883,15 +1993,17 @@ import std.string : toLower;
                 // publish WM_SETICON a moment after the window appears, so a
                 // null result is retried a few times (iconHasInk/executable
                 // fallback make a permanent null rare).
+                // Resolving every window's icon here (WM_GETICON + GDI raster)
+                // cost ~250 ms at startup, so it is drained a couple per frame
+                // in processPendingTaskIcons while the placeholder glyph shows.
                 if (_taskbar.externalTaskIconImage(t.hwnd) is null)
                 {
                     auto attempted = t.hwnd in _externalIconAttempts;
                     const tries = attempted is null ? cast(ubyte) 0 : *attempted;
-                    if (tries < 3)
+                    if (tries < 3 && t.hwnd !in _pendingTaskIconPending)
                     {
-                        _taskbar.setExternalTaskIcon(t.hwnd,
-                            externalTaskIcon(t.hwnd));
-                        _externalIconAttempts[t.hwnd] = cast(ubyte) (tries + 1);
+                        _pendingTaskIconPending[t.hwnd] = true;
+                        _pendingTaskIconQueue ~= t.hwnd;
                     }
                 }
                 // Seed the thumbnail cache once while the window is visible so a
@@ -1900,17 +2012,18 @@ import std.string : toLower;
                 // every sync: that was a full capture per visible window per
                 // second. The hovered task refreshes its own frame on demand
                 // (see captureThumbnailCached).
+                // Thumbnails are NOT captured here: PrintWindow for every
+                // visible window cost ~750 ms at startup. They are seeded a few
+                // at a time in the background (seedThumbnails) and captured on
+                // demand when a task is hovered (captureThumbnailCached).
                 if (!externalTaskMinimized(t.hwnd) &&
-                    t.hwnd !in _thumbnailCache)
+                    t.hwnd !in _thumbnailCache &&
+                    t.hwnd !in _thumbnailSeedPending)
                 {
-                    auto size = externalTaskSize(t.hwnd);
-                    auto image = captureExternalThumbnail(t.hwnd, size.width,
-                        size.height);
-                    if (image !is null && bitmapHasContent(image))
-                        _thumbnailCache[t.hwnd] = image;
+                    _thumbnailSeedPending[t.hwnd] = true;
+                    _thumbnailSeedQueue ~= t.hwnd;
                 }
             }
-            if (!_startupFirstTickDone) startupMark("sync: per-task icons/thumbnails");
             // Remove entries whose window is gone.
             foreach (hwnd; _externalHwnds)
             {
@@ -2064,6 +2177,12 @@ import std.string : toLower;
     // AURORA_DESK_STATS=1 and the titlebar shows the last scene/render pass
     // cost. Off by default (and only on Windows).
     private bool _startupFirstTickDone;
+    // Windows waiting for a background thumbnail seed (see seedThumbnails).
+    private ulong[] _thumbnailSeedQueue;
+    private bool[ulong] _thumbnailSeedPending;
+    private double _thumbnailSeedElapsed;
+    private ulong[] _pendingTaskIconQueue;
+    private bool[ulong] _pendingTaskIconPending;
     private double _statsTitleAccumulator = 0.0;
     private long _reportMaxSceneMicros;
     private long _reportMaxRenderMicros;
@@ -2121,6 +2240,8 @@ import std.string : toLower;
         }
         _elapsedSeconds += deltaSeconds;
         processPendingDesktopIcons();
+        processPendingTaskIcons();
+        seedThumbnails(deltaSeconds);
         updateTaskPreviewHover(deltaSeconds);
         maybeReportFrameStats(deltaSeconds);
         // After an input-language change the OS applies it on its own thread,

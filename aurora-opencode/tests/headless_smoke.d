@@ -189,6 +189,25 @@ int main(string[] args)
     popup.dismiss();
     root.tickTree(0.02);
 
+    // Provider selector: Settings offers OpenCode / CommandCode / Qwen 3.8
+    // 27B and fills the editable base URL + model for each.
+    const providerNames = root.providerPresetNamesForTesting();
+    assert(providerNames.length == 3, "Expected three provider presets");
+    assert(root.providerSelectorPresentForTesting(),
+        "Settings dialog missing the Provider picker");
+    assert(root.selectProviderForTesting(0) ==
+        "https://opencode.ai/zen/go/v1\ndeepseek-v4.1-flash",
+        "OpenCode preset filled the wrong endpoint/model");
+    assert(root.selectProviderForTesting(1) ==
+        "https://api.commandcode.ai/provider/v1\ndeepseek/deepseek-v4.1-flash",
+        "CommandCode preset filled the wrong endpoint/model");
+    assert(root.selectProviderForTesting(2) ==
+        "http://127.0.0.1:8080/v1\nQwen/Qwen3.8-27B",
+        "Qwen preset filled the wrong endpoint/model");
+    root.dismissPopupForTesting();
+    root.tickTree(0.02);
+    writeln("Provider presets fill the Settings endpoint + model");
+
     // Scrollbar: a long conversation overflows the chat area; auto-follow pins
     // the view to the bottom, and dragging the scrollbar must let the user
     // scroll up without being snapped back down.

@@ -70,6 +70,49 @@ public immutable string[] defaultModels = [
     "hy3"
 ];
 
+/**
+ * A selectable API provider preset.
+ *
+ * Settings lists these and pre-fills the editable base URL, key and model when
+ * one is chosen, so switching provider is one click while every field stays
+ * editable afterwards (the user can point any preset at a different host or
+ * model without losing the preset list).
+ */
+public struct ProviderPreset
+{
+    string id;      // stable key: "opencode", "commandcode", "qwen"
+    string name;    // display label
+    string baseUrl; // default endpoint
+    string model;   // default model id for that endpoint
+}
+
+/// The provider presets offered by Settings. Order is the display order.
+public immutable ProviderPreset[] providerPresets = [
+    ProviderPreset("opencode", "OpenCode", opencodeGoBaseUrl,
+        "deepseek-v4.1-flash"),
+    ProviderPreset("commandcode", "CommandCode", commandcodeBaseUrl,
+        "deepseek/deepseek-v4.1-flash"),
+    ProviderPreset("qwen", "Qwen 3.8 27B", "http://127.0.0.1:8080/v1",
+        "Qwen/Qwen3.8-27B")
+];
+
+/// Index of the preset whose base URL matches `baseUrl`, or -1 for a custom
+/// endpoint the user edited by hand.
+public int providerPresetIndexForBaseUrl(string baseUrl)
+{
+    const wanted = baseUrl.strip().toLower();
+    foreach (index, preset; providerPresets)
+        if (preset.baseUrl.toLower() == wanted) return cast(int) index;
+    return -1;
+}
+
+/// Display label of the provider serving `baseUrl` ("Custom" when edited).
+public string providerPresetLabel(string baseUrl)
+{
+    const index = providerPresetIndexForBaseUrl(baseUrl);
+    return index >= 0 ? providerPresets[cast(size_t) index].name : "Custom";
+}
+
 /// The OpenCode Go catalog serves a few models over the Anthropic `/messages`
 /// or OpenAI `/responses` shapes. The Aurora client speaks only
 /// `/chat/completions`, so offering one of those ids in the picker would make
@@ -682,45 +725,93 @@ public void ensureStateDirectory()
     if (!exists(directory)) mkdirRecurse(directory);
 }
 
+/// Read one provider's `key` from the opencode CLI auth store
+/// (`~/.local/share/opencode/auth.json`). "" when the provider or file is
+/// missing.
+private string readAuthProviderKey(string provider)
+{
+    const profile = environment.get("USERPROFILE");
+    if (profile.length == 0) return "";
+    const authPath = buildPath(profile, ".local", "share", "opencode",
+        "auth.json");
+    try
+    {
+        if (!exists(authPath)) return "";
+        auto value = parseJSON(readText(authPath));
+        if (value.type != JSONType.object) return "";
+        if (auto found = provider in value.object)
+        {
+            if (found.type == JSONType.object)
+            {
+                if (auto key = "key" in found.object)
+                    if (key.type == JSONType.string && key.str.length > 0)
+                        return key.str;
+            }
+        }
+    }
+    catch (Exception error)
+    {
+        logError("failed to read opencode auth: " ~ error.msg);
+    }
+    return "";
+}
+
+/**
+ * Best-known API key for a provider preset id.
+ *
+ * A local endpoint (qwen) usually needs no key, so this returns "" for it
+ * rather than borrowing an unrelated cloud credential. CommandCode also checks
+ * the opencode CLI's `~/.config/opencode/commandcode.key` file.
+ */
+public string readProviderKey(string providerId)
+{
+    switch (providerId)
+    {
+        case "commandcode":
+        {
+            auto key = readAuthProviderKey("commandcode");
+            if (key.length > 0) return key;
+            const profile = environment.get("USERPROFILE");
+            if (profile.length > 0)
+            {
+                const path = buildPath(profile, ".config", "opencode",
+                    "commandcode.key");
+                try
+                {
+                    if (exists(path))
+                    {
+                        const value = readText(path).strip();
+                        if (value.length > 0) return value;
+                    }
+                }
+                catch (Exception) {}
+            }
+            return readDefaultKeyFile();
+        }
+        case "qwen":
+            return "";
+        case "opencode":
+        default:
+        {
+            auto key = readAuthProviderKey("opencode-go");
+            if (key.length > 0) return key;
+            key = readAuthProviderKey("opencode");
+            if (key.length > 0) return key;
+            return readDefaultKeyFile();
+        }
+    }
+}
+
 private string readDefaultKeyFile()
 {
     // Primary: the real opencode CLI auth store
     // (~/.local/share/opencode/auth.json) which holds the Go-plan and
-    // DeepSeek API keys.
-    const profile = environment.get("USERPROFILE");
-    if (profile.length > 0)
+    // DeepSeek API keys. Prefer the OpenCode gateway credential (the default
+    // provider); fall back to the alternate providers.
+    foreach (provider; ["opencode-go", "commandcode", "deepseek"])
     {
-        const authPath = buildPath(profile, ".local", "share", "opencode",
-            "auth.json");
-        try
-        {
-            if (exists(authPath))
-            {
-                auto value = parseJSON(readText(authPath));
-                if (value.type == JSONType.object)
-                {
-                    // Prefer the OpenCode gateway credential (the default
-                    // provider); fall back to the alternate providers.
-                    foreach (provider; ["opencode-go", "commandcode", "deepseek"])
-                    {
-                        if (auto found = provider in value.object)
-                        {
-                            if (found.type == JSONType.object)
-                            {
-                                if (auto key = "key" in found.object)
-                                    if (key.type == JSONType.string &&
-                                        key.str.length > 0)
-                                        return key.str;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        catch (Exception error)
-        {
-            logError("failed to read opencode auth: " ~ error.msg);
-        }
+        auto key = readAuthProviderKey(provider);
+        if (key.length > 0) return key;
     }
     // Fallback: legacy key files from the web server setup.
     foreach (candidate; defaultKeyFileCandidates)

@@ -386,3 +386,11 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   crisp rebuild. `widgets/desktop.d` `FloatingWindow` enables it during an
   edge/corner resize drag and clears it on release; resize dropped from
   15.6 ms/83 ms avg/worst to 4.5 ms/7 ms.
+- `aurora-desktop` only (no vendor change): all shell work that used to block
+  the first frame is now lazy and time-budgeted. `startupMark` logs phase timings
+  to `aurora_startup.log` under `AURORA_DESK_STATS=1`. Desktop-folder shell icons
+  (`processPendingDesktopIcons`, 6 ms/frame) and external taskbar icons
+  (`processPendingTaskIcons`, 4 ms/frame) drain a queue instead of running in the
+  `DesktopRoot` constructor; thumbnails are no longer seeded at startup
+  (`seedThumbnails`, one per 2 s, capped at 640 px via `cappedThumbnailSize`).
+  First frame went from ~5.4 s to ~2.0 s debug (~1.7 s release).

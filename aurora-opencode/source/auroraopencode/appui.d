@@ -461,6 +461,13 @@ public final class OpenCodeRoot : VBox
 
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
+    // Settings-dialog input fields, kept while the dialog is open so a chosen
+    // provider preset can fill them and the smoke test can read them back.
+    // Null when the dialog is closed.
+    private TextField _settingsBaseField;
+    private TextField _settingsKeyField;
+    private TextField _settingsModelField;
+    private Button _settingsProviderButton;
 
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
@@ -825,13 +832,40 @@ public final class OpenCodeRoot : VBox
         auto title = content.add(new Label("Settings"));
         title.setScale(3);
 
+        // Provider preset picker: choosing one fills the base URL, key and
+        // model fields below, all of which stay editable.
+        auto providerRow = new HBox(8);
+        providerRow.layoutHints().preferredHeight = 40;
+        auto providerLabel = providerRow.add(new Label("Provider"));
+        providerLabel.layoutHints().preferredWidth = 110;
+        providerLabel.setScale(1);
+        auto providerButton = providerRow.add(
+            new Button(providerPresetLabel(_settings.baseUrl)));
+        providerButton.setId("oc-provider");
+        providerButton.layoutHints().flex = 1.0;
+        providerButton.onClick = delegate()
+        {
+            ContextMenuItem[] items;
+            foreach (index; 0 .. providerPresets.length)
+                items ~= providerMenuItem(cast(int) index);
+            const origin = providerButton.globalOrigin();
+            // Keep the Settings dialog open: showContextMenuBelow dismisses
+            // every transient popup, including this dialog.
+            showContextMenuKeepPopups(providerButton,
+                Point(origin.x, origin.y + providerButton.size().height),
+                items);
+        };
+        _settingsProviderButton = providerButton;
+
         auto baseRow = new HBox(8);
         baseRow.layoutHints().preferredHeight = 40;
         auto baseLabel = baseRow.add(new Label("API base URL"));
         baseLabel.layoutHints().preferredWidth = 110;
         baseLabel.setScale(1);
         auto baseField = baseRow.add(new TextField(_settings.baseUrl));
+        baseField.setId("oc-settings-base");
         baseField.layoutHints().flex = 1.0;
+        _settingsBaseField = baseField;
 
         auto keyRow = new HBox(8);
         keyRow.layoutHints().preferredHeight = 40;
@@ -839,13 +873,25 @@ public final class OpenCodeRoot : VBox
         keyLabel.layoutHints().preferredWidth = 110;
         keyLabel.setScale(1);
         auto keyField = keyRow.add(new TextField(_settings.apiKey));
+        keyField.setId("oc-settings-key");
         keyField.layoutHints().flex = 1.0;
+        _settingsKeyField = keyField;
 
         auto hint = content.add(new Label(
             "Key loads from your settings file, OPENCODE_API_KEY, or the " ~
             "opencode-api server key file by default."));
         hint.setScale(1);
         hint.setColor(opencodeMuted);
+
+        auto modelRow = new HBox(8);
+        modelRow.layoutHints().preferredHeight = 40;
+        auto modelLabel = modelRow.add(new Label("Model"));
+        modelLabel.layoutHints().preferredWidth = 110;
+        modelLabel.setScale(1);
+        auto modelField = modelRow.add(new TextField(_settings.model));
+        modelField.setId("oc-model-field");
+        modelField.layoutHints().flex = 1.0;
+        _settingsModelField = modelField;
 
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 42;
@@ -858,8 +904,15 @@ public final class OpenCodeRoot : VBox
         {
             const baseUrl = baseField.textUtf8().strip();
             const apiKey = keyField.textUtf8().strip();
+            const model = modelField.textUtf8().strip();
             if (baseUrl.length > 0) _settings.baseUrl = baseUrl;
             _settings.apiKey = apiKey;
+            if (model.length > 0)
+            {
+                _settings.model = model;
+                if (_current >= 0) _sessions[_current].model = _settings.model;
+                updateModelButton();
+            }
             _client.setCredentials(_settings.baseUrl, _settings.apiKey);
             saveSettingsNow();
             updateKeyBadge();
@@ -868,18 +921,51 @@ public final class OpenCodeRoot : VBox
             dismissPopup();
         };
 
+        content.add(providerRow);
         content.add(baseRow);
         content.add(keyRow);
+        content.add(modelRow);
         content.add(hint);
         content.add(footer);
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(540, 300));
+        popup.setRequestedSize(Size(540, 390));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
-        popup.onDismissed = delegate() { _activePopup = null; };
+        popup.onDismissed = delegate()
+        {
+            _activePopup = null;
+            _settingsBaseField = null;
+            _settingsKeyField = null;
+            _settingsModelField = null;
+            _settingsProviderButton = null;
+        };
         openPopup(popup);
         popup.focusFirst();
+    }
+
+    /// A provider preset as a context-menu command bound to its own index (a
+    /// factory, so each item captures a distinct index).
+    private ContextMenuItem providerMenuItem(int index)
+    {
+        const preset = providerPresets[cast(size_t) index];
+        return ContextMenuItem.command(preset.name,
+            delegate() { applyProviderPreset(index); });
+    }
+
+    /// Fill the Settings base URL/key/model fields for a provider preset.
+    /// Staged: nothing is written to disk until the dialog's Save is pressed.
+    private void applyProviderPreset(int index)
+    {
+        if (index < 0 || index >= cast(int) providerPresets.length) return;
+        const preset = providerPresets[cast(size_t) index];
+        if (_settingsBaseField !is null) _settingsBaseField.setText(preset.baseUrl);
+        if (_settingsKeyField !is null)
+            _settingsKeyField.setText(readProviderKey(preset.id));
+        if (_settingsModelField !is null)
+            _settingsModelField.setText(preset.model);
+        if (_settingsProviderButton !is null)
+            _settingsProviderButton.setText(preset.name);
     }
 
     private void openPopup(PopupOverlay popup)
@@ -1213,5 +1299,39 @@ public final class OpenCodeRoot : VBox
     public size_t bubbleShapeCountForTesting() const
     {
         return MessageBubble.shapeCount;
+    }
+
+    /// Test-only: the provider preset names offered by the Settings dialog.
+    public string[] providerPresetNamesForTesting()
+    {
+        string[] names;
+        foreach (preset; providerPresets) names ~= preset.name;
+        return names;
+    }
+
+    /// Test-only: open Settings and report whether the provider picker exists.
+    public bool providerSelectorPresentForTesting()
+    {
+        showSettingsDialog();
+        return _settingsProviderButton !is null;
+    }
+
+    /// Test-only: open Settings, apply the provider preset at `index`, and
+    /// return the base URL and model it filled in, as "baseUrl\nmodel".
+    public string selectProviderForTesting(int index)
+    {
+        showSettingsDialog();
+        applyProviderPreset(index);
+        const baseUrl = _settingsBaseField !is null
+            ? _settingsBaseField.textUtf8() : "";
+        const model = _settingsModelField !is null
+            ? _settingsModelField.textUtf8() : "";
+        return baseUrl ~ "\n" ~ model;
+    }
+
+    /// Test-only: dismiss whatever popup is open.
+    public void dismissPopupForTesting()
+    {
+        dismissPopup();
     }
 }
