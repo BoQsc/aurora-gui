@@ -1084,7 +1084,6 @@ version (Windows)
     // round-robin over 40 windows would be a constant ~50% of a core of
     // PrintWindow work for previews nobody is looking at.
     private enum double thumbRefreshSeconds = 60.0;
-    private enum double thumbBackgroundRefreshSeconds = 60.0;
     // Previews render at ~200 px wide; capturing larger is wasted work.
     private enum int thumbMaxDimension = 480;
 
@@ -1221,7 +1220,11 @@ version (Windows)
                 {
                     const candidate = _thumbPriority[0];
                     _thumbPriority = _thumbPriority[1 .. $];
-                    if (candidate != 0 && thumbnailDue(candidate, now))
+                    // An explicit hover request refreshes regardless of age
+                    // (but a minimized window cannot be captured - keep its
+                    // last frame, as Windows does).
+                    if (candidate != 0 &&
+                        !externalTaskMinimized(candidate))
                     {
                         target = candidate;
                         have = true;
@@ -1265,6 +1268,8 @@ version (Windows)
                     _thumbSharedAt.remove(target);
                 }
             }
+            // Be gentle on the target applications; there is no deadline.
+            Thread.sleep(dur!"msecs"(10));
         }
     }
 }
