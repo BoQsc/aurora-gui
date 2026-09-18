@@ -1,5 +1,37 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: clicking a task made it vanish (FIXED, verified)
+
+**Complaint (user).** "i JUST CLICKED A FEW TASKS AND THEY JUST DISSAPEARED
+INSTEAD OFf the ttaskbar for no reason".
+
+**Two coupled root causes.**
+1. `tasks.d` `enumCallback` dropped ANY window whose `GetWindowRect` height was
+   `< 60`, commented as "minimized windows collapse to the caption". A minimized
+   window's rect is a title-bar/off-screen stub, so the moment a window was
+   minimized its task was removed by the next `syncExternalTasks()` poll. Windows
+   keeps minimized windows in the taskbar (dimmed), so this was wrong.
+2. `desktop.d` `activateEntry` toggled minimize-vs-activate on
+   `onExternalVisible` (i.e. "not minimized"), so clicking the task of ANY open
+   window minimized it - even one that was not focused. Combined with (1) the
+   task then disappeared.
+
+**Fix.**
+- `aurora-desktop/source/auroradesktop/tasks.d`: keep minimized windows; the
+  `height < 60` stub filter and the full-screen-overlay filter now apply only to
+  non-minimized windows. `task.minimized` is already carried and the taskbar
+  paints the dimmed minimized underline.
+- `vendor/aurora-d-0.4.5/source/aurora/widgets/desktop.d`: `activateEntry`
+  toggles on `onExternalFocused` (Windows behavior: clicking the focused
+  window's task minimizes it; clicking any other activates it). While Aurora
+  owns the foreground this means a task click activates/switches rather than
+  minimizing the clicked app.
+
+**Verification.** `dub build` OK; `build\headless-smoke.exe` -> ALL PASSED.
+Deterministic probe `build\task_probe.exe` (creates its own window): visible
+enumerated = true, after `ShowWindow(SW_MINIMIZE)` enumerated = true ->
+"PASS: minimized window stays a task" (this FAILS on the old code).
+
 ## 2026-09-18 - Aurora Desktop: mouse disappears while dragging icons/windows (FIXED)
 
 **Complaint (user).** "WHY MOUSE DISAPPEARS ONCE I START DRAGGING TASKBARK ICONS

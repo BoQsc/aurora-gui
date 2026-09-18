@@ -134,16 +134,23 @@ version (Windows)
         GetWindowRect(hwnd, &r);
         const ww = r.right - r.left;
         const wh = r.bottom - r.top;
-        // Skip title-bar-only stubs (minimized windows collapse to the caption)
-        // and full-screen always-on-top overlays that are not real tasks.
-        if (wh < 60) return 1;
-        if (isFullScreenSystemWindow(cls, ww, wh)) return 1;
+        const minimized = IsIconic(hwnd) != 0;
+        // Windows keeps a minimized window in the taskbar (dimmed indicator), so
+        // never drop it. A minimized window's GetWindowRect collapses to a
+        // title-bar/off-screen stub, so the stub and full-screen-overlay filters
+        // only apply to normal windows; dropping minimized windows here made a
+        // task button vanish the moment it was minimized by a click.
+        if (!minimized)
+        {
+            if (wh < 60) return 1;
+            if (isFullScreenSystemWindow(cls, ww, wh)) return 1;
+        }
 
         ExternalTask task;
         task.hwnd = cast(ulong) hwnd;
         task.title = title;
         task.visible = true;
-        task.minimized = IsIconic(hwnd) != 0;
+        task.minimized = minimized;
         task.maximized = IsZoomed(hwnd) != 0;
         task.x = r.left;
         task.y = r.top;

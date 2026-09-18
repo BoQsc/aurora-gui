@@ -47,6 +47,19 @@ Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
 (guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
 the window. Win+D / Show desktop / taskbar all stay restored.
 
+**Task button vanishes when clicked (fixed 2026-09-18).** Two coupled bugs:
+(a) `tasks.d enumCallback` dropped any window with `GetWindowRect` height `< 60`
+(minimized windows collapse to a stub), so minimizing a window removed its task
+on the next poll; (b) `desktop.d activateEntry` toggled minimize-vs-activate on
+`onExternalVisible`, so clicking any open (not-minimized) task minimized it.
+Fixed by keeping minimized windows (stub/fullscreen filters apply only to
+non-minimized) and toggling on `onExternalFocused`. **Deterministic test (no
+touching user apps):** `build\task_probe.exe` creates its own STATIC window,
+asserts it is enumerated while visible, minimizes it, asserts it is still
+enumerated -> "PASS: minimized window stays a task". Source
+`C:\Users\WINDOW~2\AppData\Local\Temp\opencode\task_probe.d`; build with
+`dmd -i -Isource -I..\vendor\aurora-d-0.4.5\source <probe>.d -of=build\task_probe.exe -Luser32.lib -Lgdi32.lib -Lshell32.lib -Lole32.lib`.
+
 **Cursor disappears while dragging (fixed 2026-09-18).** Root cause: the
 synchronized-drag pointer hid the native OS cursor (`SetCursor(null)` via
 `setPointerVisible(false)`) but the Aurora replacement overlay is only composited

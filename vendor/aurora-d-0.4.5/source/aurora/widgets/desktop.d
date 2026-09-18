@@ -2617,9 +2617,14 @@ class Taskbar : Widget
                 invalidate();
                 return;
             }
-            const visible = onExternalVisible is null ? true :
-                onExternalVisible(entry.hostHwnd);
-            if (visible)
+            // Windows toggles by FOCUS, not by "not minimized": clicking the
+            // focused window's task minimizes it, while clicking any other
+            // window's task activates it. Toggling on visibility minimized
+            // every open-but-unfocused task the user clicked (and, together
+            // with the enumeration's stub filter, made it disappear).
+            const focused = onExternalFocused !is null &&
+                onExternalFocused(entry.hostHwnd);
+            if (focused)
             {
                 if (onExternalMinimize !is null)
                     onExternalMinimize(entry.hostHwnd);

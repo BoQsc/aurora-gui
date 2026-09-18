@@ -301,6 +301,11 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   the shell cannot be stranded by any minimize path.
 - `aurora-desktop` enables it in `DesktopRoot.setShellWindow`. Other Aurora apps
   are unaffected (default off).
+- `widgets/desktop.d`: `activateEntry()` (taskbar task click) now toggles
+  minimize-vs-activate on `onExternalFocused` instead of `onExternalVisible`.
+  Toggling on visibility minimized every open-but-unfocused window the user
+  clicked, which (with the old enumeration stub filter) also made the task
+  disappear from the bar. Windows minimises only the focused window's task.
 - `window.d`: `beginSynchronizedPointer()` no longer hides the native cursor
   unless the Aurora cursor overlay is actually enabled (`_systemCursorVisible`),
   because `ensureScene` only draws the overlay in that case; otherwise the drag
