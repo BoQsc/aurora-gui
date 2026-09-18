@@ -975,6 +975,8 @@ else version (Windows)
         private bool _liveResizeMoveOnly;
         private bool _fullscreen;
         private bool _minimized;
+        private bool _preventMinimize;
+        private bool _restoringFromMinimize;
         private bool _hasWindowedPlacement;
         private LONG_PTR _windowedStyle;
         private LONG_PTR _windowedExStyle;
@@ -1574,6 +1576,9 @@ else version (Windows)
         override bool minimize()
         {
             if (_hwnd is null) return false;
+            // A desktop shell must not disappear: with prevent-minimize set, a
+            // minimize request is acknowledged but ignored.
+            if (_preventMinimize) return true;
             if (_fullscreen) setFullscreen(false);
             return ShowWindow(_hwnd, SW_MINIMIZE) != FALSE;
         }
@@ -1582,6 +1587,21 @@ else version (Windows)
         {
             if (_hwnd is null) return false;
             return ShowWindow(_hwnd, SW_RESTORE) != FALSE;
+        }
+
+        override bool setPreventMinimize(bool prevent)
+        {
+            _preventMinimize = prevent;
+            // If the window is already minimized when the policy is turned on,
+            // bring it back so the shell is never stranded off-screen.
+            if (prevent && _hwnd !is null && _minimized)
+                ShowWindow(_hwnd, SW_RESTORE);
+            return true;
+        }
+
+        override bool preventMinimize()
+        {
+            return _preventMinimize;
         }
 
         override bool isMinimized()
@@ -1959,11 +1979,31 @@ else version (Windows)
                 case WM_ERASEBKGND:
                     paintStartupBackground(cast(HDC) wParam);
                     return 1;
+                case WM_SYSCOMMAND:
+                    // Desktop-shell windows cover the screen and have no taskbar
+                    // button to restore them, so ignore minimize requests
+                    // (Win+D, Show desktop, the system menu) when opted out.
+                    if (_preventMinimize &&
+                        (cast(UINT) wParam & 0xFFF0) == SC_MINIMIZE)
+                        return 0;
+                    return DefWindowProcW(_hwnd, message, wParam, lParam);
                 case WM_SIZE:
                 {
                     _minimized = cast(DWORD) wParam == SIZE_MINIMIZED;
                     if (_minimized)
                     {
+                        // Some shell paths (Win+D, Show desktop, third-party
+                        // tools) bypass WM_SYSCOMMAND and call ShowWindow with
+                        // SW_MINIMIZE directly, which only shows up here. A
+                        // desktop shell must never be stranded minimized, so
+                        // bounce straight back to the restored state.
+                        if (_preventMinimize && !_restoringFromMinimize)
+                        {
+                            _restoringFromMinimize = true;
+                            ShowWindow(_hwnd, SW_RESTORE);
+                            _restoringFromMinimize = false;
+                            return 0;
+                        }
                         // Keep the last full-size framebuffer and content while
                         // minimized instead of shrinking to 1x1. A 1x1 frame
                         // would be scaled up as a solid box during the restore

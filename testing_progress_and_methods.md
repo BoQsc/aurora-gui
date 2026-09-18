@@ -4,6 +4,61 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora Desktop: "frozen" shell was a stuck minimize (2026-09-18)
+
+**Symptom (user).** "entire aurora desktop program is frozen, not the first
+time." The screen showed the last Aurora frame and did not respond.
+
+**How to tell a freeze from a minimize (do this first).** Do NOT kill the
+process. Inspect it:
+```
+powershell -NoProfile -Command "Get-Process aurora-desktop | Select Id,CPU,Responding,MainWindowTitle"
+```
+`Responding=True` + near-zero CPU means the message pump is alive (not hung).
+Then read the real window placement (PowerShell — `GetWindowPlacement`):
+- `IsIconic(hwnd)=True` and `showCmd=2` (SW_SHOWMINIMIZED) with `minPos` around
+  `-25600,-25600` => the window is minimized, not frozen.
+Because `aurora.platform.win32` pauses rendering while minimized
+(`paintNow`: `if (!_visible || _minimized || !_needsPaint ...) return;`), a
+minimized full-screen shell leaves its last frame visible and unresponsive.
+`ShowWindow(SW_RESTORE)` + a CPU-delta check confirms it was only minimized.
+
+Note: `EnumWindows` + `GetWindowTextW` must use `CharSet.Unicode`, otherwise wide
+titles marshal as ANSI and truncate to their first character (`A`).
+
+**Fix.** Opt-in `setPreventMinimize` on `NativeWindow`/`GuiWindow`; the Win32
+`PlatformWindow` returns 0 for `WM_SYSCOMMAND` `SC_MINIMIZE` (Win+D, Win+M,
+system menu, taskbar) and makes `minimize()` a no-op (restoring if already
+minimized). Paths that bypass `WM_SYSCOMMAND` and call `ShowWindow(SW_MINIMIZE)`
+directly land in `WM_SIZE`/`SIZE_MINIMIZED`, which now calls
+`ShowWindow(SW_RESTORE)` (guarded by `_restoringFromMinimize`). `DesktopRoot.setShellWindow`
+enables it. Other apps unaffected.
+
+**How to test.** `build\headless-smoke.exe` -> ALL PASSED. Live guard checks:
+```
+powershell -NoProfile -Command "Add-Type ...; SendMessageTimeout(hwnd,0x0112,0xF020,0,2,2000,[ref]$r); IsIconic(hwnd)"
+```
+must report `iconic=False` (WM_SYSCOMMAND path). Also test the bypass path:
+```
+ShowWindow(hwnd, 6)  # SW_MINIMIZE, bypasses WM_SYSCOMMAND
+Start-Sleep -Milliseconds 400; IsIconic(hwnd)   # must be False
+```
+`WM_SIZE`/`SIZE_MINIMIZED` now bounces straight back with `ShowWindow(SW_RESTORE)`
+(guarded by `_restoringFromMinimize`), so even raw shell minimizes cannot strand
+the window. Win+D / Show desktop / taskbar all stay restored.
+
+**CRITICAL measurement pitfall — make the capture probe DPI-aware first.** A
+DPI-unaware PowerShell probe virtualizes coordinates: `GetClientRect` returned
+`1280x760` and `CopyFromScreen` a `1536x864` "screen" while the true physical
+client is `1600x950` on a `1920x1080` display at DPI 120. This produced a false
+"framebuffer double-scale / taskbar rendered off-screen" diagnosis and a wild
+goose chase. Always call `SetProcessDPIAware()` (P/Invoke) **before** enumerating
+or capturing, then the numbers are real (`client=1600x950`, `window=1618x997`)
+and `PrintWindow` shows the taskbar correctly. Reusable probe:
+`C:\Users\WINDOW~2\AppData\Local\Temp\opencode\capture_aurora.ps1`
+(now calls `SetProcessDPIAware()`), invoked as
+`capture_aurora.ps1 -TargetPid <pid> -Out <png>`.
+
 ## Aurora Desktop: Windows-style tray flyouts + input-language indicator (2026-09-18)
 
 **Request (user, 4 screenshots).** The network/Wi-Fi, battery, volume and input

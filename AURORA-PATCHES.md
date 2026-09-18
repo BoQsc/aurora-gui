@@ -283,3 +283,23 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   `trayIconGlobalBounds` accepts `0..4`, and `tooltipForRegion` /
   `tooltipAnchorForRegion` map the new range.
 - `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `desktop.d`.
+
+## Prevent-minimize policy for desktop shells (`aurora.platform.*`)
+
+- A desktop-shell window covers the screen and has no taskbar button of its own
+  to restore it, so Win+D / Win+M / the Windows taskbar's "Show desktop" or
+  minimize left it stranded minimized. The platform pauses rendering while
+  minimized, so the last frame stayed on screen and the shell read as "frozen".
+- Added opt-in `NativeWindow.setPreventMinimize(bool)` / `preventMinimize()`
+  (`platform/base.d`), forwarded by `GuiWindow` (`window.d`).
+  `PlatformWindow` (`platform/win32.d`) returns 0 for `WM_SYSCOMMAND`
+  `SC_MINIMIZE` while the policy is set, makes `minimize()` a no-op, and
+  restores immediately when enabled on an already-minimized window. Some shell
+  paths bypass `WM_SYSCOMMAND` and call `ShowWindow(SW_MINIMIZE)` directly,
+  which only reaches the window proc as `WM_SIZE`/`SIZE_MINIMIZED`; that branch
+  now calls `ShowWindow(SW_RESTORE)` (guarded by `_restoringFromMinimize`) so
+  the shell cannot be stranded by any minimize path.
+- `aurora-desktop` enables it in `DesktopRoot.setShellWindow`. Other Aurora apps
+  are unaffected (default off).
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `base.d`, `win32.d`
+  and `window.d`.

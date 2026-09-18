@@ -348,6 +348,22 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         return _native !is null && _native.isMinimized();
     }
 
+    /**
+     * Desktop shells set this so a stray Win+D / "Show desktop" cannot minimize
+     * the shell into an unrecoverable last frame. Returns false when the
+     * backend does not support it.
+     */
+    bool setPreventMinimize(bool prevent)
+    {
+        return _native !is null && _native.setPreventMinimize(prevent);
+    }
+
+    /** True when minimize requests are ignored. */
+    bool preventMinimize()
+    {
+        return _native !is null && _native.preventMinimize();
+    }
+
     /** Hide or show the window (minimize-to-tray); false when unsupported. */
     bool setVisible(bool visible)
     {

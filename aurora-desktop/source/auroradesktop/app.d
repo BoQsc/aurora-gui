@@ -70,6 +70,11 @@ final class DesktopRoot : Widget
     {
         _window = window;
         _window.setSystemCursorVisible(!_hideSystemCursor);
+        // A desktop shell covers the screen and has no taskbar button to bring
+        // it back, so a stray Win+D / "Show desktop" would leave the last frame
+        // on screen with nothing responding (which reads as "frozen"). Refuse
+        // to minimize, exactly like the Windows shell.
+        _window.setPreventMinimize(true);
         version (Windows)
         {
             import aurora.platform.select : PlatformWindow;

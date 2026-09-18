@@ -212,6 +212,24 @@ abstract class NativeWindow
     }
 
     /**
+     * Opt out of minimizing. Desktop-shell windows cover the screen and have no
+     * taskbar button to restore them, so a stray Win+D / "Show desktop" would
+     * leave the last frame on screen with no way back (looks frozen). When set,
+     * minimize requests are ignored by the platform. Unsupported backends
+     * return false.
+     */
+    bool setPreventMinimize(bool prevent)
+    {
+        return false;
+    }
+
+    /** True when minimize requests are ignored (see setPreventMinimize). */
+    bool preventMinimize()
+    {
+        return false;
+    }
+
+    /**
      * Hide or show the native window (used for minimize-to-tray, where the
      * taskbar button disappears but the process keeps running). Unsupported
      * backends return false.

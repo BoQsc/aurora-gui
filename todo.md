@@ -1,5 +1,56 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora Desktop: "frozen entire program" was a stuck minimize (COMPLETED, verified)
+
+**Complaint (user).** "why is it frozen, entire aurora desktop program is frozen,
+not the first time."
+
+**Diagnosis (measured, not guessed).** The process was alive and its message
+pump running (`Get-Process` `Responding=True`, CPU delta 0.031 s / 3 s, all
+threads waiting). The window itself was **minimized**: `IsIconic=True`,
+`GetWindowPlacement.showCmd=2` (SW_SHOWMINIMIZED), `minPos=-25600,-25600`,
+`normal=217,57,1511,855`. While minimized the platform deliberately pauses
+rendering (`win32.d` `paintNow`: `if (!_visible || _minimized ...) return;`), so
+the last full-screen frame stays on screen and nothing responds — which reads as
+"frozen". `ShowWindow(SW_RESTORE)` brought it back and CPU immediately resumed
+(0.312 s / 3 s), proving it was never hung.
+
+**Trigger.** The shell is a normal window with `WS_MINIMIZEBOX | WS_SYSMENU`, so
+Win+D / Win+M / the Windows taskbar's minimize and "Show desktop" can minimize
+it. A desktop shell has no taskbar button of its own to bring it back, so it is
+stranded showing a stale frame.
+
+**Fix.** Added an opt-in "cannot be minimized" policy to the platform:
+`NativeWindow.setPreventMinimize/preventMinimize`
+(`platform/base.d`), `PlatformWindow` ignores `WM_SYSCOMMAND` `SC_MINIMIZE`
+(Win+D / system menu / taskbar) and `minimize()` becomes a no-op, restoring
+immediately if already minimized (`platform/win32.d`), forwarded by
+`GuiWindow` (`window.d`). `DesktopRoot.setShellWindow` enables it. Other Aurora
+apps are unaffected (opt-in). Some shell paths (Win+D / Show desktop /
+third-party tools) bypass `WM_SYSCOMMAND` and call `ShowWindow(SW_MINIMIZE)`
+directly, which only surfaces as `WM_SIZE`/`SIZE_MINIMIZED`; that path now
+bounces straight back with `ShowWindow(SW_RESTORE)` (guarded by
+`_restoringFromMinimize` to avoid reentrancy).
+
+**Verification.** Built + `build\headless-smoke.exe` -> ALL PASSED. Live: sent
+`WM_SYSCOMMAND` `SC_MINIMIZE` to the running shell -> `IsIconic` stayed `False`;
+a raw cross-process `ShowWindow(SW_MINIMIZE)` (which bypasses the window proc)
+now also bounces back -> `IsIconic` stayed `False` at 400 ms and 1.2 s. App
+rebuilt and relaunched as one instance.
+
+**Correction (important, avoids repeating a wrong diagnosis).** An intermediate
+investigation concluded the taskbar was rendering "off-screen" because
+`_framebufferSize=1600x950` while `GetClientRect` reported `1280x760` — a
+supposed DPI double-scale. That was a **measurement artifact**: the diagnostic
+PowerShell capture was DPI-unaware, so `GetClientRect`/`GetWindowRect`/
+`CopyFromScreen` returned 96-DPI-virtualized coordinates (1280x760, "screen"
+1536x864) while the real physical client is 1600x950 on a 1920x1080 screen at
+DPI 120. With `SetProcessDPIAware()` **before** any capture, `client=1600x950`,
+`window=1618x997`, and `PrintWindow` shows the taskbar correctly (Start,
+Search, tray, ENG, live clock). No framebuffer fix was needed. **Lesson: always
+make the capture probe DPI-aware first (call `SetProcessDPIAware()`), never
+conclude a geometry bug from a DPI-unaware probe.**
+
 ## 2026-09-18 - Aurora Desktop: tray flyouts match Windows (network/battery/volume/language) (COMPLETED, verified)
 
 **Request (user, 4 screenshots).** Show the Windows system-tray flyouts and
