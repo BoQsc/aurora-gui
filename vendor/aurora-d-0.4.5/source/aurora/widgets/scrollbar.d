@@ -74,7 +74,8 @@ class Scrollbar : Widget
         return _maximum > _minimum;
     }
 
-    override bool claimsBorderlessResizeEdge() const @safe pure nothrow @nogc
+    override bool claimsBorderlessResizeEdge(Point localPosition)
+        const @safe pure nothrow @nogc
     {
         return visible() && scrollable();
     }

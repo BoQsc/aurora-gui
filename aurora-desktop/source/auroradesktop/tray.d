@@ -60,6 +60,16 @@ final class VolumePanel : TrayPanel
         rebuild();
     }
 
+    // See LanguagePanel.bindRow: the device index must arrive as a parameter,
+    // not a loop-body local, or every device button selects the last device.
+    private void bindDeviceRow(Button row, uint index)
+    {
+        row.onClick = delegate()
+        {
+            if (onDeviceSelected !is null) onDeviceSelected(index);
+        };
+    }
+
     /// Windows 11 volume flyout: the active output device as the header (with a
     /// chevron to reveal the device picker), then a mute glyph + slider + value.
     private void rebuild()
@@ -119,17 +129,13 @@ final class VolumePanel : TrayPanel
             _deviceList = column.add(new VBox(2));
             foreach (device; _devices)
             {
-                const captured = device.index;
                 const active = device.index == _selected;
                 auto deviceRow = _deviceList.add(new Button(device.name,
                     IconKind.volume));
                 deviceRow.setFlat(true);
                 deviceRow.setAccent(active);
                 deviceRow.layoutHints().preferredHeight = 32;
-                deviceRow.onClick = delegate()
-                {
-                    if (onDeviceSelected !is null) onDeviceSelected(captured);
-                };
+                bindDeviceRow(deviceRow, device.index);
                 _deviceButtons ~= deviceRow;
             }
             const count = cast(int) _deviceButtons.length;
@@ -218,6 +224,17 @@ final class WifiPanel : TrayPanel
         rebuild();
     }
 
+    // See LanguagePanel.bindRow: ssid/profile/secured must arrive as parameters,
+    // not loop-body locals, or every network row connects to the last network.
+    private void bindNetworkRow(WifiNetworkRow row, string ssid, string profile,
+        bool secured)
+    {
+        row.onClick = delegate()
+        {
+            if (onConnect !is null) onConnect(ssid, profile, secured);
+        };
+    }
+
     private void rebuild()
     {
         foreach (child; _column.children())
@@ -260,16 +277,12 @@ final class WifiPanel : TrayPanel
         {
             if (shown >= 8) break;
             const ssid = network.ssid;
-            const profile = network.profile;
             const secured = network.secured;
             const signal = network.signal;
             const active = _state.connected && ssid == activeSsid;
             auto row = _networkList.add(new WifiNetworkRow(ssid, secured,
                 cast(int) signal, active));
-            row.onClick = delegate()
-            {
-                if (onConnect !is null) onConnect(ssid, profile, secured);
-            };
+            bindNetworkRow(row, network.ssid, network.profile, secured);
             ++shown;
         }
         bool hasNote;
@@ -974,6 +987,19 @@ final class LanguagePanel : TrayPanel
         rebuild(languages);
     }
 
+    // NB: the hkl MUST arrive as a function parameter. Capturing a loop-body
+    // local (`const captured = language.hkl`) makes every row's closure share
+    // one reused stack slot, so all rows selected the LAST language (proved:
+    // the same pattern prints "2 2 2" for a 0..3 loop). Do not inline this
+    // back into the loop.
+    private void bindRow(LanguageRow row, size_t hkl)
+    {
+        row.onClick = delegate()
+        {
+            if (onSelect !is null) onSelect(hkl);
+        };
+    }
+
     private void rebuild(InputLanguage[] languages)
     {
         _languages = languages.dup;
@@ -981,12 +1007,8 @@ final class LanguagePanel : TrayPanel
             _column.remove(child);
         foreach (language; languages)
         {
-            const captured = language.hkl;
             auto row = _column.add(new LanguageRow(language));
-            row.onClick = delegate()
-            {
-                if (onSelect !is null) onSelect(captured);
-            };
+            bindRow(row, language.hkl);
         }
         _column.add(new Separator());
         auto settings = _column.add(new Button("Language preferences",

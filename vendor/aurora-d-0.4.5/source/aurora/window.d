@@ -920,7 +920,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         auto target = targetAt(position);
         while (target !is null)
         {
-            if (target.claimsBorderlessResizeEdge()) return true;
+            if (target.claimsBorderlessResizeEdge(
+                target.globalToLocal(position))) return true;
             target = target.parent();
         }
         return false;

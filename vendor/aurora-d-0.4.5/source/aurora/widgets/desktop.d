@@ -2592,6 +2592,16 @@ class Taskbar : Widget
             showDesktopWidth, bounds().height);
     }
 
+    // The Show-desktop strip sits in the window's right resize margin, so the
+    // outermost pixels flipped to resize instead of toggling Show desktop. Claim
+    // just that strip (and the clock beside it) for the client.
+    override bool claimsBorderlessResizeEdge(Point localPosition)
+        const @safe pure nothrow @nogc
+    {
+        return showDesktopRect().contains(localPosition) ||
+            clockRect().contains(localPosition);
+    }
+
     private Rect clockRect() const @safe pure nothrow @nogc
     {
         if (!_modernShell)

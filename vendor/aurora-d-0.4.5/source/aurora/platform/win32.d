@@ -1931,8 +1931,18 @@ else version (Windows)
                         return TRUE;
                     break;
                 case WM_NCHITTEST:
-                    if (!options.decorated && options.resizable && !_fullscreen)
+                    if (!options.decorated && options.resizable)
+                    {
+                        // A fullscreen surface is not edge-resizable and its
+                        // client area reaches the screen edges. Falling through
+                        // to DefWindowProc made the right edge report
+                        // HTVSCROLL (WS_VSCROLL is set for scroll integration)
+                        // and the bottom/right the resize border, which stole
+                        // every click from the taskbar's edge-anchored
+                        // Show-desktop strip. Report the client everywhere.
+                        if (_fullscreen) return HTCLIENT;
                         return hitTestBorderlessResize(lParam);
+                    }
                     break;
                 case wmDropFiles:
                 {

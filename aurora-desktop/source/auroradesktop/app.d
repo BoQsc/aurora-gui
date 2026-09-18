@@ -12,12 +12,13 @@ import auroradesktop.store : DesktopState, IconState, PinnedAppState, TaskState,
     saveDesktopState;
 import auroradesktop.taskpreview : TaskPreview;
 import auroradesktop.tasks : ExternalTask, TrayIconInfo, activateExternalTask,
-    captureExternalThumbnail, closeExternalTask, enumerateExternalTasks,
+    cachedThumbnail, closeExternalTask, enumerateExternalTasks,
     enumerateTrayIcons, excludeWindow, externalTaskAlive, externalTaskFocused,
     executableIcon, externalTaskGroupKey, externalTaskIcon,
     externalTaskMinimized, externalTaskSize, externalTaskTitle, fileIcon,
     minimizeExternalTask, postTrayContextMenu, postTrayDoubleClick,
-    postTrayPrimaryClick, restoreExternalTask;
+    postTrayPrimaryClick, requestThumbnail, restoreExternalTask,
+    setThumbnailTargets, startThumbnailWorker, stopThumbnailWorker;
 import auroradesktop.inputlang : InputLanguage, activateInputLanguage,
     activeInputLanguage, inputLanguageAbbrev, inputLanguageName,
     inputLanguages;
@@ -31,7 +32,7 @@ import std.algorithm : canFind, endsWith;
 import std.conv : to;
 import std.format : format;
 import std.path : baseName;
-import std.process : environment, spawnShell;
+import std.process : environment;
 import std.string : toLower;
 import std.utf : toUTF8, toUTF32;
 
@@ -181,15 +182,7 @@ final class DesktopRoot : Widget
         _taskbar.onTaskManager = delegate()
         {
             version (Windows)
-            {
-                try
-                {
-                    spawnShell("taskmgr.exe");
-                }
-                catch (Exception)
-                {
-                }
-            }
+                systemOpenPath("taskmgr.exe");
         };
         _taskbar.onDateTimeSettings = delegate()
         {
@@ -306,6 +299,13 @@ final class DesktopRoot : Widget
     }
 
     // --- pinned taskbar apps ---------------------------------------------
+    // NB: exePath must arrive as a parameter. Capturing a loop-body local made
+    // every pinned task launch the LAST pinned app (D reuses the closure slot).
+    private void delegate() pinnedLauncher(string exePath)
+    {
+        return delegate() { activateOrLaunchApp(exePath); };
+    }
+
     private void restorePinnedApps()
     {
         foreach (a; _state.pinnedApps)
@@ -314,7 +314,7 @@ final class DesktopRoot : Widget
             const title = a.title.length > 0 ? a.title : baseName(a.exePath);
             const exePath = a.exePath;
             _taskbar.addPinnedTask(title, executableIcon(exePath),
-                delegate() { activateOrLaunchApp(exePath); }, exePath);
+                pinnedLauncher(exePath), exePath);
         }
     }
 
@@ -365,13 +365,7 @@ final class DesktopRoot : Widget
                     return;
                 }
             }
-            try
-            {
-                spawnShell(exePath);
-            }
-            catch (Exception)
-            {
-            }
+            systemOpenPath(exePath);
         }
     }
 
@@ -472,6 +466,19 @@ final class DesktopRoot : Widget
         if (hwndPtr is null || callbackPtr is null || osIdPtr is null)
             return false;
         return postTrayDoubleClick(*hwndPtr, *callbackPtr, *osIdPtr);
+    }
+
+    // See LanguagePanel.bindRow: id/label must arrive as parameters. Capturing
+    // loop-body locals while building the tray model made every tray icon
+    // invoke the LAST icon (D reuses the closure slot).
+    private void delegate() trayIconAction(size_t id, string label)
+    {
+        return delegate() { invokeTrayIcon(id, label); };
+    }
+
+    private void delegate() trayIconDoubleClickAction(size_t id, string label)
+    {
+        return delegate() { invokeTrayDoubleClick(id, label); };
     }
 
     /// Double-clicking a tray icon opens the owning application, exactly like
@@ -581,11 +588,9 @@ final class DesktopRoot : Widget
                 icon.iconImage = info.icon;
                 icon.hidden = hiddenPtr !is null ? *hiddenPtr : info.hidden;
                 icon.system = info.isSystem;
-                const label = info.label;
-                const stableId = icon.id;
-                icon.action = delegate() { invokeTrayIcon(stableId, label); };
+                icon.action = trayIconAction(icon.id, info.label);
                 icon.doubleClickAction =
-                    delegate() { invokeTrayDoubleClick(stableId, label); };
+                    trayIconDoubleClickAction(icon.id, info.label);
                 desired ~= icon;
             }
 
@@ -874,6 +879,11 @@ import std.string : toLower;
 
     // Add the persisted pinned tasks after the built-in windows/commands. The
     // stored order (minus any task already present) is restored via setEntryOrder.
+    private void delegate() pinnedTitleMessage(string title)
+    {
+        return delegate() { showMessage(title ~ " is pinned."); };
+    }
+
     private void restorePinnedTasks()
     {
         // Duplicates the built-in window titles; skip those.
@@ -902,7 +912,7 @@ import std.string : toLower;
                 // Not one of our built-in windows; add a draggable placeholder
                 // command so the pin arrangement is visible.
                 _taskbar.addCommand(t.title, iconKindFromName(t.iconName),
-                    delegate() { showMessage(t.title ~ " is pinned."); });
+                    pinnedTitleMessage(t.title));
                 seen[t.title] = null;
             }
         }
@@ -1197,14 +1207,8 @@ import std.string : toLower;
     /// Open a real desktop item (file/folder/shortcut) with the shell.
     private void openDesktopEntry(string path)
     {
-        try
-        {
-            spawnShell(path);
-        }
-        catch (Exception)
-        {
+        if (!systemOpenPath(path))
             showMessage("Could not open " ~ baseName(path));
-        }
     }
 
     /// Pick a glyph for a file by its extension.
@@ -1765,57 +1769,17 @@ import std.string : toLower;
     // Resolved grouping key per hwnd (owning executable path), so grouping only
     // pays the OpenProcess/query cost once per window.
     private string[ulong] _externalGroupKeys;
-    // Last good thumbnail per window. PrintWindow cannot capture a minimized
-    // window, so hovering a minimized task reuses the last frame captured while
-    // it was visible instead of showing black.
-    private RgbaImage[ulong] _thumbnailCache;
-    // When each cached thumbnail was captured (seconds since app start), so the
-    // hovered task's preview can be refreshed on demand without re-capturing
-    // every window on the periodic sync.
-    private double[ulong] _thumbnailTime;
     private double _elapsedSeconds = 0.0;
-    private enum double thumbnailRefreshSeconds = 1.5;
 
-    private static bool bitmapHasContent(RgbaImage image)
-    {
-        if (image is null) return false;
-        const px = image.pixels();
-        // A failed capture is uniformly black; sample to stay cheap.
-        for (size_t i = 0; i + 3 < px.length; i += 4 * 7)
-            if (px[i] > 16 || px[i + 1] > 16 || px[i + 2] > 16) return true;
-        return false;
-    }
-
-    /// Capture a window thumbnail, falling back to the last good frame when the
-    /// window is minimized (or the capture failed).
-    ///
-    /// `allowRefresh` is only true for the task the user is actually hovering:
-    /// re-capturing every visible window on the 1 s sync cost a full
-    /// PrintWindow + per-pixel conversion per window per second (with dozens of
-    /// windows that is a multi-millisecond stall every tick). The cache is now
-    /// populated once per window and refreshed on demand, so the idle shell does
-    /// no thumbnail work at all.
+    /// The warm thumbnail for a window, or null when the worker has not
+    /// captured it yet. NEVER captures on the UI thread: the background worker
+    /// (tasks.d) keeps the cache fresh, so a preview is instant even for a
+    /// grouped app with many windows. `allowRefresh` is kept for call-site
+    /// compatibility and only asks the worker to re-capture this window soon.
     private RgbaImage captureThumbnailCached(ulong hwnd, bool allowRefresh = false)
     {
-        auto cached = hwnd in _thumbnailCache;
-        if (cached !is null)
-        {
-            auto stamp = hwnd in _thumbnailTime;
-            const age = stamp is null ? double.infinity :
-                _elapsedSeconds - *stamp;
-            if (!allowRefresh || age < thumbnailRefreshSeconds) return *cached;
-        }
-        auto size = externalTaskSize(hwnd);
-        int capWidth, capHeight;
-        cappedThumbnailSize(size.width, size.height, capWidth, capHeight);
-        auto image = captureExternalThumbnail(hwnd, capWidth, capHeight);
-        if (image !is null && bitmapHasContent(image))
-        {
-            _thumbnailCache[hwnd] = image;
-            _thumbnailTime[hwnd] = _elapsedSeconds;
-            return image;
-        }
-        return cached is null ? null : *cached;
+        if (allowRefresh) requestThumbnail(hwnd);
+        return cachedThumbnail(hwnd);
     }
 
     /// Resolve a bounded number of queued taskbar icons per frame so the real
@@ -1842,80 +1806,6 @@ import std.string : toLower;
                 _externalIconAttempts[hwnd] = cast(ubyte) (tries + 1);
                 if ((MonoTime.currTime - started).total!"usecs" >= budgetMicros)
                     break;
-            }
-        }
-    }
-
-    /// PrintWindow renders the window scaled into the destination device
-    /// context, so requesting a large capture for a small preview only wastes
-    /// work. Fit the capture inside a `maxDimension` box, preserving aspect.
-    private static void cappedThumbnailSize(int fullWidth, int fullHeight,
-        out int width, out int height)
-    {
-        enum int maxDimension = 640;
-        if (fullWidth <= 0 || fullHeight <= 0)
-        {
-            width = 1;
-            height = 1;
-            return;
-        }
-        if (fullWidth <= maxDimension && fullHeight <= maxDimension)
-        {
-            width = fullWidth;
-            height = fullHeight;
-            return;
-        }
-        if (fullWidth >= fullHeight)
-        {
-            width = maxDimension;
-            height = cast(int) (cast(long) fullHeight * maxDimension / fullWidth);
-        }
-        else
-        {
-            height = maxDimension;
-            width = cast(int) (cast(long) fullWidth * maxDimension / fullHeight);
-        }
-        if (width < 1) width = 1;
-        if (height < 1) height = 1;
-    }
-
-    /// Capture at most one queued window thumbnail every `seedInterval`
-    /// seconds. Doing this for every window at once (or every sync) stalled the
-    /// UI; the hover preview still captures its own frame on demand.
-    private void seedThumbnails(double deltaSeconds)
-    {
-        version (Windows)
-        {
-            // Slow and pause-while-previewing: a PrintWindow capture of a large
-            // window can take hundreds of milliseconds, so never churn through
-            // the queue while the user is actively hovering a task.
-            enum double seedInterval = 2.0;
-            _thumbnailSeedElapsed += deltaSeconds;
-            if (_thumbnailSeedElapsed < seedInterval) return;
-            _thumbnailSeedElapsed = 0.0;
-            if (_preview !is null) return;
-            while (_thumbnailSeedQueue.length > 0)
-            {
-                const hwnd = _thumbnailSeedQueue[0];
-                _thumbnailSeedQueue = _thumbnailSeedQueue[1 .. $];
-                if (hwnd in _thumbnailSeedPending)
-                    _thumbnailSeedPending.remove(hwnd);
-                if (_taskbar.indexOfExternal(hwnd) < 0) continue;
-                if (hwnd in _thumbnailCache) continue;
-                if (externalTaskMinimized(hwnd)) continue;
-                auto size = externalTaskSize(hwnd);
-                if (size.width <= 0 || size.height <= 0) continue;
-                int capWidth, capHeight;
-                cappedThumbnailSize(size.width, size.height, capWidth,
-                    capHeight);
-                auto image = captureExternalThumbnail(hwnd, capWidth,
-                    capHeight);
-                if (image !is null && bitmapHasContent(image))
-                {
-                    _thumbnailCache[hwnd] = image;
-                    _thumbnailTime[hwnd] = _elapsedSeconds;
-                }
-                break;
             }
         }
     }
@@ -2006,24 +1896,17 @@ import std.string : toLower;
                         _pendingTaskIconQueue ~= t.hwnd;
                     }
                 }
-                // Seed the thumbnail cache once while the window is visible so a
-                // minimized task can still show its last frame (PrintWindow
-                // cannot capture a minimized window). Do NOT re-capture here on
-                // every sync: that was a full capture per visible window per
-                // second. The hovered task refreshes its own frame on demand
-                // (see captureThumbnailCached).
-                // Thumbnails are NOT captured here: PrintWindow for every
-                // visible window cost ~750 ms at startup. They are seeded a few
-                // at a time in the background (seedThumbnails) and captured on
-                // demand when a task is hovered (captureThumbnailCached).
-                if (!externalTaskMinimized(t.hwnd) &&
-                    t.hwnd !in _thumbnailCache &&
-                    t.hwnd !in _thumbnailSeedPending)
-                {
-                    _thumbnailSeedPending[t.hwnd] = true;
-                    _thumbnailSeedQueue ~= t.hwnd;
-                }
             }
+            // Hand the live window set to the background thumbnail worker so
+            // every task preview is already cached by the time it is hovered.
+            // The worker captures off the UI thread; this call only publishes
+            // the list.
+            ulong[] thumbnailTargets;
+            thumbnailTargets.reserve(tasks.length);
+            foreach (t; tasks)
+                thumbnailTargets ~= t.hwnd;
+            setThumbnailTargets(thumbnailTargets);
+
             // Remove entries whose window is gone.
             foreach (hwnd; _externalHwnds)
             {
@@ -2031,8 +1914,6 @@ import std.string : toLower;
                 _taskbar.removeExternal(hwnd);
                 if (hwnd in _externalIconAttempts) _externalIconAttempts.remove(hwnd);
                 if (hwnd in _externalGroupKeys) _externalGroupKeys.remove(hwnd);
-                if (hwnd in _thumbnailCache) _thumbnailCache.remove(hwnd);
-                if (hwnd in _thumbnailTime) _thumbnailTime.remove(hwnd);
             }
             _externalHwnds.length = 0;
             foreach (t; tasks)
@@ -2177,10 +2058,6 @@ import std.string : toLower;
     // AURORA_DESK_STATS=1 and the titlebar shows the last scene/render pass
     // cost. Off by default (and only on Windows).
     private bool _startupFirstTickDone;
-    // Windows waiting for a background thumbnail seed (see seedThumbnails).
-    private ulong[] _thumbnailSeedQueue;
-    private bool[ulong] _thumbnailSeedPending;
-    private double _thumbnailSeedElapsed;
     private ulong[] _pendingTaskIconQueue;
     private bool[ulong] _pendingTaskIconPending;
     private double _statsTitleAccumulator = 0.0;
@@ -2241,7 +2118,6 @@ import std.string : toLower;
         _elapsedSeconds += deltaSeconds;
         processPendingDesktopIcons();
         processPendingTaskIcons();
-        seedThumbnails(deltaSeconds);
         updateTaskPreviewHover(deltaSeconds);
         maybeReportFrameStats(deltaSeconds);
         // After an input-language change the OS applies it on its own thread,
@@ -2563,6 +2439,14 @@ int run(string[] args)
         return 0;
     }
 
-    return window.run();
+    // Keep task previews warm off the UI thread for the real session only;
+    // tests never call stopThumbnailWorker() so a daemon worker would outlive
+    // their root.
+    version (Windows)
+        startThumbnailWorker();
+    const result = window.run();
+    version (Windows)
+        stopThumbnailWorker();
+    return result;
 }
 

@@ -96,13 +96,23 @@ public immutable ProviderPreset[] providerPresets = [
         "Qwen/Qwen3.8-27B")
 ];
 
+/// Lowercased, whitespace-trimmed base URL with any trailing slashes removed,
+/// so `.../v1` and `.../v1/` identify the same provider.
+private string normalizedBaseUrl(string value)
+{
+    value = value.strip().toLower();
+    while (value.length > 0 && value[$ - 1] == '/')
+        value = value[0 .. $ - 1];
+    return value;
+}
+
 /// Index of the preset whose base URL matches `baseUrl`, or -1 for a custom
 /// endpoint the user edited by hand.
 public int providerPresetIndexForBaseUrl(string baseUrl)
 {
-    const wanted = baseUrl.strip().toLower();
+    const wanted = normalizedBaseUrl(baseUrl);
     foreach (index, preset; providerPresets)
-        if (preset.baseUrl.toLower() == wanted) return cast(int) index;
+        if (normalizedBaseUrl(preset.baseUrl) == wanted) return cast(int) index;
     return -1;
 }
 
@@ -111,6 +121,24 @@ public string providerPresetLabel(string baseUrl)
 {
     const index = providerPresetIndexForBaseUrl(baseUrl);
     return index >= 0 ? providerPresets[cast(size_t) index].name : "Custom";
+}
+
+unittest
+{
+    // The preset table drives both the Settings dropdown and the per-provider
+    // key resolution, so its contents and matching must stay stable.
+    assert(providerPresets.length == 3);
+    assert(providerPresetIndexForBaseUrl(opencodeGoBaseUrl) == 0);
+    assert(providerPresetIndexForBaseUrl(commandcodeBaseUrl) == 1);
+    assert(providerPresetIndexForBaseUrl("http://127.0.0.1:8080/v1") == 2);
+    assert(providerPresetIndexForBaseUrl("https://example.com/v1") == -1);
+    // A trailing slash identifies the same provider (and therefore its key).
+    assert(providerPresetIndexForBaseUrl(opencodeGoBaseUrl ~ "/") == 0);
+    assert(providerPresetLabel(opencodeGoBaseUrl) == "OpenCode");
+    assert(providerPresetLabel(commandcodeBaseUrl) == "CommandCode");
+    assert(providerPresetLabel("https://example.com/v1") == "Custom");
+    // A local preset never borrows a cloud credential.
+    assert(readProviderKey("qwen") == "");
 }
 
 /// The OpenCode Go catalog serves a few models over the Anthropic `/messages`
@@ -883,9 +911,25 @@ public Settings loadSettings()
     const allowBlankLocalKey = apiKeyWasConfigured &&
         isLoopbackApiBaseUrl(settings.baseUrl);
     if (!allowBlankLocalKey && settings.apiKey.length == 0)
-        settings.apiKey = environment.get("OPENCODE_API_KEY");
-    if (!allowBlankLocalKey && settings.apiKey.length == 0)
-        settings.apiKey = readDefaultKeyFile();
+    {
+        // Resolve the credential for the CONFIGURED provider, not always the
+        // OpenCode one. A saved CommandCode endpoint must load the CommandCode
+        // key, and a local preset must stay blank instead of borrowing an
+        // unrelated cloud credential. Custom (non-preset) endpoints keep the
+        // previous env/default behaviour.
+        const presetIndex = providerPresetIndexForBaseUrl(settings.baseUrl);
+        if (presetIndex >= 0)
+        {
+            settings.apiKey = readProviderKey(
+                providerPresets[cast(size_t) presetIndex].id);
+        }
+        else
+        {
+            settings.apiKey = environment.get("OPENCODE_API_KEY");
+            if (settings.apiKey.length == 0)
+                settings.apiKey = readDefaultKeyFile();
+        }
+    }
     if (settings.model.length == 0) settings.model = defaultModel;
     foreach (legacy; legacyBaseUrls)
     {

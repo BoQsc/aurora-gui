@@ -1055,3 +1055,218 @@ version (Windows)
         return new RgbaImage(w, h, rgba);
     }
 }
+
+// --- background thumbnail worker ---------------------------------------------
+// Native taskbars show window previews instantly because DWM already has the
+// frames. `captureExternalThumbnail` costs 15-70 ms per window, so capturing on
+// hover made a grouped preview (15 windows) take seconds. This worker keeps a
+// warm cache off the UI thread; the UI only ever reads it, so previews are
+// instant and no hover ever stalls.
+//
+// All module-level state is __gshared because the worker is a real OS thread
+// (D module globals are thread-local by default and the worker would otherwise
+// see a private, empty copy).
+version (Windows)
+{
+    import core.thread : Thread;
+    import core.sync.mutex : Mutex;
+    import core.time : MonoTime, dur;
+
+    private __gshared Thread _thumbWorker;
+    private __gshared bool _thumbWorkerStop;
+    private __gshared Mutex _thumbLock;
+    private __gshared ulong[] _thumbTargets;
+    private __gshared ulong[] _thumbPriority;
+    private __gshared RgbaImage[ulong] _thumbShared;
+    private __gshared MonoTime[ulong] _thumbSharedAt;
+    private __gshared bool _thumbWorkerRunning;
+    // Warm each window once, then refresh only on demand (hover). A 1 s
+    // round-robin over 40 windows would be a constant ~50% of a core of
+    // PrintWindow work for previews nobody is looking at.
+    private enum double thumbRefreshSeconds = 60.0;
+    private enum double thumbBackgroundRefreshSeconds = 60.0;
+    // Previews render at ~200 px wide; capturing larger is wasted work.
+    private enum int thumbMaxDimension = 480;
+
+    /// Fit a capture inside the thumbnail box, preserving aspect. PrintWindow
+    /// scales the window into the destination DC (verified: capped vs full
+    /// downscale MAE 8/255), so a small capture is a correct large one scaled.
+    void thumbnailCaptureSize(int fullWidth, int fullHeight, out int width,
+        out int height)
+    {
+        if (fullWidth <= 0 || fullHeight <= 0)
+        {
+            width = 1;
+            height = 1;
+            return;
+        }
+        if (fullWidth <= thumbMaxDimension && fullHeight <= thumbMaxDimension)
+        {
+            width = fullWidth;
+            height = fullHeight;
+            return;
+        }
+        if (fullWidth >= fullHeight)
+        {
+            width = thumbMaxDimension;
+            height = cast(int) (cast(long) fullHeight * thumbMaxDimension /
+                fullWidth);
+        }
+        else
+        {
+            height = thumbMaxDimension;
+            width = cast(int) (cast(long) fullWidth * thumbMaxDimension /
+                fullHeight);
+        }
+        if (width < 1) width = 1;
+        if (height < 1) height = 1;
+    }
+
+    /// Start the worker. Safe to call repeatedly. Call from the real app only
+    /// (tests never stop it, so a daemon thread would outlive their root).
+    void startThumbnailWorker()
+    {
+        if (_thumbWorkerRunning) return;
+        _thumbLock = new Mutex();
+        _thumbWorkerStop = false;
+        _thumbWorkerRunning = true;
+        _thumbWorker = new Thread(&thumbnailWorkerMain);
+        _thumbWorker.isDaemon = true;
+        _thumbWorker.start();
+    }
+
+    void stopThumbnailWorker()
+    {
+        if (!_thumbWorkerRunning) return;
+        _thumbWorkerStop = true;
+        if (_thumbWorker !is null) _thumbWorker.join();
+        _thumbWorker = null;
+        _thumbWorkerRunning = false;
+    }
+
+    /// Publish the windows whose previews should stay warm (live tasks; may
+    /// include minimized ones, whose last frame is kept but not refreshed).
+    void setThumbnailTargets(ulong[] hwnds)
+    {
+        if (_thumbLock is null) return;
+        synchronized (_thumbLock)
+        {
+            _thumbTargets = hwnds.dup;
+            bool[ulong] live;
+            foreach (hwnd; hwnds) live[hwnd] = true;
+            ulong[] stale;
+            foreach (hwnd; _thumbShared.keys)
+                if (hwnd !in live) stale ~= hwnd;
+            foreach (hwnd; stale)
+            {
+                _thumbShared.remove(hwnd);
+                _thumbSharedAt.remove(hwnd);
+            }
+        }
+    }
+
+    /// Ask for an immediate capture (the window the user just hovered).
+    void requestThumbnail(ulong hwnd)
+    {
+        if (_thumbLock is null || hwnd == 0) return;
+        synchronized (_thumbLock)
+        {
+            foreach (existing; _thumbPriority)
+                if (existing == hwnd) return;
+            _thumbPriority ~= hwnd;
+        }
+    }
+
+    /// The cached frame for `hwnd`, or null when not captured yet. Never blocks
+    /// on a capture: the caller shows a placeholder and the worker fills it.
+    RgbaImage cachedThumbnail(ulong hwnd)
+    {
+        if (_thumbLock is null) return null;
+        synchronized (_thumbLock)
+        {
+            auto found = hwnd in _thumbShared;
+            return found is null ? null : *found;
+        }
+    }
+
+    /// A failed PrintWindow is uniformly black; sample cheaply instead of
+    /// storing an empty frame.
+    private bool thumbnailHasContent(RgbaImage image)
+    {
+        if (image is null) return false;
+        const px = image.pixels();
+        for (size_t i = 0; i + 3 < px.length; i += 4 * 7)
+            if (px[i] > 16 || px[i + 1] > 16 || px[i + 2] > 16) return true;
+        return false;
+    }
+
+    private bool thumbnailDue(ulong hwnd, MonoTime now)
+    {
+        if (externalTaskMinimized(hwnd)) return false;
+        auto at = hwnd in _thumbSharedAt;
+        if (at is null) return true;
+        return (now - *at).total!"seconds" >= thumbRefreshSeconds;
+    }
+
+    private void thumbnailWorkerMain()
+    {
+        while (!_thumbWorkerStop)
+        {
+            ulong target;
+            bool have;
+            synchronized (_thumbLock)
+            {
+                const now = MonoTime.currTime;
+                while (_thumbPriority.length > 0)
+                {
+                    const candidate = _thumbPriority[0];
+                    _thumbPriority = _thumbPriority[1 .. $];
+                    if (candidate != 0 && thumbnailDue(candidate, now))
+                    {
+                        target = candidate;
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have)
+                {
+                    foreach (hwnd; _thumbTargets)
+                    {
+                        if (!thumbnailDue(hwnd, now)) continue;
+                        target = hwnd;
+                        have = true;
+                        break;
+                    }
+                }
+            }
+            if (!have)
+            {
+                Thread.sleep(dur!"msecs"(15));
+                continue;
+            }
+
+            auto size = externalTaskSize(target);
+            int width;
+            int height;
+            thumbnailCaptureSize(size.width, size.height, width, height);
+            auto image = captureExternalThumbnail(target, width, height);
+            if (image !is null && !thumbnailHasContent(image)) image = null;
+
+            synchronized (_thumbLock)
+            {
+                if (externalTaskAlive(target))
+                {
+                    if (image !is null) _thumbShared[target] = image;
+                    _thumbSharedAt[target] = MonoTime.currTime;
+                }
+                else
+                {
+                    _thumbShared.remove(target);
+                    _thumbSharedAt.remove(target);
+                }
+            }
+        }
+    }
+}
+
+

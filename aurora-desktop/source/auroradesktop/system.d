@@ -710,6 +710,40 @@ void systemSleep()
 }
 
 /**
+ * Open a path the way Explorer does: run an .exe, open a file in its default
+ * application, open a folder, follow a .lnk, or follow a shell URL/verb.
+ *
+ * This is the native shell path (ShellExecuteW). Do NOT use std.process
+ * spawnShell for this: on Windows it runs `%COMSPEC% /c`, which spawns a
+ * console window and mis-parses paths with spaces, so clicking a desktop or
+ * taskbar shortcut looked like "a cmd that does nothing".
+ *
+ * Returns true when the shell accepted the request (ShellExecuteW > 32).
+ */
+bool systemOpenPath(string path, string verb = "open",
+    string workingDirectory = null)
+{
+    version (Windows)
+    {
+        import core.sys.windows.shellapi : ShellExecuteW;
+        import core.sys.windows.winuser : SW_SHOWNORMAL;
+        import std.utf : toUTF16z;
+        if (path.length == 0) return false;
+        const wideVerb = verb.length > 0 ? toUTF16z(verb) : null;
+        const widePath = toUTF16z(path);
+        const wideDir = workingDirectory.length > 0 ?
+            toUTF16z(workingDirectory) : null;
+        const result = cast(size_t) ShellExecuteW(null,
+            wideVerb, widePath, null, wideDir, SW_SHOWNORMAL);
+        return result > 32;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+/**
  * Opens a Windows Settings page (the settings button in the Start menu, or a
  * tray panel shortcut). Defaults to the Settings home page.
  */

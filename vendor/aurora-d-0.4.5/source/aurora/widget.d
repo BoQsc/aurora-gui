@@ -583,12 +583,15 @@ abstract class Widget
     }
 
     /**
-     * Whether this control must win native pointer hit-testing when it overlaps
-     * a borderless window's resize margin. Most content leaves the edge to the
-     * window; narrow edge controls such as scrollbars opt in so half of their
-     * track does not unexpectedly resize the window instead.
+     * Whether this control must win native pointer hit-testing at
+     * `localPosition` when it overlaps a borderless window's resize margin.
+     * Most content leaves the edge to the window; narrow edge controls such as
+     * scrollbars opt in so half of their track does not unexpectedly resize the
+     * window instead. Position-aware so an edge-anchored control (e.g. the
+     * taskbar's Show-desktop strip) can claim only its own rectangle.
      */
-    bool claimsBorderlessResizeEdge() const @safe pure nothrow @nogc
+    bool claimsBorderlessResizeEdge(Point localPosition)
+        const @safe pure nothrow @nogc
     {
         return false;
     }

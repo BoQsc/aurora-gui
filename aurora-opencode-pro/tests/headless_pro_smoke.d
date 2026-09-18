@@ -1264,6 +1264,27 @@ int main(string[] args)
     root.dismissPopupForTesting();
     writeln("Provider presets fill the Settings endpoint + model");
 
+    // The provider button must be reachable by a real pointer click inside the
+    // Settings popup, and the keep-popups menu must not close the dialog.
+    assert(root.providerSelectorPresentForTesting(),
+        "Settings did not reopen for the provider click test");
+    root.tickTree(0.02);
+    assert(driver.paint(), "Settings did not lay out for the provider click test");
+    auto providerButton = requireWidget!Button(root, "oc-provider");
+    driver.click(globalCenter(providerButton));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Provider dropdown did not repaint");
+    auto providerMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(providerMenu !is null,
+        "Clicking the Provider button did not open its dropdown");
+    assert(providerMenu.items().length == 3,
+        "Provider dropdown should offer three presets");
+    assert(findById(root, "oc-settings-base") !is null,
+        "Provider dropdown dismissed the Settings dialog");
+    writeln("Provider dropdown opens on a real click and keeps Settings open");
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+
     // The system prompt documents every tool (so the model can use them
     // trivially) and Settings can show its full text.
     assert(root.systemPromptButtonPresentForTesting(),

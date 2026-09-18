@@ -4,6 +4,57 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode live provider testing (2026-09-18)
+
+**Provider key probe.** A tiny standalone probe prints each preset's endpoint,
+model and resolved key length. Build from `aurora-opencode-pro`:
+```
+"C:\D\dmd2\windows\bin64\dmd.exe" -i -I..\aurora-opencode-core\source ^
+  -I..\vendor\aurora-d-0.4.5\source <probe>.d ^
+  user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=<probe>.exe
+<probe>.exe
+```
+Expected on this machine: `opencode` keyLen=67 (from
+`~/.local/share/opencode/auth.json`), `commandcode` keyLen=93 (from
+`~/.config/opencode/commandcode.key`), `qwen` keyLen=0.
+
+**Provider-aware key resolution (regression to watch).** `loadSettings` must
+pick the key for the configured provider, not always OpenCode. Write a
+settings.json with a CommandCode `baseUrl` and NO `apiKey`, point `APPDATA` at
+it, run the probe: `loadSettings.keyLen` must be 93 (it was 67 before the fix —
+the bug). Qwen preset -> keyLen 0; default (no file) -> 67.
+
+**Real-click dropdown test (in `headless_pro_smoke.d`).**
+```
+assert(root.providerSelectorPresentForTesting());
+root.tickTree(0.02); driver.paint();
+auto providerButton = requireWidget!Button(root, "oc-provider");
+driver.click(globalCenter(providerButton));
+root.tickTree(0.02); driver.paint();
+auto menu = cast(ContextMenu) currentTransientPopup(root);  // items().length == 3
+assert(findById(root, "oc-settings-base") !is null);        // dialog survived
+```
+This catches popup/context-menu hit-testing regressions that a direct `onClick`
+call would miss.
+
+**Live end-to-end chat (isolated state).** Avoid clobbering the running
+instance's sessions by giving the probe its own `%APPDATA%`:
+```
+mkdir C:\...\oc-live-state
+set "APPDATA=C:\...\oc-live-state"   & rem no settings.json -> default provider
+aurora-opencode-pro.exe --screenshot-chat C:\...\out.ppm "Reply with exactly: AURORA-PROV-OK"
+```
+Expect `status: Done.` and the exact reply; the isolated
+`Aurora OpenCode\logs\errors.log` is clean. With a settings.json pointing at
+`http://127.0.0.1:8080/v1` and no local server running, expect
+`Error: Chat request failed (WinINet error 12029).` (graceful, no crash).
+
+**Vendor build flake.** A release build once failed with
+`scrollbar.d(77): does not override claimsBorderlessResizeEdge()` even though
+the file already had the matching `(Point)` signature; an immediate retry
+linked. Re-read the vendor file and retry before diagnosing — an external
+editor can save mid-build.
+
 ## Aurora OpenCode provider selector/editor (2026-09-18)
 
 **What it is.** Settings now has a **Provider** dropdown (OpenCode / CommandCode

@@ -1,5 +1,50 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-18 - Aurora OpenCode: live testing session, provider-aware key bug fixed (FIXED, verified)
+
+**Trigger (user).** "try to do a few tests with aurora opencode and resolve
+problems if anything."
+
+**Tests run.**
+1. **Provider key probe** (`readProviderKey` per preset): OpenCode -> 67-char
+   `opencode-go` key from `auth.json`; CommandCode -> 93-char key from
+   `~/.config/opencode/commandcode.key`; Qwen local -> blank (correct).
+2. **Real pointer click on the Provider button** inside the Settings popup
+   (headless `UiTestDriver`): the 3-item dropdown opens and the Settings dialog
+   stays alive (proves `showContextMenuKeepPopups` works with real hit-testing,
+   not just a direct `onClick` call).
+3. **Live end-to-end chat** against the OpenCode endpoint via
+   `--screenshot-chat` in an isolated `%APPDATA%`: assistant replied exactly
+   `AURORA-PROV-OK`, status `Done. • 4,025 tokens`, clean `errors.log`.
+4. **Qwen local with no server**: fails gracefully with
+   `Error: Chat request failed (WinINet error 12029).`, returns to Send, no
+   crash.
+
+**Bug found + fixed (real).** `loadSettings` auto-filled a missing key with
+`readDefaultKeyFile()`, which returns the **OpenCode** key first. A settings
+file pointing at CommandCode therefore loaded the wrong credential (probe:
+`keyLen = 67` instead of `93`), so a provider switch without a saved key would
+fail auth. `loadSettings` now resolves the key for the configured provider:
+`providerPresetIndexForBaseUrl(baseUrl)` -> `readProviderKey(preset.id)`;
+custom (non-preset) endpoints keep the old env/default fallback. Verified for
+all three: CommandCode -> 93, Qwen -> blank, default -> OpenCode 67.
+
+**Minor fix.** `providerPresetIndexForBaseUrl` now normalizes trailing slashes,
+so `.../v1/` matches the preset (and gets that provider's key) instead of
+showing "Custom".
+
+**Verification.** Core `dub test` -> "41 modules passed unittests" (new preset
+unittest); Pro + baseline release builds link; Pro smoke (incl. the real-click
+dropdown test) and baseline smoke (live chat) PASS; app rebuilt and relaunched
+as exactly one instance (PID 8912, built 21:14).
+
+**Transient build failure (not a code bug).** One release build failed with
+`scrollbar.d(77): does not override claimsBorderlessResizeEdge()` while the
+on-disk file already had the matching `(Point)` signature; an immediate retry
+linked. Cause: an external editor/process saved `vendor/aurora-d-0.4.5` files
+mid-build. On a vendor signature mismatch, re-read the files and retry before
+diagnosing.
+
 ## 2026-09-18 - Aurora OpenCode: provider selector/editor (OpenCode / CommandCode / Qwen 3.8 27B) (DONE, verified)
 
 **Request (user).** "Add ability to select or edit providers either commandcode,
