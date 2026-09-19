@@ -810,8 +810,12 @@ int main(string[] args)
             assert(m.toolCallId.length > 0,
                 "compaction dropped a tool reply's toolCallId");
         }
-        if (m.role == "system" && m.content.indexOf("compacted") >= 0)
+        if (m.role == "system" && m.content.indexOf("## Objective") >= 0 &&
+            m.content.indexOf("## Work State") >= 0 &&
+            m.content.indexOf("## Next Move") >= 0)
             ++compactNotes;
+        assert(m.content.indexOf("earlier message elided") < 0,
+            "compaction still emits content-free message placeholders");
         if (m.role == "assistant" && m.toolCalls.length == 1)
         {
             sawPair = true;
@@ -826,6 +830,36 @@ int main(string[] args)
     assert(sawPair, "compaction dropped the tool-call messages");
     assert(slimBytes < fatBytes, "compaction did not shrink the request");
     writeln("Compaction bounds old tool history and preserves recent pairing");
+
+    // Oversized ordinary dialogue is summarized into one structured handoff,
+    // preserving objective/work/blocker/next-move semantics for continuation.
+    root.newChatForTesting();
+    string[] checkpointRoles, checkpointBodies;
+    checkpointRoles ~= "user";
+    checkpointBodies ~= "Add per-chat draft autosave and verify restart recovery.";
+    foreach (i; 0 .. 20)
+    {
+        checkpointRoles ~= (i % 2 == 0 ? "assistant" : "user");
+        checkpointBodies ~= "checkpoint detail " ~ to!string(i) ~ " " ~
+            replicate("z", 1_200);
+    }
+    root.addConversationForTesting(checkpointRoles, checkpointBodies);
+    auto checkpointed = root.compactedRequestMessagesForTesting(2_000);
+    int structuredCheckpoints;
+    foreach (m; checkpointed)
+    {
+        if (m.role == "system" && m.content.indexOf("## Objective") >= 0 &&
+            m.content.indexOf("## Important Details") >= 0 &&
+            m.content.indexOf("### Active") >= 0 &&
+            m.content.indexOf("### Blocked") >= 0 &&
+            m.content.indexOf("## Next Move") >= 0)
+            ++structuredCheckpoints;
+        assert(m.content.indexOf("earlier message elided") < 0,
+            "dialogue compaction emitted a lossy placeholder");
+    }
+    assert(structuredCheckpoints == 1,
+        "oversized dialogue did not produce one structured checkpoint");
+    writeln("Oversized dialogue compacts to a structured continuation checkpoint");
 
     // Long transcripts stay complete in the message graph but only the newest
     // page is materialized. This prevents a pathological chat from allocating
@@ -2256,33 +2290,56 @@ int main(string[] args)
     assert(root.lastUserMessageForTesting().indexOf("repeated") >= 0,
         "Repeated-failure recovery message did not explain the loop: " ~
         root.lastUserMessageForTesting());
+    auto recoveryRequest = root.requestMessagesForTesting();
+    assert(recoveryRequest.length > 0 && recoveryRequest[$ - 1].role == "system",
+        "Internal loop recovery was sent as a fake user message");
+    assert(recoveryRequest[$ - 1].content.indexOf(
+        "Internal agent-control instruction") >= 0,
+        "Internal loop recovery lost its control-role marker");
     writeln("Repeated-failure recovery breaks a failing tool loop");
 
-    // Semantically different successful reads used to evade both loop guards.
-    // The fifth non-mutating batch is redirected. Merely requesting an edit
-    // cannot reset the counter; only a successful mutation result can.
-    OpenCodeToolCall variedRead;
-    variedRead.name = "read";
-    OpenCodeToolCall progressEdit;
-    progressEdit.name = "edit";
-    root.injectToolResultForTesting("edit", "Done", false);
-    foreach (round; 0 .. 4)
+    // Let the earlier real workers settle before starting the sequential
+    // long-horizon probe; otherwise their late result can consume its pending
+    // slot and make the first distinct call appear to vanish.
+    const evidenceSettleDeadline = Clock.currTime + 5.seconds;
+    while (Clock.currTime < evidenceSettleDeadline &&
+        (root.pendingToolResultsForTesting() > 0 ||
+         root.liveToolCallCountForTesting() > 0 ||
+         root.clientBusyForTesting()))
     {
-        variedRead.arguments = `{"filePath":"file-` ~ to!string(round) ~ `.d"}`;
-        assert(!root.recordToolBatchForProgressTesting([variedRead]),
-            "non-progress guard fired before its documented budget");
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
     }
-    variedRead.arguments = `{"filePath":"file-4.d"}`;
-    assert(root.recordToolBatchForProgressTesting([variedRead]),
-        "non-progress guard did not stop varied exploration");
-    assert(!root.recordToolBatchForProgressTesting([progressEdit]),
-        "a mutating request should be allowed to execute");
-    assert(root.recordToolBatchForProgressTesting([variedRead]),
-        "an unexecuted mutation incorrectly reset the exploration budget");
-    root.injectToolResultForTesting("edit", "Done", false);
-    assert(!root.recordToolBatchForProgressTesting([variedRead]),
-        "a successful mutation did not reset the exploration budget");
-    writeln("Progress guard bounds varied read/search/command loops");
+    root.newChatForTesting();
+    root.addConversationForTesting(["assistant"], [""]);
+
+    // Long-horizon regression: distinct evidence-gathering rounds are valid
+    // progress. The old five-round exploration budget forcibly skipped these
+    // calls, permanently preventing diagnostics and the autosave-prompt task
+    // captured in the real failing transcript from reaching an edit.
+    const evidenceBase = root.toolMessageCountForTesting();
+    foreach (round; 0 .. 12)
+    {
+        if (round > 0)
+            root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall variedRead;
+        variedRead.id = "call_evidence_" ~ to!string(round);
+        variedRead.name = "dshell";
+        variedRead.arguments = `{"command":"list","pattern":"evidence-` ~
+            to!string(round) ~ `-*"}`;
+        root.injectToolCallsForTesting([variedRead]);
+        const targetEvidenceCount = evidenceBase + cast(int) round + 1;
+        const roundDeadline = Clock.currTime + 2.seconds;
+        while (root.toolMessageCountForTesting() < targetEvidenceCount &&
+            Clock.currTime < roundDeadline)
+        {
+            root.tickTree(0.01);
+            Thread.sleep(5.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == targetEvidenceCount,
+            "distinct evidence round was skipped at round " ~ to!string(round));
+    }
+    writeln("Distinct evidence rounds remain available for long-horizon work");
 
     // The doom-loop injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the

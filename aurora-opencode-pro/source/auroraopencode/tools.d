@@ -275,10 +275,13 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Work outcome-first. For a change request, start making the " ~
         "smallest correct change as soon as the relevant code is known; for " ~
         "an investigation, answer as soon as the evidence supports it.\n");
-    builder.put("- Use the fewest useful tool rounds. Normally use at most two " ~
-        "batched discovery rounds before editing or answering. If one exact " ~
-        "fact is still missing, name it and make one targeted lookup. Do not " ~
-        "reread known code or keep searching merely to gain confidence.\n");
+    builder.put("- Use the fewest useful tool rounds, but continue until the " ~
+        "requested outcome is achieved or a concrete blocker requires user " ~
+        "input. Successful reads, searches, builds, tests, and verified waits " ~
+        "are progress when they resolve a relevant unknown; never stop merely " ~
+        "because a task required several tool rounds. Batch independent " ~
+        "lookups, avoid rereading known code, and do not search merely to gain " ~
+        "confidence.\n");
     builder.put("- Define success before acting and stop when it is met. If you " ~
         "say you have the full picture or enough information, your next step " ~
         "must be an edit, a focused verification, or the final answer.\n");

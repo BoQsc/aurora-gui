@@ -4099,11 +4099,6 @@ public final class OpenCodeRoot : VBox
     private int _lastFailureRepeatCount;
     private bool _failureLoopDetected;
     private static immutable int failureLoopRepeatThreshold = 3;
-    // Successful calls can still form a loop. The latest real-world failure
-    // spent 73 read/search/run rounds without editing or answering, which the
-    // exact-repeat and repeated-error guards could not see.
-    private int _nonProgressToolRounds;
-    private static immutable int maxNonProgressToolRounds = 5;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -4765,7 +4760,6 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _toolRounds = 0;
-        _nonProgressToolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
         if (_status !is null) updateStatus("");
@@ -5055,7 +5049,6 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
-        _nonProgressToolRounds = 0;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         clearActivity();
@@ -5085,7 +5078,6 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
-        _nonProgressToolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
@@ -6120,7 +6112,6 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
-        _nonProgressToolRounds = 0;
         clearActivity();
         // Branching away abandons the turn: stop its clock so it cannot keep
         // ticking while another branch is displayed.
@@ -6216,25 +6207,6 @@ public final class OpenCodeRoot : VBox
             _streamBubble = null;
         }
         markDirty();
-
-        // Semantically different successful reads used to evade every guard.
-        // After a bounded evidence budget, skip another non-mutating batch and
-        // require the model to implement, verify, or answer with what it has.
-        if (nonProgressBudgetExhausted(event.toolCalls))
-        {
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the exploration budget was exhausted; " ~
-                "use the evidence already gathered.");
-            breakToolLoop(session,
-                "You have spent enough rounds gathering context without " ~
-                "completing the task. Do not do another broad read, search, " ~
-                "plan update, or diagnostic command. Use the evidence already " ~
-                "available now: if the user requested a change, make the " ~
-                "smallest correct edit and run one focused verification; " ~
-                "otherwise answer directly. Only a concrete failure from that " ~
-                "edit or verification justifies another lookup.");
-            return;
-        }
 
         // Doom-loop recovery: the same tool call repeated with identical input
         // means the model is stuck. Break the loop and ask it to answer with
@@ -6342,23 +6314,6 @@ public final class OpenCodeRoot : VBox
         foreach (call; calls)
             builder.put(call.name ~ "(" ~ call.arguments ~ ");");
         return builder.data;
-    }
-
-    /// Reads, searches, plans and commands are evidence, not completion. Count
-    /// their batches across a turn. Merely requesting a mutation is not progress:
-    /// the worker may reject it, the process may die, or the user may interrupt
-    /// before it executes. Only applyToolResult credits a successful mutation.
-    private bool nonProgressBudgetExhausted(
-        const(OpenCodeToolCall)[] calls)
-    {
-        foreach (call; calls)
-        {
-            if (call.name == "edit" || call.name == "write" ||
-                call.name == "apply_patch" || call.name == "remove")
-                return false;
-        }
-        ++_nonProgressToolRounds;
-        return _nonProgressToolRounds >= maxNonProgressToolRounds;
     }
 
     /// Worker thread body: execute each tool in the batch and push the results
@@ -6508,14 +6463,6 @@ public final class OpenCodeRoot : VBox
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
 
-        // Credit actual progress only after a workspace mutation succeeds. The
-        // old pre-execution reset let endless failed edits buy fresh exploration
-        // budgets, which is exactly what the long crash-recovery transcript did.
-        if (!event.toolFailed && (event.toolName == "edit" ||
-            event.toolName == "write" || event.toolName == "apply_patch" ||
-            event.toolName == "remove"))
-            _nonProgressToolRounds = 0;
-
         // Progress-based loop detection: remember the last failure signature
         // (tool name + first output line) and how many times in a row it has
         // repeated. Any success is progress and clears it.
@@ -6605,9 +6552,6 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
-        // Deliberately retain `_nonProgressToolRounds`: after an exploration
-        // recovery, another non-mutating batch is redirected immediately. A
-        // successfully completed edit resets the budget in applyToolResult.
         updateStatus("Tool loop detected - asking the model to change approach...");
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
@@ -6668,7 +6612,6 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _failureLoopDetected = false;
-        _nonProgressToolRounds = 0;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -6703,6 +6646,19 @@ public final class OpenCodeRoot : VBox
         return total;
     }
 
+    /// A short, UTF-8-safe first-line excerpt for deterministic checkpoints.
+    /// Compaction must never copy a multi-megabyte message into its summary.
+    private static string checkpointSnippet(string text, size_t limit = 480)
+    {
+        const line = firstLineOf(text);
+        if (line.length <= limit) return line;
+        size_t cut = limit;
+        while (cut > 0 &&
+            (cast(ubyte) line[cut] & cast(ubyte) 0xC0) == cast(ubyte) 0x80)
+            --cut;
+        return line[0 .. cut] ~ "...";
+    }
+
     /// Remove old, completed tool-call envelopes instead of replaying hundreds
     /// of stale calls on every continuation. The real user/assistant dialogue
     /// remains intact and the newest tool groups remain verbatim. A compact
@@ -6733,17 +6689,52 @@ public final class OpenCodeRoot : VBox
             }
         }
 
+        string objective = "Continue the user's current task.";
+        foreach (m; messages)
+            if (m.role == "user")
+            {
+                const excerpt = checkpointSnippet(m.content, 700);
+                if (excerpt.length > 0) objective = excerpt;
+                break;
+            }
+
+        string[] failures;
+        size_t groupsSeen;
+        foreach (m; messages)
+        {
+            if (m.role == "assistant" && m.toolCalls.length > 0)
+            {
+                if (groupsSeen++ >= collapseCount) break;
+                continue;
+            }
+            if (groupsSeen > 0 && groupsSeen <= collapseCount &&
+                m.role == "tool" && m.content.length >= 6 &&
+                m.content[0 .. 6] == "Error:" && failures.length < 3)
+                failures ~= checkpointSnippet(m.content);
+        }
+
         auto noteText = appender!string();
-        noteText.put("Earlier completed tool activity was compacted (" ~
-            to!string(collapseCount) ~ " rounds: ");
+        noteText.put("## Objective\n- " ~ objective ~
+            "\n\n## Important Details\n- Earlier completed tool activity " ~
+            "was checkpointed after " ~ to!string(collapseCount) ~
+            " rounds.\n- Tool activity: ");
         foreach (i, name; callOrder)
         {
             if (i > 0) noteText.put(", ");
             noteText.put(name ~ " x" ~ to!string(callCounts[name]));
         }
-        noteText.put("). Do not repeat old exploration merely because its " ~
-            "raw output is omitted. The current workspace contains successful " ~
-            "changes; make only a targeted lookup when an exact fact is needed.");
+        noteText.put(".\n\n## Work State\n### Completed\n- The tool " ~
+            "rounds listed above completed and remain reflected in the current " ~
+            "workspace.\n\n### Active\n- Continue from the retained recent " ~
+            "messages and tool results.\n\n### Blocked\n");
+        if (failures.length == 0)
+            noteText.put("- (none recorded in the checkpointed tool rounds)\n");
+        else
+            foreach (failure; failures)
+                noteText.put("- " ~ failure ~ "\n");
+        noteText.put("\n## Next Move\n- Use the retained recent context; " ~
+            "make a targeted lookup only when an exact fact is missing. Do not " ~
+            "repeat old exploration merely because raw output was shortened.");
         ChatRequestMessage note;
         note.role = "system";
         note.content = noteText.data;
@@ -6792,12 +6783,12 @@ public final class OpenCodeRoot : VBox
 
         auto result = messages.dup;
         immutable toolNote =
-            "(earlier tool output elided to fit the context window)";
-        immutable msgNote =
-            "(earlier message elided to fit the context window)";
+            "(tool output shortened during checkpoint compaction)";
 
-        // Pass 1: elide older tool results, keeping the newest few intact.
-        enum size_t keepRecentTools = 4;
+        // Pass 1: shorten old tool results while keeping the newest exact. The
+        // assistant tool-call envelope remains adjacent, so the provider still
+        // receives a structurally valid exchange.
+        enum size_t keepRecentTools = 1;
         size_t[] toolIndexes;
         foreach (i, m; result)
             if (m.role == "tool") toolIndexes ~= i;
@@ -6812,8 +6803,9 @@ public final class OpenCodeRoot : VBox
             }
         }
 
-        // Pass 2: elide older non-tool turns, protecting the system prompt,
-        // the first user turn and the most recent exchanges.
+        // Pass 2: replace older dialogue with one structured handoff rather
+        // than dozens of content-free "message elided" placeholders. The full
+        // transcript remains persisted; only this model request is compacted.
         enum size_t protectTail = 8;
         if (total > budget)
         {
@@ -6823,17 +6815,75 @@ public final class OpenCodeRoot : VBox
                 protectHead = i + 1;
                 if (m.role != "system") break;
             }
+            bool[] remove = new bool[](result.length);
+            string[] userDetails;
+            string[] completed;
+            string[] blockers;
             foreach (i, m; result)
             {
-                if (total <= budget) break;
                 if (i < protectHead) continue;
                 if (i + protectTail >= result.length) continue;
                 if (m.role == "system" || m.role == "tool") continue;
                 if (i == protectHead && m.role == "user") continue;
-                if (m.content.length <= msgNote.length) continue;
-                total -= m.content.length - msgNote.length;
-                result[i].content = msgNote;
+                if (m.toolCalls.length > 0) continue;
+                remove[i] = true;
+                const excerpt = checkpointSnippet(m.content);
+                if (excerpt.length == 0) continue;
+                if (m.role == "user" && userDetails.length < 8)
+                    userDetails ~= excerpt;
+                else if (m.role == "assistant" && completed.length < 8)
+                {
+                    completed ~= excerpt;
+                    const lower = excerpt.toLower();
+                    if (blockers.length < 4 &&
+                        (lower.canFind("error") || lower.canFind("cannot") ||
+                         lower.canFind("couldn't") || lower.canFind("blocked")))
+                        blockers ~= excerpt;
+                }
             }
+
+            auto checkpoint = appender!string();
+            string objective = "Continue the user's current task.";
+            foreach (m; result)
+                if (m.role == "user")
+                {
+                    const excerpt = checkpointSnippet(m.content, 700);
+                    if (excerpt.length > 0) objective = excerpt;
+                    break;
+                }
+            checkpoint.put("## Objective\n- " ~ objective ~
+                "\n\n## Important Details\n");
+            if (userDetails.length == 0) checkpoint.put("- (none)\n");
+            else foreach (detail; userDetails) checkpoint.put("- " ~ detail ~ "\n");
+            checkpoint.put("\n## Work State\n### Completed\n");
+            if (completed.length == 0) checkpoint.put("- (none)\n");
+            else foreach (item; completed) checkpoint.put("- " ~ item ~ "\n");
+            checkpoint.put("\n### Active\n- Continue from the retained recent " ~
+                "messages and exact tool results.\n\n### Blocked\n");
+            if (blockers.length == 0) checkpoint.put("- (none)\n");
+            else foreach (item; blockers) checkpoint.put("- " ~ item ~ "\n");
+            checkpoint.put("\n## Next Move\n- Complete the current request, " ~
+                "then run focused verification and report the result.");
+
+            ChatRequestMessage checkpointMessage;
+            checkpointMessage.role = "system";
+            checkpointMessage.content = checkpoint.data;
+            ChatRequestMessage[] compacted;
+            bool inserted;
+            foreach (i, m; result)
+            {
+                if (remove[i])
+                {
+                    if (!inserted)
+                    {
+                        compacted ~= checkpointMessage;
+                        inserted = true;
+                    }
+                    continue;
+                }
+                compacted ~= m;
+            }
+            result = compacted;
         }
         return result;
     }
@@ -6895,8 +6945,14 @@ public final class OpenCodeRoot : VBox
                 continue;
             }
             ChatRequestMessage request;
-            request.role = message.role;
-            request.content = message.content;
+            // Recovery/finalization guidance is application control state, not
+            // something the user said. Keep it in the durable graph for replay,
+            // but send it under the system role so it cannot overwrite or
+            // impersonate the user's intent in later model turns.
+            request.role = message.internal ? "system" : message.role;
+            request.content = message.internal
+                ? "Internal agent-control instruction:\n" ~ message.content
+                : message.content;
             request.toolCallId = message.toolCallId;
             messages ~= request;
             ++slot;
@@ -9866,13 +9922,6 @@ public final class OpenCodeRoot : VBox
     public int toolRepeatCountForTesting()
     {
         return _lastToolRepeatCount;
-    }
-
-    /// Test-only: drive the non-progress classifier without starting workers.
-    public bool recordToolBatchForProgressTesting(
-        const(OpenCodeToolCall)[] calls)
-    {
-        return nonProgressBudgetExhausted(calls);
     }
 
     /// Test-only: simulate a finished tool call with a given outcome, driving
