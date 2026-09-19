@@ -162,6 +162,36 @@ private void assertLlamaServerCompatibility()
         "qwen-local", true));
     assert(on.object["reasoning_effort"].str == "high",
         "local Thinking=on did not request reasoning");
+
+    // Aurora's long-history compactor can contribute later instruction
+    // checkpoints. Qwen's llama.cpp Jinja template rejects a second/midstream
+    // system or developer message, so the wire payload must contain one merged
+    // system block at index zero.
+    ChatRequestMessage initial, checkpoint, developer, assistant;
+    initial.role = "system";
+    initial.content = "Primary instructions";
+    assistant.role = "assistant";
+    assistant.content = "Earlier answer";
+    checkpoint.role = "system";
+    checkpoint.content = "Compaction checkpoint";
+    developer.role = "developer";
+    developer.content = "Durable task state";
+    auto strict = parseJSON(client.buildBodyForTesting(
+        [user, initial, assistant, checkpoint, developer], null,
+        "qwen-local", false));
+    const wireMessages = strict.object["messages"].array;
+    assert(wireMessages.length == 3,
+        "system/developer blocks were not folded into one message");
+    assert(wireMessages[0].object["role"].str == "system",
+        "merged system message is not first");
+    assert(wireMessages[0].object["content"].str ==
+        "Primary instructions\n\nCompaction checkpoint\n\nDurable task state",
+        "merged system message lost or reordered instructions");
+    foreach (index, message; wireMessages)
+        if (index > 0)
+            assert(message.object["role"].str != "system" &&
+                message.object["role"].str != "developer",
+                "llama-server payload still contains a later instruction");
     writeln("llama-server HTTP and reasoning compatibility serialize correctly");
     client.closeSession();
 }

@@ -2116,7 +2116,8 @@ int main(string[] args)
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Please answer this."]);
-        root.failAssistantMessageForTesting("HTTP 400: bad request");
+        root.failAssistantMessageForTesting(
+            "HTTP 500:\nraise_exception('System message must be at the beginning.')");
         assert(root.messageCountForTesting() == 2,
             "A failed request must add an assistant turn, got " ~
             to!string(root.messageCountForTesting()));
@@ -2128,6 +2129,10 @@ int main(string[] args)
             "The error was not attached to an assistant reply");
         assert(root.lastAssistantContentForTesting().indexOf("Error:") >= 0,
             "The error text is missing from the reply: " ~
+            root.lastAssistantContentForTesting());
+        assert(root.lastAssistantContentForTesting().indexOf(
+            "```text\nHTTP 500:\nraise_exception") >= 0,
+            "Provider error formatting corrupted newlines/underscores: " ~
             root.lastAssistantContentForTesting());
         // A later failure after a reply already exists must not add a phantom
         // extra assistant turn on top of it.

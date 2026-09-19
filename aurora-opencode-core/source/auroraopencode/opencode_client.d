@@ -557,7 +557,8 @@ final class OpenCodeClient
                 const detail = readAllAsUtf8(request);
                 throw new Exception("Upstream returned HTTP " ~
                     to!string(statusCode) ~
-                    (detail.length > 0 ? ": " ~ truncateForError(detail) : ""));
+                    (detail.length > 0 ? ": " ~
+                        formatHttpErrorDetail(detail) : ""));
             }
 
             pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
@@ -734,7 +735,8 @@ final class OpenCodeClient
                 const detail = readAllAsUtf8(request);
                 throw new Exception("Models endpoint returned HTTP " ~
                     to!string(statusCode) ~
-                    (detail.length > 0 ? ": " ~ truncateForError(detail) : ""));
+                    (detail.length > 0 ? ": " ~
+                        formatHttpErrorDetail(detail) : ""));
             }
 
             const body = readAllAsUtf8(request);
@@ -801,6 +803,42 @@ final class OpenCodeClient
         return json;
     }
 
+    /// llama.cpp chat templates (including Qwen 3/3.5 templates) commonly
+    /// require the system/developer instruction to be the first message and
+    /// allow only one such block. Aurora can add later system checkpoints when
+    /// compacting a long tool history, so fold every instruction block into a
+    /// single leading system message before serialization. Removing them from
+    /// their old positions also preserves assistant tool_calls -> tool result
+    /// adjacency for strict OpenAI-compatible validators.
+    private static ChatRequestMessage[] normalizeSystemMessages(
+        const(ChatRequestMessage)[] messages)
+    {
+        ChatRequestMessage combined;
+        combined.role = "system";
+        ChatRequestMessage[] ordinary;
+        foreach (message; messages)
+        {
+            if (message.role == "system" || message.role == "developer")
+            {
+                if (message.content.length == 0) continue;
+                if (combined.content.length > 0) combined.content ~= "\n\n";
+                combined.content ~= message.content;
+            }
+            else
+            {
+                ChatRequestMessage copy;
+                copy.role = message.role;
+                copy.content = message.content;
+                copy.reasoningContent = message.reasoningContent;
+                copy.toolCallId = message.toolCallId;
+                copy.toolCalls = message.toolCalls.dup;
+                ordinary ~= copy;
+            }
+        }
+        if (combined.content.length == 0) return ordinary;
+        return [combined] ~ ordinary;
+    }
+
     private static string buildChatBody(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
         string baseUrl)
@@ -808,7 +846,7 @@ final class OpenCodeClient
         JSONValue root;
         root["model"] = model;
         JSONValue messageList = JSONValue(string[].init);
-        foreach (message; messages)
+        foreach (message; normalizeSystemMessages(messages))
             messageList.array ~= chatMessageToJson(message);
         root["messages"] = messageList;
         if (tools.length > 0)
@@ -868,6 +906,35 @@ final class OpenCodeClient
     {
         if (value.length <= 800) return value;
         return value[0 .. 800] ~ "…";
+    }
+
+    /// OpenAI-compatible servers wrap failures as {"error":{"message":...}}.
+    /// Decode that envelope before handing it to the Markdown UI: displaying
+    /// raw JSON made `\n` render as a literal `n` and backslashes/underscores
+    /// look corrupted even though the server response itself was valid JSON.
+    private static string formatHttpErrorDetail(string detail)
+    {
+        try
+        {
+            auto root = parseJSON(detail);
+            if (root.type == JSONType.object)
+            {
+                if (auto error = "error" in root.object)
+                {
+                    if (error.type == JSONType.object)
+                        if (auto message = "message" in error.object)
+                            if (message.type == JSONType.string)
+                                return truncateForError(message.str);
+                    if (error.type == JSONType.string)
+                        return truncateForError(error.str);
+                }
+                if (auto message = "message" in root.object)
+                    if (message.type == JSONType.string)
+                        return truncateForError(message.str);
+            }
+        }
+        catch (Exception) {}
+        return truncateForError(detail);
     }
 
     unittest

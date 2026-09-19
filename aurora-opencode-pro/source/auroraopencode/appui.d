@@ -30,7 +30,7 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.math : isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
-import std.string : strip, toLower;
+import std.string : replace, strip, toLower;
 import std.utf : toUTF16z, toUTF32;
 version (Windows)
 {
@@ -2041,6 +2041,55 @@ private static string basenameOf(string path)
     foreach (index, ch; path)
         if (ch == '/' || ch == '\\') cut = index + 1;
     return path[cut .. $];
+}
+
+/// Folder containing a file mutated by a tool, or "" when the tool is not a
+/// file mutation. Used by the tool bubble's "Open file location" context item.
+private string toolFilePath(string toolName, string toolArgs)
+{
+    switch (toolName)
+    {
+        case "edit":
+        case "write":
+            return toolArgFromArgs(toolArgs, "filePath");
+        case "remove":
+            auto path = toolArgFromArgs(toolArgs, "path");
+            return path.length > 0 ? path : toolArgFromArgs(toolArgs, "filePath");
+        default:
+            return "";
+    }
+}
+
+/// Whether `path` is absolute (drive-rooted, UNC or rooted) on Windows.
+private static bool isAbsolutePath(string path)
+{
+    if (path.length == 0) return false;
+    if (path[0] == '/' || path[0] == '\\') return true;
+    return path.length >= 2 && path[1] == ':';
+}
+
+/// The directory part of `path` ("" when it has no separator).
+private static string directoryOf(string path)
+{
+    size_t cut = size_t.max;
+    foreach (index, ch; path)
+        if (ch == '/' || ch == '\\') cut = index;
+    return cut == size_t.max ? "" : path[0 .. cut];
+}
+
+/// Open File Explorer at the folder containing `filePath`, resolving a relative
+/// path against `workspace`.
+private void openFileLocation(string filePath, string workspace)
+{
+    version (Windows)
+    {
+        if (filePath.length == 0) return;
+        auto path = filePath;
+        if (!isAbsolutePath(path) && workspace.length > 0)
+            path = buildPath(workspace, path);
+        const dir = directoryOf(path);
+        openFolderInExplorer(dir.length > 0 ? dir : path);
+    }
 }
 
 /// Count non-overlapping occurrences of `needle` in `haystack`.
@@ -4182,6 +4231,9 @@ public final class OpenCodeRoot : VBox
     private Label _status;
     private TextField _filterField;
     private int[] _sessionIndices;
+    // Conversation ids pinned to the top of the sidebar. Persisted in
+    // pins.json so pins survive restarts without touching session state.
+    private string[] _pinnedSessionIds;
     private string _filterText;
     private string _lastUsageText;
     // Live output-token counter for the in-flight reply. The provider usually
@@ -6837,7 +6889,8 @@ public final class OpenCodeRoot : VBox
         clearActivity();
         auto message = &session.messages[$ - 1];
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
-            "Error: " ~ error;
+            "Error:\n\n```text\n" ~
+            error.replace("```", "`` `") ~ "\n```";
         message.failed = true;
         session.taskStatus = "blocked";
         publishThreadUpdated(*session);
@@ -6852,7 +6905,7 @@ public final class OpenCodeRoot : VBox
         // Render the canonical settled view (the streamed bubble lacked the
         // timestamp footer, context menu and collapse wiring).
         rebuildMessageColumn();
-        updateStatus("Error: " ~ error);
+        updateStatus("Request failed. See the conversation for details.");
         markDirty();
         refreshBubbleActions();
     }
@@ -9193,21 +9246,29 @@ public final class OpenCodeRoot : VBox
         const projectId = activeProjectId();
         // Newest conversation first: sessions are appended on creation, so walk
         // the array backwards and keep the real indices for row -> session.
-        foreach_reverse (index, session; _sessions)
+        // Pinned conversations are listed first; each group stays newest-first.
+        foreach (bool pinnedPass; [true, false])
         {
-            // Sessions restored from an older build have no project; they
-            // belong to the sandbox.
-            if (sessionProjectId(session) != projectId) continue;
-            const title = session.title.length > 0 ? session.title : "New chat";
-            if (_filterText.length > 0 &&
-                !canFind(title.toLower(), _filterText.toLower()))
-                continue;
-            indices ~= cast(int) index;
-            string secondary;
-            const path = activeMessagePath(session);
-            if (path.length > 0)
-                secondary = session.messages[path[$ - 1]].time;
-            items ~= ListItem(title, IconKind.none, secondary);
+            foreach_reverse (index, session; _sessions)
+            {
+                // Sessions restored from an older build have no project; they
+                // belong to the sandbox.
+                if (sessionProjectId(session) != projectId) continue;
+                const pinned = isSessionPinned(session.id);
+                if (pinned != pinnedPass) continue;
+                const title = session.title.length > 0 ? session.title
+                    : "New chat";
+                if (_filterText.length > 0 &&
+                    !canFind(title.toLower(), _filterText.toLower()))
+                    continue;
+                indices ~= cast(int) index;
+                string secondary;
+                const path = activeMessagePath(session);
+                if (path.length > 0)
+                    secondary = session.messages[path[$ - 1]].time;
+                items ~= ListItem(pinned ? "★ " ~ title : title,
+                    IconKind.none, secondary);
+            }
         }
         _sessionIndices = indices;
         _sessionList.setItems(items);
@@ -9318,6 +9379,16 @@ public final class OpenCodeRoot : VBox
                     editAndResend(_current, messageIndex);
                 });
         }
+        else if (message.role == "tool")
+        {
+            const filePath = toolFilePath(message.toolName, message.toolArgs);
+            if (filePath.length > 0)
+                items ~= ContextMenuItem.command("Open file location",
+                    IconKind.folder, delegate()
+                    {
+                        openFileLocation(filePath, workspaceForSession(_current));
+                    });
+        }
         showContextMenu(_messageColumn, globalPosition, items);
     }
 
@@ -9330,6 +9401,13 @@ public final class OpenCodeRoot : VBox
             {
                 selectSession(sessionIndex);
             }, "Enter"),
+            ContextMenuItem.command(
+                isSessionPinned(_sessions[sessionIndex].id)
+                    ? "Unpin conversation" : "Pin conversation",
+                IconKind.none, delegate()
+                {
+                    toggleSessionPin(sessionIndex);
+                }),
             ContextMenuItem.command("Rename…", IconKind.settings, delegate()
             {
                 showRenameSession(sessionIndex);
@@ -9340,6 +9418,68 @@ public final class OpenCodeRoot : VBox
             }, "Del"),
         ];
         showContextMenu(_sessionList, globalPosition, items);
+    }
+
+    // -- Pinned conversations --------------------------------------------
+
+    private bool isSessionPinned(const string id)
+    {
+        return id.length > 0 && _pinnedSessionIds.canFind(id);
+    }
+
+    private void toggleSessionPin(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        const id = _sessions[sessionIndex].id;
+        if (id.length == 0) return;
+        if (_pinnedSessionIds.canFind(id))
+        {
+            string[] kept;
+            foreach (pin; _pinnedSessionIds)
+                if (pin != id) kept ~= pin;
+            _pinnedSessionIds = kept;
+        }
+        else
+        {
+            _pinnedSessionIds ~= id;
+        }
+        savePinnedSessions();
+        updateSessionList(false);
+    }
+
+    private void loadPinnedSessions()
+    {
+        const path = buildPath(opencodeStateDirectory(), "pins.json");
+        if (!exists(path)) return;
+        try
+        {
+            auto value = parseJSON(readText(path));
+            if (value.type != JSONType.array) return;
+            string[] ids;
+            foreach (item; value.array)
+                if (item.type == JSONType.string && item.str.length > 0)
+                    ids ~= item.str;
+            _pinnedSessionIds = ids;
+        }
+        catch (Exception error)
+            logError("could not read pinned conversations: " ~ error.msg);
+    }
+
+    private void savePinnedSessions()
+    {
+        try
+        {
+            ensureStateDirectory();
+            JSONValue root = JSONValue(string[].init);
+            foreach (id; _pinnedSessionIds)
+                root.array ~= JSONValue(id);
+            writeFileAtomically(
+                buildPath(opencodeStateDirectory(), "pins.json"),
+                root.toString());
+        }
+        catch (Exception error)
+            logError("could not save pinned conversations: " ~ error.msg);
     }
 
     private void showRenameSession(int sessionIndex)
@@ -9656,6 +9796,7 @@ public final class OpenCodeRoot : VBox
     private void restoreSessions()
     {
         _sessions.length = 0;
+        loadPinnedSessions();
         const dir = opencodeStateDirectory();
         // Crash-safe saving renames sessions.json through .bak/.tmp in several
         // steps and also writes a per-message recovery copy, so a crash can
