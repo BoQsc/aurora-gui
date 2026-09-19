@@ -4,6 +4,57 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode Pro: tool elapsed time in the transcript (2026-09-19)
+
+**What changed.** Every tool run is timed and the duration is shown in the chat
+next to the `+N -M` diff counters, so "things that take time" (commands, reads,
+edits) report how long they took. Plumbing, innermost first:
+- `tools.d`: `executeTool` now wraps a new `dispatchTool` (single return point)
+  and stamps `ToolExecution.elapsedMs`. Measured with `MonoTime` at **usec**
+  precision and rounded to ms, clamped to `1` when the op finishes in under a
+  millisecond (an in-process edit is routinely sub-ms; whole-ms truncation
+  previously yielded `0`, which hid the label).
+- `opencode_client.d`: `OpenCodeEvent.elapsedMs` carries it to the UI; set in
+  `publishToolResult` and copied onto `ChatMessage.toolElapsedMs`
+  (`core.d`) in `applyToolResult`.
+- `appui.d`: `formatElapsedMs` renders `340ms` / `1.5s` / `2m03s` (returns `""`
+  for `0`). `MessageBubble` (settled rows), `LiveToolRow` (in-flight rows, with a
+  ticking `onTick` and a `setElapsed` freeze seam) and `ToolGroupBubble`
+  (collapsed header, aggregate) all draw it. The header is persisted as
+  `toolElapsedMs` and restored, so a reloaded transcript keeps the durations.
+  `ToolGroupBubble.onTick` repaints the collapsed header while live, so a long
+  command's timer ticks even with no stream events arriving.
+
+**Gotcha that cost a red test.** `aurora.text.layout.TextLayout` is a **class**
+(`vendor/aurora-d-0.4.5/source/aurora/text/layout.d:132`), so an unassigned
+local is `null`; the label code must test `layout is null`, never
+`layout.width > 0` (the latter dereferences null when only the elapsed label is
+present).
+
+**Unrelated-looking but required.** Commit `5b94269` added the Thinking "?" 
+`TooltipAnchor` (an 18 px widget) *between* the Thinking and Tools toggles,
+which breaks the pre-existing smoke assertion
+`toggleGap <= 12` ("Tools toggle should sit right next to the Thinking toggle").
+That assertion runs before the elapsed assertions, so the whole smoke aborts.
+The anchor must be added to `composerControls` **after** `_toolsBox`.
+
+**How to test.**
+- `tools_test.d` (from `aurora-opencode-pro`):
+  ```
+  "C:\D\dmd2\windows\bin64\dmd.exe" -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+  build\tools-test.exe   rem -> "tool calls report their elapsed time"
+  ```
+- Pro smoke (`headless_pro_smoke.d`):
+  ```
+  "C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+  build\headless-pro-smoke.exe
+  ```
+  New lines: "Live tool rows show a running elapsed time", "Tool duration shown
+  on the row and group header: <n>ms", and the elapsed assertion inside "Read
+  bodies survive a save + reload" (synthetic `1234`/`4321` ms round-trip).
+  `setLiveToolElapsedForTesting(ms)` freezes the live timer so the running-timer
+  assertions are deterministic.
+
 ## Aurora OpenCode Pro: apply_patch crash + reload bugs (2026-09-19)
 
 **Symptom.** The app access-violated every ~90 s (`0xC0000005`) and the
