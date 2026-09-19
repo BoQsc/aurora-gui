@@ -65,7 +65,7 @@ private __gshared string _lastLoggedActivity;
 /// crash handler reads `_lastActivity`, which is never throttled.
 private __gshared SysTime _lastMarkerWrite;
 private __gshared bool _lastMarkerWriteSet;
-private enum double markerWriteIntervalMs = 100.0;
+private enum double markerWriteIntervalMs = 2_000.0;
 
 /// Identifies the build the archived symbols belong to, so a crash report can
 /// be matched to the `.pdb` that describes it.
@@ -108,7 +108,22 @@ public void noteActivity(string what)
 /// Whether a marker fires once per painted frame rather than once per step.
 private bool isPerFrameMarker(string what) pure nothrow @safe @nogc
 {
-    return what.length >= 5 && what[0 .. 5] == "paint";
+    if (what.length >= 5 && what[0 .. 5] == "paint") return true;
+    // Most paint markers include the widget first ("MessageBubble.onPaint").
+    // Treat those as per-frame too; otherwise alternating bubbles bypass the
+    // consecutive-repeat check and flush thousands of lines every second.
+    enum needle = ".onPaint";
+    if (what.length < needle.length) return false;
+    foreach (i; 0 .. what.length - needle.length + 1)
+        if (what[i .. i + needle.length] == needle) return true;
+    return false;
+}
+
+unittest
+{
+    assert(isPerFrameMarker("paintThinking index=1"));
+    assert(isPerFrameMarker("MessageBubble.onPaint role=assistant"));
+    assert(!isPerFrameMarker("rebuildMessageColumn sessions=2"));
 }
 
 /// True at most a few times per second, so a repaint storm cannot flood the

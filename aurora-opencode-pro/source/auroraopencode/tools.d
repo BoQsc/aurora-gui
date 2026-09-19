@@ -310,6 +310,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Do not use two tools for the same discovery. In particular, " ~
         "do not list a directory when the relevant file paths are already " ~
         "known, and do not follow a successful search with a broader one.\n");
+    builder.put("- Read-only exploration has a finite budget. By about ten " ~
+        "read/search calls you must make the smallest correct edit or state a " ~
+        "specific blocker; varying search arguments is not progress by itself.\n");
     builder.put("- Treat an explicit path in the user's request as the target. " ~
         "If it differs from the working directory, pass that absolute path to " ~
         "`read`, `dshell`, or `grep`, or use it as `run.workdir`; do not search " ~

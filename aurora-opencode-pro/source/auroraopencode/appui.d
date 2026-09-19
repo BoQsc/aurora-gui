@@ -4102,6 +4102,13 @@ public final class OpenCodeRoot : VBox
     private int _lastFailureRepeatCount;
     private bool _failureLoopDetected;
     private static immutable int failureLoopRepeatThreshold = 3;
+    // Successful context calls are not automatically useful progress. After a
+    // bounded evidence phase, force the model to act on what it has learned;
+    // after a larger bound, reject more read-only wandering until it edits or
+    // reports a concrete blocker. This catches varied read/grep loops that the
+    // identical-call detector deliberately cannot catch.
+    private static immutable int explorationCheckpointCalls = 10;
+    private static immutable int explorationHardLimitCalls = 16;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -4158,6 +4165,16 @@ public final class OpenCodeRoot : VBox
     /// Set when the user stops a turn so late tool results cannot restart it.
     private bool _turnCancelled;
     private double[string] _turnDurations;
+    // A streaming connection can remain alive on SSE keepalives while the model
+    // produces no useful event. Track meaningful UI-visible progress and cancel
+    // one stalled request after a bounded wait, then retry it once from durable
+    // history instead of spinning forever.
+    private MonoTime _lastRequestProgressAt;
+    private bool _requestProgressSet;
+    private bool _watchdogCancelPending;
+    private bool _watchdogRetryAllowed;
+    private int _watchdogRetries;
+    private static immutable long stalledResponseSeconds = 90;
 
     // Live "how long has this chat taken" stopwatch in the composer footer. The
     // total is the sum of every finished turn's `workedSeconds` on the active
@@ -5201,6 +5218,58 @@ public final class OpenCodeRoot : VBox
         return prompt.data;
     }
 
+    private static bool likelyChangeRequest(string text)
+    {
+        const lower = text.toLower().strip();
+        foreach (prefix; ["add ", "build ", "change ", "create ", "delete ",
+            "fix ", "implement ", "make ", "move ", "refactor ", "remove ",
+            "rename ", "replace ", "update "])
+            if (lower.length >= prefix.length &&
+                lower[0 .. prefix.length] == prefix) return true;
+        return lower.canFind("\\") || lower.canFind("/") ||
+            lower.canFind(".d") || lower.canFind(".ts") ||
+            lower.canFind(".js") || lower.canFind(".py");
+    }
+
+    private static bool isAutomaticTaskPlan(const ref ChatSession session)
+    {
+        return session.taskSteps.length == 3 &&
+            session.taskSteps[0].text == "Inspect the relevant code" &&
+            session.taskSteps[1].text == "Implement the requested changes" &&
+            session.taskSteps[2].text == "Run focused verification";
+    }
+
+    private static void initializeAutomaticTaskPlan(ref ChatSession session)
+    {
+        session.taskSteps = [
+            TaskStep("Inspect the relevant code", "in_progress"),
+            TaskStep("Implement the requested changes", "pending"),
+            TaskStep("Run focused verification", "pending"),
+        ];
+    }
+
+    private static void advanceAutomaticPlanToImplementation(
+        ref ChatSession session)
+    {
+        if (!isAutomaticTaskPlan(session)) return;
+        session.taskSteps[0].status = "completed";
+        session.taskSteps[1].status = "in_progress";
+    }
+
+    private static void completeAutomaticImplementation(ref ChatSession session)
+    {
+        if (!isAutomaticTaskPlan(session)) return;
+        session.taskSteps[0].status = "completed";
+        session.taskSteps[1].status = "completed";
+        session.taskSteps[2].status = "in_progress";
+    }
+
+    private static void completeAutomaticVerification(ref ChatSession session)
+    {
+        if (!isAutomaticTaskPlan(session)) return;
+        foreach (ref step; session.taskSteps) step.status = "completed";
+    }
+
     private void publishThreadUpdated(const ref ChatSession session)
     {
         publishRuntimeEvent(AgentEventKind.threadUpdated, session,
@@ -6196,6 +6265,7 @@ public final class OpenCodeRoot : VBox
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
         int completionTokens = 0, int totalTokens = 0, bool terminal = true)
     {
+        _requestProgressSet = false;
         if (terminal || cancelled) setTurnActiveMarker(false);
         _preparingToolCalls.length = 0;
         clearActivity();
@@ -6358,6 +6428,7 @@ public final class OpenCodeRoot : VBox
 
     private void failAssistantMessage(string error)
     {
+        _requestProgressSet = false;
         setTurnActiveMarker(false);
         _preparingToolCalls.length = 0;
         freezeTurnTiming();
@@ -6397,6 +6468,89 @@ public final class OpenCodeRoot : VBox
         updateStatus("Error: " ~ error);
         markDirty();
         refreshBubbleActions();
+    }
+
+    private static bool isMeaningfulRequestProgress(
+        const ref OpenCodeEvent event)
+    {
+        final switch (event.kind)
+        {
+            case OpenCodeEventKind.chatBegin:
+            case OpenCodeEventKind.toolCallDelta:
+            case OpenCodeEventKind.toolCalls:
+            case OpenCodeEventKind.done:
+            case OpenCodeEventKind.error:
+                return true;
+            case OpenCodeEventKind.delta:
+                return event.text.length > 0;
+            case OpenCodeEventKind.usage:
+            case OpenCodeEventKind.toolResult:
+            case OpenCodeEventKind.models:
+            case OpenCodeEventKind.modelsError:
+                return false;
+        }
+    }
+
+    private void noteRequestProgress(const ref OpenCodeEvent event)
+    {
+        if (!isMeaningfulRequestProgress(event)) return;
+        _lastRequestProgressAt = MonoTime.currTime;
+        _requestProgressSet = true;
+    }
+
+    private void checkStalledRequest()
+    {
+        if (!_client.busy() || !_requestProgressSet ||
+            _watchdogCancelPending) return;
+        const idle = MonoTime.currTime - _lastRequestProgressAt;
+        if (!responseIsStalled(idle.total!"seconds")) return;
+        _watchdogCancelPending = true;
+        _watchdogRetryAllowed = _watchdogRetries < 1;
+        _requestProgressSet = false;
+        _turnCancelled = true;
+        _client.cancel();
+        updateStatus("Model response stalled — recovering…");
+        setActivity("Recovering stalled model response…");
+    }
+
+    private static bool responseIsStalled(long idleSeconds)
+    {
+        return idleSeconds >= stalledResponseSeconds;
+    }
+
+    private bool recoverStalledRequest(const OpenCodeEvent event)
+    {
+        if (!event.cancelled || !_watchdogCancelPending) return false;
+        const retry = _watchdogRetryAllowed;
+        _watchdogCancelPending = false;
+        _watchdogRetryAllowed = false;
+        finishAssistantMessage(true, event.promptTokens,
+            event.completionTokens, event.totalTokens);
+        if (!retry || _current < 0)
+        {
+            continueOrCompleteTask(true);
+            updateStatus("Model stalled twice. Task paused for review.");
+            return true;
+        }
+        ++_watchdogRetries;
+        _turnCancelled = false;
+        auto session = &_sessions[_current];
+        session.taskStatus = "active";
+        ChatMessage recovery;
+        recovery.role = "user";
+        recovery.internal = true;
+        recovery.content = "The previous model response produced no meaningful " ~
+            "event for 90 seconds and was cancelled. Resume from the durable " ~
+            "task state. Do not repeat prior exploration; take the next concrete " ~
+            "action or report a blocker.";
+        appendMessage(*session, recovery);
+        publishThreadUpdated(*session);
+        markDirty();
+        rebuildMessageColumn();
+        setTurnActiveMarker(true, session.id);
+        updateStatus("Retrying from durable task state…");
+        startChatRequest(_current, false);
+        return true;
     }
 
     // -- tool loop ---------------------------------------------------------
@@ -6485,6 +6639,85 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
     }
 
+    private static bool isReadOnlyExplorationTool(string name)
+    {
+        return name == "read" || name == "grep" || name == "glob" ||
+            name == "dshell";
+    }
+
+    private static int readOnlyExplorationCount(const ref ChatSession session)
+    {
+        int count;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                count = 0;
+                continue;
+            }
+            if (message.role != "tool") continue;
+            if (isMutatingTool(message.toolName)) count = 0;
+            else if (isReadOnlyExplorationTool(message.toolName)) ++count;
+        }
+        return count;
+    }
+
+    private static bool hasExplorationCheckpoint(
+        const ref ChatSession session)
+    {
+        bool found;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                found = false;
+                continue;
+            }
+            if (message.role == "tool" && isMutatingTool(message.toolName))
+                found = false;
+            if (message.internal && message.content.length >= 23 &&
+                message.content[0 .. 23] == "Exploration checkpoint:")
+                found = true;
+        }
+        return found;
+    }
+
+    private static bool allReadOnlyExploration(
+        const(OpenCodeToolCall)[] calls)
+    {
+        if (calls.length == 0) return false;
+        foreach (call; calls)
+            if (!isReadOnlyExplorationTool(call.name)) return false;
+        return true;
+    }
+
+    private void appendExplorationCheckpoint(ref ChatSession session,
+        bool hardLimit)
+    {
+        advanceAutomaticPlanToImplementation(session);
+        ChatMessage checkpoint;
+        checkpoint.role = "user";
+        checkpoint.internal = true;
+        checkpoint.content = "Exploration checkpoint: " ~
+            (hardLimit
+                ? "the read-only evidence budget is exhausted. Further " ~
+                    "read/search calls will be rejected until you make a " ~
+                    "file-changing tool call. Use the evidence already present " ~
+                    "to edit now, or report one concrete blocker."
+                : "you have enough source evidence. Your next tool batch must " ~
+                    "make the smallest correct edit (edit/write/apply_patch/" ~
+                    "remove). Do not perform another broad search or reread " ~
+                    "known code; if a real blocker remains, state it precisely.");
+        appendMessage(session, checkpoint);
+        publishThreadUpdated(session);
+        markDirty();
+        rebuildMessageColumn();
+        updateStatus(hardLimit ? "Exploration limit reached — forcing action…" :
+            "Evidence gathered — asking the model to edit…");
+    }
+
     /// The model requested tool calls. Finalize the assistant message with the
     /// request (so it persists and is replayed on regeneration), then execute
     /// each tool on a worker thread. Results are pushed back through the
@@ -6515,6 +6748,20 @@ public final class OpenCodeRoot : VBox
             _streamBubble = null;
         }
         markDirty();
+
+        if (allReadOnlyExploration(event.toolCalls) &&
+            readOnlyExplorationCount(*session) >= explorationHardLimitCalls)
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the read-only exploration budget is " ~
+                "exhausted; make the requested change or report a blocker.");
+            appendExplorationCheckpoint(*session, true);
+            _messagesScroll.follow = true;
+            _messagesScroll.invalidate();
+            if (!_toolContinuationPaused)
+                startChatRequest(_current, false);
+            return;
+        }
 
         // Doom-loop recovery: the same tool call repeated with identical input
         // means the model is stuck. Break the loop and ask it to answer with
@@ -6775,6 +7022,7 @@ public final class OpenCodeRoot : VBox
             applyDurablePlan(*session, toolArgs);
         if (!event.toolFailed && isMutatingTool(event.toolName))
         {
+            completeAutomaticImplementation(*session);
             session.verificationStatus = "required";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
@@ -6783,6 +7031,7 @@ public final class OpenCodeRoot : VBox
             toolArgs) &&
             session.verificationStatus == "required")
         {
+            completeAutomaticVerification(*session);
             session.verificationStatus = "passed";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
@@ -6844,6 +7093,10 @@ public final class OpenCodeRoot : VBox
             if (!_toolContinuationPaused)
             {
                 appendQueuedGuidance(*session);
+                if (readOnlyExplorationCount(*session) >=
+                    explorationCheckpointCalls &&
+                    !hasExplorationCheckpoint(*session))
+                    appendExplorationCheckpoint(*session, false);
                 startChatRequest(_current, false);
             }
         }
@@ -7019,6 +7272,8 @@ public final class OpenCodeRoot : VBox
             session.objective = text;
             session.taskSteps.length = 0;
             session.verificationStatus = "not_required";
+            if (_settings.toolsEnabled && likelyChangeRequest(text))
+                initializeAutomaticTaskPlan(*session);
         }
         session.taskStatus = "active";
         publishThreadUpdated(*session);
@@ -7053,6 +7308,9 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _turnCancelled = false;
+        _watchdogCancelPending = false;
+        _watchdogRetryAllowed = false;
+        _watchdogRetries = 0;
         startChatRequest(_current);
     }
 
@@ -7564,6 +7822,8 @@ public final class OpenCodeRoot : VBox
         _activeRequestId = _nextRequestId;
         _activeRequestSession = sessionIndex;
         _chatStartedAt = MonoTime.currTime;
+        _lastRequestProgressAt = _chatStartedAt;
+        _requestProgressSet = true;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
         // A user-initiated request opens a new turn clock; a tool-continuation
@@ -8882,6 +9142,17 @@ public final class OpenCodeRoot : VBox
                 session.id = session.messages.length > 0
                     ? "t-" ~ session.messages[0].id : newSessionId();
             }
+            if (session.taskSteps.length == 0 &&
+                (session.taskStatus == "active" ||
+                 session.taskStatus == "reviewing" ||
+                 session.taskStatus == "verifying") &&
+                likelyChangeRequest(session.objective))
+            {
+                initializeAutomaticTaskPlan(session);
+                publishThreadUpdated(session);
+                _stateDirty = true;
+                _persistDue = MonoTime.currTime;
+            }
         }
         if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
             _current = preferredCurrent;
@@ -9074,6 +9345,7 @@ public final class OpenCodeRoot : VBox
                 ++eventIndex;
                 continue;
             }
+            noteRequestProgress(event);
             // Providers commonly send a few bytes per SSE record. Merge only
             // adjacent fragments of the same channel, preserving exact ordering
             // between reasoning, prose, tools, usage, and terminal events.
@@ -9135,6 +9407,7 @@ public final class OpenCodeRoot : VBox
                     applyToolResult(event);
                     break;
                 case OpenCodeEventKind.done:
+                    if (recoverStalledRequest(event)) break;
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
@@ -9158,6 +9431,7 @@ public final class OpenCodeRoot : VBox
         }
         _batchingToolResults = false;
         flushToolTranscriptChanges();
+        checkStalledRequest();
 
         // The upstream model can take several seconds to return its first
         // token (cold start). Surface that as a live countdown so the UI
@@ -9269,6 +9543,20 @@ public final class OpenCodeRoot : VBox
         return _current < 0 ? 0 : _sessions[_current].taskSteps.length;
     }
 
+    public string taskStepStatusForTesting(int index) const
+    {
+        if (_current < 0 || index < 0 ||
+            index >= cast(int) _sessions[_current].taskSteps.length) return "";
+        return _sessions[_current].taskSteps[cast(size_t) index].status;
+    }
+
+    public bool initializeAutomaticPlanForTesting(string request)
+    {
+        if (_current < 0 || !likelyChangeRequest(request)) return false;
+        initializeAutomaticTaskPlan(_sessions[_current]);
+        return true;
+    }
+
     public void applyPlanForTesting(string arguments)
     {
         if (_current >= 0) applyDurablePlan(_sessions[_current], arguments);
@@ -9301,6 +9589,21 @@ public final class OpenCodeRoot : VBox
     public bool completionWouldContinueForTesting() const
     {
         return taskContinuesAfterDone(false);
+    }
+
+    public int explorationCountForTesting() const
+    {
+        return _current < 0 ? 0 :
+            readOnlyExplorationCount(_sessions[_current]);
+    }
+
+    public bool applyExplorationCheckpointForTesting()
+    {
+        if (_current < 0 || readOnlyExplorationCount(_sessions[_current]) <
+            explorationCheckpointCalls ||
+            hasExplorationCheckpoint(_sessions[_current])) return false;
+        appendExplorationCheckpoint(_sessions[_current], false);
+        return true;
     }
 
     /// Discard the compatibility snapshot in memory and replay only the durable
@@ -10635,6 +10938,20 @@ public final class OpenCodeRoot : VBox
     public bool clientBusyForTesting()
     {
         return _client !is null && _client.busy();
+    }
+
+    public bool responseIsStalledForTesting(long idleSeconds) const
+    {
+        return responseIsStalled(idleSeconds);
+    }
+
+    public bool eventCountsAsProgressForTesting(OpenCodeEventKind kind,
+        string text = "") const
+    {
+        OpenCodeEvent event;
+        event.kind = kind;
+        event.text = text;
+        return isMeaningfulRequestProgress(event);
     }
 
     /// Test-only: tool calls injected but not yet reported back.

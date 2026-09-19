@@ -2312,6 +2312,12 @@ int main(string[] args)
         Thread.sleep(20.msecs);
     }
     root.newChatForTesting();
+    assert(root.initializeAutomaticPlanForTesting(
+        "Add a folder button to appui.d"),
+        "change request did not receive an application-owned task plan");
+    assert(root.taskStepCountForTesting() == 3 &&
+        root.taskStepStatusForTesting(0) == "in_progress",
+        "automatic task plan did not begin in the inspection phase");
     root.addConversationForTesting(["assistant"], [""]);
 
     // Long-horizon regression: distinct evidence-gathering rounds are valid
@@ -2340,7 +2346,60 @@ int main(string[] args)
         assert(root.toolMessageCountForTesting() == targetEvidenceCount,
             "distinct evidence round was skipped at round " ~ to!string(round));
     }
+    assert(root.explorationCountForTesting() == 12,
+        "distinct exploration was not counted toward the progress budget");
+    assert(root.applyExplorationCheckpointForTesting(),
+        "read-only budget did not produce an action checkpoint");
+    assert(root.lastUserMessageForTesting().indexOf(
+        "Exploration checkpoint") >= 0,
+        "action checkpoint instruction was not appended");
+    assert(root.taskStepStatusForTesting(0) == "completed" &&
+        root.taskStepStatusForTesting(1) == "in_progress",
+        "action checkpoint did not advance the automatic plan to implementation");
     writeln("Distinct evidence rounds remain available for long-horizon work");
+
+    // Four more distinct results reach the hard budget. The next read must be
+    // answered with a protocol-valid skipped tool result instead of running.
+    foreach (round; 12 .. 16)
+    {
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall extraRead;
+        extraRead.id = "call_evidence_" ~ to!string(round);
+        extraRead.name = "dshell";
+        extraRead.arguments = `{"command":"list","pattern":"evidence-` ~
+            to!string(round) ~ `-*"}`;
+        root.injectToolCallsForTesting([extraRead]);
+        const target = evidenceBase + cast(int) round + 1;
+        const extraEvidenceDeadline = Clock.currTime + 2.seconds;
+        while (root.toolMessageCountForTesting() < target &&
+            Clock.currTime < extraEvidenceDeadline)
+        {
+            root.tickTree(0.01);
+            Thread.sleep(5.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == target,
+            "pre-limit exploration result did not settle");
+    }
+    assert(root.explorationCountForTesting() == 16,
+        "hard exploration threshold was not reached");
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall blockedRead;
+    blockedRead.id = "call_evidence_blocked";
+    blockedRead.name = "grep";
+    blockedRead.arguments = `{"pattern":"another search"}`;
+    root.injectToolCallsForTesting([blockedRead]);
+    assert(root.lastToolResultForTesting().indexOf(
+        "exploration budget is exhausted") >= 0,
+        "hard exploration limit did not reject another read-only call");
+    writeln("Read-only progress budget forces implementation after evidence");
+    assert(!root.responseIsStalledForTesting(89) &&
+        root.responseIsStalledForTesting(90),
+        "stalled-response watchdog threshold is not 90 seconds");
+    assert(!root.eventCountsAsProgressForTesting(OpenCodeEventKind.usage) &&
+        root.eventCountsAsProgressForTesting(OpenCodeEventKind.delta, "token") &&
+        root.eventCountsAsProgressForTesting(OpenCodeEventKind.toolCalls),
+        "watchdog meaningful-progress classification is incorrect");
+    writeln("Stalled model responses have a meaningful-event watchdog");
 
     // The doom-loop injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the

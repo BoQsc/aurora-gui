@@ -4,7 +4,7 @@ import core.stdc.stdio : fclose, fflush, fopen, fwrite;
 import core.sync.mutex : Mutex;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : mkdirRecurse;
+import std.file : exists, getSize, mkdirRecurse, remove, rename;
 import std.path : buildPath;
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,25 @@ static this()
 public void setLogDirectory(string directory)
 {
     _logsDir = directory;
+    rotateOversizedLog();
+}
+
+private enum ulong maxLogBytes = 8UL * 1024 * 1024;
+
+/// Keep diagnostic logging bounded. A paint storm once grew errors.log past
+/// 160 MB; retain one previous file for crash forensics, then start clean.
+private void rotateOversizedLog()
+{
+    if (_logsDir.length == 0) return;
+    try
+    {
+        const current = logFilePath();
+        if (!exists(current) || getSize(current) <= maxLogBytes) return;
+        const previous = buildPath(_logsDir, "errors.previous.log");
+        if (exists(previous)) remove(previous);
+        rename(current, previous);
+    }
+    catch (Throwable) {}
 }
 
 public string logDirectory()
