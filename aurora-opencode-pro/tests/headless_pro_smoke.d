@@ -15,6 +15,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
     parseMarkdown;
 import auroraopencode.restart : planRestart, restartHelperArgv;
+import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : previewToolDiff;
 import core.time : msecs, seconds;
 import core.thread : Thread;
@@ -2799,6 +2800,32 @@ int main(string[] args)
         else
             writeln("Restart helper not built; argv inspection skipped");
         writeln("Restart button present; rebuild-in-place available");
+    }
+
+    // The UI now publishes backend-neutral thread/item lifecycle records to an
+    // append-only journal. This is the compatibility seam for future Codex and
+    // provider-neutral runtimes, and must survive independently of sessions.json.
+    {
+        const journalPath = buildPath(stateDir, "runtime-events.jsonl");
+        assert(exists(journalPath), "agent runtime journal was not created");
+        const events = readAgentRuntimeEvents(journalPath);
+        assert(events.length > 0, "agent runtime journal contains no events");
+        bool sawThread;
+        bool sawItem;
+        ulong previous;
+        foreach (event; events)
+        {
+            assert(event.threadId.length > 0,
+                "runtime event is missing its durable thread id");
+            assert(event.sequence > previous,
+                "runtime event sequence is not strictly increasing");
+            previous = event.sequence;
+            if (event.kind == AgentEventKind.threadStarted) sawThread = true;
+            if (event.kind == AgentEventKind.itemAdded) sawItem = true;
+        }
+        assert(sawThread, "runtime journal has no thread.started event");
+        assert(sawItem, "runtime journal has no item.added event");
+        writeln("Durable agent runtime journal records thread/item events");
     }
 
     root.shutdownClient();

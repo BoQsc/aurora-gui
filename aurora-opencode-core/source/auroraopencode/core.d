@@ -523,6 +523,10 @@ public struct ChatMessage
 
 public struct ChatSession
 {
+    // Stable runtime identity. Messages have always had graph ids, but an
+    // empty conversation needs an identity too so durable thread events can be
+    // recorded before its first prompt is sent.
+    string id;
     string title;
     string model;
     bool thinking;
@@ -547,6 +551,14 @@ public string newMessageId()
 {
     return "m" ~ to!string(Clock.currTime.stdTime) ~ "-" ~
         to!string(messageIdCounter++);
+}
+
+/// A stable id for a durable agent thread. Keep the prefix distinct from
+/// message ids so event logs remain readable and accidental cross-linking is
+/// easy to spot.
+public string newSessionId()
+{
+    return "t-" ~ newMessageId();
 }
 
 /**

@@ -8,6 +8,8 @@ import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
+import auroraopencode.runtime : AgentEventKind, AgentRuntime,
+    AgentRuntimeEvent, DurableAgentRuntime;
 import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
@@ -4109,6 +4111,13 @@ public final class OpenCodeRoot : VBox
     private MonoTime _persistDue;
     private static immutable int persistDebounceMs = 150;
 
+    // Backend-neutral lifecycle stream. sessions.json remains the compatibility
+    // snapshot while this append-only journal becomes the durable seam between
+    // the UI and whichever engine (Aurora, Codex, or another provider) runs a
+    // thread. Journal failure must never make the chat unusable.
+    private AgentRuntime _runtime;
+    private bool _runtimeErrorReported;
+
     private ContextUsageBadge _usageBadge;
     private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
@@ -4172,6 +4181,8 @@ public final class OpenCodeRoot : VBox
         super(0);
         _window = window;
         setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
+        _runtime = new DurableAgentRuntime(buildPath(opencodeStateDirectory(),
+            "runtime-events.jsonl"));
         _settings = loadSettings();
         _projectState = loadProjects();
         migrateWorkspaceIntoProjects();
@@ -5030,12 +5041,15 @@ public final class OpenCodeRoot : VBox
     private void newChat()
     {
         ChatSession session;
+        session.id = newSessionId();
         session.title = "New chat";
         session.model = _settings.model;
         session.thinking = _settings.thinking;
         session.projectId = activeProjectId();
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
+        publishRuntimeEvent(AgentEventKind.threadStarted, session,
+            "", "", "", runtimeThreadPayload(session));
         _visibleMessageLimit = messageHistoryPageSize;
         _streamBubble = null;
         _editMessageIndex = -1;
@@ -5096,17 +5110,132 @@ public final class OpenCodeRoot : VBox
         selectSession(_sessionIndices[row]);
     }
 
+    private void publishRuntimeEvent(AgentEventKind kind,
+        const ref ChatSession session, string turnId = "", string itemId = "",
+        string itemKind = "", string payloadJson = "{}")
+    {
+        if (_runtime is null || session.id.length == 0) return;
+        AgentRuntimeEvent event;
+        event.kind = kind;
+        event.threadId = session.id;
+        event.turnId = turnId;
+        event.itemId = itemId;
+        event.itemKind = itemKind;
+        event.payloadJson = payloadJson;
+        if (!_runtime.publish(event) && !_runtimeErrorReported)
+        {
+            _runtimeErrorReported = true;
+            logError("agent runtime journal unavailable: " ~
+                _runtime.lastError());
+        }
+    }
+
+    private static string runtimeThreadPayload(const ref ChatSession session)
+    {
+        JSONValue payload;
+        payload["title"] = session.title;
+        payload["model"] = session.model;
+        payload["thinking"] = session.thinking;
+        payload["projectId"] = session.projectId;
+        return payload.toString();
+    }
+
+    private void publishThreadUpdated(const ref ChatSession session)
+    {
+        publishRuntimeEvent(AgentEventKind.threadUpdated, session,
+            "", "", "", runtimeThreadPayload(session));
+    }
+
+    /// A turn is keyed by the real user message that opened it. Tool results
+    /// and internal recovery instructions remain part of that same turn.
+    private static string runtimeTurnId(const ref ChatSession session)
+    {
+        string result;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+                result = message.id;
+        }
+        return result;
+    }
+
+    private static string runtimeItemKind(const ref ChatMessage message)
+    {
+        if (message.internal) return "controlMessage";
+        if (message.role == "user") return "userMessage";
+        if (message.role == "assistant") return "agentMessage";
+        if (message.role == "tool") return "functionCallOutput";
+        return "message";
+    }
+
+    /// Preserve structured source data so recovery never needs to reinterpret
+    /// a rendered chat bubble.
+    private static string runtimeMessagePayload(const ref ChatMessage message)
+    {
+        JSONValue payload;
+        payload["role"] = message.role;
+        payload["content"] = message.content;
+        payload["parentId"] = message.parentId;
+        if (message.reasoning.length > 0)
+            payload["reasoning"] = message.reasoning;
+        if (message.time.length > 0) payload["time"] = message.time;
+        if (message.failed) payload["failed"] = true;
+        if (message.internal) payload["internal"] = true;
+        if (message.toolCallId.length > 0)
+            payload["toolCallId"] = message.toolCallId;
+        if (message.toolName.length > 0) payload["toolName"] = message.toolName;
+        if (message.toolArgs.length > 0) payload["toolArgs"] = message.toolArgs;
+        if (message.toolCalls.length > 0)
+        {
+            JSONValue calls = JSONValue(string[].init);
+            foreach (call; message.toolCalls)
+            {
+                JSONValue value;
+                value["id"] = call.id;
+                value["name"] = call.name;
+                value["arguments"] = call.arguments;
+                calls.array ~= value;
+            }
+            payload["toolCalls"] = calls;
+        }
+        if (message.totalTokens > 0 || message.completionTokens > 0)
+        {
+            payload["promptTokens"] = message.promptTokens;
+            payload["completionTokens"] = message.completionTokens;
+            payload["totalTokens"] = message.totalTokens;
+        }
+        return payload.toString();
+    }
+
+    private void publishMessageEvent(AgentEventKind kind,
+        const ref ChatSession session, const ref ChatMessage message)
+    {
+        publishRuntimeEvent(kind, session, runtimeTurnId(session), message.id,
+            runtimeItemKind(message), runtimeMessagePayload(message));
+    }
+
+    private static string errorPayload(string error)
+    {
+        JSONValue payload;
+        payload["error"] = error;
+        return payload.toString();
+    }
+
     /// Append a message as a child of the active leaf and advance the leaf so
     /// the new message becomes the visible tip. All new turns (user prompts,
     /// assistant replies, tool results, recovery notes) go through here so the
     /// message graph stays consistent and branches never lose their parent.
-    private static void appendMessage(ref ChatSession session,
+    private void appendMessage(ref ChatSession session,
         ChatMessage message)
     {
+        if (session.id.length == 0) session.id = newSessionId();
         message.id = newMessageId();
         message.parentId = session.activeLeafId;
         session.messages ~= message;
         session.activeLeafId = message.id;
+        publishMessageEvent(AgentEventKind.itemAdded, session,
+            session.messages[$ - 1]);
     }
 
     /// When a tool batch is abandoned (the loop guard or the round cap fired),
@@ -5114,7 +5243,7 @@ public final class OpenCodeRoot : VBox
     /// `tool` reply for every id before any following message, so record an
     /// explanatory result per call — otherwise the stored transcript is invalid
     /// and the next request fails with HTTP 400.
-    private static void appendSkippedToolResults(ref ChatSession session,
+    private void appendSkippedToolResults(ref ChatSession session,
         const(OpenCodeToolCall)[] calls, string reason)
     {
         foreach (call; calls)
@@ -6032,7 +6161,13 @@ public final class OpenCodeRoot : VBox
                 message.totalTokens = totalTokens;
             }
             message.tokensPerSecondTenths = _liveTokenRateTenths;
+            publishMessageEvent(AgentEventKind.itemUpdated,
+                _sessions[_current], *message);
         }
+        if (_current >= 0)
+            publishRuntimeEvent(cancelled ? AgentEventKind.turnInterrupted :
+                AgentEventKind.turnCompleted, _sessions[_current],
+                runtimeTurnId(_sessions[_current]));
         // The streamed bubble was built for streaming only (no timestamp, usage
         // footer, context menu or collapse wiring). Rebuild so the settled view
         // is canonical immediately — otherwise the transcript silently
@@ -6079,6 +6214,9 @@ public final class OpenCodeRoot : VBox
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error: " ~ error;
         message.failed = true;
+        publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
+        publishRuntimeEvent(AgentEventKind.turnFailed, *session,
+            runtimeTurnId(*session), "", "", errorPayload(error));
         if (_streamBubble !is null)
         {
             _streamBubble.setStreaming(false);
@@ -6201,6 +6339,7 @@ public final class OpenCodeRoot : VBox
         }
 
         message.toolCalls = event.toolCalls.dup;
+        publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
         if (_streamBubble !is null)
         {
             _streamBubble.setStreaming(false);
@@ -6586,6 +6725,7 @@ public final class OpenCodeRoot : VBox
         }
         session.model = _settings.model;
         session.thinking = _settings.thinking;
+        publishThreadUpdated(*session);
 
         // Editing a prompt: branch from the original prompt's parent so the
         // edited turn becomes a sibling and the old run is kept, not truncated.
@@ -7126,6 +7266,11 @@ public final class OpenCodeRoot : VBox
         {
             beginTurnTiming(sessionIndex);
             setTurnActiveMarker(true);
+            JSONValue payload;
+            payload["model"] = session.model;
+            payload["thinking"] = session.thinking;
+            publishRuntimeEvent(AgentEventKind.turnStarted, *session,
+                _turnUserId, "", "", payload.toString());
         }
         updateStatus("Generating…");
         // Fill the request round-trip immediately: the transcript shows a live
@@ -7804,6 +7949,8 @@ public final class OpenCodeRoot : VBox
     private void deleteSession(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        const removed = _sessions[sessionIndex];
+        publishRuntimeEvent(AgentEventKind.threadDeleted, removed);
         _sessions = _sessions[0 .. sessionIndex] ~
             _sessions[sessionIndex + 1 .. $];
         if (_current == sessionIndex)
@@ -7916,6 +8063,7 @@ public final class OpenCodeRoot : VBox
             if (name.length > 0)
             {
                 _sessions[sessionIndex].title = name;
+                publishThreadUpdated(_sessions[sessionIndex]);
                 updateSessionList();
                 markDirty();
             }
@@ -8098,6 +8246,7 @@ public final class OpenCodeRoot : VBox
     private static JSONValue sessionToJson(const ref ChatSession session)
     {
         JSONValue root;
+        if (session.id.length > 0) root["id"] = session.id;
         root["title"] = session.title;
         root["model"] = session.model;
         root["thinking"] = session.thinking;
@@ -8232,6 +8381,8 @@ public final class OpenCodeRoot : VBox
                     {
                         if (sessionValue.type != JSONType.object) continue;
                         ChatSession session;
+                        if (auto field = "id" in sessionValue.object)
+                            session.id = field.str;
                         if (auto field = "title" in sessionValue.object)
                             session.title = field.str;
                         if (auto field = "model" in sessionValue.object)
@@ -8348,7 +8499,16 @@ public final class OpenCodeRoot : VBox
         // messages before the merge compared them, so the same file loaded
         // twice looked like two different conversations and was duplicated.
         foreach (ref session; _sessions)
+        {
             ensureMessageGraph(session);
+            if (session.id.length == 0)
+            {
+                // A legacy transcript has no thread id. Derive it from the
+                // now-stable opening message so it remains the same thereafter.
+                session.id = session.messages.length > 0
+                    ? "t-" ~ session.messages[0].id : newSessionId();
+            }
+        }
         if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
             _current = preferredCurrent;
         if (_sessions.length > 0)
@@ -8389,6 +8549,7 @@ public final class OpenCodeRoot : VBox
     private static bool sameRestoredConversation(const ref ChatSession a,
         const ref ChatSession b)
     {
+        if (a.id.length > 0 && b.id.length > 0) return a.id == b.id;
         if (a.title != b.title) return false;
         if (a.messages.length == 0 || b.messages.length == 0)
             return a.messages.length == b.messages.length;
