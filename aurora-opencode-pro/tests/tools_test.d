@@ -302,6 +302,49 @@ int main()
             `{"action":"remove","processId":"` ~ processId ~ `"}`), dir);
         assert(!removed.failed, removed.output);
 
+        auto interactive = executeTool(makeCall("run",
+            `{"program":"cmd.exe","args":["/d","/q","/v:on","/c","set /p line= & echo got:!line!"],"background":true}`),
+            dir);
+        const interactiveMarker = interactive.output.indexOf("processId: ");
+        assert(!interactive.failed && interactiveMarker >= 0,
+            "interactive process returned no id: " ~ interactive.output);
+        auto interactiveIdBody = interactive.output[
+            cast(size_t) interactiveMarker + 11 .. $];
+        const interactiveIdEnd = interactiveIdBody.indexOf('\n');
+        const interactiveId = interactiveIdEnd >= 0
+            ? interactiveIdBody[0 .. cast(size_t) interactiveIdEnd]
+            : interactiveIdBody;
+        auto wrote = executeTool(makeCall("process",
+            `{"action":"write","processId":"` ~ interactiveId ~
+            `","input":"hello-stdin\n","closeStdin":true}`), dir);
+        assert(!wrote.failed && wrote.output.indexOf("Stdin closed") >= 0,
+            "writing process stdin failed: " ~ wrote.output);
+        string interactiveOutput;
+        foreach (_; 0 .. 40)
+        {
+            interactiveOutput = executeTool(makeCall("process",
+                `{"action":"output","processId":"` ~ interactiveId ~ `"}`),
+                dir).output;
+            if (interactiveOutput.indexOf("got:hello-stdin") >= 0) break;
+            Thread.sleep(msecs(100));
+        }
+        assert(interactiveOutput.indexOf("got:hello-stdin") >= 0,
+            "process did not receive stdin: " ~ interactiveOutput);
+        // Wait until removal is legal; output can arrive just before the
+        // monitor publishes the terminal status.
+        string interactiveStatus;
+        foreach (_; 0 .. 40)
+        {
+            interactiveStatus = executeTool(makeCall("process",
+                `{"action":"status","processId":"` ~ interactiveId ~ `"}`),
+                dir).output;
+            if (interactiveStatus.indexOf("status: exited") >= 0) break;
+            Thread.sleep(msecs(50));
+        }
+        removed = executeTool(makeCall("process",
+            `{"action":"remove","processId":"` ~ interactiveId ~ `"}`), dir);
+        assert(!removed.failed, removed.output ~ "\n" ~ interactiveStatus);
+
         auto longBackground = executeTool(makeCall("run",
             `{"program":"cmd.exe","args":["/d","/c","ping -n 30 127.0.0.1 >nul"],"background":true}`),
             dir);
@@ -330,7 +373,7 @@ int main()
         removed = executeTool(makeCall("process",
             `{"action":"remove","processId":"` ~ longId ~ `"}`), dir);
         assert(!removed.failed, removed.output);
-        writeln("Background process keeps stable id, status and output");
+        writeln("Background process keeps id, output, stdin and cancellation");
     }
     else
     {

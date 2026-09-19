@@ -7,7 +7,8 @@ import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
     isAbsolute;
-import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
+import std.process : Pid, Pipe, pipe, waitTimeout, kill, wait, spawnProcess,
+    Config;
 version (Windows)
     import core.sys.windows.windows : HANDLE, DWORD, BOOL, UINT, ULONG_PTR,
         LONG, WCHAR;
@@ -157,10 +158,11 @@ private OpenCodeToolDef processToolDefinition()
     return OpenCodeToolDef(
         "process",
         "Manage background processes started by `run` or `bash`. List them, " ~
-        "inspect status, read accumulated output, request termination, or " ~
-        "remove a completed process record. Reuse the returned processId; " ~
+        "inspect status, read accumulated output, write or close stdin, " ~
+        "request termination, or remove a completed process record. Reuse " ~
+        "the returned processId; " ~
         "do not relaunch a command merely because it is still running.",
-        `{"type":"object","properties":{"action":{"type":"string","enum":["list","status","output","kill","remove"],"description":"Operation to perform"},"processId":{"type":"string","description":"Stable id returned by a background run/bash call; required except for list"}},"required":["action"]}`
+        `{"type":"object","properties":{"action":{"type":"string","enum":["list","status","output","write","kill","remove"],"description":"Operation to perform"},"processId":{"type":"string","description":"Stable id returned by a background run/bash call; required except for list"},"input":{"type":"string","description":"Text to write for the write action"},"closeStdin":{"type":"boolean","description":"Close stdin after writing, or close it without input"}},"required":["action"]}`
     );
 }
 
@@ -440,7 +442,8 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Add `\"background\":true` to `run`/`bash` for long builds, " ~
         "servers, watchers, or commands that need not block the agent turn. " ~
         "The result returns a stable processId. Use `process` with action " ~
-        "`status`, `output`, `kill`, or `remove` to manage it; use `list` " ~
+        "`status`, `output`, `write`, `kill`, or `remove` to manage it; use " ~
+        "`write` with `input` and optional `closeStdin`; use `list` " ~
         "without an id to discover active processes. Never restart a command " ~
         "just because its status is still running.\n");
     builder.put("Workflow: gather context with `dshell`/`read`/`grep`, make the " ~
@@ -980,6 +983,8 @@ private final class SupervisedProcess
     string workdir;
     string outputPath;
     Pid pid;
+    File input;
+    bool stdinClosed;
     MonoTime startedAt;
     bool running = true;
     bool killRequested;
@@ -1030,11 +1035,22 @@ private ToolExecution startBackgroundProcess(string[] argv, string workdir,
         return ToolExecution(toolName,
             "Error: could not open background process output.", true);
 
+    Pipe inputPipe;
+    try inputPipe = pipe();
+    catch (Exception error)
+    {
+        collectException(outFile.close());
+        collectException(remove(outPath));
+        return ToolExecution(toolName,
+            "Error: could not create process stdin: " ~ error.msg, true);
+    }
+
     Pid pid;
-    try pid = spawnProcess(argv, stdin, outFile, outFile, null,
+    try pid = spawnProcess(argv, inputPipe.readEnd, outFile, outFile, null,
         Config.suppressConsole, workdir);
     catch (Exception error)
     {
+        collectException(inputPipe.close());
         collectException(outFile.close());
         collectException(remove(outPath));
         return ToolExecution(toolName,
@@ -1042,6 +1058,7 @@ private ToolExecution startBackgroundProcess(string[] argv, string workdir,
     }
     // The child owns its duplicated output handle. Closing our copy allows
     // status/output calls to read the file while the process is still active.
+    collectException(inputPipe.readEnd.close());
     collectException(outFile.close());
 
     auto process = new SupervisedProcess();
@@ -1050,6 +1067,7 @@ private ToolExecution startBackgroundProcess(string[] argv, string workdir,
     process.workdir = workdir;
     process.outputPath = outPath;
     process.pid = pid;
+    process.input = inputPipe.writeEnd;
     process.startedAt = MonoTime.currTime;
     _processMutex.lock();
     _processes[id] = process;
@@ -1076,6 +1094,11 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
             process.running = false;
             process.exitCode = waited.status;
             process.elapsedMs = stopwatch.peek.total!"msecs";
+            if (!process.stdinClosed)
+            {
+                collectException(process.input.close());
+                process.stdinClosed = true;
+            }
             _processMutex.unlock();
             return;
         }
@@ -1093,6 +1116,11 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
         process.timedOut = timedOut;
         process.exitCode = 1;
         process.elapsedMs = stopwatch.peek.total!"msecs";
+        if (!process.stdinClosed)
+        {
+            collectException(process.input.close());
+            process.stdinClosed = true;
+        }
         _processMutex.unlock();
         return;
     }
@@ -1109,6 +1137,7 @@ private string processStatusText(const SupervisedProcess process)
     auto result = "processId: " ~ process.id ~ "\nstatus: " ~ state;
     if (!process.running) result ~= "\nexitCode: " ~ to!string(process.exitCode);
     result ~= "\nelapsedMs: " ~ to!string(elapsed) ~
+        "\nstdin: " ~ (process.stdinClosed ? "closed" : "open") ~
         "\nworkdir: " ~ process.workdir ~
         "\ncommand: " ~ process.command;
     return result;
@@ -1124,10 +1153,16 @@ private ToolExecution runProcessTool(string args)
             "Error: process requires a JSON object payload.", true);
     string action;
     string id;
+    string input;
+    bool closeStdin;
     if (auto field = "action" in value.object)
         if (field.type == JSONType.string) action = field.str;
     if (auto field = "processId" in value.object)
         if (field.type == JSONType.string) id = field.str;
+    if (auto field = "input" in value.object)
+        if (field.type == JSONType.string) input = field.str;
+    if (auto field = "closeStdin" in value.object)
+        closeStdin = field.type == JSONType.true_;
 
     if (action == "list")
     {
@@ -1168,6 +1203,43 @@ private ToolExecution runProcessTool(string args)
             ? "Termination requested for " ~ id ~ "."
             : "Process " ~ id ~ " has already finished.", false);
     }
+    if (action == "write")
+    {
+        if (!process.running)
+        {
+            _processMutex.unlock();
+            return ToolExecution("process",
+                "Error: process " ~ id ~ " has already finished.", true);
+        }
+        if (process.stdinClosed)
+        {
+            _processMutex.unlock();
+            return ToolExecution("process",
+                "Error: stdin is already closed for " ~ id ~ ".", true);
+        }
+        try
+        {
+            if (input.length > 0) process.input.write(input);
+            if (input.length > 0) process.input.flush();
+            if (closeStdin)
+            {
+                process.input.close();
+                process.stdinClosed = true;
+            }
+        }
+        catch (Exception error)
+        {
+            _processMutex.unlock();
+            return ToolExecution("process",
+                "Error: could not write process stdin: " ~ error.msg, true);
+        }
+        const closed = process.stdinClosed;
+        _processMutex.unlock();
+        return ToolExecution("process",
+            (input.length > 0 ? "Wrote " ~ to!string(input.length) ~
+                " bytes to " ~ id ~ "." : "No input bytes written.") ~
+            (closed ? " Stdin closed." : ""), false);
+    }
     if (action == "remove")
     {
         if (process.running)
@@ -1176,6 +1248,7 @@ private ToolExecution runProcessTool(string args)
             return ToolExecution("process",
                 "Error: kill or wait for " ~ id ~ " before removing it.", true);
         }
+        if (!process.stdinClosed) collectException(process.input.close());
         _processes.remove(id);
         const path = process.outputPath;
         _processMutex.unlock();
@@ -1198,7 +1271,8 @@ private ToolExecution runProcessTool(string args)
             ? truncateOutput(output) : "(no output yet)", false);
     }
     return ToolExecution("process",
-        "Error: action must be list, status, output, kill, or remove.", true);
+        "Error: action must be list, status, output, write, kill, or remove.",
+        true);
 }
 
 /// Set while the user has asked to stop the current turn. A command launched by
