@@ -2973,7 +2973,7 @@ private final class ContextUsageBadge : Widget
 
     string labelForTesting()
     {
-        return hasUsage() ? to!string(usagePercent) ~ "%" : "ctx";
+        return hasUsage() ? to!string(usagePercent) ~ "%" : "0%";
     }
 
     protected override Size onMeasure(Size available)

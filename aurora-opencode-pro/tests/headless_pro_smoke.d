@@ -289,8 +289,8 @@ int main(string[] args)
 
     // Context meter starts empty: the restored replies have no API usage yet.
     auto usageBadge = requireWidget!Widget(root, "oc-usage");
-    assert(root.contextUsageTextForTesting() == "ctx",
-        "Context badge should read ctx until usage is reported");
+    assert(root.contextUsageTextForTesting() == "0%",
+        "Context badge should read 0% until usage is reported");
     writeln("Context badge initially: ", root.contextUsageTextForTesting());
 
     auto sessions = requireWidget!SessionListView(root, "oc-sessions");
@@ -1015,8 +1015,8 @@ int main(string[] args)
     // resets the badge, and switching back restores the persisted count.
     sessions.onSelectionChanged(1);
     root.tickTree(0.02);
-    assert(root.contextUsageTextForTesting() == "ctx",
-        "Badge should reset for a session without usage");
+    assert(root.contextUsageTextForTesting() == "0%",
+        "Badge should reset to 0% for a session without usage");
     sessions.onSelectionChanged(0);
     root.tickTree(0.02);
     assert(root.contextUsageTextForTesting() == "25%",
