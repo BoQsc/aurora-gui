@@ -3891,6 +3891,11 @@ public final class OpenCodeRoot : VBox
     private HoverTooltip _legacyTooltip;
     private bool _legacyTooltipOpen;
 
+    // Hover tooltip for the composer's Thinking toggle, explaining what it does.
+    private TooltipAnchor _thinkingTooltipAnchor;
+    private HoverTooltip _thinkingTooltip;
+    private bool _thinkingTooltipOpen;
+
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
@@ -4144,6 +4149,21 @@ public final class OpenCodeRoot : VBox
             if (_current >= 0) _sessions[_current].thinking = value;
             saveSettingsNow();
         };
+        _thinkingTooltipAnchor = new TooltipAnchor(_thinkingBox);
+        _thinkingTooltipAnchor.setText(
+            "Controls the model's reasoning effort. On sends " ~
+            "reasoning_effort \"high\" so the model thinks longer before " ~
+            "answering. Off sends \"none\" on a local server (disabling " ~
+            "thinking) or \"low\" on a hosted provider. Models that do not " ~
+            "support reasoning_effort ignore it.");
+        _thinkingTooltipAnchor.onHoverChanged = delegate(bool open)
+        {
+            if (_thinkingTooltip is null)
+                _thinkingTooltip = new HoverTooltip(_thinkingTooltipAnchor);
+            setTooltipOpen(_thinkingTooltipAnchor, _thinkingTooltip,
+                _thinkingTooltipOpen, open);
+        };
+        composerControls.add(_thinkingTooltipAnchor);
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
