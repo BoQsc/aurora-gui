@@ -4,6 +4,46 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode Pro: conversation work-time timer (2026-09-19)
+
+**What changed.** The composer footer now carries a small clock badge
+(`oc-timer`, `ChatTimerBadge`) showing how long the conversation has taken
+overall — the assistant's accumulated working time: every finished turn on the
+active branch plus the turn currently in flight. It ticks in real time while the
+agent works and freezes on the total when idle.
+- A finished turn is stamped by `freezeTurnTiming()` onto the user message that
+  opened it (`ChatMessage.workedSeconds`), so it survives a restart and a
+  regenerate overwrites the old value instead of double-counting.
+- `sessionWorkedSeconds()` sums the active branch's `workedSeconds`; because it
+  walks the active path, a branch totals only its own work.
+- The live portion is only counted when the running turn's user-message id is
+  actually on that session (`turnBelongsTo`), so a stale session index reused
+  after a reload cannot leak one chat's live time into another.
+- The badge is refreshed from the root `onTick` (throttled to 0.2 s) and on
+  session switch/`newChat`.
+
+**D gotcha that cost two red tests.** In D, a floating-point variable is
+default-initialized to **NaN**, not 0.0. Both the accumulator (`double total;`)
+and `ChatMessage.workedSeconds` were NaN until assigned, so the sum came out
+`nan`. Guard with `isFinite(...) && x > 0` (and initialize accumulators to
+`0.0`). Note also that `Duration.total!"seconds"` returns `long`, so
+`isFinite(that)` fails to compile.
+
+**How to test.**
+```
+"C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+build\headless-pro-smoke.exe
+```
+Smoke assertion: "Chat timer accumulates the conversation's work time and
+persists" — seeds 67 s via `setChatWorkedSecondsForTesting(67)`, checks the
+label reads `1m 07s`, saves/reloads (`persistForTesting` +
+`reloadSessionsForTesting`) and re-checks, then asserts the badge runs during
+`startTurnClockForTesting()` and stops after `finishStreamForTesting()`. Test
+hooks: `chatTimerLabelForTesting`, `chatTimerRunningForTesting`,
+`chatWorkedSecondsForTesting`, `setChatWorkedSecondsForTesting`. The test seam
+must call `markDirty()` after stamping, exactly like the production freeze, or a
+reload resolves to a stale recovery snapshot.
+
 ## Aurora OpenCode Pro: tool elapsed time in the transcript (2026-09-19)
 
 **What changed.** Every tool run is timed and the duration is shown in the chat

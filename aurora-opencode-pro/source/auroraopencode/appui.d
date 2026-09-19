@@ -24,6 +24,7 @@ import std.datetime : Clock;
 import std.file : exists, fileRemove = remove, mkdirRecurse, readText, rename,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
+import std.math : isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
 import std.string : strip, toLower;
@@ -2164,7 +2165,7 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
 /// Whole seconds; never negative.
 private string formatTurnDuration(double seconds)
 {
-    if (seconds < 0) seconds = 0;
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const total = cast(long) seconds;
     if (total < 60) return to!string(total) ~ "s";
     const remainder = total % 60;
@@ -3180,6 +3181,79 @@ private final class ContextUsageBadge : Widget
 }
 
 // ---------------------------------------------------------------------------
+// Conversation work-time badge
+// ---------------------------------------------------------------------------
+
+/// A small live stopwatch for the whole conversation: the assistant's
+/// accumulated working time across every finished turn on the active branch,
+/// plus the turn currently in flight. It ticks while the agent works and holds
+/// the total when it is idle, so the chat's overall cost is visible at a glance.
+private final class ChatTimerBadge : Widget
+{
+    private double _seconds = 0.0;
+    private bool _running;
+    private long _shownSecond = -1;
+
+    this()
+    {
+        layoutHints().preferredWidth = 104;
+        layoutHints().minWidth = 104;
+        layoutHints().preferredHeight = 22;
+    }
+
+    void setSeconds(double seconds, bool running)
+    {
+        // Guard the NaN default a double carries in D as well as negatives.
+        if (!isFinite(seconds) || seconds < 0) seconds = 0;
+        const second = cast(long) seconds;
+        // Repaint only when the visible whole-second value or the running state
+        // changes, so a 60 fps tick does not repaint the footer every frame.
+        if (second == _shownSecond && running == _running) return;
+        _seconds = seconds;
+        _shownSecond = second;
+        _running = running;
+        invalidate();
+    }
+
+    string labelForTesting() const
+    {
+        return "Total " ~ formatTurnDuration(_seconds);
+    }
+
+    bool runningForTesting() const
+    {
+        return _running;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = 104;
+        layoutHints().preferredHeight = 22;
+        return Size(104, 22);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const width = bounds().width;
+        const height = bounds().height;
+        canvas.fillRoundedRect(Rect(0, 0, width, height), height / 2,
+            opencodeField);
+        // A tiny clock face (circle + hands) instead of a glyph, so no font or
+        // code page can turn it into a missing-character box.
+        const cx = 13;
+        const cy = height / 2;
+        const mark = _running ? opencodeAccent : opencodeMuted;
+        canvas.strokeCircle(Point(cx, cy), 5, mark, 1);
+        canvas.drawLine(Point(cx, cy), Point(cx, cy - 3), mark, 1);
+        canvas.drawLine(Point(cx, cy), Point(cx + 2, cy + 1), mark, 1);
+        canvas.drawTextInRect(Rect(22, 0, width - 24, height),
+            toUTF32(labelForTesting()), _running ? palette.text : opencodeMuted,
+            1, HorizontalAlign.left, VerticalAlign.middle, false);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Chat input with Enter-to-send
 // ---------------------------------------------------------------------------
 
@@ -4073,8 +4147,18 @@ public final class OpenCodeRoot : VBox
     // rest of the run.
     private MonoTime _turnStartedAt;
     private string _turnUserId;
+    private int _turnSessionIndex = -1;
     private bool _turnTiming;
     private double[string] _turnDurations;
+
+    // Live "how long has this chat taken" stopwatch in the composer footer. The
+    // total is the sum of every finished turn's `workedSeconds` on the active
+    // branch plus the turn in flight; `_timerBadgeAccum` throttles the recompute
+    // to a few times a second instead of every frame.
+    private ChatTimerBadge _timerBadge;
+    private double _timerBadgeAccum = 0.0;
+    private long _lastTimerTotal = -1;
+    private bool _lastTimerRunning;
 
     // Pro: the "Worked for …" completion separator is still fragile (its
     // appearance depends on turn-timing key matches and finishing on a prose
@@ -4345,6 +4429,12 @@ public final class OpenCodeRoot : VBox
         // The "?" help anchor sits after the pair so Thinking and Tools stay
         // adjacent (commit 5b94269 left an 18 px badge between them).
         composerControls.add(_thinkingTooltipAnchor);
+        // Push the conversation timer to the right edge of the footer so it is
+        // always visible, even when a long model name and the toggles fill the
+        // row (it was easy to miss tucked in after the "?").
+        composerControls.add(new Spacer());
+        _timerBadge = composerControls.add(new ChatTimerBadge());
+        _timerBadge.setId("oc-timer");
 
         toolbar.add(new Spacer());
 
@@ -4972,6 +5062,7 @@ public final class OpenCodeRoot : VBox
         _input.requestFocus();
         updateStatus("New conversation. Ask away!");
         refreshUsageBadge();
+        refreshTimerBadge(true);
     }
 
     private void selectSession(int index)
@@ -5001,6 +5092,7 @@ public final class OpenCodeRoot : VBox
         markDirty();
         updateStatus("");
         refreshUsageBadge();
+        refreshTimerBadge(true);
     }
 
     private void selectSessionByRow(int row)
@@ -6819,9 +6911,28 @@ public final class OpenCodeRoot : VBox
     {
         if (!_turnTiming) return;
         if (_turnUserId.length > 0)
-            _turnDurations[_turnUserId] =
-                (MonoTime.currTime - _turnStartedAt).total!"seconds";
+        {
+            const duration = (MonoTime.currTime - _turnStartedAt).total!"seconds";
+            _turnDurations[_turnUserId] = duration;
+            // Stamp the total on the user message that opened the turn. The
+            // conversation timer sums those stamps, and overwriting (rather than
+            // adding) means regenerating a turn replaces its old time instead of
+            // double-counting it.
+            if (_turnSessionIndex >= 0 &&
+                _turnSessionIndex < cast(int) _sessions.length)
+            {
+                auto session = &_sessions[_turnSessionIndex];
+                foreach (ref message; session.messages)
+                    if (message.id == _turnUserId)
+                    {
+                        message.workedSeconds = duration;
+                        break;
+                    }
+                markDirty();
+            }
+        }
         _turnTiming = false;
+        refreshTimerBadge(true);
     }
 
     /// Start (or restart) the turn clock for a user-initiated request.
@@ -6829,7 +6940,71 @@ public final class OpenCodeRoot : VBox
     {
         _turnStartedAt = MonoTime.currTime;
         _turnUserId = activeTurnUserId(sessionIndex);
+        _turnSessionIndex = sessionIndex;
         _turnTiming = true;
+        refreshTimerBadge(true);
+    }
+
+    /// Whether the turn currently on the clock was opened by a user message on
+    /// `sessionIndex`'s active branch. Matching the message id (not just the
+    /// index) matters because the index can be reused after a reload or a
+    /// session delete, which would otherwise leak one chat's live time into
+    /// another.
+    private bool turnBelongsTo(int sessionIndex)
+    {
+        if (!_turnTiming || sessionIndex != _turnSessionIndex ||
+            _turnUserId.length == 0)
+            return false;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        auto session = &_sessions[sessionIndex];
+        foreach (index; activeMessagePath(*session))
+            if (session.messages[index].role == "user" &&
+                session.messages[index].id == _turnUserId)
+                return true;
+        return false;
+    }
+
+    /// The assistant's accumulated working time for a conversation: every
+    /// finished turn's duration on the active branch, plus the turn currently
+    /// in flight. Keying on the user messages that opened each turn is what
+    /// makes a branch total only the work on its own path.
+    private double sessionWorkedSeconds(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return 0;
+        auto session = &_sessions[sessionIndex];
+        double total = 0.0;
+        foreach (index; activeMessagePath(*session))
+        {
+            const message = session.messages[index];
+            // D default-initializes floating point to NaN, so an untouched
+            // `workedSeconds` must be skipped or it poisons the whole sum.
+            if (message.role == "user" && !message.internal &&
+                isFinite(message.workedSeconds) && message.workedSeconds > 0)
+                total += message.workedSeconds;
+        }
+        if (turnBelongsTo(sessionIndex))
+        {
+            const live = (MonoTime.currTime - _turnStartedAt).total!"seconds";
+            if (live > 0) total += live;
+        }
+        return total;
+    }
+
+    /// Push the conversation's accumulated work time into the composer badge.
+    /// Throttled by the caller; `force` is for session switches and freezes.
+    private void refreshTimerBadge(bool force = false)
+    {
+        if (_timerBadge is null) return;
+        const total = sessionWorkedSeconds(_current);
+        const running = turnBelongsTo(_current);
+        if (!force && cast(long) total == _lastTimerTotal &&
+            running == _lastTimerRunning)
+            return;
+        _lastTimerTotal = cast(long) total;
+        _lastTimerRunning = running;
+        _timerBadge.setSeconds(total, running);
     }
 
     private void startChatRequest(int sessionIndex, bool userTurn = true)
@@ -7913,6 +8088,10 @@ public final class OpenCodeRoot : VBox
             // reloaded transcript still shows how long each command took.
             if (message.toolElapsedMs > 0)
                 messageJson["toolElapsedMs"] = message.toolElapsedMs;
+            // A finished turn's working time is stored on its opening user
+            // message, so the conversation timer survives a restart.
+            if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
+                messageJson["workedSeconds"] = message.workedSeconds;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -8044,6 +8223,13 @@ public final class OpenCodeRoot : VBox
                                     if (auto f = "toolElapsedMs" in messageValue.object)
                                         if (f.type == JSONType.integer)
                                             message.toolElapsedMs = cast(long) f.integer;
+                                    if (auto f = "workedSeconds" in messageValue.object)
+                                    {
+                                        if (f.type == JSONType.integer)
+                                            message.workedSeconds = cast(double) f.integer;
+                                        else if (f.type == JSONType.float_)
+                                            message.workedSeconds = f.floating;
+                                    }
                                     if (auto f = "toolCalls" in messageValue.object)
                                     {
                                         if (f.type == JSONType.array)
@@ -8327,6 +8513,15 @@ public final class OpenCodeRoot : VBox
 
         if (_stateDirty && MonoTime.currTime >= _persistDue)
             persistState();
+
+        // Tick the conversation stopwatch a few times a second rather than every
+        // frame: the displayed value only changes once per whole second.
+        _timerBadgeAccum += deltaSeconds;
+        if (_timerBadgeAccum >= 0.2)
+        {
+            _timerBadgeAccum = 0;
+            refreshTimerBadge();
+        }
 
         updateSendButton();
     }
@@ -9990,6 +10185,43 @@ public final class OpenCodeRoot : VBox
             if (auto group = cast(ToolGroupBubble) child)
                 total += group.elapsedMsForTesting();
         return total;
+    }
+
+    /// Test-only: the composer timer's label, e.g. "0s" or "1m 07s".
+    public string chatTimerLabelForTesting()
+    {
+        return _timerBadge is null ? "" : _timerBadge.labelForTesting();
+    }
+
+    /// Test-only: whether the composer timer is in its live (working) state.
+    public bool chatTimerRunningForTesting()
+    {
+        return _timerBadge !is null && _timerBadge.runningForTesting();
+    }
+
+    /// Test-only: the conversation's accumulated assistant working seconds.
+    public double chatWorkedSecondsForTesting()
+    {
+        return sessionWorkedSeconds(_current);
+    }
+
+    /// Test-only: stamp the active conversation's accumulated work time on its
+    /// last user message (as a finished turn would) and refresh the badge.
+    public void setChatWorkedSecondsForTesting(double seconds)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        foreach_reverse (ref message; session.messages)
+            if (message.role == "user")
+            {
+                message.workedSeconds = seconds;
+                break;
+            }
+        // Production writes the value through `freezeTurnTiming`, which marks
+        // the session dirty (refreshing the crash-recovery snapshot too). Mirror
+        // that here or a reload can resolve to a stale recovery copy.
+        markDirty();
+        refreshTimerBadge(true);
     }
 
     /// Test-only: the centered conversation column's laid-out width. It is the

@@ -2473,6 +2473,42 @@ int main(string[] args)
         writeln("Read bodies survive a save + reload");
     }
 
+    // Conversation work-time timer: the composer footer shows how long the chat
+    // has taken overall — every finished turn plus the turn in flight — ticking
+    // in real time and surviving a restart.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["Time this chat", "Done."]);
+        assert(root.chatWorkedSecondsForTesting() == 0,
+            "a fresh chat already had accumulated work time: " ~
+            to!string(root.chatWorkedSecondsForTesting()) ~ " running=" ~
+            to!string(root.chatTimerRunningForTesting()));
+        root.setChatWorkedSecondsForTesting(67);
+        assert(root.chatWorkedSecondsForTesting() == 67,
+            "chat work time did not accumulate: " ~
+            to!string(root.chatWorkedSecondsForTesting()));
+        assert(root.chatTimerLabelForTesting() == "Total 1m 07s",
+            "chat timer label wrong: " ~ root.chatTimerLabelForTesting());
+        assert(driver.paint(), "Chat timer badge did not paint");
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.chatWorkedSecondsForTesting() == 67,
+            "chat work time did not survive a reload: " ~
+            to!string(root.chatWorkedSecondsForTesting()));
+        assert(root.chatTimerLabelForTesting() == "Total 1m 07s",
+            "restored chat timer label wrong: " ~
+            root.chatTimerLabelForTesting());
+        // While a turn is in flight the badge is in its live (running) state.
+        root.startTurnClockForTesting();
+        assert(root.chatTimerRunningForTesting(),
+            "chat timer should run during an active turn");
+        root.finishStreamForTesting();
+        assert(!root.chatTimerRunningForTesting(),
+            "chat timer kept running after the turn finished");
+        writeln("Chat timer accumulates the conversation's work time and persists");
+    }
+
     // Collapse/expand performance: expanding a tool output used to shape every
     // row up front (600 rows, ~2 s of freeze). Now only the visible rows are
     // shaped and the layout is cached across toggles, so the first expand is
