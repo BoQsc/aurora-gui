@@ -506,6 +506,7 @@ public struct ChatMessage
     int diffAdditions;  // file-mutating tools: added line count (+N)
     int diffDeletions;  // file-mutating tools: removed line count (-M)
     string toolDiff;    // file-mutating tools: unified diff for the expanded view
+    long toolElapsedMs; // wall-clock tool duration in ms; 0 hides the label
     // Message graph: every message names its parent, so an edited prompt or a
     // regenerated reply can be kept alongside the run it replaced (a sibling
     // branch) instead of being discarded. `id` is unique within a session and

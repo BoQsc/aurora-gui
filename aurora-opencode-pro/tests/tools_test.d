@@ -232,6 +232,18 @@ int main()
         writeln("cmd / powershell / workdir shell selection OK");
     }
 
+    version (Windows)
+    {
+        // Every tool call is timed so the transcript can show how long a
+        // command took. Use a command that actually waits (~1s) and assert a
+        // measurable non-zero duration.
+        auto slow = executeTool(makeCall("bash",
+            `{"command":"ping -n 2 127.0.0.1 >nul","shell":"cmd"}`), dir);
+        assert(!slow.failed, "timed command failed: " ~ slow.output);
+        assert(slow.elapsedMs >= 100, "tool execution was not timed");
+        writeln("tool calls report their elapsed time");
+    }
+
     // The D-native `run` tool executes a program directly with an argument
     // list — no shell involved. On Windows use cmd.exe as the program; on
     // Unix use /bin/echo.

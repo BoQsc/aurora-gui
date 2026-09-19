@@ -117,6 +117,23 @@ private string formatTokenRate(int tenths)
     return to!string(tenths / 10) ~ "." ~ to!string(tenths % 10) ~ " t/s";
 }
 
+/// Compact wall-clock duration for a tool run: `340ms`, `1.5s`, `2m03s`.
+/// Negative or zero durations return "" so an unknown/instant time shows
+/// nothing rather than a misleading `0ms`.
+private string formatElapsedMs(long ms)
+{
+    if (ms <= 0) return "";
+    if (ms < 1000) return to!string(ms) ~ "ms";
+    // Round to 0.1s so a fast command does not read `0.0s`.
+    const tenths = (ms + 50) / 100;
+    const seconds = tenths / 10;
+    if (seconds < 60)
+        return to!string(seconds) ~ "." ~ to!string(tenths % 10) ~ "s";
+    const minutes = seconds / 60;
+    const rest = seconds % 60;
+    return to!string(minutes) ~ "m" ~ (rest < 10 ? "0" : "") ~ to!string(rest) ~ "s";
+}
+
 // ---------------------------------------------------------------------------
 // Chat message bubble
 // ---------------------------------------------------------------------------
@@ -259,6 +276,9 @@ private final class MessageBubble : Widget
     private int _diffDeletions;
     private string _diffText;
     private bool _hasDiff;
+    // Wall-clock tool duration, shown on the tool header next to the diff
+    // counters. 0 hides the label (older messages / non-tool bubbles).
+    private long _toolElapsedMs;
 
     /// One rendered line of an expanded tool body. `kind` selects the row tint
     /// and text colour; line numbers are 0 when the column does not apply.
@@ -381,6 +401,15 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Record how long the tool run took so the header can show it next to the
+    /// diff counters. Milliseconds; 0 hides the label.
+    void setToolElapsed(long elapsedMs)
+    {
+        if (_toolElapsedMs == elapsedMs) return;
+        _toolElapsedMs = elapsedMs;
+        invalidate();
+    }
+
     void setCollapsed(bool value)
     {
         if (_collapsed == value) return;
@@ -415,6 +444,8 @@ private final class MessageBubble : Widget
     public int diffAdditionsForTesting() { return _diffAdditions; }
     public int diffDeletionsForTesting() { return _diffDeletions; }
     public bool hasDiffForTesting() { return _hasDiff; }
+    /// Test-only: the tool's wall-clock duration in milliseconds (0 when none).
+    public long toolElapsedMsForTesting() const { return _toolElapsedMs; }
 
     /// Test-only: the tool header's compact argument text, without the
     /// `⚙ name`/toggle prefix. Used to prove arrays render as a command line
@@ -1049,7 +1080,7 @@ private final class MessageBubble : Widget
         if (subtitle.length > 0) left ~= "  " ~ subtitle;
 
         int statsWidth;
-        TextLayout addLayout, delLayout;
+        TextLayout addLayout, delLayout, elapsedLayout;
         if (_hasDiff && (_diffAdditions > 0 || _diffDeletions > 0))
         {
             addLayout = canvas.layoutText(toUTF32("+" ~ to!string(_diffAdditions)),
@@ -1057,6 +1088,15 @@ private final class MessageBubble : Widget
             delLayout = canvas.layoutText(toUTF32("-" ~ to!string(_diffDeletions)),
                 1, FontRole.monospace, null, 200, false);
             statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+        }
+        const elapsedText = _toolElapsedMs > 0
+            ? formatElapsedMs(_toolElapsedMs) : "";
+        if (elapsedText.length > 0)
+        {
+            elapsedLayout = canvas.layoutText(toUTF32(elapsedText), 1,
+                FontRole.monospace, null, 200, false);
+            if (statsWidth > 0) statsWidth += 8;
+            statsWidth += cast(int) elapsedLayout.width;
         }
 
         const available = maxInt(1, innerWidth - statsWidth -
@@ -1067,15 +1107,29 @@ private final class MessageBubble : Widget
         labelCanvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
 
-if (statsWidth > 0)
+        if (statsWidth > 0)
         {
-            // Place the +N -M counters directly after the tool text so they sit
-            // next to the message instead of the far right edge.
-            const x = padH + cast(int) layout.width + 8;
-            const sy = top + (h - cast(int) addLayout.height) / 2;
-            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
-            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
-                delLayout, opencodeDiffDelete);
+            // Place the stats directly after the tool text so they sit next to
+            // the message instead of the far right edge: the green/red `+N -M`
+            // counters and the wall-clock duration. `TextLayout` is a class, so
+            // an unassigned one is null - test for presence, never `.width > 0`.
+            int x = padH + cast(int) layout.width + 8;
+            const statHeight = elapsedLayout !is null && addLayout is null
+                ? cast(int) elapsedLayout.height
+                : (addLayout !is null ? cast(int) addLayout.height : 0);
+            const sy = top + (h - statHeight) / 2;
+            if (addLayout !is null)
+            {
+                canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
+                canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+                    delLayout, opencodeDiffDelete);
+                x += cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+            }
+            if (elapsedLayout !is null)
+            {
+                if (addLayout !is null) x += 8;
+                canvas.drawLayout(Point(x, sy), elapsedLayout, opencodeMuted);
+            }
         }
     }
 
@@ -2174,12 +2228,48 @@ private final class LiveToolRow : Widget
     private string _detail;
     private string[] _detailLines;
     private bool _detailTruncated;
+    // Live wall-clock timer: shown while the command runs, so a long command
+    // displays its elapsed time the same way a settled row shows its duration.
+    private MonoTime _started;
+    private long _fixedMs;      // > 0 freezes the value (tests / settled rows)
+    private long _lastBucket = -1;
 
     void delegate() onSizeChanged;
 
     this()
     {
         setId("oc-live-tool");
+        _started = MonoTime.currTime;
+    }
+
+    /// Freeze the elapsed value (tests and restored rows). 0 restores the live
+    /// clock.
+    void setElapsed(long ms)
+    {
+        _fixedMs = ms;
+        invalidate();
+    }
+
+    private long elapsedMs() const
+    {
+        if (_fixedMs > 0) return _fixedMs;
+        return cast(long) (MonoTime.currTime - _started).total!"msecs";
+    }
+
+    /// Test-only: the elapsed time currently displayed.
+    public long toolElapsedMsForTesting() const { return elapsedMs(); }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (_fixedMs > 0) return;
+        const ms = elapsedMs();
+        // Repaint only when the visible label can change (0.1s buckets under a
+        // second, whole seconds above) so a long command does not repaint every
+        // frame.
+        const bucket = ms < 1000 ? ms / 100 : ms / 1000;
+        if (bucket == _lastBucket) return;
+        _lastBucket = bucket;
+        invalidate();
     }
 
     /// Name the call being shown. `title` is the human tool name (present
@@ -2278,7 +2368,7 @@ private final class LiveToolRow : Widget
         const textX = padH;
         const innerWidth = maxInt(1, bounds().width - textX - padH);
         int statsWidth;
-        TextLayout addLayout, delLayout;
+        TextLayout addLayout, delLayout, elapsedLayout;
         if (_hasDiff)
         {
             addLayout = canvas.layoutText(toUTF32("+" ~ to!string(_additions)),
@@ -2287,21 +2377,41 @@ private final class LiveToolRow : Widget
                 1, FontRole.monospace, null, 200, false);
             statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
         }
+        const elapsedText = formatElapsedMs(elapsedMs());
+        if (elapsedText.length > 0)
+        {
+            elapsedLayout = canvas.layoutText(toUTF32(elapsedText), 1,
+                FontRole.monospace, null, 200, false);
+            if (statsWidth > 0) statsWidth += 8;
+            statsWidth += cast(int) elapsedLayout.width;
+        }
         const available = maxInt(1, innerWidth - statsWidth -
             (statsWidth > 0 ? 8 : 0));
-auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
+        auto layout = canvas.layoutText(toUTF32(rowText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, available, false);
         const sy = (h - cast(int) layout.height) / 2;
         canvas.drawLayout(Point(textX, sy), layout, opencodeMuted);
         if (statsWidth > 0)
         {
-            // Place the +N -M counters directly after the header text so they
-            // sit next to the tool/edit message instead of the far right edge.
-            const x = textX + cast(int) layout.width + 8;
-            const statSy = (h - cast(int) addLayout.height) / 2;
-            canvas.drawLayout(Point(x, statSy), addLayout, opencodeDiffAdd);
-            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, statSy),
-                delLayout, opencodeDiffDelete);
+            // The stats sit next to the header text: +N -M and the live elapsed
+            // time. `TextLayout` is a class, so test `is null`, not `.width`.
+            int x = textX + cast(int) layout.width + 8;
+            const statHeight = elapsedLayout !is null && addLayout is null
+                ? cast(int) elapsedLayout.height
+                : (addLayout !is null ? cast(int) addLayout.height : 0);
+            const statSy = (h - statHeight) / 2;
+            if (addLayout !is null)
+            {
+                canvas.drawLayout(Point(x, statSy), addLayout, opencodeDiffAdd);
+                canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, statSy),
+                    delLayout, opencodeDiffDelete);
+                x += cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+            }
+            if (elapsedLayout !is null)
+            {
+                if (addLayout !is null) x += 8;
+                canvas.drawLayout(Point(x, statSy), elapsedLayout, opencodeMuted);
+            }
         }
 
         if (_detailLines.length == 0) return;
@@ -2641,6 +2751,39 @@ private final class ToolGroupBubble : Widget
         return deletions;
     }
 
+    /// Sum the child rows' wall-clock durations so the collapsed group header
+    /// can show the action group's total time next to the `+N -M` counters.
+    private long elapsedTotalMs()
+    {
+        long total;
+        foreach (part; _parts)
+        {
+            if (auto bubble = cast(MessageBubble) part)
+                total += bubble.toolElapsedMsForTesting();
+            else if (auto row = cast(LiveToolRow) part)
+                total += row.toolElapsedMsForTesting();
+        }
+        return total;
+    }
+
+    /// Test-only: aggregate tool duration of the group's children.
+    public long elapsedMsForTesting() { return elapsedTotalMs(); }
+
+    /// While the group is live its header shows a running total; repaint it when
+    /// the displayed value changes so a long command's timer ticks even when no
+    /// stream events arrive (the rows themselves are collapsed/hidden).
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_live) return;
+        const ms = elapsedTotalMs();
+        const bucket = ms < 1000 ? ms / 100 : ms / 1000;
+        if (bucket == _elapsedBucket) return;
+        _elapsedBucket = bucket;
+        invalidate();
+    }
+
+    private long _elapsedBucket = -1;
+
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
@@ -2688,7 +2831,7 @@ private final class ToolGroupBubble : Widget
         int additions, deletions;
         diffTotals(additions, deletions);
         int statsWidth;
-        TextLayout addLayout, delLayout;
+        TextLayout addLayout, delLayout, elapsedLayout;
         if (additions > 0 || deletions > 0)
         {
             addLayout = canvas.layoutText(toUTF32("+" ~ to!string(additions)),
@@ -2696,6 +2839,14 @@ private final class ToolGroupBubble : Widget
             delLayout = canvas.layoutText(toUTF32("-" ~ to!string(deletions)),
                 1, FontRole.monospace, null, 200, false);
             statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+        }
+        const elapsedText = formatElapsedMs(elapsedTotalMs());
+        if (elapsedText.length > 0)
+        {
+            elapsedLayout = canvas.layoutText(toUTF32(elapsedText), 1,
+                FontRole.monospace, null, 200, false);
+            if (statsWidth > 0) statsWidth += 8;
+            statsWidth += cast(int) elapsedLayout.width;
         }
 
         const textWidth = maxInt(1, innerWidth - statsWidth -
@@ -2708,11 +2859,25 @@ private final class ToolGroupBubble : Widget
 
         if (statsWidth > 0)
         {
-            const x = padH + cast(int) layout.width + 8;
-            const sy = padV + (h - cast(int) addLayout.height) / 2;
-            canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
-            canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
-                delLayout, opencodeDiffDelete);
+            // `TextLayout` is a class: an unassigned one is null, so test for
+            // presence rather than `.width > 0`.
+            int x = padH + cast(int) layout.width + 8;
+            const statHeight = elapsedLayout !is null && addLayout is null
+                ? cast(int) elapsedLayout.height
+                : (addLayout !is null ? cast(int) addLayout.height : 0);
+            const sy = padV + (h - statHeight) / 2;
+            if (addLayout !is null)
+            {
+                canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
+                canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
+                    delLayout, opencodeDiffDelete);
+                x += cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+            }
+            if (elapsedLayout !is null)
+            {
+                if (addLayout !is null) x += 8;
+                canvas.drawLayout(Point(x, sy), elapsedLayout, opencodeMuted);
+            }
         }
     }
 
@@ -4163,7 +4328,6 @@ public final class OpenCodeRoot : VBox
             setTooltipOpen(_thinkingTooltipAnchor, _thinkingTooltip,
                 _thinkingTooltipOpen, open);
         };
-        composerControls.add(_thinkingTooltipAnchor);
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
@@ -4178,6 +4342,9 @@ public final class OpenCodeRoot : VBox
                   "run/read/write/remove/glob/grep/dshell tools."
                 : "Tools disabled.");
         };
+        // The "?" help anchor sits after the pair so Thinking and Tools stay
+        // adjacent (commit 5b94269 left an 18 px badge between them).
+        composerControls.add(_thinkingTooltipAnchor);
 
         toolbar.add(new Spacer());
 
@@ -5397,8 +5564,11 @@ public final class OpenCodeRoot : VBox
         if (message.toolArgs.length > 0)
             bubble.setToolArgs(message.toolArgs);
         if (message.role == "tool")
+        {
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 message.toolDiff);
+            bubble.setToolElapsed(message.toolElapsedMs);
+        }
         // The reasoning passed in is this turn's own chain of thought, so each
         // round shows an expandable "Thinking" block attached to the reply it
         // belongs to — a stable, append-only transcript.
@@ -6187,6 +6357,7 @@ public final class OpenCodeRoot : VBox
         result.diffAdditions = execution.additions;
         result.diffDeletions = execution.deletions;
         result.diffText = execution.diff;
+        result.elapsedMs = execution.elapsedMs;
         result.reasoning = false;
         result.requestId = requestId;
         client.pushLocalEvent(result);
@@ -6230,6 +6401,7 @@ public final class OpenCodeRoot : VBox
         toolMessage.diffAdditions = event.diffAdditions;
         toolMessage.diffDeletions = event.diffDeletions;
         toolMessage.toolDiff = event.diffText;
+        toolMessage.toolElapsedMs = event.elapsedMs;
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
 
@@ -7737,6 +7909,10 @@ public final class OpenCodeRoot : VBox
                 messageJson["diffDeletions"] = message.diffDeletions;
             if (message.toolDiff.length > 0)
                 messageJson["toolDiff"] = message.toolDiff;
+            // The tool's wall-clock duration must also survive a restart, so a
+            // reloaded transcript still shows how long each command took.
+            if (message.toolElapsedMs > 0)
+                messageJson["toolElapsedMs"] = message.toolElapsedMs;
             messages.array ~= messageJson;
         }
         root["messages"] = messages;
@@ -7865,6 +8041,9 @@ public final class OpenCodeRoot : VBox
                                             message.diffDeletions = cast(int) f.integer;
                                     if (auto f = "toolDiff" in messageValue.object)
                                         message.toolDiff = f.str;
+                                    if (auto f = "toolElapsedMs" in messageValue.object)
+                                        if (f.type == JSONType.integer)
+                                            message.toolElapsedMs = cast(long) f.integer;
                                     if (auto f = "toolCalls" in messageValue.object)
                                     {
                                         if (f.type == JSONType.array)
@@ -8892,6 +9071,51 @@ public final class OpenCodeRoot : VBox
             : "";
     }
 
+    /// Test-only: aggregate duration of the in-flight rows, or -1 when there is
+    /// no live row. Used to prove the running timer reaches the group header.
+    public long totalLiveToolElapsedMsForTesting()
+    {
+        long total = -1;
+        foreach (child; messageColumnVisuals())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                    {
+                        if (total < 0) total = 0;
+                        total += row.toolElapsedMsForTesting();
+                    }
+                continue;
+            }
+            if (auto row = cast(LiveToolRow) child)
+            {
+                if (total < 0) total = 0;
+                total += row.toolElapsedMsForTesting();
+            }
+        }
+        return total;
+    }
+
+    /// Test-only: freeze the elapsed value shown by the in-flight tool rows so
+    /// the running timer and the group aggregate can be asserted without
+    /// sleeping (0 restores the live clock).
+    public void setLiveToolElapsedForTesting(long ms)
+    {
+        foreach (child; messageColumnVisuals())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        row.setElapsed(ms);
+                continue;
+            }
+            if (auto row = cast(LiveToolRow) child)
+                row.setElapsed(ms);
+        }
+    }
+
     /// Test-only: streamed body previews of the in-flight tool rows, in column
     /// order (proves the user can see what a tool is producing while it runs).
     public string[] liveToolRowPreviewsForTesting()
@@ -9146,7 +9370,8 @@ public final class OpenCodeRoot : VBox
     /// Test-only: append a completed `tool` message with its diff metadata,
     /// simulating a restored/executed result without running a real tool.
     public void appendToolMessageForTesting(string toolName, string content,
-        string args, int additions, int deletions, string diff)
+        string args, int additions, int deletions, string diff,
+        long elapsedMs = 0)
     {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
@@ -9158,6 +9383,7 @@ public final class OpenCodeRoot : VBox
         message.diffAdditions = additions;
         message.diffDeletions = deletions;
         message.toolDiff = diff;
+        message.toolElapsedMs = elapsedMs;
         message.time = currentTimestamp();
         appendMessage(*session, message);
         rebuildMessageColumn();
@@ -9746,6 +9972,24 @@ public final class OpenCodeRoot : VBox
         auto bubbles = toolBubblesForTesting();
         if (n < 0 || n >= cast(int) bubbles.length) return false;
         return bubbles[cast(size_t) n].hasDiffForTesting();
+    }
+
+    /// Test-only: the wall-clock duration shown for the `tool` bubble at `n`.
+    public long toolElapsedMsForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return 0;
+        return bubbles[cast(size_t) n].toolElapsedMsForTesting();
+    }
+
+    /// Test-only: aggregate tool duration across every action-group header.
+    public long totalToolGroupElapsedMsForTesting()
+    {
+        long total;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                total += group.elapsedMsForTesting();
+        return total;
     }
 
     /// Test-only: the centered conversation column's laid-out width. It is the

@@ -1677,7 +1677,17 @@ int main(string[] args)
             root.totalToolGroupDeletionsForTesting() >= 1,
             "live action-group header did not aggregate the edit preview");
         assert(driver.paint(), "Live edit row did not paint");
-        writeln("Live tool rows grow +N -M as arguments stream");
+        // The in-flight row is timed too, so a long command shows how long it
+        // has been running. Freeze the value to keep the assertion non-racy and
+        // prove the collapsed action-group header aggregates the live timer.
+        root.setLiveToolElapsedForTesting(2500);
+        assert(root.totalLiveToolElapsedMsForTesting() >= 2500,
+            "live tool row did not report its elapsed time");
+        assert(root.totalToolGroupElapsedMsForTesting() >= 2500,
+            "collapsed action-group header did not aggregate the live duration");
+        assert(driver.paint(), "Live elapsed label did not paint");
+        root.setLiveToolElapsedForTesting(0);
+        writeln("Live tool rows show a running elapsed time");
     }
 
     // Live phase indicator: the generic activity row covers the gaps where no
@@ -2010,6 +2020,16 @@ int main(string[] args)
     writeln("Action-group header shows aggregate +",
         root.totalToolGroupAdditionsForTesting(), " -",
         root.totalToolGroupDeletionsForTesting(), " while collapsed");
+    // The real edit call above was timed by `executeTool`; the duration rides
+    // on the tool message, shows on the row, and aggregates into the collapsed
+    // group header just like the diff counters.
+    assert(root.toolElapsedMsForTesting(0) > 0,
+        "real tool call did not report its elapsed time");
+    assert(root.totalToolGroupElapsedMsForTesting() >=
+        root.toolElapsedMsForTesting(0),
+        "action-group header did not aggregate the tool duration");
+    writeln("Tool duration shown on the row and group header: ",
+        root.toolElapsedMsForTesting(0), "ms");
     assert(root.firstToolBubbleCollapsedForTesting(),
         "edit diff part should start collapsed");
     root.toggleFirstToolBubbleForTesting();
@@ -2424,9 +2444,9 @@ int main(string[] args)
         root.addConversationForTesting(["assistant"], [""]);
         root.appendToolMessageForTesting("read",
             "line one\nline two\nline three\n", `{"filePath":"a.txt"}`,
-            0, 0, "");
+            0, 0, "", 1234);
         root.appendToolMessageForTesting("read", "second file\nbody\n",
-            `{"filePath":"b.txt"}`, 0, 0, "");
+            `{"filePath":"b.txt"}`, 0, 0, "", 4321);
         assert(root.contextGroupCountForTesting() == 1,
             "two reads did not fold into one context group");
         root.persistForTesting();
@@ -2435,6 +2455,13 @@ int main(string[] args)
             "restored read lost its content: " ~ root.toolResultForTesting(0));
         assert(root.toolResultForTesting(1).indexOf("second file") >= 0,
             "restored second read lost its content");
+        // The duration is persisted with the message, so a reloaded transcript
+        // still shows how long each tool took.
+        assert(root.toolElapsedMsForTesting(0) == 1234,
+            "restored tool lost its elapsed time: " ~
+            to!string(root.toolElapsedMsForTesting(0)));
+        assert(root.totalToolGroupElapsedMsForTesting() >= 1234,
+            "restored group header lost the elapsed time");
         assert(root.contextGroupCountForTesting() == 1,
             "restored reads did not fold into a group");
         assert(root.firstToolGroupPartCountForTesting() == 2,

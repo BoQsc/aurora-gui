@@ -499,6 +499,10 @@ public struct ToolExecution
     int additions;
     int deletions;
     string diff;
+    // Wall-clock duration of the call, measured by `executeTool`. The UI shows
+    // it on the tool row (and aggregated on the action-group header) the same
+    // way the file-mutating tools show their `+N -M` counters.
+    long elapsedMs;
 }
 
 /// A line-based diff between two file bodies. `unified` uses the standard
@@ -2024,9 +2028,26 @@ private bool fileMatchesInclude(string fileName, string include)
     return endsWith(fileName, include);
 }
 
-/// Execute a single tool call against the workspace directory. The result is
-/// a plain-text string ready to be fed back to the model as a `tool` message.
+/// Execute a single tool call against the workspace directory and record how
+/// long it took. The result is a plain-text string ready to be fed back to the
+/// model as a `tool` message.
 public ToolExecution executeTool(const OpenCodeToolCall call,
+    string workspace)
+{
+    const started = MonoTime.currTime;
+    auto result = dispatchTool(call, workspace);
+    // Microsecond precision then round to ms. An in-process edit can finish in
+    // well under a millisecond; clamping to 1 keeps the label visible and
+    // honest ("<1ms" would just be noise) instead of dropping it as 0.
+    const usecs = cast(long) (MonoTime.currTime - started).total!"usecs";
+    result.elapsedMs = usecs <= 1000 ? 1 : (usecs + 500) / 1000;
+    return result;
+}
+
+/// Dispatch a tool call. Split out of `executeTool` so the timing wrapper has a
+/// single return point and every exit (including the unknown-tool error) is
+/// measured.
+private ToolExecution dispatchTool(const OpenCodeToolCall call,
     string workspace)
 {
     switch (call.name)
