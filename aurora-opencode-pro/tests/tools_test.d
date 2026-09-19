@@ -7,9 +7,12 @@ import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
 import std.path : buildPath;
+import std.json : parseJSON;
 import std.stdio : writeln;
 import std.string : indexOf, replace;
 import std.utf : validate;
+import core.thread : Thread;
+import core.time : msecs;
 
 private OpenCodeToolCall makeCall(string name, string args)
 {
@@ -256,6 +259,78 @@ int main()
         assert(runResult.output.indexOf("run-ok") >= 0,
             "run did not pass args through: " ~ runResult.output);
         writeln("D-native run tool executes a program directly");
+
+        // Long commands can detach from the model round and remain addressable
+        // by a stable process id. Polling output/status must not relaunch them.
+        auto background = executeTool(makeCall("run",
+            `{"program":"cmd.exe","args":["/d","/c","echo bg-start & ping -n 2 127.0.0.1 >nul & echo bg-done"],"background":true}`),
+            dir);
+        assert(!background.failed, "background run failed: " ~
+            background.output);
+        const marker = background.output.indexOf("processId: ");
+        assert(marker >= 0, "background run returned no process id: " ~
+            background.output);
+        auto idBody = background.output[cast(size_t) marker + 11 .. $];
+        const idEnd = idBody.indexOf('\n');
+        const processId = idEnd >= 0
+            ? idBody[0 .. cast(size_t) idEnd] : idBody;
+        assert(processId.length > 0);
+
+        string captured;
+        string status;
+        foreach (_; 0 .. 40)
+        {
+            auto outputResult = executeTool(makeCall("process",
+                `{"action":"output","processId":"` ~ processId ~ `"}`),
+                dir);
+            assert(!outputResult.failed, outputResult.output);
+            captured = outputResult.output;
+            auto statusResult = executeTool(makeCall("process",
+                `{"action":"status","processId":"` ~ processId ~ `"}`),
+                dir);
+            assert(!statusResult.failed, statusResult.output);
+            status = statusResult.output;
+            if (status.indexOf("status: exited") >= 0) break;
+            Thread.sleep(msecs(100));
+        }
+        assert(captured.indexOf("bg-start") >= 0 &&
+            captured.indexOf("bg-done") >= 0,
+            "background output was not retained: " ~ captured);
+        assert(status.indexOf("status: exited") >= 0,
+            "background process never completed: " ~ status);
+        auto removed = executeTool(makeCall("process",
+            `{"action":"remove","processId":"` ~ processId ~ `"}`), dir);
+        assert(!removed.failed, removed.output);
+
+        auto longBackground = executeTool(makeCall("run",
+            `{"program":"cmd.exe","args":["/d","/c","ping -n 30 127.0.0.1 >nul"],"background":true}`),
+            dir);
+        const longMarker = longBackground.output.indexOf("processId: ");
+        assert(!longBackground.failed && longMarker >= 0,
+            "long background run returned no id: " ~ longBackground.output);
+        auto longIdBody = longBackground.output[
+            cast(size_t) longMarker + 11 .. $];
+        const longIdEnd = longIdBody.indexOf('\n');
+        const longId = longIdEnd >= 0
+            ? longIdBody[0 .. cast(size_t) longIdEnd] : longIdBody;
+        auto killed = executeTool(makeCall("process",
+            `{"action":"kill","processId":"` ~ longId ~ `"}`), dir);
+        assert(!killed.failed, killed.output);
+        string killedStatus;
+        foreach (_; 0 .. 40)
+        {
+            killedStatus = executeTool(makeCall("process",
+                `{"action":"status","processId":"` ~ longId ~ `"}`),
+                dir).output;
+            if (killedStatus.indexOf("status: killed") >= 0) break;
+            Thread.sleep(msecs(100));
+        }
+        assert(killedStatus.indexOf("status: killed") >= 0,
+            "background process tree was not terminated: " ~ killedStatus);
+        removed = executeTool(makeCall("process",
+            `{"action":"remove","processId":"` ~ longId ~ `"}`), dir);
+        assert(!removed.failed, removed.output);
+        writeln("Background process keeps stable id, status and output");
     }
     else
     {
@@ -335,6 +410,7 @@ int main()
         bool foundDshell;
         foreach (tool; toolset)
         {
+            parseJSON(tool.parametersJson);
             if (tool.name != "dshell") continue;
             foundDshell = true;
             assert(tool.parametersJson.indexOf("\"where\"") >= 0 &&
@@ -375,12 +451,14 @@ int main()
     bool hasRun;
     bool nativeHasDshell;
     bool nativeHasRemove;
+    bool nativeHasProcess;
     foreach (tool; natives)
     {
         if (tool.name == "bash") nativeHasShell = true;
         if (tool.name == "run") hasRun = true;
         if (tool.name == "dshell") nativeHasDshell = true;
         if (tool.name == "remove") nativeHasRemove = true;
+        if (tool.name == "process") nativeHasProcess = true;
         assert(tool.name != "glob",
             "native toolset should expose dshell instead of glob");
     }
@@ -388,6 +466,7 @@ int main()
     assert(hasRun, "Native toolset must include the run tool");
     assert(nativeHasDshell, "Native toolset must include dshell");
     assert(nativeHasRemove, "Native toolset must include remove");
+    assert(nativeHasProcess, "Native toolset must include process management");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&

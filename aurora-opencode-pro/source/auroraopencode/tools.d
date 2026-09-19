@@ -23,6 +23,8 @@ import std.algorithm : sort, map, filter;
 import std.array : appender, array;
 import std.range : take;
 import std.typecons : Tuple;
+import core.sync.mutex : Mutex;
+import core.thread : Thread;
 
 // ---------------------------------------------------------------------------
 // Built-in tool definitions advertised to the model. The parameter schemas
@@ -149,6 +151,19 @@ private OpenCodeToolDef updatePlanToolDefinition()
     );
 }
 
+/// Inspect and control commands launched with `background:true`.
+private OpenCodeToolDef processToolDefinition()
+{
+    return OpenCodeToolDef(
+        "process",
+        "Manage background processes started by `run` or `bash`. List them, " ~
+        "inspect status, read accumulated output, request termination, or " ~
+        "remove a completed process record. Reuse the returned processId; " ~
+        "do not relaunch a command merely because it is still running.",
+        `{"type":"object","properties":{"action":{"type":"string","enum":["list","status","output","kill","remove"],"description":"Operation to perform"},"processId":{"type":"string","description":"Stable id returned by a background run/bash call; required except for list"}},"required":["action"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -160,8 +175,9 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "Execute shell commands in the workspace. Use this to run build " ~
             "commands, inspect the environment, or manipulate files when the " ~
             "dedicated tools do not fit. " ~ shellUsageNotes(shell),
-            `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["command"]}`
+            `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the command in the background"}},"required":["command"]}`
         ),
+        processToolDefinition(),
         dshellToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
@@ -207,8 +223,9 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "DMD, compiler options precede `-run`; everything after the source " ~
             "file is a runtime argument (example: `-Isource -i -run " ~
             "source/app.d`).",
-            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 60000)"}},"required":["program"]}`
+            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
+        processToolDefinition(),
         dshellToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
@@ -420,6 +437,12 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         builder.put("- `bash` {\"command\":\"dub build\",\"workdir\":\".\"} — " ~
             "run a shell command. Use only for builds, git, package managers, " ~
             "or executables the native tools cannot handle.\n");
+    builder.put("- Add `\"background\":true` to `run`/`bash` for long builds, " ~
+        "servers, watchers, or commands that need not block the agent turn. " ~
+        "The result returns a stable processId. Use `process` with action " ~
+        "`status`, `output`, `kill`, or `remove` to manage it; use `list` " ~
+        "without an id to discover active processes. Never restart a command " ~
+        "just because its status is still running.\n");
     builder.put("Workflow: gather context with `dshell`/`read`/`grep`, make the " ~
         "smallest change with `edit` (or `write` for new files or full " ~
         "rewrites), verify with `run`/`bash`, then briefly summarise what " ~
@@ -824,7 +847,7 @@ private string[] shellCommand(string shell, string command)
 /// not an object.
 private bool parseToolArgs(string args, ref string command,
     ref string shell, ref string workdir, ref int timeoutMs,
-    ref string[] argv)
+    ref string[] argv, ref bool background)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -842,6 +865,8 @@ private bool parseToolArgs(string args, ref string command,
     if (auto field = "timeout" in value.object)
         if (field.type == JSONType.integer)
             timeoutMs = cast(int) field.integer;
+    if (auto field = "background" in value.object)
+        background = field.type == JSONType.true_;
     if (auto field = "args" in value.object)
     {
         if (field.type == JSONType.array)
@@ -861,16 +886,18 @@ private ToolExecution runBash(string args, string workspace)
     string command;
     string shell = "auto";
     string workdir;
-    int timeoutMs = 60_000;
+    int timeoutMs = 3_600_000;
     string[] argvExtra;
-    if (!parseToolArgs(args, command, shell, workdir, timeoutMs, argvExtra))
+    bool background;
+    if (!parseToolArgs(args, command, shell, workdir, timeoutMs, argvExtra,
+        background))
         return ToolExecution("bash",
             "Error: bash requires a JSON object payload.", true);
     if (command.length == 0)
         return ToolExecution("bash",
             "Error: bash requires a non-empty `command` argument.", true);
     if (timeoutMs <= 0)
-        timeoutMs = 60_000;
+        timeoutMs = 3_600_000;
 
     if (shell == "auto")
         shell = defaultShellName();
@@ -878,6 +905,8 @@ private ToolExecution runBash(string args, string workspace)
     const resolvedWorkdir = workdir.length > 0
         ? resolveToolPath(workdir, workspace) : workspace;
 
+    if (background)
+        return startBackgroundProcess(argv, resolvedWorkdir, timeoutMs, "bash");
     auto result = runProcess(argv, resolvedWorkdir, timeoutMs, "bash");
     return ToolExecution("bash", truncateOutput(result[0]), result[1]);
 }
@@ -893,7 +922,8 @@ private ToolExecution runProgramTool(string args, string workspace)
     catch (Exception) value = JSONValue.init;
     string program;
     string workdir;
-    int timeoutMs = 60_000;
+    int timeoutMs = 3_600_000;
+    bool background;
     string[] argv;
     if (value.type == JSONType.object)
     {
@@ -906,6 +936,8 @@ private ToolExecution runProgramTool(string args, string workspace)
         if (auto field = "timeout" in value.object)
             if (field.type == JSONType.integer)
                 timeoutMs = cast(int) field.integer;
+        if (auto field = "background" in value.object)
+            background = field.type == JSONType.true_;
         if (auto field = "args" in value.object)
         {
             if (field.type == JSONType.array)
@@ -922,7 +954,7 @@ private ToolExecution runProgramTool(string args, string workspace)
         return ToolExecution("run",
             "Error: run requires a non-empty `program` argument.", true);
     if (timeoutMs <= 0)
-        timeoutMs = 60_000;
+        timeoutMs = 3_600_000;
 
     // The program name is resolved against PATH by spawnProcess; an explicit
     // path may be given instead. Remaining arguments pass through verbatim.
@@ -930,8 +962,243 @@ private ToolExecution runProgramTool(string args, string workspace)
         ? resolveToolPath(workdir, workspace) : workspace;
     auto fullArgv = [program] ~ argv;
 
+    if (background)
+        return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
+            "run");
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run");
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
+}
+
+// ---------------------------------------------------------------------------
+// Supervised background processes
+// ---------------------------------------------------------------------------
+
+private final class SupervisedProcess
+{
+    string id;
+    string command;
+    string workdir;
+    string outputPath;
+    Pid pid;
+    MonoTime startedAt;
+    bool running = true;
+    bool killRequested;
+    bool killed;
+    bool timedOut;
+    int exitCode;
+    long elapsedMs;
+}
+
+private __gshared Mutex _processMutex;
+private __gshared SupervisedProcess[string] _processes;
+private __gshared ulong _processCounter;
+
+shared static this()
+{
+    _processMutex = new Mutex();
+}
+
+private string displayCommand(const(string)[] argv)
+{
+    auto result = appender!string();
+    foreach (index, arg; argv)
+    {
+        if (index > 0) result.put(' ');
+        result.put(arg);
+    }
+    return result.data;
+}
+
+private ToolExecution startBackgroundProcess(string[] argv, string workdir,
+    int timeoutMs, string toolName)
+{
+    import core.atomic : atomicLoad;
+
+    if (atomicLoad(_commandsCancelled))
+        return ToolExecution(toolName,
+            "Stopped: command cancelled before it started.", true);
+
+    string id;
+    _processMutex.lock();
+    id = "p-" ~ to!string(cast(long) MonoTime.currTime.ticks) ~ "-" ~
+        to!string(++_processCounter);
+    _processMutex.unlock();
+    const outPath = buildNormalizedPath(buildPath(cast(string) tempDir(),
+        "aurora-opencode-process-" ~ id ~ ".out"));
+    File outFile;
+    if (!tryOpenOutput(outPath, outFile, toolName))
+        return ToolExecution(toolName,
+            "Error: could not open background process output.", true);
+
+    Pid pid;
+    try pid = spawnProcess(argv, stdin, outFile, outFile, null,
+        Config.suppressConsole, workdir);
+    catch (Exception error)
+    {
+        collectException(outFile.close());
+        collectException(remove(outPath));
+        return ToolExecution(toolName,
+            "Error: could not start process: " ~ error.msg, true);
+    }
+    // The child owns its duplicated output handle. Closing our copy allows
+    // status/output calls to read the file while the process is still active.
+    collectException(outFile.close());
+
+    auto process = new SupervisedProcess();
+    process.id = id;
+    process.command = displayCommand(argv);
+    process.workdir = workdir;
+    process.outputPath = outPath;
+    process.pid = pid;
+    process.startedAt = MonoTime.currTime;
+    _processMutex.lock();
+    _processes[id] = process;
+    _processMutex.unlock();
+
+    auto monitor = new Thread({ monitorBackgroundProcess(process, timeoutMs); });
+    monitor.isDaemon = true;
+    monitor.start();
+    return ToolExecution(toolName,
+        "Background process started.\nprocessId: " ~ id ~
+        "\nUse the process tool to inspect status or output.", false);
+}
+
+private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
+{
+    const timeout = msecs(timeoutMs);
+    auto stopwatch = StopWatch(AutoStart.yes);
+    while (true)
+    {
+        const waited = waitTimeout(process.pid, msecs(100));
+        if (waited.terminated)
+        {
+            _processMutex.lock();
+            process.running = false;
+            process.exitCode = waited.status;
+            process.elapsedMs = stopwatch.peek.total!"msecs";
+            _processMutex.unlock();
+            return;
+        }
+
+        _processMutex.lock();
+        const killRequested = process.killRequested;
+        _processMutex.unlock();
+        const timedOut = stopwatch.peek > timeout;
+        if (!killRequested && !timedOut) continue;
+
+        killProcessTree(process.pid);
+        _processMutex.lock();
+        process.running = false;
+        process.killed = killRequested;
+        process.timedOut = timedOut;
+        process.exitCode = 1;
+        process.elapsedMs = stopwatch.peek.total!"msecs";
+        _processMutex.unlock();
+        return;
+    }
+}
+
+private string processStatusText(const SupervisedProcess process)
+{
+    const elapsed = process.running
+        ? (MonoTime.currTime - process.startedAt).total!"msecs"
+        : process.elapsedMs;
+    string state = process.running ? "running" :
+        (process.timedOut ? "timed_out" :
+        (process.killed ? "killed" : "exited"));
+    auto result = "processId: " ~ process.id ~ "\nstatus: " ~ state;
+    if (!process.running) result ~= "\nexitCode: " ~ to!string(process.exitCode);
+    result ~= "\nelapsedMs: " ~ to!string(elapsed) ~
+        "\nworkdir: " ~ process.workdir ~
+        "\ncommand: " ~ process.command;
+    return result;
+}
+
+private ToolExecution runProcessTool(string args)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object)
+        return ToolExecution("process",
+            "Error: process requires a JSON object payload.", true);
+    string action;
+    string id;
+    if (auto field = "action" in value.object)
+        if (field.type == JSONType.string) action = field.str;
+    if (auto field = "processId" in value.object)
+        if (field.type == JSONType.string) id = field.str;
+
+    if (action == "list")
+    {
+        string result;
+        _processMutex.lock();
+        foreach (process; _processes)
+            result ~= (result.length > 0 ? "\n\n" : "") ~
+                processStatusText(process);
+        _processMutex.unlock();
+        return ToolExecution("process",
+            result.length > 0 ? result : "No supervised processes.", false);
+    }
+    if (id.length == 0)
+        return ToolExecution("process",
+            "Error: processId is required for action '" ~ action ~ "'.", true);
+
+    _processMutex.lock();
+    auto found = id in _processes;
+    auto process = found is null ? null : *found;
+    if (process is null)
+    {
+        _processMutex.unlock();
+        return ToolExecution("process",
+            "Error: unknown processId '" ~ id ~ "'.", true);
+    }
+    if (action == "status")
+    {
+        const result = processStatusText(process);
+        _processMutex.unlock();
+        return ToolExecution("process", result, false);
+    }
+    if (action == "kill")
+    {
+        if (process.running) process.killRequested = true;
+        const running = process.running;
+        _processMutex.unlock();
+        return ToolExecution("process", running
+            ? "Termination requested for " ~ id ~ "."
+            : "Process " ~ id ~ " has already finished.", false);
+    }
+    if (action == "remove")
+    {
+        if (process.running)
+        {
+            _processMutex.unlock();
+            return ToolExecution("process",
+                "Error: kill or wait for " ~ id ~ " before removing it.", true);
+        }
+        _processes.remove(id);
+        const path = process.outputPath;
+        _processMutex.unlock();
+        collectException(remove(path));
+        return ToolExecution("process", "Removed process record " ~ id ~ ".",
+            false);
+    }
+    _processMutex.unlock();
+
+    if (action == "output")
+    {
+        string output;
+        try output = exists(process.outputPath)
+            ? decodeBytesLenient(cast(const(ubyte)[]) read(process.outputPath))
+            : "";
+        catch (Exception error)
+            return ToolExecution("process",
+                "Error: could not read process output: " ~ error.msg, true);
+        return ToolExecution("process", output.length > 0
+            ? truncateOutput(output) : "(no output yet)", false);
+    }
+    return ToolExecution("process",
+        "Error: action must be list, status, output, kill, or remove.", true);
 }
 
 /// Set while the user has asked to stop the current turn. A command launched by
@@ -2196,6 +2463,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runBash(call.arguments, workspace);
         case "run":
             return runProgramTool(call.arguments, workspace);
+        case "process":
+            return runProcessTool(call.arguments);
         case "dshell":
             return runDshell(call.arguments, workspace);
         case "read":
