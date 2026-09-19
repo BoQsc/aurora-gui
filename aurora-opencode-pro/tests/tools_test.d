@@ -517,19 +517,30 @@ int main()
         "Steering prompts must document dshell");
     assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
         "Native steering prompt must mention the remove tool");
-    // The prompt carries the Codex workflow: a plan tool, a multi-file patch
-    // tool, and the editing constraints.
+    // The prompt carries a concise execution contract while tool schemas carry
+    // parameter syntax, avoiding duplicated instructions and prompt tokens.
     assert(toolSteeringPrompt(false).indexOf("apply_patch") >= 0,
         "Steering prompt must advertise apply_patch");
     assert(toolSteeringPrompt(false).indexOf("update_plan") >= 0,
         "Steering prompt must advertise update_plan");
-    assert(toolSteeringPrompt(false).indexOf("Editing constraints") >= 0,
-        "Steering prompt must carry the Codex editing constraints");
+    assert(toolSteeringPrompt(false).indexOf("# Execution loop") >= 0,
+        "Steering prompt must define the execution loop");
+    assert(toolSteeringPrompt(false).indexOf(
+        "first mutation normally within six") >= 0,
+        "Steering prompt must bound read-only exploration");
+    assert(toolSteeringPrompt(false).indexOf(
+        "Do not finish with pending checklist items") >= 0,
+        "Steering prompt must enforce the durable completion contract");
+    assert(toolSteeringPrompt(false).indexOf("# Environment") >
+        toolSteeringPrompt(false).indexOf("# Communication"),
+        "Dynamic environment should follow stable instructions for caching");
+    assert(toolSteeringPrompt(false).length < 8_000,
+        "Steering prompt should stay concise; tool syntax belongs in schemas");
     // The app can edit its own source; the prompt must forbid the agent from
     // building or killing the process that hosts its session.
     assert(toolSteeringPrompt(false).indexOf(
         "the process running this session") >= 0,
-        "Steering prompt must forbid building/killing the host process");
+        "Steering prompt must protect the live host process");
     writeln("Default vs native-only toolset shapes OK");
 
     // write creates missing parent directories, as its description promises.

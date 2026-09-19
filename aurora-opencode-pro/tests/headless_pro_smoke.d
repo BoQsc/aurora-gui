@@ -1370,19 +1370,19 @@ int main(string[] args)
     dismissContextMenus(root);
     root.tickTree(0.02);
 
-    // The system prompt documents every tool (so the model can use them
-    // trivially) and Settings can show its full text.
+    // Settings exposes the concise system prompt. Tool-specific syntax remains
+    // in the API tool schemas instead of being duplicated here.
     assert(root.systemPromptButtonPresentForTesting(),
         "Settings dialog missing the System prompt button");
     const systemPrompt = root.systemPromptViewerTextForTesting();
     assert(systemPrompt.indexOf("Aurora OpenCode") >= 0,
         "system prompt is missing the identity line");
-    assert(systemPrompt.indexOf("`edit`") >= 0 &&
-        systemPrompt.indexOf("replaceAll") >= 0,
-        "system prompt does not document the edit tool: " ~ systemPrompt);
-    assert(systemPrompt.indexOf("Workflow:") >= 0,
-        "system prompt is missing the tool workflow guidance");
-    writeln("System prompt documents the tools and is viewable from Settings");
+    assert(systemPrompt.indexOf("# Execution loop") >= 0 &&
+        systemPrompt.indexOf("# Operating contract") >= 0,
+        "system prompt is missing the execution contract: " ~ systemPrompt);
+    assert(systemPrompt.indexOf("first mutation normally within six") >= 0,
+        "system prompt does not bound read-only exploration");
+    writeln("Concise execution-contract prompt is viewable from Settings");
     const promptShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
     if (!exists(promptShots)) mkdirRecurse(promptShots);
     assert(driver.paint(), "System prompt viewer did not repaint");
