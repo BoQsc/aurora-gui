@@ -1,8 +1,9 @@
 module auroraopencode_pro_tools_test;
 
 import auroraopencode.core : OpenCodeToolCall;
-import auroraopencode.tools : builtinToolDefinitions, executeTool,
-    nativeOnlyToolDefinitions, resolveToolPath, toolSteeringPrompt;
+import auroraopencode.tools : ToolExecution, builtinToolDefinitions,
+    cancelRunningCommands, executeTool, nativeOnlyToolDefinitions,
+    resetRunningCommands, resolveToolPath, toolSteeringPrompt;
 import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
@@ -250,6 +251,28 @@ int main()
         assert(!slow.failed, "timed command failed: " ~ slow.output);
         assert(slow.elapsedMs >= 100, "tool execution was not timed");
         writeln("tool calls report their elapsed time");
+
+        // Stop must interrupt a command already running on a tool worker. This
+        // also guards the UI/worker race where the worker used to clear a Stop
+        // request just after the user clicked the button.
+        resetRunningCommands();
+        ToolExecution cancelled;
+        auto worker = new Thread({
+            cancelled = executeTool(makeCall("run",
+                `{"program":"cmd.exe","args":["/d","/c","ping -n 30 127.0.0.1 >nul"]}`),
+                dir);
+        });
+        worker.start();
+        Thread.sleep(msecs(250));
+        cancelRunningCommands();
+        worker.join();
+        assert(cancelled.failed &&
+            cancelled.output.indexOf("stopped by user") >= 0,
+            "Stop did not terminate the running command: " ~ cancelled.output);
+        assert(cancelled.elapsedMs < 5_000,
+            "Stopped command did not return promptly");
+        resetRunningCommands();
+        writeln("Stop promptly terminates a running command");
     }
 
     // The D-native `run` tool executes a program directly with an argument

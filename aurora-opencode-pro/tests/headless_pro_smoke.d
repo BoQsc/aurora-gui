@@ -812,6 +812,27 @@ int main(string[] args)
     root.finishStreamForTesting();
     writeln("Changing chats preserves the running turn's ownership");
 
+    // The button says Stop while a turn is active, so clicking it must stop
+    // unconditionally—even when unsent composer text is present. Previously
+    // that text was silently queued as guidance and the turn kept running.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["keep working"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.streamReasoningForTesting("still working");
+    root.setInputForTesting("unsent text must remain unsent");
+    root.clickSendButtonForTesting();
+    assert(!root.turnBusyForTesting(), "Stop did not release the active turn");
+    assert(root.queuedGuidanceCountForTesting() == 0,
+        "Stop click queued composer text instead of stopping");
+    assert(root.inputTextForTesting() == "unsent text must remain unsent",
+        "Stop click consumed unsent composer text");
+    assert(root.sendButtonTextForTesting() == "Send",
+        "Stop did not restore the Send button");
+    assert(root.taskStatusForTesting() == "blocked",
+        "Stopped task did not leave active state");
+    writeln("One Stop click immediately releases the turn");
+
     // Compaction: old completed tool envelopes are structurally collapsed even
     // before the hard context limit. Replaying every stale call on every round
     // is quadratic; only the newest eight exact pairs need to remain.

@@ -4270,6 +4270,13 @@ public final class OpenCodeRoot : VBox
     private bool _turnTiming;
     /// Set when the user stops a turn so late tool results cannot restart it.
     private bool _turnCancelled;
+    // Logical cancellation is immediate, but WinINet may need a short moment to
+    // unwind its worker after the request handle is closed. During that gap the
+    // transcript is already stopped and the composer cannot start a conflicting
+    // request on the same client.
+    private bool _stopPending;
+    private MonoTime _stopRequestedAt;
+    private static immutable long stopDetachTimeoutMs = 2_000;
     private double[string] _turnDurations;
     // A streaming connection can remain alive on SSE keepalives while the model
     // produces no useful event. Track meaningful UI-visible progress and cancel
@@ -4759,7 +4766,14 @@ public final class OpenCodeRoot : VBox
         _input.onSendRequested = delegate() { sendMessage(); };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
-        _sendButton.onClick = delegate() { sendMessage(); };
+        _sendButton.onClick = delegate()
+        {
+            // A visible Stop button must always stop. Composer text is guidance
+            // only when submitted with Enter; it must never turn a Stop click
+            // into a hidden "keep going" operation.
+            if (turnIsBusy()) stopActiveTurn();
+            else sendMessage();
+        };
 
         auto composer = new ChatComposer(_input, _sendButton, composerControls);
         composer.setId("oc-composer");
@@ -7076,6 +7090,10 @@ public final class OpenCodeRoot : VBox
         if (_current == sessionIndex) rebuildMessageColumn();
         const requestId = _activeRequestId;
         const workspace = workspaceForSession(sessionIndex);
+        // Reset before the worker is visible to the UI. A Stop click can only
+        // occur after this handler returns, so the worker can no longer clear a
+        // cancellation that the user just requested.
+        resetRunningCommands();
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
@@ -7108,9 +7126,6 @@ public final class OpenCodeRoot : VBox
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
         ulong requestId, const(OpenCodeToolCall)[] calls, string workspace)
     {
-        // A fresh batch means the previous turn's stop request no longer
-        // applies; clear it so this batch's commands are not terminated.
-        resetRunningCommands();
         size_t slot;
         while (slot < calls.length)
         {
@@ -7457,10 +7472,66 @@ public final class OpenCodeRoot : VBox
 
     // -- sending ----------------------------------------------------------
 
+    private bool turnIsBusy()
+    {
+        return _stopPending || _turnInFlight || _turnTiming || _client.busy() ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0;
+    }
+
+    /// Stop is a local state transition first and an I/O cancellation second.
+    /// Invalidate the request id before closing handles so already-queued or
+    /// late events cannot append output, restart a tool continuation, or keep
+    /// the UI trapped in Stop mode.
+    private void stopActiveTurn()
+    {
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+
+        _turnCancelled = true;
+        _watchdogCancelPending = false;
+        _watchdogRetryAllowed = false;
+        _requestProgressSet = false;
+
+        // Reject all remaining network and tool events from this turn before
+        // asking the workers to stop.
+        _activeRequestId = 0;
+        _activeRequestSession = -1;
+        cancelRunningCommands();
+        _client.cancel();
+        _stopPending = _client.busy();
+        _stopRequestedAt = MonoTime.currTime;
+
+        if (_streamBubble !is null)
+        {
+            _streamBubble.setThinkingLive(false);
+            _streamBubble.setStreaming(false);
+            _streamBubble = null;
+        }
+        cancelPendingTools();
+
+        auto session = &_sessions[sessionIndex];
+        session.queuedGuidance.length = 0;
+        session.taskStatus = "blocked";
+        publishThreadUpdated(*session);
+        publishRuntimeEvent(AgentEventKind.turnInterrupted, *session,
+            runtimeTurnId(*session));
+        markDirty();
+        if (_current == sessionIndex) rebuildMessageColumn();
+        updateSessionList(false);
+        updateStatus(_stopPending
+            ? "Stopped. Releasing the network request…" : "Stopped.");
+        updateSendButton();
+    }
+
     private void sendMessage()
     {
-        if (_client.busy() || _turnTiming ||
-            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
+        if (_stopPending)
+        {
+            updateStatus("Stopped. Waiting for the previous request to close…");
+            return;
+        }
+        if (turnIsBusy())
         {
             if (_current != turnOwnerSessionIndex())
             {
@@ -7484,11 +7555,7 @@ public final class OpenCodeRoot : VBox
                 updateStatus("Guidance queued — applying at the next safe step…");
                 return;
             }
-            _client.cancel();
-            cancelRunningCommands();
-            updateStatus("Stopping…");
-            _turnCancelled = true;
-            setActivity("Stopping…");
+            stopActiveTurn();
             return;
         }
 
@@ -8584,8 +8651,9 @@ public final class OpenCodeRoot : VBox
         // request: between tool rounds no request is streaming, so keying on
         // the client alone flips "Stop" back to "Send" while the agent is
         // still working. `_turnTiming` spans the turn and survives those gaps.
-        const busy = _client.busy() || _turnTiming;
-        _sendButton.setText(busy ? "Stop" : "Send");
+        const busy = turnIsBusy();
+        _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
+        _sendButton.setEnabled(!_stopPending);
         _sendButton.setAccent(!busy);
     }
 
@@ -9768,6 +9836,31 @@ public final class OpenCodeRoot : VBox
         flushToolTranscriptChanges();
         checkStalledRequest();
 
+        // `stopActiveTurn` releases all logical/UI state immediately. The only
+        // remaining gate is the old WinINet worker; re-enable Send as soon as
+        // closing its handle has unwound the worker.
+        if (_stopPending && !_client.busy())
+        {
+            _stopPending = false;
+            updateStatus("Stopped.");
+            updateSendButton();
+        }
+        else if (_stopPending &&
+            (MonoTime.currTime - _stopRequestedAt).total!"msecs" >=
+                stopDetachTimeoutMs)
+        {
+            // A provider/WinINet stack that ignores handle cancellation must
+            // not own the composer forever. Detach its daemon worker and give
+            // subsequent turns a fresh client; the retired client's queue is
+            // no longer drained, so it cannot leak late output into the UI.
+            auto retired = _client;
+            retired.closeSession();
+            _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
+            _stopPending = false;
+            updateStatus("Stopped.");
+            updateSendButton();
+        }
+
         // The upstream model can take several seconds to return its first
         // token (cold start). Surface that as a live countdown so the UI
         // never looks frozen, and switch back to a normal status the moment
@@ -10447,6 +10540,21 @@ public final class OpenCodeRoot : VBox
     public void sendForTesting()
     {
         sendMessage();
+    }
+
+    public void clickSendButtonForTesting()
+    {
+        if (_sendButton.onClick !is null) _sendButton.onClick();
+    }
+
+    public string sendButtonTextForTesting() const
+    {
+        return _sendButton is null ? "" : to!string(_sendButton.text());
+    }
+
+    public bool turnBusyForTesting()
+    {
+        return turnIsBusy();
     }
 
     public void stopTurnClockForTesting()
