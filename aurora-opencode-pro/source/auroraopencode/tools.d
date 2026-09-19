@@ -10,12 +10,15 @@ import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
 import std.process : Pid, Pipe, pipe, waitTimeout, kill, wait, spawnProcess,
     Config;
 version (Windows)
+{
     import core.sys.windows.windows : HANDLE, DWORD, BOOL, UINT, ULONG_PTR,
         LONG, WCHAR;
+    import core.sys.windows.shellapi : ShellExecuteW;
+}
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin, stdout, stderr;
 import std.string : indexOf, replace, strip, toLower;
-import std.utf : toUTF8;
+import std.utf : toUTF8, toUTF16z;
 import std.conv : to;
 import std.exception : collectException;
 import core.time : seconds, Duration, MonoTime, msecs;
@@ -152,6 +155,21 @@ private OpenCodeToolDef updatePlanToolDefinition()
     );
 }
 
+/// Open a local file/directory or web URL with the operating system's default
+/// application. This avoids platform shell commands such as Windows `start`,
+/// whose nested quoting is fragile when paths contain spaces.
+private OpenCodeToolDef openToolDefinition()
+{
+    return OpenCodeToolDef(
+        "open",
+        "Open a local file, directory, or HTTP(S) URL with the operating " ~
+        "system's default application. Local paths may be workspace-relative " ~
+        "or absolute. Use this instead of shell commands such as start, " ~
+        "Start-Process, open, or xdg-open.",
+        `{"type":"object","properties":{"target":{"type":"string","description":"Local file/directory path or HTTP(S) URL to open"}},"required":["target"]}`
+    );
+}
+
 /// Inspect and control commands launched with `background:true`.
 private OpenCodeToolDef processToolDefinition()
 {
@@ -181,6 +199,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         ),
         processToolDefinition(),
         dshellToolDefinition(),
+        openToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -229,6 +248,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         ),
         processToolDefinition(),
         dshellToolDefinition(),
+        openToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -353,7 +373,7 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("\n# Tool policy\n");
     if (nativeOnly)
         builder.put("There is no shell and no bash/cmd/powershell. Use native " ~
-            "`read`, `write`, `edit`, `apply_patch`, `remove`, `glob`, `grep`, " ~
+            "`read`, `write`, `edit`, `apply_patch`, `remove`, `open`, `glob`, `grep`, " ~
             "and `dshell` file tools, plus `run` with an explicit program and " ~
             "argument list. Do not reconstruct shell commands.\n");
     else
@@ -364,6 +384,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("Use `dshell list` for file discovery and `grep` for content " ~
         "search. Do not pair a successful discovery with a broader duplicate. " ~
         "Tool schemas contain exact syntax and parameter requirements.\n");
+    builder.put("Use the native `open` tool to open files, folders, or web " ~
+        "pages. Never reconstruct platform launch commands such as Windows " ~
+        "`start` or PowerShell `Start-Process`.\n");
     builder.put("Use background execution only for a genuinely long command. " ~
         "Track it with `process` and never relaunch it merely because it is " ~
         "still running.\n");
@@ -863,6 +886,60 @@ private ToolExecution runProgramTool(string args, string workspace,
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
         cancellation);
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
+}
+
+/// Open a target through the operating system without routing it through a
+/// command shell. HTTP(S) targets pass through unchanged; local paths are
+/// resolved against the conversation workspace and must already exist.
+private ToolExecution runOpenTool(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string target;
+    if (value.type == JSONType.object)
+        if (auto field = "target" in value.object)
+            if (field.type == JSONType.string)
+                target = field.str.strip();
+    if (target.length == 0)
+        return ToolExecution("open",
+            "Error: open requires a non-empty `target` argument.", true);
+
+    const lower = target.toLower();
+    const isWebUrl = lower.indexOf("https://") == 0 ||
+        lower.indexOf("http://") == 0;
+    if (!isWebUrl)
+    {
+        target = resolveToolPath(target, workspace);
+        if (!exists(target))
+            return ToolExecution("open",
+                "Error: target does not exist: " ~ target, true);
+    }
+
+    version (Windows)
+    {
+        const result = ShellExecuteW(null, toUTF16z("open"),
+            toUTF16z(target), null, null, 1);
+        if (cast(size_t) result <= 32)
+            return ToolExecution("open",
+                "Error: Windows could not open the target (ShellExecute " ~
+                to!string(cast(size_t) result) ~ "): " ~ target, true);
+    }
+    else version (OSX)
+    {
+        auto result = runProcess(["open", target], workspace, 30_000,
+            "open");
+        if (result[1])
+            return ToolExecution("open", truncateOutput(result[0]), true);
+    }
+    else
+    {
+        auto result = runProcess(["xdg-open", target], workspace, 30_000,
+            "open");
+        if (result[1])
+            return ToolExecution("open", truncateOutput(result[0]), true);
+    }
+    return ToolExecution("open", "Opened: " ~ target, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -2561,6 +2638,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runProcessTool(call.arguments);
         case "dshell":
             return runDshell(call.arguments, workspace);
+        case "open":
+            return runOpenTool(call.arguments, workspace);
         case "read":
             return runRead(call.arguments, workspace);
         case "write":

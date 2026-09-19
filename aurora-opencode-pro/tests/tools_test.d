@@ -505,17 +505,20 @@ int main()
     bool hasShell;
     bool defaultHasDshell;
     bool defaultHasRemove;
+    bool defaultHasOpen;
     foreach (tool; defaults)
     {
         if (tool.name == "bash") hasShell = true;
         if (tool.name == "dshell") defaultHasDshell = true;
         if (tool.name == "remove") defaultHasRemove = true;
+        if (tool.name == "open") defaultHasOpen = true;
         assert(tool.name != "glob",
             "glob should remain executable but dshell is primary discovery");
     }
     assert(hasShell, "Default toolset must include the shell tool");
     assert(defaultHasDshell, "Default toolset must include dshell");
     assert(defaultHasRemove, "Default toolset must include remove");
+    assert(defaultHasOpen, "Default toolset must include open");
 
     auto natives = nativeOnlyToolDefinitions();
     bool nativeHasShell;
@@ -523,6 +526,7 @@ int main()
     bool nativeHasDshell;
     bool nativeHasRemove;
     bool nativeHasProcess;
+    bool nativeHasOpen;
     foreach (tool; natives)
     {
         if (tool.name == "bash") nativeHasShell = true;
@@ -530,6 +534,7 @@ int main()
         if (tool.name == "dshell") nativeHasDshell = true;
         if (tool.name == "remove") nativeHasRemove = true;
         if (tool.name == "process") nativeHasProcess = true;
+        if (tool.name == "open") nativeHasOpen = true;
         assert(tool.name != "glob",
             "native toolset should expose dshell instead of glob");
     }
@@ -538,6 +543,7 @@ int main()
     assert(nativeHasDshell, "Native toolset must include dshell");
     assert(nativeHasRemove, "Native toolset must include remove");
     assert(nativeHasProcess, "Native toolset must include process management");
+    assert(nativeHasOpen, "Native toolset must include open");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&
@@ -545,6 +551,8 @@ int main()
         "Steering prompts must document dshell");
     assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
         "Native steering prompt must mention the remove tool");
+    assert(toolSteeringPrompt(true).indexOf("native `open` tool") >= 0,
+        "Steering prompt must require the native open tool");
     // The prompt carries a concise execution contract while tool schemas carry
     // parameter syntax, avoiding duplicated instructions and prompt tokens.
     assert(toolSteeringPrompt(false).indexOf("apply_patch") >= 0,
@@ -576,6 +584,21 @@ int main()
         "the process running this session") >= 0,
         "Steering prompt must protect the live host process");
     writeln("Default vs native-only toolset shapes OK");
+
+    // Native open validates targets before asking the OS to launch anything,
+    // avoiding shell retries and making missing-path failures deterministic.
+    {
+        auto missingArgument = executeTool(makeCall("open", `{}`), dir);
+        assert(missingArgument.failed &&
+            missingArgument.output.indexOf("non-empty `target`") >= 0,
+            "open must reject a missing target: " ~ missingArgument.output);
+        auto missingFile = executeTool(makeCall("open",
+            `{"target":"does-not-exist.html"}`), dir);
+        assert(missingFile.failed &&
+            missingFile.output.indexOf("target does not exist") >= 0,
+            "open must reject a nonexistent file: " ~ missingFile.output);
+        writeln("native open validates its target without invoking a shell");
+    }
 
     // write creates missing parent directories, as its description promises.
     {

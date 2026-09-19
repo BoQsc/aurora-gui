@@ -450,6 +450,8 @@ private final class MessageBubble : Widget
     /// message column can re-layout and the scroll view can re-measure.
     void delegate() onSizeChanged;
 
+
+
     /// Test-only: current collapsed state.
     public bool collapsedForTesting()
     {
@@ -1781,11 +1783,13 @@ private final class MessageBubble : Widget
         if (event.button != MouseButton.left) return false;
         if (_thinking.length > 0 && _thinkingRect.contains(event.position))
         {
+            ChatScrollView.holdPositionForNextLayout();
             setThinkingCollapsed(!_thinkingCollapsed);
             return true;
         }
         if (_role == "tool" && _collapseRect.contains(event.position))
         {
+            ChatScrollView.holdPositionForNextLayout();
             setCollapsed(!_collapsed);
             return true;
         }
@@ -1926,6 +1930,8 @@ private string humanToolTitle(string toolName)
             return "Edit";
         case "apply_patch":
             return "Patch";
+        case "open":
+            return "Open";
         case "update_plan":
             return "Plan";
         case "remove":
@@ -1958,6 +1964,8 @@ private string humanToolProgressTitle(string toolName)
             return "Editing";
         case "apply_patch":
             return "Applying";
+        case "open":
+            return "Opening";
         case "update_plan":
             return "Planning";
         case "remove":
@@ -2017,6 +2025,8 @@ private string humanToolSubtitle(string toolName, string toolArgs)
             auto path = toolArgFromArgs(toolArgs, "path");
             if (path.length == 0) path = toolArgFromArgs(toolArgs, "filePath");
             return basenameOf(path);
+        case "open":
+            return toolArgFromArgs(toolArgs, "target");
         default:
             return toolArgFromArgs(toolArgs, "path");
     }
@@ -2713,6 +2723,8 @@ private final class ToolGroupBubble : Widget
 
     void delegate() onSizeChanged;
 
+
+
     this(Widget[] parts, bool live = false)
     {
         _parts = parts;
@@ -2960,6 +2972,7 @@ private final class ToolGroupBubble : Widget
         if (event.button == MouseButton.left &&
             _headerRect.contains(event.position))
         {
+            ChatScrollView.holdPositionForNextLayout();
             toggle();
             return true;
         }
@@ -3552,13 +3565,60 @@ private final class ChatScrollView : ScrollView
 {
     bool follow = true;
 
+    // Set by a collapsible widget (tool output / reasoning / tool group) right
+    // before a user-driven expand/collapse. The freeze below then holds the
+    // content offset across every layout until the block has finished
+    // re-measuring, instead of snapping the viewport back to the bottom and
+    // shoving the clicked row out of view. A single-layout hold is not enough:
+    // an intervening layout (streaming, repaint, onSizeChanged invalidation)
+    // can consume it before the real resize lands.
+    private static bool _holdPending;
+    private int _holdScrollY = -1;
+    private int _lastMaxScroll = -1;
+
     this(Widget content)
     {
         super(content);
     }
 
+    /// Keep the reader's position across the next content re-measure. Call
+    /// immediately before applying a user-driven size change (collapse/expand)
+    /// so the toggled row stays put instead of the view jumping to the bottom.
+    static void holdPositionForNextLayout()
+    {
+        _holdPending = true;
+    }
+
     protected override void onLayout()
     {
+        if (_holdPending)
+        {
+            // Anchor the offset on the first held layout, then keep restoring it
+            // each pass so the collapsed/expanded row stays put. Release only
+            // once the content height stops changing (the resize has settled).
+            if (_holdScrollY < 0)
+            {
+                _holdScrollY = scrollY();
+                _lastMaxScroll = -1;
+            }
+            super.onLayout();
+            auto max = maxScroll();
+            auto target = _holdScrollY;
+            if (target < 0) target = 0;
+            if (target > max) target = max;
+            if (scrollY() != target) setScrollY(target);
+            if (_lastMaxScroll == max)
+            {
+                _holdPending = false;
+                _holdScrollY = -1;
+                follow = scrollY() >= max - 4;
+            }
+            else
+            {
+                _lastMaxScroll = max;
+            }
+            return;
+        }
         super.onLayout();
         if (follow) setScrollY(maxScroll());
     }
