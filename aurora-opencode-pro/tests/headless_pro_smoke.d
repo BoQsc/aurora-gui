@@ -759,7 +759,8 @@ int main(string[] args)
     // A fully-answered exchange is preserved verbatim.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["read it"]);
-    root.appendDanglingToolCallsForTesting("call_ok");
+    root.appendToolRequestTurnForTesting("I need to inspect the file.",
+        "call_ok", "read", `{}`);
     root.appendToolReplyForTesting("call_ok", "file contents");
     root.addConversationForTesting(["assistant"], ["done"]);
     auto answeredReqs = root.requestMessagesForTesting();
@@ -769,6 +770,8 @@ int main(string[] args)
         if (m.role == "assistant" && m.toolCalls.length == 1)
         {
             sawCall = true;
+            assert(m.reasoningContent == "I need to inspect the file.",
+                "Tool continuation dropped provider reasoning_content");
             assert(i + 1 < answeredReqs.length &&
                 answeredReqs[i + 1].role == "tool" &&
                 answeredReqs[i + 1].toolCallId == "call_ok",
@@ -778,7 +781,36 @@ int main(string[] args)
     }
     assert(sawCall && sawReply,
         "A valid tool exchange was dropped by the sanitizer");
-    writeln("Outgoing request keeps a fully-answered tool exchange");
+    writeln("Outgoing request keeps tool exchange + reasoning state");
+
+    // Navigation during a turn is a view change, not ownership transfer. The
+    // original conversation must keep receiving streamed bytes while a newly
+    // created chat stays untouched, and its sidebar activity marker must remain.
+    root.newChatForTesting();
+    const ownerSession = cast(int) root.sessionCountForTesting() - 1;
+    root.addConversationForTesting(["user"], ["work in the background"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.streamReasoningForTesting("planning");
+    root.newChatForTesting();
+    const viewingSession = root.currentSessionForTesting();
+    assert(viewingSession != ownerSession, "New chat did not change the view");
+    assert(root.turnOwnerSessionForTesting() == ownerSession,
+        "New chat stole ownership from the running turn");
+    assert(root.activeSessionRowsForTesting().length > 0,
+        "Background turn lost its sidebar activity marker");
+    root.streamContentForTesting("finished in the original chat");
+    assert(root.lastMessageContentInSessionForTesting(viewingSession).length == 0,
+        "Background response leaked into the selected new chat");
+    assert(root.lastMessageContentInSessionForTesting(ownerSession) ==
+        "finished in the original chat",
+        "Background response did not stay with its owning chat before selection");
+    root.selectSessionForTesting(ownerSession);
+    assert(root.lastAssistantContentForTesting() ==
+        "finished in the original chat",
+        "Background response did not stay with its owning chat");
+    root.finishStreamForTesting();
+    writeln("Changing chats preserves the running turn's ownership");
 
     // Compaction: old completed tool envelopes are structurally collapsed even
     // before the hard context limit. Replaying every stale call on every round

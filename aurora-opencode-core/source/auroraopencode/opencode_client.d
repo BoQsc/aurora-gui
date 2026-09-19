@@ -278,6 +278,7 @@ final class OpenCodeClient
             ChatRequestMessage copy;
             copy.role = message.role.dup;
             copy.content = message.content.dup;
+            copy.reasoningContent = message.reasoningContent.dup;
             copy.toolCallId = message.toolCallId.dup;
             foreach (call; message.toolCalls)
             {
@@ -772,6 +773,13 @@ final class OpenCodeClient
         JSONValue json;
         json["role"] = message.role;
         json["content"] = message.content;
+        // DeepSeek/CommandCode-style reasoning models require the assistant's
+        // reasoning_content to be echoed on the following tool round. Include
+        // an empty value for legacy persisted tool calls: presence is required
+        // even when an older Aurora build failed to save the returned text.
+        if (message.role == "assistant" &&
+            (message.reasoningContent.length > 0 || message.toolCalls.length > 0))
+            json["reasoning_content"] = message.reasoningContent;
         if (message.role == "tool" && message.toolCallId.length > 0)
             json["tool_call_id"] = message.toolCallId;
         if (message.toolCalls.length > 0)

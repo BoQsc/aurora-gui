@@ -484,6 +484,10 @@ public struct ChatRequestMessage
 {
     string role;              // "user" | "assistant" | "tool"
     string content;
+    // Provider reasoning state returned with an assistant message. Reasoning
+    // models require this exact value to be replayed with the tool_calls it
+    // accompanied; omitting it makes the next tool-continuation request fail.
+    string reasoningContent;  // role == "assistant" -> reasoning_content
     string toolCallId;        // role == "tool"
     OpenCodeToolCall[] toolCalls; // role == "assistant"
 }

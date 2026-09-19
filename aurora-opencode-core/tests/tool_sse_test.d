@@ -66,6 +66,7 @@ private void assertRequestBody()
     ChatRequestMessage assistant;
     assistant.role = "assistant";
     assistant.content = "I'll sum.";
+    assistant.reasoningContent = "I should add the numbers.";
     OpenCodeToolCall call;
     call.id = "call_00_abc";
     call.name = "sum";
@@ -109,6 +110,11 @@ private void assertRequestBody()
     auto toolCalls = "tool_calls" in assistantJson.object;
     assert(toolCalls !is null && toolCalls.type == JSONType.array,
         "Assistant message missing tool_calls");
+    auto replayedReasoning = "reasoning_content" in assistantJson.object;
+    assert(replayedReasoning !is null &&
+        replayedReasoning.type == JSONType.string &&
+        replayedReasoning.str == "I should add the numbers.",
+        "Assistant reasoning state was not replayed with tool_calls");
     // tool message carries tool_call_id
     auto toolJson = messages.array[2];
     assert(toolJson.object["role"].str == "tool", "Tool role wrong");

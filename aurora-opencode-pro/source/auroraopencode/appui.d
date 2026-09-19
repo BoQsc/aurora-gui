@@ -3817,6 +3817,11 @@ public final class SessionListView : ListView
     void delegate(int index) onDeleteRequested;
 
     private int _hoverRow = -1;
+    // List indices whose conversation is actively working. A small pulsing
+    // bar is drawn before their title while `_activityAnimating` drives it.
+    private int[] _activityRows;
+    private double _activityElapsed;
+    private bool _activityAnimating;
 
     this()
     {
@@ -3824,6 +3829,43 @@ public final class SessionListView : ListView
         // Butt the scrollbar against the split-pane divider so no panel band
         // shows between the conversation list and the width handle.
         setScrollbarInset(0);
+    }
+
+    /// Mark which rows are busy. Called whenever the live turn changes or the
+    /// visible rows are rebuilt; the list only repaints when the set changes.
+    void setActivityRows(int[] rows)
+    {
+        if (_activityRows == rows) return;
+        if (rows.length > 0 && !_activityAnimating) _activityElapsed = 0.0;
+        _activityRows = rows;
+        _activityAnimating = rows.length > 0;
+        invalidate();
+    }
+
+    string activityRowsForTesting() const
+    {
+        auto out_ = appender!string();
+        foreach (i, row; _activityRows)
+        {
+            if (i > 0) out_.put(",");
+            out_.put(to!string(row));
+        }
+        return out_.data;
+    }
+
+    private int activityPulseStep() const
+    {
+        return cast(int) (_activityElapsed * 4) % 4;
+    }
+
+    // Animate the busy bars. Repaints only when the visible pulse step changes
+    // so an idle list costs nothing.
+    protected override void onTick(double deltaSeconds)
+    {
+        if (!_activityAnimating) return;
+        const before = activityPulseStep();
+        _activityElapsed += deltaSeconds;
+        if (activityPulseStep() != before) invalidate();
     }
 
     // Single-line conversation rows: a highlighted capsule for the active chat,
@@ -3857,6 +3899,16 @@ public final class SessionListView : ListView
             }
             else if (index == _hoverRow)
                 content.fillRoundedRect(row, 6, opencodePressed);
+
+            // A small pulsing bar before the title marks a conversation that is
+            // actively working (model thinking, running tools, streaming).
+            if (_activityAnimating && _activityRows.canFind(index))
+            {
+                static immutable int[4] pulseAlphas = [70, 130, 210, 130];
+                const bar = Rect(8, y + (rowHeight - 10) / 2, 3, 10);
+                content.fillRect(bar,
+                    opencodeAccent.withAlpha(pulseAlphas[activityPulseStep()]));
+            }
 
             int trailWidth = 0;
             if (item.secondary.length > 0)
@@ -5142,6 +5194,8 @@ public final class OpenCodeRoot : VBox
 
     private void newChat()
     {
+        const keepRunningTurn = _turnInFlight || _client.busy() ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0;
         ChatSession session;
         session.id = newSessionId();
         session.title = "New chat";
@@ -5155,20 +5209,23 @@ public final class OpenCodeRoot : VBox
         _visibleMessageLimit = messageHistoryPageSize;
         _streamBubble = null;
         _editMessageIndex = -1;
-        _pendingToolCalls.length = 0;
-        _liveToolCalls.length = 0;
-        _preparingToolCalls.length = 0;
-        _pendingToolResults = 0;
-        _turnCancelled = false;
-        _toolRounds = 0;
-        _lastToolSignature = "";
-        _lastToolRepeatCount = 0;
-        _lastFailureSignature = "";
-        _lastFailureRepeatCount = 0;
-        _failureLoopDetected = false;
+        if (!keepRunningTurn)
+        {
+            _pendingToolCalls.length = 0;
+            _liveToolCalls.length = 0;
+            _preparingToolCalls.length = 0;
+            _pendingToolResults = 0;
+            _turnCancelled = false;
+            _toolRounds = 0;
+            _lastToolSignature = "";
+            _lastToolRepeatCount = 0;
+            _lastFailureSignature = "";
+            _lastFailureRepeatCount = 0;
+            _failureLoopDetected = false;
+            clearActivity();
+        }
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
-        clearActivity();
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -5181,21 +5238,45 @@ public final class OpenCodeRoot : VBox
     private void selectSession(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
+        const keepRunningTurn = _turnInFlight || _client.busy() ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0;
         _current = index;
         _visibleMessageLimit = messageHistoryPageSize;
         _streamBubble = null;
         _editMessageIndex = -1;
-        _pendingToolCalls.length = 0;
-        _liveToolCalls.length = 0;
-        _preparingToolCalls.length = 0;
-        _pendingToolResults = 0;
-        _toolRounds = 0;
-        _lastToolSignature = "";
-        _lastToolRepeatCount = 0;
-        _lastFailureSignature = "";
-        _lastFailureRepeatCount = 0;
-        _failureLoopDetected = false;
-        clearActivity();
+        if (!keepRunningTurn)
+        {
+            _pendingToolCalls.length = 0;
+            _liveToolCalls.length = 0;
+            _preparingToolCalls.length = 0;
+            _pendingToolResults = 0;
+            _toolRounds = 0;
+            _lastToolSignature = "";
+            _lastToolRepeatCount = 0;
+            _lastFailureSignature = "";
+            _lastFailureRepeatCount = 0;
+            _failureLoopDetected = false;
+            clearActivity();
+        }
+        else if (index == turnOwnerSessionIndex() &&
+            _sessions[index].messages.length > 0 &&
+            _sessions[index].messages[$ - 1].role == "assistant")
+        {
+            // Reattach a live bubble when returning to the conversation that is
+            // still streaming. The durable message collected every background
+            // delta while another chat was selected.
+            const message = _sessions[index].messages[$ - 1];
+            _streamBubble = new MessageBubble();
+            _streamBubble.setRole("assistant");
+            _streamBubble.setContent(message.content);
+            _streamBubble.setThinking(message.reasoning);
+            _streamBubble.setThinkingLive(true);
+            _streamBubble.setStreaming(true);
+            _streamBubble.setMessageIndex(
+                cast(int) _sessions[index].messages.length - 1);
+            _streamBubble.setLiveTokens(_liveOutputTokens, true);
+            _streamBubble.setTokenRate(_liveTokenRateTenths);
+        }
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
         _settings.thinking = _sessions[index].thinking;
@@ -5605,8 +5686,9 @@ public final class OpenCodeRoot : VBox
         // is no host: the rows go to the bottom, after the prompt. Nesting them
         // under the previous answer put "Waiting for the model…" ABOVE the prompt
         // that triggered it.
-        const bool isLive = (_activityRow !is null && _activityRow.hasLabel()) ||
-            _preparingToolCalls.length > 0 || _liveToolCalls.length > 0;
+        const bool isLive = viewingTurnOwner() &&
+            ((_activityRow !is null && _activityRow.hasLabel()) ||
+             _preparingToolCalls.length > 0 || _liveToolCalls.length > 0);
         size_t liveHostSlot = size_t.max;
         if (isLive)
             foreach_reverse (slot, index; path)
@@ -6209,7 +6291,9 @@ public final class OpenCodeRoot : VBox
 
     private void beginAssistantMessage()
     {
-        if (_current < 0) return;
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
         _preparingToolCalls.length = 0;
         // Each assistant turn counts its own output from zero.
         _liveOutputBytes = 0;
@@ -6218,11 +6302,18 @@ public final class OpenCodeRoot : VBox
         _tokenRateBaseTokens = 0;
         _tokenRateStarted = false;
         _liveTotalTokens = 0;
-        auto session = &_sessions[_current];
+        auto session = &_sessions[sessionIndex];
         ChatMessage message;
         message.role = "assistant";
         message.time = currentTimestamp();
         appendMessage(*session, message);
+
+        if (_current != sessionIndex)
+        {
+            markDirty();
+            updateSessionList(false);
+            return;
+        }
 
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
@@ -6249,7 +6340,9 @@ public final class OpenCodeRoot : VBox
 
     private void appendStreamDelta(string text, bool reasoning)
     {
-        if (_current < 0 || _streamBubble is null) return;
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
         if (!_receivedFirstDelta)
         {
             _receivedFirstDelta = true;
@@ -6261,22 +6354,27 @@ public final class OpenCodeRoot : VBox
         // BOTH phases and is kept after the turn ends; the generic phase word
         // ("Writing…") was dropped because it vanished at completion and read
         // like a file write.
-        auto session = &_sessions[_current];
+        auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
         if (reasoning)
         {
             message.reasoning ~= text;
-            _streamBubble.appendThinking(text);
-            _streamBubble.setThinkingLive(true);
+            if (_streamBubble !is null && _current == sessionIndex)
+            {
+                _streamBubble.appendThinking(text);
+                _streamBubble.setThinkingLive(true);
+            }
             // The header now speaks for this phase; drop "Waiting for the model…".
             clearActivity();
         }
         else
         {
-            _streamBubble.setThinkingLive(false);
+            if (_streamBubble !is null && _current == sessionIndex)
+                _streamBubble.setThinkingLive(false);
             message.content ~= text;
-            _streamBubble.appendContent(text);
+            if (_streamBubble !is null && _current == sessionIndex)
+                _streamBubble.appendContent(text);
             // Drop the "Waiting for the model…" row now that the answer itself
             // is visibly streaming (no "Writing…" replacement any more).
             clearActivity();
@@ -6287,6 +6385,11 @@ public final class OpenCodeRoot : VBox
         const estimate = (_liveOutputBytes + 3) / 4;
         if (estimate > _liveOutputTokens) _liveOutputTokens = estimate;
         updateLiveTokenRate();
+        if (_streamBubble is null || _current != sessionIndex)
+        {
+            markDirty();
+            return;
+        }
         _streamBubble.setLiveTokens(_liveOutputTokens, true);
         _streamBubble.setTokenRate(_liveTokenRateTenths);
         // A reasoning reply already has the compact stats in its Thinking
@@ -6333,8 +6436,10 @@ public final class OpenCodeRoot : VBox
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
         int completionTokens = 0, int totalTokens = 0, bool terminal = true)
     {
+        const sessionIndex = turnOwnerSessionIndex();
         _requestProgressSet = false;
         if (terminal || cancelled) setTurnActiveMarker(false);
+        setTurnInFlight(false);
         _preparingToolCalls.length = 0;
         clearActivity();
         // The turn is over: freeze its clock before rebuilding so the durable
@@ -6361,9 +6466,10 @@ public final class OpenCodeRoot : VBox
         // still shows it on the Thinking header after the stream bubble is gone.
         if (completionTokens == 0 && _liveOutputTokens > 0)
             completionTokens = cast(int) _liveOutputTokens;
-        if (_current >= 0 && _sessions[_current].messages.length > 0)
+        if (sessionIndex >= 0 && sessionIndex < cast(int) _sessions.length &&
+            _sessions[sessionIndex].messages.length > 0)
         {
-            auto message = &_sessions[_current].messages[$ - 1];
+            auto message = &_sessions[sessionIndex].messages[$ - 1];
             if (message.time.length == 0) message.time = currentTimestamp();
             if (completionTokens > 0 || totalTokens > 0)
             {
@@ -6373,12 +6479,13 @@ public final class OpenCodeRoot : VBox
             }
             message.tokensPerSecondTenths = _liveTokenRateTenths;
             publishMessageEvent(AgentEventKind.itemUpdated,
-                _sessions[_current], *message);
+                _sessions[sessionIndex], *message);
         }
-        if (_current >= 0 && (terminal || cancelled))
+        if (sessionIndex >= 0 && sessionIndex < cast(int) _sessions.length &&
+            (terminal || cancelled))
             publishRuntimeEvent(cancelled ? AgentEventKind.turnInterrupted :
-                AgentEventKind.turnCompleted, _sessions[_current],
-                runtimeTurnId(_sessions[_current]));
+                AgentEventKind.turnCompleted, _sessions[sessionIndex],
+                runtimeTurnId(_sessions[sessionIndex]));
         // The streamed bubble was built for streaming only (no timestamp, usage
         // footer, context menu or collapse wiring). Rebuild so the settled view
         // is canonical immediately — otherwise the transcript silently
@@ -6406,8 +6513,10 @@ public final class OpenCodeRoot : VBox
     /// before the durable task can enter the completed state.
     private void continueOrCompleteTask(bool cancelled)
     {
-        if (_current < 0) return;
-        auto session = &_sessions[_current];
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
         if (cancelled)
         {
             session.taskStatus = "blocked";
@@ -6420,8 +6529,9 @@ public final class OpenCodeRoot : VBox
             session.taskStatus = "active";
             publishThreadUpdated(*session);
             setTurnActiveMarker(true, session.id);
+            setTurnInFlight(true);
             updateStatus("Applying queued guidance…");
-            startChatRequest(_current, false);
+            startChatRequest(sessionIndex, false);
             return;
         }
         if (hasIncompleteTaskSteps(*session))
@@ -6440,9 +6550,9 @@ public final class OpenCodeRoot : VBox
                 appendMessage(*session, gate);
                 publishThreadUpdated(*session);
                 markDirty();
-                rebuildMessageColumn();
+                if (_current == sessionIndex) rebuildMessageColumn();
                 updateStatus("Reviewing unfinished checklist…");
-                startChatRequest(_current, false);
+                startChatRequest(sessionIndex, false);
                 return;
             }
             session.taskStatus = "blocked";
@@ -6467,10 +6577,11 @@ public final class OpenCodeRoot : VBox
                 appendMessage(*session, gate);
                 publishThreadUpdated(*session);
                 markDirty();
-                rebuildMessageColumn();
+                if (_current == sessionIndex) rebuildMessageColumn();
                 setTurnActiveMarker(true, session.id);
+                setTurnInFlight(true);
                 updateStatus("Verifying before completion…");
-                startChatRequest(_current, false);
+                startChatRequest(sessionIndex, false);
                 return;
             }
             session.taskStatus = "blocked";
@@ -6485,8 +6596,10 @@ public final class OpenCodeRoot : VBox
 
     private bool taskContinuesAfterDone(bool cancelled) const
     {
-        if (cancelled || _current < 0) return false;
-        const session = _sessions[_current];
+        const sessionIndex = turnOwnerSessionIndex();
+        if (cancelled || sessionIndex < 0 ||
+            sessionIndex >= cast(int) _sessions.length) return false;
+        const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0) return true;
         if (hasIncompleteTaskSteps(session) &&
             session.taskStatus != "reviewing") return true;
@@ -6496,17 +6609,19 @@ public final class OpenCodeRoot : VBox
 
     private void failAssistantMessage(string error)
     {
+        const sessionIndex = turnOwnerSessionIndex();
         _requestProgressSet = false;
         setTurnActiveMarker(false);
+        setTurnInFlight(false);
         _preparingToolCalls.length = 0;
         freezeTurnTiming();
-        if (_current < 0)
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
         {
             clearActivity();
             updateStatus("Error: " ~ error);
             return;
         }
-        auto session = &_sessions[_current];
+        auto session = &_sessions[sessionIndex];
         // The failure can arrive before any assistant turn exists (the request
         // was rejected before the first streamed byte, so `chatBegin` never
         // fired). Create the reply turn first: without this the error text was
@@ -6514,7 +6629,12 @@ public final class OpenCodeRoot : VBox
         // history and rendering the user's own message as an error.
         if (session.messages.length == 0 ||
             session.messages[$ - 1].role != "assistant")
-            beginAssistantMessage();
+        {
+            ChatMessage reply;
+            reply.role = "assistant";
+            reply.time = currentTimestamp();
+            appendMessage(*session, reply);
+        }
         clearActivity();
         auto message = &session.messages[$ - 1];
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
@@ -6589,20 +6709,24 @@ public final class OpenCodeRoot : VBox
     private bool recoverStalledRequest(const OpenCodeEvent event)
     {
         if (!event.cancelled || !_watchdogCancelPending) return false;
+        const sessionIndex = turnOwnerSessionIndex();
         const retry = _watchdogRetryAllowed;
         _watchdogCancelPending = false;
         _watchdogRetryAllowed = false;
         finishAssistantMessage(true, event.promptTokens,
             event.completionTokens, event.totalTokens);
-        if (!retry || _current < 0)
+        if (!retry || sessionIndex < 0 ||
+            sessionIndex >= cast(int) _sessions.length)
         {
             continueOrCompleteTask(true);
+            _activeRequestId = 0;
+            _activeRequestSession = -1;
             updateStatus("Model stalled twice. Task paused for review.");
             return true;
         }
         ++_watchdogRetries;
         _turnCancelled = false;
-        auto session = &_sessions[_current];
+        auto session = &_sessions[sessionIndex];
         session.taskStatus = "active";
         ChatMessage recovery;
         recovery.role = "user";
@@ -6614,10 +6738,11 @@ public final class OpenCodeRoot : VBox
         appendMessage(*session, recovery);
         publishThreadUpdated(*session);
         markDirty();
-        rebuildMessageColumn();
+        if (viewingTurnOwner()) rebuildMessageColumn();
         setTurnActiveMarker(true, session.id);
+        setTurnInFlight(true);
         updateStatus("Retrying from durable task state…");
-        startChatRequest(_current, false);
+        startChatRequest(sessionIndex, false);
         return true;
     }
 
@@ -6629,6 +6754,7 @@ public final class OpenCodeRoot : VBox
     private void cancelPendingTools()
     {
         setTurnActiveMarker(false);
+        setTurnInFlight(false);
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
         _pendingToolCalls.length = 0;
@@ -6676,6 +6802,7 @@ public final class OpenCodeRoot : VBox
     private bool activityRowWanted() const
     {
         return _activityRow !is null && _activityRow.hasLabel() &&
+            viewingTurnOwner() &&
             _preparingToolCalls.length == 0 && _liveToolCalls.length == 0;
     }
 
@@ -6686,7 +6813,8 @@ public final class OpenCodeRoot : VBox
         const wasPresent = _activityRow.parent() !is null;
         _activityRow.setLabel("");
         _activityRow.setLive(false);
-        if (wasPresent && _current >= 0) rebuildMessageColumn();
+        if (wasPresent && _current >= 0 && viewingTurnOwner())
+            rebuildMessageColumn();
     }
 
     /// The model is still generating tool-call arguments: it has named the
@@ -6696,7 +6824,9 @@ public final class OpenCodeRoot : VBox
     /// text.
     private void handleToolCallProgress(const OpenCodeEvent event)
     {
-        if (_current < 0) return;
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
         if (event.toolCalls.length == 0) return;
         _preparingToolCalls = event.toolCalls.dup;
         updateStatus("Preparing tools…");
@@ -6704,7 +6834,7 @@ public final class OpenCodeRoot : VBox
         // generic phase row would only duplicate it. Drop it; it comes back
         // when the next round waits on the model with no live row to show.
         clearActivity();
-        rebuildMessageColumn();
+        if (_current == sessionIndex) rebuildMessageColumn();
     }
 
     private static bool isReadOnlyExplorationTool(string name)
@@ -6810,7 +6940,7 @@ public final class OpenCodeRoot : VBox
         appendMessage(session, checkpoint);
         publishThreadUpdated(session);
         markDirty();
-        rebuildMessageColumn();
+        if (viewingTurnOwner()) rebuildMessageColumn();
         updateStatus(hardLimit ? "Exploration limit reached — forcing action…" :
             "Evidence gathered — asking the model to edit…");
     }
@@ -6822,8 +6952,10 @@ public final class OpenCodeRoot : VBox
     private void handleToolCalls(const OpenCodeEvent event)
     {
         _preparingToolCalls.length = 0;
-        if (_current < 0) return;
-        auto session = &_sessions[_current];
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
         if (message.role != "assistant") return;
@@ -6856,7 +6988,7 @@ public final class OpenCodeRoot : VBox
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
             if (!_toolContinuationPaused)
-                startChatRequest(_current, false);
+                startChatRequest(sessionIndex, false);
             return;
         }
 
@@ -6889,7 +7021,7 @@ public final class OpenCodeRoot : VBox
             markDirty();
             // Re-render the wrapper (now a hidden slot) and the recovery prompt
             // in one pass; there is no live row for this path.
-            rebuildMessageColumn();
+            if (_current == sessionIndex) rebuildMessageColumn();
             _toolRounds = 0;
             _lastToolSignature = "";
             _lastToolRepeatCount = 0;
@@ -6897,7 +7029,7 @@ public final class OpenCodeRoot : VBox
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
             if (!_toolContinuationPaused)
-                startChatRequest(_current, false);
+                startChatRequest(sessionIndex, false);
             return;
         }
 
@@ -6917,14 +7049,14 @@ public final class OpenCodeRoot : VBox
             markDirty();
             // Re-render the wrapper (now a hidden slot) and the finalizing
             // prompt in one pass; there is no live row for this path.
-            rebuildMessageColumn();
+            if (_current == sessionIndex) rebuildMessageColumn();
             _toolRounds = 0;
             _lastToolSignature = "";
             _lastToolRepeatCount = 0;
             updateStatus("Finalizing — asking the model to answer…");
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
-            startChatRequest(_current, false);
+            startChatRequest(sessionIndex, false);
             return;
         }
         ++_toolRounds;
@@ -6941,8 +7073,7 @@ public final class OpenCodeRoot : VBox
         clearActivity();
 
         // Show the live "Exploring" row while the context tools are running.
-        rebuildMessageColumn();
-        const sessionIndex = _current;
+        if (_current == sessionIndex) rebuildMessageColumn();
         const requestId = _activeRequestId;
         const workspace = workspaceForSession(sessionIndex);
         // The UI may clear/replace its live arrays as soon as the user cancels
@@ -7078,8 +7209,10 @@ public final class OpenCodeRoot : VBox
     /// history so the model can answer with the results available.
     private void applyToolResult(const OpenCodeEvent event)
     {
-        if (_current < 0 || _turnCancelled || _pendingToolCalls.length == 0) return;
-        auto session = &_sessions[_current];
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length ||
+            _turnCancelled || _pendingToolCalls.length == 0) return;
+        auto session = &_sessions[sessionIndex];
 
         // The command arguments come from the original tool call, matched by
         // its id, so the result bubble can show the full command.
@@ -7196,7 +7329,7 @@ public final class OpenCodeRoot : VBox
                     explorationCheckpointCalls &&
                     !hasExplorationCheckpoint(*session))
                     appendExplorationCheckpoint(*session, false);
-                startChatRequest(_current, false);
+                startChatRequest(sessionIndex, false);
             }
         }
     }
@@ -7301,6 +7434,7 @@ public final class OpenCodeRoot : VBox
     /// enriched history. Shared by the exact-repeat and repeated-failure paths.
     private void breakToolLoop(ChatSession* session, string instruction)
     {
+        const sessionIndex = turnOwnerSessionIndex();
         ChatMessage recovery;
         recovery.role = "user";
         recovery.internal = true;
@@ -7318,7 +7452,7 @@ public final class OpenCodeRoot : VBox
         _messagesScroll.follow = true;
         _messagesScroll.invalidate();
         if (!_toolContinuationPaused)
-            startChatRequest(_current, false);
+            startChatRequest(sessionIndex, false);
     }
 
     // -- sending ----------------------------------------------------------
@@ -7328,6 +7462,12 @@ public final class OpenCodeRoot : VBox
         if (_client.busy() || _turnTiming ||
             _pendingToolCalls.length > 0 || _pendingToolResults > 0)
         {
+            if (_current != turnOwnerSessionIndex())
+            {
+                updateStatus("Another conversation is still working. " ~
+                    "Select it to steer or stop that turn.");
+                return;
+            }
             // Text entered while work is active is steering, not an implicit
             // stop.  Queue it durably and inject it at the next valid message
             // boundary.  Clicking the stop-shaped send button with no text
@@ -7708,6 +7848,7 @@ public final class OpenCodeRoot : VBox
                     ChatRequestMessage request;
                     request.role = message.role;
                     request.content = message.content;
+                    request.reasoningContent = message.reasoning;
                     request.toolCalls = message.toolCalls.dup;
                     messages ~= request;
                     foreach (k; slot + 1 .. replyEnd)
@@ -7726,6 +7867,7 @@ public final class OpenCodeRoot : VBox
                     ChatRequestMessage request;
                     request.role = message.role;
                     request.content = message.content;
+                    request.reasoningContent = message.reasoning;
                     messages ~= request;
                 }
                 slot = replyEnd;
@@ -7746,6 +7888,8 @@ public final class OpenCodeRoot : VBox
             request.content = message.internal
                 ? "Internal agent-control instruction:\n" ~ message.content
                 : message.content;
+            if (message.role == "assistant")
+                request.reasoningContent = message.reasoning;
             request.toolCallId = message.toolCallId;
             messages ~= request;
             ++slot;
@@ -7932,6 +8076,7 @@ public final class OpenCodeRoot : VBox
         {
             beginTurnTiming(sessionIndex);
             setTurnActiveMarker(true, session.id);
+            setTurnInFlight(true);
             JSONValue payload;
             payload["model"] = session.model;
             payload["thinking"] = session.thinking;
@@ -8419,9 +8564,12 @@ public final class OpenCodeRoot : VBox
     {
         if (!_toolTranscriptDirty) return;
         _toolTranscriptDirty = false;
-        rebuildMessageColumn();
-        _messagesScroll.invalidate();
-        refreshBubbleActions();
+        if (viewingTurnOwner())
+        {
+            rebuildMessageColumn();
+            _messagesScroll.invalidate();
+            refreshBubbleActions();
+        }
         markDirty();
     }
 
@@ -8596,6 +8744,51 @@ public final class OpenCodeRoot : VBox
         _usageTooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
+    // True while an agent turn is running. Its owning conversation may differ
+    // from the selected view; the sidebar marker stays with the owner.
+    private bool _turnInFlight;
+
+    /// The selected conversation is only a view. Network/tool events continue
+    /// to belong to the conversation that started the request even when the
+    /// user opens or selects another chat while it works in the background.
+    private int turnOwnerSessionIndex() const
+    {
+        const requestActive = _turnInFlight || _activeRequestId != 0;
+        if (requestActive && _activeRequestSession >= 0 &&
+            _activeRequestSession < cast(int) _sessions.length)
+            return _activeRequestSession;
+        if (_turnTiming && _turnSessionIndex >= 0 &&
+            _turnSessionIndex < cast(int) _sessions.length)
+            return _turnSessionIndex;
+        return _current;
+    }
+
+    private bool viewingTurnOwner() const
+    {
+        return _current >= 0 && _current == turnOwnerSessionIndex();
+    }
+
+    private int[] activeSessionRows()
+    {
+        int[] rows;
+        if (!_turnInFlight) return rows;
+        const owner = turnOwnerSessionIndex();
+        foreach (i, sessionIndex; _sessionIndices)
+            if (sessionIndex == owner)
+            {
+                rows ~= cast(int) i;
+                break;
+            }
+        return rows;
+    }
+
+    private void setTurnInFlight(bool active)
+    {
+        if (_turnInFlight == active) return;
+        _turnInFlight = active;
+        if (_sessionList !is null) _sessionList.setActivityRows(activeSessionRows());
+    }
+
     private void updateSessionList(bool revealCurrent = true)
     {
         ListItem[] items;
@@ -8621,6 +8814,7 @@ public final class OpenCodeRoot : VBox
         }
         _sessionIndices = indices;
         _sessionList.setItems(items);
+        _sessionList.setActivityRows(activeSessionRows());
         int row = -1;
         foreach (i, sessionIndex; _sessionIndices)
             if (sessionIndex == _current) row = cast(int) i;
@@ -8641,6 +8835,11 @@ public final class OpenCodeRoot : VBox
     private void deleteSession(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_turnInFlight && sessionIndex == turnOwnerSessionIndex())
+        {
+            updateStatus("Stop the running turn before deleting this conversation.");
+            return;
+        }
         const removed = _sessions[sessionIndex];
         publishRuntimeEvent(AgentEventKind.threadDeleted, removed);
         _sessions = _sessions[0 .. sessionIndex] ~
@@ -8651,6 +8850,8 @@ public final class OpenCodeRoot : VBox
                 : -1;
         else if (_current > sessionIndex)
             --_current;
+        if (_activeRequestSession > sessionIndex) --_activeRequestSession;
+        if (_turnSessionIndex > sessionIndex) --_turnSessionIndex;
         _streamBubble = null;
         _editMessageIndex = -1;
         rebuildMessageColumn();
@@ -9461,9 +9662,7 @@ public final class OpenCodeRoot : VBox
             // Cancellation, navigation, and a subsequent request can all race
             // with a worker's final queue push. Never attach those stale bytes
             // or tool results to a different conversation/branch.
-            if (event.requestId != 0 &&
-                (event.requestId != _activeRequestId ||
-                 _activeRequestSession != _current))
+            if (event.requestId != 0 && event.requestId != _activeRequestId)
             {
                 ++eventIndex;
                 continue;
@@ -9530,15 +9729,28 @@ public final class OpenCodeRoot : VBox
                     applyToolResult(event);
                     break;
                 case OpenCodeEventKind.done:
+                    const completedRequestId = event.requestId;
                     if (recoverStalledRequest(event)) break;
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
                         !taskContinues);
                     continueOrCompleteTask(event.cancelled);
+                    // A continuation started above owns a new id. Only clear the
+                    // completed request when no replacement was launched.
+                    if (_activeRequestId == completedRequestId)
+                    {
+                        _activeRequestId = 0;
+                        _activeRequestSession = -1;
+                    }
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
+                    if (_activeRequestId == event.requestId)
+                    {
+                        _activeRequestId = 0;
+                        _activeRequestSession = -1;
+                    }
                     break;
                 case OpenCodeEventKind.models:
                     applyModels(event.modelIds);
@@ -9633,6 +9845,33 @@ public final class OpenCodeRoot : VBox
     public size_t sessionCountForTesting() const
     {
         return _sessions.length;
+    }
+
+    public int currentSessionForTesting() const
+    {
+        return _current;
+    }
+
+    public int turnOwnerSessionForTesting() const
+    {
+        return turnOwnerSessionIndex();
+    }
+
+    public void selectSessionForTesting(int index)
+    {
+        selectSession(index);
+    }
+
+    public string lastMessageContentInSessionForTesting(int index) const
+    {
+        if (index < 0 || index >= cast(int) _sessions.length ||
+            _sessions[index].messages.length == 0) return "";
+        return _sessions[index].messages[$ - 1].content;
+    }
+
+    public string activeSessionRowsForTesting() const
+    {
+        return _sessionList is null ? "" : _sessionList.activityRowsForTesting();
     }
 
     public void setTaskStateForTesting(string objective, string status,
@@ -10595,7 +10834,9 @@ public final class OpenCodeRoot : VBox
     /// without a real network round-trip.
     public void startTurnClockForTesting()
     {
+        _activeRequestSession = _current;
         beginTurnTiming(_current);
+        setTurnInFlight(true);
     }
 
     /// Test-only: deliver a streamed reasoning (chain-of-thought) fragment.
