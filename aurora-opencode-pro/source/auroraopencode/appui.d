@@ -88,6 +88,24 @@ private void openLinkInBrowser(string url)
     ShellExecuteW(null, null, toUTF16z(url), null, null, 1);
 }
 
+version (Windows)
+private void openFolderInExplorer(string path)
+{
+    // The "explore" verb targets the folder itself, so a click opens the
+    // directory in File Explorer instead of running its default handler.
+    ShellExecuteW(null, toUTF16z("explore"), toUTF16z(path), null, null, 1);
+}
+
+/// Baseline offset of the first shaped line inside a layout box. The stats
+/// (monospace) line box is taller than the UI label's, so centring each by its
+/// own box height left the counters slightly above the visual middle; aligning
+/// on baselines keeps them on the label's line.
+private static double firstBaseline(TextLayout layout)
+{
+    return layout is null || layout.lines.length == 0
+        ? 0.0 : layout.lines[0].baseline;
+}
+
 private string currentTimestamp()
 {
     auto now = Clock.currTime;
@@ -1119,10 +1137,11 @@ private final class MessageBubble : Widget
             // counters and the wall-clock duration. `TextLayout` is a class, so
             // an unassigned one is null - test for presence, never `.width > 0`.
             int x = padH + cast(int) layout.width + 8;
-            const statHeight = elapsedLayout !is null && addLayout is null
-                ? cast(int) elapsedLayout.height
-                : (addLayout !is null ? cast(int) addLayout.height : 0);
-            const sy = top + (h - statHeight) / 2;
+            // Align the counters/timer on the header label's baseline: the
+            // monospace line box is taller than the UI label's, so centring
+            // each by its own box height left the stats slightly high.
+            const sy = cast(int)(top + layout.lines[0].baseline -
+                firstBaseline(addLayout !is null ? addLayout : elapsedLayout));
             if (addLayout !is null)
             {
                 canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
@@ -2401,10 +2420,10 @@ private final class LiveToolRow : Widget
             // The stats sit next to the header text: +N -M and the live elapsed
             // time. `TextLayout` is a class, so test `is null`, not `.width`.
             int x = textX + cast(int) layout.width + 8;
-            const statHeight = elapsedLayout !is null && addLayout is null
-                ? cast(int) elapsedLayout.height
-                : (addLayout !is null ? cast(int) addLayout.height : 0);
-            const statSy = (h - statHeight) / 2;
+            // Baseline-align the counters/timer with the header label so the
+            // taller monospace line box does not push them above the middle.
+            const statSy = cast(int)(sy + layout.lines[0].baseline -
+                firstBaseline(addLayout !is null ? addLayout : elapsedLayout));
             if (addLayout !is null)
             {
                 canvas.drawLayout(Point(x, statSy), addLayout, opencodeDiffAdd);
@@ -2845,6 +2864,8 @@ private final class ToolGroupBubble : Widget
                 1, FontRole.monospace, null, 200, false);
             statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
         }
+        // The `+N -M` counters and elapsed timer are drawn on the header's
+        // vertical midline (see `sy` below), not hugging the top edge.
         const elapsedText = formatElapsedMs(elapsedTotalMs());
         if (elapsedText.length > 0)
         {
@@ -2867,10 +2888,10 @@ private final class ToolGroupBubble : Widget
             // `TextLayout` is a class: an unassigned one is null, so test for
             // presence rather than `.width > 0`.
             int x = padH + cast(int) layout.width + 8;
-            const statHeight = elapsedLayout !is null && addLayout is null
-                ? cast(int) elapsedLayout.height
-                : (addLayout !is null ? cast(int) addLayout.height : 0);
-            const sy = padV + (h - statHeight) / 2;
+            // The label is drawn at `padV`, so put the counters/timer on its
+            // baseline rather than their own box centre (which sat too high).
+            const sy = cast(int)(padV + layout.lines[0].baseline -
+                firstBaseline(addLayout !is null ? addLayout : elapsedLayout));
             if (addLayout !is null)
             {
                 canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
@@ -3086,6 +3107,38 @@ private final class TooltipAnchor : Widget
 
     private Widget _hoverOwner;
 }
+
+/// CheckBox that surfaces pointer enter/leave so a parent can drive a hover
+/// tooltip straight from the control instead of a separate "?" badge.
+private final class HoverCheckBox : CheckBox
+{
+    void delegate(bool hovered) onHoverChanged;
+
+    this(string text = "", bool checked = false)
+    {
+        super(text, checked);
+    }
+
+    protected override void onMouseEnter()
+    {
+        super.onMouseEnter();
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        super.onMouseLeave();
+        if (onHoverChanged !is null) onHoverChanged(false);
+    }
+}
+
+/// Explanation shown when hovering the composer's Thinking toggle.
+private immutable string thinkingToggleTooltipText =
+    "Controls the model's reasoning effort. On sends " ~
+    "reasoning_effort \"high\" so the model thinks longer before " ~
+    "answering. Off sends \"none\" on a local server (disabling " ~
+    "thinking) or \"low\" on a hosted provider. Models that do not " ~
+    "support reasoning_effort ignore it.";
 
 /// Small rectangular context meter in the toolbar. Shows the exact token
 /// usage the API reported as a percentage of the model's context window, and
@@ -3990,6 +4043,7 @@ public final class OpenCodeRoot : VBox
     private TitleBarSnapPreview _snapPreview;
     private SplitPane _sessionsSplit;
     private Label _sessionsHeader;
+    private IconButton _openFolderButton;
     private Label _sessionsPath;
     private VBox _sessionsHeaderColumn;
     private Button _newChatButton;
@@ -4430,7 +4484,8 @@ public final class OpenCodeRoot : VBox
             }
         };
 
-        _thinkingBox = composerControls.add(new CheckBox("Thinking"));
+        auto thinkingBox = new HoverCheckBox("Thinking");
+        _thinkingBox = composerControls.add(thinkingBox);
         _thinkingBox.setId("oc-thinking");
         hugCheckBoxLabel(_thinkingBox, "Thinking");
         _thinkingBox.setChecked(_settings.thinking, false);
@@ -4440,19 +4495,14 @@ public final class OpenCodeRoot : VBox
             if (_current >= 0) _sessions[_current].thinking = value;
             saveSettingsNow();
         };
-        _thinkingTooltipAnchor = new TooltipAnchor(_thinkingBox);
-        _thinkingTooltipAnchor.setText(
-            "Controls the model's reasoning effort. On sends " ~
-            "reasoning_effort \"high\" so the model thinks longer before " ~
-            "answering. Off sends \"none\" on a local server (disabling " ~
-            "thinking) or \"low\" on a hosted provider. Models that do not " ~
-            "support reasoning_effort ignore it.");
-        _thinkingTooltipAnchor.onHoverChanged = delegate(bool open)
+        // The tooltip hangs off the Thinking checkbox itself rather than a
+        // separate "?" badge, so hovering the control explains it.
+        thinkingBox.onHoverChanged = delegate(bool open)
         {
             if (_thinkingTooltip is null)
-                _thinkingTooltip = new HoverTooltip(_thinkingTooltipAnchor);
-            setTooltipOpen(_thinkingTooltipAnchor, _thinkingTooltip,
-                _thinkingTooltipOpen, open);
+                _thinkingTooltip = new HoverTooltip(_thinkingBox);
+            setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
+                _thinkingTooltip, _thinkingTooltipOpen, open, true);
         };
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
@@ -4468,9 +4518,7 @@ public final class OpenCodeRoot : VBox
                   "run/read/write/remove/glob/grep/dshell tools."
                 : "Tools disabled.");
         };
-        // The "?" help anchor sits after the pair so Thinking and Tools stay
-        // adjacent (commit 5b94269 left an 18 px badge between them).
-        composerControls.add(_thinkingTooltipAnchor);
+
         // Push the conversation timer to the right edge of the footer so it is
         // always visible, even when a long model name and the toggles fill the
         // row (it was easy to miss tucked in after the "?").
@@ -4552,10 +4600,30 @@ public final class OpenCodeRoot : VBox
         auto headerColumn = new VBox(8, headerPadding);
         headerColumn.setId("oc-header-column");
         _sessionsHeaderColumn = headerColumn;
-        _sessionsHeader = headerColumn.add(new Label("Sandbox"));
+        // Title row: project name with a small "open folder" button beside it,
+        // so a click reveals the active workspace in File Explorer.
+        auto titleRow = headerColumn.add(new HBox(6));
+        titleRow.setId("oc-project-title-row");
+        // A plain HBox reports no intrinsic height, and the header VBox (and
+        // updateSessionsHeaderHeight) size children purely from their layout
+        // hints. Without an explicit height the row collapsed to 0 px and both
+        // the project title and the folder button vanished. Pin it to the
+        // control height so it matches the row's tallest child.
+        titleRow.layoutHints().minHeight = opencodeControlHeight;
+        titleRow.layoutHints().preferredHeight = opencodeControlHeight;
+        _sessionsHeader = titleRow.add(new Label("Sandbox"));
         _sessionsHeader.setId("oc-project-title");
         _sessionsHeader.setScale(1);
         _sessionsHeader.setColor(opencodeText);
+        _openFolderButton = titleRow.add(new IconButton(IconKind.folder));
+        _openFolderButton.setId("oc-open-folder");
+        _openFolderButton.setFlat(true);
+        _openFolderButton.onClick = delegate()
+        {
+            const workspace = activeWorkspace();
+            openFolderInExplorer(workspace.length > 0 ? workspace : ".");
+        };
+        titleRow.add(new Spacer());
         _sessionsPath = headerColumn.add(new Label(""));
         _sessionsPath.setId("oc-project-path");
         _sessionsPath.setScale(1);
@@ -8434,8 +8502,30 @@ public final class OpenCodeRoot : VBox
         }
     }
 
-    /// Position a generic tooltip under its anchor, clamped to the window.
-    private void positionTooltip(Widget anchor, HoverTooltip tooltip)
+    /// Open/close a hover tooltip from any anchor widget with explicit text.
+    private void setTooltipOpen(Widget anchor, string text, HoverTooltip tooltip,
+        ref bool open, bool value, bool above = false)
+    {
+        if (value)
+        {
+            tooltip.setText(text);
+            popupRoot(this).add(tooltip);
+            positionTooltip(anchor, tooltip, above);
+            open = true;
+        }
+        else
+        {
+            open = false;
+            if (tooltip.parent() !is null)
+                tooltip.parent().remove(tooltip);
+        }
+    }
+
+    /// Position a generic tooltip near its anchor, clamped to the window.
+    /// When `above` is set the tooltip is placed over the anchor, otherwise
+    /// under it.
+    private void positionTooltip(Widget anchor, HoverTooltip tooltip,
+        bool above = false)
     {
         const origin = anchor.localToGlobal(Point(0, 0));
         const anchorRect = Rect(origin.x, origin.y, anchor.bounds().width,
@@ -8443,7 +8533,9 @@ public final class OpenCodeRoot : VBox
         const measured = tooltip.measure(Size(int.max, int.max));
         const gap = 6;
         int x = anchorRect.x;
-        int y = anchorRect.bottom() + gap;
+        int y = above
+            ? anchorRect.y - measured.height - gap
+            : anchorRect.bottom() + gap;
         x = clampInt(x, 8, maxInt(8, bounds().width - measured.width - 8));
         y = clampInt(y, 8, maxInt(8, bounds().height - measured.height - 8));
         tooltip.setBounds(Rect(x, y, measured.width, measured.height));
