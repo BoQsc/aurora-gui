@@ -9,7 +9,8 @@ import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
-    AgentRuntimeEvent, DurableAgentRuntime;
+    AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
+    deletedAgentRuntimeThreadIds;
 import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
@@ -4222,12 +4223,12 @@ public final class OpenCodeRoot : VBox
     /// Distinguish a crash during agent work from an unrelated idle UI crash.
     /// The supervisor resumes only when this marker survives an interrupted
     /// turn, avoiding an unsolicited API request after every abnormal exit.
-    private static void setTurnActiveMarker(bool active)
+    private static void setTurnActiveMarker(bool active, string threadId = "")
     {
         const path = activeTurnMarkerPath();
         if (active)
         {
-            try write(path, "active\n");
+            try write(path, threadId.length > 0 ? threadId ~ "\n" : "active\n");
             catch (Exception error)
                 logError("could not mark active turn: " ~ error.msg);
         }
@@ -4269,9 +4270,24 @@ public final class OpenCodeRoot : VBox
             logInfo("resume skipped: no conversation to continue");
             return;
         }
+        // Prefer the exact thread recorded when the turn began instead of the
+        // last sidebar selection saved by an unrelated UI update.
+        try
+        {
+            const activeId = readText(activeTurnMarkerPath()).strip();
+            if (activeId.length > 0 && activeId != "active")
+                foreach (i, session; _sessions)
+                    if (session.id == activeId)
+                    {
+                        _current = cast(int) i;
+                        break;
+                    }
+        }
+        catch (Exception) {}
         _resumePrompt = "The application closed unexpectedly (" ~
             (cause.length > 0 ? cause : "cause unknown") ~
-            "). Continue from where you left off.";
+            "). Continue the durable objective and checklist from where you " ~
+            "left off. Apply any queued guidance before claiming completion.";
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
     }
@@ -4770,6 +4786,7 @@ public final class OpenCodeRoot : VBox
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
+        _turnCancelled = false;
         _toolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
@@ -5057,6 +5074,7 @@ public final class OpenCodeRoot : VBox
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
+        _turnCancelled = false;
         _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
@@ -5137,7 +5155,50 @@ public final class OpenCodeRoot : VBox
         payload["model"] = session.model;
         payload["thinking"] = session.thinking;
         payload["projectId"] = session.projectId;
+        payload["activeLeafId"] = session.activeLeafId;
+        payload["objective"] = session.objective;
+        payload["taskStatus"] = session.taskStatus;
+        payload["verificationStatus"] = session.verificationStatus;
+        JSONValue steps = JSONValue(string[].init);
+        foreach (step; session.taskSteps)
+        {
+            JSONValue value;
+            value["text"] = step.text;
+            value["status"] = step.status;
+            steps.array ~= value;
+        }
+        payload["taskSteps"] = steps;
+        JSONValue guidance = JSONValue(string[].init);
+        foreach (item; session.queuedGuidance) guidance.array ~= JSONValue(item);
+        payload["queuedGuidance"] = guidance;
         return payload.toString();
+    }
+
+    /// Machine-readable task state supplied on every request.  This is the
+    /// durable equivalent of Codex's thread goal: compaction and restarts cannot
+    /// silently erase the objective or turn an unfinished checklist into "done".
+    private static string durableTaskPrompt(const ref ChatSession session)
+    {
+        if (session.objective.length == 0 && session.taskSteps.length == 0 &&
+            session.verificationStatus.length == 0) return "";
+        auto prompt = appender!string();
+        prompt.put("\n\n# Durable Task State\n");
+        prompt.put("Objective: " ~ (session.objective.length > 0
+            ? session.objective : "(not set)") ~ "\n");
+        prompt.put("Status: " ~ (session.taskStatus.length > 0
+            ? session.taskStatus : "active") ~ "\n");
+        prompt.put("Verification: " ~ (session.verificationStatus.length > 0
+            ? session.verificationStatus : "not_required") ~ "\n");
+        if (session.taskSteps.length > 0)
+        {
+            prompt.put("Checklist:\n");
+            foreach (step; session.taskSteps)
+                prompt.put("- [" ~ step.status ~ "] " ~ step.text ~ "\n");
+        }
+        prompt.put("Treat this state as authoritative. Update the plan as work " ~
+            "changes. Do not claim completion while verification is required " ~
+            "or a checklist item remains pending/in_progress.\n");
+        return prompt.data;
     }
 
     private void publishThreadUpdated(const ref ChatSession session)
@@ -5205,6 +5266,17 @@ public final class OpenCodeRoot : VBox
             payload["completionTokens"] = message.completionTokens;
             payload["totalTokens"] = message.totalTokens;
         }
+        if (message.tokensPerSecondTenths > 0)
+            payload["tokensPerSecondTenths"] = message.tokensPerSecondTenths;
+        if (message.diffAdditions > 0)
+            payload["diffAdditions"] = message.diffAdditions;
+        if (message.diffDeletions > 0)
+            payload["diffDeletions"] = message.diffDeletions;
+        if (message.toolDiff.length > 0) payload["toolDiff"] = message.toolDiff;
+        if (message.toolElapsedMs > 0)
+            payload["toolElapsedMs"] = message.toolElapsedMs;
+        if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
+            payload["workedSeconds"] = message.workedSeconds;
         return payload.toString();
     }
 
@@ -5958,6 +6030,7 @@ public final class OpenCodeRoot : VBox
         const leaf = deepestDescendant(*session,
             siblings[cast(size_t) target]);
         session.activeLeafId = session.messages[leaf].id;
+        publishThreadUpdated(*session);
         _streamBubble = null;
         _editMessageIndex = -1;
         rebuildMessageColumn();
@@ -6121,14 +6194,14 @@ public final class OpenCodeRoot : VBox
     }
 
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
-        int completionTokens = 0, int totalTokens = 0)
+        int completionTokens = 0, int totalTokens = 0, bool terminal = true)
     {
-        setTurnActiveMarker(false);
+        if (terminal || cancelled) setTurnActiveMarker(false);
         _preparingToolCalls.length = 0;
         clearActivity();
         // The turn is over: freeze its clock before rebuilding so the durable
         // completion separator appears immediately above the final answer.
-        freezeTurnTiming();
+        if (terminal || cancelled) freezeTurnTiming();
         if (_streamBubble !is null)
         {
             // Settle the final count (exact when the provider reported it) and
@@ -6164,7 +6237,7 @@ public final class OpenCodeRoot : VBox
             publishMessageEvent(AgentEventKind.itemUpdated,
                 _sessions[_current], *message);
         }
-        if (_current >= 0)
+        if (_current >= 0 && (terminal || cancelled))
             publishRuntimeEvent(cancelled ? AgentEventKind.turnInterrupted :
                 AgentEventKind.turnCompleted, _sessions[_current],
                 runtimeTurnId(_sessions[_current]));
@@ -6173,7 +6246,8 @@ public final class OpenCodeRoot : VBox
         // is canonical immediately — otherwise the transcript silently
         // rearranges the next time anything triggers a rebuild.
         rebuildMessageColumn();
-        string status = cancelled ? "Stopped." : "Done.";
+        string status = cancelled ? "Stopped." : terminal ? "Done." :
+            "Continuing…";
         if (!cancelled && totalTokens > 0)
         {
             _lastUsageText = " • " ~ formatThousands(totalTokens) ~ " tokens";
@@ -6187,6 +6261,99 @@ public final class OpenCodeRoot : VBox
         markDirty();
         refreshBubbleActions();
         refreshUsageBadge();
+    }
+
+    /// A provider `done` is not automatically task completion.  First consume
+    /// queued steering; then, for file-changing work, require a focused check
+    /// before the durable task can enter the completed state.
+    private void continueOrCompleteTask(bool cancelled)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        if (cancelled)
+        {
+            session.taskStatus = "blocked";
+            publishThreadUpdated(*session);
+            markDirty();
+            return;
+        }
+        if (appendQueuedGuidance(*session))
+        {
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            setTurnActiveMarker(true, session.id);
+            updateStatus("Applying queued guidance…");
+            startChatRequest(_current, false);
+            return;
+        }
+        if (hasIncompleteTaskSteps(*session))
+        {
+            if (session.taskStatus != "reviewing")
+            {
+                session.taskStatus = "reviewing";
+                ChatMessage gate;
+                gate.role = "user";
+                gate.internal = true;
+                gate.content = "Completion gate: the durable checklist still " ~
+                    "contains pending or in-progress work. Continue the work " ~
+                    "and update the checklist. Do not claim completion while " ~
+                    "an item remains unfinished; if blocked, report the exact " ~
+                    "blocker.";
+                appendMessage(*session, gate);
+                publishThreadUpdated(*session);
+                markDirty();
+                rebuildMessageColumn();
+                updateStatus("Reviewing unfinished checklist…");
+                startChatRequest(_current, false);
+                return;
+            }
+            session.taskStatus = "blocked";
+            updateStatus("Finished with checklist items still incomplete.");
+            publishThreadUpdated(*session);
+            markDirty();
+            return;
+        }
+        if (session.verificationStatus == "required")
+        {
+            if (session.taskStatus != "verifying")
+            {
+                session.taskStatus = "verifying";
+                ChatMessage gate;
+                gate.role = "user";
+                gate.internal = true;
+                gate.content = "Completion gate: files changed in this task, " ~
+                    "but no successful verification has been recorded since " ~
+                    "the last change. Run the most focused relevant check now. " ~
+                    "Do not claim completion unless it succeeds; if it cannot " ~
+                    "be run, report the concrete blocker.";
+                appendMessage(*session, gate);
+                publishThreadUpdated(*session);
+                markDirty();
+                rebuildMessageColumn();
+                setTurnActiveMarker(true, session.id);
+                updateStatus("Verifying before completion…");
+                startChatRequest(_current, false);
+                return;
+            }
+            session.taskStatus = "blocked";
+            session.verificationStatus = "failed";
+            updateStatus("Finished with verification still incomplete.");
+        }
+        else
+            session.taskStatus = "completed";
+        publishThreadUpdated(*session);
+        markDirty();
+    }
+
+    private bool taskContinuesAfterDone(bool cancelled) const
+    {
+        if (cancelled || _current < 0) return false;
+        const session = _sessions[_current];
+        if (session.queuedGuidance.length > 0) return true;
+        if (hasIncompleteTaskSteps(session) &&
+            session.taskStatus != "reviewing") return true;
+        return session.verificationStatus == "required" &&
+            session.taskStatus != "verifying";
     }
 
     private void failAssistantMessage(string error)
@@ -6214,6 +6381,8 @@ public final class OpenCodeRoot : VBox
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error: " ~ error;
         message.failed = true;
+        session.taskStatus = "blocked";
+        publishThreadUpdated(*session);
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
         publishRuntimeEvent(AgentEventKind.turnFailed, *session,
             runtimeTurnId(*session), "", "", errorPayload(error));
@@ -6602,6 +6771,23 @@ public final class OpenCodeRoot : VBox
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
 
+        if (!event.toolFailed && event.toolName == "update_plan")
+            applyDurablePlan(*session, toolArgs);
+        if (!event.toolFailed && isMutatingTool(event.toolName))
+        {
+            session.verificationStatus = "required";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+        }
+        else if (!event.toolFailed && isVerificationTool(event.toolName,
+            toolArgs) &&
+            session.verificationStatus == "required")
+        {
+            session.verificationStatus = "passed";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+        }
+
         // Progress-based loop detection: remember the last failure signature
         // (tool name + first output line) and how many times in a row it has
         // repeated. Any success is progress and clears it.
@@ -6656,8 +6842,93 @@ public final class OpenCodeRoot : VBox
                 return;
             }
             if (!_toolContinuationPaused)
+            {
+                appendQueuedGuidance(*session);
                 startChatRequest(_current, false);
+            }
         }
+    }
+
+    private static bool isMutatingTool(string name)
+    {
+        return name == "write" || name == "edit" || name == "apply_patch" ||
+            name == "remove";
+    }
+
+    private static bool isVerificationTool(string name, string arguments)
+    {
+        if (name != "run" && name != "bash") return false;
+        try
+        {
+            auto root = parseJSON(arguments);
+            if (root.type == JSONType.object)
+                if (auto background = "background" in root.object)
+                    if (background.type == JSONType.true_) return false;
+        }
+        catch (Exception) {}
+        const lower = arguments.toLower();
+        foreach (signal; ["test", "build", "check", "lint", "verify",
+            "compile", "pytest", "unittest", "dmd", "dub", "cargo",
+            "npm run", "pnpm", "yarn"])
+            if (lower.canFind(signal)) return true;
+        return false;
+    }
+
+    private void applyDurablePlan(ref ChatSession session, string arguments)
+    {
+        JSONValue root;
+        try root = parseJSON(arguments);
+        catch (Exception) return;
+        if (root.type != JSONType.object) return;
+        auto plan = "plan" in root.object;
+        if (plan is null || plan.type != JSONType.array) return;
+        TaskStep[] steps;
+        foreach (item; plan.array)
+        {
+            if (item.type != JSONType.object) return;
+            TaskStep step;
+            if (auto field = "step" in item.object)
+                if (field.type == JSONType.string) step.text = field.str;
+            if (auto field = "status" in item.object)
+                if (field.type == JSONType.string) step.status = field.str;
+            if (step.text.length == 0 || step.status.length == 0) return;
+            steps ~= step;
+        }
+        session.taskSteps = steps;
+        bool complete = steps.length > 0;
+        foreach (step; steps)
+            if (step.status != "completed") complete = false;
+        if (session.taskStatus != "reviewing" || complete)
+            session.taskStatus = "active";
+        publishThreadUpdated(session);
+    }
+
+    private static bool hasIncompleteTaskSteps(const ref ChatSession session)
+    {
+        foreach (step; session.taskSteps)
+            if (step.status != "completed") return true;
+        return false;
+    }
+
+    /// Move guidance entered during a live turn into the transcript only at a
+    /// valid message boundary (after all tool results, or after a prose reply).
+    private bool appendQueuedGuidance(ref ChatSession session)
+    {
+        if (session.queuedGuidance.length == 0) return false;
+        foreach (text; session.queuedGuidance)
+        {
+            ChatMessage guidance;
+            guidance.role = "user";
+            guidance.content = text;
+            guidance.time = currentTimestamp();
+            appendMessage(session, guidance);
+        }
+        session.queuedGuidance.length = 0;
+        session.taskStatus = "active";
+        publishThreadUpdated(session);
+        markDirty();
+        rebuildMessageColumn();
+        return true;
     }
 
     /// First non-empty, trimmed line of a tool output, used as the failure
@@ -6705,6 +6976,22 @@ public final class OpenCodeRoot : VBox
         if (_client.busy() || _turnTiming ||
             _pendingToolCalls.length > 0 || _pendingToolResults > 0)
         {
+            // Text entered while work is active is steering, not an implicit
+            // stop.  Queue it durably and inject it at the next valid message
+            // boundary.  Clicking the stop-shaped send button with no text
+            // keeps the explicit cancellation behaviour.
+            const guidance = _input.textUtf8().strip();
+            if (guidance.length > 0 && _current >= 0)
+            {
+                auto session = &_sessions[_current];
+                session.queuedGuidance ~= guidance;
+                session.taskStatus = "active";
+                _input.setText("");
+                publishThreadUpdated(*session);
+                markDirty();
+                updateStatus("Guidance queued — applying at the next safe step…");
+                return;
+            }
             _client.cancel();
             cancelRunningCommands();
             updateStatus("Stopping…");
@@ -6725,6 +7012,15 @@ public final class OpenCodeRoot : VBox
         }
         session.model = _settings.model;
         session.thinking = _settings.thinking;
+        const newTask = session.objective.length == 0 ||
+            session.taskStatus == "completed" || session.taskStatus == "blocked";
+        if (newTask)
+        {
+            session.objective = text;
+            session.taskSteps.length = 0;
+            session.verificationStatus = "not_required";
+        }
+        session.taskStatus = "active";
         publishThreadUpdated(*session);
 
         // Editing a prompt: branch from the original prompt's parent so the
@@ -7238,8 +7534,19 @@ public final class OpenCodeRoot : VBox
             // Native tools are the main tool set; the legacy shell tool is an
             // opt-in addition from Settings.
             systemPrompt.content = buildSystemPrompt(!_settings.legacyTools,
-                workspace, platform);
+                workspace, platform) ~ durableTaskPrompt(*session);
             messages ~= systemPrompt;
+        }
+        else
+        {
+            const taskPrompt = durableTaskPrompt(*session);
+            if (taskPrompt.length > 0)
+            {
+                ChatRequestMessage systemPrompt;
+                systemPrompt.role = "system";
+                systemPrompt.content = taskPrompt;
+                messages ~= systemPrompt;
+            }
         }
         messages ~= compactRequestMessages(buildRequestMessages(*session),
             contextLimitForModel(_settings.model));
@@ -7265,7 +7572,7 @@ public final class OpenCodeRoot : VBox
         if (userTurn)
         {
             beginTurnTiming(sessionIndex);
-            setTurnActiveMarker(true);
+            setTurnActiveMarker(true, session.id);
             JSONValue payload;
             payload["model"] = session.model;
             payload["thinking"] = session.thinking;
@@ -7305,6 +7612,7 @@ public final class OpenCodeRoot : VBox
         if (message.role != "assistant") return false;
         cancelPendingTools();
         session.activeLeafId = message.parentId;
+        publishThreadUpdated(*session);
         _streamBubble = null;
         _editMessageIndex = -1;
         rebuildMessageColumn();
@@ -7630,8 +7938,9 @@ public final class OpenCodeRoot : VBox
             const platform = "posix";
         else
             const platform = "unknown";
-        const prompt = buildSystemPrompt(!_settings.legacyTools,
+        string prompt = buildSystemPrompt(!_settings.legacyTools,
             activeWorkspace(), platform);
+        if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current]);
 
         auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 640;
@@ -8252,6 +8561,30 @@ public final class OpenCodeRoot : VBox
         root["thinking"] = session.thinking;
         if (session.projectId.length > 0)
             root["project"] = session.projectId;
+        if (session.objective.length > 0) root["objective"] = session.objective;
+        if (session.taskStatus.length > 0)
+            root["taskStatus"] = session.taskStatus;
+        if (session.verificationStatus.length > 0)
+            root["verificationStatus"] = session.verificationStatus;
+        if (session.taskSteps.length > 0)
+        {
+            JSONValue steps = JSONValue(string[].init);
+            foreach (step; session.taskSteps)
+            {
+                JSONValue value;
+                value["text"] = step.text;
+                value["status"] = step.status;
+                steps.array ~= value;
+            }
+            root["taskSteps"] = steps;
+        }
+        if (session.queuedGuidance.length > 0)
+        {
+            JSONValue guidance = JSONValue(string[].init);
+            foreach (item; session.queuedGuidance)
+                guidance.array ~= JSONValue(item);
+            root["queuedGuidance"] = guidance;
+        }
         if (session.activeLeafId.length > 0)
             root["activeLeaf"] = session.activeLeafId;
         JSONValue messages = JSONValue(string[].init);
@@ -8391,6 +8724,33 @@ public final class OpenCodeRoot : VBox
                             session.thinking = field.type == JSONType.true_;
                         if (auto field = "project" in sessionValue.object)
                             session.projectId = field.str;
+                        if (auto field = "objective" in sessionValue.object)
+                            session.objective = field.str;
+                        if (auto field = "taskStatus" in sessionValue.object)
+                            session.taskStatus = field.str;
+                        if (auto field = "verificationStatus" in
+                            sessionValue.object)
+                            session.verificationStatus = field.str;
+                        if (auto field = "taskSteps" in sessionValue.object)
+                            if (field.type == JSONType.array)
+                                foreach (item; field.array)
+                                {
+                                    if (item.type != JSONType.object) continue;
+                                    TaskStep step;
+                                    if (auto f = "text" in item.object)
+                                        if (f.type == JSONType.string)
+                                            step.text = f.str;
+                                    if (auto f = "status" in item.object)
+                                        if (f.type == JSONType.string)
+                                            step.status = f.str;
+                                    if (step.text.length > 0)
+                                        session.taskSteps ~= step;
+                                }
+                        if (auto field = "queuedGuidance" in sessionValue.object)
+                            if (field.type == JSONType.array)
+                                foreach (item; field.array)
+                                    if (item.type == JSONType.string)
+                                        session.queuedGuidance ~= item.str;
                         if (session.projectId.length == 0)
                             session.projectId = sandboxProjectId;
                         if (auto field = "activeLeaf" in sessionValue.object)
@@ -8492,6 +8852,20 @@ public final class OpenCodeRoot : VBox
                             logError("skipping unreadable sessions snapshot " ~
                                 candidate ~ ": " ~ error.msg);
                         }
+                        }
+        // The event journal is the recovery authority. Merge it after every
+        // snapshot so the latest flushed item/task update wins even when the
+        // compatibility JSON cache was missing or saved a moment earlier.
+        if (_runtime !is null)
+        {
+            const events = _runtime.history();
+            foreach (deletedId; deletedAgentRuntimeThreadIds(events))
+                foreach_reverse (index; 0 .. _sessions.length)
+                    if (_sessions[index].id == deletedId)
+                        _sessions = _sessions[0 .. index] ~
+                            _sessions[index + 1 .. $];
+            foreach (session; projectAgentRuntimeEvents(events))
+                mergeJournalSession(session);
         }
         // Repair/backfill the message graph for sessions saved before branching
         // existed (or with dangling links), once, after the snapshots have been
@@ -8572,6 +8946,64 @@ public final class OpenCodeRoot : VBox
         _sessions ~= session;
     }
 
+    private void mergeJournalSession(ChatSession recovered)
+    {
+        foreach (ref existing; _sessions)
+        {
+            if (!sameRestoredConversation(existing, recovered)) continue;
+            if (recovered.title.length > 0) existing.title = recovered.title;
+            if (recovered.model.length > 0) existing.model = recovered.model;
+            if (recovered.projectId.length > 0)
+                existing.projectId = recovered.projectId;
+            existing.thinking = recovered.thinking;
+            if (recovered.objective.length > 0)
+                existing.objective = recovered.objective;
+            if (recovered.taskStatus.length > 0)
+                existing.taskStatus = recovered.taskStatus;
+            if (recovered.verificationStatus.length > 0)
+                existing.verificationStatus = recovered.verificationStatus;
+            if (recovered.taskSteps.length > 0)
+                existing.taskSteps = recovered.taskSteps.dup;
+            existing.queuedGuidance = recovered.queuedGuidance.dup;
+            foreach (message; recovered.messages)
+            {
+                bool found;
+                foreach (ref current; existing.messages)
+                    if (current.id == message.id)
+                    {
+                        const oldWorked = current.workedSeconds;
+                        const oldRate = current.tokensPerSecondTenths;
+                        const oldElapsed = current.toolElapsedMs;
+                        const oldAdds = current.diffAdditions;
+                        const oldDeletes = current.diffDeletions;
+                        const oldDiff = current.toolDiff;
+                        current = message;
+                        if ((!isFinite(current.workedSeconds) ||
+                            current.workedSeconds <= 0) &&
+                            isFinite(oldWorked) && oldWorked > 0)
+                            current.workedSeconds = oldWorked;
+                        if (current.tokensPerSecondTenths == 0)
+                            current.tokensPerSecondTenths = oldRate;
+                        if (current.toolElapsedMs == 0)
+                            current.toolElapsedMs = oldElapsed;
+                        if (current.diffAdditions == 0)
+                            current.diffAdditions = oldAdds;
+                        if (current.diffDeletions == 0)
+                            current.diffDeletions = oldDeletes;
+                        if (current.toolDiff.length == 0)
+                            current.toolDiff = oldDiff;
+                        found = true;
+                        break;
+                    }
+                if (!found) existing.messages ~= message;
+            }
+            if (recovered.activeLeafId.length > 0)
+                existing.activeLeafId = recovered.activeLeafId;
+            return;
+        }
+        _sessions ~= recovered;
+    }
+
     /// Move an unreadable sessions file aside so the next launch starts clean
     /// without destroying the bytes that caused the failure.
     private void quarantineSessionsFile(string path)
@@ -8602,6 +9034,7 @@ public final class OpenCodeRoot : VBox
             logInfo("resuming after an unexpected shutdown");
             if (_current >= 0)
             {
+                appendQueuedGuidance(_sessions[_current]);
                 ChatMessage recovery;
                 recovery.role = "user";
                 recovery.internal = true;
@@ -8702,8 +9135,11 @@ public final class OpenCodeRoot : VBox
                     applyToolResult(event);
                     break;
                 case OpenCodeEventKind.done:
+                    const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
-                        event.completionTokens, event.totalTokens);
+                        event.completionTokens, event.totalTokens,
+                        !taskContinues);
+                    continueOrCompleteTask(event.cancelled);
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
@@ -8800,6 +9236,81 @@ public final class OpenCodeRoot : VBox
     public size_t sessionCountForTesting() const
     {
         return _sessions.length;
+    }
+
+    public void setTaskStateForTesting(string objective, string status,
+        string verification)
+    {
+        if (_current < 0) return;
+        _sessions[_current].objective = objective;
+        _sessions[_current].taskStatus = status;
+        _sessions[_current].verificationStatus = verification;
+        publishThreadUpdated(_sessions[_current]);
+        markDirty();
+    }
+
+    public string taskObjectiveForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].objective;
+    }
+
+    public string taskStatusForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].taskStatus;
+    }
+
+    public string verificationStatusForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].verificationStatus;
+    }
+
+    public size_t taskStepCountForTesting() const
+    {
+        return _current < 0 ? 0 : _sessions[_current].taskSteps.length;
+    }
+
+    public void applyPlanForTesting(string arguments)
+    {
+        if (_current >= 0) applyDurablePlan(_sessions[_current], arguments);
+    }
+
+    public void queueGuidanceForTesting(string guidance)
+    {
+        if (_current < 0 || guidance.strip().length == 0) return;
+        _sessions[_current].queuedGuidance ~= guidance.strip();
+        publishThreadUpdated(_sessions[_current]);
+        markDirty();
+    }
+
+    public size_t queuedGuidanceCountForTesting() const
+    {
+        return _current < 0 ? 0 : _sessions[_current].queuedGuidance.length;
+    }
+
+    public bool consumeGuidanceForTesting()
+    {
+        return _current >= 0 && appendQueuedGuidance(_sessions[_current]);
+    }
+
+    public bool completionNeedsVerificationForTesting() const
+    {
+        return _current >= 0 &&
+            _sessions[_current].verificationStatus == "required";
+    }
+
+    public bool completionWouldContinueForTesting() const
+    {
+        return taskContinuesAfterDone(false);
+    }
+
+    /// Discard the compatibility snapshot in memory and replay only the durable
+    /// event journal, mirroring the startup fallback without touching disk.
+    public void restoreJournalOnlyForTesting()
+    {
+        _sessions = _runtime is null ? null :
+            projectAgentRuntimeEvents(_runtime.history());
+        _current = _sessions.length > 0 ? cast(int) _sessions.length - 1 : -1;
+        if (_current >= 0) rebuildMessageColumn();
     }
 
     /// Test-only: title of a session.
@@ -9266,6 +9777,16 @@ public final class OpenCodeRoot : VBox
     public void setInputForTesting(string text)
     {
         _input.setText(text);
+    }
+
+    public void sendForTesting()
+    {
+        sendMessage();
+    }
+
+    public void stopTurnClockForTesting()
+    {
+        freezeTurnTiming();
     }
 
     /// Test-only: apply a pending edit and append the edited prompt as a sibling
@@ -10089,14 +10610,14 @@ public final class OpenCodeRoot : VBox
     /// the same path as a real toolResult event. Seeds a one-call pending
     /// batch when none is open so a test can feed repeated failures.
     public void injectToolResultForTesting(string name, string output,
-        bool failed)
+        bool failed, string arguments = "{}")
     {
         if (_pendingToolCalls.length == 0)
         {
             OpenCodeToolCall call;
             call.id = "call_inject";
             call.name = name;
-            call.arguments = "{}";
+            call.arguments = arguments;
             _pendingToolCalls = [call];
             _liveToolCalls = [call];
             _pendingToolResults = 1;

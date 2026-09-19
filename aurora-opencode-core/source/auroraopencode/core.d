@@ -521,6 +521,15 @@ public struct ChatMessage
     bool internal;
 }
 
+/// Durable work state kept independently of transcript prose.  The model may
+/// restate a plan in chat, but the application must not have to scrape rendered
+/// bubbles to discover what remains after a restart.
+public struct TaskStep
+{
+    string text;
+    string status; // "pending" | "in_progress" | "completed"
+}
+
 public struct ChatSession
 {
     // Stable runtime identity. Messages have always had graph ids, but an
@@ -531,6 +540,13 @@ public struct ChatSession
     string model;
     bool thinking;
     string projectId;  // owning project; empty/unknown maps to the sandbox
+    string objective;
+    string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"
+    TaskStep[] taskSteps;
+    string verificationStatus; // "not_required" | "required" | "passed" | "failed"
+    // Guidance entered while a turn is running is queued until a safe model
+    // boundary.  Keeping it here makes steering survive an application restart.
+    string[] queuedGuidance;
     ChatMessage[] messages;
     // The id of the message at the tip of the branch currently shown. The
     // visible conversation is the path from this leaf up through `parentId`s;

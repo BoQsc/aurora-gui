@@ -2806,6 +2806,58 @@ int main(string[] args)
     // append-only journal. This is the compatibility seam for future Codex and
     // provider-neutral runtimes, and must survive independently of sessions.json.
     {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Build durable recovery"]);
+        root.setTaskStateForTesting("Build durable recovery", "active",
+            "not_required");
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.startTurnClockForTesting();
+        root.setInputForTesting("Keep it GUI-first");
+        root.sendForTesting();
+        root.stopTurnClockForTesting();
+        assert(root.taskStepCountForTesting() == 2,
+            "update_plan was not captured as durable checklist state");
+        assert(root.queuedGuidanceCountForTesting() == 1,
+            "active-turn guidance was not queued durably");
+        assert(root.inputTextForTesting().length == 0,
+            "queued active-turn guidance was not cleared from the composer");
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.taskObjectiveForTesting() == "Build durable recovery" &&
+            root.taskStepCountForTesting() == 2 &&
+            root.queuedGuidanceCountForTesting() == 1,
+            "task objective/checklist/guidance did not survive snapshot reload");
+        assert(root.consumeGuidanceForTesting(),
+            "queued guidance was not injected at a safe boundary");
+        assert(root.queuedGuidanceCountForTesting() == 0,
+            "consumed guidance remained queued");
+        assert(root.completionWouldContinueForTesting(),
+            "unfinished durable checklist did not hold completion open");
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"completed"}]}`);
+
+        root.injectToolResultForTesting("edit", "Edited file", false,
+            `{"path":"example.d"}`);
+        assert(root.completionNeedsVerificationForTesting(),
+            "a successful file mutation did not arm the completion gate");
+        root.injectToolResultForTesting("run", "Tests passed", false,
+            `{"argv":["dub","test"]}`);
+        assert(root.verificationStatusForTesting() == "passed" &&
+            !root.completionNeedsVerificationForTesting(),
+            "a focused successful check did not satisfy the completion gate");
+        assert(!root.completionWouldContinueForTesting(),
+            "completed checklist plus successful verification stayed open");
+
+        root.restoreJournalOnlyForTesting();
+        assert(root.taskObjectiveForTesting() == "Build durable recovery" &&
+            root.taskStepCountForTesting() == 2 &&
+            root.verificationStatusForTesting() == "passed",
+            "journal-only recovery did not reconstruct durable task state");
+        writeln("Durable goals, steering, verification, and journal replay work");
+
         const journalPath = buildPath(stateDir, "runtime-events.jsonl");
         assert(exists(journalPath), "agent runtime journal was not created");
         const events = readAgentRuntimeEvents(journalPath);
