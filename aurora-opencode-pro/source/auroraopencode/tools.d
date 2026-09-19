@@ -14,7 +14,7 @@ version (Windows)
         LONG, WCHAR;
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin, stdout, stderr;
-import std.string : indexOf, replace, strip;
+import std.string : indexOf, replace, strip, toLower;
 import std.utf : toUTF8;
 import std.conv : to;
 import std.exception : collectException;
@@ -298,7 +298,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "file, relevant code, and intended behavior, edit immediately. Reach " ~
         "the first mutation normally within six read/search calls and no later " ~
         "than ten; otherwise state the exact blocker. Changing search terms is " ~
-        "not progress.\n");
+        "not progress. Reading files through `run`, Python, a shell, git, or " ~
+        "another executable still counts as exploration and must never be " ~
+        "used to evade an exploration checkpoint.\n");
 
     builder.put("\n# Execution loop\n");
     builder.put("1. Translate the request into a concrete result and success " ~
@@ -315,6 +317,10 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("4. Run focused verification proportional to the change. Once " ~
         "the relevant checks pass, broaden or repeat them only when a failure, " ~
         "new edit, or unresolved concern justifies it.\n");
+    builder.put("Verification is a terminal phase: use at most three focused " ~
+        "check attempts after an edit. After one relevant check passes, stop " ~
+        "reading and answer; do not inspect the implementation again merely " ~
+        "to reconfirm your explanation.\n");
     builder.put("For GUI, layout, or interaction changes, compilation alone is " ~
         "not verification: add or run a focused UI assertion, inspect rendered " ~
         "output, or clearly state that visual behavior remains unverified.\n");
@@ -332,6 +338,10 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- The worktree may be dirty. Preserve changes you did not " ~
         "make and work around unrelated edits. Ask only when they directly " ~
         "conflict with the requested change. Do not amend commits unless asked.\n");
+    builder.put("- Other conversations may be active in the same workspace. " ~
+        "Re-read the exact edit anchor immediately before mutating it, prefer " ~
+        "context-checked `edit`/`apply_patch` over whole-file rewrites, and " ~
+        "never overwrite a file from a stale earlier read.\n");
     builder.put("- Never run destructive commands such as `git reset --hard` " ~
         "or `git checkout --` unless the user explicitly requests them.\n");
     builder.put("- This application can edit its own source, so a rebuild or " ~
@@ -343,8 +353,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("\n# Tool policy\n");
     if (nativeOnly)
         builder.put("There is no shell and no bash/cmd/powershell. Use native " ~
-            "file tools and `run` with an explicit program and argument list. " ~
-            "Do not reconstruct shell commands.\n");
+            "`read`, `write`, `edit`, `apply_patch`, `remove`, `glob`, `grep`, " ~
+            "and `dshell` file tools, plus `run` with an explicit program and " ~
+            "argument list. Do not reconstruct shell commands.\n");
     else
         builder.put("Use native tools for file discovery, reads, searches, " ~
             "edits, writes, and removals. Use `bash` only for git, builds, " ~
@@ -879,10 +890,25 @@ private final class SupervisedProcess
 private __gshared Mutex _processMutex;
 private __gshared SupervisedProcess[string] _processes;
 private __gshared ulong _processCounter;
+private __gshared Mutex _workspaceLocksMutex;
+private __gshared Mutex[string] _workspaceMutationLocks;
 
 shared static this()
 {
     _processMutex = new Mutex();
+    _workspaceLocksMutex = new Mutex();
+}
+
+private Mutex workspaceMutationLock(string workspace)
+{
+    auto key = buildNormalizedPath(workspace);
+    version (Windows) key = key.toLower();
+    _workspaceLocksMutex.lock();
+    scope (exit) _workspaceLocksMutex.unlock();
+    if (auto found = key in _workspaceMutationLocks) return *found;
+    auto created = new Mutex();
+    _workspaceMutationLocks[key] = created;
+    return created;
 }
 
 private string displayCommand(const(string)[] argv)
@@ -1770,6 +1796,50 @@ private string joinPatchLines(string[] items)
     return builder.data;
 }
 
+/// Normalize CRLF/CR to LF while retaining a map from each normalized byte
+/// offset back to the original string. apply_patch uses this only as a context
+/// fallback, so matching ignores line-ending style without rewriting unrelated
+/// lines or normalizing an entire mixed-ending file.
+private string normalizePatchContext(string input, ref size_t[] offsets)
+{
+    auto normalized = appender!string();
+    size_t index;
+    while (index < input.length)
+    {
+        offsets ~= index;
+        if (input[index] == '\r')
+        {
+            if (index + 1 < input.length && input[index + 1] == '\n')
+                ++index;
+            normalized.put('\n');
+        }
+        else
+            normalized.put(input[index]);
+        ++index;
+    }
+    offsets ~= input.length;
+    return normalized.data;
+}
+
+private bool findPatchContextIgnoringNewlines(string content,
+    string oldBlock, size_t searchPos, out size_t start, out size_t end)
+{
+    size_t[] contentOffsets;
+    size_t[] unused;
+    const normalizedContent = normalizePatchContext(content, contentOffsets);
+    const normalizedOld = normalizePatchContext(oldBlock, unused);
+    if (normalizedOld.length == 0) return false;
+    size_t normalizedFrom;
+    while (normalizedFrom < contentOffsets.length &&
+        contentOffsets[normalizedFrom] < searchPos)
+        ++normalizedFrom;
+    const found = normalizedContent.indexOf(normalizedOld, normalizedFrom);
+    if (found < 0) return false;
+    start = contentOffsets[cast(size_t) found];
+    end = contentOffsets[cast(size_t) found + normalizedOld.length];
+    return true;
+}
+
 /// True when `line` (after trimming) starts with one of the `*** ...`
 /// section markers used by the Codex patch format.
 private bool isPatchDirective(string line)
@@ -1946,22 +2016,36 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 // size_t.max-length concatenation (the msvcr120 `memcpy` access
                 // violation). Check the signed result first, then widen.
                 size_t at;
+                size_t oldEnd;
                 if (oldBlock.length == 0)
+                {
                     at = searchPos;
+                    oldEnd = searchPos;
+                }
                 else
                 {
                     const found = content.indexOf(oldBlock, searchPos);
                     if (found < 0)
                     {
-                        hunkFailed = true;
-                        failReason = "patch context not found";
-                        return;
+                        if (!findPatchContextIgnoringNewlines(content,
+                            oldBlock, searchPos, at, oldEnd))
+                        {
+                            hunkFailed = true;
+                            failReason = "patch context not found";
+                            return;
+                        }
                     }
-                    at = cast(size_t) found;
+                    else
+                    {
+                        at = cast(size_t) found;
+                        oldEnd = at + oldBlock.length;
+                    }
                 }
-                content = content[0 .. at] ~ newBlock ~
-                    content[at + oldBlock.length .. $];
-                searchPos = at + newBlock.length;
+                const replacement = content.indexOf("\r\n") >= 0
+                    ? newBlock.replace("\n", "\r\n") : newBlock;
+                content = content[0 .. at] ~ replacement ~
+                    content[oldEnd .. $];
+                searchPos = at + replacement.length;
                 oldLines.length = 0;
                 newLines.length = 0;
             }
@@ -2439,7 +2523,20 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null)
 {
     const started = MonoTime.currTime;
-    auto result = dispatchTool(call, workspace, cancellation);
+    ToolExecution result;
+    if (call.name == "write" || call.name == "edit" ||
+        call.name == "apply_patch" || call.name == "remove")
+    {
+        // Multiple conversations may work in one project. Serialize workspace
+        // mutations so two tool workers can never write/delete concurrently;
+        // context-checked edit/patch calls then detect stale anchors cleanly.
+        auto mutationLock = workspaceMutationLock(workspace);
+        mutationLock.lock();
+        scope (exit) mutationLock.unlock();
+        result = dispatchTool(call, workspace, cancellation);
+    }
+    else
+        result = dispatchTool(call, workspace, cancellation);
     // Microsecond precision then round to ms. An in-process edit can finish in
     // well under a millisecond; clamping to 1 keeps the label visible and
     // honest ("<1ms" would just be noise) instead of dropping it as 0.

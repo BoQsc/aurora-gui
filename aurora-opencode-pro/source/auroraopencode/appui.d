@@ -4282,6 +4282,7 @@ public final class OpenCodeRoot : VBox
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
     private static immutable int explorationHardLimitCalls = 16;
+    private static immutable int maxVerificationAttempts = 3;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -7076,18 +7077,81 @@ public final class OpenCodeRoot : VBox
     private static int readOnlyExplorationCount(const ref ChatSession session)
     {
         int count;
+        bool mutated;
         foreach (index; activeMessagePath(session))
         {
             const message = session.messages[index];
             if (message.role == "user" && !message.internal)
             {
                 count = 0;
+                mutated = false;
                 continue;
             }
-            if (message.role == "tool" &&
-                isReadOnlyExplorationTool(message.toolName)) ++count;
+            if (message.role != "tool") continue;
+            if (isSubstantiveMutation(message.toolName, message.failed,
+                message.diffAdditions, message.diffDeletions,
+                message.toolDiff))
+            {
+                mutated = true;
+                continue;
+            }
+            // Before the first real edit, generic process execution is also
+            // exploration. Otherwise a model can evade the read budget by
+            // replacing `read` with `run python -c open(...)` indefinitely.
+            if (!mutated && (isReadOnlyExplorationTool(message.toolName) ||
+                message.toolName == "run" || message.toolName == "bash"))
+                ++count;
         }
         return count;
+    }
+
+    private static bool hasSubstantiveMutation(
+        const ref ChatSession session)
+    {
+        bool found;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                found = false;
+                continue;
+            }
+            if (message.role == "tool" && isSubstantiveMutation(
+                message.toolName, message.failed, message.diffAdditions,
+                message.diffDeletions, message.toolDiff))
+                found = true;
+        }
+        return found;
+    }
+
+    private static int verificationAttemptsSinceMutation(
+        const ref ChatSession session)
+    {
+        int attempts;
+        bool mutated;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                attempts = 0;
+                mutated = false;
+                continue;
+            }
+            if (message.role != "tool") continue;
+            if (isSubstantiveMutation(message.toolName, message.failed,
+                message.diffAdditions, message.diffDeletions,
+                message.toolDiff))
+            {
+                attempts = 0;
+                mutated = true;
+                continue;
+            }
+            if (mutated && isVerificationTool(message.toolName,
+                message.toolArgs)) ++attempts;
+        }
+        return attempts;
     }
 
     private static bool hasExplorationCheckpoint(
@@ -7110,12 +7174,39 @@ public final class OpenCodeRoot : VBox
     }
 
     private static bool allReadOnlyExploration(
-        const(OpenCodeToolCall)[] calls)
+        const(OpenCodeToolCall)[] calls, const ref ChatSession session)
     {
         if (calls.length == 0) return false;
+        const mutated = hasSubstantiveMutation(session);
         foreach (call; calls)
-            if (!isReadOnlyExplorationTool(call.name)) return false;
+            if (!isReadOnlyExplorationTool(call.name) &&
+                !(!mutated && (call.name == "run" || call.name == "bash")))
+                return false;
         return true;
+    }
+
+    private static bool hasUnnecessaryPostVerificationCall(
+        const(OpenCodeToolCall)[] calls)
+    {
+        foreach (call; calls)
+            if (call.name != "update_plan" && !isMutatingTool(call.name))
+                return true;
+        return false;
+    }
+
+    private void skipToolsAndFinalize(ref ChatSession session,
+        const(OpenCodeToolCall)[] calls, string result, string instruction)
+    {
+        appendSkippedToolResults(session, calls, result);
+        ChatMessage finalize;
+        finalize.role = "user";
+        finalize.internal = true;
+        finalize.content = instruction;
+        appendMessage(session, finalize);
+        markDirty();
+        if (viewingTurnOwner()) rebuildMessageColumn();
+        if (!_toolContinuationPaused)
+            startChatRequest(turnOwnerSessionIndex(), false);
     }
 
     private void appendExplorationCheckpoint(ref ChatSession session,
@@ -7189,7 +7280,32 @@ public final class OpenCodeRoot : VBox
         }
         markDirty();
 
-        if (allReadOnlyExploration(event.toolCalls) &&
+        if (session.verificationStatus == "passed" &&
+            hasUnnecessaryPostVerificationCall(event.toolCalls))
+        {
+            skipToolsAndFinalize(*session, event.toolCalls,
+                "Tool call skipped: focused verification already passed.",
+                "Verification passed. Stop inspecting and answer the user now " ~
+                "with the outcome, changed locations, and verification result.");
+            return;
+        }
+
+        if (session.verificationStatus == "required" &&
+            verificationAttemptsSinceMutation(*session) >=
+                maxVerificationAttempts &&
+            hasUnnecessaryPostVerificationCall(event.toolCalls))
+        {
+            skipToolsAndFinalize(*session, event.toolCalls,
+                "Tool call skipped: the verification attempt budget is " ~
+                    "exhausted.",
+                "You have used the verification budget. Do not inspect or " ~
+                "rerun the same checks. Make a concrete corrective edit if " ~
+                "the failure identifies one; otherwise report the exact " ~
+                "verification blocker to the user now.");
+            return;
+        }
+
+        if (allReadOnlyExploration(event.toolCalls, *session) &&
             readOnlyExplorationCount(*session) >= explorationHardLimitCalls)
         {
             appendSkippedToolResults(*session, event.toolCalls,

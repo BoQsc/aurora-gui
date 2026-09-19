@@ -1943,6 +1943,34 @@ int main(string[] args)
         writeln("Live token count grows on the Thinking header and stays");
     }
 
+    // A reasoning round that ends in tool calls does not pass through
+    // finishAssistantMessage. Its live count/rate must be persisted before the
+    // transient stream bubble is replaced by the settled tool-call wrapper.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Inspect then answer"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.streamReasoningForTesting(
+            "I need enough streamed reasoning to establish a token sample.");
+        Thread.sleep(120.msecs);
+        root.streamContentForTesting("I will inspect the target now.");
+        assert(root.streamThinkingHeaderTextForTesting().indexOf("t/s") >= 0,
+            "Tool-bound round never established live throughput");
+        OpenCodeToolCall transition;
+        transition.id = "call-token-transition";
+        transition.name = "read";
+        transition.arguments = `{"filePath":"missing-token-test.txt"}`;
+        root.injectToolCallsForTesting([transition]);
+        const settledHeader = root.lastAssistantThinkingHeaderTextForTesting();
+        assert(settledHeader.indexOf("tokens") >= 0 &&
+            settledHeader.indexOf("t/s") >= 0,
+            "Thinking → tool-call transition lost token stats: " ~
+            settledHeader);
+        root.clickSendButtonForTesting();
+        writeln("Tool-call transition preserves Thinking token throughput");
+    }
+
     // Codex-style live group: each in-flight tool is its own child row under
     // one action group whose header speaks in the present tense while the tools
     // run. The rows carry the streamed body so the user sees progress, and they
@@ -2503,6 +2531,16 @@ int main(string[] args)
     assert(root.lastToolResultForTesting().indexOf(
         "exploration budget is exhausted") >= 0,
         "hard exploration limit did not reject another read-only call");
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall blockedRunRead;
+    blockedRunRead.id = "call_evidence_run_bypass";
+    blockedRunRead.name = "run";
+    blockedRunRead.arguments =
+        `{"program":"python","args":["-c","print(open('app.d').read())"]}`;
+    root.injectToolCallsForTesting([blockedRunRead]);
+    assert(root.lastToolResultForTesting().indexOf(
+        "exploration budget is exhausted") >= 0,
+        "run/Python bypassed the hard exploration limit");
     const exhaustedExplorationCount = root.explorationCountForTesting();
     // A failed patch and a comment-only edit must not reset the request-wide
     // evidence count or falsely satisfy the implementation/completion gate.
@@ -2519,6 +2557,29 @@ int main(string[] args)
     assert(root.verificationStatusForTesting() != "required",
         "comment-only mutation falsely satisfied implementation progress");
     writeln("Request-wide exploration budget rejects failed/comment-only resets");
+
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Make and verify a change"]);
+    root.addConversationForTesting(["assistant"], [""]);
+    root.injectToolResultForTesting("edit", "Edited app.d", false,
+        `{"filePath":"app.d"}`, 1, 1,
+        "@@ -1 +1 @@\n-old\n+new\n");
+    assert(root.verificationStatusForTesting() == "required",
+        "substantive mutation did not require verification");
+    root.injectToolResultForTesting("run", "tests passed", false,
+        `{"program":"dub","args":["test"]}`);
+    assert(root.verificationStatusForTesting() == "passed",
+        "successful focused check did not pass verification");
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall postVerifyRead;
+    postVerifyRead.id = "call_post_verify_read";
+    postVerifyRead.name = "read";
+    postVerifyRead.arguments = `{"filePath":"app.d"}`;
+    root.injectToolCallsForTesting([postVerifyRead]);
+    assert(root.lastToolResultForTesting().indexOf(
+        "verification already passed") >= 0,
+        "inspection continued after verification passed");
+    writeln("Passed verification terminates further inspection");
     assert(!root.responseIsStalledForTesting(89) &&
         root.responseIsStalledForTesting(90),
         "stalled-response watchdog threshold is not 90 seconds");

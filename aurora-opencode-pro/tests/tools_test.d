@@ -557,6 +557,12 @@ int main()
         "first mutation normally within six") >= 0,
         "Steering prompt must bound read-only exploration");
     assert(toolSteeringPrompt(false).indexOf(
+        "used to evade an exploration checkpoint") >= 0,
+        "Steering prompt must forbid run-based exploration bypasses");
+    assert(toolSteeringPrompt(false).indexOf(
+        "Verification is a terminal phase") >= 0,
+        "Steering prompt must bound post-edit verification");
+    assert(toolSteeringPrompt(false).indexOf(
         "Do not finish with pending checklist items") >= 0,
         "Steering prompt must enforce the durable completion contract");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
@@ -599,6 +605,22 @@ int main()
         assert(result.additions > 0 && result.deletions > 0,
             "apply_patch must report a diff: " ~ result.output);
         writeln("apply_patch adds, updates and deletes files in one call");
+    }
+
+    // Patch context is logical text, not a line-ending contract. A model emits
+    // LF patch payloads even when the target uses CRLF or has mixed endings;
+    // matching must preserve the file's untouched bytes and still land.
+    {
+        const mixedPath = buildPath(dir, "mixed.txt");
+        write(mixedPath, "alpha\r\nbeta\ngamma\r\n");
+        auto result = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: mixed.txt\n@@\n alpha\n-beta\n+changed\n gamma\n*** End Patch"}`), dir);
+        assert(!result.failed,
+            "apply_patch rejected mixed/CRLF context: " ~ result.output);
+        const mixed = readText(mixedPath);
+        assert(mixed.indexOf("alpha\r\nchanged\r\ngamma\r\n") >= 0,
+            "apply_patch did not preserve CRLF replacement style: " ~ mixed);
+        writeln("apply_patch matches CRLF and mixed-line-ending context");
     }
 
     // Regression: a hunk whose context is absent must fail cleanly. The old
