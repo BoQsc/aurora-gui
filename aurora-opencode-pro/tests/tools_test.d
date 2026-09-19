@@ -200,7 +200,12 @@ int main()
         `{"pattern":"outside-workspace-marker","path":"` ~ jsonRoot ~ `"}`), dir);
     assert(!rootedGrep.failed && rootedGrep.output.indexOf("target.d:1:") >= 0,
         "grep ignored its explicit search root: " ~ rootedGrep.output);
-    writeln("glob and grep honor an explicit repository root");
+    auto fileGrep = executeTool(makeCall("grep",
+        `{"pattern":"outside-workspace-marker","path":"` ~
+        jsonRoot ~ `/source/target.d"}`), dir);
+    assert(!fileGrep.failed && fileGrep.output.indexOf("target.d:1:") >= 0,
+        "grep rejected an explicit file path: " ~ fileGrep.output);
+    writeln("glob and grep honor explicit repository and file paths");
 
     // bash echo round-trips through the shell
     auto bashResult = executeTool(makeCall("bash",

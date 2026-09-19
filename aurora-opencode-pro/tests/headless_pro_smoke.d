@@ -1153,6 +1153,12 @@ int main(string[] args)
     assert(root.visibleSessionCountForTesting() == 0,
         "A new project starts with no conversations");
     assert(exists(projectDir), "Project folder was not created");
+    auto projectTitleRow = requireWidget!Widget(root, "oc-project-title-row");
+    auto projectTitle = requireWidget!Widget(root, "oc-project-title");
+    auto openFolder = requireWidget!Widget(root, "oc-open-folder");
+    assert(projectTitleRow.bounds().height > 0 &&
+        projectTitle.bounds().height > 0 && openFolder.bounds().height > 0,
+        "Project title row collapsed and hid its title/folder button");
     writeln("Created project: ", root.activeProjectNameForTesting());
 
     // New chats belong to the active project.
@@ -1292,6 +1298,26 @@ int main(string[] args)
     assert(toggleGap <= 12,
         "Tools toggle should sit right next to the Thinking toggle");
     writeln("Thinking/Tools toggles hug their labels (gap ", toggleGap, " px)");
+
+    // Hovering Thinking itself (there is no separate '?' badge) opens the
+    // explanation above the control so it does not cover the composer.
+    driver.moveTo(globalCenter(thinkingToggle));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Thinking tooltip did not repaint");
+    assert(root.isThinkingTooltipOpenForTesting(),
+        "Hovering Thinking did not open its tooltip");
+    const thinkingTip = root.thinkingTooltipBoundsForTesting();
+    const thinkingOrigin = thinkingToggle.localToGlobal(Point(0, 0));
+    assert(thinkingTip.height > 0 && thinkingTip.bottom() <= thinkingOrigin.y,
+        "Thinking tooltip should open above the toggle");
+    assert(root.thinkingTooltipTextForTesting().indexOf(
+        "reasoning effort") >= 0,
+        "Thinking tooltip lost its explanation");
+    driver.moveTo(Point(4, 700));
+    root.tickTree(0.02);
+    assert(!root.isThinkingTooltipOpenForTesting(),
+        "Thinking tooltip stayed open after pointer leave");
+    writeln("Thinking tooltip opens above the toggle and dismisses on leave");
 
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);
@@ -2391,7 +2417,22 @@ int main(string[] args)
     assert(root.lastToolResultForTesting().indexOf(
         "exploration budget is exhausted") >= 0,
         "hard exploration limit did not reject another read-only call");
-    writeln("Read-only progress budget forces implementation after evidence");
+    const exhaustedExplorationCount = root.explorationCountForTesting();
+    // A failed patch and a comment-only edit must not reset the request-wide
+    // evidence count or falsely satisfy the implementation/completion gate.
+    root.injectToolResultForTesting("apply_patch", "patch context not found",
+        true, `{"patch":"failed"}`);
+    assert(root.explorationCountForTesting() == exhaustedExplorationCount,
+        "failed mutation changed the request-wide exploration budget to " ~
+        to!string(root.explorationCountForTesting()));
+    root.injectToolResultForTesting("edit", "Edited comment", false,
+        `{"filePath":"app.d"}`, 1, 0,
+        "@@ -1,1 +1,2 @@\n code\n+// unlock reads\n");
+    assert(root.explorationCountForTesting() == exhaustedExplorationCount,
+        "comment-only mutation reset the request-wide exploration budget");
+    assert(root.verificationStatusForTesting() != "required",
+        "comment-only mutation falsely satisfied implementation progress");
+    writeln("Request-wide exploration budget rejects failed/comment-only resets");
     assert(!root.responseIsStalledForTesting(89) &&
         root.responseIsStalledForTesting(90),
         "stalled-response watchdog threshold is not 90 seconds");
@@ -2899,7 +2940,8 @@ int main(string[] args)
             `{"step":"Verify recovery","status":"completed"}]}`);
 
         root.injectToolResultForTesting("edit", "Edited file", false,
-            `{"path":"example.d"}`);
+            `{"path":"example.d"}`, 1, 1,
+            "@@ -1,1 +1,1 @@\n-old\n+new\n");
         assert(root.completionNeedsVerificationForTesting(),
             "a successful file mutation did not arm the completion gate");
         root.injectToolResultForTesting("run", "Tests passed", false,

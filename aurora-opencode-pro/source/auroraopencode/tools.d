@@ -315,6 +315,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("4. Run focused verification proportional to the change. Once " ~
         "the relevant checks pass, broaden or repeat them only when a failure, " ~
         "new edit, or unresolved concern justifies it.\n");
+    builder.put("For GUI, layout, or interaction changes, compilation alone is " ~
+        "not verification: add or run a focused UI assertion, inspect rendered " ~
+        "output, or clearly state that visual behavior remains unverified.\n");
     builder.put("5. Stop and report the outcome, changed locations, verification " ~
         "performed, and any real remaining blocker. Do not keep exploring after " ~
         "success criteria are met.\n");
@@ -323,6 +326,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Prefer `apply_patch` for related multi-file or multi-hunk " ~
         "edits, `edit` for one surgical replacement, and `write` for new files " ~
         "or complete rewrites. Add comments only when code is not self-explanatory.\n");
+    builder.put("- A mutation must advance the requested artifact. Never add a " ~
+        "comment, whitespace, or other unrelated change merely to unlock more " ~
+        "exploration.\n");
     builder.put("- The worktree may be dirty. Preserve changes you did not " ~
         "make and work around unrelated edits. Ask only when they directly " ~
         "conflict with the requested change. Do not amend commits unless asked.\n");
@@ -2297,9 +2303,9 @@ private ToolExecution runGrep(string args, string workspace)
 
     const root = pathArg.length > 0
         ? resolveToolPath(pathArg, workspace) : workspace;
-    if (!exists(root) || !isDir(root))
-        return ToolExecution("grep", "Error: search directory not found: " ~
-            root, true);
+    if (!exists(root) || (!isDir(root) && !isFile(root)))
+        return ToolExecution("grep", "Error: search path not found: " ~ root,
+            true);
 
     Regex!(char) re;
     try re = regex(pattern);
@@ -2316,15 +2322,13 @@ private ToolExecution runGrep(string args, string workspace)
     enum size_t maxLineChars = 300;
     string[] hits;
     bool capped;
-    outer: foreach (entry; dirEntries(root, SpanMode.breadth))
+    bool scanFile(string filePath)
     {
-        if (!entry.isFile) continue;
         if (include.length > 0 &&
-            !fileMatchesInclude(baseName(entry.name), include))
-            continue;
+            !fileMatchesInclude(baseName(filePath), include)) return false;
         File file;
-        try file = File(entry.name, "r");
-        catch (Exception) continue;
+        try file = File(filePath, "r");
+        catch (Exception) return false;
         scope (exit) collectException(file.close());
         size_t lineNo;
         try
@@ -2338,15 +2342,30 @@ private ToolExecution runGrep(string args, string workspace)
                 if (display.length > maxLineChars)
                     display = display[0 .. utf8SafeCut(
                         cast(const(ubyte)[]) display[0 .. maxLineChars])] ~ "…";
-                hits ~= entry.name ~ ":" ~ to!string(lineNo) ~ ": " ~ display;
+                hits ~= filePath ~ ":" ~ to!string(lineNo) ~ ": " ~ display;
                 if (hits.length >= maxHits)
                 {
                     capped = true;
-                    break outer;
+                    return true;
                 }
             }
         }
         catch (Exception) {}
+        return false;
+    }
+
+    // Models frequently pass the known target file as `path`. Treat that as a
+    // precise one-file search instead of failing and provoking another tool
+    // round just to remove the filename from the argument.
+    if (isFile(root))
+        scanFile(root);
+    else
+    {
+        foreach (entry; dirEntries(root, SpanMode.breadth))
+        {
+            if (!entry.isFile) continue;
+            if (scanFile(entry.name)) break;
+        }
     }
     if (hits.length == 0)
         return ToolExecution("grep", "No matches for: " ~ pattern, false);

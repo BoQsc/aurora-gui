@@ -4156,11 +4156,11 @@ public final class OpenCodeRoot : VBox
     private int _lastFailureRepeatCount;
     private bool _failureLoopDetected;
     private static immutable int failureLoopRepeatThreshold = 3;
-    // Successful context calls are not automatically useful progress. After a
-    // bounded evidence phase, force the model to act on what it has learned;
-    // after a larger bound, reject more read-only wandering until it edits or
-    // reports a concrete blocker. This catches varied read/grep loops that the
-    // identical-call detector deliberately cannot catch.
+    // Successful context calls are not automatically useful progress. Count
+    // exploration across the whole user request (a mutation does not buy a new
+    // search budget), then force the model to act on the evidence already read.
+    // This catches varied read/grep loops and prevents trivial edits from being
+    // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
     private static immutable int explorationHardLimitCalls = 16;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
@@ -6713,6 +6713,38 @@ public final class OpenCodeRoot : VBox
             name == "dshell";
     }
 
+    private static bool isCommentOnlyChangedLine(string body)
+    {
+        if (body.length == 0) return true;
+        if (body[0] == '*') return true;
+        if (body.length >= 2 &&
+            (body[0 .. 2] == "//" || body[0 .. 2] == "/*" ||
+             body[0 .. 2] == "*/")) return true;
+        return false;
+    }
+
+    /// A successful mutation only advances task state when it changed the
+    /// requested artifact. Whitespace/comment-only edits are useful at times,
+    /// but they must not let a stuck model satisfy the implementation gate.
+    private static bool isSubstantiveMutation(string name, bool failed,
+        int additions, int deletions, string diff)
+    {
+        if (failed || !isMutatingTool(name)) return false;
+        if (diff.length == 0)
+            return name == "remove" || additions > 0 || deletions > 0;
+        foreach (line; diff.splitLines())
+        {
+            if (line.length < 2 || (line[0] != '+' && line[0] != '-'))
+                continue;
+            if (line.length >= 3 &&
+                (line[0 .. 3] == "+++" || line[0 .. 3] == "---"))
+                continue;
+            const body = strip(line[1 .. $]);
+            if (!isCommentOnlyChangedLine(body)) return true;
+        }
+        return false;
+    }
+
     private static int readOnlyExplorationCount(const ref ChatSession session)
     {
         int count;
@@ -6724,9 +6756,8 @@ public final class OpenCodeRoot : VBox
                 count = 0;
                 continue;
             }
-            if (message.role != "tool") continue;
-            if (isMutatingTool(message.toolName)) count = 0;
-            else if (isReadOnlyExplorationTool(message.toolName)) ++count;
+            if (message.role == "tool" &&
+                isReadOnlyExplorationTool(message.toolName)) ++count;
         }
         return count;
     }
@@ -6743,8 +6774,6 @@ public final class OpenCodeRoot : VBox
                 found = false;
                 continue;
             }
-            if (message.role == "tool" && isMutatingTool(message.toolName))
-                found = false;
             if (message.internal && message.content.length >= 23 &&
                 message.content[0 .. 23] == "Exploration checkpoint:")
                 found = true;
@@ -7079,6 +7108,7 @@ public final class OpenCodeRoot : VBox
         toolMessage.toolCallId = event.toolCallId;
         toolMessage.toolName = event.toolName;
         toolMessage.toolArgs = toolArgs;
+        toolMessage.failed = event.toolFailed;
         toolMessage.diffAdditions = event.diffAdditions;
         toolMessage.diffDeletions = event.diffDeletions;
         toolMessage.toolDiff = event.diffText;
@@ -7088,7 +7118,8 @@ public final class OpenCodeRoot : VBox
 
         if (!event.toolFailed && event.toolName == "update_plan")
             applyDurablePlan(*session, toolArgs);
-        if (!event.toolFailed && isMutatingTool(event.toolName))
+        if (isSubstantiveMutation(event.toolName, event.toolFailed,
+            event.diffAdditions, event.diffDeletions, event.diffText))
         {
             completeAutomaticImplementation(*session);
             session.verificationStatus = "required";
@@ -10328,6 +10359,27 @@ public final class OpenCodeRoot : VBox
             _usageTooltip.bounds().height);
     }
 
+    public bool isThinkingTooltipOpenForTesting()
+    {
+        return _thinkingTooltipOpen && _thinkingTooltip !is null &&
+            _thinkingTooltip.parent() !is null;
+    }
+
+    public Rect thinkingTooltipBoundsForTesting()
+    {
+        if (_thinkingTooltip is null || _thinkingTooltip.parent() is null)
+            return Rect.init;
+        const origin = _thinkingTooltip.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, _thinkingTooltip.bounds().width,
+            _thinkingTooltip.bounds().height);
+    }
+
+    public string thinkingTooltipTextForTesting()
+    {
+        return isThinkingTooltipOpenForTesting() && _thinkingTooltip !is null
+            ? _thinkingTooltip.textForTesting() : "";
+    }
+
     /// Test-only: the context badge's global bounds.
     public Rect contextBadgeBoundsForTesting()
     {
@@ -11005,7 +11057,8 @@ public final class OpenCodeRoot : VBox
     /// the same path as a real toolResult event. Seeds a one-call pending
     /// batch when none is open so a test can feed repeated failures.
     public void injectToolResultForTesting(string name, string output,
-        bool failed, string arguments = "{}")
+        bool failed, string arguments = "{}", int additions = 0,
+        int deletions = 0, string diff = "")
     {
         if (_pendingToolCalls.length == 0)
         {
@@ -11023,6 +11076,9 @@ public final class OpenCodeRoot : VBox
         event.toolCallId = _pendingToolCalls[0].id;
         event.text = output;
         event.toolFailed = failed;
+        event.diffAdditions = additions;
+        event.diffDeletions = deletions;
+        event.diffText = diff;
         applyToolResult(event);
     }
 
