@@ -812,6 +812,39 @@ int main(string[] args)
     root.finishStreamForTesting();
     writeln("Changing chats preserves the running turn's ownership");
 
+    // True concurrency: two selected-at-different-times conversations own
+    // distinct runtimes. Both remain active, output stays isolated, and Stop
+    // affects only the conversation currently being viewed.
+    root.newChatForTesting();
+    const concurrentA = root.currentSessionForTesting();
+    root.addConversationForTesting(["user"], ["run A"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.newChatForTesting();
+    const concurrentB = root.currentSessionForTesting();
+    root.addConversationForTesting(["user"], ["run B"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.queueContentInSessionForTesting(concurrentA, "A partial");
+    root.queueContentInSessionForTesting(concurrentB, "B partial");
+    root.tickTree(0.01);
+    assert(root.sessionTurnBusyForTesting(concurrentA) &&
+        root.sessionTurnBusyForTesting(concurrentB),
+        "Two conversations did not remain active together");
+    assert(root.activeSessionRowsForTesting().indexOf(",") >= 0,
+        "Sidebar did not mark both concurrent conversations active");
+    assert(root.lastMessageContentInSessionForTesting(concurrentA) ==
+        "A partial" &&
+        root.lastMessageContentInSessionForTesting(concurrentB) == "B partial",
+        "Concurrent stream output crossed conversation boundaries");
+    root.clickSendButtonForTesting();
+    assert(!root.sessionTurnBusyForTesting(concurrentB),
+        "Stop did not release the selected conversation");
+    assert(root.sessionTurnBusyForTesting(concurrentA),
+        "Stopping conversation B also stopped conversation A");
+    root.finishStreamInSessionForTesting(concurrentA);
+    writeln("Two conversations run concurrently with isolated Stop/output");
+
     // The button says Stop while a turn is active, so clicking it must stop
     // unconditionally—even when unsent composer text is present. Previously
     // that text was silently queued as guidance and the turn kept running.

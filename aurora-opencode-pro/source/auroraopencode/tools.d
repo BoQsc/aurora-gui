@@ -762,7 +762,8 @@ private bool parseToolArgs(string args, ref string command,
     return true;
 }
 
-private ToolExecution runBash(string args, string workspace)
+private ToolExecution runBash(string args, string workspace,
+    ToolCancellation cancellation = null)
 {
     string command;
     string shell = "auto";
@@ -788,7 +789,8 @@ private ToolExecution runBash(string args, string workspace)
 
     if (background)
         return startBackgroundProcess(argv, resolvedWorkdir, timeoutMs, "bash");
-    auto result = runProcess(argv, resolvedWorkdir, timeoutMs, "bash");
+    auto result = runProcess(argv, resolvedWorkdir, timeoutMs, "bash",
+        cancellation);
     return ToolExecution("bash", truncateOutput(result[0]), result[1]);
 }
 
@@ -796,7 +798,8 @@ private ToolExecution runBash(string args, string workspace)
 /// never through a shell. This is the cross-platform replacement for the
 /// bash/cmd/powershell tool: the model names the program and its arguments,
 /// and the app spawns it directly, so no shell syntax or quoting is involved.
-private ToolExecution runProgramTool(string args, string workspace)
+private ToolExecution runProgramTool(string args, string workspace,
+    ToolCancellation cancellation = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -846,7 +849,8 @@ private ToolExecution runProgramTool(string args, string workspace)
     if (background)
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
             "run");
-    auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run");
+    auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
+        cancellation);
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
 }
 
@@ -1159,6 +1163,32 @@ private ToolExecution runProcessTool(string args)
 /// cannot abort a later turn.
 private shared bool _commandsCancelled;
 
+/// Per-conversation cancellation token. Each running chat owns one, so
+/// stopping a command in one conversation cannot terminate commands launched
+/// by another conversation.
+public final class ToolCancellation
+{
+    private shared bool _cancelled;
+
+    public void cancel()
+    {
+        import core.atomic : atomicStore;
+        atomicStore(_cancelled, true);
+    }
+
+    public void reset()
+    {
+        import core.atomic : atomicStore;
+        atomicStore(_cancelled, false);
+    }
+
+    public bool cancelled()
+    {
+        import core.atomic : atomicLoad;
+        return atomicLoad(_cancelled);
+    }
+}
+
 /// Request termination of any in-flight command process. Safe to call from the
 /// UI thread while the process runs on a worker thread.
 public void cancelRunningCommands()
@@ -1273,14 +1303,15 @@ version (Windows)
 /// (console tools emit the OEM codepage, not UTF-8). Returns (output,
 /// timedOut).
 private Tuple!(string, bool) runProcess(string[] argv, string workdir,
-    int timeoutMs, string toolName)
+    int timeoutMs, string toolName, ToolCancellation cancellation = null)
 {
     import std.typecons : tuple;
     import core.atomic : atomicLoad;
 
     // A stop may have been requested after the previous command finished but
     // before this one launched; honor it without starting the process at all.
-    if (atomicLoad(_commandsCancelled))
+    if ((cancellation !is null && cancellation.cancelled()) ||
+        (cancellation is null && atomicLoad(_commandsCancelled)))
         return tuple("Stopped: command cancelled before it started.", true);
 
     const outPath = buildNormalizedPath(buildPath(
@@ -1311,7 +1342,8 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     while (true)
     {
         if (waitTimeout(pid, msecs(100)).terminated) break;
-        if (atomicLoad(_commandsCancelled))
+        if ((cancellation !is null && cancellation.cancelled()) ||
+            (cancellation is null && atomicLoad(_commandsCancelled)))
         {
             cancelled = true;
             break;
@@ -2404,10 +2436,10 @@ private bool fileMatchesInclude(string fileName, string include)
 /// long it took. The result is a plain-text string ready to be fed back to the
 /// model as a `tool` message.
 public ToolExecution executeTool(const OpenCodeToolCall call,
-    string workspace)
+    string workspace, ToolCancellation cancellation = null)
 {
     const started = MonoTime.currTime;
-    auto result = dispatchTool(call, workspace);
+    auto result = dispatchTool(call, workspace, cancellation);
     // Microsecond precision then round to ms. An in-process edit can finish in
     // well under a millisecond; clamping to 1 keeps the label visible and
     // honest ("<1ms" would just be noise) instead of dropping it as 0.
@@ -2420,14 +2452,14 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
 /// single return point and every exit (including the unknown-tool error) is
 /// measured.
 private ToolExecution dispatchTool(const OpenCodeToolCall call,
-    string workspace)
+    string workspace, ToolCancellation cancellation = null)
 {
     switch (call.name)
     {
         case "bash":
-            return runBash(call.arguments, workspace);
+            return runBash(call.arguments, workspace, cancellation);
         case "run":
-            return runProgramTool(call.arguments, workspace);
+            return runProgramTool(call.arguments, workspace, cancellation);
         case "process":
             return runProcessTool(call.arguments);
         case "dshell":

@@ -15,8 +15,7 @@ import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     executeTool, nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
-    cancelRunningCommands, resetRunningCommands,
-    ToolExecution;
+    ToolCancellation, ToolExecution;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -4071,10 +4070,78 @@ public final class ProjectListView : ListView
 // Main root
 // ---------------------------------------------------------------------------
 
+/// All mutable execution state owned by one conversation. The root temporarily
+/// loads one of these into its existing event handlers, then saves it back.
+/// This keeps the mature streaming/tool code intact while allowing every chat
+/// to have an independent client, request, tool queue, watchdog, and Stop token.
+private final class ConversationRuntime
+{
+    OpenCodeClient client;
+    ToolCancellation cancellation;
+    OpenCodeEvent[] eventScratch;
+    ulong activeRequestId;
+    int activeRequestSession = -1;
+    bool batchingToolResults;
+    bool toolTranscriptDirty;
+    OpenCodeToolCall[] pendingToolCalls;
+    int pendingToolResults;
+    OpenCodeToolCall[] liveToolCalls;
+    OpenCodeToolCall[] preparingToolCalls;
+    int toolRounds;
+    bool toolContinuationPaused;
+    string lastToolSignature;
+    int lastToolRepeatCount;
+    string lastFailureSignature;
+    int lastFailureRepeatCount;
+    bool failureLoopDetected;
+    long liveOutputBytes;
+    long liveOutputTokens;
+    int liveTokenRateTenths;
+    long tokenRateBaseTokens;
+    MonoTime tokenRateStartedAt;
+    bool tokenRateStarted;
+    int liveTotalTokens;
+    bool suppressDoneStatus;
+    MessageBubble streamBubble;
+    ActivityRow activityRow;
+    MonoTime chatStartedAt;
+    bool receivedFirstDelta;
+    int lastColdStartSeconds = -1;
+    MonoTime turnStartedAt;
+    string turnUserId;
+    int turnSessionIndex = -1;
+    bool turnTiming;
+    bool turnCancelled;
+    bool stopPending;
+    MonoTime stopRequestedAt;
+    MonoTime lastRequestProgressAt;
+    bool requestProgressSet;
+    bool watchdogCancelPending;
+    bool watchdogRetryAllowed;
+    int watchdogRetries;
+    bool turnInFlight;
+
+    this(string baseUrl, string apiKey)
+    {
+        client = new OpenCodeClient(baseUrl, apiKey);
+        cancellation = new ToolCancellation();
+    }
+
+    bool busy()
+    {
+        return stopPending || turnInFlight || turnTiming || client.busy() ||
+            pendingToolCalls.length > 0 || pendingToolResults > 0;
+    }
+}
+
 public final class OpenCodeRoot : VBox
 {
     private GuiWindow _window;
     private OpenCodeClient _client;
+    private ConversationRuntime[string] _conversationRuntimes;
+    private string _loadedRuntimeId;
+    private ToolCancellation _toolCancellation;
+    private int _processingRuntimeSession = -1;
     private Settings _settings;
     private ChatSession[] _sessions;
     private int _current = -1;
@@ -4307,6 +4374,141 @@ public final class OpenCodeRoot : VBox
     // the pending flag keeps the transcript live until the helper is started.
     private bool _restartPending;
 
+    private ConversationRuntime runtimeForSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return null;
+        const id = _sessions[sessionIndex].id;
+        if (auto existing = id in _conversationRuntimes)
+            return *existing;
+        auto created = new ConversationRuntime(_settings.baseUrl,
+            _settings.apiKey);
+        // The headless harness can pause automatic continuations globally;
+        // carry that test mode into chats created afterward.
+        created.toolContinuationPaused = _toolContinuationPaused;
+        _conversationRuntimes[id] = created;
+        return created;
+    }
+
+    /// Persist the handler scratch fields into the conversation currently
+    /// loaded in the root. This is deliberately mechanical: the event handlers
+    /// remain single-context code, while onTick swaps contexts between queues.
+    private void saveLoadedRuntime()
+    {
+        if (_loadedRuntimeId.length == 0) return;
+        auto found = _loadedRuntimeId in _conversationRuntimes;
+        if (found is null) return;
+        auto rt = *found;
+        rt.client = _client;
+        rt.cancellation = _toolCancellation;
+        rt.eventScratch = _eventScratch;
+        rt.activeRequestId = _activeRequestId;
+        rt.activeRequestSession = _activeRequestSession;
+        rt.batchingToolResults = _batchingToolResults;
+        rt.toolTranscriptDirty = _toolTranscriptDirty;
+        rt.pendingToolCalls = _pendingToolCalls;
+        rt.pendingToolResults = _pendingToolResults;
+        rt.liveToolCalls = _liveToolCalls;
+        rt.preparingToolCalls = _preparingToolCalls;
+        rt.toolRounds = _toolRounds;
+        rt.toolContinuationPaused = _toolContinuationPaused;
+        rt.lastToolSignature = _lastToolSignature;
+        rt.lastToolRepeatCount = _lastToolRepeatCount;
+        rt.lastFailureSignature = _lastFailureSignature;
+        rt.lastFailureRepeatCount = _lastFailureRepeatCount;
+        rt.failureLoopDetected = _failureLoopDetected;
+        rt.liveOutputBytes = _liveOutputBytes;
+        rt.liveOutputTokens = _liveOutputTokens;
+        rt.liveTokenRateTenths = _liveTokenRateTenths;
+        rt.tokenRateBaseTokens = _tokenRateBaseTokens;
+        rt.tokenRateStartedAt = _tokenRateStartedAt;
+        rt.tokenRateStarted = _tokenRateStarted;
+        rt.liveTotalTokens = _liveTotalTokens;
+        rt.suppressDoneStatus = _suppressDoneStatus;
+        rt.streamBubble = _streamBubble;
+        rt.activityRow = _activityRow;
+        rt.chatStartedAt = _chatStartedAt;
+        rt.receivedFirstDelta = _receivedFirstDelta;
+        rt.lastColdStartSeconds = _lastColdStartSeconds;
+        rt.turnStartedAt = _turnStartedAt;
+        rt.turnUserId = _turnUserId;
+        rt.turnSessionIndex = _turnSessionIndex;
+        rt.turnTiming = _turnTiming;
+        rt.turnCancelled = _turnCancelled;
+        rt.stopPending = _stopPending;
+        rt.stopRequestedAt = _stopRequestedAt;
+        rt.lastRequestProgressAt = _lastRequestProgressAt;
+        rt.requestProgressSet = _requestProgressSet;
+        rt.watchdogCancelPending = _watchdogCancelPending;
+        rt.watchdogRetryAllowed = _watchdogRetryAllowed;
+        rt.watchdogRetries = _watchdogRetries;
+        rt.turnInFlight = _turnInFlight;
+    }
+
+    private void loadRuntime(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        const id = _sessions[sessionIndex].id;
+        if (_loadedRuntimeId == id) return;
+        saveLoadedRuntime();
+        auto rt = runtimeForSession(sessionIndex);
+        _loadedRuntimeId = id;
+        _client = rt.client;
+        _toolCancellation = rt.cancellation;
+        _eventScratch = rt.eventScratch;
+        _activeRequestId = rt.activeRequestId;
+        _activeRequestSession = rt.activeRequestSession;
+        _batchingToolResults = rt.batchingToolResults;
+        _toolTranscriptDirty = rt.toolTranscriptDirty;
+        _pendingToolCalls = rt.pendingToolCalls;
+        _pendingToolResults = rt.pendingToolResults;
+        _liveToolCalls = rt.liveToolCalls;
+        _preparingToolCalls = rt.preparingToolCalls;
+        _toolRounds = rt.toolRounds;
+        _toolContinuationPaused = rt.toolContinuationPaused;
+        _lastToolSignature = rt.lastToolSignature;
+        _lastToolRepeatCount = rt.lastToolRepeatCount;
+        _lastFailureSignature = rt.lastFailureSignature;
+        _lastFailureRepeatCount = rt.lastFailureRepeatCount;
+        _failureLoopDetected = rt.failureLoopDetected;
+        _liveOutputBytes = rt.liveOutputBytes;
+        _liveOutputTokens = rt.liveOutputTokens;
+        _liveTokenRateTenths = rt.liveTokenRateTenths;
+        _tokenRateBaseTokens = rt.tokenRateBaseTokens;
+        _tokenRateStartedAt = rt.tokenRateStartedAt;
+        _tokenRateStarted = rt.tokenRateStarted;
+        _liveTotalTokens = rt.liveTotalTokens;
+        _suppressDoneStatus = rt.suppressDoneStatus;
+        _streamBubble = rt.streamBubble;
+        _activityRow = rt.activityRow;
+        _chatStartedAt = rt.chatStartedAt;
+        _receivedFirstDelta = rt.receivedFirstDelta;
+        _lastColdStartSeconds = rt.lastColdStartSeconds;
+        _turnStartedAt = rt.turnStartedAt;
+        _turnUserId = rt.turnUserId;
+        _turnSessionIndex = rt.turnSessionIndex;
+        _turnTiming = rt.turnTiming;
+        _turnCancelled = rt.turnCancelled;
+        _stopPending = rt.stopPending;
+        _stopRequestedAt = rt.stopRequestedAt;
+        _lastRequestProgressAt = rt.lastRequestProgressAt;
+        _requestProgressSet = rt.requestProgressSet;
+        _watchdogCancelPending = rt.watchdogCancelPending;
+        _watchdogRetryAllowed = rt.watchdogRetryAllowed;
+        _watchdogRetries = rt.watchdogRetries;
+        _turnInFlight = rt.turnInFlight;
+    }
+
+    private void closeRuntimeClients()
+    {
+        saveLoadedRuntime();
+        if (_conversationRuntimes.length == 0 && _client !is null)
+            _client.closeSession();
+        foreach (rt; _conversationRuntimes)
+            rt.client.closeSession();
+    }
+
     this(GuiWindow window)
     {
         super(0);
@@ -4319,11 +4521,17 @@ public final class OpenCodeRoot : VBox
         migrateWorkspaceIntoProjects();
         foreach (project; _projectState.projects)
             ensureProjectDirectory(project);
-        _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
         buildUi();
         updateProjectRail();
         restoreSessions();
         syncCurrentToActiveProject();
+        if (_current >= 0)
+            loadRuntime(_current);
+        else
+        {
+            _client = new OpenCodeClient(_settings.baseUrl, _settings.apiKey);
+            _toolCancellation = new ToolCancellation();
+        }
         // The restored selection is applied before the first layout. Revealing
         // it at that point would measure against a zero-height viewport and
         // seed the list's scroll offset at the bottom.
@@ -4410,6 +4618,7 @@ public final class OpenCodeRoot : VBox
                     if (session.id == activeId)
                     {
                         _current = cast(int) i;
+                        loadRuntime(_current);
                         break;
                     }
         }
@@ -4429,7 +4638,7 @@ public final class OpenCodeRoot : VBox
         // arrived moments before the window closed is otherwise lost, which is
         // why the last message could vanish across a restart.
         persistState();
-        _client.closeSession();
+        closeRuntimeClients();
     }
 
     /// Test-only: whether a restart has been requested and the window is about
@@ -4469,7 +4678,7 @@ public final class OpenCodeRoot : VBox
         // Flush every piece of state the new instance reads on startup.
         persistState();
         saveProjects(_projectState);
-        _client.closeSession();
+        closeRuntimeClients();
 
         auto plan = planRestart(opencodeStateDirectory(), rebuild,
             thisProcessID, thisExePath());
@@ -4931,8 +5140,11 @@ public final class OpenCodeRoot : VBox
             selectSession(candidate);
             return;
         }
+        saveLoadedRuntime();
+        _loadedRuntimeId = "";
         _current = -1;
         _streamBubble = null;
+        _activityRow = null;
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -5208,8 +5420,10 @@ public final class OpenCodeRoot : VBox
 
     private void newChat()
     {
-        const keepRunningTurn = _turnInFlight || _client.busy() ||
-            _pendingToolCalls.length > 0 || _pendingToolResults > 0;
+        saveLoadedRuntime();
+        if (_loadedRuntimeId.length == 0 && _sessions.length == 0 &&
+            _client !is null)
+            _client.closeSession();
         ChatSession session;
         session.id = newSessionId();
         session.title = "New chat";
@@ -5218,26 +5432,11 @@ public final class OpenCodeRoot : VBox
         session.projectId = activeProjectId();
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
+        loadRuntime(_current);
         publishRuntimeEvent(AgentEventKind.threadStarted, session,
             "", "", "", runtimeThreadPayload(session));
         _visibleMessageLimit = messageHistoryPageSize;
-        _streamBubble = null;
         _editMessageIndex = -1;
-        if (!keepRunningTurn)
-        {
-            _pendingToolCalls.length = 0;
-            _liveToolCalls.length = 0;
-            _preparingToolCalls.length = 0;
-            _pendingToolResults = 0;
-            _turnCancelled = false;
-            _toolRounds = 0;
-            _lastToolSignature = "";
-            _lastToolRepeatCount = 0;
-            _lastFailureSignature = "";
-            _lastFailureRepeatCount = 0;
-            _failureLoopDetected = false;
-            clearActivity();
-        }
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
         rebuildMessageColumn();
@@ -5252,27 +5451,12 @@ public final class OpenCodeRoot : VBox
     private void selectSession(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
-        const keepRunningTurn = _turnInFlight || _client.busy() ||
-            _pendingToolCalls.length > 0 || _pendingToolResults > 0;
+        saveLoadedRuntime();
         _current = index;
+        loadRuntime(index);
         _visibleMessageLimit = messageHistoryPageSize;
-        _streamBubble = null;
         _editMessageIndex = -1;
-        if (!keepRunningTurn)
-        {
-            _pendingToolCalls.length = 0;
-            _liveToolCalls.length = 0;
-            _preparingToolCalls.length = 0;
-            _pendingToolResults = 0;
-            _toolRounds = 0;
-            _lastToolSignature = "";
-            _lastToolRepeatCount = 0;
-            _lastFailureSignature = "";
-            _lastFailureRepeatCount = 0;
-            _failureLoopDetected = false;
-            clearActivity();
-        }
-        else if (index == turnOwnerSessionIndex() &&
+        if (turnIsBusy() && index == turnOwnerSessionIndex() &&
             _sessions[index].messages.length > 0 &&
             _sessions[index].messages[$ - 1].role == "assistant")
         {
@@ -6243,7 +6427,7 @@ public final class OpenCodeRoot : VBox
             // Abandon the interrupted turn so the killed tool's late result
             // cannot restart the chat via a continuation request.
             _turnCancelled = true;
-            cancelRunningCommands();
+            _toolCancellation.cancel();
             _suppressDoneStatus = true;
         }
         cancelPendingTools();
@@ -6341,7 +6525,7 @@ public final class OpenCodeRoot : VBox
         // without the "Writing…" wording, which read like a file write and
         // vanished at completion (the Thinking header's token count now carries
         // that progress signal).
-        setActivity(_settings.thinking ? "Thinking…" : "Waiting for the model…");
+        setActivity(session.thinking ? "Thinking…" : "Waiting for the model…");
         // Rebuild rather than appending the bubble directly: a row already
         // pinned for a previous phase (e.g. "Waiting for the model…") would
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
@@ -6984,6 +7168,19 @@ public final class OpenCodeRoot : VBox
         }
 
         message.toolCalls = event.toolCalls.dup;
+        // The tool request ends this assistant reply (reasoning phase included)
+        // but the user turn continues, so `finishAssistantMessage` never runs
+        // between rounds. Persist the live output-token count and throughput
+        // onto the message BEFORE the stream bubble is torn down below; the
+        // rebuild that follows otherwise renders the Thinking header from a
+        // message with zeroed stats and the token / t/s indicator disappears
+        // instead of keeping its place. The continuation's `chatBegin` cannot
+        // do this: it runs after this teardown, when `_streamBubble` is null.
+        if (_liveOutputTokens > 0 &&
+            message.completionTokens < cast(int) _liveOutputTokens)
+            message.completionTokens = cast(int) _liveOutputTokens;
+        if (_liveTokenRateTenths > 0)
+            message.tokensPerSecondTenths = _liveTokenRateTenths;
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
         if (_streamBubble !is null)
         {
@@ -7093,14 +7290,15 @@ public final class OpenCodeRoot : VBox
         // Reset before the worker is visible to the UI. A Stop click can only
         // occur after this handler returns, so the worker can no longer clear a
         // cancellation that the user just requested.
-        resetRunningCommands();
+        _toolCancellation.reset();
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
         auto client = _client;
+        auto cancellation = _toolCancellation;
         auto worker = new Thread({
             runToolWorker(client, sessionIndex, requestId,
-                workerCalls, workspace);
+                workerCalls, workspace, cancellation);
         });
         worker.isDaemon = true;
         worker.start();
@@ -7124,7 +7322,8 @@ public final class OpenCodeRoot : VBox
     /// in model order, not completion order, so parallelism cannot reshuffle
     /// the transcript.
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
-        ulong requestId, const(OpenCodeToolCall)[] calls, string workspace)
+        ulong requestId, const(OpenCodeToolCall)[] calls, string workspace,
+        ToolCancellation cancellation)
     {
         size_t slot;
         while (slot < calls.length)
@@ -7132,7 +7331,7 @@ public final class OpenCodeRoot : VBox
             if (!toolSupportsParallel(calls[slot]))
             {
                 publishToolResult(client, calls[slot],
-                    executeTool(calls[slot], workspace), requestId);
+                    executeTool(calls[slot], workspace, cancellation), requestId);
                 ++slot;
                 continue;
             }
@@ -7155,7 +7354,8 @@ public final class OpenCodeRoot : VBox
                 Thread[] workers;
                 foreach (call; calls[wave .. waveEnd])
                 {
-                    auto job = new ParallelToolJob(call, workspace);
+                    auto job = new ParallelToolJob(call, workspace,
+                        cancellation);
                     jobs ~= job;
                     auto worker = new Thread(&job.run);
                     worker.isDaemon = true;
@@ -7187,16 +7387,19 @@ public final class OpenCodeRoot : VBox
         OpenCodeToolCall call;
         string workspace;
         ToolExecution execution;
+        ToolCancellation cancellation;
 
-        this(const ref OpenCodeToolCall source, string workspace)
+        this(const ref OpenCodeToolCall source, string workspace,
+            ToolCancellation cancellation)
         {
             this.call = source;
             this.workspace = workspace;
+            this.cancellation = cancellation;
         }
 
         void run()
         {
-            execution = executeTool(call, workspace);
+            execution = executeTool(call, workspace, cancellation);
         }
     }
 
@@ -7497,7 +7700,7 @@ public final class OpenCodeRoot : VBox
         // asking the workers to stop.
         _activeRequestId = 0;
         _activeRequestSession = -1;
-        cancelRunningCommands();
+        _toolCancellation.cancel();
         _client.cancel();
         _stopPending = _client.busy();
         _stopRequestedAt = MonoTime.currTime;
@@ -8117,7 +8320,7 @@ public final class OpenCodeRoot : VBox
             }
         }
         messages ~= compactRequestMessages(buildRequestMessages(*session),
-            contextLimitForModel(_settings.model));
+            contextLimitForModel(session.model));
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
             tools = _settings.legacyTools
@@ -8127,8 +8330,8 @@ public final class OpenCodeRoot : VBox
         // rejects requests without one. The first message id is stable for
         // this conversation across turns and restarts.
         _client.setOpenCodeSession(sessionRoutingKey(*session));
-        _client.startChatMessages(messages, tools, _settings.model,
-            _settings.thinking, ++_nextRequestId);
+        _client.startChatMessages(messages, tools, session.model,
+            session.thinking, ++_nextRequestId);
         _activeRequestId = _nextRequestId;
         _activeRequestSession = sessionIndex;
         _chatStartedAt = MonoTime.currTime;
@@ -8204,7 +8407,7 @@ public final class OpenCodeRoot : VBox
             // Abandon the interrupted turn so the killed tool's late result
             // cannot restart the chat via a continuation request.
             _turnCancelled = true;
-            cancelRunningCommands();
+            _toolCancellation.cancel();
             _suppressDoneStatus = true;
         }
         cancelPendingTools();
@@ -8439,6 +8642,9 @@ public final class OpenCodeRoot : VBox
                     updateSessionsHeader();
                 }
             }
+            saveLoadedRuntime();
+            foreach (rt; _conversationRuntimes)
+                rt.client.setCredentials(_settings.baseUrl, _settings.apiKey);
             _client.setCredentials(_settings.baseUrl, _settings.apiKey);
             saveSettingsNow();
             updateKeyBadge();
@@ -8642,6 +8848,8 @@ public final class OpenCodeRoot : VBox
 
     private void updateStatus(string text)
     {
+        if (_processingRuntimeSession >= 0 &&
+            _processingRuntimeSession != _current) return;
         _status.setText(text);
     }
 
@@ -8839,14 +9047,19 @@ public final class OpenCodeRoot : VBox
     private int[] activeSessionRows()
     {
         int[] rows;
-        if (!_turnInFlight) return rows;
-        const owner = turnOwnerSessionIndex();
         foreach (i, sessionIndex; _sessionIndices)
-            if (sessionIndex == owner)
+        {
+            const id = _sessions[sessionIndex].id;
+            bool active;
+            if (id == _loadedRuntimeId)
+                active = _turnInFlight;
+            else if (auto found = id in _conversationRuntimes)
+                active = (*found).turnInFlight;
+            if (active)
             {
                 rows ~= cast(int) i;
-                break;
             }
+        }
         return rows;
     }
 
@@ -8903,7 +9116,10 @@ public final class OpenCodeRoot : VBox
     private void deleteSession(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
-        if (_turnInFlight && sessionIndex == turnOwnerSessionIndex())
+        saveLoadedRuntime();
+        const removedId = _sessions[sessionIndex].id;
+        auto removedRuntime = removedId in _conversationRuntimes;
+        if (removedRuntime !is null && (*removedRuntime).busy())
         {
             updateStatus("Stop the running turn before deleting this conversation.");
             return;
@@ -8912,14 +9128,26 @@ public final class OpenCodeRoot : VBox
         publishRuntimeEvent(AgentEventKind.threadDeleted, removed);
         _sessions = _sessions[0 .. sessionIndex] ~
             _sessions[sessionIndex + 1 .. $];
+        if (removedRuntime !is null)
+        {
+            (*removedRuntime).client.closeSession();
+            _conversationRuntimes.remove(removedId);
+        }
         if (_current == sessionIndex)
             _current = _sessions.length > 0
                 ? minInt(sessionIndex, cast(int) _sessions.length - 1)
                 : -1;
         else if (_current > sessionIndex)
             --_current;
-        if (_activeRequestSession > sessionIndex) --_activeRequestSession;
-        if (_turnSessionIndex > sessionIndex) --_turnSessionIndex;
+        foreach (rt; _conversationRuntimes)
+        {
+            if (rt.activeRequestSession > sessionIndex)
+                --rt.activeRequestSession;
+            if (rt.turnSessionIndex > sessionIndex)
+                --rt.turnSessionIndex;
+        }
+        _loadedRuntimeId = "";
+        if (_current >= 0) loadRuntime(_current);
         _streamBubble = null;
         _editMessageIndex = -1;
         rebuildMessageColumn();
@@ -9721,6 +9949,18 @@ public final class OpenCodeRoot : VBox
             }
         }
 
+        // Each conversation owns a separate client and event queue. Service
+        // all of them on every UI tick, then restore the selected context.
+        saveLoadedRuntime();
+        const selectedRuntimeSession = _current;
+        foreach (runtimeIndex; 0 .. _sessions.length)
+        {
+            const runtimeId = _sessions[runtimeIndex].id;
+            if (runtimeId != _loadedRuntimeId &&
+                (runtimeId in _conversationRuntimes) is null)
+                continue;
+            _processingRuntimeSession = cast(int) runtimeIndex;
+            loadRuntime(cast(int) runtimeIndex);
         _client.drain(_eventScratch);
         _batchingToolResults = true;
         size_t eventIndex;
@@ -9881,6 +10121,18 @@ public final class OpenCodeRoot : VBox
         if (_streamBubble !is null)
             _streamBubble.tickThinking(deltaSeconds);
 
+            saveLoadedRuntime();
+        }
+        _processingRuntimeSession = -1;
+        if (selectedRuntimeSession >= 0 &&
+            selectedRuntimeSession < cast(int) _sessions.length)
+        {
+            loadRuntime(selectedRuntimeSession);
+            // A background runtime may have updated the shared usage widget;
+            // restore the selected chat's durable usage before painting.
+            refreshUsageBadge();
+        }
+
         if (_sessionsRatioDirty)
         {
             _sessionsRatioDirty = false;
@@ -9947,6 +10199,13 @@ public final class OpenCodeRoot : VBox
 
     public int turnOwnerSessionForTesting() const
     {
+        foreach (index, session; _sessions)
+        {
+            if (session.id == _loadedRuntimeId && _turnInFlight)
+                return cast(int) index;
+            if (auto found = session.id in _conversationRuntimes)
+                if ((*found).turnInFlight) return cast(int) index;
+        }
         return turnOwnerSessionIndex();
     }
 
@@ -9965,6 +10224,19 @@ public final class OpenCodeRoot : VBox
     public string activeSessionRowsForTesting() const
     {
         return _sessionList is null ? "" : _sessionList.activityRowsForTesting();
+    }
+
+    public bool sessionTurnBusyForTesting(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        const id = _sessions[sessionIndex].id;
+        if (id == _loadedRuntimeId)
+            return _turnInFlight || _turnTiming || _stopPending ||
+                _activeRequestId != 0 || _pendingToolResults > 0;
+        if (auto found = id in _conversationRuntimes)
+            return (*found).busy();
+        return false;
     }
 
     public void setTaskStateForTesting(string objective, string status,
@@ -10950,20 +11222,58 @@ public final class OpenCodeRoot : VBox
     /// Test-only: deliver a streamed reasoning (chain-of-thought) fragment.
     public void streamReasoningForTesting(string text)
     {
-        appendStreamDelta(text, true);
+        streamDeltaInSessionForTesting(turnOwnerSessionForTesting(), text,
+            true);
     }
 
     /// Test-only: deliver a streamed answer fragment.
     public void streamContentForTesting(string text)
     {
-        appendStreamDelta(text, false);
+        streamDeltaInSessionForTesting(turnOwnerSessionForTesting(), text,
+            false);
+    }
+
+    public void streamContentInSessionForTesting(int sessionIndex, string text)
+    {
+        streamDeltaInSessionForTesting(sessionIndex, text, false);
+    }
+
+    /// Test-only: queue a real client event so onTick must drain and route two
+    /// conversation queues, rather than calling the stream handler directly.
+    public void queueContentInSessionForTesting(int sessionIndex, string text)
+    {
+        auto rt = runtimeForSession(sessionIndex);
+        if (rt is null) return;
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.delta;
+        event.text = text;
+        rt.client.pushLocalEvent(event);
+    }
+
+    private void streamDeltaInSessionForTesting(int sessionIndex, string text,
+        bool reasoning)
+    {
+        const selected = _current;
+        if (sessionIndex >= 0) loadRuntime(sessionIndex);
+        appendStreamDelta(text, reasoning);
+        saveLoadedRuntime();
+        if (selected >= 0) loadRuntime(selected);
     }
 
     /// Test-only: finish the live assistant turn exactly as a `done` event does
     /// (clears the phase row, drops the streaming flag).
     public void finishStreamForTesting()
     {
+        finishStreamInSessionForTesting(turnOwnerSessionForTesting());
+    }
+
+    public void finishStreamInSessionForTesting(int sessionIndex)
+    {
+        const selected = _current;
+        if (sessionIndex >= 0) loadRuntime(sessionIndex);
         finishAssistantMessage(false);
+        saveLoadedRuntime();
+        if (selected >= 0) loadRuntime(selected);
     }
 
     /// Test-only: the live output-token count of the streaming reply (0 when
