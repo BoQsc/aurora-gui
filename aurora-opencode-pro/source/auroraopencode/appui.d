@@ -12,6 +12,7 @@ import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     executeTool, nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
+    cancelRunningCommands, resetRunningCommands,
     ToolExecution;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
@@ -4149,6 +4150,8 @@ public final class OpenCodeRoot : VBox
     private string _turnUserId;
     private int _turnSessionIndex = -1;
     private bool _turnTiming;
+    /// Set when the user stops a turn so late tool results cannot restart it.
+    private bool _turnCancelled;
     private double[string] _turnDurations;
 
     // Live "how long has this chat taken" stopwatch in the composer footer. The
@@ -5807,9 +5810,14 @@ public final class OpenCodeRoot : VBox
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length)
             return;
-        if (_client.busy())
+        if (_client.busy() || _turnTiming ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
         {
             _client.cancel();
+            // Abandon the interrupted turn so the killed tool's late result
+            // cannot restart the chat via a continuation request.
+            _turnCancelled = true;
+            cancelRunningCommands();
             _suppressDoneStatus = true;
         }
         cancelPendingTools();
@@ -6362,6 +6370,9 @@ public final class OpenCodeRoot : VBox
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
         ulong requestId, const(OpenCodeToolCall)[] calls, string workspace)
     {
+        // A fresh batch means the previous turn's stop request no longer
+        // applies; clear it so this batch's commands are not terminated.
+        resetRunningCommands();
         size_t slot;
         while (slot < calls.length)
         {
@@ -6460,7 +6471,7 @@ public final class OpenCodeRoot : VBox
     /// history so the model can answer with the results available.
     private void applyToolResult(const OpenCodeEvent event)
     {
-        if (_current < 0 || _pendingToolCalls.length == 0) return;
+        if (_current < 0 || _turnCancelled || _pendingToolCalls.length == 0) return;
         auto session = &_sessions[_current];
 
         // The command arguments come from the original tool call, matched by
@@ -6608,10 +6619,13 @@ public final class OpenCodeRoot : VBox
 
     private void sendMessage()
     {
-        if (_client.busy())
+        if (_client.busy() || _turnTiming ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
         {
             _client.cancel();
+            cancelRunningCommands();
             updateStatus("Stopping…");
+            _turnCancelled = true;
             setActivity("Stopping…");
             return;
         }
@@ -6659,6 +6673,7 @@ public final class OpenCodeRoot : VBox
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
+        _turnCancelled = false;
         startChatRequest(_current);
     }
 
@@ -7078,7 +7093,8 @@ public final class OpenCodeRoot : VBox
     /// false when there is nothing to regenerate.
     private bool prepareRegenerate(int sessionIndex, int messageIndex)
     {
-        if (_client.busy()) return false;
+        if (_client.busy() || _turnTiming ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0) return false;
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return false;
         auto session = &_sessions[sessionIndex];
@@ -7101,9 +7117,14 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (_client.busy())
+        if (_client.busy() || _turnTiming ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
         {
             _client.cancel();
+            // Abandon the interrupted turn so the killed tool's late result
+            // cannot restart the chat via a continuation request.
+            _turnCancelled = true;
+            cancelRunningCommands();
             _suppressDoneStatus = true;
         }
         cancelPendingTools();

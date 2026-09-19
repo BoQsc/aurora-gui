@@ -8,8 +8,11 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
     isAbsolute;
 import std.process : Pid, waitTimeout, kill, wait, spawnProcess, Config;
+version (Windows)
+    import core.sys.windows.windows : HANDLE, DWORD, BOOL, UINT, ULONG_PTR,
+        LONG, WCHAR;
 import std.regex : Regex, matchFirst, regex;
-import std.stdio : File, stdin;
+import std.stdio : File, stdin, stdout, stderr;
 import std.string : indexOf, replace, strip;
 import std.utf : toUTF8;
 import std.conv : to;
@@ -928,6 +931,120 @@ private ToolExecution runProgramTool(string args, string workspace)
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
 }
 
+/// Set while the user has asked to stop the current turn. A command launched by
+/// `runProcess` polls this flag and terminates its process as soon as it is
+/// observed. It is cleared at the start of each tool batch so an earlier stop
+/// cannot abort a later turn.
+private shared bool _commandsCancelled;
+
+/// Request termination of any in-flight command process. Safe to call from the
+/// UI thread while the process runs on a worker thread.
+public void cancelRunningCommands()
+{
+    import core.atomic : atomicStore;
+    atomicStore(_commandsCancelled, true);
+}
+
+/// Clear the stop request before a new batch of tool calls begins.
+public void resetRunningCommands()
+{
+    import core.atomic : atomicStore;
+    atomicStore(_commandsCancelled, false);
+}
+
+/// Terminate `pid` and every process it spawned. Commands are launched through
+/// a shell wrapper (cmd/powershell/bash), so the real work runs in
+/// grandchildren; `std.process.kill` only signals the direct child and leaves
+/// those running. On Windows the descendant tree is walked natively and each
+/// process terminated with `TerminateProcess` (no external `taskkill`).
+private void killProcessTree(Pid pid)
+{
+    version (Windows)
+        killProcessTreeWindows(cast(DWORD) pid.processID);
+    else
+    {
+        try kill(pid);
+        catch (Exception) {}
+    }
+    try wait(pid);
+    catch (Exception) {}
+}
+
+version (Windows)
+{
+    private struct PROCESSENTRY32W
+    {
+        DWORD dwSize;
+        DWORD cntUsage;
+        DWORD th32ProcessID;
+        ULONG_PTR th32DefaultHeapID;
+        DWORD th32ModuleID;
+        DWORD cntThreads;
+        DWORD th32ParentProcessID;
+        LONG pcPriClassBase;
+        DWORD dwFlags;
+        WCHAR[260] szExeFile;
+    }
+
+    private enum DWORD TH32CS_SNAPPROCESS = 0x00000002;
+    private enum DWORD PROCESS_TERMINATE = 0x0001;
+
+    // Bound by mangled name so they do not clash with druntime's own decls.
+    pragma(mangle, "CreateToolhelp32Snapshot")
+    private extern(Windows) HANDLE _CreateToolhelp32Snapshot(DWORD, DWORD);
+    pragma(mangle, "Process32FirstW")
+    private extern(Windows) BOOL _Process32FirstW(HANDLE, PROCESSENTRY32W*);
+    pragma(mangle, "Process32NextW")
+    private extern(Windows) BOOL _Process32NextW(HANDLE, PROCESSENTRY32W*);
+    pragma(mangle, "OpenProcess")
+    private extern(Windows) HANDLE _OpenProcess(DWORD, BOOL, DWORD);
+    pragma(mangle, "TerminateProcess")
+    private extern(Windows) BOOL _TerminateProcess(HANDLE, UINT);
+    pragma(mangle, "CloseHandle")
+    private extern(Windows) BOOL _CloseHandle(HANDLE);
+
+    /// Native whole-tree termination. Snapshot every process once, then walk
+    /// parent -> child links so all descendants die, not just the direct child.
+    private void killProcessTreeWindows(DWORD rootPid)
+    {
+        DWORD[] pids;
+        DWORD[] parents;
+        auto snapshot = _CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot != cast(HANDLE) -1 && snapshot !is null)
+        {
+            PROCESSENTRY32W entry;
+            entry.dwSize = cast(DWORD) PROCESSENTRY32W.sizeof;
+            if (_Process32FirstW(snapshot, &entry))
+            {
+                do
+                {
+                    pids ~= entry.th32ProcessID;
+                    parents ~= entry.th32ParentProcessID;
+                    entry.dwSize = cast(DWORD) PROCESSENTRY32W.sizeof;
+                } while (_Process32NextW(snapshot, &entry));
+            }
+            _CloseHandle(snapshot);
+        }
+
+        void killRecursive(DWORD target, int depth)
+        {
+            // Descendants first so nothing can respawn work, depth-capped in
+            // case the snapshot ever reports a cyclic parent chain.
+            if (depth < 32)
+                foreach (i, parent; parents)
+                    if (parent == target && pids[i] != target)
+                        killRecursive(pids[i], depth + 1);
+            auto handle = _OpenProcess(PROCESS_TERMINATE, false, target);
+            if (handle !is null)
+            {
+                _TerminateProcess(handle, 1);
+                _CloseHandle(handle);
+            }
+        }
+        killRecursive(rootPid, 0);
+    }
+}
+
 /// Shared process runner used by the shell tool and the native `run` tool.
 /// Spawns `argv` directly (no shell), redirects stdout+stderr to a temp file,
 /// waits up to `timeoutMs`, and kills on timeout. Output is decoded leniently
@@ -937,6 +1054,12 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     int timeoutMs, string toolName)
 {
     import std.typecons : tuple;
+    import core.atomic : atomicLoad;
+
+    // A stop may have been requested after the previous command finished but
+    // before this one launched; honor it without starting the process at all.
+    if (atomicLoad(_commandsCancelled))
+        return tuple("Stopped: command cancelled before it started.", true);
 
     const outPath = buildNormalizedPath(buildPath(
         cast(string) tempDir(), "aurora-opencode-tool-" ~
@@ -958,16 +1081,27 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     }
 
     const timeout = msecs(timeoutMs);
-    auto result = waitTimeout(pid, timeout);
+    auto stopwatch = StopWatch(AutoStart.yes);
     bool timedOut;
-    if (!result.terminated)
+    bool cancelled;
+    // Poll rather than blocking for the whole timeout so a stop request can
+    // terminate a long-running command promptly instead of waiting it out.
+    while (true)
     {
-        timedOut = true;
-        try kill(pid);
-        catch (Exception) {}
-        try wait(pid);
-        catch (Exception) {}
+        if (waitTimeout(pid, msecs(100)).terminated) break;
+        if (atomicLoad(_commandsCancelled))
+        {
+            cancelled = true;
+            break;
+        }
+        if (stopwatch.peek > timeout)
+        {
+            timedOut = true;
+            break;
+        }
     }
+    if (timedOut || cancelled)
+        killProcessTree(pid);
 
     string output;
     if (exists(outPath))
@@ -984,12 +1118,15 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         try remove(outPath);
         catch (Exception) {}
     }
-    if (timedOut)
+    if (cancelled)
+        output = (output.length > 0 ? output ~ "\n" : "") ~
+            "\n…(stopped by user; process terminated)";
+    else if (timedOut)
         output = (output.length > 0 ? output ~ "\n" : "") ~
             "\n…(process timed out after " ~ to!string(timeoutMs) ~
             "ms and was killed)";
     if (output.length == 0) output = "(no output)";
-    return tuple(output, timedOut);
+    return tuple(output, timedOut || cancelled);
 }
 
 private bool tryOpenOutput(string outPath, out File outFile, string toolName)
