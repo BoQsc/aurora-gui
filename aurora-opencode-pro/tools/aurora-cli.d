@@ -34,7 +34,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.array : join;
 import std.conv : parse, to;
-import std.file : exists, readText;
+import std.file : copy, exists, getSize, readText;
 import std.path : buildPath;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : stderr, stdin, stdout;
@@ -336,6 +336,30 @@ private bool instructionBuild(in Options options, string argument)
         warn("build needs --dir <packageDir>");
         return false;
     }
+    // A build rewrites the app's own .exe in place, and the linker truncates
+    // the file before it writes the new image. If the running app still holds
+    // that image, the write fails and leaves a 0-byte exe: the app can never
+    // launch again and every later restart fails. Keep a copy of the good exe,
+    // stop the app while the exe is rewritten, and restore the copy whenever
+    // the link leaves the exe empty.
+    const backup = options.exePath ~ ".bak";
+    bool haveBackup;
+    if (options.exePath.length > 0 && exists(options.exePath))
+    {
+        try
+        {
+            copy(options.exePath, backup);
+            haveBackup = true;
+        }
+        catch (Exception error)
+            warn("could not back up " ~ options.exePath ~ ": " ~ error.msg);
+    }
+    if (options.exePath.length > 0 && !canWrite(options.exePath))
+    {
+        say("stopping " ~ options.imageName ~ " before rebuilding");
+        if (!instructionStop(options))
+            warn("could not stop the app; the build may fail to replace the exe");
+    }
     say("building " ~ config);
     try
     {
@@ -359,10 +383,25 @@ private bool instructionBuild(in Options options, string argument)
                 return false;
             }
         });
-        if (!ran) return false;
+        if (!ran)
+        {
+            restoreExe(options.exePath, backup, haveBackup);
+            return false;
+        }
         if (code != 0)
         {
             warn("build failed with " ~ to!string(code));
+            restoreExe(options.exePath, backup, haveBackup);
+            return false;
+        }
+        // The linker can report success and still leave a locked image
+        // truncated. An empty or missing exe is a failure no matter the code.
+        if (options.exePath.length > 0 &&
+            (!exists(options.exePath) || getSize(options.exePath) == 0))
+        {
+            warn("build left " ~ options.exePath ~
+                " empty (the running app held the image)");
+            restoreExe(options.exePath, backup, haveBackup);
             return false;
         }
         say("build succeeded");
@@ -371,8 +410,23 @@ private bool instructionBuild(in Options options, string argument)
     catch (Exception error)
     {
         warn("could not start dub: " ~ error.msg);
+        restoreExe(options.exePath, backup, haveBackup);
         return false;
     }
+}
+
+/// Put the pre-build copy of the app exe back after a failed or truncated
+/// build, so a rebuild can never leave the app unlaunchable.
+private void restoreExe(string exePath, string backup, bool haveBackup)
+{
+    if (!haveBackup || exePath.length == 0) return;
+    try
+    {
+        copy(backup, exePath);
+        warn("restored " ~ exePath ~ " from " ~ backup);
+    }
+    catch (Exception error)
+        warn("could not restore " ~ exePath ~ ": " ~ error.msg);
 }
 
 /// The last `native crash: ... at <address>` entry, or "" when there is none.

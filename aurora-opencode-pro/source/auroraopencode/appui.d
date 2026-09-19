@@ -7749,6 +7749,13 @@ public final class OpenCodeRoot : VBox
                 const name = baseName(entry.name);
                 if (!name.startsWith("sessions")) continue;
                 if (name.indexOf(".json") < 0) continue;
+                // A quarantined (`.bad`) or manually preserved
+                // (`.preserve-...`) copy is known not to parse. Reading it
+                // every launch only reproduces the same error and wastes the
+                // restore; `.bak`/`.tmp` are left in because they can be the
+                // last complete save.
+                if (name.indexOf(".bad") >= 0 ||
+                    name.indexOf(".preserve") >= 0) continue;
                 candidates ~= entry.name;
             }
         }
@@ -7861,10 +7868,7 @@ public final class OpenCodeRoot : VBox
                                 }
                             }
                         }
-                        // Repair/backfill the message graph for sessions saved
-                        // before branching existed (or with dangling links).
-                                        ensureMessageGraph(session);
-                                        mergeRestoredSession(session);
+                        mergeRestoredSession(session);
                                     }
                                 }
                             }
@@ -7876,17 +7880,32 @@ public final class OpenCodeRoot : VBox
                                 candidate ~ ": " ~ error.msg);
                         }
         }
+        // Repair/backfill the message graph for sessions saved before branching
+        // existed (or with dangling links), once, after the snapshots have been
+        // merged. Repairing during parsing minted ids for legacy (id-less)
+        // messages before the merge compared them, so the same file loaded
+        // twice looked like two different conversations and was duplicated.
+        foreach (ref session; _sessions)
+            ensureMessageGraph(session);
         if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
             _current = preferredCurrent;
         if (_sessions.length > 0)
         {
-            if (_current < 0) _current = 0;
+            // The snapshot's `current` index may no longer address the merged
+            // list (a snapshot with more sessions was written after the merge
+            // order was fixed, or a stale `_current` survived from before the
+            // reload). Clamp it or `_sessions[_current]` faults on the first
+            // access after a reload.
+            if (_current < 0 || _current >= cast(int) _sessions.length)
+                _current = 0;
             _settings.model = _sessions[_current].model;
             _settings.thinking = _sessions[_current].thinking;
             _modelButton.setText(_settings.model);
             _thinkingBox.setChecked(_settings.thinking, false);
             rebuildMessageColumn();
         }
+        else
+            _current = -1;
         refreshUsageBadge();
     }
 
@@ -7894,16 +7913,35 @@ public final class OpenCodeRoot : VBox
     /// conversation is already present (matched by title and opening message),
     /// keep whichever copy holds more messages so a partial snapshot can never
     /// replace a more complete one.
+    /**
+     * Whether two restored sessions are the same conversation rather than two
+     * chats that merely share a title and opening prompt. Every chat the user
+     * has not titled is called "New chat", and a scripted run can even produce
+     * byte-identical transcripts, so title + first content is not distinctive:
+     * matching on it merged independent conversations and dropped one, which
+     * shifted every later index (and made a reload address the wrong session).
+     * Message ids are minted once per message and are copied into every
+     * snapshot of the same conversation, so they identify it; the content
+     * fallback only applies to legacy sessions saved before ids existed.
+     */
+    private static bool sameRestoredConversation(const ref ChatSession a,
+        const ref ChatSession b)
+    {
+        if (a.title != b.title) return false;
+        if (a.messages.length == 0 || b.messages.length == 0)
+            return a.messages.length == b.messages.length;
+        const firstA = a.messages[0];
+        const firstB = b.messages[0];
+        if (firstA.id.length > 0 && firstB.id.length > 0)
+            return firstA.id == firstB.id;
+        return firstA.content == firstB.content;
+    }
+
     private void mergeRestoredSession(ChatSession session)
     {
-        const firstContent = session.messages.length > 0
-            ? session.messages[0].content : "";
         foreach (ref existing; _sessions)
         {
-            if (existing.title != session.title) continue;
-            const existingFirst = existing.messages.length > 0
-                ? existing.messages[0].content : "";
-            if (existingFirst != firstContent) continue;
+            if (!sameRestoredConversation(existing, session)) continue;
             if (session.messages.length > existing.messages.length)
                 existing = session;
             return;
@@ -8310,6 +8348,11 @@ public final class OpenCodeRoot : VBox
             appendMessage(*session, message);
         }
         rebuildMessageColumn();
+        // Production appends mark the conversation dirty, which also refreshes
+        // the immediate recovery snapshot. Mirror that here, or a test that
+        // saves then reloads sees a stale recovery copy of this chat (empty)
+        // alongside the saved one and resolves `current` to the stale entry.
+        markDirty();
     }
 
     /// Test-only: stamp a completed time on the message at physical `index` so

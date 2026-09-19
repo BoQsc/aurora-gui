@@ -353,11 +353,17 @@ struct Canvas
         foreach (positioned; layout.glyphs)
         {
             // A glyph whose face failed to resolve has nothing to draw from,
-            // and every branch below dereferences it. Skipping it loses one
-            // glyph; dereferencing it took the whole process down here. The
-            // frequency is logged once, because a layout that reaches this
-            // point has an inconsistency upstream that is worth seeing.
-            if (positioned.font is null)
+            // and every branch below dereferences it. The same is true of a
+            // glyph index outside the face's range: `glyphByIndex`,
+            // `isColorGlyph` and `rasterizeColorGlyph` all index the face's
+            // tables with it, and an out-of-range index runs off the end of
+            // those tables and faults. Both cases are skipped rather than
+            // dereferenced, because dereferencing them took the whole process
+            // down here. The frequency is logged once, because a layout that
+            // reaches this point has an inconsistency upstream worth seeing.
+            if (positioned.font is null ||
+                positioned.glyphIndex >= cast(uint) maxInt(1,
+                    positioned.font.glyphCount()))
             {
                 version (Windows)
                 {
@@ -367,7 +373,7 @@ struct Canvas
                     {
                         reported = true;
                         const line = "aurora: drawLayout skipped a glyph with " ~
-                            "no font face\n";
+                            "no font face or an out-of-range glyph index\n";
                         if (auto file = fopen("aurora-nullfont.log\0", "a"))
                         {
                             fwrite(line.ptr, 1, line.length, file);
@@ -436,6 +442,11 @@ struct Canvas
         // Render at the requested size; find the actual rasterized extent by
         // scanning the alpha bounds so placement uses the real ink.
         const size = maxInt(1, pixelSize);
+        // The scan below indexes `rgba` as exactly size*size*4 bytes. The
+        // rasterizer is not required to return a buffer of that size, and
+        // indexing past the end of a shorter buffer faults. Bail out instead
+        // of reading out of bounds.
+        if (rgba.length < cast(size_t) size * size * 4) return;
         int minX = size, minY = size, maxX = -1, maxY = -1;
         foreach (y; 0 .. size)
         {

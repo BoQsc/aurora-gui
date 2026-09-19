@@ -4,6 +4,57 @@
 > it lists the measured pitfalls (NaN timers, raster-icon alpha/DPI, popup
 > hit-testing, retained-layer invalidation) that this log kept re-discovering.
 
+## Aurora OpenCode Pro: apply_patch crash + reload bugs (2026-09-19)
+
+**Symptom.** The app access-violated every ~90 s (`0xC0000005`) and the
+supervisor relaunched it, so it looked like an endless crash/exit loop.
+
+**How to read the real fault without a debugger.** Run
+`python scripts/analyze-crashdump.py <dump> <exe>`. The app's own dumps were
+0 bytes; Windows still wrote full-memory dumps to
+`%LOCALAPPDATA%\CrashDumps\aurora-opencode-pro.exe.<pid>.dmp`. The script (and,
+manually, the `minidump` Python package) does this:
+- exception stream: `d.exception.exception_records[0].ExceptionRecord`
+  (`ExceptionCode_raw`, `ExceptionAddress`, `ExceptionInformation`);
+- module list `d.modules.modules` maps the fault address to a module+offset;
+- faulting thread `d.threads.threads` matching `...ThreadId`; its
+  `ContextObject` has `Rsp/Rbp/Rip/Rcx/Rdx/R8/...`;
+- stack bytes via `d.get_reader().memory_segments` (find the segment containing
+  `Rsp`, then `seg.read(rsp, n, r.file_handle)`);
+- walk the RBP chain: `[Rbp]` = next Rbp, `[Rbp+8]` = return address.
+Resolve addresses against the sibling `.pdb` with `dbghelp` **`SymFromAddr`**
+(the druntime binding only exposes the legacy `SymGetSymFromAddr64`, which
+misses non-public symbols; call `SymFromAddr` via ctypes with a `SYMBOL_INFO`
+whose `SizeOfStruct=88`/`MaxNameLen=1900`). Example result:
+`msvcr120!memcpy` fault, `R8=0xFFFFFFFFFFFFFFFF`, frames
+`runApplyPatch.flushHunk` (`tools.d`) -> `runApplyPatch` -> `executeTool`.
+
+**Root cause.** `tools.d` `flushHunk`:
+`const at = oldBlock.length == 0 ? searchPos : content.indexOf(...)`.
+D's common type of `size_t` and `ptrdiff_t` is `ulong` (verified:
+`typeof(true ? size_t(0) : ptrdiff_t(-1))` is `ulong`), so `at < 0` is dead and
+`-1` becomes `size_t.max`, slicing/concatenating `size_t.max` bytes. Same class
+as the old markdown `indexOf` bug. Fix: keep it signed, check `< 0`, then cast.
+
+**How to test.**
+- `tools_test.d` gained `apply_patch reports a missing context instead of
+  crashing` (a hunk whose context line is absent must return `failed` and leave
+  the file unchanged). Build/run from `aurora-opencode-pro`:
+  ```
+  "C:\D\dmd2\windows\bin64\dmd.exe" -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\tools_test.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\tools-test.exe
+  build\tools-test.exe
+  ```
+- Reload bugs (`_current` out of range, duplicate "New chat" merge, stale
+  recovery snapshot) are guarded by the existing persistence blocks in
+  `tests\headless_pro_smoke.d` (`Branches survive a save + reload`, `Edit diff
+  survives a save + reload`, `Restored sessions: 3`). Run the Pro smoke:
+  ```
+  "C:\D\dmd2\windows\bin64\dmd.exe" -version=AuroraHeadless -i -Isource -I..\aurora-opencode-core\source -I..\vendor\aurora-d-0.4.5\source tests\headless_pro_smoke.d user32.lib gdi32.lib shell32.lib wininet.lib winmm.lib -of=build\headless-pro-smoke.exe
+  build\headless-pro-smoke.exe   rem -> "Aurora OpenCode Pro headless smoke test passed."
+  ```
+- After any rebuild: kill the running exe and relaunch exactly one from the
+  package root. Do not launch `build\aurora-opencode-pro.exe` (stale).
+
 ## Aurora OpenCode Pro action-group diff counters (2026-09-18)
 
 **What changed.** The folded action-group header (`ToolGroupBubble`, the

@@ -391,6 +391,11 @@ int main()
         "Steering prompt must advertise update_plan");
     assert(toolSteeringPrompt(false).indexOf("Editing constraints") >= 0,
         "Steering prompt must carry the Codex editing constraints");
+    // The app can edit its own source; the prompt must forbid the agent from
+    // building or killing the process that hosts its session.
+    assert(toolSteeringPrompt(false).indexOf(
+        "the process running this session") >= 0,
+        "Steering prompt must forbid building/killing the host process");
     writeln("Default vs native-only toolset shapes OK");
 
     // write creates missing parent directories, as its description promises.
@@ -421,6 +426,30 @@ int main()
         assert(result.additions > 0 && result.deletions > 0,
             "apply_patch must report a diff: " ~ result.output);
         writeln("apply_patch adds, updates and deletes files in one call");
+    }
+
+    // Regression: a hunk whose context is absent must fail cleanly. The old
+    // code resolved the match position with
+    //     const at = oldBlock.length == 0 ? searchPos
+    //                                    : content.indexOf(oldBlock, searchPos);
+    // which promotes `indexOf`'s signed -1 to `ulong` because the other branch
+    // is `size_t`; `at < 0` was therefore dead, `-1` became size_t.max, and
+    // the following slice/concatenation copied size_t.max bytes, faulting in
+    // msvcr120's memcpy (the `0xC0000005` that killed the app on every
+    // apply_patch miss).
+    {
+        write(buildPath(dir, "keep.txt"), "keep\nold\n");
+        auto missing = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: keep.txt\n@@\n not present\n+added\n*** End Patch"}`),
+            dir);
+        assert(missing.failed,
+            "apply_patch with an absent context must fail, not crash");
+        assert(missing.output.indexOf("patch context not found") >= 0,
+            "apply_patch miss must explain the missing context: " ~
+            missing.output);
+        assert(readText(buildPath(dir, "keep.txt")) == "keep\nold\n",
+            "a failed hunk must not modify the file");
+        writeln("apply_patch reports a missing context instead of crashing");
     }
 
     // update_plan renders a checked list and enforces a single in-progress

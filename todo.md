@@ -1,5 +1,104 @@
 # Aurora Cut todo / complaints log
 
+## 2026-09-19 - Aurora OpenCode Pro: crash/exiting storm resolved (FIXED, verified)
+
+**Request (user).** "autonomously resolve crashing, exiting and other bad
+behaviours, read latest chat recent messages of aurora opencode. Resolve
+problems."
+
+**Evidence (not guessed).** The app had crashed every ~90 s since 2026-09-19
+00:50; the supervisor relaunched it each time. Windows full-memory dumps in
+`%LOCALAPPDATA%\CrashDumps\aurora-opencode-pro.exe.*.dmp` were parsed: every
+fault was an access violation (`0xC0000005`) in `msvcr120.dll` `memcpy`
+(offset `0x3c369`), a **write** to an unmapped page, with `R8 = 0xFFFFFFFFFFFFFFFF`
+(`SIZE_MAX`) as the copy length. The RBP chain resolved (via `dbghelp
+SymFromAddr`) to
+`runApplyPatch.flushHunk` (`tools.d`) -> `runApplyPatch` -> `executeTool` ->
+`runToolWorker`. The last chat session showed the in-app agent repeatedly
+calling `apply_patch` to remove an elapsed-bar that the user had rejected
+("the timer is horrible"); each miss crashed the app that hosted the agent, so
+the removal could never finish.
+
+**Root cause.** `tools.d` `flushHunk`:
+```d
+const at = oldBlock.length == 0
+    ? searchPos : content.indexOf(oldBlock, searchPos);   // size_t ? ptrdiff_t
+if (at < 0) { ... }                                       // DEAD
+content = content[0 .. at] ~ newBlock ~ content[at + oldBlock.length .. $];
+```
+D's common type of `size_t` and `ptrdiff_t` is **`ulong`**, so `at` was
+unsigned; `indexOf`'s `-1` ("not found") became `size_t.max`, the `at < 0`
+guard was dead, and the slice/concatenation copied `size_t.max` bytes -> the
+`memcpy` AV. This is the same class as the earlier markdown `indexOf` bug.
+
+**Fixes.**
+- `tools.d` `flushHunk`: keep `indexOf`'s result signed, check `< 0`, then
+  `cast(size_t)`. A missing patch context now fails the hunk cleanly.
+- Completed the paused cleanup: removed the unused `drawElapsedBar` method,
+  `_workStart`/`elapsedBar*` fields and the stray indentation the failed
+  patches left in `ChatComposer` (`appui.d`).
+- `appui.d` `restoreSessions`: never leaves a stale `_current`
+  (`if (_current < 0 || _current >= _sessions.length) _current = 0;` else
+  `_current = -1;`) - an out-of-range `_current` faulted on reload.
+- `appui.d` `mergeRestoredSession`: identity is now the first **message id**
+  (content fallback for legacy), not title+first content. Every untitled chat
+  is "New chat" and scripted runs can be byte-identical, so the old key merged
+  independent conversations and dropped one.
+- `appui.d` `restoreSessions`: `ensureMessageGraph` runs **after** merging, not
+  during parsing, so freshly minted legacy ids no longer make the same file
+  reload as two conversations.
+- `appui.d` restore scan skips quarantined `.bad` / `.preserve-*` copies.
+- `appui.d` test helper `addConversationForTestingWithReasoning` now calls
+  `markDirty()` like production appends, so the immediate recovery snapshot is
+  not stale.
+- `window.d` `onNativeClientControlAt` uses `hitTestHover`: a transient popup's
+  full-window overlay is transparent outside its panel, so it must not hide the
+  scrollbar's resize-edge claim.
+- `headless_pro_smoke.d`: dismiss the Settings dialog opened by
+  `workedForCheckboxForTesting`; expect the toolbar button's real "Rebuild"
+  label.
+- Carried the in-flight diagnostics fixes: `crashguard.d` writes the dump from
+  the last-chance filter (dumps were 0 bytes), `canvas.d` guards a null face /
+  out-of-range glyph index and a short raster buffer, `aurora-cli.d` backs up
+  and restores the app exe around `instruction build` so a locked link cannot
+  leave a 0-byte exe.
+
+**Verification (all run on the final tree).**
+- `tools-test.exe` -> `apply_patch reports a missing context instead of
+  crashing` plus every earlier tool assert; EXIT=0.
+- `aurora-opencode-core` `dub test` -> "41 modules passed unittests".
+- `headless-pro-smoke.exe` -> `Aurora OpenCode Pro headless smoke test passed.`
+  (persistence reload, tool diff reload, scrollbar resize edge, intro click,
+  restart button all pass).
+- `dub build --build=release` OK; app relaunched as exactly one instance
+  (PID 2472) and held for >1 min with no new crash-log entries.
+- Crash root cause proof: the parsed Windows dump's RBP chain and `R8=SIZE_MAX`,
+  plus the standalone D check that `typeof(true ? size_t(0) : ptrdiff_t(-1))`
+  is `ulong`.
+
+**Follow-up: guidance + future improvements (DONE 2026-09-19).**
+- `AURORA-USAGE-STANDARDS.md` gained sections 10-13: the `indexOf` signed/unsigned
+  ternary trap, crash triage without a debugger, the self-modifying-app rebuild
+  rule, and restored-session identity/reload safety. The global `CLAUDE.md` got
+  the same recurring-issue rules.
+- `scripts/analyze-crashdump.py`: reusable dump analyzer (exception, faulting
+  module+offset, registers, RBP stack symbolized via `dbghelp SymFromAddr`); it
+  now warns when the on-disk exe does not match the crashing build, so a stale
+  `.pdb` cannot silently name the wrong function.
+- `rebuilder.d` `runBuild` now backs up the exe before building and restores it
+  if the link fails or leaves a 0-byte image, closing the last self-truncating
+  build path (previously only `aurora-cli.d` had the guard).
+- `tools.d` `buildSystemPrompt` gained an explicit constraint: the app edits its
+  own source, so the agent must never build/kill the process running its session
+  (it would end the session and force a restart). Guarded in `tools_test.d`. This
+  is the structural fix for the self-destruct loop, not just documentation.
+- Verified again after these edits: `tools-test.exe` pass, Pro smoke pass,
+  release rebuilt and relaunched as one instance (PID 14464).
+
+**Remaining.** None blocking. `rebuilder.d` and `aurora-cli.d` still hold two
+independent build paths by design (the app cannot rebuild itself); both now
+share the backup/restore contract.
+
 ## 2026-09-18 - Aurora OpenCode Pro: aggregate +N -M on the collapsed action-group header (DONE, verified)
 
 **Request (user).** "editing thing does not show to the right side the added and

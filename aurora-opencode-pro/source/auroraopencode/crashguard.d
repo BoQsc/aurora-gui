@@ -636,11 +636,21 @@ version (Windows)
      *
      * The address and last activity say *what* happened; a dump says *why*, by
      * letting a debugger walk the real crash stack against the archived `.pdb`.
-     * It is written from the vectored handler, before unwinding, so the stack
-     * is still whole - which the old last-chance handler could never guarantee.
+     *
+     * It is written from the last-chance filter, not from the vectored handler.
+     * `MiniDumpWriteDump` runs in-process on the dying thread and re-enters the
+     * loader and dbghelp; called on the first-chance exception inside the
+     * vectored handler it died inside itself before writing a byte or logging
+     * the result, which is why every earlier `logs/dumps/crash-*.dmp` was 0
+     * bytes with no `dump: ok`/`dump: failed` line to explain it. By the time
+     * the last-chance filter runs the exception is definitively fatal, which is
+     * the state `MiniDumpWriteDump` is meant to be called in.
      */
     private void writeMiniDump(EXCEPTION_POINTERS* info) nothrow
     {
+        static __gshared bool attempted;
+        if (attempted) return;
+        attempted = true;
         try
         {
             if (miniDumpWrite is null)
@@ -716,11 +726,24 @@ version (Windows)
             // linked directly, so the crash path adds no import to the link.
             import core.sys.windows.winbase : GetModuleHandleA, GetProcAddress;
             alias CaptureFn = ushort function(uint, uint, void**, uint*);
+            // `CaptureStackBackTrace` is a kernel32 export on some Windows
+            // builds and only an ntdll `RtlCaptureStackBackTrace` on others.
+            // Resolving it from kernel32 alone returned null on the machines
+            // where it lives in ntdll, which is why every crash logged
+            // "CaptureStackBackTrace unavailable" and no frames were ever
+            // recorded. Try both modules before giving up.
+            CaptureFn capture = null;
             auto kernel = GetModuleHandleA("kernel32.dll\0");
-            auto capture = kernel !is null
-                ? cast(CaptureFn) GetProcAddress(kernel,
-                    "CaptureStackBackTrace\0")
-                : null;
+            if (kernel !is null)
+                capture = cast(CaptureFn) GetProcAddress(kernel,
+                    "CaptureStackBackTrace\0");
+            if (capture is null)
+            {
+                auto ntdll = GetModuleHandleA("ntdll.dll\0");
+                if (ntdll !is null)
+                    capture = cast(CaptureFn) GetProcAddress(ntdll,
+                        "RtlCaptureStackBackTrace\0");
+            }
             if (capture !is null)
             {
                 enum uint maxFrames = 62;
@@ -763,7 +786,8 @@ version (Windows)
             // failing system code; capture them before the dump attempt, which
             // may not return.
             writeFaultFrames(info);
-            writeMiniDump(info);
+            // The dump is intentionally not written from here; it is written
+            // from `nativeCrashFilter` below. See `writeMiniDump`.
         }
         catch (Throwable) {}
         return exceptionContinueSearch;
@@ -814,6 +838,9 @@ version (Windows)
                 toHex(address) ~ "\n  " ~ _lastActivity ~ "\n");
         }
         catch (Throwable) {}
+        // Capture the dump here, at last chance, where the exception is fatal.
+        // This is the only call site for `MiniDumpWriteDump`; see `writeMiniDump`.
+        writeMiniDump(info);
         try
         {
             auto record = info !is null ? info.ExceptionRecord : null;

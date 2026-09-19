@@ -27,7 +27,8 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
 import std.datetime : Clock;
-import std.file : append, exists, mkdirRecurse, readText, write;
+import std.file : append, copy, exists, getSize, mkdirRecurse, readText, remove,
+    write;
 import std.path : buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
@@ -418,6 +419,23 @@ private bool waitForUnlock(string exePath, int timeoutSeconds)
     return canWrite(exePath);
 }
 
+/// Put the pre-build copy of the app exe back after a failed or truncated
+/// build, so a restart can never leave the app unlaunchable. The linker
+/// truncates the target before writing it, so a link that fails (or is killed)
+/// mid-write leaves a 0-byte image even when the exit code is not meaningful.
+private void restoreExe(string exePath, string backup, bool haveBackup,
+    string logPath)
+{
+    if (!haveBackup || exePath.length == 0) return;
+    try
+    {
+        copy(backup, exePath);
+        appendLine(logPath, "restored " ~ exePath ~ " from " ~ backup);
+    }
+    catch (Exception error)
+        appendLine(logPath, "could not restore the exe: " ~ error.msg);
+}
+
 private bool runBuild(in Options options)
 {
     File log;
@@ -431,19 +449,53 @@ private bool runBuild(in Options options)
         }
         catch (Exception) {}
     }
+    // Keep a copy of the good exe; a failed link can leave the target empty.
+    const backup = options.exePath ~ ".bak";
+    bool haveBackup;
+    if (options.exePath.length > 0 && exists(options.exePath))
+    {
+        try
+        {
+            copy(options.exePath, backup);
+            haveBackup = true;
+        }
+        catch (Exception error)
+            appendLine(options.logPath,
+                "could not back up the exe: " ~ error.msg);
+    }
+    int code;
     try
     {
         auto pid = spawnProcess(["dub", "build", "--force",
             "--build=" ~ options.buildType],
             stdin, hasLog ? log : stdout, hasLog ? log : stderr, null,
             Config.none, options.packageDir);
-        return wait(pid) == 0;
+        code = wait(pid);
     }
     catch (Exception error)
     {
         appendLine(options.logPath, "dub could not be started: " ~ error.msg);
+        restoreExe(options.exePath, backup, haveBackup, options.logPath);
         return false;
     }
+    // A zero exit code is not enough: the target must exist and be non-empty.
+    if (code != 0 || options.exePath.length == 0 ||
+        !exists(options.exePath) || getSize(options.exePath) == 0)
+    {
+        appendLine(options.logPath, "build failed (exit " ~ to!string(code) ~
+            "; exe " ~ (options.exePath.length == 0 ? "unspecified"
+                : (exists(options.exePath)
+                    ? to!string(getSize(options.exePath)) ~ " bytes" : "missing")) ~
+            "); restoring the previous binary");
+        if (options.exePath.length > 0 && exists(options.exePath))
+        {
+            try remove(options.exePath);
+            catch (Exception) {}
+        }
+        restoreExe(options.exePath, backup, haveBackup, options.logPath);
+        return false;
+    }
+    return true;
 }
 
 private bool launchApp(in Options options)

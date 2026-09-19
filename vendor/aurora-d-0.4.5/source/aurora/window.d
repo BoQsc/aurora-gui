@@ -917,7 +917,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     override bool onNativeClientControlAt(Point position)
     {
-        auto target = targetAt(position);
+        // Use the hover-aware test: a transient popup's overlay spans the whole
+        // root but is only interactive over its panel (hoverTransparentAt), and
+        // its full-window rectangle must not hide an edge control underneath it
+        // from `claimsBorderlessResizeEdge`. Otherwise an open flyout made the
+        // scrollbar's track resize the window instead of being clickable.
+        auto target = _root is null ? null : _root.hitTestHover(position);
         while (target !is null)
         {
             if (target.claimsBorderlessResizeEdge(

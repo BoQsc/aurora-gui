@@ -144,3 +144,96 @@ Before considering a taskbar/tray/icon feature done:
 7. Graceful degradation on API/handle failure.
 8. Regression test + `headless-smoke` green.
 9. Rebuilt, old instance killed, exactly one relaunched, build stamp verified.
+
+## 10. Signed/unsigned index traps (`indexOf` / `lastIndexOf` / ternary)
+
+`std.string.indexOf`/`lastIndexOf` return **`ptrdiff_t`**, and `-1` means "not
+found". The trap is the ternary: **D's common type of `size_t` and `ptrdiff_t` is
+`ulong`** (verified: `typeof(true ? size_t(0) : ptrdiff_t(-1))` is `ulong`).
+
+```d
+// WRONG: `at` is ulong, so `at < 0` is dead and -1 becomes size_t.max.
+// The slice/concatenation below then copies size_t.max bytes -> access
+// violation inside msvcr120!memcpy with R8 = 0xFFFFFFFFFFFFFFFF.
+const at = oldBlock.length == 0
+    ? searchPos : content.indexOf(oldBlock, searchPos);
+if (at < 0) { ... }                                  // never taken
+content = content[0 .. at] ~ block ~ content[at + ... .. $];
+```
+
+Rule: never let the signed result meet an unsigned value in one expression. Keep
+it signed, test it, **then** widen:
+
+```d
+const found = content.indexOf(oldBlock, searchPos);
+if (found < 0) { /* not found */ return; }
+const at = cast(size_t) found;
+```
+
+This bug class has recurred (the markdown inline-link parser and the
+`apply_patch` `flushHunk`). Whenever an `indexOf`/`lastIndexOf` result feeds a
+slice, add a regression test that passes a needle which is **absent** (or a
+stray bracket, or a patch hunk with no matching context). Existing guards:
+`markdown.d` `verifyStrayBracketParsing`, `tools_test.d` "apply_patch reports a
+missing context instead of crashing".
+
+## 11. Crash triage without a debugger
+
+- The app's own `logs/dumps/*.dmp` may be 0 bytes (the in-process
+  `MiniDumpWriteDump` can fail on the dying thread). Do not stop there: Windows
+  writes **full-memory dumps** to `%LOCALAPPDATA%\CrashDumps\<exe>.<pid>.dmp`.
+- `scripts/analyze-crashdump.py <dump> <exe>` prints the exception code/address,
+  the faulting module + offset, the general-purpose registers (for a `memcpy`
+  fault read `RCX`/`RDX` as the buffers and `R8` as the length), and a
+  RBP-walked stack symbolized through the sibling `.pdb` with `dbghelp`
+  `SymFromAddr` (the legacy `SymGetSymFromAddr64` misses non-public symbols).
+- The app's `logs/native-crash.log` records the last activity
+  (`noteActivity`), e.g. `rebuild slot=… role=assistant toolCalls=1`. Combine it
+  with the dump stack to name the exact source line. A fault address inside
+  `msvcr120`/`ntdll` is almost always a bad length handed to `memcpy`, not a
+  bug in that DLL.
+- The `last-activity` line and the fault address repeat across runs when the
+  input is deterministic; "it crashed at the same address again" means the fix
+  did not touch that path - keep the evidence, do not add another guess.
+
+## 12. Self-modifying apps: never rebuild or kill from inside
+
+Aurora OpenCode is an agent that edits its own source. The agent process and the
+app being rebuilt are the same process:
+
+- Running `dub build`, `taskkill`, or the app's **Rebuild** action from inside
+  replaces/terminates the process hosting the session. The supervisor then
+  relaunches it and the session is lost - this is what produced "you keep
+  killing yourself" and hundreds of restarts.
+- The safe loop is external: **edit source -> build -> kill the old instance ->
+  launch exactly one**. The in-app agent should make source-only edits and let
+  an external operator (or the deterministic rebuilder, which waits for the
+  file lock) do the build.
+- The linker truncates the exe before writing it. `aurora-cli.d` and
+  `rebuilder.d` both back the exe up before building and restore it if the link
+  fails or leaves a 0-byte file. Do not build directly against a running exe,
+  and do not remove those guards.
+- A crash loop is diagnosable from the artifacts above; adding speculative
+  guards to a crash without the fault stack wastes rebuild cycles (and each
+  rebuild kills the session). Get the stack first.
+
+## 13. Restored-session identity and reload safety
+
+- The state directory holds several snapshots of the same conversations
+  (`sessions.json`, `sessions.recovery.json`, `sessions.json.bak`). Merge them
+  by a **stable identity**, not `title + first content`: every untitled chat is
+  `"New chat"`, and a scripted run can be byte-identical. A weak key merges
+  independent conversations and drops one, which shifts every later index.
+- Message ids are minted once and copied into every snapshot; use the first
+  message id (content only as a fallback for legacy files). Repair the message
+  graph (`ensureMessageGraph`) **after** merging, never during parsing -
+  repairing first mints ids for legacy messages and makes the same file look
+  like two conversations.
+- After a restore that can change the session count, clamp `_current`
+  (`< 0 || >= _sessions.length -> 0`, or `-1` when empty). A stale index faults
+  on `_sessions[_current]`.
+- Skip quarantined `.bad` / `.preserve-*` files when scanning for snapshots;
+  they are known-unreadable and only reproduce the same error every launch.
+- Test helpers that append messages must call `markDirty()` exactly like the
+  production path, or the immediate recovery snapshot goes stale and the reload
+  test is not testing production behaviour.

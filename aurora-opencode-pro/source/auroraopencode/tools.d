@@ -320,6 +320,14 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "or approves them.\n");
     builder.put("- If you notice unexpected changes you did not make, stop " ~
         "and ask the user how to proceed.\n");
+    builder.put("- This application can edit its own source, so the process " ~
+        "running this session is the same one a build or a process kill would " ~
+        "replace or terminate. NEVER run a build, rebuild, or stop command " ~
+        "(`dub build`, `taskkill`, `Stop-Process`, or killing " ~
+        "`aurora-opencode-pro`/`aurora-rebuilder`): ending that process ends " ~
+        "your own session and the supervisor relaunches it, forcing the user " ~
+        "to restart you. Make source-only edits and let the user rebuild " ~
+        "externally.\n");
 
     builder.put("\n## Plan tool\n");
     builder.put("Use the `update_plan` tool to track multi-step work.\n");
@@ -1535,13 +1543,26 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 if (oldLines.length == 0 && newLines.length == 0) return;
                 const oldBlock = joinPatchLines(oldLines);
                 const newBlock = joinPatchLines(newLines);
-                const at = oldBlock.length == 0
-                    ? searchPos : content.indexOf(oldBlock, searchPos);
-                if (at < 0)
+                // `content.indexOf` returns `ptrdiff_t` and -1 means "not
+                // found". Keep it signed until it is known to be valid: mixing
+                // it with the unsigned `searchPos` in one expression makes the
+                // result `ulong`, so -1 becomes size_t.max, the `at < 0` test is
+                // dead, and the slice below runs off the end into a
+                // size_t.max-length concatenation (the msvcr120 `memcpy` access
+                // violation). Check the signed result first, then widen.
+                size_t at;
+                if (oldBlock.length == 0)
+                    at = searchPos;
+                else
                 {
-                    hunkFailed = true;
-                    failReason = "patch context not found";
-                    return;
+                    const found = content.indexOf(oldBlock, searchPos);
+                    if (found < 0)
+                    {
+                        hunkFailed = true;
+                        failReason = "patch context not found";
+                        return;
+                    }
+                    at = cast(size_t) found;
                 }
                 content = content[0 .. at] ~ newBlock ~
                     content[at + oldBlock.length .. $];

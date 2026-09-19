@@ -26,6 +26,12 @@
       "mainSourceFile": "source/app.d"
     },
     {
+      "name": "newbuild",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-pro-new",
+      "mainSourceFile": "source/app.d"
+    },
+    {
       "name": "rebuilder",
       "targetType": "executable",
       "targetName": "aurora-rebuilder",

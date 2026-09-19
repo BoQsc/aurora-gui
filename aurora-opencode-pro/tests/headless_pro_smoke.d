@@ -1555,6 +1555,10 @@ int main(string[] args)
         assert(root.turnCompletionTextsForTesting().length == 0,
             "opted-out turn still received a Worked-for separator");
         writeln("Worked-for separator is off unless enabled in Settings");
+        // `workedForCheckboxForTesting` opens the Settings dialog to reach the
+        // checkbox; close it, or its full-window overlay consumes the real
+        // pointer clicks the later tests dispatch.
+        root.dismissPopupForTesting();
     }
 
     // A quick direct response did not perform reasoning or tool work. Matching
@@ -2641,8 +2645,8 @@ int main(string[] args)
     // predicates are.
     {
         auto restartButton = requireWidget!Button(root, "oc-restart");
-        assert(restartButton.text() == "Restart"d,
-            "Restart button must be labelled Restart");
+        assert(restartButton.text() == "Rebuild"d,
+            "Restart button must be labelled Rebuild");
         assert(!root.restartPendingForTesting(),
             "a restart must not be pending before one is requested");
         // This test binary is built into build\ inside the package, so the
