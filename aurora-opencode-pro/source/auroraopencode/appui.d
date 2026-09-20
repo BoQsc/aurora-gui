@@ -4593,7 +4593,7 @@ public final class OpenCodeRoot : VBox
     // rounds 27/83/113 while the model was still editing). The doom-loop guard
     // below catches genuine repetition; this is only a backstop against a truly
     // runaway turn, so keep it high.
-    private static immutable int maxToolRounds = 150;
+    private static immutable int maxToolRounds = 300;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Doom-loop recovery (mirrors the original opencode app): when the model
@@ -4619,12 +4619,6 @@ public final class OpenCodeRoot : VBox
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
-    // After the checkpoint, allow two genuinely focused lookups. A third
-    // read/search request without an implementation step is drift, not useful
-    // exploration, and is finalized through the same one-retry guard used by
-    // verification. This keeps long investigations possible while preventing
-    // the 100+ repeated-read loop seen in production.
-    private static immutable int postCheckpointExplorationCalls = 2;
     private static immutable int maxVerificationAttempts = 3;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
@@ -7593,63 +7587,6 @@ public final class OpenCodeRoot : VBox
         return found;
     }
 
-    private static int explorationCountAfterCheckpoint(
-        const ref ChatSession session)
-    {
-        int count = -1;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal)
-            {
-                count = -1;
-                continue;
-            }
-            if (message.internal && message.content.length >= 23 &&
-                message.content[0 .. 23] == "Exploration checkpoint:")
-            {
-                count = 0;
-                continue;
-            }
-            if (count >= 0 && message.role == "tool" && !message.failed &&
-                isReadOnlyExplorationTool(message.toolName))
-                ++count;
-        }
-        return count < 0 ? 0 : count;
-    }
-
-    private static bool onlyExplorationCalls(
-        const(OpenCodeToolCall)[] calls)
-    {
-        if (calls.length == 0) return false;
-        foreach (call; calls)
-            if (!isReadOnlyExplorationTool(call.name)) return false;
-        return true;
-    }
-
-    /// Detect successful observations repeated anywhere in the current user
-    /// turn, not only in adjacent model responses. Interleaving a grep between
-    /// identical reads must not reset loop protection.
-    private static bool repeatsKnownObservation(const ref ChatSession session,
-        const(OpenCodeToolCall)[] calls)
-    {
-        foreach (call; calls)
-        {
-            if (!isReadOnlyExplorationTool(call.name)) continue;
-            int matches;
-            foreach_reverse (index; activeMessagePath(session))
-            {
-                const message = session.messages[index];
-                if (message.role == "user" && !message.internal) break;
-                if (message.role == "tool" && !message.failed &&
-                    message.toolName == call.name &&
-                    message.toolArgs == call.arguments && ++matches >= 2)
-                    return true;
-            }
-        }
-        return false;
-    }
-
     private static bool hasUnnecessaryPostVerificationCall(
         const(OpenCodeToolCall)[] calls)
     {
@@ -7806,32 +7743,6 @@ public final class OpenCodeRoot : VBox
                 "rerun the same checks. Make a concrete corrective edit if " ~
                 "the failure identifies one; otherwise report the exact " ~
                 "verification blocker to the user now.");
-            return;
-        }
-
-        if (repeatsKnownObservation(*session, event.toolCalls))
-        {
-            skipToolsAndFinalize(*session, event.toolCalls,
-                "Tool call skipped: this successful observation was already " ~
-                    "collected twice in the current turn.",
-                "The requested read/search has already succeeded twice. Do " ~
-                    "not repeat or rephrase exploration. Use the evidence " ~
-                    "already collected to make the smallest safe change, or " ~
-                    "report the one concrete blocker now.");
-            return;
-        }
-
-        if (hasExplorationCheckpoint(*session) &&
-            explorationCountAfterCheckpoint(*session) >=
-                postCheckpointExplorationCalls &&
-            onlyExplorationCalls(event.toolCalls))
-        {
-            skipToolsAndFinalize(*session, event.toolCalls,
-                "Tool call skipped: the focused post-checkpoint exploration " ~
-                    "allowance is exhausted.",
-                "Exploration is complete. Stop reading and searching. Apply " ~
-                    "the smallest correct change using the evidence already " ~
-                    "collected, or report the exact missing fact as a blocker.");
             return;
         }
 
