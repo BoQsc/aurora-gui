@@ -878,11 +878,17 @@ final class OpenCodeClient
         JSONValue streamOptions;
         streamOptions["include_usage"] = true;
         root["stream_options"] = streamOptions;
-        // CommandCode rejects "none", while current llama-server accepts it
-        // and uses it to disable thinking in hybrid Qwen templates. Keep the
-        // hosted DeepSeek behavior unchanged and make the local checkbox exact.
-        root["reasoning_effort"] = thinking ? "high" :
-            (isLoopbackApiBaseUrl(baseUrl) ? "none" : "low");
+        // `low` still enables reasoning on hosted DeepSeek/OpenCode routes.
+        // That made an unchecked Thinking box misleading and could make the
+        // next request fail when a provider demanded its hidden
+        // `reasoning_content` back. Local llama-server accepts `none`; hosted
+        // gateways such as CommandCode may reject it, so omit the option there
+        // when thinking is disabled and let the provider's non-reasoning
+        // default apply.
+        if (thinking)
+            root["reasoning_effort"] = "high";
+        else if (isLoopbackApiBaseUrl(baseUrl))
+            root["reasoning_effort"] = "none";
         return root.toString();
     }
 

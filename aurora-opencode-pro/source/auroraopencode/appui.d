@@ -5814,6 +5814,15 @@ public final class OpenCodeRoot : VBox
         prompt.put("\n\n# Durable Task State\n");
         prompt.put("Objective: " ~ (session.objective.length > 0
             ? session.objective : "(not set)") ~ "\n");
+        string currentRequest;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+                currentRequest = message.content;
+        }
+        if (currentRequest.length > 0 && currentRequest != session.objective)
+            prompt.put("Current request: " ~ currentRequest ~ "\n");
         prompt.put("Status: " ~ (session.taskStatus.length > 0
             ? session.taskStatus : "active") ~ "\n");
         prompt.put("Verification: " ~ (session.verificationStatus.length > 0
@@ -6006,6 +6015,7 @@ public final class OpenCodeRoot : VBox
             result.content = reason;
             result.toolCallId = call.id;
             result.toolName = call.name;
+            result.failed = true;
             appendMessage(session, result);
         }
     }
@@ -7460,10 +7470,55 @@ public final class OpenCodeRoot : VBox
         return false;
     }
 
+    private static bool hasInternalInstructionSinceUser(
+        const ref ChatSession session, string instruction)
+    {
+        const path = activeMessagePath(session);
+        foreach_reverse (index; path)
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal) break;
+            if (message.internal && message.content == instruction) return true;
+        }
+        return false;
+    }
+
+    /// A guard may ask the model once to stop calling tools and provide its
+    /// answer. If the very next response requests tools again, finish locally
+    /// instead of recursively issuing the same request forever.
+    private void finishRepeatedGuard(ref ChatSession session, string result)
+    {
+        ChatMessage finalMessage;
+        finalMessage.role = "assistant";
+        finalMessage.content = session.verificationStatus == "passed"
+            ? "Finished. The focused verification already passed; Aurora " ~
+                "stopped an additional unnecessary tool request."
+            : "Stopped the repeated tool request. " ~ result;
+        finalMessage.time = currentTimestamp();
+        appendMessage(session, finalMessage);
+        _pendingToolCalls.length = 0;
+        _liveToolCalls.length = 0;
+        _preparingToolCalls.length = 0;
+        _pendingToolResults = 0;
+        session.taskStatus = session.verificationStatus == "passed"
+            ? "completed" : "blocked";
+        publishThreadUpdated(session);
+        finishAssistantMessage(false);
+        _activeRequestId = 0;
+        _activeRequestSession = -1;
+        updateSessionList(false);
+    }
+
     private void skipToolsAndFinalize(ref ChatSession session,
         const(OpenCodeToolCall)[] calls, string result, string instruction)
     {
+        const repeated = hasInternalInstructionSinceUser(session, instruction);
         appendSkippedToolResults(session, calls, result);
+        if (repeated)
+        {
+            finishRepeatedGuard(session, result);
+            return;
+        }
         ChatMessage finalize;
         finalize.role = "user";
         finalize.internal = true;
@@ -7574,14 +7629,18 @@ public final class OpenCodeRoot : VBox
         if (allReadOnlyExploration(event.toolCalls, *session) &&
             readOnlyExplorationCount(*session) >= explorationHardLimitCalls)
         {
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the read-only exploration budget is " ~
-                "exhausted; make the requested change or report a blocker.");
-            appendExplorationCheckpoint(*session, true);
+            const reason = "Tool call skipped: the read-only exploration " ~
+                "budget is exhausted; make the requested change or report a " ~
+                "blocker.";
+            const instruction = "Exploration checkpoint: the read-only " ~
+                "evidence budget is exhausted. Further read/search calls will " ~
+                "be rejected until you make a file-changing tool call. Use " ~
+                "the evidence already present to edit now, or report one " ~
+                "concrete blocker.";
+            skipToolsAndFinalize(*session, event.toolCalls, reason,
+                instruction);
             _messagesScroll.follow = true;
             _messagesScroll.invalidate();
-            if (!_toolContinuationPaused)
-                startChatRequest(sessionIndex, false);
             return;
         }
 
@@ -8160,11 +8219,17 @@ public final class OpenCodeRoot : VBox
         }
         session.model = _settings.model;
         session.thinking = _settings.thinking;
-        const newTask = session.objective.length == 0 ||
+        // The objective describes the thread's durable purpose. Short
+        // follow-ups such as "launch it" or "check the log" refine that work;
+        // replacing the objective with them made compaction erase why the work
+        // existed. A completed/blocked turn still gets a fresh checklist and
+        // verification state, while the original objective remains stable.
+        const resetTaskState = session.objective.length == 0 ||
             session.taskStatus == "completed" || session.taskStatus == "blocked";
-        if (newTask)
-        {
+        if (session.objective.length == 0)
             session.objective = text;
+        if (resetTaskState)
+        {
             session.taskSteps.length = 0;
             session.verificationStatus = "not_required";
             if (_settings.toolsEnabled && likelyChangeRequest(text))
@@ -8256,11 +8321,31 @@ public final class OpenCodeRoot : VBox
     private static ChatRequestMessage[] collapseCompletedToolHistory(
         ChatRequestMessage[] messages)
     {
-        enum size_t keepRecentToolGroups = 8;
         size_t groupCount;
-        foreach (m; messages)
+        size_t lastInstruction;
+        bool haveInstruction;
+        foreach (i, m; messages)
+        {
+            if (m.role == "user" || m.role == "system" ||
+                m.role == "developer")
+            {
+                lastInstruction = i;
+                haveInstruction = true;
+            }
             if (m.role == "assistant" && m.toolCalls.length > 0)
                 ++groupCount;
+        }
+        // Only an actively continuing tool round needs its exact envelope. A
+        // later user/control instruction starts a new round, so every earlier
+        // completed envelope can be checkpointed. Keeping eight old groups was
+        // both expensive and fragile: one legacy group with missing reasoning
+        // could make the provider reject an otherwise unrelated follow-up.
+        size_t groupsAfterInstruction;
+        foreach (i, m; messages)
+            if (m.role == "assistant" && m.toolCalls.length > 0 &&
+                (!haveInstruction || i > lastInstruction))
+                ++groupsAfterInstruction;
+        const size_t keepRecentToolGroups = groupsAfterInstruction > 0 ? 1 : 0;
         if (groupCount <= keepRecentToolGroups) return messages;
 
         const collapseCount = groupCount - keepRecentToolGroups;
@@ -8287,6 +8372,7 @@ public final class OpenCodeRoot : VBox
                 break;
             }
 
+        string[] concreteOutcomes;
         string[] failures;
         size_t groupsSeen;
         foreach (m; messages)
@@ -8297,9 +8383,28 @@ public final class OpenCodeRoot : VBox
                 continue;
             }
             if (groupsSeen > 0 && groupsSeen <= collapseCount &&
-                m.role == "tool" && m.content.length >= 6 &&
-                m.content[0 .. 6] == "Error:" && failures.length < 3)
-                failures ~= checkpointSnippet(m.content);
+                m.role == "tool")
+            {
+                const excerpt = checkpointSnippet(m.content, 700);
+                if (excerpt.length == 0) continue;
+                const lower = excerpt.toLower();
+                const failed = lower.canFind("error") ||
+                    lower.canFind("failed") ||
+                    lower.canFind("cannot") ||
+                    lower.canFind("tool call skipped") ||
+                    lower.canFind("exited with code");
+                if (failed)
+                {
+                    failures ~= excerpt;
+                    if (failures.length > 6) failures = failures[1 .. $];
+                }
+                else
+                {
+                    concreteOutcomes ~= excerpt;
+                    if (concreteOutcomes.length > 12)
+                        concreteOutcomes = concreteOutcomes[1 .. $];
+                }
+            }
         }
 
         auto noteText = appender!string();
@@ -8312,9 +8417,13 @@ public final class OpenCodeRoot : VBox
             if (i > 0) noteText.put(", ");
             noteText.put(name ~ " x" ~ to!string(callCounts[name]));
         }
-        noteText.put(".\n\n## Work State\n### Completed\n- The tool " ~
-            "rounds listed above completed and remain reflected in the current " ~
-            "workspace.\n\n### Active\n- Continue from the retained recent " ~
+        noteText.put(".\n\n## Work State\n### Completed\n");
+        if (concreteOutcomes.length == 0)
+            noteText.put("- No concrete successful outcome was retained.\n");
+        else
+            foreach (outcome; concreteOutcomes)
+                noteText.put("- " ~ outcome ~ "\n");
+        noteText.put("\n### Active\n- Continue from the retained recent " ~
             "messages and tool results.\n\n### Blocked\n");
         if (failures.length == 0)
             noteText.put("- (none recorded in the checkpointed tool rounds)\n");
@@ -8418,16 +8527,25 @@ public final class OpenCodeRoot : VBox
                 remove[i] = true;
                 const excerpt = checkpointSnippet(m.content);
                 if (excerpt.length == 0) continue;
-                if (m.role == "user" && userDetails.length < 8)
+                if (m.role == "user")
+                {
                     userDetails ~= excerpt;
-                else if (m.role == "assistant" && completed.length < 8)
+                    if (userDetails.length > 8)
+                        userDetails = userDetails[1 .. $];
+                }
+                else if (m.role == "assistant")
                 {
                     completed ~= excerpt;
+                    if (completed.length > 8)
+                        completed = completed[1 .. $];
                     const lower = excerpt.toLower();
-                    if (blockers.length < 4 &&
-                        (lower.canFind("error") || lower.canFind("cannot") ||
-                         lower.canFind("couldn't") || lower.canFind("blocked")))
+                    if (lower.canFind("error") || lower.canFind("cannot") ||
+                        lower.canFind("couldn't") || lower.canFind("blocked"))
+                    {
                         blockers ~= excerpt;
+                        if (blockers.length > 4)
+                            blockers = blockers[1 .. $];
+                    }
                 }
             }
 

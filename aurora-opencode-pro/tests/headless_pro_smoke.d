@@ -881,7 +881,7 @@ int main(string[] args)
 
     // Compaction: old completed tool envelopes are structurally collapsed even
     // before the hard context limit. Replaying every stale call on every round
-    // is quadratic; only the newest eight exact pairs need to remain.
+    // is quadratic; only the actively continuing newest pair needs to remain.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["big job"]);
     import std.array : replicate;
@@ -923,12 +923,17 @@ int main(string[] args)
                 "compaction broke tool-call/reply pairing");
         }
     }
-    assert(toolCount == 8,
-        "compaction did not retain exactly the newest eight tool groups");
+    assert(toolCount == 1,
+        "compaction did not retain exactly the active newest tool group");
     assert(compactNotes == 1,
         "compaction did not replace old tool groups with one control note");
     assert(sawPair, "compaction dropped the tool-call messages");
     assert(slimBytes < fatBytes, "compaction did not shrink the request");
+    root.addConversationForTesting(["user"], ["Now verify the result."]);
+    auto followupHistory = root.compactedRequestMessagesForTesting(8_000);
+    foreach (m; followupHistory)
+        assert(m.toolCalls.length == 0 && m.role != "tool",
+            "new user turn replayed a completed tool/reasoning envelope");
     writeln("Compaction bounds old tool history and preserves recent pairing");
 
     // Oversized ordinary dialogue is summarized into one structured handoff,
@@ -2563,6 +2568,11 @@ int main(string[] args)
     assert(root.lastToolResultForTesting().indexOf(
         "exploration budget is exhausted") >= 0,
         "run/Python bypassed the hard exploration limit");
+    assert(root.messageRoleForTesting(root.totalMessageCountForTesting() - 1) ==
+        "assistant",
+        "repeated hard-limit instruction did not finish locally");
+    assert(root.taskStatusForTesting() == "blocked",
+        "repeated exploration guard did not leave a bounded blocked turn");
     const exhaustedExplorationCount = root.explorationCountForTesting();
     // A failed patch and a comment-only edit must not reset the request-wide
     // evidence count or falsely satisfy the implementation/completion gate.

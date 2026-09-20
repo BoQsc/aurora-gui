@@ -214,6 +214,24 @@ int main()
     auto bashResult = executeTool(makeCall("bash",
         `{"command":"echo aurora-tool-echo"}`), dir);
     assert(!bashResult.failed, "bash failed: " ~ bashResult.output);
+
+    version (Windows)
+    {
+        auto nonzero = executeTool(makeCall("bash",
+            `{"command":"exit /b 7","shell":"cmd"}`), dir);
+        assert(nonzero.failed,
+            "non-zero command exit was incorrectly recorded as success");
+        assert(nonzero.output.indexOf("code 7") >= 0,
+            "non-zero command output omitted the exit code: " ~
+            nonzero.output);
+    }
+    else
+    {
+        auto nonzero = executeTool(makeCall("bash",
+            `{"command":"exit 7","shell":"sh"}`), dir);
+        assert(nonzero.failed,
+            "non-zero command exit was incorrectly recorded as success");
+    }
     assert(bashResult.output.indexOf("aurora-tool-echo") >= 0,
         "bash echo output missing: " ~ bashResult.output);
 

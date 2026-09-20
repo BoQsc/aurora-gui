@@ -1811,11 +1811,17 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     auto stopwatch = StopWatch(AutoStart.yes);
     bool timedOut;
     bool cancelled;
+    int exitCode;
     // Poll rather than blocking for the whole timeout so a stop request can
     // terminate a long-running command promptly instead of waiting it out.
     while (true)
     {
-        if (waitTimeout(pid, msecs(100)).terminated) break;
+        const waited = waitTimeout(pid, msecs(100));
+        if (waited.terminated)
+        {
+            exitCode = waited.status;
+            break;
+        }
         if ((cancellation !is null && cancellation.cancelled()) ||
             (cancellation is null && atomicLoad(_commandsCancelled)))
         {
@@ -1853,8 +1859,11 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         output = (output.length > 0 ? output ~ "\n" : "") ~
             "\n…(process timed out after " ~ to!string(timeoutMs) ~
             "ms and was killed)";
+    else if (exitCode != 0)
+        output = (output.length > 0 ? output ~ "\n" : "") ~
+            "Process exited with code " ~ to!string(exitCode) ~ ".";
     if (output.length == 0) output = "(no output)";
-    return tuple(output, timedOut || cancelled);
+    return tuple(output, timedOut || cancelled || exitCode != 0);
 }
 
 private bool tryOpenOutput(string outPath, out File outFile, string toolName)

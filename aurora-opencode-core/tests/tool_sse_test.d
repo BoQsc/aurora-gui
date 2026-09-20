@@ -137,6 +137,12 @@ private void assertPlainBody()
     assert(("tools" in value.object) is null, "Plain chat sent tools");
     assert(("parallel_tool_calls" in value.object) is null,
         "Plain chat sent a tool-only request option");
+    assert(value.object["reasoning_effort"].str == "high",
+        "Thinking=on did not request hosted reasoning");
+    auto thinkingOff = parseJSON(client.buildBodyForTesting([user], null,
+        "deepseek/deepseek-v4.1-flash", false));
+    assert(("reasoning_effort" in thinkingOff.object) is null,
+        "Thinking=off still enabled hosted reasoning");
     writeln("Plain chat body stays tool-free");
     client.closeSession();
 }

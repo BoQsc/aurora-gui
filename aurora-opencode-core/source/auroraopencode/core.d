@@ -894,6 +894,7 @@ public Settings loadSettings()
 {
     Settings settings;
     bool apiKeyWasConfigured;
+    int settingsVersion;
     const path = buildPath(opencodeStateDirectory(), "settings.json");
     if (exists(path))
     {
@@ -902,6 +903,9 @@ public Settings loadSettings()
             auto value = parseJSON(readText(path));
             if (value.type == JSONType.object)
             {
+                if (auto found = "settingsVersion" in value.object)
+                    if (found.type == JSONType.integer)
+                        settingsVersion = cast(int) found.integer;
                 if (auto found = "baseUrl" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.baseUrl = found.str;
@@ -939,6 +943,13 @@ public Settings loadSettings()
                 if (auto found = "workspace" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.workspace = found.str;
+                // Version 2 makes native, structured tools the reliable
+                // default for existing installations too. Older builds wrote
+                // `legacyTools: true` by default, which kept steering models
+                // into fragile shell quoting on Windows. Users can opt back in
+                // from Settings after this one-time migration.
+                if (settingsVersion < 2)
+                    settings.legacyTools = false;
             }
         }
         catch (Exception error)
@@ -985,6 +996,7 @@ public void saveSettings(const ref Settings settings)
 {
     ensureStateDirectory();
     JSONValue root;
+    root["settingsVersion"] = 2;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
     root["model"] = settings.model;
