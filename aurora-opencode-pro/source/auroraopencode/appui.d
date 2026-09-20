@@ -9313,7 +9313,11 @@ public final class OpenCodeRoot : VBox
         hint.setColor(opencodeMuted);
 
         auto filter = new CheckBox("Current conversation only");
-        filter.setChecked(false, false);
+        filter.setId("oc-changes-filter");
+        // Default to the active conversation's changes: the common case is
+        // reverting work this chat just did, and the box can still be cleared
+        // to see the whole workspace.
+        filter.setChecked(true, false);
         content.add(filter);
         auto header = content.add(new Label(
             "File                                      Change · Diff · Time · Conversation"));
