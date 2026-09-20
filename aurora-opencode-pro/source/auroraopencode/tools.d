@@ -198,7 +198,8 @@ private OpenCodeToolDef webFetchToolDefinition()
         "Fetch an HTTP(S) URL and return the response body as text. Use this " ~
         "to read a web page, API endpoint, or JSON document that is not in the " ~
         "workspace. Redirects are followed. HTML is converted to readable " ~
-        "text unless `raw` is true; large bodies are truncated.",
+        "text unless `raw` is true, with script, style and SVG bodies " ~
+        "dropped; large bodies are truncated.",
         `{"type":"object","properties":{"url":{"type":"string","description":"Absolute http(s) URL to fetch"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 30000)"},"raw":{"type":"boolean","description":"Return the response body untouched instead of converting HTML to text"}},"required":["url"]}`
     );
 }
@@ -1108,7 +1109,9 @@ private ToolExecution runProgramTool(string args, string workspace,
 /// `curl` and return the body as text. `curl` ships with Windows 10+ and is
 /// present on almost every Unix, so a fetch needs no shell and no URL
 /// quoting. HTML is reduced to readable text unless `raw` is set, and the
-/// result is truncated like every other tool's output.
+/// result is truncated like every other tool's output. The reducer skips
+/// script/style/SVG bodies, so a page whose inlined CSS is larger than its
+/// text still shows its content inside that budget.
 private ToolExecution runWebFetch(string args, string workspace,
     ToolCancellation cancellation = null)
 {
@@ -1194,14 +1197,22 @@ private ToolExecution runWebFetch(string args, string workspace,
 /// Reduce an HTML document to readable plain text: tags are dropped, a small
 /// set of common entities is decoded, and whitespace runs are collapsed. This
 /// is deliberately tiny - enough to make a fetched page legible, not an HTML
-/// parser. Script/style bodies survive as text, which is acceptable for a
-/// first-pass fetch.
+/// parser. The bodies of non-content elements (`script`, `style`, `noscript`,
+/// `svg`, `template`) and HTML comments are dropped: on a single-file page the
+/// inlined CSS is many times larger than the text, so keeping it would spend
+/// the whole output cap on styles and truncate away the actual content.
 private string htmlToText(string html)
 {
+    static immutable string[] nonContentElements =
+        ["script", "style", "noscript", "svg", "template"];
+
     auto builder = appender!string();
     string pending;
+    string tagName;
     bool inTag;
     bool maybeEntity;
+    bool inComment;
+    string skipping;
 
     void flushEntity()
     {
@@ -1221,15 +1232,66 @@ private string htmlToText(string html)
         maybeEntity = false;
     }
 
-    foreach (ch; html)
+    size_t index;
+    while (index < html.length)
     {
+        const ch = html[index];
+
+        // Inside a comment: drop everything up to the closing `-->`.
+        if (inComment)
+        {
+            if (ch == '-' && index + 2 < html.length &&
+                html[index + 1] == '-' && html[index + 2] == '>')
+            {
+                inComment = false;
+                index += 3;
+                continue;
+            }
+            ++index;
+            continue;
+        }
+
+        // Inside a non-content element: drop everything up to its close tag.
+        if (skipping.length > 0)
+        {
+            const hasClose = ch == '<' &&
+                index + 2 + skipping.length <= html.length &&
+                html[index + 1] == '/' &&
+                toLower(html[index + 2 .. index + 2 + skipping.length]) == skipping;
+            if (hasClose)
+            {
+                const close = indexOf(html[index .. $], ">");
+                index = close < 0 ? html.length
+                    : index + cast(size_t) close + 1;
+                skipping = "";
+                builder.put(' ');
+                continue;
+            }
+            ++index;
+            continue;
+        }
+
         if (inTag)
         {
             if (ch == '>')
             {
                 inTag = false;
                 builder.put(' ');
+                string lower = toLower(strip(tagName));
+                if (lower.length > 0 && lower[0] != '/' && lower[$ - 1] != '/')
+                {
+                    size_t nameEnd;
+                    while (nameEnd < lower.length && lower[nameEnd] != ' ' &&
+                        lower[nameEnd] != '\t' && lower[nameEnd] != '\n' &&
+                        lower[nameEnd] != '\r' && lower[nameEnd] != '/')
+                        ++nameEnd;
+                    if (nonContentElements.canFind(lower[0 .. nameEnd]))
+                        skipping = lower[0 .. nameEnd];
+                }
             }
+            else
+                tagName ~= ch;
+            ++index;
             continue;
         }
         if (maybeEntity)
@@ -1237,20 +1299,37 @@ private string htmlToText(string html)
             if (ch == ';')
             {
                 flushEntity();
+                ++index;
                 continue;
             }
             if (ch != '&' && ch != '<' && ch != ' ' && pending.length < 10)
             {
                 pending ~= ch;
+                ++index;
                 continue;
             }
             builder.put("&" ~ pending);
             pending = "";
             maybeEntity = false;
         }
-        if (ch == '<') { inTag = true; continue; }
-        if (ch == '&') { maybeEntity = true; pending = ""; continue; }
+
+        if (ch == '<')
+        {
+            if (index + 3 < html.length && html[index + 1] == '!' &&
+                html[index + 2] == '-' && html[index + 3] == '-')
+            {
+                inComment = true;
+                index += 4;
+                continue;
+            }
+            inTag = true;
+            tagName = "";
+            ++index;
+            continue;
+        }
+        if (ch == '&') { maybeEntity = true; pending = ""; ++index; continue; }
         builder.put(ch);
+        ++index;
     }
     if (maybeEntity)
         builder.put("&" ~ pending);

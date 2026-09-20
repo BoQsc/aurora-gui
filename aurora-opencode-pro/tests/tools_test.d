@@ -661,8 +661,10 @@ int main()
         toolSteeringPrompt(false).indexOf("at most three") < 0,
         "Steering prompt must not impose artificial call quotas");
     assert(toolSteeringPrompt(false).indexOf(
-        "Do not finish with pending checklist items") >= 0,
-        "Steering prompt must enforce the durable completion contract");
+        "Skip a plan for direct answers, quick exploration") >= 0 &&
+        toolSteeringPrompt(false).indexOf(
+            "A final prose answer ends the turn") >= 0,
+        "Steering prompt must scope plans and define a stopping condition");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
         "Dynamic environment should follow stable instructions for caching");
@@ -912,6 +914,81 @@ int main()
                 "webfetch did not return the JSON body: " ~ fetched.output);
             writeln("webfetch fetched a live JSON document (",
                 fetched.output.length, " chars)");
+        }
+
+        // Deterministic guard: a page whose inline <style>/<script> bodies are
+        // larger than the output cap must still surrender its visible text.
+        // While those bodies were kept, the CSS alone filled the cap and the
+        // real content never reached the model.
+        {
+            import std.array : appender;
+            import std.conv : to;
+            import std.exception : collectException;
+            import std.socket : AddressFamily, InternetAddress, TcpSocket;
+
+            auto fixture = appender!string();
+            fixture.put("<!DOCTYPE html><html><head><title>cap fixture</title>");
+            fixture.put("<style>");
+            fixture.put(replicate(
+                ".fixture-rule-xyz{color:#abcdef;padding:4px;margin:2px;}\n",
+                1200));
+            fixture.put("</style><script>var leak = 'script-body-marker';</script>");
+            fixture.put("<noscript>noscript-body-marker</noscript></head><body>");
+            fixture.put("<p>Guard marker: visible paragraph.</p>");
+            fixture.put("<!-- comment-body-marker --></body></html>");
+            assert(fixture.data.length > 50_000,
+                "the fixture must exceed the tool output cap");
+
+            auto listener = new TcpSocket(AddressFamily.INET);
+            listener.bind(new InternetAddress("127.0.0.1", 0));
+            listener.listen(1);
+            const port = (cast(InternetAddress) listener.localAddress).port;
+
+            const response = "HTTP/1.1 200 OK\r\n" ~
+                "Content-Type: text/html; charset=utf-8\r\n" ~
+                "Content-Length: " ~ to!string(fixture.data.length) ~ "\r\n" ~
+                "Connection: close\r\n\r\n" ~ fixture.data;
+
+            auto server = new Thread({
+                try
+                {
+                    auto client = listener.accept();
+                    scope (exit) collectException(client.close());
+                    auto buffer = new ubyte[4096];
+                    collectException(client.receive(buffer));
+                    size_t sent;
+                    while (sent < response.length)
+                    {
+                        const written = client.send(response[sent .. $]);
+                        if (written <= 0) break;
+                        sent += written;
+                    }
+                }
+                catch (Throwable) {}
+            });
+            server.isDaemon = true;
+            server.start();
+
+            auto htmlFetch = executeTool(makeCall("webfetch",
+                `{"url":"http://127.0.0.1:` ~ to!string(port) ~ `/"}`), dir);
+            if (!htmlFetch.failed)
+                server.join();
+            collectException(listener.close());
+
+            assert(!htmlFetch.failed,
+                "webfetch failed on the local HTML fixture: " ~ htmlFetch.output);
+            assert(htmlFetch.output.indexOf("Guard marker: visible paragraph.") >= 0,
+                "webfetch lost the page body behind a large inline <style>: " ~
+                htmlFetch.output[0 .. (htmlFetch.output.length < 160
+                    ? htmlFetch.output.length : 160)]);
+            assert(htmlFetch.output.indexOf("fixture-rule-xyz") < 0,
+                "webfetch leaked CSS into the page text");
+            assert(htmlFetch.output.indexOf("script-body-marker") < 0,
+                "webfetch leaked a script body into the page text");
+            assert(htmlFetch.output.indexOf("comment-body-marker") < 0,
+                "webfetch leaked an HTML comment into the page text");
+            writeln("webfetch reduces a CSS-heavy page to its visible text (",
+                htmlFetch.output.length, " chars)");
         }
     }
 

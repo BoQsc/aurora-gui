@@ -115,9 +115,9 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "user-visible sentence stating the outcome and first action. Send a " ~
         "new update only when the phase changes, a useful result is found, or " ~
         "a blocker appears.\n" ~
-        "- Keep the user's whole request and any durable task state as " ~
-        "the completion contract. Do not finish with pending checklist items, " ~
-        "an unverified required change, or an unresolved tool error.\n" ~
+        "- Keep the user's request as the completion contract. A durable plan " ~
+        "is a progress aid, not permission to enlarge the scope. Keep it " ~
+        "current when one exists; do not create work merely to satisfy it.\n" ~
         "- Use the minimum evidence sufficient for the next action. " ~
         "Every read or search must resolve a named unknown. Batch independent " ~
         "lookups. Reread when workspace state changed, the earlier result was " ~
@@ -135,10 +135,11 @@ private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
         "1. Translate the request into a concrete result and success " ~
-        "criteria. For multi-step work, record 2-7 outcome-oriented steps with " ~
-        "`update_plan`; keep exactly one in progress and update it when a step " ~
-        "finishes. If durable task state already contains a checklist, keep it " ~
-        "current instead of replacing or ignoring it.\n" ~
+        "criteria. Use `update_plan` only when the work is genuinely substantial, " ~
+        "has multiple dependent phases, or benefits from durable checkpoints. " ~
+        "Skip a plan for direct answers, quick exploration, and a single " ~
+        "localized change. When a plan exists, keep exactly one step in progress " ~
+        "and update it as work finishes.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
         "working directory. Read a file before changing it.\n" ~
@@ -157,8 +158,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "not verification: add or run a focused UI assertion, inspect rendered " ~
         "output, or clearly state that visual behavior remains unverified.\n" ~
         "5. Stop and report the outcome, changed locations, verification " ~
-        "performed, and any real remaining blocker. Do not keep exploring after " ~
-        "success criteria are met.\n";
+        "performed, and any real remaining blocker. A final prose answer ends " ~
+        "the turn: do not leave stale plan items for the application to reconcile, " ~
+        "and do not keep exploring after success criteria are met.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)

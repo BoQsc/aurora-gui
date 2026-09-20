@@ -2934,6 +2934,140 @@ private final class TurnCompletionSeparator : Widget
     }
 }
 
+// ---------------------------------------------------------------------------
+// Durable plan card (Pro): the session's objective + checklist
+// ---------------------------------------------------------------------------
+
+/// The durable task plan for the active conversation, pinned at the top of the
+/// transcript: the objective, a progress line, and one row per checklist step.
+/// The model owns this state through `update_plan`. The checklist is advisory
+/// progress state rather than an automatic continuation trigger, and this card
+/// keeps that state visible without expanding the tool group that updated it.
+private final class PlanCard : Widget
+{
+    private static immutable int padH = 12;
+    private static immutable int padV = 8;
+    private static immutable int lineH = opencodeFontBase + 6;
+
+    private string _objective;
+    private string _status;
+    private string[] _texts;
+    private string[] _statuses;
+
+    this()
+    {
+        setId("oc-plan");
+    }
+
+    /// Replace the rendered plan. The card is rebuilt on every tool result, so
+    /// it copies the steps into its own arrays and repaints only on a change.
+    void update(string objective, const(TaskStep)[] steps, string status)
+    {
+        string[] texts;
+        string[] statuses;
+        foreach (step; steps)
+        {
+            texts ~= step.text;
+            statuses ~= step.status;
+        }
+        if (objective == _objective && status == _status &&
+            texts == _texts && statuses == _statuses) return;
+        _objective = objective;
+        _status = status;
+        _texts = texts;
+        _statuses = statuses;
+        invalidate();
+    }
+
+    size_t stepCountForTesting() const { return _texts.length; }
+    string objectiveForTesting() const { return _objective; }
+    string titleForTesting() const { return titleText(); }
+    string stepTextForTesting(size_t index) const
+    {
+        return index < _texts.length ? _texts[index] : "";
+    }
+    string stepStatusForTesting(size_t index) const
+    {
+        return index < _statuses.length ? _statuses[index] : "";
+    }
+
+    private bool hasObjective() const { return _objective.length > 0; }
+
+    private string titleText() const
+    {
+        int done;
+        foreach (status; _statuses)
+            if (status == "completed") ++done;
+        string title = "Plan  " ~ to!string(done) ~ "/" ~
+            to!string(_texts.length) ~ " done";
+        if (_status.length > 0) title ~= "  -  " ~ _status;
+        return title;
+    }
+
+    private int totalHeight() const
+    {
+        return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) +
+            cast(int) _texts.length);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        const height = totalHeight();
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+        canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodeField);
+        // A left accent rail marks the card as the plan, not a message bubble.
+        canvas.fillRect(Rect(0, padV, 3, maxInt(0, height - 2 * padV)),
+            opencodeAccent);
+
+        const textWidth = maxInt(0, width - 2 * padH);
+        int y = padV;
+        canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
+            toUTF32(titleText()), opencodeText, 1,
+            HorizontalAlign.left, VerticalAlign.middle, true);
+        y += lineH;
+        if (hasObjective())
+        {
+            canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
+                toUTF32("Objective: " ~ _objective), opencodeMuted, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            y += lineH;
+        }
+        canvas.fillRect(Rect(padH, y, textWidth, 1), opencodeBorder);
+        foreach (index, text; _texts)
+        {
+            const status = index < _statuses.length
+                ? _statuses[index] : "pending";
+            string marker = "[ ]";
+            Color color = opencodeText;
+            if (status == "completed")
+            {
+                marker = "[x]";
+                color = opencodeMuted;
+            }
+            else if (status == "in_progress")
+            {
+                marker = "[>]";
+                color = opencodeAccent;
+            }
+            canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
+                toUTF32(marker ~ " " ~ text), color, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            y += lineH;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Action tool group (Pro): one foldable row for an assistant round's tools
 // ---------------------------------------------------------------------------
 
@@ -4455,8 +4589,11 @@ private final class ConversationRuntime
     bool toolTranscriptDirty;
     OpenCodeToolCall[] pendingToolCalls;
     int pendingToolResults;
+    bool[string] reportedToolCallIds;
     OpenCodeToolCall[] liveToolCalls;
     OpenCodeToolCall[] preparingToolCalls;
+    int toolRounds;
+    bool finalAnswerRequested;
     bool toolContinuationPaused;
     string lastToolSignature;
     int lastToolRepeatCount;
@@ -4607,6 +4744,10 @@ public final class OpenCodeRoot : VBox
     // the enriched history is re-sent until the model answers with text.
     private OpenCodeToolCall[] _pendingToolCalls;
     private int _pendingToolResults;
+    // A local worker should publish exactly one result for every requested id.
+    // Keep an explicit ledger anyway: duplicate or unknown results must never
+    // decrement the batch and start the next model round early.
+    private bool[string] _reportedToolCallIds;
     // The subset of `_pendingToolCalls` that has not reported yet, used to paint
     // the live "Exploring" context row while tools are still running.
     private OpenCodeToolCall[] _liveToolCalls;
@@ -4614,6 +4755,11 @@ public final class OpenCodeRoot : VBox
     // announced their names but not finished). Shown as in-progress rows so a
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
+    private int _toolRounds;
+    // A bounded tool loop gets one final, tool-free answer request. If the model
+    // asks for tools again, settle the turn instead of starting another cycle.
+    private bool _finalAnswerRequested;
+    private static immutable int maxToolRounds = 64;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Repetition is a signal for guidance, not permission to reject a tool.
@@ -4768,8 +4914,11 @@ public final class OpenCodeRoot : VBox
         rt.toolTranscriptDirty = _toolTranscriptDirty;
         rt.pendingToolCalls = _pendingToolCalls;
         rt.pendingToolResults = _pendingToolResults;
+        rt.reportedToolCallIds = _reportedToolCallIds;
         rt.liveToolCalls = _liveToolCalls;
         rt.preparingToolCalls = _preparingToolCalls;
+        rt.toolRounds = _toolRounds;
+        rt.finalAnswerRequested = _finalAnswerRequested;
         rt.toolContinuationPaused = _toolContinuationPaused;
         rt.lastToolSignature = _lastToolSignature;
         rt.lastToolRepeatCount = _lastToolRepeatCount;
@@ -4817,8 +4966,11 @@ public final class OpenCodeRoot : VBox
         _toolTranscriptDirty = rt.toolTranscriptDirty;
         _pendingToolCalls = rt.pendingToolCalls;
         _pendingToolResults = rt.pendingToolResults;
+        _reportedToolCallIds = rt.reportedToolCallIds;
         _liveToolCalls = rt.liveToolCalls;
         _preparingToolCalls = rt.preparingToolCalls;
+        _toolRounds = rt.toolRounds;
+        _finalAnswerRequested = rt.finalAnswerRequested;
         _toolContinuationPaused = rt.toolContinuationPaused;
         _lastToolSignature = rt.lastToolSignature;
         _lastToolRepeatCount = rt.lastToolRepeatCount;
@@ -5498,6 +5650,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble = null;
         _activityRow = null;
         _pendingToolCalls.length = 0;
+        _reportedToolCallIds = null;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
@@ -5925,97 +6078,6 @@ public final class OpenCodeRoot : VBox
         return prompt.data;
     }
 
-    /// A path or file extension is only a *target*, never an instruction. On
-    /// its own it must not qualify a request as a change, otherwise a question
-    /// that merely names a file (for example "check why ... in C:\repo\app.d")
-    /// was seeded with an implementation checklist and then nagged to edit code
-    /// the user only asked about. A path therefore signals change work only when
-    /// the request also names an action to take on it.
-    private static bool likelyChangeRequest(string text)
-    {
-        const lower = text.toLower().strip();
-        foreach (prefix; ["add ", "build ", "change ", "create ", "delete ",
-            "fix ", "implement ", "make ", "move ", "refactor ", "remove ",
-            "rename ", "replace ", "update "])
-            if (lower.length >= prefix.length &&
-                lower[0 .. prefix.length] == prefix) return true;
-        const hasPathOrExtension = lower.canFind("\\") || lower.canFind("/") ||
-            lower.canFind(".d") || lower.canFind(".ts") ||
-            lower.canFind(".js") || lower.canFind(".py");
-        if (!hasPathOrExtension) return false;
-        // `build` is deliberately absent here: mid-sentence it is usually the
-        // noun ("the build fails"), while the leading-verb check above already
-        // covers the imperative "build ...".
-        foreach (verb; ["add", "change", "create", "delete", "fix",
-            "implement", "make", "move", "refactor", "remove", "rename",
-            "replace", "update", "write", "edit", "patch"])
-            if (containsWord(lower, verb)) return true;
-        return false;
-    }
-
-    /// Whole-word containment, so "update" does not match inside "updater" and
-    /// "edit" does not match inside "editing" when classifying intent.
-    private static bool containsWord(string haystack, string word)
-    {
-        size_t from;
-        while (word.length > 0 && from + word.length <= haystack.length)
-        {
-            const at = haystack.indexOf(word, from);
-            if (at < 0) return false;
-            const beforeOk = at == 0 || !isWordChar(haystack[at - 1]);
-            const afterOk = at + word.length >= haystack.length ||
-                !isWordChar(haystack[at + word.length]);
-            if (beforeOk && afterOk) return true;
-            from = at + 1;
-        }
-        return false;
-    }
-
-    private static bool isWordChar(char c)
-    {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '_';
-    }
-
-    private static bool isAutomaticTaskPlan(const ref ChatSession session)
-    {
-        return session.taskSteps.length == 3 &&
-            session.taskSteps[0].text == "Inspect the relevant code" &&
-            session.taskSteps[1].text == "Implement the requested changes" &&
-            session.taskSteps[2].text == "Run focused verification";
-    }
-
-    private static void initializeAutomaticTaskPlan(ref ChatSession session)
-    {
-        session.taskSteps = [
-            TaskStep("Inspect the relevant code", "in_progress"),
-            TaskStep("Implement the requested changes", "pending"),
-            TaskStep("Run focused verification", "pending"),
-        ];
-    }
-
-    private static void advanceAutomaticPlanToImplementation(
-        ref ChatSession session)
-    {
-        if (!isAutomaticTaskPlan(session)) return;
-        session.taskSteps[0].status = "completed";
-        session.taskSteps[1].status = "in_progress";
-    }
-
-    private static void completeAutomaticImplementation(ref ChatSession session)
-    {
-        if (!isAutomaticTaskPlan(session)) return;
-        session.taskSteps[0].status = "completed";
-        session.taskSteps[1].status = "completed";
-        session.taskSteps[2].status = "in_progress";
-    }
-
-    private static void completeAutomaticVerification(ref ChatSession session)
-    {
-        if (!isAutomaticTaskPlan(session)) return;
-        foreach (ref step; session.taskSteps) step.status = "completed";
-    }
-
     private void publishThreadUpdated(const ref ChatSession session)
     {
         publishRuntimeEvent(AgentEventKind.threadUpdated, session,
@@ -6193,6 +6255,16 @@ public final class OpenCodeRoot : VBox
                 _messagesScroll.invalidate();
             };
             _messageColumn.add(older);
+        }
+        // The durable task plan belongs at the very top of the transcript: the
+        // objective and checklist the model maintains through `update_plan`,
+        // rendered live so progress is visible without expanding a tool group.
+        if (session.taskSteps.length > 0)
+        {
+            auto planCard = new PlanCard();
+            planCard.update(session.objective, _sessions[_current].taskSteps,
+                session.taskStatus);
+            _messageColumn.add(planCard);
         }
         // Only the latest real assistant reply shows its token usage in the
         // footer. Tool-call wrappers (empty content + tool requests) never do.
@@ -7145,20 +7217,10 @@ public final class OpenCodeRoot : VBox
         return delegate() { continueFromReply(sessionIndex, messageIndex); };
     }
 
-    private static string incompleteChecklistGatePrompt()
-    {
-        return "Completion gate: reconcile the durable checklist before " ~
-            "producing another user-facing report. If the unfinished items " ~
-            "are already complete, call update_plan once to mark them " ~
-            "completed, then respond with only a brief checklist " ~
-            "confirmation; do not repeat the completion report. Otherwise " ~
-            "continue with the next concrete unfinished item and update the " ~
-            "checklist. If blocked, report the exact blocker.";
-    }
-
-    /// A provider `done` is not automatically task completion.  First consume
-    /// queued steering; then, for file-changing work, require a focused check
-    /// before the durable task can enter the completed state.
+    /// A prose `done` event is a real turn boundary. Queued user guidance is the
+    /// only reason to open another request automatically. A stale checklist or
+    /// missing verification remains visible as incomplete state, but never
+    /// manufactures hidden follow-up turns after the model has answered.
     private void continueOrCompleteTask(bool cancelled)
     {
         const sessionIndex = turnOwnerSessionIndex();
@@ -7184,53 +7246,16 @@ public final class OpenCodeRoot : VBox
         }
         if (hasIncompleteTaskSteps(*session))
         {
-            if (session.taskStatus != "reviewing")
-            {
-                session.taskStatus = "reviewing";
-                ChatMessage gate;
-                gate.role = "user";
-                gate.internal = true;
-                gate.content = incompleteChecklistGatePrompt();
-                appendMessage(*session, gate);
-                publishThreadUpdated(*session);
-                markDirty();
-                if (_current == sessionIndex) rebuildMessageColumn();
-                updateStatus("Reviewing unfinished checklist…");
-                startChatRequest(sessionIndex, false);
-                return;
-            }
             session.taskStatus = "blocked";
-            updateStatus("Finished with checklist items still incomplete.");
+            updateStatus("Stopped with checklist items still incomplete.");
             publishThreadUpdated(*session);
             markDirty();
             return;
         }
         if (session.verificationStatus == "required")
         {
-            if (session.taskStatus != "verifying")
-            {
-                session.taskStatus = "verifying";
-                ChatMessage gate;
-                gate.role = "user";
-                gate.internal = true;
-                gate.content = "Completion gate: files changed in this task, " ~
-                    "but no successful verification has been recorded since " ~
-                    "the last change. Run the most focused relevant check now. " ~
-                    "Do not claim completion unless it succeeds; if it cannot " ~
-                    "be run, report the concrete blocker.";
-                appendMessage(*session, gate);
-                publishThreadUpdated(*session);
-                markDirty();
-                if (_current == sessionIndex) rebuildMessageColumn();
-                setTurnActiveMarker(true, session.id);
-                setTurnInFlight(true);
-                updateStatus("Verifying before completion…");
-                startChatRequest(sessionIndex, false);
-                return;
-            }
             session.taskStatus = "blocked";
-            session.verificationStatus = "failed";
-            updateStatus("Finished with verification still incomplete.");
+            updateStatus("Stopped without the required verification.");
         }
         else
             session.taskStatus = "completed";
@@ -7244,11 +7269,7 @@ public final class OpenCodeRoot : VBox
         if (cancelled || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
-        if (session.queuedGuidance.length > 0) return true;
-        if (hasIncompleteTaskSteps(session) &&
-            session.taskStatus != "reviewing") return true;
-        return session.verificationStatus == "required" &&
-            session.taskStatus != "verifying";
+        return session.queuedGuidance.length > 0;
     }
 
     private void failAssistantMessage(string error)
@@ -7549,7 +7570,6 @@ public final class OpenCodeRoot : VBox
 
     private void appendExplorationCheckpoint(ref ChatSession session)
     {
-        advanceAutomaticPlanToImplementation(session);
         ChatMessage checkpoint;
         checkpoint.role = "user";
         checkpoint.internal = true;
@@ -7612,6 +7632,55 @@ public final class OpenCodeRoot : VBox
         }
         markDirty();
 
+        // A hard backstop is deliberately generous: normal stopping is still
+        // the model returning prose with no tool calls. The cap exists only so
+        // a provider that continually asks for tools cannot own a conversation
+        // forever. It gets one explicit chance to summarize without tools.
+        if (_finalAnswerRequested)
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the bounded tool loop already requested " ~
+                "a final answer.");
+            ChatMessage stopped;
+            stopped.role = "assistant";
+            stopped.failed = true;
+            stopped.content = "Stopped: the model continued requesting tools " ~
+                "after the tool-loop limit. You can continue this task " ~
+                "explicitly.";
+            stopped.time = currentTimestamp();
+            appendMessage(*session, stopped);
+            session.taskStatus = "blocked";
+            publishThreadUpdated(*session);
+            finishAssistantMessage(true, 0, 0, 0, true,
+                "tool_loop_limit");
+            _activeRequestId = 0;
+            _activeRequestSession = -1;
+            return;
+        }
+
+        if (_toolRounds >= maxToolRounds)
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the maximum number of tool rounds was " ~
+                "reached.");
+            ChatMessage finalize;
+            finalize.role = "user";
+            finalize.internal = true;
+            finalize.content = "The bounded tool loop is complete. Do not call " ~
+                "more tools. Give the user a concise final answer from the " ~
+                "evidence already collected, including any unresolved blocker.";
+            appendMessage(*session, finalize);
+            _finalAnswerRequested = true;
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Tool limit reached — requesting a final answer…");
+            if (!_toolContinuationPaused)
+                startChatRequest(sessionIndex, false);
+            return;
+        }
+        ++_toolRounds;
+
         // Repeated calls still execute. On the third consecutive identical
         // batch, schedule a hidden note for the next model round so it can use
         // the fresh result while reconsidering its approach.
@@ -7638,6 +7707,7 @@ public final class OpenCodeRoot : VBox
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
         _pendingToolCalls = event.toolCalls.dup;
+        _reportedToolCallIds = null;
         _liveToolCalls = event.toolCalls.dup;
         _pendingToolResults = cast(int) event.toolCalls.length;
         updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
@@ -7801,15 +7871,21 @@ public final class OpenCodeRoot : VBox
 
         // The command arguments come from the original tool call, matched by
         // its id, so the result bubble can show the full command.
+        if (event.toolCallId.length == 0 ||
+            event.toolCallId in _reportedToolCallIds) return;
         string toolArgs;
+        bool recognized;
         foreach (call; _pendingToolCalls)
         {
             if (call.id == event.toolCallId)
             {
                 toolArgs = call.arguments;
+                recognized = true;
                 break;
             }
         }
+        if (!recognized) return;
+        _reportedToolCallIds[event.toolCallId] = true;
         // Drop the reported call from the live set so the "Exploring" row only
         // counts the context tools that are still running.
         foreach (i, call; _liveToolCalls)
@@ -7839,7 +7915,6 @@ public final class OpenCodeRoot : VBox
         if (isSubstantiveMutation(event.toolName, event.toolFailed,
             event.diffAdditions, event.diffDeletions, event.diffText))
         {
-            completeAutomaticImplementation(*session);
             session.verificationStatus = "required";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
@@ -7848,7 +7923,6 @@ public final class OpenCodeRoot : VBox
             toolArgs) &&
             session.verificationStatus == "required")
         {
-            completeAutomaticVerification(*session);
             session.verificationStatus = "passed";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
@@ -7894,6 +7968,7 @@ public final class OpenCodeRoot : VBox
         if (_pendingToolResults <= 0)
         {
             _pendingToolCalls.length = 0;
+            _reportedToolCallIds = null;
             _liveToolCalls.length = 0;
             _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
@@ -8129,8 +8204,6 @@ public final class OpenCodeRoot : VBox
         {
             session.taskSteps.length = 0;
             session.verificationStatus = "not_required";
-            if (_settings.toolsEnabled && likelyChangeRequest(text))
-                initializeAutomaticTaskPlan(*session);
         }
         session.taskStatus = "active";
         publishThreadUpdated(*session);
@@ -8159,7 +8232,10 @@ public final class OpenCodeRoot : VBox
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
         _pendingProgressGuidance = "";
+        _toolRounds = 0;
+        _finalAnswerRequested = false;
         _pendingToolCalls.length = 0;
+        _reportedToolCallIds = null;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
@@ -8790,6 +8866,9 @@ public final class OpenCodeRoot : VBox
         // whole turn (and one action group owns its tools).
         if (userTurn)
         {
+            _toolRounds = 0;
+            _finalAnswerRequested = false;
+            _reportedToolCallIds = null;
             beginTurnTiming(sessionIndex);
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
@@ -10832,17 +10911,6 @@ public final class OpenCodeRoot : VBox
                 session.id = session.messages.length > 0
                     ? "t-" ~ session.messages[0].id : newSessionId();
             }
-            if (session.taskSteps.length == 0 &&
-                (session.taskStatus == "active" ||
-                 session.taskStatus == "reviewing" ||
-                 session.taskStatus == "verifying") &&
-                likelyChangeRequest(session.objective))
-            {
-                initializeAutomaticTaskPlan(session);
-                publishThreadUpdated(session);
-                _stateDirty = true;
-                _persistDue = MonoTime.currTime;
-            }
         }
         if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
             _current = preferredCurrent;
@@ -11374,11 +11442,36 @@ public final class OpenCodeRoot : VBox
         return _sessions[_current].taskSteps[cast(size_t) index].status;
     }
 
-    public bool initializeAutomaticPlanForTesting(string request)
+    /// Test-only: the plan card the transcript currently renders, if any.
+    private PlanCard planCardVisual()
     {
-        if (_current < 0 || !likelyChangeRequest(request)) return false;
-        initializeAutomaticTaskPlan(_sessions[_current]);
-        return true;
+        foreach (child; messageColumnVisuals())
+            if (auto card = cast(PlanCard) child) return card;
+        return null;
+    }
+
+    public int planCardStepCountForTesting()
+    {
+        auto card = planCardVisual();
+        return card is null ? 0 : cast(int) card.stepCountForTesting();
+    }
+
+    public string planCardTitleForTesting()
+    {
+        auto card = planCardVisual();
+        return card is null ? "" : card.titleForTesting();
+    }
+
+    public string planCardObjectiveForTesting()
+    {
+        auto card = planCardVisual();
+        return card is null ? "" : card.objectiveForTesting();
+    }
+
+    public string planCardStepStatusForTesting(int index)
+    {
+        auto card = planCardVisual();
+        return card is null ? "" : card.stepStatusForTesting(cast(size_t) index);
     }
 
     public void applyPlanForTesting(string arguments)
@@ -11441,9 +11534,12 @@ public final class OpenCodeRoot : VBox
         return taskContinuesAfterDone(false);
     }
 
-    public string incompleteChecklistGatePromptForTesting() const
+    public void settleTaskAfterDoneForTesting()
     {
-        return incompleteChecklistGatePrompt();
+        setTurnActiveMarker(false);
+        setTurnInFlight(false);
+        freezeTurnTiming();
+        continueOrCompleteTask(false);
     }
 
     public int explorationCountForTesting() const
@@ -12914,16 +13010,46 @@ public final class OpenCodeRoot : VBox
         applyToolResult(event);
     }
 
+    public void seedPendingToolBatchForTesting(
+        const(OpenCodeToolCall)[] calls)
+    {
+        _pendingToolCalls = calls.dup;
+        _liveToolCalls = calls.dup;
+        _reportedToolCallIds = null;
+        _pendingToolResults = cast(int) calls.length;
+    }
+
+    public void injectToolResultIdForTesting(string id, string name = "read")
+    {
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.toolResult;
+        event.toolCallId = id;
+        event.toolName = name;
+        event.text = "ok";
+        applyToolResult(event);
+    }
+
     /// Test-only: a network request is in flight.
     public bool clientBusyForTesting()
     {
         return _client !is null && _client.busy();
     }
 
-    /// Long-horizon turns are ended only by the user, a provider/network error,
-    /// or normal model completion—not by a local inactivity timer or round cap.
+    /// Healthy long-horizon turns have no inactivity timeout. A generous round
+    /// cap remains as a deterministic backstop for providers that never emit a
+    /// final answer.
     public bool hasAutomaticTurnTimeoutForTesting() const { return false; }
-    public int toolRoundLimitForTesting() const { return 0; }
+    public int toolRoundLimitForTesting() const { return maxToolRounds; }
+
+    public void setToolRoundsForTesting(int rounds)
+    {
+        _toolRounds = rounds;
+    }
+
+    public bool finalAnswerRequestedForTesting() const
+    {
+        return _finalAnswerRequested;
+    }
 
     /// Test-only: tool calls injected but not yet reported back.
     public int pendingToolResultsForTesting() const

@@ -1704,6 +1704,32 @@ int main(string[] args)
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
         writeln("A turn's tools fold into one collapsible action group");
 
+    // A worker result is accepted exactly once and only when its id belongs to
+    // the open batch. Unknown/duplicate events cannot consume another call's
+    // slot and start the next model request before all results are present.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["check", ""]);
+    root.pauseToolContinuationForTesting();
+    OpenCodeToolCall orderedA, orderedB;
+    orderedA.id = "call_order_a";
+    orderedA.name = "read";
+    orderedA.arguments = `{"path":"a"}`;
+    orderedB.id = "call_order_b";
+    orderedB.name = "read";
+    orderedB.arguments = `{"path":"b"}`;
+    root.seedPendingToolBatchForTesting([orderedA, orderedB]);
+    root.injectToolResultIdForTesting("unknown");
+    assert(root.pendingToolResultsForTesting() == 2,
+        "an unknown tool result consumed a pending slot");
+    root.injectToolResultIdForTesting("call_order_a");
+    root.injectToolResultIdForTesting("call_order_a");
+    assert(root.pendingToolResultsForTesting() == 1,
+        "a duplicate tool result consumed a second pending slot");
+    root.injectToolResultIdForTesting("call_order_b");
+    assert(root.pendingToolResultsForTesting() == 0,
+        "the ordered tool batch did not settle after both unique results");
+    writeln("Tool result ledger rejects unknown and duplicate events");
+
     // Turn timer: Codex renders "Worked for …" as a horizontal completion
     // boundary immediately ABOVE the final answer. It must not be embedded in
     // an earlier action-group header, which reverses the visual relationship.
@@ -2573,27 +2599,19 @@ int main(string[] args)
         root.tickTree(0.02);
         Thread.sleep(20.msecs);
     }
-    // A path or extension is only a target, not an instruction. A question that
-    // merely names a file elsewhere in the sentence must stay a question: if it
-    // were seeded with the application-owned implementation checklist, that
-    // scaffold would hold completion open and force an unrequested edit round.
+    // Plans are model-owned and reserved for genuinely substantial work. The
+    // application no longer guesses from verbs or paths and seeds a generic
+    // checklist, which used to hold ordinary turns open after a final answer.
     root.newChatForTesting();
-    assert(!root.initializeAutomaticPlanForTesting(
-        "check why it still continues in a chat " ~
-        `C:\Users\me\repo\aurora-opencode-pro`),
-        "an investigation that mentions a path was seeded with a change plan");
     assert(root.taskStepCountForTesting() == 0,
-        "a read-only question received an implementation checklist");
-    assert(root.initializeAutomaticPlanForTesting(
-        `fix C:\Users\me\repo\aurora-opencode-pro\source\app.d`),
-        "a change request naming a path did not receive a task plan");
-    root.newChatForTesting();
-    assert(root.initializeAutomaticPlanForTesting(
-        "Add a folder button to appui.d"),
-        "change request did not receive an application-owned task plan");
+        "a new task received an application-owned checklist");
+    root.applyPlanForTesting(
+        `{"plan":[{"step":"Inspect the relevant code","status":"in_progress"},` ~
+        `{"step":"Implement the requested changes","status":"pending"},` ~
+        `{"step":"Run focused verification","status":"pending"}]}`);
     assert(root.taskStepCountForTesting() == 3 &&
         root.taskStepStatusForTesting(0) == "in_progress",
-        "automatic task plan did not begin in the inspection phase");
+        "an explicit durable plan was not retained");
     root.addConversationForTesting(["assistant"], [""]);
 
     // Long-horizon regression: distinct evidence-gathering rounds are valid
@@ -2629,9 +2647,9 @@ int main(string[] args)
     assert(root.lastUserMessageForTesting().indexOf(
         "Exploration checkpoint") >= 0,
         "action checkpoint instruction was not appended");
-    assert(root.taskStepStatusForTesting(0) == "completed" &&
-        root.taskStepStatusForTesting(1) == "in_progress",
-        "action checkpoint did not advance the automatic plan to implementation");
+    assert(root.taskStepStatusForTesting(0) == "in_progress" &&
+        root.taskStepStatusForTesting(1) == "pending",
+        "application guidance rewrote the model-owned plan");
     writeln("Distinct evidence rounds remain available for long-horizon work");
 
     // A checkpoint is a decision point, not a blind cutoff. One focused lookup
@@ -2708,9 +2726,29 @@ int main(string[] args)
         "post-verification inspection received a fabricated skipped result");
     writeln("Passed verification does not revoke tool access");
     assert(!root.hasAutomaticTurnTimeoutForTesting() &&
-        root.toolRoundLimitForTesting() == 0,
-        "long-horizon work still has an automatic timeout or round cap");
-    writeln("Long-horizon turns have no automatic timeout or round cap");
+        root.toolRoundLimitForTesting() >= 32,
+        "long-horizon work lacks a generous deterministic loop backstop");
+    writeln("Long-horizon turns have no timeout and a generous loop backstop");
+
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["bounded task", ""]);
+    root.pauseToolContinuationForTesting();
+    root.setToolRoundsForTesting(root.toolRoundLimitForTesting());
+    OpenCodeToolCall overLimit;
+    overLimit.id = "call_over_limit";
+    overLimit.name = "read";
+    overLimit.arguments = `{"path":"again"}`;
+    root.injectToolCallsForTesting([overLimit]);
+    assert(root.finalAnswerRequestedForTesting() &&
+        root.pendingToolResultsForTesting() == 0,
+        "the tool-loop limit executed another batch instead of finalizing");
+    root.addConversationForTesting(["assistant"], [""]);
+    root.injectToolCallsForTesting([overLimit]);
+    assert(root.taskStatusForTesting() == "blocked" &&
+        root.lastAssistantContentForTesting().indexOf("Stopped:") >= 0,
+        "a model that ignored finalization restarted the tool loop");
+    writeln("Tool-loop backstop finalizes once, then settles deterministically");
 
     // The repetition-guidance injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the
@@ -3183,6 +3221,19 @@ int main(string[] args)
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.rebuildForTesting();
+        assert(root.planCardStepCountForTesting() == 2,
+            "the durable plan did not render as a plan card in the transcript");
+        assert(root.planCardObjectiveForTesting() == "Build durable recovery",
+            "the plan card lost the durable objective: " ~
+            root.planCardObjectiveForTesting());
+        assert(root.planCardStepStatusForTesting(0) == "completed" &&
+            root.planCardStepStatusForTesting(1) == "in_progress",
+            "the plan card did not reflect the checklist statuses");
+        assert(root.planCardTitleForTesting().indexOf("1/2 done") >= 0,
+            "the plan card progress line is wrong: " ~
+            root.planCardTitleForTesting());
+        assert(driver.paint(), "the plan card did not paint");
         root.startTurnClockForTesting();
         root.setInputForTesting("Keep it GUI-first");
         root.sendForTesting();
@@ -3211,13 +3262,12 @@ int main(string[] args)
             "consumed guidance remained queued");
         assert(root.queuedPromptBubbleCountForTesting() == 0,
             "the pending prompt bubble was not replaced by a real turn");
-        assert(root.completionWouldContinueForTesting(),
-            "unfinished durable checklist did not hold completion open");
-        const checklistGate = root.incompleteChecklistGatePromptForTesting();
-        assert(checklistGate.indexOf("call update_plan once") >= 0 &&
-            checklistGate.indexOf("do not repeat the completion report") >= 0,
-            "checklist reconciliation gate can still provoke a duplicate " ~
-            "completion report: " ~ checklistGate);
+        assert(!root.completionWouldContinueForTesting(),
+            "an unfinished checklist manufactured another model request");
+        root.settleTaskAfterDoneForTesting();
+        assert(root.taskStatusForTesting() == "blocked" &&
+            !root.turnBusyForTesting(),
+            "a final answer with stale plan state did not settle locally");
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);
