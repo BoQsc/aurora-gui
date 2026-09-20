@@ -3426,6 +3426,7 @@ private final class ContextUsageBadge : Widget
     private int _completion = -1;
     private int _total = -1;
     private int _limit = 128_000;
+    private bool _estimated;
 
     this()
     {
@@ -3442,13 +3443,16 @@ private final class ContextUsageBadge : Widget
         invalidate();
     }
 
-    void setUsage(int prompt, int completion, int total)
+    void setUsage(int prompt, int completion, int total,
+        bool estimated = false)
     {
-        if (prompt == _prompt && completion == _completion && total == _total)
+        if (prompt == _prompt && completion == _completion && total == _total &&
+            estimated == _estimated)
             return;
         _prompt = prompt;
         _completion = completion;
         _total = total;
+        _estimated = estimated;
         invalidate();
     }
 
@@ -3456,6 +3460,7 @@ private final class ContextUsageBadge : Widget
     int completionTokens() const @safe pure nothrow @nogc { return _completion; }
     int totalTokens() const @safe pure nothrow @nogc { return _total; }
     int limit() const @safe pure nothrow @nogc { return _limit; }
+    bool estimated() const @safe pure nothrow @nogc { return _estimated; }
 
     bool hasUsage() const @safe pure nothrow @nogc
     {
@@ -3471,7 +3476,9 @@ private final class ContextUsageBadge : Widget
 
     string labelForTesting()
     {
-        return hasUsage() ? to!string(usagePercent) ~ "%" : "0%";
+        return hasUsage()
+            ? (_estimated ? "~" : "") ~ to!string(usagePercent) ~ "%"
+            : "0%";
     }
 
     protected override Size onMeasure(Size available)
@@ -4586,7 +4593,7 @@ public final class OpenCodeRoot : VBox
     // rounds 27/83/113 while the model was still editing). The doom-loop guard
     // below catches genuine repetition; this is only a backstop against a truly
     // runaway turn, so keep it high.
-    private static immutable int maxToolRounds = 300;
+    private static immutable int maxToolRounds = 150;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Doom-loop recovery (mirrors the original opencode app): when the model
@@ -4612,6 +4619,12 @@ public final class OpenCodeRoot : VBox
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
+    // After the checkpoint, allow two genuinely focused lookups. A third
+    // read/search request without an implementation step is drift, not useful
+    // exploration, and is finalized through the same one-retry guard used by
+    // verification. This keeps long investigations possible while preventing
+    // the 100+ repeated-read loop seen in production.
+    private static immutable int postCheckpointExplorationCalls = 2;
     private static immutable int maxVerificationAttempts = 3;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
@@ -4631,6 +4644,14 @@ public final class OpenCodeRoot : VBox
     private bool _runtimeErrorReported;
 
     private ContextUsageBadge _usageBadge;
+    // Provider usage is optional on OpenAI-compatible streaming endpoints.
+    // Cache a full-request estimate per conversation so the toolbar never
+    // claims 0% merely because the gateway omitted `usage`.
+    private int[string] _estimatedContextTokens;
+    // A newly submitted request is newer than any usage persisted on an older
+    // assistant reply. Keep showing its estimate until this request supplies
+    // an exact total of its own.
+    private bool[string] _preferEstimatedContext;
     private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
     // Payload of the most recent message "Copy" context-menu action; retained
@@ -6255,11 +6276,14 @@ public final class OpenCodeRoot : VBox
             // with no `onPaint` after it, so death was in build/measure rather
             // than paint. Naming the slot and message here makes the last
             // recorded step the exact one that faulted.
-            noteActivity("rebuild slot=" ~ to!string(slot) ~ "/" ~
-                to!string(path.length) ~ " index=" ~ to!string(index) ~
-                " role=" ~ message.role ~ " toolCalls=" ~
-                to!string(message.toolCalls.length) ~ " internal=" ~
-                to!string(message.internal));
+            // Sampling retains a useful crash breadcrumb without turning every
+            // rebuild of a 120-row page into 120 synchronous log writes.
+            if (slot == 0 || slot + 1 == path.length || slot % 20 == 0)
+                noteActivity("rebuild slot=" ~ to!string(slot) ~ "/" ~
+                    to!string(path.length) ~ " index=" ~ to!string(index) ~
+                    " role=" ~ message.role ~ " toolCalls=" ~
+                    to!string(message.toolCalls.length) ~ " internal=" ~
+                    to!string(message.internal));
 
 
             // Synthetic control turns (max-rounds / loop recovery) steer the
@@ -7394,13 +7418,39 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         if (event.toolCalls.length == 0) return;
+        const previousShape = toolProgressRenderShape(_preparingToolCalls);
+        const nextShape = toolProgressRenderShape(event.toolCalls);
+        const activityWasPresent = _activityRow !is null &&
+            _activityRow.parent() !is null;
         _preparingToolCalls = event.toolCalls.dup;
         updateStatus("Preparing tools…");
         // The aggregate live row already says what is being prepared, so the
         // generic phase row would only duplicate it. Drop it; it comes back
         // when the next round waits on the model with no live row to show.
         clearActivity();
-        if (_current == sessionIndex) rebuildMessageColumn();
+        // Tool arguments commonly arrive a few bytes per SSE event. Rebuilding
+        // 120 retained widgets for every fragment caused multi-GB growth. The
+        // live preview only needs a refresh when a tool appears/changes or each
+        // 512-byte detail bucket; `clearActivity` already rebuilt when it
+        // removed the phase row.
+        if (!activityWasPresent && _current == sessionIndex &&
+            previousShape != nextShape)
+            rebuildMessageColumn();
+    }
+
+    private static string toolProgressRenderShape(
+        const(OpenCodeToolCall)[] calls)
+    {
+        auto shape = appender!string();
+        foreach (call; calls)
+        {
+            int additions, deletions;
+            previewToolDiff(call.name, call.arguments, additions, deletions);
+            shape.put(call.id ~ ":" ~ call.name ~ ":" ~
+                to!string(call.arguments.length / 512) ~ ":" ~
+                to!string(additions) ~ ":" ~ to!string(deletions) ~ ";");
+        }
+        return shape.data;
     }
 
     private static bool isReadOnlyExplorationTool(string name)
@@ -7541,6 +7591,63 @@ public final class OpenCodeRoot : VBox
                 found = true;
         }
         return found;
+    }
+
+    private static int explorationCountAfterCheckpoint(
+        const ref ChatSession session)
+    {
+        int count = -1;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                count = -1;
+                continue;
+            }
+            if (message.internal && message.content.length >= 23 &&
+                message.content[0 .. 23] == "Exploration checkpoint:")
+            {
+                count = 0;
+                continue;
+            }
+            if (count >= 0 && message.role == "tool" && !message.failed &&
+                isReadOnlyExplorationTool(message.toolName))
+                ++count;
+        }
+        return count < 0 ? 0 : count;
+    }
+
+    private static bool onlyExplorationCalls(
+        const(OpenCodeToolCall)[] calls)
+    {
+        if (calls.length == 0) return false;
+        foreach (call; calls)
+            if (!isReadOnlyExplorationTool(call.name)) return false;
+        return true;
+    }
+
+    /// Detect successful observations repeated anywhere in the current user
+    /// turn, not only in adjacent model responses. Interleaving a grep between
+    /// identical reads must not reset loop protection.
+    private static bool repeatsKnownObservation(const ref ChatSession session,
+        const(OpenCodeToolCall)[] calls)
+    {
+        foreach (call; calls)
+        {
+            if (!isReadOnlyExplorationTool(call.name)) continue;
+            int matches;
+            foreach_reverse (index; activeMessagePath(session))
+            {
+                const message = session.messages[index];
+                if (message.role == "user" && !message.internal) break;
+                if (message.role == "tool" && !message.failed &&
+                    message.toolName == call.name &&
+                    message.toolArgs == call.arguments && ++matches >= 2)
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool hasUnnecessaryPostVerificationCall(
@@ -7699,6 +7806,32 @@ public final class OpenCodeRoot : VBox
                 "rerun the same checks. Make a concrete corrective edit if " ~
                 "the failure identifies one; otherwise report the exact " ~
                 "verification blocker to the user now.");
+            return;
+        }
+
+        if (repeatsKnownObservation(*session, event.toolCalls))
+        {
+            skipToolsAndFinalize(*session, event.toolCalls,
+                "Tool call skipped: this successful observation was already " ~
+                    "collected twice in the current turn.",
+                "The requested read/search has already succeeded twice. Do " ~
+                    "not repeat or rephrase exploration. Use the evidence " ~
+                    "already collected to make the smallest safe change, or " ~
+                    "report the one concrete blocker now.");
+            return;
+        }
+
+        if (hasExplorationCheckpoint(*session) &&
+            explorationCountAfterCheckpoint(*session) >=
+                postCheckpointExplorationCalls &&
+            onlyExplorationCalls(event.toolCalls))
+        {
+            skipToolsAndFinalize(*session, event.toolCalls,
+                "Tool call skipped: the focused post-checkpoint exploration " ~
+                    "allowance is exhausted.",
+                "Exploration is complete. Stop reading and searching. Apply " ~
+                    "the smallest correct change using the evidence already " ~
+                    "collected, or report the exact missing fact as a blocker.");
             return;
         }
 
@@ -8366,6 +8499,21 @@ public final class OpenCodeRoot : VBox
         return total;
     }
 
+    /// Conservative local fallback for providers that omit streamed usage.
+    /// Count the exact compacted messages plus advertised tool schemas, then
+    /// apply the same four-bytes-per-token approximation used by compaction.
+    private static int estimateRequestTokens(
+        const(ChatRequestMessage)[] messages,
+        const(OpenCodeToolDef)[] tools)
+    {
+        size_t bytes = requestMessageBytes(messages);
+        foreach (tool; tools)
+            bytes += tool.name.length + tool.description.length +
+                tool.parametersJson.length + 64;
+        const size_t tokens = (bytes + 3) / 4;
+        return tokens > cast(size_t) int.max ? int.max : cast(int) tokens;
+    }
+
     /// A short, UTF-8-safe first-line excerpt for deterministic checkpoints.
     /// Compaction must never copy a multi-megabyte message into its summary.
     private static string checkpointSnippet(string text, size_t limit = 480)
@@ -8896,6 +9044,15 @@ public final class OpenCodeRoot : VBox
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
+        const estimatedTokens = estimateRequestTokens(messages, tools);
+        _estimatedContextTokens[session.id] = estimatedTokens;
+        _preferEstimatedContext[session.id] = true;
+        if (_current == sessionIndex && _usageBadge !is null)
+        {
+            _usageBadge.setModel(session.model);
+            _usageBadge.setUsage(estimatedTokens, 0, estimatedTokens, true);
+            refreshContextUsageTooltip();
+        }
         // The OpenCode gateway routes by a stable per-conversation id; it
         // rejects requests without one. The first message id is stable for
         // this conversation across turns and restarts.
@@ -9903,29 +10060,44 @@ public final class OpenCodeRoot : VBox
 
     // -- context usage meter ---------------------------------------------
 
-    /// Recompute the toolbar context badge from the current session's latest
-    /// assistant reply that carries API-reported usage.
+    /// Prefer usage from the latest request when its provider reported it;
+    /// otherwise use that request's estimate instead of stale usage from an
+    /// older assistant reply.
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
         _usageBadge.setModel(_settings.model);
         int prompt = -1, completion = -1, total = -1;
+        bool estimated;
         if (_current >= 0)
         {
             auto session = &_sessions[_current];
-            foreach_reverse (slot, index; activeMessagePath(*session))
+            const preferEstimate = session.id in _preferEstimatedContext &&
+                _preferEstimatedContext[session.id];
+            if (!preferEstimate)
             {
-                auto message = &session.messages[index];
-                if (message.role == "assistant" && message.totalTokens > 0)
+                foreach_reverse (slot, index; activeMessagePath(*session))
                 {
-                    prompt = message.promptTokens;
-                    completion = message.completionTokens;
-                    total = message.totalTokens;
-                    break;
+                    auto message = &session.messages[index];
+                    if (message.role == "assistant" && message.totalTokens > 0)
+                    {
+                        prompt = message.promptTokens;
+                        completion = message.completionTokens;
+                        total = message.totalTokens;
+                        break;
+                    }
                 }
             }
+            if (total <= 0)
+                if (auto fallback = session.id in _estimatedContextTokens)
+                {
+                    prompt = *fallback;
+                    completion = 0;
+                    total = *fallback;
+                    estimated = true;
+                }
         }
-        _usageBadge.setUsage(prompt, completion, total);
+        _usageBadge.setUsage(prompt, completion, total, estimated);
         refreshContextUsageTooltip();
     }
 
@@ -9939,12 +10111,19 @@ public final class OpenCodeRoot : VBox
             " tokens";
         if (hasUsage)
         {
-            rows ~= "Used: " ~ formatThousands(_usageBadge.totalTokens()) ~
+            rows ~= (_usageBadge.estimated() ? "Estimated used: " : "Used: ") ~
+                formatThousands(_usageBadge.totalTokens()) ~
                 " tokens (" ~ to!string(_usageBadge.usagePercent()) ~ "%)";
-            rows ~= "Prompt: " ~ formatThousands(_usageBadge.promptTokens()) ~
-                " tokens";
-            rows ~= "Completion: " ~
-                formatThousands(_usageBadge.completionTokens()) ~ " tokens";
+            if (_usageBadge.estimated())
+                rows ~= "Provider usage unavailable; estimate includes " ~
+                    "instructions, compacted messages, and tool schemas.";
+            else
+            {
+                rows ~= "Prompt: " ~
+                    formatThousands(_usageBadge.promptTokens()) ~ " tokens";
+                rows ~= "Completion: " ~
+                    formatThousands(_usageBadge.completionTokens()) ~ " tokens";
+            }
         }
         else
         {
@@ -10477,12 +10656,11 @@ public final class OpenCodeRoot : VBox
     {
         _stateDirty = true;
         _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
-        // A copy is written the instant state changes, ahead of the debounced
-        // save and independent of any orderly shutdown. The app can die from a
-        // fault that no handler sees, so the conversation on disk must always
-        // already be current rather than waiting for a shutdown that may never
-        // run. This is the data the next start restores.
-        persistRecoveryState();
+        // Message/task mutations are already appended synchronously to the
+        // durable runtime journal, which startup treats as the recovery
+        // authority. Re-serializing every conversation here made each streamed
+        // tool result rewrite tens of megabytes. Keep the compatibility JSON
+        // snapshot debounced; a crash between snapshots is recovered by replay.
     }
 
     /**
@@ -11172,6 +11350,12 @@ public final class OpenCodeRoot : VBox
                     // The exact completion count replaces the local estimate on
                     // the Thinking header; the total goes in the footer.
                     _liveTotalTokens = event.totalTokens;
+                    if (event.totalTokens > 0)
+                    {
+                        const owner = turnOwnerSessionIndex();
+                        if (owner >= 0 && owner < cast(int) _sessions.length)
+                            _preferEstimatedContext[_sessions[owner].id] = false;
+                    }
                     if (event.completionTokens > 0)
                         _liveOutputTokens = event.completionTokens;
                     updateLiveTokenRate();
@@ -12141,6 +12325,7 @@ public final class OpenCodeRoot : VBox
         if (_current >= 0)
         {
             auto session = &_sessions[_current];
+            if (total > 0) _preferEstimatedContext[session.id] = false;
             const path = activeMessagePath(*session);
             if (path.length > 0)
             {
@@ -12150,6 +12335,14 @@ public final class OpenCodeRoot : VBox
                 message.totalTokens = total;
             }
         }
+        refreshUsageBadge();
+    }
+
+    public void recordEstimatedContextUsageForTesting(int total)
+    {
+        if (_current < 0) return;
+        _estimatedContextTokens[_sessions[_current].id] = total;
+        _preferEstimatedContext[_sessions[_current].id] = true;
         refreshUsageBadge();
     }
 

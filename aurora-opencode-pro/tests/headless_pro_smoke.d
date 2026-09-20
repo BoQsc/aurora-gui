@@ -1215,10 +1215,19 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(root.contextUsageTextForTesting() == "0%",
         "Badge should reset to 0% for a session without usage");
+    root.recordEstimatedContextUsageForTesting(13_000);
+    assert(root.contextUsageTextForTesting() == "~2%",
+        "Provider-less context must show a clearly estimated non-zero value");
     sessions.onSelectionChanged(0);
     root.tickTree(0.02);
     assert(root.contextUsageTextForTesting() == "25%",
         "Badge should restore the persisted usage for the session");
+    root.recordEstimatedContextUsageForTesting(30_000);
+    assert(root.contextUsageTextForTesting() == "~3%",
+        "A new request estimate must supersede stale exact usage");
+    root.recordContextUsageForTesting(35_000, 5_000, 40_000);
+    assert(root.contextUsageTextForTesting() == "4%",
+        "Fresh provider usage must replace the request estimate");
     writeln("Context meter follows the active session");
 
     // --- Projects -------------------------------------------------------
@@ -2508,6 +2517,29 @@ int main(string[] args)
         "Doom-loop recovery did not reset the repeat counter");
     writeln("Doom-loop recovery breaks repeated identical tool calls");
 
+    // Repetition need not be adjacent. A model that alternates a known read
+    // with unrelated searches must still be stopped before executing the same
+    // successful observation for a third time.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Inspect then change the file"]);
+    enum repeatedArgs = `{"filePath":"source/rebuild.d"}`;
+    root.appendToolMessageForTesting("read", "known rebuild source",
+        repeatedArgs, 0, 0, "");
+    root.appendToolMessageForTesting("grep", "one unrelated result",
+        `{"pattern":"launch"}`, 0, 0, "");
+    root.appendToolMessageForTesting("read", "known rebuild source",
+        repeatedArgs, 0, 0, "");
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall interleavedRepeat;
+    interleavedRepeat.id = "call_interleaved_repeat";
+    interleavedRepeat.name = "read";
+    interleavedRepeat.arguments = repeatedArgs;
+    root.injectToolCallsForTesting([interleavedRepeat]);
+    assert(root.lastUserMessageForTesting().indexOf(
+        "already succeeded twice") >= 0,
+        "interleaved successful read repetition escaped the progress guard");
+    writeln("Progress guard catches interleaved repeated observations");
+
     // Progress-based loop recovery: the same FAILING tool (slightly different
     // arguments each time, so the exact-call signature never matches) must also
     // be broken once the identical failure repeats.
@@ -2629,6 +2661,30 @@ int main(string[] args)
     assert(root.explorationCountForTesting() == exhaustedExplorationCount,
         "substantive mutation reset the request-wide exploration budget");
     writeln("Exploration checkpoint guides action without disabling inspection");
+
+    // The checkpoint is now an enforceable phase boundary: two focused
+    // follow-up observations are available, but a third read-only round is
+    // skipped and the model is directed to implement or report a blocker.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Implement a bounded change"]);
+    foreach (i; 0 .. 10)
+        root.appendToolMessageForTesting("grep", "evidence",
+            `{"pattern":"seed-` ~ to!string(i) ~ `"}`, 0, 0, "");
+    assert(root.applyExplorationCheckpointForTesting(),
+        "bounded-exploration fixture did not create its checkpoint");
+    foreach (i; 0 .. 2)
+        root.appendToolMessageForTesting("read", "focused evidence",
+            `{"filePath":"focused-` ~ to!string(i) ~ `.d"}`, 0, 0, "");
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall excessRead;
+    excessRead.id = "call_excess_read";
+    excessRead.name = "read";
+    excessRead.arguments = `{"filePath":"focused-2.d"}`;
+    root.injectToolCallsForTesting([excessRead]);
+    assert(root.lastUserMessageForTesting().indexOf(
+        "Exploration is complete") >= 0,
+        "post-checkpoint exploration allowance was not enforced");
+    writeln("Exploration checkpoint enforces a bounded implementation phase");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);
