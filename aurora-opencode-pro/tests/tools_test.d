@@ -2,7 +2,7 @@ module auroraopencode_pro_tools_test;
 
 import auroraopencode.core : OpenCodeToolCall,
     setOpencodeStateDirectoryForTesting;
-import auroraopencode.tools : ChangeContext, ToolExecution,
+import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
     resolveToolPath, revertChangeRecord, toolSteeringPrompt;
@@ -187,6 +187,31 @@ int main()
     assert(grepExt.output.indexOf("extra.txt") >= 0,
         "grep include .txt did not match: " ~ grepExt.output);
     writeln("grep include is a glob (and accepts a bare extension)");
+
+    // A repository-wide search must not crawl generated/VCS trees or binary
+    // artifacts. Those can dwarf the source tree and previously made several
+    // parallel greps appear to hang for minutes.
+    mkdirRecurse(buildPath(dir, "build", "deep"));
+    write(buildPath(dir, "build", "deep", "ignored.d"),
+        "ignored-search-marker\n");
+    write(buildPath(dir, "src", "ignored.exe"),
+        "ignored-search-marker\n");
+    auto ignoredGrep = executeTool(makeCall("grep",
+        `{"pattern":"ignored-search-marker"}`), dir);
+    assert(!ignoredGrep.failed && ignoredGrep.output.indexOf("No matches") >= 0,
+        "grep entered a generated directory or binary artifact: " ~
+        ignoredGrep.output);
+
+    // Stop is per conversation and must also interrupt native searches, not
+    // only spawned shell commands.
+    auto grepCancellation = new ToolCancellation();
+    grepCancellation.cancel();
+    auto cancelledGrep = executeTool(makeCall("grep",
+        `{"pattern":"aurora"}`), dir, grepCancellation);
+    assert(cancelledGrep.failed &&
+        cancelledGrep.output.indexOf("cancelled") >= 0,
+        "cancelled grep kept running: " ~ cancelledGrep.output);
+    writeln("grep skips generated/binary trees and responds to Stop");
 
     // A chat can belong to the sandbox while the user explicitly names another
     // repository. Search tools must honor that root instead of silently looking

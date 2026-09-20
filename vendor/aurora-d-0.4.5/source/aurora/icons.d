@@ -37,7 +37,8 @@ enum IconKind : ubyte
     volumeMuted,
     battery,
     batteryCharging,
-    power
+    power,
+    user
 }
 
 void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
@@ -288,6 +289,15 @@ void drawIcon(ref Canvas canvas, IconKind icon, Rect rect, Color foreground,
                 foreground, maxInt(scale, 1));
             canvas.drawLine(Point(cx, cy - 8 * scale), Point(cx, cy - 2 * scale),
                 foreground, scale * 2);
+            break;
+        }
+        case IconKind.user:
+        {
+            // Avatar: a round head above a rounded shoulders dome.
+            canvas.fillRoundedRect(Rect(cx - 5 * scale, cy - 9 * scale,
+                10 * scale, 10 * scale), 5 * scale, foreground);
+            canvas.fillRoundedRect(Rect(cx - 8 * scale, cy + 2 * scale,
+                16 * scale, 8 * scale), 4 * scale, foreground.withAlpha(210));
             break;
         }
     }

@@ -7,7 +7,7 @@ import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
     timeLastModified;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
-    isAbsolute;
+    extension, isAbsolute;
 import std.process : Pid, Pipe, pipe, waitTimeout, kill, wait, spawnProcess,
     Config;
 version (Windows)
@@ -2850,7 +2850,38 @@ private ToolExecution runGlob(string args, string workspace)
     return ToolExecution("glob", truncateOutput(builder.data), false);
 }
 
-private ToolExecution runGrep(string args, string workspace)
+private bool grepIgnoredDirectory(string directory)
+{
+    const name = toLower(baseName(directory));
+    switch (name)
+    {
+        case ".git", ".hg", ".svn", ".dub", ".cache", ".idea", ".vscode",
+            "build", "dist", "out", "target", "node_modules", "coverage",
+            "__pycache__":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool grepIgnoredFile(string filePath)
+{
+    const ext = toLower(extension(filePath));
+    switch (ext)
+    {
+        case ".exe", ".dll", ".pdb", ".obj", ".lib", ".o", ".a", ".so",
+            ".dylib", ".bin", ".zip", ".7z", ".rar", ".gz", ".tar",
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf",
+            ".mp3", ".mp4", ".wav", ".woff", ".woff2", ".ttf", ".otf",
+            ".db", ".sqlite", ".class", ".jar", ".pyc":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private ToolExecution runGrep(string args, string workspace,
+    ToolCancellation cancellation = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -2893,12 +2924,28 @@ private ToolExecution runGrep(string args, string workspace)
     // not reported (grep is line-based, matching ripgrep's default behaviour).
     enum size_t maxHits = 200;
     enum size_t maxLineChars = 300;
+    enum ulong maxRecursiveFileBytes = 8UL * 1024 * 1024;
     string[] hits;
     bool capped;
-    bool scanFile(string filePath)
+    bool stopped;
+    bool scanFile(string filePath, bool explicitFile = false)
     {
+        if (cancellation !is null && cancellation.cancelled())
+        {
+            stopped = true;
+            return true;
+        }
         if (include.length > 0 &&
             !fileMatchesInclude(baseName(filePath), include)) return false;
+        if (!explicitFile)
+        {
+            if (grepIgnoredFile(filePath)) return false;
+            try
+            {
+                if (getSize(filePath) > maxRecursiveFileBytes) return false;
+            }
+            catch (Exception) return false;
+        }
         File file;
         try file = File(filePath, "r");
         catch (Exception) return false;
@@ -2909,6 +2956,12 @@ private ToolExecution runGrep(string args, string workspace)
             foreach (line; file.byLine())
             {
                 ++lineNo;
+                if ((lineNo & 255) == 0 && cancellation !is null &&
+                    cancellation.cancelled())
+                {
+                    stopped = true;
+                    return true;
+                }
                 if (matchFirst(line, re).empty) continue;
                 string display =
                     decodeBytesLenient(cast(const(ubyte)[]) line);
@@ -2931,15 +2984,41 @@ private ToolExecution runGrep(string args, string workspace)
     // precise one-file search instead of failing and provoking another tool
     // round just to remove the filename from the argument.
     if (isFile(root))
-        scanFile(root);
+        scanFile(root, true);
     else
     {
-        foreach (entry; dirEntries(root, SpanMode.breadth))
+        bool scanDirectory(string directory)
         {
-            if (!entry.isFile) continue;
-            if (scanFile(entry.name)) break;
+            if (cancellation !is null && cancellation.cancelled())
+            {
+                stopped = true;
+                return true;
+            }
+            try
+            {
+                foreach (entry; dirEntries(directory, SpanMode.shallow))
+                {
+                    if (cancellation !is null && cancellation.cancelled())
+                    {
+                        stopped = true;
+                        return true;
+                    }
+                    if (entry.isDir)
+                    {
+                        if (!grepIgnoredDirectory(entry.name) &&
+                            scanDirectory(entry.name)) return true;
+                    }
+                    else if (entry.isFile && scanFile(entry.name))
+                        return true;
+                }
+            }
+            catch (Exception) {}
+            return false;
         }
+        scanDirectory(root);
     }
+    if (stopped)
+        return ToolExecution("grep", "Stopped: grep cancelled.", true);
     if (hits.length == 0)
         return ToolExecution("grep", "No matches for: " ~ pattern, false);
     auto builder = appender!string();
@@ -3205,7 +3284,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "glob":
             return runGlob(call.arguments, workspace);
         case "grep":
-            return runGrep(call.arguments, workspace);
+            return runGrep(call.arguments, workspace, cancellation);
         default:
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);

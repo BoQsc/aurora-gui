@@ -2588,7 +2588,12 @@ int main(string[] args)
         "comment-only mutation reset the request-wide exploration budget");
     assert(root.verificationStatusForTesting() != "required",
         "comment-only mutation falsely satisfied implementation progress");
-    writeln("Request-wide exploration budget rejects failed/comment-only resets");
+    root.injectToolResultForTesting("edit", "Edited implementation", false,
+        `{"filePath":"app.d"}`, 1, 1,
+        "@@ -1 +1 @@\n-old behavior\n+new behavior\n");
+    assert(root.explorationCountForTesting() == exhaustedExplorationCount,
+        "substantive mutation reset the request-wide exploration budget");
+    writeln("Request-wide exploration budget survives every mutation result");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);

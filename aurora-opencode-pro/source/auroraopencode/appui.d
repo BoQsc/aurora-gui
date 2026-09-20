@@ -20,7 +20,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     ToolExecution;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
-import std.algorithm : canFind;
+import std.algorithm : canFind, max;
 import std.array : appender;
 import std.conv : to;
 import std.datetime : Clock;
@@ -2983,17 +2983,17 @@ private final class ToolGroupBubble : Widget
         return deletions;
     }
 
-    /// Sum the child rows' wall-clock durations so the collapsed group header
-    /// can show the action group's total time next to the `+N -M` counters.
+    /// Parallel children share the same wall-clock interval, so the collapsed
+    /// group header shows the longest child rather than adding their times.
     private long elapsedTotalMs()
     {
         long total;
         foreach (part; _parts)
         {
             if (auto bubble = cast(MessageBubble) part)
-                total += bubble.toolElapsedMsForTesting();
+                total = max(total, bubble.toolElapsedMsForTesting());
             else if (auto row = cast(LiveToolRow) part)
-                total += row.toolElapsedMsForTesting();
+                total = max(total, row.toolElapsedMsForTesting());
         }
         return total;
     }
@@ -5064,7 +5064,7 @@ public final class OpenCodeRoot : VBox
         changesButton.setId("oc-changes");
         changesButton.onClick = delegate() { showChangesDialog(); };
 
-        auto profileButton = toolbar.add(new Button("Profile"));
+        auto profileButton = toolbar.add(new Button("Profile", IconKind.user));
         profileButton.setId("oc-profile");
         profileButton.onClick = delegate() { showProfileDialog(); };
 
@@ -7375,11 +7375,14 @@ public final class OpenCodeRoot : VBox
                 mutated = true;
                 continue;
             }
-            // Before the first real edit, generic process execution is also
-            // exploration. Otherwise a model can evade the read budget by
-            // replacing `read` with `run python -c open(...)` indefinitely.
-            if (!mutated && (isReadOnlyExplorationTool(message.toolName) ||
-                message.toolName == "run" || message.toolName == "bash"))
+            // Native read/search calls count across the entire user request.
+            // A successful edit is progress, but it must not erase the
+            // evidence budget and reopen an unbounded inspection loop.
+            // Before the first real edit, generic process execution counts too
+            // so a model cannot evade the budget with `run python open(...)`.
+            if (isReadOnlyExplorationTool(message.toolName) ||
+                (!mutated && (message.toolName == "run" ||
+                    message.toolName == "bash")))
                 ++count;
         }
         return count;
