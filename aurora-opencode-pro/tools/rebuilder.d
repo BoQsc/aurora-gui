@@ -436,16 +436,104 @@ private void restoreExe(string exePath, string backup, bool haveBackup,
         appendLine(logPath, "could not restore the exe: " ~ error.msg);
 }
 
+/**
+ * Where the most recent `dub build` transcript is kept.
+ *
+ * DUB's output used to be streamed straight into `restart.log`, where it was
+ * interleaved with the restart narration and could not be read back. Capturing
+ * it to its own file means a failed compile can be quoted in the report and
+ * inspected afterwards without scrolling through unrelated lines.
+ */
+private string buildOutputPath(in Options options)
+{
+    if (options.logPath.length == 0) return "";
+    return buildPath(dirName(options.logPath), "build.log");
+}
+
+/// A short, self-contained summary of a failed build, in its own file, so the
+/// question "why did the rebuild fail?" has a one-screen answer.
+private string buildReportPath(in Options options)
+{
+    if (options.logPath.length == 0) return "";
+    return buildPath(dirName(options.logPath), "rebuild-report.txt");
+}
+
+/**
+ * The compiler's own error lines, in order, from a captured build transcript.
+ *
+ * DMD and DUB both mark these with `Error:` / `error:`; keeping only the
+ * matching lines turns pages of progress output into the handful of lines that
+ * explain the failure.
+ */
+private string[] errorLines(string output)
+{
+    string[] found;
+    size_t start;
+    while (start < output.length)
+    {
+        auto end = output.indexOf('\n', start);
+        if (end < 0) end = output.length;
+        const line = strip(output[start .. end]);
+        if (line.indexOf("Error:") >= 0 || line.indexOf("error:") >= 0)
+            found ~= line;
+        if (end == output.length) break;
+        start = end + 1;
+    }
+    return found;
+}
+
+/// Keep a report bounded: the tail is what a reader needs, not a transcript of
+/// every module the compiler touched on the way down.
+private string tailText(string text, size_t maxChars)
+{
+    if (text.length <= maxChars) return text;
+    return "...(earlier output omitted)...\n" ~ text[text.length - maxChars .. $];
+}
+
+/// Write the failed-build summary: the command, where it ran, the exit code,
+/// the extracted compiler errors, and the tail of the full output.
+private void writeBuildReport(in Options options, int code, string output,
+    string[] errors)
+{
+    const path = buildReportPath(options);
+    if (path.length == 0) return;
+    string text;
+    text ~= "Aurora OpenCode rebuild report\n";
+    text ~= "time:    " ~ to!string(Clock.currTime) ~ "\n";
+    text ~= "command: dub build --force --build=" ~ options.buildType ~ "\n";
+    text ~= "dir:     " ~ options.packageDir ~ "\n";
+    text ~= "exit:    " ~ to!string(code) ~ "\n";
+    text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
+    if (errors.length == 0)
+        text ~= "  (no line matched 'error:'; see " ~ buildOutputPath(options) ~
+            " for the full output)\n";
+    else
+        foreach (line; errors)
+            text ~= "  " ~ line ~ "\n";
+    text ~= "\nfull output (tail):\n" ~ tailText(output, 12_000) ~ "\n";
+    try
+    {
+        mkdirRecurse(dirName(path));
+        write(path, text);
+    }
+    catch (Exception) {}
+}
+
 private bool runBuild(in Options options)
 {
-    File log;
-    bool hasLog;
-    if (options.logPath.length > 0)
+    // DUB's output is captured to `build.log` rather than streamed into
+    // `restart.log`: a failed compile needs its error lines quoted in the
+    // report, and that is only possible if the text can be read back.
+    const outputPath = buildOutputPath(options);
+    File sink;
+    bool haveSink;
+    if (outputPath.length > 0)
     {
         try
         {
-            log = File(options.logPath, "a");
-            hasLog = true;
+            mkdirRecurse(dirName(outputPath));
+            sink = File(outputPath, "w");
+            haveSink = true;
         }
         catch (Exception) {}
     }
@@ -468,16 +556,22 @@ private bool runBuild(in Options options)
     {
         auto pid = spawnProcess(["dub", "build", "--force",
             "--build=" ~ options.buildType],
-            stdin, hasLog ? log : stdout, hasLog ? log : stderr, null,
+            stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
             Config.none, options.packageDir);
         code = wait(pid);
     }
     catch (Exception error)
     {
+        if (haveSink) sink.close();
         appendLine(options.logPath, "dub could not be started: " ~ error.msg);
         restoreExe(options.exePath, backup, haveBackup, options.logPath);
         return false;
     }
+    if (haveSink) sink.close();
+    const output = haveSink && exists(outputPath) ? readText(outputPath) : "";
+    const errors = errorLines(output);
+    const firstError = errors.length > 0 ? errors[0]
+        : "(no compiler error line; see " ~ outputPath ~ ")";
     // A zero exit code is not enough: the target must exist and be non-empty.
     if (code != 0 || options.exePath.length == 0 ||
         !exists(options.exePath) || getSize(options.exePath) == 0)
@@ -487,6 +581,17 @@ private bool runBuild(in Options options)
                 : (exists(options.exePath)
                     ? to!string(getSize(options.exePath)) ~ " bytes" : "missing")) ~
             "); restoring the previous binary");
+        appendLine(options.logPath, "build error: " ~ firstError);
+        writeBuildReport(options, code, output, errors);
+        // Named in the app's own log too, so the compiler failure lands where
+        // the app's crash summary and the user's usual log both look.
+        const appLog = appLogPath(options);
+        if (appLog.length > 0)
+            appendLine(appLog, "[ERROR] rebuild failed: " ~ firstError);
+        // Shown on screen, not just on disk: a rebuild that silently reopens
+        // the previous binary looks like nothing happened at all.
+        setProgress("Rebuild failed: " ~ firstError,
+            "see " ~ buildReportPath(options), 1.0);
         if (options.exePath.length > 0 && exists(options.exePath))
         {
             try remove(options.exePath);
@@ -494,6 +599,14 @@ private bool runBuild(in Options options)
         }
         restoreExe(options.exePath, backup, haveBackup, options.logPath);
         return false;
+    }
+    // A good build clears any report left by an earlier failure, so a stale one
+    // never masquerades as the latest result.
+    const report = buildReportPath(options);
+    if (report.length > 0 && exists(report))
+    {
+        try remove(report);
+        catch (Exception) {}
     }
     return true;
 }
@@ -606,8 +719,13 @@ int main(string[] args)
         const rebuilt = runBuild(options);
         appendLine(options.logPath, rebuilt ? "build succeeded"
             : "build FAILED; relaunching the previous binary");
-        setProgress(rebuilt ? "Rebuild finished. Starting..."
-            : "Rebuild failed; starting the previous build", "", 1.0);
+        // On failure `runBuild` has already put the first compiler error on
+        // screen; overwriting that with a generic line would hide the reason.
+        if (rebuilt)
+            setProgress("Rebuild finished. Starting...", "", 1.0);
+        else
+            appendLine(options.logPath,
+                "compiler errors: " ~ buildReportPath(options));
     }
     else
         appendLine(options.logPath, "rebuild skipped; relaunching as built");

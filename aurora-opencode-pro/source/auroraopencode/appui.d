@@ -5064,6 +5064,10 @@ public final class OpenCodeRoot : VBox
         changesButton.setId("oc-changes");
         changesButton.onClick = delegate() { showChangesDialog(); };
 
+        auto profileButton = toolbar.add(new Button("Profile"));
+        profileButton.setId("oc-profile");
+        profileButton.onClick = delegate() { showProfileDialog(); };
+
         auto settingsButton = toolbar.add(new Button("Settings", IconKind.settings));
         settingsButton.onClick = delegate() { showSettingsDialog(); };
 
@@ -9034,6 +9038,178 @@ public final class OpenCodeRoot : VBox
     /// Aurora-owned, Git-independent file history for the active workspace.
     /// Rows are append-only audit records; every revert is another reversible
     /// record and exact after-byte checks prevent overwriting subsequent work.
+    // -- profile / usage dialog -------------------------------------------
+
+    private void showProfileDialog()
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        long totalTokens, promptTokens, completionTokens;
+        int replies, sessionsWithUsage;
+        foreach (ref session; _sessions)
+        {
+            bool used;
+            foreach (ref message; session.messages)
+            {
+                if (message.totalTokens > 0 || message.completionTokens > 0)
+                {
+                    totalTokens += message.totalTokens;
+                    promptTokens += message.promptTokens;
+                    completionTokens += message.completionTokens;
+                    used = true;
+                }
+                if (message.role == "assistant") ++replies;
+            }
+            if (used) ++sessionsWithUsage;
+        }
+
+        string withThousands(long value)
+        {
+            auto text = to!string(value);
+            string outText;
+            int count;
+            for (int i = cast(int) text.length; i > 0; --i)
+            {
+                outText = text[i - 1] ~ outText;
+                if (++count % 3 == 0 && i > 1) outText = "," ~ outText;
+            }
+            return outText;
+        }
+
+        Color usageCellColor(int value, int peak)
+        {
+            if (value <= 0) return Color.rgba(60, 60, 60, 255);
+            if (peak <= 1) return Color.rgba(57, 211, 83, 255);
+            const fraction = cast(double) value / cast(double) peak;
+            if (fraction < 0.25) return Color.rgba(14, 68, 41, 255);
+            if (fraction < 0.5) return Color.rgba(0, 109, 50, 255);
+            if (fraction < 0.75) return Color.rgba(38, 166, 65, 255);
+            return Color.rgba(57, 211, 83, 255);
+        }
+
+        string barText(long value, long peak)
+        {
+            const width = 24;
+            const filled = peak > 0 ? cast(int)(value * width / peak) : 0;
+            string outBar;
+            foreach (i; 0 .. width)
+                outBar ~= i < filled ? "█" : "░";
+            return outBar;
+        }
+
+        auto content = new VBox(10, Insets(16));
+        content.layoutHints().preferredWidth = 720;
+
+        auto title = content.add(new Label("Profile"));
+        title.setPixelSize(opencodeFontTitle);
+        auto hint = content.add(new Label(
+            "Token usage across every conversation in this workspace."));
+        hint.setScale(1);
+        hint.setColor(opencodeMuted);
+
+        auto summary = content.add(new Label(
+            withThousands(totalTokens) ~ " tokens total  ·  " ~
+            withThousands(promptTokens) ~ " input  ·  " ~
+            withThousands(completionTokens) ~ " output"));
+        summary.setScale(1);
+        auto detail = content.add(new Label(
+            to!string(replies) ~ " assistant replies  ·  " ~
+            to!string(sessionsWithUsage) ~ " conversation(s) with recorded usage"));
+        detail.setScale(1);
+        detail.setColor(opencodeMuted);
+
+        // Contribution-style grid: one cell per assistant reply in the active
+        // conversation, shaded by token count (darker for lighter turns).
+        int[] activity;
+        if (_current >= 0 && _current < cast(int) _sessions.length)
+            foreach (ref message; _sessions[_current].messages)
+                if (message.role == "assistant")
+                    activity ~= (message.totalTokens > 0
+                        ? message.totalTokens : message.completionTokens);
+
+        const columns = 13;
+        const rowsCount = 7;
+        const cells = columns * rowsCount;
+        int[] window = activity.length > cells ? activity[$ - cells .. $] : activity;
+        int peakCell;
+        foreach (value; window) if (value > peakCell) peakCell = value;
+
+        auto gridLabel = content.add(new Label("Recent activity (active chat)"));
+        gridLabel.setScale(1);
+        gridLabel.setColor(opencodeMuted);
+        auto grid = content.add(new VBox(2));
+        auto gridRows = new HBox[rowsCount];
+        foreach (r; 0 .. rowsCount)
+            gridRows[r] = grid.add(new HBox(2));
+        const offset = cells - cast(int) window.length;
+        foreach (k; 0 .. cells)
+        {
+            auto cell = new Label("·");
+            cell.setScale(1);
+            if (k >= offset)
+            {
+                const value = window[k - offset];
+                cell.setText("█");
+                cell.setColor(usageCellColor(value, peakCell));
+            }
+            else
+                cell.setColor(Color.rgba(60, 60, 60, 255));
+            gridRows[k % rowsCount].add(cell);
+        }
+
+        // Per-conversation totals with proportional bars.
+        long peakSession;
+        foreach (ref session; _sessions)
+        {
+            long sessionTotal;
+            foreach (ref message; session.messages)
+                sessionTotal += message.totalTokens;
+            if (sessionTotal > peakSession) peakSession = sessionTotal;
+        }
+        auto listLabel = content.add(new Label("Usage by conversation"));
+        listLabel.setScale(1);
+        listLabel.setColor(opencodeMuted);
+        auto list = content.add(new ListView());
+        list.setId("oc-profile-list");
+        list.layoutHints().preferredHeight = 300;
+        ListItem[] items;
+        foreach (index, ref session; _sessions)
+        {
+            long sessionTotal;
+            int msgs;
+            foreach (ref message; session.messages)
+            {
+                sessionTotal += message.totalTokens;
+                if (message.role == "assistant") ++msgs;
+            }
+            if (sessionTotal == 0 && msgs == 0) continue;
+            const name = session.title.length > 0 ? session.title : "New chat";
+            const marker = cast(int) index == _current ? "▸ " : "";
+            const secondary = to!string(msgs) ~ " replies · " ~
+                withThousands(sessionTotal) ~ " tokens  " ~
+                barText(sessionTotal, peakSession);
+            items ~= ListItem(marker ~ name, IconKind.settings, secondary);
+        }
+        if (items.length == 0)
+            items ~= ListItem("No usage recorded yet", IconKind.settings,
+                "Send a message to start tracking tokens.");
+        list.setItems(items);
+
+        auto footer = content.add(new HBox(8));
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto close = footer.add(new Button("Close"));
+        close.setId("oc-profile-close");
+        close.onClick = delegate() { dismissPopup(); };
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(760, 560));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+    }
+
     private void showChangesDialog()
     {
         if (_activePopup !is null) _activePopup.dismiss();
