@@ -208,6 +208,12 @@ private final class MessageBubble : Widget
     private bool _tokensLive;
     private int _messageIndex;
     private bool _hidden;
+    // A prompt typed while its turn is still running is queued durably and only
+    // injected at the next valid message boundary. Drawing it as a normal user
+    // turn would misrepresent ordering (the model has not seen it yet), so a
+    // queued bubble renders dimmed with a "queued" footer instead — the prompt
+    // stays visible instead of looking like it silently vanished.
+    private bool _queued;
 
     // Chat-quality actions (Pro): regenerate/retry the last reply, edit &
     // resend a user message.
@@ -402,6 +408,29 @@ private final class MessageBubble : Widget
     public string roleForTesting()
     {
         return _role;
+    }
+
+    /// Mark this bubble as a queued (not-yet-sent) user prompt. It renders
+    /// dimmed, with `hint` in the footer, so a prompt typed during a live turn
+    /// reads as pending rather than sent.
+    void setQueued(bool value, string hint = "")
+    {
+        if (_queued == value) return;
+        _queued = value;
+        if (_queued && hint.length > 0) _usageText = hint;
+        invalidate();
+    }
+
+    /// Whether this bubble represents a queued, not-yet-applied prompt.
+    bool queued() const
+    {
+        return _queued;
+    }
+
+    /// Test-only: whether this bubble is a queued prompt.
+    public bool queuedForTesting() const
+    {
+        return _queued;
     }
 
     /// Test-only: how many codepoints of answer content this bubble holds.
@@ -998,10 +1027,13 @@ private final class MessageBubble : Widget
             const panelW = userBubbleWidth(width);
             userX = maxInt(0, width - panelW);
             userInnerWidth = maxInt(24, panelW - 2 * padH);
+            // A queued prompt is dimmed (rather than accent-highlighted) and
+            // carries a footer hint, so a prompt typed while the turn is live
+            // reads as pending instead of sent.
             canvas.fillRoundedRect(Rect(userX, 0, panelW, height), 8,
                 opencodePanel);
             canvas.fillRect(Rect(userX + panelW - accentW, 0, accentW, height),
-                opencodeAccent);
+                _queued ? opencodeMuted : opencodeAccent);
         }
         else if (_failed)
         {
@@ -1068,7 +1100,8 @@ private final class MessageBubble : Widget
                 const textX = _role == "user" ? userX + padH : padH;
                 const textWidth = _role == "user" ? userInnerWidth : innerWidth;
                 auto layout = shapedContent(textWidth);
-                canvas.drawLayout(Point(textX, contentY), layout, opencodeText);
+                canvas.drawLayout(Point(textX, contentY), layout,
+                    _queued ? opencodeMuted : opencodeText);
                 if (layout.lines.length > 0)
                     _selSegments ~= SelectSegment(layout, textX, contentY,
                         maxInt(1, textWidth),
@@ -6372,6 +6405,24 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(null, _messageColumn, "live");
+        // A prompt typed while this turn is still running is queued durably and
+        // only injected at the next valid message boundary. Show it now as a
+        // dimmed, pending user bubble so submitting a prompt never looks like
+        // it vanished; `appendQueuedGuidance` turns each queued entry into a
+        // real turn (and clears the queue) in the same rebuild that applies it.
+        if (session.queuedGuidance.length > 0)
+            foreach (text; session.queuedGuidance)
+            {
+                auto queuedBubble = new MessageBubble();
+                queuedBubble.setRole("user");
+                queuedBubble.setContent(to!string(text));
+                // No physical message backs it yet, so it carries no context
+                // menu, branch nav or action pill.
+                queuedBubble.setMessageIndex(-1);
+                queuedBubble.setQueued(true,
+                    "Queued · sending at the next safe step");
+                _messageColumn.add(queuedBubble);
+            }
         // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
         // happens many times while a reply and its tools stream (e.g. every
         // throttled tool-argument delta), and forcing follow each time yanked a
@@ -6695,6 +6746,10 @@ public final class OpenCodeRoot : VBox
             auto child = cast(MessageBubble) children[i - 1];
             if (child is null) continue;
             if (_streamBubble !is null && child is _streamBubble) continue;
+            // A queued prompt is not the latest settled reply; skip it so the
+            // real last reply keeps its Regenerate/Continue pill while a
+            // prompt sits in the queue.
+            if (child.queued()) continue;
             target = child;
             break;
         }
@@ -7999,6 +8054,10 @@ public final class OpenCodeRoot : VBox
                 _input.setText("");
                 publishThreadUpdated(*session);
                 markDirty();
+                // Materialize the pending prompt so it is visible immediately
+                // instead of only flashing a status line.
+                _messagesScroll.follow = true;
+                rebuildMessageColumn();
                 updateStatus("Guidance queued — applying at the next safe step…");
                 return;
             }
@@ -11297,11 +11356,37 @@ public final class OpenCodeRoot : VBox
         _sessions[_current].queuedGuidance ~= guidance.strip();
         publishThreadUpdated(_sessions[_current]);
         markDirty();
+        rebuildMessageColumn();
     }
 
     public size_t queuedGuidanceCountForTesting() const
     {
         return _current < 0 ? 0 : _sessions[_current].queuedGuidance.length;
+    }
+
+    /// Test-only: how many queued (not-yet-sent) prompt bubbles the transcript
+    /// currently shows, so the pending UI can be asserted directly.
+    public int queuedPromptBubbleCountForTesting()
+    {
+        int count;
+        foreach (child; messageColumnVisuals())
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble.queued()) ++count;
+        return count;
+    }
+
+    /// Test-only: a short prefix of the queued prompt bubble at visual `index`.
+    public string queuedPromptBubbleTextForTesting(int index)
+    {
+        int seen;
+        foreach (child; messageColumnVisuals())
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null || !bubble.queued()) continue;
+            if (seen == index) return bubble.contentSnippetForTesting();
+            ++seen;
+        }
+        return "";
     }
 
     public bool consumeGuidanceForTesting()

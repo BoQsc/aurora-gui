@@ -3179,6 +3179,12 @@ int main(string[] args)
             "active-turn guidance was not queued durably");
         assert(root.inputTextForTesting().length == 0,
             "queued active-turn guidance was not cleared from the composer");
+        assert(root.queuedPromptBubbleCountForTesting() == 1,
+            "a queued prompt did not appear as a pending transcript bubble");
+        assert(root.queuedPromptBubbleTextForTesting(0) == "Keep it GUI-first",
+            "the pending prompt bubble lost its text: " ~
+            root.queuedPromptBubbleTextForTesting(0));
+        assert(driver.paint(), "a queued prompt bubble did not paint");
         root.persistForTesting();
         root.reloadSessionsForTesting();
         assert(root.taskObjectiveForTesting() == "Build durable recovery" &&
@@ -3189,6 +3195,8 @@ int main(string[] args)
             "queued guidance was not injected at a safe boundary");
         assert(root.queuedGuidanceCountForTesting() == 0,
             "consumed guidance remained queued");
+        assert(root.queuedPromptBubbleCountForTesting() == 0,
+            "the pending prompt bubble was not replaced by a real turn");
         assert(root.completionWouldContinueForTesting(),
             "unfinished durable checklist did not hold completion open");
         const checklistGate = root.incompleteChecklistGatePromptForTesting();
