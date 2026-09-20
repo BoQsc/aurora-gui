@@ -15,7 +15,7 @@ import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     InternetSetOptionW;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.string : indexOf, lastIndexOf;
+import std.string : indexOf, lastIndexOf, strip;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef, isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
@@ -84,6 +84,95 @@ public bool transientChatStatusForTesting(uint status)
 {
     return isTransientChatStatus(cast(DWORD) status);
 }
+
+/// Thinking-mode providers (DeepSeek-class routes behind the OpenCode Go
+/// gateway) reject a request whose assistant messages omit `reasoning_content`:
+/// "The `reasoning_content` in the thinking mode must be passed back to the
+/// API". That is a request-shape problem Aurora can repair, not a fatal upstream
+/// failure, so the client re-sends the payload with the reasoning replayed
+/// instead of blocking the answer.
+private bool isReasoningReplayRejection(string detail)
+{
+    return containsAsciiIgnoreCase(detail, "reasoning_content") &&
+        (containsAsciiIgnoreCase(detail, "thinking") ||
+            containsAsciiIgnoreCase(detail, "passed back"));
+}
+
+/// Test-only: exposes the reasoning-replay recovery decision.
+public bool recoverableReasoningErrorForTesting(string detail)
+{
+    return isReasoningReplayRejection(detail);
+}
+
+/// Test-only: exposes the gateway-wrapper stripping applied to failures.
+public string condenseUpstreamDetailForTesting(string detail)
+{
+    return condenseUpstreamDetail(detail);
+}
+
+/// Case-insensitive ASCII substring search. Provider payloads can be tens of
+/// kilobytes, so this scans in place instead of lowering a whole copy.
+private bool containsAsciiIgnoreCase(string haystack, string needle)
+{
+    if (needle.length == 0) return true;
+    if (haystack.length < needle.length) return false;
+    foreach (index; 0 .. haystack.length - needle.length + 1)
+    {
+        bool match = true;
+        foreach (offset; 0 .. needle.length)
+        {
+            if (asciiLower(haystack[index + offset]) !=
+                asciiLower(needle[offset]))
+            {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+private char asciiLower(char value)
+{
+    return value >= 'A' && value <= 'Z' ? cast(char)(value + 32) : value;
+}
+
+/// The OpenCode Go route wraps provider failures in several layers ("Error from
+/// provider (X): Upstream request failed: [code] text"). Showing every layer
+/// turned one actionable sentence into a wall of gateway plumbing, so keep the
+/// provider's own message.
+private static string condenseUpstreamDetail(string detail)
+{
+    string text = detail.strip;
+    if (startsWithAscii(text, "Error from provider ("))
+    {
+        const close = text.indexOf("):");
+        if (close >= 0) text = text[cast(size_t) close + 2 .. $].strip;
+    }
+    if (startsWithAscii(text, "Upstream request failed:"))
+    {
+        const colon = text.indexOf(':');
+        text = text[cast(size_t) colon + 1 .. $].strip;
+    }
+    if (text.length > 1 && text[0] == '[')
+    {
+        const close = text.indexOf("] ");
+        if (close > 0) text = text[cast(size_t) close + 2 .. $].strip;
+    }
+    return text;
+}
+
+/// Plain-language failure shown only when the provider keeps refusing the
+/// conversation's thinking state even after Aurora replayed it and dropped
+/// hosted reasoning. The raw gateway text names internal fields and reads like
+/// a bug in the user's own prompt, so it stays in the log.
+private immutable string reasoningReplayFailureText =
+    "The provider refused this conversation in thinking mode: it requires the " ~
+    "assistant's earlier thinking to be sent back, and it still refused after " ~
+    "Aurora replayed it. Turn Thinking off for this chat (or start a new chat) " ~
+    "and send again.";
+
 private enum DWORD defaultSendTimeoutMs = 60_000;
 private enum DWORD defaultReceiveTimeoutMs = 120_000;
 
@@ -514,7 +603,13 @@ final class OpenCodeClient
         try
         {
             const target = parseHttpTarget(_baseUrl, "/chat/completions");
-            const body = buildChatBody(messages, tools, model, thinking,
+            // Request-shape recovery state. A thinking-mode provider can reject
+            // the payload because the assistant's reasoning was not replayed
+            // (first recovery) and, if it still refuses, because hosted
+            // reasoning cannot continue on this history (second recovery).
+            bool replayReasoning;
+            bool droppedReasoning;
+            string body = buildChatBody(messages, tools, model, thinking,
                 _baseUrl);
             _streamReasoning = "";
             _streamContent = "";
@@ -536,15 +631,20 @@ final class OpenCodeClient
                 headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
-            auto bodyBytes = cast(ubyte[]) body.dup;
             auto session = openSession();
             uint attempt;
             while (attempt < maxTransientChatAttempts)
             {
+                if (replayReasoning || droppedReasoning)
+                    body = buildChatBody(messages, tools, model,
+                        droppedReasoning ? false : thinking, _baseUrl,
+                        replayReasoning);
+                auto bodyBytes = cast(ubyte[]) body.dup;
                 HINTERNET connection;
                 HINTERNET request;
                 bool retry;
                 DWORD retryStatus;
+                string retryNote;
                 try
                 {
                     connection = InternetConnectW(session,
@@ -574,17 +674,50 @@ final class OpenCodeClient
                         statusCode != 200)
                     {
                         const detail = readAllAsUtf8(request);
+                        const reasoningRejected =
+                            isReasoningReplayRejection(detail);
                         if (isTransientChatStatus(statusCode) &&
                             attempt + 1 < maxTransientChatAttempts)
                         {
                             retry = true;
                             retryStatus = statusCode;
                         }
+                        else if (reasoningRejected && !droppedReasoning &&
+                            attempt + 1 < maxTransientChatAttempts)
+                        {
+                            // Repair the request instead of failing the turn:
+                            // echo the assistant reasoning, then (if the
+                            // provider still objects) continue without hosted
+                            // reasoning rather than blocking the answer.
+                            if (!replayReasoning)
+                            {
+                                replayReasoning = true;
+                                retryNote = "replaying the assistant reasoning";
+                            }
+                            else
+                            {
+                                droppedReasoning = true;
+                                retryNote =
+                                    "continuing without hosted reasoning";
+                            }
+                            retry = true;
+                            retryStatus = statusCode;
+                        }
+                        else if (reasoningRejected)
+                        {
+                            logError("chat request failed: HTTP " ~
+                                to!string(statusCode) ~ " " ~
+                                condenseUpstreamDetail(
+                                    formatHttpErrorDetail(detail)) ~ " [" ~
+                                _baseUrl ~ "]");
+                            throw new Exception(reasoningReplayFailureText);
+                        }
                         else
                             throw new Exception("Upstream returned HTTP " ~
                                 to!string(statusCode) ~
                                 (detail.length > 0 ? ": " ~
-                                    formatHttpErrorDetail(detail) : "") ~
+                                    condenseUpstreamDetail(
+                                        formatHttpErrorDetail(detail)) : "") ~
                                 (isTransientChatStatus(statusCode) && attempt > 0
                                     ? " (after " ~ to!string(attempt + 1) ~
                                         " attempts)" : ""));
@@ -641,7 +774,9 @@ final class OpenCodeClient
                 if (!retry) break;
                 ++attempt;
                 logInfo("chat upstream returned HTTP " ~
-                    to!string(retryStatus) ~ "; retrying attempt " ~
+                    to!string(retryStatus) ~
+                    (retryNote.length > 0 ? " (" ~ retryNote ~ ")" : "") ~
+                    "; retrying attempt " ~
                     to!string(attempt + 1) ~ "/" ~
                     to!string(maxTransientChatAttempts) ~ " [" ~
                     _baseUrl ~ "]");
@@ -745,9 +880,11 @@ final class OpenCodeClient
 
     /// Test-only: build the request JSON body without sending anything.
     public string buildBodyForTesting(const(ChatRequestMessage)[] messages,
-        const(OpenCodeToolDef)[] tools, string model, bool thinking)
+        const(OpenCodeToolDef)[] tools, string model, bool thinking,
+        bool forceReasoningReplay = false)
     {
-        return buildChatBody(messages, tools, model, thinking, _baseUrl);
+        return buildChatBody(messages, tools, model, thinking, _baseUrl,
+            forceReasoningReplay);
     }
 
     /// Test-only: verify URL transport selection without opening a connection.
@@ -840,7 +977,8 @@ final class OpenCodeClient
         }
     }
 
-    private static JSONValue chatMessageToJson(const ref ChatRequestMessage message)
+    private static JSONValue chatMessageToJson(
+        const ref ChatRequestMessage message, bool forceReasoningReplay = false)
     {
         JSONValue json;
         json["role"] = message.role;
@@ -849,8 +987,12 @@ final class OpenCodeClient
         // reasoning_content to be echoed on the following tool round. Include
         // an empty value for legacy persisted tool calls: presence is required
         // even when an older Aurora build failed to save the returned text.
+        // `forceReasoningReplay` extends that to every assistant message; it is
+        // the recovery for a provider that rejected an earlier attempt with
+        // exactly this complaint.
         if (message.role == "assistant" &&
-            (message.reasoningContent.length > 0 || message.toolCalls.length > 0))
+            (forceReasoningReplay || message.reasoningContent.length > 0 ||
+                message.toolCalls.length > 0))
             json["reasoning_content"] = message.reasoningContent;
         if (message.role == "tool" && message.toolCallId.length > 0)
             json["tool_call_id"] = message.toolCallId;
@@ -911,13 +1053,13 @@ final class OpenCodeClient
 
     private static string buildChatBody(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
-        string baseUrl)
+        string baseUrl, bool forceReasoningReplay = false)
     {
         JSONValue root;
         root["model"] = model;
         JSONValue messageList = JSONValue(string[].init);
         foreach (message; normalizeSystemMessages(messages))
-            messageList.array ~= chatMessageToJson(message);
+            messageList.array ~= chatMessageToJson(message, forceReasoningReplay);
         root["messages"] = messageList;
         if (tools.length > 0)
         {

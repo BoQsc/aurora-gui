@@ -1,7 +1,8 @@
 module auroraopencode_core_tool_sse;
 
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
-    OpenCodeEventKind, transientChatStatusForTesting;
+    OpenCodeEventKind, condenseUpstreamDetailForTesting,
+    recoverableReasoningErrorForTesting, transientChatStatusForTesting;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -165,6 +166,103 @@ private void assertPlainBody()
     client.closeSession();
 }
 
+/// The failure this recovery exists for: the OpenCode Go route refused a
+/// thinking-mode continuation because the assistant's `reasoning_content` was
+/// not replayed. It is a repairable request-shape problem, not a fatal upstream
+/// error, and any text that does reach the transcript must be the provider's
+/// own sentence instead of the gateway's wrapper chain.
+private void assertReasoningReplayRecovery()
+{
+    const live =
+        "HTTP 400: Error from provider (Console Go): Upstream request failed: " ~
+        "[invalid_request_error] The `reasoning_content` in the thinking mode " ~
+        "must be passed back to the API.";
+    assert(recoverableReasoningErrorForTesting(live),
+        "A missing reasoning_content replay was treated as fatal");
+    assert(recoverableReasoningErrorForTesting(
+        `{"error":{"message":"The reasoning_content in the thinking mode ` ~
+        `must be passed back to the API."}}`),
+        "The raw JSON envelope hid the reasoning replay failure");
+    assert(!recoverableReasoningErrorForTesting("HTTP 401: invalid api key"),
+        "An unrelated auth failure was misread as a reasoning problem");
+    assert(!recoverableReasoningErrorForTesting(
+        "rate limit exceeded for reasoning tokens"),
+        "A rate limit was misread as a reasoning replay problem");
+
+    assert(condenseUpstreamDetailForTesting(live) ==
+        "HTTP 400: Error from provider (Console Go): Upstream request failed: " ~
+        "[invalid_request_error] The `reasoning_content` in the thinking mode " ~
+        "must be passed back to the API.",
+        "A message that is not a bare gateway wrapper was rewritten");
+    // The client condenses the provider's own message (already unwrapped from
+    // the HTTP status and JSON envelope by `formatHttpErrorDetail`).
+    const providerMessage =
+        "Error from provider (Console Go): Upstream request failed: " ~
+        "[invalid_request_error] The `reasoning_content` in the thinking mode " ~
+        "must be passed back to the API.";
+    assert(condenseUpstreamDetailForTesting(providerMessage) ==
+        "The `reasoning_content` in the thinking mode must be passed back to " ~
+        "the API.",
+        "Gateway wrapping still leaks into the transcript: " ~
+        condenseUpstreamDetailForTesting(providerMessage));
+    assert(condenseUpstreamDetailForTesting(
+        "[invalid_request_error] tool_call_id must follow a tool_calls " ~
+        "message") == "tool_call_id must follow a tool_calls message",
+        "A provider error code prefix was left in the message");
+    assert(condenseUpstreamDetailForTesting("HTTP 500: server exploded") ==
+        "HTTP 500: server exploded",
+        "A plain provider message was rewritten");
+    writeln("Reasoning replay rejections are recognized and condensed");
+}
+
+/// A provider that rejected an attempt for a missing reasoning replay gets the
+/// field forced onto every assistant message, including ones whose reasoning
+/// text was never captured (a Thinking=off turn, or a legacy saved chat).
+private void assertForcedReasoningReplayBody()
+{
+    auto client = new OpenCodeClient("https://example.com/v1", "test-key");
+
+    ChatRequestMessage user, assistant, toolResult;
+    user.role = "user";
+    user.content = "Continue";
+    assistant.role = "assistant";
+    assistant.content = "Working on it.";
+    OpenCodeToolCall call;
+    call.id = "call_1";
+    call.name = "read";
+    call.arguments = "{}";
+    assistant.toolCalls ~= call;
+    toolResult.role = "tool";
+    toolResult.toolCallId = "call_1";
+    toolResult.content = "ok";
+
+    const plain = parseJSON(client.buildBodyForTesting(
+        [user, assistant, toolResult], null, "deepseek/x", true));
+    auto plainAssistant = plain.object["messages"].array[1];
+    assert(("reasoning_content" in plainAssistant.object) !is null &&
+        plainAssistant.object["reasoning_content"].str == "",
+        "A tool round stopped replaying an (empty) reasoning_content");
+
+    // An assistant answer with no reasoning and no tool calls is normally sent
+    // without the field; only the recovery path forces its presence.
+    ChatRequestMessage answer;
+    answer.role = "assistant";
+    answer.content = "Earlier answer";
+    const omitted = parseJSON(client.buildBodyForTesting(
+        [user, answer], null, "deepseek/x", true));
+    assert(("reasoning_content" in
+        omitted.object["messages"].array[1].object) is null,
+        "The first attempt sent a reasoning field it did not need");
+    const forced = parseJSON(client.buildBodyForTesting(
+        [user, answer], null, "deepseek/x", true, true));
+    auto forcedAssistant = forced.object["messages"].array[1];
+    assert(("reasoning_content" in forcedAssistant.object) !is null &&
+        forcedAssistant.object["reasoning_content"].str == "",
+        "The recovery body did not replay reasoning_content");
+    writeln("Reasoning replay recovery serializes a repairable body");
+    client.closeSession();
+}
+
 /// llama-server's conventional local endpoint uses HTTP, needs no key, and
 /// accepts reasoning_effort=none for Qwen's non-thinking mode.
 private void assertLlamaServerCompatibility()
@@ -222,6 +320,7 @@ private void assertLlamaServerCompatibility()
 
 int main()
 {
+    assertReasoningReplayRecovery();
     assert(transientChatStatusForTesting(500));
     assert(transientChatStatusForTesting(502));
     assert(transientChatStatusForTesting(503));
@@ -234,6 +333,7 @@ int main()
     assertFinishReasonFixture();
     assertRequestBody();
     assertPlainBody();
+    assertForcedReasoningReplayBody();
     assertLlamaServerCompatibility();
     writeln("aurora-opencode-core tool SSE tests passed.");
     return 0;
