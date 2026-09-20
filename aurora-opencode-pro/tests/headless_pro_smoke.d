@@ -938,9 +938,10 @@ int main(string[] args)
         "preserving guidance incorrectly kept the stopped task active");
     writeln("Stop preserves already-submitted guidance in the transcript");
 
-    // Compaction: old completed tool envelopes are structurally collapsed even
-    // before the hard context limit. Replaying every stale call on every round
-    // is quadratic; only the actively continuing newest pair needs to remain.
+    // Compaction is a context-pressure operation, not something performed on
+    // every continuation. Below the threshold the model-visible prefix remains
+    // stable; above it, old completed tool envelopes are checkpointed while the
+    // actively continuing newest pair remains structurally valid.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["big job"]);
     import std.array : replicate;
@@ -956,6 +957,13 @@ int main(string[] args)
     size_t fatBytes;
     foreach (m; fat) fatBytes += m.content.length;
     assert(fatBytes > 200_000, "compaction fixture was not large enough");
+    auto stable = root.compactedRequestMessagesForTesting(1_000_000);
+    int stableToolGroups;
+    foreach (m; stable)
+        if (m.role == "assistant" && m.toolCalls.length > 0)
+            ++stableToolGroups;
+    assert(stable.length == fat.length && stableToolGroups == 12,
+        "under-budget request was needlessly compacted");
     auto slim = root.compactedRequestMessagesForTesting(8_000);
     size_t slimBytes;
     int toolCount, compactNotes;
@@ -1160,16 +1168,16 @@ int main(string[] args)
         writeln("Client surfaces streamed reasoning as it arrives");
     }
 
-    // Context usage meter: the toolbar badge shows the exact API usage as a
-    // percentage of the model's context window, and hovering opens a tooltip
-    // with the full breakdown (mirrors the real opencode indicator). The
+    // Context usage meter: the toolbar badge shows the exact model-visible
+    // input as a percentage of the context window. Output/billing totals must
+    // not make context occupancy jump while a response streams. The
     // limit comes from the model catalog: deepseek-v4.1-flash (the OpenCode
     // gateway id) has a 1,000,000-token context window.
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
     root.recordContextUsageForTesting(240000, 10000, 250000);
     assert(driver.paint(), "Context badge did not paint after usage");
-    assert(root.contextUsageTextForTesting() == "25%",
-        "Badge should show 250000/1000000 = 25%");
+    assert(root.contextUsageTextForTesting() == "24%",
+        "Badge should show 240000/1000000 = 24% input context");
     writeln("Context badge after usage: ", root.contextUsageTextForTesting());
 
     assert(!root.isContextTooltipOpenForTesting(),
@@ -1197,9 +1205,9 @@ int main(string[] args)
     assert(tooltip.indexOf("deepseek-v4.1-flash") >= 0,
         "Tooltip lacks the model");
     assert(tooltip.indexOf("1,000,000") >= 0, "Tooltip lacks the context limit");
-    assert(tooltip.indexOf("250,000") >= 0, "Tooltip lacks the used tokens");
-    assert(tooltip.indexOf("25%") >= 0, "Tooltip lacks the usage percent");
-    assert(tooltip.indexOf("240,000") >= 0, "Tooltip lacks the prompt tokens");
+    assert(tooltip.indexOf("240,000") >= 0, "Tooltip lacks active input");
+    assert(tooltip.indexOf("24%") >= 0, "Tooltip lacks the usage percent");
+    assert(tooltip.indexOf("10,000") >= 0, "Tooltip lacks last output tokens");
     writeln("Context tooltip shows the usage breakdown on hover");
 
     // Moving away from the badge dismisses the tooltip.
@@ -1220,14 +1228,14 @@ int main(string[] args)
         "Provider-less context must show a clearly estimated non-zero value");
     sessions.onSelectionChanged(0);
     root.tickTree(0.02);
-    assert(root.contextUsageTextForTesting() == "25%",
+    assert(root.contextUsageTextForTesting() == "24%",
         "Badge should restore the persisted usage for the session");
     root.recordEstimatedContextUsageForTesting(30_000);
     assert(root.contextUsageTextForTesting() == "~3%",
         "A new request estimate must supersede stale exact usage");
-    root.recordContextUsageForTesting(35_000, 5_000, 40_000);
-    assert(root.contextUsageTextForTesting() == "4%",
-        "Fresh provider usage must replace the request estimate");
+    root.recordContextUsageForTesting(30_000, 10_000, 40_000);
+    assert(root.contextUsageTextForTesting() == "3%",
+        "Fresh prompt usage must replace the estimate without counting output");
     writeln("Context meter follows the active session");
 
     // --- Projects -------------------------------------------------------

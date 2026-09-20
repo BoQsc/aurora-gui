@@ -4622,10 +4622,13 @@ public final class OpenCodeRoot : VBox
     private bool _runtimeErrorReported;
 
     private ContextUsageBadge _usageBadge;
-    // Provider usage is optional on OpenAI-compatible streaming endpoints.
-    // Cache a full-request estimate per conversation so the toolbar never
-    // claims 0% merely because the gateway omitted `usage`.
+    // The context meter tracks model-visible input, never cumulative
+    // input+output usage. Provider usage is optional on OpenAI-compatible
+    // streaming endpoints, so cache a full-request estimate per conversation.
     private int[string] _estimatedContextTokens;
+    private int[string] _reportedContextTokens;
+    private int[string] _reportedCompletionTokens;
+    private bool[string] _contextWasCompacted;
     // A newly submitted request is newer than any usage persisted on an older
     // assistant reply. Keep showing its estimate until this request supplies
     // an exact total of its own.
@@ -8099,12 +8102,20 @@ public final class OpenCodeRoot : VBox
         const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools)
     {
-        size_t bytes = requestMessageBytes(messages);
+        const size_t bytes = requestMessageBytes(messages) +
+            requestToolDefinitionBytes(tools);
+        const size_t tokens = (bytes + 3) / 4;
+        return tokens > cast(size_t) int.max ? int.max : cast(int) tokens;
+    }
+
+    private static size_t requestToolDefinitionBytes(
+        const(OpenCodeToolDef)[] tools)
+    {
+        size_t bytes;
         foreach (tool; tools)
             bytes += tool.name.length + tool.description.length +
                 tool.parametersJson.length + 64;
-        const size_t tokens = (bytes + 3) / 4;
-        return tokens > cast(size_t) int.max ? int.max : cast(int) tokens;
+        return bytes;
     }
 
     /// A short, UTF-8-safe first-line excerpt for deterministic checkpoints.
@@ -8271,19 +8282,30 @@ public final class OpenCodeRoot : VBox
         return result;
     }
 
-    /// Deterministically shrink a request so it fits the model's context
-    /// window. Structural tool-history compaction runs on every request to avoid
-    /// quadratic token replay; oversized remaining content is then elided.
+    /// Deterministically shrink a request only when it approaches the model's
+    /// context budget. Keeping the model-visible prefix stable below that limit
+    /// avoids needless context churn on every tool continuation.
     private static ChatRequestMessage[] compactRequestMessages(
-        ChatRequestMessage[] messages, int contextLimit)
+        ChatRequestMessage[] messages, int contextLimit,
+        size_t fixedRequestBytes = 0)
     {
         if (messages.length == 0) return messages;
-        messages = collapseCompletedToolHistory(messages);
         if (contextLimit <= 0) return messages;
-        // Rough token estimate (~4 chars/token). Begin eliding at 60% of the
-        // window so there is headroom for the response and tool schemas.
-        const size_t budget = cast(size_t) contextLimit * 4 * 6 / 10;
-        size_t total = requestMessageBytes(messages);
+        // Reserve 10% or 20k tokens (whichever is larger), capped at 40% for
+        // small windows. This follows the same preflight/headroom shape as
+        // Codex and OpenCode rather than compacting on every continuation.
+        const size_t contextTokens = cast(size_t) contextLimit;
+        const size_t proportionalReserve = contextTokens / 10;
+        size_t reserveTokens = proportionalReserve > 20_000
+            ? proportionalReserve : 20_000;
+        const size_t maximumReserve = contextTokens * 4 / 10;
+        if (reserveTokens > maximumReserve) reserveTokens = maximumReserve;
+        const size_t budget = (contextTokens - reserveTokens) * 4;
+        size_t total = fixedRequestBytes + requestMessageBytes(messages);
+        if (total <= budget) return messages;
+
+        messages = collapseCompletedToolHistory(messages);
+        total = fixedRequestBytes + requestMessageBytes(messages);
         if (total <= budget) return messages;
 
         auto result = messages.dup;
@@ -8630,13 +8652,21 @@ public final class OpenCodeRoot : VBox
                 messages ~= systemPrompt;
             }
         }
-        messages ~= compactRequestMessages(buildRequestMessages(*session),
-            contextLimitForModel(session.model));
         OpenCodeToolDef[] tools;
         if (_settings.toolsEnabled)
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
+        auto rawRequestMessages = buildRequestMessages(*session);
+        const rawRequestBytes = requestMessageBytes(rawRequestMessages);
+        const fixedRequestBytes = requestMessageBytes(messages) +
+            requestToolDefinitionBytes(tools);
+        auto compactedRequestMessages = compactRequestMessages(
+            rawRequestMessages, contextLimitForModel(session.model),
+            fixedRequestBytes);
+        _contextWasCompacted[session.id] =
+            requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
+        messages ~= compactedRequestMessages;
         const estimatedTokens = estimateRequestTokens(messages, tools);
         _estimatedContextTokens[session.id] = estimatedTokens;
         _preferEstimatedContext[session.id] = true;
@@ -9651,9 +9681,8 @@ public final class OpenCodeRoot : VBox
 
     // -- context usage meter ---------------------------------------------
 
-    /// Prefer usage from the latest request when its provider reported it;
-    /// otherwise use that request's estimate instead of stale usage from an
-    /// older assistant reply.
+    /// Show model-visible input for the latest request. Completion and total
+    /// billing usage are not context occupancy and must not move this meter.
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
@@ -9667,14 +9696,21 @@ public final class OpenCodeRoot : VBox
                 _preferEstimatedContext[session.id];
             if (!preferEstimate)
             {
-                foreach_reverse (slot, index; activeMessagePath(*session))
+                if (auto reported = session.id in _reportedContextTokens)
+                {
+                    prompt = *reported;
+                    total = *reported;
+                    if (auto output = session.id in _reportedCompletionTokens)
+                        completion = *output;
+                }
+                else foreach_reverse (slot, index; activeMessagePath(*session))
                 {
                     auto message = &session.messages[index];
-                    if (message.role == "assistant" && message.totalTokens > 0)
+                    if (message.role == "assistant" && message.promptTokens > 0)
                     {
                         prompt = message.promptTokens;
                         completion = message.completionTokens;
-                        total = message.totalTokens;
+                        total = message.promptTokens;
                         break;
                     }
                 }
@@ -9702,7 +9738,8 @@ public final class OpenCodeRoot : VBox
             " tokens";
         if (hasUsage)
         {
-            rows ~= (_usageBadge.estimated() ? "Estimated used: " : "Used: ") ~
+            rows ~= (_usageBadge.estimated() ? "Estimated active input: " :
+                "Active input: ") ~
                 formatThousands(_usageBadge.totalTokens()) ~
                 " tokens (" ~ to!string(_usageBadge.usagePercent()) ~ "%)";
             if (_usageBadge.estimated())
@@ -9710,10 +9747,16 @@ public final class OpenCodeRoot : VBox
                     "instructions, compacted messages, and tool schemas.";
             else
             {
-                rows ~= "Prompt: " ~
-                    formatThousands(_usageBadge.promptTokens()) ~ " tokens";
-                rows ~= "Completion: " ~
+                rows ~= "Last output: " ~
                     formatThousands(_usageBadge.completionTokens()) ~ " tokens";
+            }
+            if (_current >= 0)
+            {
+                const sessionId = _sessions[_current].id;
+                if (sessionId in _contextWasCompacted &&
+                    _contextWasCompacted[sessionId])
+                    rows ~= "Older context was compacted for this request; " ~
+                        "the full chat remains saved.";
             }
         }
         else
@@ -10940,11 +10983,17 @@ public final class OpenCodeRoot : VBox
                     // The exact completion count replaces the local estimate on
                     // the Thinking header; the total goes in the footer.
                     _liveTotalTokens = event.totalTokens;
-                    if (event.totalTokens > 0)
+                    if (event.promptTokens > 0)
                     {
                         const owner = turnOwnerSessionIndex();
                         if (owner >= 0 && owner < cast(int) _sessions.length)
+                        {
+                            _reportedContextTokens[_sessions[owner].id] =
+                                event.promptTokens;
+                            _reportedCompletionTokens[_sessions[owner].id] =
+                                event.completionTokens;
                             _preferEstimatedContext[_sessions[owner].id] = false;
+                        }
                     }
                     if (event.completionTokens > 0)
                         _liveOutputTokens = event.completionTokens;
@@ -10956,10 +11005,16 @@ public final class OpenCodeRoot : VBox
                         if (!_streamBubble.hasThinkingForTesting())
                             _streamBubble.setUsageText(liveTokenStatsText());
                     }
-                    if (_usageBadge !is null)
+                    // Only the viewed conversation owns the badge. A background
+                    // turn keeps recording its usage in the maps above, but its
+                    // numbers must never overwrite the meter for a different
+                    // chat the user is looking at (that mixed one session's
+                    // tokens with another session's context limit).
+                    if (_usageBadge !is null && viewingTurnOwner())
                     {
-                        _usageBadge.setUsage(event.promptTokens,
-                            event.completionTokens, event.totalTokens);
+                        if (event.promptTokens > 0)
+                            _usageBadge.setUsage(event.promptTokens,
+                                event.completionTokens, event.promptTokens);
                         refreshContextUsageTooltip();
                     }
                     break;
@@ -11913,7 +11968,12 @@ public final class OpenCodeRoot : VBox
         if (_current >= 0)
         {
             auto session = &_sessions[_current];
-            if (total > 0) _preferEstimatedContext[session.id] = false;
+            if (prompt > 0)
+            {
+                _reportedContextTokens[session.id] = prompt;
+                _reportedCompletionTokens[session.id] = completion;
+                _preferEstimatedContext[session.id] = false;
+            }
             const path = activeMessagePath(*session);
             if (path.length > 0)
             {

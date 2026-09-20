@@ -28,10 +28,27 @@ alias SystemPromptRenderer = string delegate(in SystemPromptContext ctx);
 private SystemPromptModule[] _extraModules;
 
 /// Register an additional module. Registration order is preserved and the
-/// module renders after every built-in section.
+/// module renders after every built-in section. Registering a module whose
+/// name is already present replaces it in place, so calling this once per
+/// context does not duplicate the section.
 public void registerSystemPromptModule(SystemPromptModule entry)
 {
+    foreach (ref existing; _extraModules)
+        if (existing.name == entry.name)
+        {
+            existing = entry;
+            return;
+        }
     _extraModules ~= entry;
+}
+
+/// Replace the entire set of extra modules. Callers that derive the applicable
+/// awareness modules from the current context each time should use this (rather
+/// than repeated registration) so a module from a previous context, such as a
+/// rebuild section, cannot leak into an unrelated prompt.
+public void setSystemPromptModules(SystemPromptModule[] modules)
+{
+    _extraModules = modules;
 }
 
 /// Convenience helper for modules that only expose static text.
