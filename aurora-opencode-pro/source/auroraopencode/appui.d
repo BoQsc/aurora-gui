@@ -24,13 +24,13 @@ import std.conv : to;
 import std.datetime : Clock;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
-import std.file : exists, fileRemove = remove, mkdirRecurse, readText, rename,
+import std.file : exists, isDir, fileRemove = remove, mkdirRecurse, readText, rename,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
-import std.string : replace, strip, toLower;
+import std.string : indexOf, replace, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32;
 version (Windows)
 {
@@ -209,7 +209,8 @@ private final class MessageBubble : Widget
     private int _versionHover;
     private int _versionWidth;
     // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
-    void delegate(int messageIndex, Point globalPosition) onContextMenuRequested;
+    void delegate(int messageIndex, Point globalPosition, string linkTarget)
+        onContextMenuRequested;
 
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
@@ -1774,8 +1775,16 @@ private final class MessageBubble : Widget
         {
             if (onContextMenuRequested !is null)
             {
+                string linkTarget;
+                foreach (index, rect; _linkRects)
+                    if (rect.contains(event.position) &&
+                        index < _linkUrls.length)
+                    {
+                        linkTarget = _linkUrls[index];
+                        break;
+                    }
                 onContextMenuRequested(_messageIndex,
-                    localToGlobal(event.position));
+                    localToGlobal(event.position), linkTarget);
                 return true;
             }
             return false;
@@ -2053,21 +2062,138 @@ private static string basenameOf(string path)
     return path[cut .. $];
 }
 
-/// Folder containing a file mutated by a tool, or "" when the tool is not a
-/// file mutation. Used by the tool bubble's "Open file location" context item.
-private string toolFilePath(string toolName, string toolArgs)
+private void appendUniquePath(ref string[] paths, string path)
 {
+    path = path.strip();
+    if (path.length == 0 || paths.canFind(path)) return;
+    paths ~= path;
+}
+
+/// Candidate paths carried by structured tool arguments. Unlike prose parsing,
+/// these fields and patch directives have unambiguous file semantics.
+private string[] toolArgumentPaths(string toolName, string toolArgs)
+{
+    string[] paths;
     switch (toolName)
     {
+        case "read":
         case "edit":
         case "write":
-            return toolArgFromArgs(toolArgs, "filePath");
+            appendUniquePath(paths, toolArgFromArgs(toolArgs, "filePath"));
+            break;
         case "remove":
+        {
             auto path = toolArgFromArgs(toolArgs, "path");
-            return path.length > 0 ? path : toolArgFromArgs(toolArgs, "filePath");
+            appendUniquePath(paths, path.length > 0 ? path :
+                toolArgFromArgs(toolArgs, "filePath"));
+            break;
+        }
+        case "open":
+        {
+            auto path = toolArgFromArgs(toolArgs, "target");
+            if (!path.toLower().startsWith("http://") &&
+                !path.toLower().startsWith("https://"))
+                appendUniquePath(paths, path);
+            break;
+        }
+        case "grep":
+        case "glob":
+        case "dshell":
+            appendUniquePath(paths, toolArgFromArgs(toolArgs, "path"));
+            break;
+        case "apply_patch":
+            foreach (line; toolArgFromArgs(toolArgs, "patch").splitLines())
+            {
+                const text = line.strip();
+                foreach (prefix; ["*** Add File:", "*** Update File:",
+                    "*** Delete File:", "*** Move to:"])
+                    if (text.startsWith(prefix))
+                        appendUniquePath(paths, text[prefix.length .. $]);
+            }
+            break;
         default:
-            return "";
+            break;
     }
+    return paths;
+}
+
+/// Extract a path from a structured tool-result line. Supported forms cover
+/// dshell (`<path>…</path>`, `[f] …`), grep (`file:line:`), and common compiler
+/// diagnostics (`file(line):`). The caller validates every candidate on disk.
+private string outputPathCandidate(string line)
+{
+    auto text = line.strip();
+    if (text.startsWith("<path>"))
+    {
+        const end = text.indexOf("</path>");
+        if (end > 6) return text[6 .. cast(size_t) end];
+    }
+    if (text.startsWith("[f] ") || text.startsWith("[d] "))
+    {
+        text = text[4 .. $];
+        const detail = text.indexOf("  (");
+        return detail > 0 ? text[0 .. cast(size_t) detail] : text;
+    }
+    foreach (index, ch; text)
+    {
+        if (ch != ':' || index + 2 >= text.length) continue;
+        size_t cursor = index + 1;
+        if (text[cursor] < '0' || text[cursor] > '9') continue;
+        while (cursor < text.length && text[cursor] >= '0' &&
+            text[cursor] <= '9') ++cursor;
+        if (cursor < text.length && (text[cursor] == ':' ||
+            text[cursor] == ')'))
+            return text[0 .. index];
+    }
+    const paren = text.indexOf('(');
+    if (paren > 0) return text[0 .. cast(size_t) paren];
+    return "";
+}
+
+unittest
+{
+    auto paths = toolArgumentPaths("apply_patch",
+        `{"patch":"*** Begin Patch\n*** Update File: source/app.d\n*** Add File: docs/read me.md\n*** Delete File: old.txt\n*** End Patch"}`);
+    assert(paths == ["source/app.d", "docs/read me.md", "old.txt"]);
+    assert(toolArgumentPaths("read", `{"filePath":"source/app.d"}`) ==
+        ["source/app.d"]);
+    assert(toolArgumentPaths("open", `{"target":"https://example.com"}`).length == 0);
+    assert(outputPathCandidate(`<path>C:\work\src</path>`) ==
+        `C:\work\src`);
+    assert(outputPathCandidate(`C:\work\main.d:42: error`) ==
+        `C:\work\main.d`);
+    assert(outputPathCandidate(`source/app.d(17): Error`) ==
+        `source/app.d`);
+}
+
+private string resolveDisplayedPath(string path, string workspace)
+{
+    path = path.strip();
+    if (path.length == 0) return "";
+    if (!isAbsolutePath(path) && workspace.length > 0)
+        path = buildPath(workspace, path);
+    return path;
+}
+
+/// All validated paths represented by a tool bubble. Deleted patch targets are
+/// retained when their containing directory still exists.
+private string[] toolFilePaths(string toolName, string toolArgs,
+    string toolOutput, string workspace)
+{
+    string[] result;
+    void accept(string candidate)
+    {
+        const resolved = resolveDisplayedPath(candidate, workspace);
+        if (resolved.length == 0) return;
+        const folder = directoryOf(resolved);
+        if (exists(resolved) || (folder.length > 0 && exists(folder)))
+            appendUniquePath(result, resolved);
+    }
+    foreach (candidate; toolArgumentPaths(toolName, toolArgs))
+        accept(candidate);
+    foreach (line; toolOutput.splitLines())
+        accept(outputPathCandidate(line));
+    return result;
 }
 
 /// Whether `path` is absolute (drive-rooted, UNC or rooted) on Windows.
@@ -2094,12 +2220,16 @@ private void openFileLocation(string filePath, string workspace)
     version (Windows)
     {
         if (filePath.length == 0) return;
-        auto path = filePath;
-        if (!isAbsolutePath(path) && workspace.length > 0)
-            path = buildPath(workspace, path);
-        const dir = directoryOf(path);
-        openFolderInExplorer(dir.length > 0 ? dir : path);
+        const path = resolveDisplayedPath(filePath, workspace);
+        const dir = exists(path) && isDir(path) ? path : directoryOf(path);
+        if (dir.length > 0 && exists(dir)) openFolderInExplorer(dir);
     }
+}
+
+private void delegate() openFileLocationAction(string filePath,
+    string workspace)
+{
+    return delegate() { openFileLocation(filePath, workspace); };
 }
 
 /// Count non-overlapping occurrences of `needle` in `haystack`.
@@ -6425,10 +6555,10 @@ public final class OpenCodeRoot : VBox
         if (message.failed)
             bubble.setFailed("");
         bubble.onContextMenuRequested =
-            delegate(int messageIndex, Point globalPosition)
+            delegate(int messageIndex, Point globalPosition, string linkTarget)
             {
                 showMessageContextMenu(bubble.messageIndex(),
-                    globalPosition, bubble);
+                    globalPosition, bubble, linkTarget);
             };
         // Persisted token usage appears only on the latest assistant reply.
         if (cast(int) index == latestAssistantIndex &&
@@ -6584,10 +6714,11 @@ public final class OpenCodeRoot : VBox
             bubble.setMessageIndex(
                 cast(int) _sessions[_current].messages.length - 1);
             bubble.onContextMenuRequested =
-                delegate(int messageIndex, Point globalPosition)
+                delegate(int messageIndex, Point globalPosition,
+                    string linkTarget)
                 {
                     showMessageContextMenu(bubble.messageIndex(),
-                        globalPosition, bubble);
+                        globalPosition, bubble, linkTarget);
                 };
         }
         _messageColumn.add(bubble);
@@ -9395,7 +9526,7 @@ public final class OpenCodeRoot : VBox
     }
 
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
-        MessageBubble sourceBubble = null)
+        MessageBubble sourceBubble = null, string linkTarget = "")
     {
         if (_current < 0) return;
         auto session = &_sessions[_current];
@@ -9439,15 +9570,40 @@ public final class OpenCodeRoot : VBox
                     editAndResend(_current, messageIndex);
                 });
         }
-        else if (message.role == "tool")
+        const workspace = workspaceForSession(_current);
+        string[] filePaths;
+        if (message.role == "tool")
+            filePaths = toolFilePaths(message.toolName,
+                message.toolArgs, message.content, workspace);
+        if (linkTarget.length > 0 &&
+            !linkTarget.toLower().startsWith("http://") &&
+            !linkTarget.toLower().startsWith("https://"))
         {
-            const filePath = toolFilePath(message.toolName, message.toolArgs);
-            if (filePath.length > 0)
-                items ~= ContextMenuItem.command("Open file location",
-                    IconKind.folder, delegate()
-                    {
-                        openFileLocation(filePath, workspaceForSession(_current));
-                    });
+            auto localTarget = linkTarget;
+            if (localTarget.toLower().startsWith("file:///"))
+                localTarget = localTarget[8 .. $];
+            const resolved = resolveDisplayedPath(localTarget, workspace);
+            const parent = directoryOf(resolved);
+            if (exists(resolved) || (parent.length > 0 && exists(parent)))
+                appendUniquePath(filePaths, resolved);
+        }
+        if (filePaths.length == 1)
+            items ~= ContextMenuItem.command("Open containing folder",
+                IconKind.folder,
+                openFileLocationAction(filePaths[0], workspace));
+        else if (filePaths.length > 1)
+        {
+            ContextMenuItem[] children;
+            foreach (filePath; filePaths)
+            {
+                auto label = basenameOf(filePath);
+                if (label.length == 0) label = filePath;
+                children ~= ContextMenuItem.command(label,
+                    IconKind.folder,
+                    openFileLocationAction(filePath, workspace));
+            }
+            items ~= ContextMenuItem.submenuItem(
+                "Open containing folder", IconKind.folder, children);
         }
         showContextMenu(_messageColumn, globalPosition, items);
     }
