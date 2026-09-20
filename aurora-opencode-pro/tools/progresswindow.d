@@ -1,4 +1,4 @@
-// A small always-on-top progress window for the rebuild/restart tools.
+// A small always-on-top progress window for rebuild and recovery maintenance.
 //
 // The app being rebuilt is closed while this runs, so the feedback has to come
 // from the tool rather than from the app. It is deliberately built on plain

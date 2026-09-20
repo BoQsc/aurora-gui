@@ -11,8 +11,8 @@ if errorlevel 1 (
     exit /b 1
 )
 pushd "%~dp0" >nul
-echo Building the restart helper...
-REM See RUN-WINDOWS.bat: the app's Restart button uses this standalone tool,
+echo Building the rebuild helper...
+REM See RUN-WINDOWS.bat: the app's Rebuild button uses this standalone tool,
 REM and the app is launched under it so its exit code is recorded.
 dub build --config=rebuilder --build=release >nul 2>nul
 echo Building Aurora OpenCode...
@@ -24,7 +24,7 @@ if errorlevel 1 (
 )
 echo Starting Aurora OpenCode with the software renderer (watched)...
 set AURORA_RENDERER=software
-bin\aurora-rebuilder.exe --exe "%~dp0aurora-opencode-pro.exe" --dir "%~dp0." --log "%APPDATA%\Aurora OpenCode\restart.log" --no-rebuild --run
+bin\aurora-rebuilder.exe --exe "%~dp0aurora-opencode-pro.exe" --dir "%~dp0." --log "%APPDATA%\Aurora OpenCode\rebuild.log" --no-rebuild --run
 set "code=%errorlevel%"
 popd >nul
 exit /b %code%

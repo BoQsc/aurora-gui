@@ -1,4 +1,4 @@
-module auroraopencode.restart;
+module auroraopencode.rebuild;
 
 import std.conv : to;
 import std.file : exists;
@@ -9,7 +9,7 @@ import std.stdio : stderr, stdin, stdout;
 // ---------------------------------------------------------------------------
 // Rebuild-and-relaunch
 // ---------------------------------------------------------------------------
-// Restarting cannot be done in-process: DUB must overwrite
+// Rebuilding cannot be done in-process: DUB must overwrite
 // `aurora-opencode-pro.exe`, and Windows holds that file locked for as long as
 // this process is alive. The work is therefore handed to the standalone
 // `bin/aurora-rebuilder.exe`, which outlives us, waits for the lock to clear,
@@ -18,7 +18,7 @@ import std.stdio : stderr, stdin, stdout;
 // There is exactly one implementation and one caller. An earlier version also
 // generated a PowerShell helper inline as a fallback; that was a second
 // implementation of the same operation, kept in step with the first by hand,
-// and it has been removed. When the tool is missing the restart fails with a
+// and it has been removed. When the tool is missing the rebuild fails with a
 // message saying so, rather than silently taking a different code path.
 
 /// How far above the executable to look for a DUB recipe before giving up.
@@ -28,7 +28,7 @@ private enum int maxBuildDirLevels = 8;
 private immutable string[] recipeNames = ["dub.json", "dub.sdl"];
 
 /// Everything the helper needs to rebuild and relaunch the app.
-struct RestartPlan
+struct RebuildPlan
 {
     /// The running executable: what gets rebuilt (in place) and relaunched.
     string exePath;
@@ -70,7 +70,7 @@ string findBuildDirectory(string exePath)
 
 /// The standalone rebuilder's location: `bin/aurora-rebuilder.exe` in the
 /// package directory, or "" when it has not been built.
-string rebuilderPath(in RestartPlan plan)
+string rebuilderPath(in RebuildPlan plan)
 {
     if (plan.workingDir.length == 0) return "";
     const candidate = buildPath(plan.workingDir, "bin", "aurora-rebuilder.exe");
@@ -78,7 +78,7 @@ string rebuilderPath(in RestartPlan plan)
 }
 
 /// The argv for the detached helper process.
-string[] restartHelperArgv(in RestartPlan plan)
+string[] rebuildHelperArgv(in RebuildPlan plan)
 {
     const helper = rebuilderPath(plan);
     if (helper.length == 0)
@@ -108,12 +108,12 @@ string[] restartHelperArgv(in RestartPlan plan)
  * when it has not been built, so the caller can keep the window open instead of
  * exiting into nothing.
  */
-bool launchRestart(in RestartPlan plan)
+bool launchRebuild(in RebuildPlan plan)
 {
-    auto argv = restartHelperArgv(plan);
+    auto argv = rebuildHelperArgv(plan);
     if (argv.length == 0)
     {
-        try stderr.writeln("restart helper missing: build it with " ~
+        try stderr.writeln("rebuild helper missing: build it with " ~
             "`dub build --config=rebuilder`");
         catch (Exception) {}
         return false;
@@ -128,15 +128,15 @@ bool launchRestart(in RestartPlan plan)
 
 /// Assemble a plan for the running build. `exePath` and `waitPid` are passed in
 /// rather than read here so the shaping stays testable.
-RestartPlan planRestart(string stateDirectory, bool rebuild, int waitPid,
+RebuildPlan planRebuild(string stateDirectory, bool rebuild, int waitPid,
     string exePath)
 {
-    RestartPlan plan;
+    RebuildPlan plan;
     plan.exePath = exePath;
     plan.waitPid = waitPid;
     plan.rebuild = rebuild;
     plan.logPath = stateDirectory.length > 0
-        ? buildPath(stateDirectory, "restart.log") : "restart.log";
+        ? buildPath(stateDirectory, "rebuild.log") : "rebuild.log";
     plan.workingDir = findBuildDirectory(exePath);
     return plan;
 }

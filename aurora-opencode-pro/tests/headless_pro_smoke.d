@@ -14,7 +14,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
     parseMarkdown;
-import auroraopencode.restart : planRestart, restartHelperArgv;
+import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : previewToolDiff;
 import core.time : msecs, seconds;
@@ -3043,33 +3043,33 @@ int main(string[] args)
         writeln("Intro overlay tracks conversation emptiness");
     }
 
-    // Restart: a Restart button in the toolbar, and a request that persists
+    // Rebuild: a Rebuild button in the toolbar, and a request that persists
     // state and hands the rebuild to a detached helper before closing the
     // window. The request is not exercised here (it would spawn a real build
     // and close the window under the test); the button wiring and the gating
     // predicates are.
     {
-        auto restartButton = requireWidget!Button(root, "oc-restart");
-        assert(restartButton.text() == "Rebuild"d,
-            "Restart button must be labelled Rebuild");
-        assert(!root.restartPendingForTesting(),
-            "a restart must not be pending before one is requested");
+        auto rebuildButton = requireWidget!Button(root, "oc-rebuild");
+        assert(rebuildButton.text() == "Rebuild"d,
+            "Rebuild button must be labelled Rebuild");
+        assert(!root.rebuildPendingForTesting(),
+            "a rebuild must not be pending before one is requested");
         // This test binary is built into build\ inside the package, so the
         // executable does have a DUB recipe above it and can rebuild in place.
         assert(root.canRebuildForTesting(),
             "the packaged build should be able to rebuild itself");
-        auto restartPlan = planRestart(stateDir, true, 12345,
+        auto rebuildPlan = planRebuild(stateDir, true, 12345,
             buildPath(stateDir, "package", "aurora-opencode-pro.exe"));
-        // Restart hands the work to the standalone rebuilder, so the argv it
+        // Rebuild hands the work to the standalone rebuilder, so the argv it
         // would spawn is what is inspected: one implementation, one caller.
-        auto scriptedPlan = restartPlan;
+        auto scriptedPlan = rebuildPlan;
         scriptedPlan.workingDir = buildPath("C:\\", "repo with spaces");
-        const helperArgv = restartHelperArgv(scriptedPlan);
+        const helperArgv = rebuildHelperArgv(scriptedPlan);
         if (helperArgv.length > 0)
         {
             const helperLine = helperArgv.join(" ");
             assert(helperLine.indexOf("aurora-rebuilder.exe") >= 0,
-                "Restart must use the standalone rebuilder: " ~ helperLine);
+                "Rebuild must use the standalone rebuilder: " ~ helperLine);
             assert(helperLine.indexOf("--rebuild") < 0 &&
                 helperLine.indexOf("--no-rebuild") < 0,
                 "a rebuild was requested, so no --no-rebuild flag belongs " ~
@@ -3082,8 +3082,8 @@ int main(string[] args)
                 "recorded: " ~ helperLine);
         }
         else
-            writeln("Restart helper not built; argv inspection skipped");
-        writeln("Restart button present; rebuild-in-place available");
+            writeln("Rebuild helper not built; argv inspection skipped");
+        writeln("Rebuild button present; rebuild-in-place available");
     }
 
     // The UI now publishes backend-neutral thread/item lifecycle records to an

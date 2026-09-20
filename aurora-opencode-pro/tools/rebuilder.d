@@ -493,7 +493,7 @@ private string tailText(string text, size_t maxChars)
 /// Write the failed-build summary: the command, where it ran, the exit code,
 /// the extracted compiler errors, and the tail of the full output.
 private void writeBuildReport(in Options options, int code, string output,
-    string[] errors)
+    const(string)[] errors)
 {
     const path = buildReportPath(options);
     if (path.length == 0) return;
@@ -522,7 +522,7 @@ private void writeBuildReport(in Options options, int code, string output,
 private bool runBuild(in Options options)
 {
     // DUB's output is captured to `build.log` rather than streamed into
-    // `restart.log`: a failed compile needs its error lines quoted in the
+    // the maintenance log: a failed compile needs its error lines quoted in the
     // report, and that is only possible if the text can be read back.
     const outputPath = buildOutputPath(options);
     File sink;
@@ -632,7 +632,7 @@ int main(string[] args)
     const options = parseArgs(args);
     // Show the progress window before any guard can return early. The mutex
     // check below (and the missing-executable check) used to `return` before
-    // the window was created, so a restart that could not proceed looked like
+    // the window was created, so maintenance that could not proceed looked like
     // nothing happened at all - no window, no rebuild, no relaunch.
     version (Windows) openProgressWindow("Aurora OpenCode - maintenance");
     version (Windows) HANDLE supervisorMutex;
@@ -665,7 +665,7 @@ int main(string[] args)
     {
         supervisorMutex = CreateMutexW(null, 0,
             toUTF16z("Local\\AuroraOpenCodeSupervisor"));
-        // An in-app restart is launched before the current app exits. Its old
+        // An in-app rebuild is launched before the current app exits. Its old
         // supervisor releases ownership immediately after that clean exit, so
         // this successor may wait briefly. Unsolicited duplicate launchers do
         // not wait and simply leave the existing owner alone.
@@ -701,9 +701,9 @@ int main(string[] args)
 
     if (!waitForUnlock(options.exePath, options.timeoutSeconds))
     {
-        // Still locked: the app is alive and this restart would be a duplicate.
-        appendLine(options.logPath, "app did not exit; restart aborted");
-        setProgress("The app did not close; restart aborted", "", 1.0);
+        // Still locked: the app is alive and this rebuild would be a duplicate.
+        appendLine(options.logPath, "app did not exit; rebuild aborted");
+        setProgress("The app did not close; rebuild aborted", "", 1.0);
         return 0;
     }
 

@@ -11,7 +11,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import auroraopencode.restart : launchRestart, planRestart;
+import auroraopencode.rebuild : launchRebuild, planRebuild;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
@@ -4630,10 +4630,10 @@ public final class OpenCodeRoot : VBox
     // appearance depends on turn-timing key matches and finishing on a prose
     // reply), so it is opt-in via `Settings.showWorkedFor` and off by default.
 
-    // Restart: rebuild the package with DUB and relaunch the app. A detached
-    // helper does the work after this window closes (see auroraopencode.restart);
+    // Rebuild: compile the package with DUB and relaunch the app. A detached
+    // helper does the work after this window closes (see auroraopencode.rebuild);
     // the pending flag keeps the transcript live until the helper is started.
-    private bool _restartPending;
+    private bool _rebuildPending;
 
     private ConversationRuntime runtimeForSession(int sessionIndex)
     {
@@ -4902,11 +4902,11 @@ public final class OpenCodeRoot : VBox
         closeRuntimeClients();
     }
 
-    /// Test-only: whether a restart has been requested and the window is about
+    /// Test-only: whether a rebuild has been requested and the window is about
     /// to close for the rebuild helper.
-    public bool restartPendingForTesting() const
+    public bool rebuildPendingForTesting() const
     {
-        return _restartPending;
+        return _rebuildPending;
     }
 
     /// Test-only: whether this build can rebuild itself in place (the
@@ -4914,7 +4914,7 @@ public final class OpenCodeRoot : VBox
     /// package can still relaunch, but there is nothing for DUB to build.
     public bool canRebuildForTesting() const
     {
-        return planRestart(opencodeStateDirectory(), true, thisProcessID,
+        return planRebuild(opencodeStateDirectory(), true, thisProcessID,
             thisExePath()).workingDir.length > 0;
     }
 
@@ -4926,27 +4926,23 @@ public final class OpenCodeRoot : VBox
     /// the build, and relaunches the binary. State is persisted before the
     /// window closes so the new instance restores where we left off.
     ///
-    /// `rebuild` is false for a plain relaunch (no DUB step), the only option
-    /// when the executable sits outside a package.
-    public void requestRestart(bool rebuild = true)
+    public void requestRebuild()
     {
-        if (_restartPending) return;
-        _restartPending = true;
-        updateStatus(rebuild
-            ? "Rebuilding with DUB, then relaunching..."
-            : "Restarting...");
+        if (_rebuildPending) return;
+        _rebuildPending = true;
+        updateStatus("Rebuilding with DUB, then relaunching...");
 
         // Flush every piece of state the new instance reads on startup.
         persistState();
         saveProjects(_projectState);
         closeRuntimeClients();
 
-        auto plan = planRestart(opencodeStateDirectory(), rebuild,
+        auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
-        if (!launchRestart(plan))
+        if (!launchRebuild(plan))
         {
-            _restartPending = false;
-            updateStatus("Rebuild failed: could not start the restart helper.");
+            _rebuildPending = false;
+            updateStatus("Rebuild failed: could not start the rebuild helper.");
             return;
         }
         _window.close();
@@ -5073,9 +5069,9 @@ public final class OpenCodeRoot : VBox
 
         // Rebuild the package with DUB and relaunch. The window closes first so
         // DUB can overwrite the running .exe.
-        auto restartButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
-        restartButton.setId("oc-restart");
-        restartButton.onClick = delegate() { requestRestart(true); };
+        auto rebuildButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
+        rebuildButton.setId("oc-rebuild");
+        rebuildButton.onClick = delegate() { requestRebuild(); };
 
         _keyBadge = toolbar.add(new Label(""));
         _keyBadge.setId("oc-key");
