@@ -2588,54 +2588,26 @@ int main(string[] args)
         "action checkpoint did not advance the automatic plan to implementation");
     writeln("Distinct evidence rounds remain available for long-horizon work");
 
-    // Four more distinct results reach the hard budget. The next read must be
-    // answered with a protocol-valid skipped tool result instead of running.
-    foreach (round; 12 .. 16)
+    // A checkpoint is a decision point, not a blind cutoff. One focused lookup
+    // remains available when a concrete unknown still blocks a safe edit.
+    root.addConversationForTesting(["assistant"], [""]);
+    OpenCodeToolCall focusedRead;
+    focusedRead.id = "call_evidence_focused";
+    focusedRead.name = "dshell";
+    focusedRead.arguments = `{"command":"info","path":"."}`;
+    const focusedTarget = root.toolMessageCountForTesting() + 1;
+    root.injectToolCallsForTesting([focusedRead]);
+    const focusedDeadline = Clock.currTime + 2.seconds;
+    while (root.toolMessageCountForTesting() < focusedTarget &&
+        Clock.currTime < focusedDeadline)
     {
-        root.addConversationForTesting(["assistant"], [""]);
-        OpenCodeToolCall extraRead;
-        extraRead.id = "call_evidence_" ~ to!string(round);
-        extraRead.name = "dshell";
-        extraRead.arguments = `{"command":"list","pattern":"evidence-` ~
-            to!string(round) ~ `-*"}`;
-        root.injectToolCallsForTesting([extraRead]);
-        const target = evidenceBase + cast(int) round + 1;
-        const extraEvidenceDeadline = Clock.currTime + 2.seconds;
-        while (root.toolMessageCountForTesting() < target &&
-            Clock.currTime < extraEvidenceDeadline)
-        {
-            root.tickTree(0.01);
-            Thread.sleep(5.msecs);
-        }
-        assert(root.toolMessageCountForTesting() == target,
-            "pre-limit exploration result did not settle");
+        root.tickTree(0.01);
+        Thread.sleep(5.msecs);
     }
-    assert(root.explorationCountForTesting() == 16,
-        "hard exploration threshold was not reached");
-    root.addConversationForTesting(["assistant"], [""]);
-    OpenCodeToolCall blockedRead;
-    blockedRead.id = "call_evidence_blocked";
-    blockedRead.name = "grep";
-    blockedRead.arguments = `{"pattern":"another search"}`;
-    root.injectToolCallsForTesting([blockedRead]);
-    assert(root.lastToolResultForTesting().indexOf(
-        "exploration budget is exhausted") >= 0,
-        "hard exploration limit did not reject another read-only call");
-    root.addConversationForTesting(["assistant"], [""]);
-    OpenCodeToolCall blockedRunRead;
-    blockedRunRead.id = "call_evidence_run_bypass";
-    blockedRunRead.name = "run";
-    blockedRunRead.arguments =
-        `{"program":"python","args":["-c","print(open('app.d').read())"]}`;
-    root.injectToolCallsForTesting([blockedRunRead]);
-    assert(root.lastToolResultForTesting().indexOf(
-        "exploration budget is exhausted") >= 0,
-        "run/Python bypassed the hard exploration limit");
-    assert(root.messageRoleForTesting(root.totalMessageCountForTesting() - 1) ==
-        "assistant",
-        "repeated hard-limit instruction did not finish locally");
-    assert(root.taskStatusForTesting() == "blocked",
-        "repeated exploration guard did not leave a bounded blocked turn");
+    assert(root.toolMessageCountForTesting() == focusedTarget,
+        "checkpoint prevented a justified focused inspection");
+    assert(root.taskStatusForTesting() != "blocked",
+        "focused post-checkpoint inspection incorrectly blocked the task");
     const exhaustedExplorationCount = root.explorationCountForTesting();
     // A failed patch and a comment-only edit must not reset the request-wide
     // evidence count or falsely satisfy the implementation/completion gate.
@@ -2656,7 +2628,7 @@ int main(string[] args)
         "@@ -1 +1 @@\n-old behavior\n+new behavior\n");
     assert(root.explorationCountForTesting() == exhaustedExplorationCount,
         "substantive mutation reset the request-wide exploration budget");
-    writeln("Request-wide exploration budget survives every mutation result");
+    writeln("Exploration checkpoint guides action without disabling inspection");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);

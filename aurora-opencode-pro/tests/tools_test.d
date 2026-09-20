@@ -168,6 +168,25 @@ int main()
         "grep did not return the matching line with a line number: " ~
         grepResult.output);
 
+    // Long searches return control with concrete progress rather than being
+    // treated as hung. The agent can inspect that report and deliberately grant
+    // the same focused search more time when the observed work is reasonable.
+    auto pausedGrep = executeTool(makeCall("grep",
+        `{"pattern":"definitely-absent","path":"wide.txt","timeout":1}`), dir);
+    assert(pausedGrep.failed && pausedGrep.output.indexOf("soft deadline") >= 0 &&
+        pausedGrep.output.indexOf("lines; found") >= 0 &&
+        pausedGrep.output.indexOf("decide whether waiting longer") >= 0,
+        "long grep did not return an inspectable progress report: " ~
+        pausedGrep.output);
+    auto extendedGrep = executeTool(makeCall("grep",
+        `{"pattern":"definitely-absent","path":"wide.txt",` ~
+        `"timeout":60000}`), dir);
+    assert(!extendedGrep.failed &&
+        extendedGrep.output.indexOf("No matches") >= 0,
+        "agent-selected longer grep deadline did not complete: " ~
+        extendedGrep.output);
+    writeln("grep soft deadline reports progress and permits a longer wait");
+
     // grep honors the documented glob `include` filter. The old filter was a
     // literal suffix test, so "*.d" could never match a real file name.
     write(buildPath(dir, "src", "extra.d"), "needle-marker\n");
@@ -212,6 +231,21 @@ int main()
         cancelledGrep.output.indexOf("cancelled") >= 0,
         "cancelled grep kept running: " ~ cancelledGrep.output);
     writeln("grep skips generated/binary trees and responds to Stop");
+
+    // A tool must not widen a project-local search to its parent directory.
+    // In real workspaces that parent commonly contains every cloned repository.
+    const jsonParent = tempDir().replace("\\", "/");
+    auto parentGrep = executeTool(makeCall("grep",
+        `{"pattern":"aurora","path":"` ~ jsonParent ~ `"}`), dir);
+    assert(parentGrep.failed && parentGrep.output.indexOf(
+        "refusing to search a parent") >= 0,
+        "grep searched above the active workspace: " ~ parentGrep.output);
+    auto parentGlob = executeTool(makeCall("glob",
+        `{"pattern":"**/*.d","path":"` ~ jsonParent ~ `"}`), dir);
+    assert(parentGlob.failed && parentGlob.output.indexOf(
+        "refusing to search a parent") >= 0,
+        "glob searched above the active workspace: " ~ parentGlob.output);
+    writeln("Search tools reject parents of the active workspace");
 
     // A chat can belong to the sandbox while the user explicitly names another
     // repository. Search tools must honor that root instead of silently looking

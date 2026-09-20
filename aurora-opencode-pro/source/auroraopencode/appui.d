@@ -4607,7 +4607,6 @@ public final class OpenCodeRoot : VBox
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
-    private static immutable int explorationHardLimitCalls = 16;
     private static immutable int maxVerificationAttempts = 3;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
@@ -7539,18 +7538,6 @@ public final class OpenCodeRoot : VBox
         return found;
     }
 
-    private static bool allReadOnlyExploration(
-        const(OpenCodeToolCall)[] calls, const ref ChatSession session)
-    {
-        if (calls.length == 0) return false;
-        const mutated = hasSubstantiveMutation(session);
-        foreach (call; calls)
-            if (!isReadOnlyExplorationTool(call.name) &&
-                !(!mutated && (call.name == "run" || call.name == "bash")))
-                return false;
-        return true;
-    }
-
     private static bool hasUnnecessaryPostVerificationCall(
         const(OpenCodeToolCall)[] calls)
     {
@@ -7620,29 +7607,23 @@ public final class OpenCodeRoot : VBox
             startChatRequest(turnOwnerSessionIndex(), false);
     }
 
-    private void appendExplorationCheckpoint(ref ChatSession session,
-        bool hardLimit)
+    private void appendExplorationCheckpoint(ref ChatSession session)
     {
         advanceAutomaticPlanToImplementation(session);
         ChatMessage checkpoint;
         checkpoint.role = "user";
         checkpoint.internal = true;
-        checkpoint.content = "Exploration checkpoint: " ~
-            (hardLimit
-                ? "the read-only evidence budget is exhausted. Further " ~
-                    "read/search calls will be rejected until you make a " ~
-                    "file-changing tool call. Use the evidence already present " ~
-                    "to edit now, or report one concrete blocker."
-                : "you have enough source evidence. Your next tool batch must " ~
-                    "make the smallest correct edit (edit/write/apply_patch/" ~
-                    "remove). Do not perform another broad search or reread " ~
-                    "known code; if a real blocker remains, state it precisely.");
+        checkpoint.content = "Exploration checkpoint: you likely have enough " ~
+            "source evidence to act. Prefer the smallest correct edit now. " ~
+            "Focused inspection remains available when one concrete unknown " ~
+            "still blocks the edit, but do not repeat known reads or broaden " ~
+            "the search scope. If a command reaches a soft deadline, inspect " ~
+            "its progress report and decide whether a longer wait is justified.";
         appendMessage(session, checkpoint);
         publishThreadUpdated(session);
         markDirty();
         if (viewingTurnOwner()) rebuildMessageColumn();
-        updateStatus(hardLimit ? "Exploration limit reached — forcing action…" :
-            "Evidence gathered — asking the model to edit…");
+        updateStatus("Evidence gathered — asking the model to edit…");
     }
 
     /// The model requested tool calls. Finalize the assistant message with the
@@ -7713,24 +7694,6 @@ public final class OpenCodeRoot : VBox
                 "rerun the same checks. Make a concrete corrective edit if " ~
                 "the failure identifies one; otherwise report the exact " ~
                 "verification blocker to the user now.");
-            return;
-        }
-
-        if (allReadOnlyExploration(event.toolCalls, *session) &&
-            readOnlyExplorationCount(*session) >= explorationHardLimitCalls)
-        {
-            const reason = "Tool call skipped: the read-only exploration " ~
-                "budget is exhausted; make the requested change or report a " ~
-                "blocker.";
-            const instruction = "Exploration checkpoint: the read-only " ~
-                "evidence budget is exhausted. Further read/search calls will " ~
-                "be rejected until you make a file-changing tool call. Use " ~
-                "the evidence already present to edit now, or report one " ~
-                "concrete blocker.";
-            skipToolsAndFinalize(*session, event.toolCalls, reason,
-                instruction);
-            _messagesScroll.follow = true;
-            _messagesScroll.invalidate();
             return;
         }
 
@@ -8081,7 +8044,7 @@ public final class OpenCodeRoot : VBox
                 if (readOnlyExplorationCount(*session) >=
                     explorationCheckpointCalls &&
                     !hasExplorationCheckpoint(*session))
-                    appendExplorationCheckpoint(*session, false);
+                    appendExplorationCheckpoint(*session);
                 startChatRequest(sessionIndex, false);
             }
         }
@@ -11541,7 +11504,7 @@ public final class OpenCodeRoot : VBox
         if (_current < 0 || readOnlyExplorationCount(_sessions[_current]) <
             explorationCheckpointCalls ||
             hasExplorationCheckpoint(_sessions[_current])) return false;
-        appendExplorationCheckpoint(_sessions[_current], false);
+        appendExplorationCheckpoint(_sessions[_current]);
         return true;
     }
 

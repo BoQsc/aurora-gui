@@ -196,7 +196,9 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "bash",
             "Execute shell commands in the workspace. Use this to run build " ~
             "commands, inspect the environment, or manipulate files when the " ~
-            "dedicated tools do not fit. " ~ shellUsageNotes(shell),
+            "dedicated tools do not fit. Set background=true for work that may " ~
+            "run long, then inspect it with the process tool. " ~
+            shellUsageNotes(shell),
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the command in the background"}},"required":["command"]}`
         ),
         processToolDefinition(),
@@ -225,7 +227,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "Defaults to the workspace; set `path` when the user's target is " ~
             "another directory. " ~
             "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
         ),
     ];
 }
@@ -245,7 +247,8 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "each argument separately (no shell quoting or redirection). For " ~
             "DMD, compiler options precede `-run`; everything after the source " ~
             "file is a runtime argument (example: `-Isource -i -run " ~
-            "source/app.d`).",
+            "source/app.d`). Set background=true for work that may run long, " ~
+            "then inspect status and output with the process tool.",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),
@@ -274,7 +277,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "Defaults to the workspace; set `path` when the user's target is " ~
             "another directory. " ~
             "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"}},"required":["pattern"]}`
+            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
         ),
     ];
 }
@@ -318,8 +321,9 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
         "for confidence or better phrasing.\n");
     builder.put("- Read-only exploration is finite. Once you know the target " ~
         "file, relevant code, and intended behavior, edit immediately. Reach " ~
-        "the first mutation normally within six read/search calls and no later " ~
-        "than ten; otherwise state the exact blocker. Changing search terms is " ~
+        "the first mutation normally within six read/search calls. At the " ~
+        "ten-call checkpoint, act unless one named unknown still prevents a " ~
+        "safe edit; resolve only that unknown. Changing search terms is " ~
         "not progress. Reading files through `run`, Python, a shell, git, or " ~
         "another executable still counts as exploration and must never be " ~
         "used to evade an exploration checkpoint.\n");
@@ -393,9 +397,13 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("Use the native `open` tool to open files, folders, or web " ~
         "pages. Never reconstruct platform launch commands such as Windows " ~
         "`start` or PowerShell `Start-Process`.\n");
-    builder.put("Use background execution only for a genuinely long command. " ~
-        "Track it with `process` and never relaunch it merely because it is " ~
-        "still running.\n");
+    builder.put("Use background execution for a command that may run longer " ~
+        "than an ordinary interactive check. Inspect its elapsed time, status, " ~
+        "and partial output with `process`; decide from observed progress " ~
+        "whether waiting longer is reasonable. Never relaunch it merely " ~
+        "because it is still running. A grep soft-deadline report requires the " ~
+        "same decision: extend `timeout` only when its scope and progress " ~
+        "justify the wait.\n");
 
     builder.put("\n# Special requests\n");
     builder.put("- For a code review, lead with concrete bugs, regressions, " ~
@@ -2809,6 +2817,10 @@ private ToolExecution runGlob(string args, string workspace)
 
     const root = pathArg.length > 0
         ? resolveToolPath(pathArg, workspace) : workspace;
+    if (pathArg.length > 0 && isWorkspaceAncestor(root, workspace))
+        return ToolExecution("glob", "Error: refusing to search a parent of " ~
+            "the active workspace. Narrow `path` to the workspace, a " ~
+            "subdirectory, or an explicitly named sibling repository.", true);
     if (!exists(root) || !isDir(root))
         return ToolExecution("glob", "Error: search directory not found: " ~
             root, true);
@@ -2880,6 +2892,27 @@ private bool grepIgnoredFile(string filePath)
     }
 }
 
+private string comparableSearchPath(string path)
+{
+    auto result = buildNormalizedPath(path).replace("\\", "/");
+    while (result.length > 1 && result[$ - 1] == '/')
+        result = result[0 .. $ - 1];
+    version (Windows) result = result.toLower();
+    return result;
+}
+
+/// Reject the especially dangerous case where a tool expands a project search
+/// to one of its parent directories (for example, from one repository to the
+/// directory containing every repository). Explicit sibling repositories and
+/// precise files remain supported.
+private bool isWorkspaceAncestor(string candidate, string workspace)
+{
+    const root = comparableSearchPath(candidate);
+    const project = comparableSearchPath(workspace);
+    return root.length > 0 && project.length > root.length &&
+        project[0 .. root.length] == root && project[root.length] == '/';
+}
+
 private ToolExecution runGrep(string args, string workspace,
     ToolCancellation cancellation = null)
 {
@@ -2889,6 +2922,7 @@ private ToolExecution runGrep(string args, string workspace,
     string pattern;
     string include;
     string pathArg;
+    int timeoutMs = 10_000;
     if (value.type == JSONType.object)
     {
         if (auto field = "pattern" in value.object)
@@ -2900,6 +2934,13 @@ private ToolExecution runGrep(string args, string workspace,
         if (auto field = "path" in value.object)
             if (field.type == JSONType.string)
                 pathArg = field.str;
+        if (auto field = "timeout" in value.object)
+            if (field.type == JSONType.integer)
+            {
+                timeoutMs = cast(int) field.integer;
+                if (timeoutMs < 1) timeoutMs = 1;
+                if (timeoutMs > 600_000) timeoutMs = 600_000;
+            }
     }
     if (pattern.length == 0)
         return ToolExecution("grep",
@@ -2907,6 +2948,11 @@ private ToolExecution runGrep(string args, string workspace,
 
     const root = pathArg.length > 0
         ? resolveToolPath(pathArg, workspace) : workspace;
+    if (pathArg.length > 0 && isWorkspaceAncestor(root, workspace))
+        return ToolExecution("grep", "Error: refusing to search a parent of " ~
+            "the active workspace. Narrow `path` to the workspace, a " ~
+            "subdirectory, a specific file, or an explicitly named sibling " ~
+            "repository.", true);
     if (!exists(root) || (!isDir(root) && !isFile(root)))
         return ToolExecution("grep", "Error: search path not found: " ~ root,
             true);
@@ -2928,8 +2974,18 @@ private ToolExecution runGrep(string args, string workspace,
     string[] hits;
     bool capped;
     bool stopped;
+    bool timedOut;
+    size_t scannedDirectories;
+    size_t scannedFiles;
+    size_t scannedLines;
+    const deadline = MonoTime.currTime + timeoutMs.msecs;
     bool scanFile(string filePath, bool explicitFile = false)
     {
+        if (MonoTime.currTime >= deadline)
+        {
+            timedOut = true;
+            return true;
+        }
         if (cancellation !is null && cancellation.cancelled())
         {
             stopped = true;
@@ -2949,6 +3005,7 @@ private ToolExecution runGrep(string args, string workspace,
         File file;
         try file = File(filePath, "r");
         catch (Exception) return false;
+        ++scannedFiles;
         scope (exit) collectException(file.close());
         size_t lineNo;
         try
@@ -2956,6 +3013,12 @@ private ToolExecution runGrep(string args, string workspace,
             foreach (line; file.byLine())
             {
                 ++lineNo;
+                ++scannedLines;
+                if ((lineNo & 255) == 0 && MonoTime.currTime >= deadline)
+                {
+                    timedOut = true;
+                    return true;
+                }
                 if ((lineNo & 255) == 0 && cancellation !is null &&
                     cancellation.cancelled())
                 {
@@ -2989,6 +3052,12 @@ private ToolExecution runGrep(string args, string workspace,
     {
         bool scanDirectory(string directory)
         {
+            ++scannedDirectories;
+            if (MonoTime.currTime >= deadline)
+            {
+                timedOut = true;
+                return true;
+            }
             if (cancellation !is null && cancellation.cancelled())
             {
                 stopped = true;
@@ -2998,6 +3067,11 @@ private ToolExecution runGrep(string args, string workspace,
             {
                 foreach (entry; dirEntries(directory, SpanMode.shallow))
                 {
+                    if (MonoTime.currTime >= deadline)
+                    {
+                        timedOut = true;
+                        return true;
+                    }
                     if (cancellation !is null && cancellation.cancelled())
                     {
                         stopped = true;
@@ -3016,6 +3090,21 @@ private ToolExecution runGrep(string args, string workspace,
             return false;
         }
         scanDirectory(root);
+    }
+    if (timedOut)
+    {
+        auto report = appender!string();
+        report.put("Paused: grep reached its " ~ to!string(timeoutMs) ~
+            " ms soft deadline after scanning " ~
+            to!string(scannedDirectories) ~ " directories, " ~
+            to!string(scannedFiles) ~ " files, and " ~
+            to!string(scannedLines) ~ " lines; found " ~
+            to!string(hits.length) ~ " matches so far. Review this progress " ~
+            "and decide whether waiting longer is reasonable. Rerun the same " ~
+            "focused search with a larger `timeout` (up to 600000 ms), or " ~
+            "narrow `path`, `pattern`, or `include`.\n");
+        foreach (hit; hits) report.put(hit ~ "\n");
+        return ToolExecution("grep", truncateOutput(report.data), true);
     }
     if (stopped)
         return ToolExecution("grep", "Stopped: grep cancelled.", true);
