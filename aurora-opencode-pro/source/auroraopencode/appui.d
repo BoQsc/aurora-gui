@@ -2127,18 +2127,19 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         case "bash":
         case "run":
         case "dshell":
-            auto command = toolArgFromArgs(toolArgs, "command");
+            auto command = partialStringArg(toolArgs, "command");
             if (command.length == 0)
-                command = toolArgFromArgs(toolArgs, "program");
-            if (command.length == 0) command = toolArgFromArgs(toolArgs, "args");
+                command = partialStringArg(toolArgs, "program");
+            if (command.length == 0)
+                command = partialStringArg(toolArgs, "args");
             return command;
         case "read":
         case "write":
         case "edit":
-            return basenameOf(toolArgFromArgs(toolArgs, "filePath"));
+            return basenameOf(partialStringArg(toolArgs, "filePath"));
         case "apply_patch":
         {
-            const files = patchFileCount(toolArgFromArgs(toolArgs, "patch"));
+            const files = patchFileCount(partialStringArg(toolArgs, "patch"));
             if (files == 0) return "";
             return to!string(files) ~ (files == 1 ? " file" : " files");
         }
@@ -2150,15 +2151,16 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         }
         case "glob":
         case "grep":
-            return toolArgFromArgs(toolArgs, "pattern");
+            return partialStringArg(toolArgs, "pattern");
         case "remove":
-            auto path = toolArgFromArgs(toolArgs, "path");
-            if (path.length == 0) path = toolArgFromArgs(toolArgs, "filePath");
+            auto path = partialStringArg(toolArgs, "path");
+            if (path.length == 0)
+                path = partialStringArg(toolArgs, "filePath");
             return basenameOf(path);
         case "open":
-            return toolArgFromArgs(toolArgs, "target");
+            return partialStringArg(toolArgs, "target");
         default:
-            return toolArgFromArgs(toolArgs, "path");
+            return partialStringArg(toolArgs, "path");
     }
 }
 
@@ -7491,6 +7493,7 @@ public final class OpenCodeRoot : VBox
             int additions, deletions;
             previewToolDiff(call.name, call.arguments, additions, deletions);
             shape.put(call.id ~ ":" ~ call.name ~ ":" ~
+                humanToolSubtitle(call.name, call.arguments) ~ ":" ~
                 to!string(call.arguments.length / 512) ~ ":" ~
                 to!string(additions) ~ ":" ~ to!string(deletions) ~ ";");
         }

@@ -2010,6 +2010,35 @@ int main(string[] args)
         writeln("Live phase row shows only when no live tool row does");
     }
 
+    // A filename commonly completes well before the rest of a large edit's
+    // streamed JSON. Discovering it must refresh the already-created nested
+    // row immediately, even when both fragments are in the same 512-byte
+    // throttle bucket and the overall JSON is not valid yet.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Edit the nested file"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall partialEdit;
+        partialEdit.id = "call-partial-edit-name";
+        partialEdit.name = "edit";
+        partialEdit.arguments = `{"filePath":"`;
+        root.injectToolProgressForTesting([partialEdit]);
+        partialEdit.arguments =
+            `{"filePath":"src/nested/widget.d","oldString":"before`;
+        root.injectToolProgressForTesting([partialEdit]);
+        const partialRows = root.liveToolRowTextsForTesting();
+        assert(partialRows.length == 1 &&
+            partialRows[0].indexOf("widget.d") >= 0,
+            "streamed edit filename did not appear in its nested row: " ~
+            (partialRows.length ? partialRows[0] : "(none)"));
+        assert(root.firstToolGroupCollapsedForTesting(),
+            "live edit action should start collapsed");
+        root.toggleFirstToolGroupForTesting();
+        assert(!root.firstToolGroupCollapsedForTesting() && driver.paint(),
+            "clicking the edit action did not expand its filename row");
+        writeln("Partial edit arguments reveal the nested filename immediately");
+    }
+
     // Live token counter: while the reply streams (reasoning, then answer) the
     // Thinking header shows an output-token count that only grows, and it stays
     // after the turn completes. The generic "Writing…" phase word is gone, so
