@@ -2685,14 +2685,10 @@ int main(string[] args)
     assert(root.lastToolResultForTesting().indexOf("skipped") < 0,
         "post-verification inspection received a fabricated skipped result");
     writeln("Passed verification does not revoke tool access");
-    assert(!root.responseIsStalledForTesting(89) &&
-        root.responseIsStalledForTesting(90),
-        "stalled-response watchdog threshold is not 90 seconds");
-    assert(!root.eventCountsAsProgressForTesting(OpenCodeEventKind.usage) &&
-        root.eventCountsAsProgressForTesting(OpenCodeEventKind.delta, "token") &&
-        root.eventCountsAsProgressForTesting(OpenCodeEventKind.toolCalls),
-        "watchdog meaningful-progress classification is incorrect");
-    writeln("Stalled model responses have a meaningful-event watchdog");
+    assert(!root.hasAutomaticTurnTimeoutForTesting() &&
+        root.toolRoundLimitForTesting() == 0,
+        "long-horizon work still has an automatic timeout or round cap");
+    writeln("Long-horizon turns have no automatic timeout or round cap");
 
     // The repetition-guidance injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the

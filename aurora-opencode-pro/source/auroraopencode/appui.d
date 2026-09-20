@@ -4422,7 +4422,6 @@ private final class ConversationRuntime
     int pendingToolResults;
     OpenCodeToolCall[] liveToolCalls;
     OpenCodeToolCall[] preparingToolCalls;
-    int toolRounds;
     bool toolContinuationPaused;
     string lastToolSignature;
     int lastToolRepeatCount;
@@ -4449,11 +4448,6 @@ private final class ConversationRuntime
     bool turnCancelled;
     bool stopPending;
     MonoTime stopRequestedAt;
-    MonoTime lastRequestProgressAt;
-    bool requestProgressSet;
-    bool watchdogCancelPending;
-    bool watchdogRetryAllowed;
-    int watchdogRetries;
     bool turnInFlight;
 
     this(string baseUrl, string apiKey)
@@ -4585,15 +4579,6 @@ public final class OpenCodeRoot : VBox
     // announced their names but not finished). Shown as in-progress rows so a
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
-    private int _toolRounds;
-    // Ceiling on assistant tool rounds in one user turn, not a "loop" detector:
-    // a real task legitimately takes many rounds because each `edit` is one
-    // dependent call (a 40-edit refactor is ~40 rounds). 50 cut real work off
-    // mid-file (observed 2026-09-14 on the "last stand" task: the cap fired at
-    // rounds 27/83/113 while the model was still editing). The doom-loop guard
-    // below catches genuine repetition; this is only a backstop against a truly
-    // runaway-resource guard, so keep it high.
-    private static immutable int maxToolRounds = 300;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Repetition is a signal for guidance, not permission to reject a tool.
@@ -4690,16 +4675,10 @@ public final class OpenCodeRoot : VBox
     private MonoTime _stopRequestedAt;
     private static immutable long stopDetachTimeoutMs = 2_000;
     private double[string] _turnDurations;
-    // A streaming connection can remain alive on SSE keepalives while the model
-    // produces no useful event. Track meaningful UI-visible progress and cancel
-    // one stalled request after a bounded wait, then retry it once from durable
-    // history instead of spinning forever.
-    private MonoTime _lastRequestProgressAt;
-    private bool _requestProgressSet;
-    private bool _watchdogCancelPending;
-    private bool _watchdogRetryAllowed;
-    private int _watchdogRetries;
-    private static immutable long stalledResponseSeconds = 90;
+    // Long model reasoning is not a failure. Network/HTTP errors are surfaced by
+    // the client and the user retains an explicit Stop action; the UI never
+    // cancels a healthy request merely because no visible token arrived within
+    // an arbitrary wall-clock interval.
 
     // Live "how long has this chat taken" stopwatch in the composer footer. The
     // total is the sum of every finished turn's `workedSeconds` on the active
@@ -4755,7 +4734,6 @@ public final class OpenCodeRoot : VBox
         rt.pendingToolResults = _pendingToolResults;
         rt.liveToolCalls = _liveToolCalls;
         rt.preparingToolCalls = _preparingToolCalls;
-        rt.toolRounds = _toolRounds;
         rt.toolContinuationPaused = _toolContinuationPaused;
         rt.lastToolSignature = _lastToolSignature;
         rt.lastToolRepeatCount = _lastToolRepeatCount;
@@ -4782,11 +4760,6 @@ public final class OpenCodeRoot : VBox
         rt.turnCancelled = _turnCancelled;
         rt.stopPending = _stopPending;
         rt.stopRequestedAt = _stopRequestedAt;
-        rt.lastRequestProgressAt = _lastRequestProgressAt;
-        rt.requestProgressSet = _requestProgressSet;
-        rt.watchdogCancelPending = _watchdogCancelPending;
-        rt.watchdogRetryAllowed = _watchdogRetryAllowed;
-        rt.watchdogRetries = _watchdogRetries;
         rt.turnInFlight = _turnInFlight;
     }
 
@@ -4810,7 +4783,6 @@ public final class OpenCodeRoot : VBox
         _pendingToolResults = rt.pendingToolResults;
         _liveToolCalls = rt.liveToolCalls;
         _preparingToolCalls = rt.preparingToolCalls;
-        _toolRounds = rt.toolRounds;
         _toolContinuationPaused = rt.toolContinuationPaused;
         _lastToolSignature = rt.lastToolSignature;
         _lastToolRepeatCount = rt.lastToolRepeatCount;
@@ -4837,11 +4809,6 @@ public final class OpenCodeRoot : VBox
         _turnCancelled = rt.turnCancelled;
         _stopPending = rt.stopPending;
         _stopRequestedAt = rt.stopRequestedAt;
-        _lastRequestProgressAt = rt.lastRequestProgressAt;
-        _requestProgressSet = rt.requestProgressSet;
-        _watchdogCancelPending = rt.watchdogCancelPending;
-        _watchdogRetryAllowed = rt.watchdogRetryAllowed;
-        _watchdogRetries = rt.watchdogRetries;
         _turnInFlight = rt.turnInFlight;
     }
 
@@ -5499,7 +5466,6 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _turnCancelled = false;
-        _toolRounds = 0;
         clearActivity();
         rebuildMessageColumn();
         if (_status !is null) updateStatus("");
@@ -7006,7 +6972,6 @@ public final class OpenCodeRoot : VBox
         string finishReason = "")
     {
         const sessionIndex = turnOwnerSessionIndex();
-        _requestProgressSet = false;
         if (terminal || cancelled) setTurnActiveMarker(false);
         setTurnInFlight(false);
         _preparingToolCalls.length = 0;
@@ -7192,7 +7157,6 @@ public final class OpenCodeRoot : VBox
     private void failAssistantMessage(string error)
     {
         const sessionIndex = turnOwnerSessionIndex();
-        _requestProgressSet = false;
         setTurnActiveMarker(false);
         setTurnInFlight(false);
         _preparingToolCalls.length = 0;
@@ -7241,94 +7205,6 @@ public final class OpenCodeRoot : VBox
         refreshBubbleActions();
     }
 
-    private static bool isMeaningfulRequestProgress(
-        const ref OpenCodeEvent event)
-    {
-        final switch (event.kind)
-        {
-            case OpenCodeEventKind.chatBegin:
-            case OpenCodeEventKind.toolCallDelta:
-            case OpenCodeEventKind.toolCalls:
-            case OpenCodeEventKind.done:
-            case OpenCodeEventKind.error:
-                return true;
-            case OpenCodeEventKind.delta:
-                return event.text.length > 0;
-            case OpenCodeEventKind.usage:
-            case OpenCodeEventKind.toolResult:
-            case OpenCodeEventKind.models:
-            case OpenCodeEventKind.modelsError:
-                return false;
-        }
-    }
-
-    private void noteRequestProgress(const ref OpenCodeEvent event)
-    {
-        if (!isMeaningfulRequestProgress(event)) return;
-        _lastRequestProgressAt = MonoTime.currTime;
-        _requestProgressSet = true;
-    }
-
-    private void checkStalledRequest()
-    {
-        if (!_client.busy() || !_requestProgressSet ||
-            _watchdogCancelPending) return;
-        const idle = MonoTime.currTime - _lastRequestProgressAt;
-        if (!responseIsStalled(idle.total!"seconds")) return;
-        _watchdogCancelPending = true;
-        _watchdogRetryAllowed = _watchdogRetries < 1;
-        _requestProgressSet = false;
-        _turnCancelled = true;
-        _client.cancel();
-        updateStatus("Model response stalled — recovering…");
-        setActivity("Recovering stalled model response…");
-    }
-
-    private static bool responseIsStalled(long idleSeconds)
-    {
-        return idleSeconds >= stalledResponseSeconds;
-    }
-
-    private bool recoverStalledRequest(const OpenCodeEvent event)
-    {
-        if (!event.cancelled || !_watchdogCancelPending) return false;
-        const sessionIndex = turnOwnerSessionIndex();
-        const retry = _watchdogRetryAllowed;
-        _watchdogCancelPending = false;
-        _watchdogRetryAllowed = false;
-        finishAssistantMessage(true, event.promptTokens,
-            event.completionTokens, event.totalTokens);
-        if (!retry || sessionIndex < 0 ||
-            sessionIndex >= cast(int) _sessions.length)
-        {
-            continueOrCompleteTask(true);
-            _activeRequestId = 0;
-            _activeRequestSession = -1;
-            updateStatus("Model stalled twice. Task paused for review.");
-            return true;
-        }
-        ++_watchdogRetries;
-        _turnCancelled = false;
-        auto session = &_sessions[sessionIndex];
-        session.taskStatus = "active";
-        ChatMessage recovery;
-        recovery.role = "user";
-        recovery.internal = true;
-        recovery.content = "The previous model response produced no meaningful " ~
-            "event for 90 seconds and was cancelled. Resume from the durable " ~
-            "task state. Do not repeat prior exploration; take the next concrete " ~
-            "action or report a blocker.";
-        appendMessage(*session, recovery);
-        publishThreadUpdated(*session);
-        markDirty();
-        if (viewingTurnOwner()) rebuildMessageColumn();
-        setTurnActiveMarker(true, session.id);
-        setTurnInFlight(true);
-        updateStatus("Retrying from durable task state…");
-        startChatRequest(sessionIndex, false);
-        return true;
-    }
-
     // -- tool loop ---------------------------------------------------------
 
     /// Drop any in-flight tool batch state. Used when the user branches away
@@ -7344,7 +7220,6 @@ public final class OpenCodeRoot : VBox
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
-        _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
         _lastFailureSignature = "";
@@ -7662,33 +7537,6 @@ public final class OpenCodeRoot : VBox
                 "next different action that advances the task.";
         }
 
-        if (_toolRounds >= maxToolRounds)
-        {
-            // Last-chance final request: tell the model to stop and answer.
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the maximum number of tool rounds was " ~
-                "reached.");
-            ChatMessage finalize;
-            finalize.role = "user";
-            finalize.internal = true;
-            finalize.content = "You have reached the maximum number of tool " ~
-                "calls. Stop using tools now and answer the user's question " ~
-                "directly with what you have learned so far.";
-            appendMessage(*session, finalize);
-            markDirty();
-            // Re-render the wrapper (now a hidden slot) and the finalizing
-            // prompt in one pass; there is no live row for this path.
-            if (_current == sessionIndex) rebuildMessageColumn();
-            _toolRounds = 0;
-            _lastToolSignature = "";
-            _lastToolRepeatCount = 0;
-            updateStatus("Finalizing — asking the model to answer…");
-            _messagesScroll.follow = true;
-            _messagesScroll.invalidate();
-            startChatRequest(sessionIndex, false);
-            return;
-        }
-        ++_toolRounds;
         const toolCount = event.toolCalls.length;
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
@@ -8080,9 +7928,6 @@ public final class OpenCodeRoot : VBox
             return;
 
         _turnCancelled = true;
-        _watchdogCancelPending = false;
-        _watchdogRetryAllowed = false;
-        _requestProgressSet = false;
 
         // Reject all remaining network and tool events from this turn before
         // asking the workers to stop.
@@ -8208,7 +8053,6 @@ public final class OpenCodeRoot : VBox
         addUserBubble(text);
         _input.setText("");
         markDirty();
-        _toolRounds = 0;
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
         _lastFailureSignature = "";
@@ -8219,9 +8063,6 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _turnCancelled = false;
-        _watchdogCancelPending = false;
-        _watchdogRetryAllowed = false;
-        _watchdogRetries = 0;
         startChatRequest(_current);
     }
 
@@ -8814,8 +8655,6 @@ public final class OpenCodeRoot : VBox
         _activeRequestId = _nextRequestId;
         _activeRequestSession = sessionIndex;
         _chatStartedAt = MonoTime.currTime;
-        _lastRequestProgressAt = _chatStartedAt;
-        _requestProgressSet = true;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
         // A user-initiated request opens a new turn clock; a tool-continuation
@@ -11067,7 +10906,6 @@ public final class OpenCodeRoot : VBox
                 ++eventIndex;
                 continue;
             }
-            noteRequestProgress(event);
             // Providers commonly send a few bytes per SSE record. Merge only
             // adjacent fragments of the same channel, preserving exact ordering
             // between reasoning, prose, tools, usage, and terminal events.
@@ -11136,7 +10974,6 @@ public final class OpenCodeRoot : VBox
                     break;
                 case OpenCodeEventKind.done:
                     const completedRequestId = event.requestId;
-                    if (recoverStalledRequest(event)) break;
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
@@ -11172,7 +11009,6 @@ public final class OpenCodeRoot : VBox
         }
         _batchingToolResults = false;
         flushToolTranscriptChanges();
-        checkStalledRequest();
 
         // `stopActiveTurn` releases all logical/UI state immediately. The only
         // remaining gate is the old WinINet worker; re-enable Send as soon as
@@ -12905,19 +12741,10 @@ public final class OpenCodeRoot : VBox
         return _client !is null && _client.busy();
     }
 
-    public bool responseIsStalledForTesting(long idleSeconds) const
-    {
-        return responseIsStalled(idleSeconds);
-    }
-
-    public bool eventCountsAsProgressForTesting(OpenCodeEventKind kind,
-        string text = "") const
-    {
-        OpenCodeEvent event;
-        event.kind = kind;
-        event.text = text;
-        return isMeaningfulRequestProgress(event);
-    }
+    /// Long-horizon turns are ended only by the user, a provider/network error,
+    /// or normal model completion—not by a local inactivity timer or round cap.
+    public bool hasAutomaticTurnTimeoutForTesting() const { return false; }
+    public int toolRoundLimitForTesting() const { return 0; }
 
     /// Test-only: tool calls injected but not yet reported back.
     public int pendingToolResultsForTesting() const
