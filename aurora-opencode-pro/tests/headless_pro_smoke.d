@@ -288,6 +288,19 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(driver.paint(), "Second pro paint failed");
 
+    // Git-independent Changes table is always available from the toolbar,
+    // including in an ordinary non-repository workspace.
+    auto changesButton = requireWidget!Button(root, "oc-changes");
+    changesButton.onClick();
+    root.tickTree(0.02);
+    assert(findById(root, "oc-changes-list") !is null,
+        "Changes button did not open the snapshot table");
+    assert(!requireWidget!Button(root, "oc-changes-revert-file").enabled(),
+        "Revert must be disabled when there is no selected change");
+    requireWidget!Button(root, "oc-changes-close").onClick();
+    root.tickTree(0.02);
+    writeln("Standalone Changes table opens without Git");
+
     // Context meter starts empty: the restored replies have no API usage yet.
     auto usageBadge = requireWidget!Widget(root, "oc-usage");
     assert(root.contextUsageTextForTesting() == "0%",

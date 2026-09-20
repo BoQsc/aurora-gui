@@ -1,6 +1,7 @@
 module auroraopencode.tools;
 
-import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef;
+import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef,
+    ensureStateDirectory, opencodeStateDirectory;
 import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
     write, mkdirRecurse, remove, rmdirRecurse, tempDir, getSize,
     timeLastModified;
@@ -18,12 +19,13 @@ version (Windows)
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin, stdout, stderr;
 import std.string : indexOf, replace, strip, toLower;
-import std.utf : toUTF8, toUTF16z;
+import std.utf : toUTF8, toUTF16z, validate;
 import std.conv : to;
 import std.exception : collectException;
 import core.time : seconds, Duration, MonoTime, msecs;
 import std.datetime.stopwatch : StopWatch, AutoStart;
-import std.algorithm : sort, map, filter;
+import std.datetime : Clock;
+import std.algorithm : canFind, sort, map, filter;
 import std.array : appender, array;
 import std.range : take;
 import std.typecons : Tuple;
@@ -352,6 +354,10 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     builder.put("- Prefer `apply_patch` for related multi-file or multi-hunk " ~
         "edits, `edit` for one surgical replacement, and `write` for new files " ~
         "or complete rewrites. Add comments only when code is not self-explanatory.\n");
+    builder.put("- Make every workspace file change through `apply_patch`, " ~
+        "`edit`, `write`, or `remove` so Aurora can snapshot and safely revert " ~
+        "it. Do not use `run`, `bash`, or an external script to mutate files; " ~
+        "those programs operate outside the change journal.\n");
     builder.put("- A mutation must advance the requested artifact. Never add a " ~
         "comment, whitespace, or other unrelated change merely to unlock more " ~
         "exploration.\n");
@@ -665,6 +671,317 @@ public string resolveToolPath(string value, string workspace)
     return buildNormalizedPath(buildPath(workspace, path));
 }
 
+private ulong stablePathHash(string value)
+{
+    ulong hash = 1469598103934665603UL;
+    foreach (ubyte b; cast(const(ubyte)[]) value)
+    {
+        hash ^= b;
+        hash *= 1099511628211UL;
+    }
+    return hash;
+}
+
+private string snapshotHash(bool existsValue, const(ubyte)[] bytes)
+{
+    if (!existsValue) return "missing";
+    return to!string(stablePathHash(cast(string) bytes)) ~ ":" ~
+        to!string(bytes.length);
+}
+
+private bool snapshotIsText(const(ubyte)[] bytes)
+{
+    try
+    {
+        validate(cast(string) bytes);
+        return true;
+    }
+    catch (Exception) return false;
+}
+
+private string changeWorkspaceDirectory(string workspace)
+{
+    ensureStateDirectory();
+    const root = buildPath(opencodeStateDirectory(), "changes",
+        to!string(stablePathHash(buildNormalizedPath(workspace).toLower())));
+    if (!exists(root)) mkdirRecurse(root);
+    const blobs = buildPath(root, "blobs");
+    if (!exists(blobs)) mkdirRecurse(blobs);
+    return root;
+}
+
+private FileSnapshot snapshotFile(string path)
+{
+    FileSnapshot result;
+    result.path = buildNormalizedPath(path);
+    result.exists = exists(result.path) && isFile(result.path);
+    if (result.exists)
+        result.bytes = cast(ubyte[]) read(result.path);
+    return result;
+}
+
+private FileSnapshot[] snapshotTargets(const string[] targets)
+{
+    FileSnapshot[] result;
+    bool seen(string path)
+    {
+        foreach (item; result)
+            if (item.path == path) return true;
+        return false;
+    }
+    foreach (candidate; targets)
+    {
+        const path = buildNormalizedPath(candidate);
+        if (exists(path) && isDir(path))
+        {
+            foreach (entry; dirEntries(path, SpanMode.depth))
+                if (entry.isFile && !seen(buildNormalizedPath(entry.name)))
+                    result ~= snapshotFile(entry.name);
+        }
+        else if (!seen(path))
+            result ~= snapshotFile(path);
+    }
+    return result;
+}
+
+private string[] mutationTargetPaths(const OpenCodeToolCall call,
+    string workspace)
+{
+    import std.string : splitLines;
+    string[] result;
+    void add(string value)
+    {
+        if (value.length == 0) return;
+        const path = resolveToolPath(value, workspace);
+        if (!result.canFind(path)) result ~= path;
+    }
+    JSONValue value;
+    try value = parseJSON(call.arguments);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object) return result;
+    if (call.name == "write" || call.name == "edit")
+    {
+        if (auto field = "filePath" in value.object)
+            if (field.type == JSONType.string) add(field.str);
+    }
+    else if (call.name == "remove")
+    {
+        foreach (key; ["path", "filePath"])
+            if (auto field = key in value.object)
+                if (field.type == JSONType.string && field.str.length > 0)
+                {
+                    add(field.str);
+                    break;
+                }
+    }
+    else if (call.name == "apply_patch")
+    {
+        string patch;
+        foreach (key; ["patch", "input", "text"])
+            if (auto field = key in value.object)
+                if (field.type == JSONType.string && field.str.length > 0)
+                {
+                    patch = field.str;
+                    break;
+                }
+        foreach (line; patch.splitLines())
+        {
+            const text = line.strip();
+            foreach (prefix; ["*** Add File:", "*** Update File:",
+                "*** Delete File:"])
+                if (text.length >= prefix.length &&
+                    text[0 .. prefix.length] == prefix)
+                    add(text[prefix.length .. $].strip());
+        }
+    }
+    return result;
+}
+
+private JSONValue changeRecordToJson(const ref ChangeRecord record)
+{
+    JSONValue root;
+    root["id"] = record.id;
+    root["transactionId"] = record.transactionId;
+    root["conversationId"] = record.conversationId;
+    root["turnId"] = record.turnId;
+    root["toolCallId"] = record.toolCallId;
+    root["toolName"] = record.toolName;
+    root["workspace"] = record.workspace;
+    root["path"] = record.path;
+    root["changeKind"] = record.changeKind;
+    root["timestamp"] = record.timestamp;
+    root["beforeExists"] = record.beforeExists;
+    root["afterExists"] = record.afterExists;
+    root["beforeHash"] = record.beforeHash;
+    root["afterHash"] = record.afterHash;
+    root["beforeBlob"] = record.beforeBlob;
+    root["afterBlob"] = record.afterBlob;
+    root["additions"] = record.additions;
+    root["deletions"] = record.deletions;
+    if (record.revertOf.length > 0) root["revertOf"] = record.revertOf;
+    return root;
+}
+
+private string jsonString(ref const JSONValue root, string key)
+{
+    if (root.type == JSONType.object)
+        if (auto field = key in root.object)
+            if (field.type == JSONType.string) return field.str;
+    return "";
+}
+
+private bool jsonBool(ref const JSONValue root, string key)
+{
+    if (root.type == JSONType.object)
+        if (auto field = key in root.object)
+            return field.type == JSONType.true_;
+    return false;
+}
+
+private int jsonInt(ref const JSONValue root, string key)
+{
+    if (root.type == JSONType.object)
+        if (auto field = key in root.object)
+            if (field.type == JSONType.integer) return cast(int) field.integer;
+    return 0;
+}
+
+private ChangeRecord changeRecordFromJson(ref const JSONValue root)
+{
+    ChangeRecord record;
+    record.id = jsonString(root, "id");
+    record.transactionId = jsonString(root, "transactionId");
+    record.conversationId = jsonString(root, "conversationId");
+    record.turnId = jsonString(root, "turnId");
+    record.toolCallId = jsonString(root, "toolCallId");
+    record.toolName = jsonString(root, "toolName");
+    record.workspace = jsonString(root, "workspace");
+    record.path = jsonString(root, "path");
+    record.changeKind = jsonString(root, "changeKind");
+    record.timestamp = jsonString(root, "timestamp");
+    record.beforeExists = jsonBool(root, "beforeExists");
+    record.afterExists = jsonBool(root, "afterExists");
+    record.beforeHash = jsonString(root, "beforeHash");
+    record.afterHash = jsonString(root, "afterHash");
+    record.beforeBlob = jsonString(root, "beforeBlob");
+    record.afterBlob = jsonString(root, "afterBlob");
+    record.additions = jsonInt(root, "additions");
+    record.deletions = jsonInt(root, "deletions");
+    record.revertOf = jsonString(root, "revertOf");
+    return record;
+}
+
+private void appendChangeRecord(const ref ChangeRecord record)
+{
+    auto file = File(buildPath(changeWorkspaceDirectory(record.workspace),
+        "journal.jsonl"), "a");
+    scope (exit) file.close();
+    file.writeln(changeRecordToJson(record).toString());
+    file.flush();
+}
+
+public ChangeRecord[] listChangeRecords(string workspace)
+{
+    import std.string : splitLines;
+    synchronized (_changeJournalMutex)
+    {
+        const path = buildPath(changeWorkspaceDirectory(workspace),
+            "journal.jsonl");
+        if (!exists(path)) return [];
+        ChangeRecord[] records;
+        foreach (line; readText(path).splitLines())
+        {
+            if (line.strip().length == 0) continue;
+            try
+            {
+                auto root = parseJSON(line);
+                auto record = changeRecordFromJson(root);
+                if (record.id.length > 0) records ~= record;
+            }
+            catch (Exception) {}
+        }
+        return records;
+    }
+}
+
+private void writeSnapshotBlob(string path, const(ubyte)[] bytes)
+{
+    write(path, bytes);
+}
+
+private void recordMutation(const OpenCodeToolCall call, string workspace,
+    const ChangeContext context, const FileSnapshot[] before,
+    const FileSnapshot[] after, string transactionId,
+    string[] revertIds = null)
+{
+    FileSnapshot[string] oldByPath;
+    FileSnapshot[string] newByPath;
+    string[] paths;
+    foreach (item; before)
+    {
+        oldByPath[item.path] = FileSnapshot(item.path, item.exists,
+            item.bytes.dup);
+        if (!paths.canFind(item.path)) paths ~= item.path;
+    }
+    foreach (item; after)
+    {
+        newByPath[item.path] = FileSnapshot(item.path, item.exists,
+            item.bytes.dup);
+        if (!paths.canFind(item.path)) paths ~= item.path;
+    }
+    synchronized (_changeJournalMutex)
+    {
+        foreach (index, path; paths)
+        {
+            auto oldState = path in oldByPath ? oldByPath[path] :
+                FileSnapshot(path, false, null);
+            auto newState = path in newByPath ? newByPath[path] :
+                FileSnapshot(path, false, null);
+            if (oldState.exists == newState.exists &&
+                oldState.bytes == newState.bytes) continue;
+            const id = to!string(Clock.currTime.stdTime) ~ "-" ~
+                to!string(++_changeSequence);
+            const root = changeWorkspaceDirectory(workspace);
+            ChangeRecord record;
+            record.id = id;
+            record.transactionId = transactionId;
+            record.conversationId = context.conversationId;
+            record.turnId = context.turnId;
+            record.toolCallId = call.id;
+            record.toolName = call.name;
+            record.workspace = buildNormalizedPath(workspace);
+            record.path = path;
+            record.changeKind = !oldState.exists ? "Created" :
+                (!newState.exists ? "Deleted" : "Modified");
+            record.timestamp = Clock.currTime.toLocalTime.toISOExtString();
+            record.beforeExists = oldState.exists;
+            record.afterExists = newState.exists;
+            record.beforeHash = snapshotHash(oldState.exists, oldState.bytes);
+            record.afterHash = snapshotHash(newState.exists, newState.bytes);
+            if (oldState.exists)
+            {
+                record.beforeBlob = buildPath(root, "blobs", id ~ ".before");
+                writeSnapshotBlob(record.beforeBlob, oldState.bytes);
+            }
+            if (newState.exists)
+            {
+                record.afterBlob = buildPath(root, "blobs", id ~ ".after");
+                writeSnapshotBlob(record.afterBlob, newState.bytes);
+            }
+            if (snapshotIsText(oldState.bytes) &&
+                snapshotIsText(newState.bytes))
+            {
+                auto diff = computeTextDiff(cast(string) oldState.bytes,
+                    cast(string) newState.bytes);
+                record.additions = diff.additions;
+                record.deletions = diff.deletions;
+            }
+            if (index < revertIds.length) record.revertOf = revertIds[index];
+            appendChangeRecord(record);
+        }
+    }
+}
+
 private int maxOutputLines = 400;
 private int maxOutputBytes = 40_000;
 
@@ -888,6 +1205,59 @@ private ToolExecution runProgramTool(string args, string workspace,
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
 }
 
+/// Identity attached to mutations initiated by a real GUI conversation. An
+/// empty conversation id disables journaling, keeping standalone tool tests and
+/// probes isolated from the user's durable history.
+public struct ChangeContext
+{
+    string conversationId;
+    string turnId;
+}
+
+/// One file in Aurora's append-only mutation journal. Before/after contents are
+/// stored as private blobs outside the workspace; hashes make the table useful
+/// without loading those blobs and exact after bytes guard every revert.
+public struct ChangeRecord
+{
+    string id;
+    string transactionId;
+    string conversationId;
+    string turnId;
+    string toolCallId;
+    string toolName;
+    string workspace;
+    string path;
+    string changeKind;
+    string timestamp;
+    bool beforeExists;
+    bool afterExists;
+    string beforeHash;
+    string afterHash;
+    string beforeBlob;
+    string afterBlob;
+    int additions;
+    int deletions;
+    string revertOf;
+}
+
+public struct ChangeRevertResult
+{
+    bool succeeded;
+    bool conflict;
+    string message;
+    int files;
+}
+
+private struct FileSnapshot
+{
+    string path;
+    bool exists;
+    ubyte[] bytes;
+}
+
+private __gshared ulong _changeSequence;
+private __gshared Mutex _changeJournalMutex;
+
 /// Open a target through the operating system without routing it through a
 /// command shell. HTTP(S) targets pass through unchanged; local paths are
 /// resolved against the conversation workspace and must already exist.
@@ -974,6 +1344,7 @@ shared static this()
 {
     _processMutex = new Mutex();
     _workspaceLocksMutex = new Mutex();
+    _changeJournalMutex = new Mutex();
 }
 
 private Mutex workspaceMutationLock(string workspace)
@@ -2597,7 +2968,8 @@ private bool fileMatchesInclude(string fileName, string include)
 /// long it took. The result is a plain-text string ready to be fed back to the
 /// model as a `tool` message.
 public ToolExecution executeTool(const OpenCodeToolCall call,
-    string workspace, ToolCancellation cancellation = null)
+    string workspace, ToolCancellation cancellation = null,
+    ChangeContext changeContext = ChangeContext.init)
 {
     const started = MonoTime.currTime;
     ToolExecution result;
@@ -2610,7 +2982,35 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         auto mutationLock = workspaceMutationLock(workspace);
         mutationLock.lock();
         scope (exit) mutationLock.unlock();
+        string[] journalTargets;
+        FileSnapshot[] before;
+        if (changeContext.conversationId.length > 0)
+        {
+            try
+            {
+                journalTargets = mutationTargetPaths(call, workspace);
+                before = snapshotTargets(journalTargets);
+            }
+            catch (Exception error)
+                return ToolExecution(call.name,
+                    "Error: could not create the safety snapshot: " ~
+                    error.msg, true);
+        }
         result = dispatchTool(call, workspace, cancellation);
+        if (changeContext.conversationId.length > 0)
+        {
+            try
+            {
+                const after = snapshotTargets(journalTargets);
+                const transactionId = call.id.length > 0 ? call.id :
+                    to!string(Clock.currTime.stdTime);
+                recordMutation(call, workspace, changeContext, before, after,
+                    transactionId);
+            }
+            catch (Exception error)
+                result.output ~= "\nWarning: the change was made, but its " ~
+                    "safety snapshot could not be saved: " ~ error.msg;
+        }
     }
     else
         result = dispatchTool(call, workspace, cancellation);
@@ -2620,6 +3020,147 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     const usecs = cast(long) (MonoTime.currTime - started).total!"usecs";
     result.elapsedMs = usecs <= 1000 ? 1 : (usecs + 500) / 1000;
     return result;
+}
+
+private bool currentMatchesAfter(const ref ChangeRecord record)
+{
+    const present = exists(record.path) && isFile(record.path);
+    if (present != record.afterExists) return false;
+    if (!present) return true;
+    if (record.afterBlob.length == 0 || !exists(record.afterBlob)) return false;
+    return cast(ubyte[]) read(record.path) ==
+        cast(ubyte[]) read(record.afterBlob);
+}
+
+/// Revert one journal row or every row from the same mutation transaction.
+/// The current bytes must exactly match the recorded after-image, so later user
+/// edits or another conversation's work can never be overwritten silently.
+public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
+    bool wholeTransaction, ChangeContext context, bool wholeTurn = false)
+{
+    ChangeRevertResult result;
+    auto mutationLock = workspaceMutationLock(workspace);
+    mutationLock.lock();
+    scope (exit) mutationLock.unlock();
+    try
+    {
+        auto all = listChangeRecords(workspace);
+        ChangeRecord* selected;
+        foreach (ref record; all)
+            if (record.id == recordId)
+            {
+                selected = &record;
+                break;
+            }
+        if (selected is null)
+        {
+            result.message = "Change record was not found.";
+            return result;
+        }
+        ChangeRecord[] targets;
+        if (wholeTurn)
+        {
+            ChangeRecord[string] combined;
+            string[] orderedPaths;
+            foreach (record; all)
+                if (record.conversationId == selected.conversationId &&
+                    record.turnId == selected.turnId)
+                {
+                    if (record.path !in combined)
+                    {
+                        combined[record.path] = record;
+                        combined[record.path].revertOf = record.id;
+                        orderedPaths ~= record.path;
+                    }
+                    else
+                    {
+                        auto aggregate = &combined[record.path];
+                        aggregate.afterExists = record.afterExists;
+                        aggregate.afterHash = record.afterHash;
+                        aggregate.afterBlob = record.afterBlob;
+                        aggregate.revertOf ~= "|" ~ record.id;
+                    }
+                }
+            foreach (path; orderedPaths) targets ~= combined[path];
+        }
+        else if (wholeTransaction)
+        {
+            foreach (record; all)
+                if (record.transactionId == selected.transactionId)
+                    targets ~= record;
+        }
+        else
+            targets = [*selected];
+        foreach (record; targets)
+            if (!currentMatchesAfter(record))
+            {
+                result.conflict = true;
+                result.message = "Cannot revert because the file changed " ~
+                    "after Aurora recorded it: " ~ record.path;
+                return result;
+            }
+
+        FileSnapshot[] before;
+        string[] paths;
+        string[] revertIds;
+        foreach (record; targets)
+        {
+            before ~= snapshotFile(record.path);
+            paths ~= record.path;
+            revertIds ~= record.revertOf.length > 0 ? record.revertOf :
+                record.id;
+            if (record.beforeExists)
+            {
+                if (record.beforeBlob.length == 0 ||
+                    !exists(record.beforeBlob))
+                    throw new Exception("missing before snapshot for " ~
+                        record.path);
+                import std.path : dirName;
+                const parent = dirName(record.path);
+                if (parent.length > 0) mkdirRecurse(parent);
+                write(record.path, read(record.beforeBlob));
+            }
+            else if (exists(record.path) && isFile(record.path))
+                remove(record.path);
+        }
+        const after = snapshotTargets(paths);
+        OpenCodeToolCall revertCall;
+        revertCall.id = "revert-" ~ recordId ~ "-" ~
+            to!string(Clock.currTime.stdTime);
+        revertCall.name = "revert";
+        const transactionId = revertCall.id;
+        recordMutation(revertCall, workspace, context, before, after,
+            transactionId, revertIds);
+        result.succeeded = true;
+        result.files = cast(int) targets.length;
+        result.message = "Reverted " ~ to!string(targets.length) ~
+            (targets.length == 1 ? " file." : " files.");
+    }
+    catch (Exception error)
+        result.message = "Revert failed: " ~ error.msg;
+    return result;
+}
+
+public string changeRecordDiff(const ref ChangeRecord record)
+{
+    try
+    {
+        ubyte[] before;
+        ubyte[] after;
+        if (record.beforeExists && exists(record.beforeBlob))
+            before = cast(ubyte[]) read(record.beforeBlob);
+        if (record.afterExists && exists(record.afterBlob))
+            after = cast(ubyte[]) read(record.afterBlob);
+        if (!snapshotIsText(before) || !snapshotIsText(after))
+            return "Binary snapshot\n\nBefore: " ~ record.beforeHash ~
+                "\nAfter:  " ~ record.afterHash ~
+                "\n\nExact bytes are preserved and can be reverted, but a " ~
+                "text diff is not available.";
+        const diff = computeTextDiff(cast(string) before, cast(string) after);
+        return "--- before\n+++ after\n" ~ diff.unified;
+    }
+    catch (Exception error)
+        return "Could not load snapshot diff: " ~ error.msg;
 }
 
 /// Dispatch a tool call. Split out of `executeTool` so the timing wrapper has a

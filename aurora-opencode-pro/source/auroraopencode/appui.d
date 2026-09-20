@@ -14,8 +14,10 @@ import auroraopencode.runtime : AgentEventKind, AgentRuntime,
 import auroraopencode.restart : launchRestart, planRestart;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
-    executeTool, nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
-    ToolCancellation, ToolExecution;
+    changeRecordDiff, executeTool, listChangeRecords,
+    nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
+    revertChangeRecord, ChangeContext, ChangeRecord, ToolCancellation,
+    ToolExecution;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind;
@@ -5058,6 +5060,10 @@ public final class OpenCodeRoot : VBox
         auto exportButton = toolbar.add(new Button("Export", IconKind.save));
         exportButton.onClick = delegate() { exportCurrentConversation(); };
 
+        auto changesButton = toolbar.add(new Button("Changes", IconKind.folder));
+        changesButton.setId("oc-changes");
+        changesButton.onClick = delegate() { showChangesDialog(); };
+
         auto settingsButton = toolbar.add(new Button("Settings", IconKind.settings));
         settingsButton.onClick = delegate() { showSettingsDialog(); };
 
@@ -7663,6 +7669,9 @@ public final class OpenCodeRoot : VBox
         if (_current == sessionIndex) rebuildMessageColumn();
         const requestId = _activeRequestId;
         const workspace = workspaceForSession(sessionIndex);
+        ChangeContext changeContext;
+        changeContext.conversationId = _sessions[sessionIndex].id;
+        changeContext.turnId = to!string(requestId);
         // Reset before the worker is visible to the UI. A Stop click can only
         // occur after this handler returns, so the worker can no longer clear a
         // cancellation that the user just requested.
@@ -7674,7 +7683,7 @@ public final class OpenCodeRoot : VBox
         auto cancellation = _toolCancellation;
         auto worker = new Thread({
             runToolWorker(client, sessionIndex, requestId,
-                workerCalls, workspace, cancellation);
+                workerCalls, workspace, cancellation, changeContext);
         });
         worker.isDaemon = true;
         worker.start();
@@ -7699,7 +7708,7 @@ public final class OpenCodeRoot : VBox
     /// the transcript.
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
         ulong requestId, const(OpenCodeToolCall)[] calls, string workspace,
-        ToolCancellation cancellation)
+        ToolCancellation cancellation, ChangeContext changeContext)
     {
         size_t slot;
         while (slot < calls.length)
@@ -7707,7 +7716,8 @@ public final class OpenCodeRoot : VBox
             if (!toolSupportsParallel(calls[slot]))
             {
                 publishToolResult(client, calls[slot],
-                    executeTool(calls[slot], workspace, cancellation), requestId);
+                    executeTool(calls[slot], workspace, cancellation,
+                        changeContext), requestId);
                 ++slot;
                 continue;
             }
@@ -8846,6 +8856,225 @@ public final class OpenCodeRoot : VBox
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
             _modelButton.size().height), PopupPlacement.above);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+    }
+
+    private string changeConversationLabel(string id) const
+    {
+        foreach (session; _sessions)
+            if (session.id == id)
+                return session.title.length > 0 ? session.title : "New chat";
+        return id.length > 12 ? id[0 .. 12] ~ "…" : id;
+    }
+
+    private static string displayChangePath(string path, string workspace)
+    {
+        if (workspace.length > 0 && path.length > workspace.length &&
+            path[0 .. workspace.length].toLower() == workspace.toLower() &&
+            (path[workspace.length] == '/' || path[workspace.length] == '\\'))
+            return path[workspace.length + 1 .. $];
+        return path;
+    }
+
+    private void showChangeDiffDialog(ChangeRecord record)
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        auto content = new VBox(8, Insets(16));
+        content.layoutHints().preferredWidth = 760;
+        auto title = content.add(new Label(record.changeKind ~ " — " ~
+            displayChangePath(record.path, record.workspace)));
+        title.setPixelSize(opencodeFontTitle);
+        auto meta = content.add(new Label(record.timestamp ~ " · " ~
+            changeConversationLabel(record.conversationId) ~ " · " ~
+            record.toolName));
+        meta.setScale(1);
+        meta.setColor(opencodeMuted);
+        auto viewer = new TextArea(changeRecordDiff(record));
+        viewer.setReadOnly(true);
+        viewer.layoutHints().preferredHeight = 430;
+        viewer.layoutHints().minHeight = 220;
+        content.add(viewer);
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto back = footer.add(new Button("Back"));
+        back.onClick = delegate()
+        {
+            dismissPopup();
+            showChangesDialog();
+        };
+        content.add(footer);
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(800, 560));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+    }
+
+    /// Aurora-owned, Git-independent file history for the active workspace.
+    /// Rows are append-only audit records; every revert is another reversible
+    /// record and exact after-byte checks prevent overwriting subsequent work.
+    private void showChangesDialog()
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        const workspace = activeWorkspace();
+        auto content = new VBox(8, Insets(16));
+        content.layoutHints().preferredWidth = 820;
+        auto title = content.add(new Label("File changes"));
+        title.setPixelSize(opencodeFontTitle);
+        auto hint = content.add(new Label(
+            "Aurora snapshots — independent of Git. Reverts are undoable and " ~
+            "stop on newer file changes. External programs are not tracked."));
+        hint.setScale(1);
+        hint.setColor(opencodeMuted);
+
+        auto filter = new CheckBox("Current conversation only");
+        filter.setChecked(false, false);
+        content.add(filter);
+        auto header = content.add(new Label(
+            "File                                      Change · Diff · Time · Conversation"));
+        header.setScale(1);
+        header.setColor(opencodeMuted);
+        auto list = content.add(new ListView());
+        list.setId("oc-changes-list");
+        list.layoutHints().preferredHeight = 380;
+        ChangeRecord[] visible;
+        bool[string] reverted;
+
+        auto status = content.add(new Label(""));
+        status.setScale(1);
+        status.setColor(opencodeMuted);
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        auto diffButton = footer.add(new Button("View diff"));
+        diffButton.setId("oc-changes-diff");
+        auto folderButton = footer.add(new Button("Open folder", IconKind.folder));
+        folderButton.setId("oc-changes-folder");
+        auto fileButton = footer.add(new Button("Revert file"));
+        fileButton.setId("oc-changes-revert-file");
+        auto actionButton = footer.add(new Button("Revert action"));
+        actionButton.setId("oc-changes-revert-action");
+        auto turnButton = footer.add(new Button("Revert turn"));
+        turnButton.setId("oc-changes-revert-turn");
+        footer.add(new Spacer());
+        auto close = footer.add(new Button("Close"));
+        close.setId("oc-changes-close");
+        content.add(footer);
+
+        bool isReverted(const ref ChangeRecord record)
+        {
+            return (record.id in reverted) !is null;
+        }
+        void updateButtons()
+        {
+            const index = list.selectedIndex();
+            const valid = index >= 0 && index < cast(int) visible.length;
+            const reversible = valid && !isReverted(visible[index]);
+            diffButton.setEnabled(valid);
+            folderButton.setEnabled(valid);
+            fileButton.setEnabled(reversible);
+            actionButton.setEnabled(reversible);
+            turnButton.setEnabled(reversible);
+        }
+        void refresh()
+        {
+            const all = listChangeRecords(workspace);
+            reverted = null;
+            string[string] reverter;
+            foreach (record; all)
+                if (record.revertOf.length > 0)
+                    foreach (candidate; all)
+                        if (("|" ~ record.revertOf ~ "|").canFind(
+                            "|" ~ candidate.id ~ "|"))
+                            reverter[candidate.id] = record.id;
+            bool activeRecord(string id, int depth = 0)
+            {
+                if (depth > cast(int) all.length) return true;
+                if (auto reverseId = id in reverter)
+                    return !activeRecord(*reverseId, depth + 1);
+                return true;
+            }
+            foreach (record; all)
+                if (!activeRecord(record.id)) reverted[record.id] = true;
+            visible.length = 0;
+            ListItem[] rows;
+            const currentId = _current >= 0 ? _sessions[_current].id : "";
+            for (size_t offset; offset < all.length; ++offset)
+            {
+                const record = all[$ - 1 - offset];
+                if (filter.checked() && record.conversationId != currentId)
+                    continue;
+                visible ~= record;
+                const marker = isReverted(record) ? "↶ " : "";
+                const relative = displayChangePath(record.path, workspace);
+                const secondary = record.changeKind ~ " · +" ~
+                    to!string(record.additions) ~ " -" ~
+                    to!string(record.deletions) ~ " · " ~ record.timestamp ~
+                    " · " ~ changeConversationLabel(record.conversationId);
+                auto icon = record.changeKind == "Created" ? IconKind.newDocument :
+                    (record.changeKind == "Deleted" ? IconKind.trash :
+                        IconKind.settings);
+                auto row = ListItem(marker ~ relative, icon, secondary);
+                row.dimmed = isReverted(record);
+                rows ~= row;
+            }
+            list.setItems(rows);
+            if (rows.length > 0) list.setSelectedIndex(0, false);
+            status.setText(rows.length == 0 ?
+                "No Aurora-managed file changes in this workspace." :
+                to!string(rows.length) ~ " recorded file change(s). " ~
+                "↶ means already reverted.");
+            updateButtons();
+        }
+        ChangeRecord selectedRecord()
+        {
+            const index = list.selectedIndex();
+            return index >= 0 && index < cast(int) visible.length ?
+                visible[index] : ChangeRecord.init;
+        }
+        void runRevert(bool action, bool turn)
+        {
+            const record = selectedRecord();
+            if (record.id.length == 0) return;
+            ChangeContext context;
+            context.conversationId = _current >= 0 ?
+                _sessions[_current].id : "manual";
+            context.turnId = "manual-revert-" ~
+                to!string(Clock.currTime.stdTime);
+            const outcome = revertChangeRecord(workspace, record.id, action,
+                context, turn);
+            status.setText(outcome.message);
+            if (outcome.succeeded) refresh();
+        }
+        filter.onChanged = delegate(bool value) { refresh(); };
+        list.onSelectionChanged = delegate(int index) { updateButtons(); };
+        list.onActivated = delegate(int index)
+        {
+            const record = selectedRecord();
+            if (record.id.length > 0) showChangeDiffDialog(record);
+        };
+        diffButton.onClick = delegate()
+        {
+            const record = selectedRecord();
+            if (record.id.length > 0) showChangeDiffDialog(record);
+        };
+        folderButton.onClick = delegate()
+        {
+            const record = selectedRecord();
+            if (record.id.length > 0) openFileLocation(record.path, workspace);
+        };
+        fileButton.onClick = delegate() { runRevert(false, false); };
+        actionButton.onClick = delegate() { runRevert(true, false); };
+        turnButton.onClick = delegate() { runRevert(false, true); };
+        close.onClick = delegate() { dismissPopup(); };
+        refresh();
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(860, 590));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
     }

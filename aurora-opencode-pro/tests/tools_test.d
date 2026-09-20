@@ -1,9 +1,11 @@
 module auroraopencode_pro_tools_test;
 
-import auroraopencode.core : OpenCodeToolCall;
-import auroraopencode.tools : ToolExecution, builtinToolDefinitions,
-    cancelRunningCommands, executeTool, nativeOnlyToolDefinitions,
-    resetRunningCommands, resolveToolPath, toolSteeringPrompt;
+import auroraopencode.core : OpenCodeToolCall,
+    setOpencodeStateDirectoryForTesting;
+import auroraopencode.tools : ChangeContext, ToolExecution,
+    builtinToolDefinitions, cancelRunningCommands, executeTool,
+    listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
+    resolveToolPath, revertChangeRecord, toolSteeringPrompt;
 import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
@@ -583,6 +585,9 @@ int main()
     assert(toolSteeringPrompt(false).indexOf(
         "the process running this session") >= 0,
         "Steering prompt must protect the live host process");
+    assert(toolSteeringPrompt(false).indexOf(
+        "outside the change journal") >= 0,
+        "Steering prompt must keep mutations inside the snapshot journal");
     writeln("Default vs native-only toolset shapes OK");
 
     // Native open validates targets before asking the OS to launch anything,
@@ -691,6 +696,84 @@ int main()
     // unknown tools report a clear error rather than crashing
     auto unknownResult = executeTool(makeCall("nope", "{}"), dir);
     assert(unknownResult.failed, "unknown tool should fail");
+
+    // Git-independent mutation journal: capture exact bytes, refuse to clobber
+    // a later external edit, and make the successful revert another snapshot.
+    {
+        setOpencodeStateDirectoryForTesting(buildPath(dir, "state"));
+        const journalPath = buildPath(dir, "journal.txt");
+        write(journalPath, "before\n");
+        ChangeContext context;
+        context.conversationId = "conversation-1";
+        context.turnId = "turn-1";
+        auto call = makeCall("edit",
+            `{"filePath":"journal.txt","oldString":"before","newString":"after"}`);
+        call.id = "journal-edit";
+        auto changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && readText(journalPath) == "after\n",
+            "journaled edit failed: " ~ changed.output);
+        auto records = listChangeRecords(dir);
+        assert(records.length == 1 && records[0].changeKind == "Modified" &&
+            records[0].beforeHash != records[0].afterHash &&
+            exists(records[0].beforeBlob) && exists(records[0].afterBlob),
+            "journal did not persist the before/after snapshots");
+
+        write(journalPath, "external\n");
+        auto conflict = revertChangeRecord(dir, records[0].id, false, context);
+        assert(!conflict.succeeded && conflict.conflict &&
+            readText(journalPath) == "external\n",
+            "revert must preserve a later external edit");
+        write(journalPath, "after\n");
+        auto reverted = revertChangeRecord(dir, records[0].id, false, context);
+        assert(reverted.succeeded && readText(journalPath) == "before\n",
+            "single-file snapshot revert failed: " ~ reverted.message);
+        records = listChangeRecords(dir);
+        assert(records.length == 2 && records[$ - 1].revertOf == records[0].id,
+            "revert must itself be journaled and undoable");
+        auto undoRevert = revertChangeRecord(dir, records[$ - 1].id,
+            false, context);
+        assert(undoRevert.succeeded && readText(journalPath) == "after\n",
+            "reverting a revert must restore the changed version");
+        auto redoRevert = revertChangeRecord(dir, records[0].id,
+            false, context);
+        assert(redoRevert.succeeded && readText(journalPath) == "before\n",
+            "the original change must become revertible again");
+
+        write(buildPath(dir, "one.txt"), "one-old\n");
+        write(buildPath(dir, "two.txt"), "two-old\n");
+        context.turnId = "turn-2";
+        call = makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: one.txt\n@@\n-one-old\n+one-new\n*** Update File: two.txt\n@@\n-two-old\n+two-new\n*** End Patch"}`);
+        call.id = "journal-patch";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed, "journaled multi-file patch failed");
+        records = listChangeRecords(dir);
+        auto actionRevert = revertChangeRecord(dir, records[$ - 1].id,
+            true, context);
+        assert(actionRevert.succeeded && actionRevert.files == 2 &&
+            readText(buildPath(dir, "one.txt")) == "one-old\n" &&
+            readText(buildPath(dir, "two.txt")) == "two-old\n",
+            "whole-action revert failed: " ~ actionRevert.message);
+
+        const repeatedPath = buildPath(dir, "repeated.txt");
+        write(repeatedPath, "A\n");
+        context.turnId = "turn-3";
+        call = makeCall("edit",
+            `{"filePath":"repeated.txt","oldString":"A","newString":"B"}`);
+        call.id = "repeat-1";
+        assert(!executeTool(call, dir, null, context).failed);
+        call = makeCall("edit",
+            `{"filePath":"repeated.txt","oldString":"B","newString":"C"}`);
+        call.id = "repeat-2";
+        assert(!executeTool(call, dir, null, context).failed);
+        records = listChangeRecords(dir);
+        auto turnRevert = revertChangeRecord(dir, records[$ - 1].id,
+            false, context, true);
+        assert(turnRevert.succeeded && readText(repeatedPath) == "A\n",
+            "whole-turn revert must collapse repeated edits safely: " ~
+            turnRevert.message);
+        writeln("standalone mutation journal and conflict-safe reverts OK");
+    }
 
     version (Windows)
     {
