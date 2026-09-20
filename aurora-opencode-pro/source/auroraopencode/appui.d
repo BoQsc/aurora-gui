@@ -4232,12 +4232,17 @@ public final class SessionListView : ListView
                     opencodeAccent.withAlpha(pulseAlphas[activityPulseStep()]));
             }
 
+            // Leave a clear gutter between the right-aligned time and the
+            // scrollbar, which sits flush against the panel edge
+            // (setScrollbarInset(0) in the constructor).
+            enum rightPad = 18;
+            enum titleGap = 10;
             int trailWidth = 0;
             if (item.secondary.length > 0)
             {
                 trailWidth = content.measureText(item.secondary, 1).width;
                 content.drawTextInRect(
-                    Rect(width - trailWidth - 12, y, trailWidth, rowHeight),
+                    Rect(width - trailWidth - rightPad, y, trailWidth, rowHeight),
                     item.secondary, opencodeMuted, 1,
                     HorizontalAlign.right, VerticalAlign.middle, true);
             }
@@ -4246,7 +4251,7 @@ public final class SessionListView : ListView
                 : (index == selected ? opencodeText : opencodeText.withAlpha(230));
             const textLeft = 14;
             const textWidth = maxInt(0, width - textLeft -
-                (trailWidth > 0 ? trailWidth + 22 : 12));
+                (trailWidth > 0 ? trailWidth + rightPad + titleGap : rightPad));
             content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
                 item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
