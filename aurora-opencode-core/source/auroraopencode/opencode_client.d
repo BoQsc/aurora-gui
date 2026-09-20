@@ -19,7 +19,7 @@ import std.string : indexOf, lastIndexOf;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef, isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
-import auroraopencode.logging : logError;
+import auroraopencode.logging : logError, logInfo;
 
 /** Kinds of events the client delivers to the UI thread. */
 enum OpenCodeEventKind
@@ -68,6 +68,19 @@ private struct HttpTarget
 }
 
 private enum DWORD defaultConnectTimeoutMs = 30_000;
+private enum uint maxTransientChatAttempts = 3;
+
+private bool isTransientChatStatus(DWORD status)
+{
+    return status == 500 || status == 502 || status == 503 || status == 504;
+}
+
+/// Exposes the deliberately narrow retry policy without requiring a live HTTP
+/// server in unit tests. Client errors are never replayed automatically.
+public bool transientChatStatusForTesting(uint status)
+{
+    return isTransientChatStatus(cast(DWORD) status);
+}
 private enum DWORD defaultSendTimeoutMs = 60_000;
 private enum DWORD defaultReceiveTimeoutMs = 120_000;
 
@@ -511,30 +524,6 @@ final class OpenCodeClient
             _lastCompletionTokens = 0;
             _lastTotalTokens = 0;
 
-            auto session = openSession();
-
-            auto connection = InternetConnectW(session, toUTF16z(target.host),
-                target.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
-            if (connection is null)
-                throw new Exception("Could not connect to " ~ target.host);
-            scope (exit) InternetCloseHandle(connection);
-
-            const flags = requestFlags(target);
-            auto request = HttpOpenRequestW(connection, "POST"w.ptr,
-                toUTF16z(target.path), null, null, null, flags, 0);
-            if (request is null)
-                throw new Exception("Could not create the chat request.");
-            if (registerRequest(request, true) is null)
-            {
-                InternetCloseHandle(request);
-                throw new Exception("Chat request cancelled.");
-            }
-            scope (exit)
-            {
-                unregisterRequest(request, true);
-                InternetCloseHandle(request);
-            }
-
             string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
             if (_apiKey.length > 0)
                 headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
@@ -543,54 +532,126 @@ final class OpenCodeClient
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
             auto bodyBytes = cast(ubyte[]) body.dup;
-            if (!HttpSendRequestW(request, toUTF16z(headers), -1,
-                bodyBytes.ptr, cast(DWORD) bodyBytes.length))
-                throw new Exception("Chat request failed (" ~
-                    wininetErrorText(GetLastError()) ~ ").");
-
-            DWORD statusCode;
-            DWORD statusLength = cast(DWORD) statusCode.sizeof;
-            if (HttpQueryInfoW(request,
-                    HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                    &statusCode, &statusLength, null) && statusCode != 200)
+            auto session = openSession();
+            uint attempt;
+            while (attempt < maxTransientChatAttempts)
             {
-                const detail = readAllAsUtf8(request);
-                throw new Exception("Upstream returned HTTP " ~
-                    to!string(statusCode) ~
-                    (detail.length > 0 ? ": " ~
-                        formatHttpErrorDetail(detail) : ""));
-            }
-
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
-            _streamActive = true;
-
-            ubyte[8192] buffer;
-            string lineBuffer;
-            while (!_cancel)
-            {
-                DWORD readBytes;
-                if (!InternetReadFile(request, buffer.ptr,
-                    cast(DWORD) buffer.length, &readBytes))
+                HINTERNET connection;
+                HINTERNET request;
+                bool retry;
+                DWORD retryStatus;
+                try
                 {
-                    const errorCode = GetLastError();
-                    if (_cancel || errorCode == ERROR_INTERNET_OPERATION_CANCELLED)
+                    connection = InternetConnectW(session,
+                        toUTF16z(target.host), target.port, null, null,
+                        INTERNET_SERVICE_HTTP, 0, 0);
+                    if (connection is null)
+                        throw new Exception("Could not connect to " ~ target.host);
+
+                    const flags = requestFlags(target);
+                    request = HttpOpenRequestW(connection, "POST"w.ptr,
+                        toUTF16z(target.path), null, null, null, flags, 0);
+                    if (request is null)
+                        throw new Exception("Could not create the chat request.");
+                    if (registerRequest(request, true) is null)
+                        throw new Exception("Chat request cancelled.");
+
+                    if (!HttpSendRequestW(request, toUTF16z(headers), -1,
+                        bodyBytes.ptr, cast(DWORD) bodyBytes.length))
+                        throw new Exception("Chat request failed (" ~
+                            wininetErrorText(GetLastError()) ~ ").");
+
+                    DWORD statusCode;
+                    DWORD statusLength = cast(DWORD) statusCode.sizeof;
+                    if (HttpQueryInfoW(request,
+                            HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                            &statusCode, &statusLength, null) &&
+                        statusCode != 200)
+                    {
+                        const detail = readAllAsUtf8(request);
+                        if (isTransientChatStatus(statusCode) &&
+                            attempt + 1 < maxTransientChatAttempts)
+                        {
+                            retry = true;
+                            retryStatus = statusCode;
+                        }
+                        else
+                            throw new Exception("Upstream returned HTTP " ~
+                                to!string(statusCode) ~
+                                (detail.length > 0 ? ": " ~
+                                    formatHttpErrorDetail(detail) : "") ~
+                                (isTransientChatStatus(statusCode) && attempt > 0
+                                    ? " (after " ~ to!string(attempt + 1) ~
+                                        " attempts)" : ""));
+                    }
+
+                    if (!retry)
+                    {
+                        pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
+                        _streamActive = true;
+
+                        ubyte[8192] buffer;
+                        string lineBuffer;
+                        while (!_cancel)
+                        {
+                            DWORD readBytes;
+                            if (!InternetReadFile(request, buffer.ptr,
+                                cast(DWORD) buffer.length, &readBytes))
+                            {
+                                const errorCode = GetLastError();
+                                if (_cancel ||
+                                    errorCode == ERROR_INTERNET_OPERATION_CANCELLED)
+                                {
+                                    cancelled = true;
+                                    break;
+                                }
+                                throw new Exception("Stream read failed (" ~
+                                    wininetErrorText(errorCode) ~ ").");
+                            }
+                            if (readBytes == 0) break;
+
+                            lineBuffer ~= cast(string)
+                                buffer[0 .. cast(size_t) readBytes];
+                            lineBuffer = dispatchSseLines(lineBuffer);
+
+                            if (_cancel)
+                            {
+                                cancelled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (request !is null)
+                    {
+                        unregisterRequest(request, true);
+                        InternetCloseHandle(request);
+                    }
+                    if (connection !is null)
+                        InternetCloseHandle(connection);
+                }
+
+                if (!retry) break;
+                ++attempt;
+                logInfo("chat upstream returned HTTP " ~
+                    to!string(retryStatus) ~ "; retrying attempt " ~
+                    to!string(attempt + 1) ~ "/" ~
+                    to!string(maxTransientChatAttempts) ~ " [" ~
+                    _baseUrl ~ "]");
+                // Short bounded backoff. Poll cancellation so Stop remains
+                // immediate even while the provider is recovering.
+                foreach (_; 0 .. attempt * 5)
+                {
+                    Thread.sleep(50.msecs);
+                    if (_cancel)
                     {
                         cancelled = true;
                         break;
                     }
-                    throw new Exception("Stream read failed (" ~
-                        wininetErrorText(errorCode) ~ ").");
                 }
-                if (readBytes == 0) break;
-
-                lineBuffer ~= cast(string) buffer[0 .. cast(size_t) readBytes];
-                lineBuffer = dispatchSseLines(lineBuffer);
-
-                if (_cancel)
-                {
-                    cancelled = true;
-                    break;
-                }
+                if (cancelled) break;
             }
 
             if (cancelled)

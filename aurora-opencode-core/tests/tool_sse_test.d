@@ -1,7 +1,7 @@
 module auroraopencode_core_tool_sse;
 
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
-    OpenCodeEventKind;
+    OpenCodeEventKind, transientChatStatusForTesting;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -204,6 +204,14 @@ private void assertLlamaServerCompatibility()
 
 int main()
 {
+    assert(transientChatStatusForTesting(500));
+    assert(transientChatStatusForTesting(502));
+    assert(transientChatStatusForTesting(503));
+    assert(transientChatStatusForTesting(504));
+    assert(!transientChatStatusForTesting(400));
+    assert(!transientChatStatusForTesting(401));
+    assert(!transientChatStatusForTesting(429));
+    writeln("Only transient upstream server failures are retried");
     assertToolCallFixture();
     assertRequestBody();
     assertPlainBody();
