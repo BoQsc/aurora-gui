@@ -585,12 +585,14 @@ int main()
     bool defaultHasDshell;
     bool defaultHasRemove;
     bool defaultHasOpen;
+    bool defaultHasWebfetch;
     foreach (tool; defaults)
     {
         if (tool.name == "bash") hasShell = true;
         if (tool.name == "dshell") defaultHasDshell = true;
         if (tool.name == "remove") defaultHasRemove = true;
         if (tool.name == "open") defaultHasOpen = true;
+        if (tool.name == "webfetch") defaultHasWebfetch = true;
         assert(tool.name != "glob",
             "glob should remain executable but dshell is primary discovery");
     }
@@ -598,6 +600,7 @@ int main()
     assert(defaultHasDshell, "Default toolset must include dshell");
     assert(defaultHasRemove, "Default toolset must include remove");
     assert(defaultHasOpen, "Default toolset must include open");
+    assert(defaultHasWebfetch, "Default toolset must include webfetch");
 
     auto natives = nativeOnlyToolDefinitions();
     bool nativeHasShell;
@@ -606,6 +609,7 @@ int main()
     bool nativeHasRemove;
     bool nativeHasProcess;
     bool nativeHasOpen;
+    bool nativeHasWebfetch;
     foreach (tool; natives)
     {
         if (tool.name == "bash") nativeHasShell = true;
@@ -614,6 +618,7 @@ int main()
         if (tool.name == "remove") nativeHasRemove = true;
         if (tool.name == "process") nativeHasProcess = true;
         if (tool.name == "open") nativeHasOpen = true;
+        if (tool.name == "webfetch") nativeHasWebfetch = true;
         assert(tool.name != "glob",
             "native toolset should expose dshell instead of glob");
     }
@@ -623,6 +628,9 @@ int main()
     assert(nativeHasRemove, "Native toolset must include remove");
     assert(nativeHasProcess, "Native toolset must include process management");
     assert(nativeHasOpen, "Native toolset must include open");
+    assert(nativeHasWebfetch, "Native toolset must include webfetch");
+    assert(toolSteeringPrompt(true).indexOf("webfetch") >= 0,
+        "Steering prompt must advertise webfetch");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&
@@ -878,6 +886,33 @@ int main()
         assert(oemResult.output.indexOf("bytes free") >= 0,
             "dir did not produce its full listing: " ~ oemResult.output);
         writeln("Tool output is valid UTF-8 (safe to persist)");
+    }
+
+    // webfetch: argument validation is deterministic; a live request must
+    // return the document body whenever the network is reachable.
+    {
+        auto missingUrl = executeTool(makeCall("webfetch", `{}`), dir);
+        assert(missingUrl.failed, "webfetch must require a url");
+        auto badScheme = executeTool(makeCall("webfetch",
+            `{"url":"ftp://example.com/x"}`), dir);
+        assert(badScheme.failed, "webfetch must reject non-http(s) schemes");
+
+        auto fetched = executeTool(makeCall("webfetch",
+            `{"url":"https://vanillaserver.eu/bloodmoon.json","timeout":20000}`),
+            dir);
+        if (fetched.failed)
+        {
+            const shown = fetched.output.length < 140
+                ? fetched.output : fetched.output[0 .. 140];
+            writeln("webfetch live check skipped (no network): ", shown);
+        }
+        else
+        {
+            assert(fetched.output.indexOf("bloodmoon") >= 0,
+                "webfetch did not return the JSON body: " ~ fetched.output);
+            writeln("webfetch fetched a live JSON document (",
+                fetched.output.length, " chars)");
+        }
     }
 
     writeln("Aurora OpenCode Pro tools module test passed.");

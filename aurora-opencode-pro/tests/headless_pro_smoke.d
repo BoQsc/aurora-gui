@@ -1224,15 +1224,15 @@ int main(string[] args)
     assert(root.contextUsageTextForTesting() == "0%",
         "Badge should reset to 0% for a session without usage");
     root.recordEstimatedContextUsageForTesting(13_000);
-    assert(root.contextUsageTextForTesting() == "~2%",
-        "Provider-less context must show a clearly estimated non-zero value");
+    assert(root.contextUsageTextForTesting() == "2%",
+        "Provider-less context must still show a non-zero value");
     sessions.onSelectionChanged(0);
     root.tickTree(0.02);
     assert(root.contextUsageTextForTesting() == "24%",
         "Badge should restore the persisted usage for the session");
     root.recordEstimatedContextUsageForTesting(30_000);
-    assert(root.contextUsageTextForTesting() == "~3%",
-        "A new request estimate must supersede stale exact usage");
+    assert(root.contextUsageTextForTesting() == "24%",
+        "A rough estimate must not replace provider-reported context usage");
     root.recordContextUsageForTesting(30_000, 10_000, 40_000);
     assert(root.contextUsageTextForTesting() == "3%",
         "Fresh prompt usage must replace the estimate without counting output");
@@ -2573,6 +2573,20 @@ int main(string[] args)
         root.tickTree(0.02);
         Thread.sleep(20.msecs);
     }
+    // A path or extension is only a target, not an instruction. A question that
+    // merely names a file elsewhere in the sentence must stay a question: if it
+    // were seeded with the application-owned implementation checklist, that
+    // scaffold would hold completion open and force an unrequested edit round.
+    root.newChatForTesting();
+    assert(!root.initializeAutomaticPlanForTesting(
+        "check why it still continues in a chat " ~
+        `C:\Users\me\repo\aurora-opencode-pro`),
+        "an investigation that mentions a path was seeded with a change plan");
+    assert(root.taskStepCountForTesting() == 0,
+        "a read-only question received an implementation checklist");
+    assert(root.initializeAutomaticPlanForTesting(
+        `fix C:\Users\me\repo\aurora-opencode-pro\source\app.d`),
+        "a change request naming a path did not receive a task plan");
     root.newChatForTesting();
     assert(root.initializeAutomaticPlanForTesting(
         "Add a folder button to appui.d"),

@@ -2066,6 +2066,8 @@ private string humanToolTitle(string toolName)
             return "Glob";
         case "grep":
             return "Grep";
+        case "webfetch":
+            return "Web fetch";
         default:
             if (toolName.length == 0) return "Tool";
             return capitalizeFirst(toolName);
@@ -2100,6 +2102,8 @@ private string humanToolProgressTitle(string toolName)
             return "Listing";
         case "grep":
             return "Searching";
+        case "webfetch":
+            return "Fetching";
         default:
             if (toolName.length == 0) return "Preparing";
             return "Preparing " ~ toolName;
@@ -3509,9 +3513,7 @@ private final class ContextUsageBadge : Widget
 
     string labelForTesting()
     {
-        return hasUsage()
-            ? (_estimated ? "~" : "") ~ to!string(usagePercent) ~ "%"
-            : "0%";
+        return hasUsage() ? to!string(usagePercent) ~ "%" : "0%";
     }
 
     protected override Size onMeasure(Size available)
@@ -4658,14 +4660,12 @@ public final class OpenCodeRoot : VBox
     // The context meter tracks model-visible input, never cumulative
     // input+output usage. Provider usage is optional on OpenAI-compatible
     // streaming endpoints, so cache a full-request estimate per conversation.
+    // Provider-reported usage always wins; the estimate is only a fallback for
+    // conversations whose provider never reports usage.
     private int[string] _estimatedContextTokens;
     private int[string] _reportedContextTokens;
     private int[string] _reportedCompletionTokens;
     private bool[string] _contextWasCompacted;
-    // A newly submitted request is newer than any usage persisted on an older
-    // assistant reply. Keep showing its estimate until this request supplies
-    // an exact total of its own.
-    private bool[string] _preferEstimatedContext;
     private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
     // Payload of the most recent message "Copy" context-menu action; retained
@@ -5925,6 +5925,12 @@ public final class OpenCodeRoot : VBox
         return prompt.data;
     }
 
+    /// A path or file extension is only a *target*, never an instruction. On
+    /// its own it must not qualify a request as a change, otherwise a question
+    /// that merely names a file (for example "check why ... in C:\repo\app.d")
+    /// was seeded with an implementation checklist and then nagged to edit code
+    /// the user only asked about. A path therefore signals change work only when
+    /// the request also names an action to take on it.
     private static bool likelyChangeRequest(string text)
     {
         const lower = text.toLower().strip();
@@ -5933,9 +5939,42 @@ public final class OpenCodeRoot : VBox
             "rename ", "replace ", "update "])
             if (lower.length >= prefix.length &&
                 lower[0 .. prefix.length] == prefix) return true;
-        return lower.canFind("\\") || lower.canFind("/") ||
+        const hasPathOrExtension = lower.canFind("\\") || lower.canFind("/") ||
             lower.canFind(".d") || lower.canFind(".ts") ||
             lower.canFind(".js") || lower.canFind(".py");
+        if (!hasPathOrExtension) return false;
+        // `build` is deliberately absent here: mid-sentence it is usually the
+        // noun ("the build fails"), while the leading-verb check above already
+        // covers the imperative "build ...".
+        foreach (verb; ["add", "change", "create", "delete", "fix",
+            "implement", "make", "move", "refactor", "remove", "rename",
+            "replace", "update", "write", "edit", "patch"])
+            if (containsWord(lower, verb)) return true;
+        return false;
+    }
+
+    /// Whole-word containment, so "update" does not match inside "updater" and
+    /// "edit" does not match inside "editing" when classifying intent.
+    private static bool containsWord(string haystack, string word)
+    {
+        size_t from;
+        while (word.length > 0 && from + word.length <= haystack.length)
+        {
+            const at = haystack.indexOf(word, from);
+            if (at < 0) return false;
+            const beforeOk = at == 0 || !isWordChar(haystack[at - 1]);
+            const afterOk = at + word.length >= haystack.length ||
+                !isWordChar(haystack[at + word.length]);
+            if (beforeOk && afterOk) return true;
+            from = at + 1;
+        }
+        return false;
+    }
+
+    private static bool isWordChar(char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_';
     }
 
     private static bool isAutomaticTaskPlan(const ref ChatSession session)
@@ -8726,14 +8765,14 @@ public final class OpenCodeRoot : VBox
         _contextWasCompacted[session.id] =
             requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
         messages ~= compactedRequestMessages;
-        const estimatedTokens = estimateRequestTokens(messages, tools);
-        _estimatedContextTokens[session.id] = estimatedTokens;
-        _preferEstimatedContext[session.id] = true;
-        if (_current == sessionIndex && _usageBadge !is null)
+        // Cache this request's local estimate so the meter still shows a value
+        // when the provider omits usage. Provider-reported usage, when present,
+        // always takes precedence over this rougher estimate.
+        _estimatedContextTokens[session.id] = estimateRequestTokens(messages, tools);
+        if (_current == sessionIndex)
         {
-            _usageBadge.setModel(session.model);
-            _usageBadge.setUsage(estimatedTokens, 0, estimatedTokens, true);
-            refreshContextUsageTooltip();
+            if (_usageBadge !is null) _usageBadge.setModel(session.model);
+            refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
         // rejects requests without one. The first message id is stable for
@@ -9742,6 +9781,9 @@ public final class OpenCodeRoot : VBox
 
     /// Show model-visible input for the latest request. Completion and total
     /// billing usage are not context occupancy and must not move this meter.
+    /// Provider-reported usage is authoritative; the cached local estimate is
+    /// only a fallback for conversations whose provider never reports usage, so
+    /// a rougher estimate can never replace a real measurement.
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
@@ -9751,27 +9793,22 @@ public final class OpenCodeRoot : VBox
         if (_current >= 0)
         {
             auto session = &_sessions[_current];
-            const preferEstimate = session.id in _preferEstimatedContext &&
-                _preferEstimatedContext[session.id];
-            if (!preferEstimate)
+            if (auto reported = session.id in _reportedContextTokens)
             {
-                if (auto reported = session.id in _reportedContextTokens)
+                prompt = *reported;
+                total = *reported;
+                if (auto output = session.id in _reportedCompletionTokens)
+                    completion = *output;
+            }
+            else foreach_reverse (slot, index; activeMessagePath(*session))
+            {
+                auto message = &session.messages[index];
+                if (message.role == "assistant" && message.promptTokens > 0)
                 {
-                    prompt = *reported;
-                    total = *reported;
-                    if (auto output = session.id in _reportedCompletionTokens)
-                        completion = *output;
-                }
-                else foreach_reverse (slot, index; activeMessagePath(*session))
-                {
-                    auto message = &session.messages[index];
-                    if (message.role == "assistant" && message.promptTokens > 0)
-                    {
-                        prompt = message.promptTokens;
-                        completion = message.completionTokens;
-                        total = message.promptTokens;
-                        break;
-                    }
+                    prompt = message.promptTokens;
+                    completion = message.completionTokens;
+                    total = message.promptTokens;
+                    break;
                 }
             }
             if (total <= 0)
@@ -11051,7 +11088,6 @@ public final class OpenCodeRoot : VBox
                                 event.promptTokens;
                             _reportedCompletionTokens[_sessions[owner].id] =
                                 event.completionTokens;
-                            _preferEstimatedContext[_sessions[owner].id] = false;
                         }
                     }
                     if (event.completionTokens > 0)
@@ -12057,7 +12093,6 @@ public final class OpenCodeRoot : VBox
             {
                 _reportedContextTokens[session.id] = prompt;
                 _reportedCompletionTokens[session.id] = completion;
-                _preferEstimatedContext[session.id] = false;
             }
             const path = activeMessagePath(*session);
             if (path.length > 0)
@@ -12075,7 +12110,6 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return;
         _estimatedContextTokens[_sessions[_current].id] = total;
-        _preferEstimatedContext[_sessions[_current].id] = true;
         refreshUsageBadge();
     }
 

@@ -197,7 +197,8 @@ private string toolPolicySection(in SystemPromptContext ctx)
         text ~= "There is no shell and no bash/cmd/powershell. Use native " ~
             "`read`, `write`, `edit`, `apply_patch`, `remove`, `open`, `glob`, `grep`, " ~
             "and `dshell` file tools, plus `run` with an explicit program and " ~
-            "argument list. Do not reconstruct shell commands.\n";
+            "argument list, and `webfetch` to read a web page or API. Do not " ~
+            "reconstruct shell commands.\n";
     else
         text ~= "Use native tools for file discovery, reads, searches, " ~
             "edits, writes, and removals. Use `bash` only for git, builds, " ~
@@ -210,6 +211,8 @@ private string toolPolicySection(in SystemPromptContext ctx)
     text ~= "Use the native `open` tool to open files, folders, or web " ~
         "pages. Never reconstruct platform launch commands such as Windows " ~
         "`start` or PowerShell `Start-Process`.\n";
+    text ~= "Use `webfetch` to read the body of a web page or API endpoint " ~
+        "instead of a shell download command; it needs no shell.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

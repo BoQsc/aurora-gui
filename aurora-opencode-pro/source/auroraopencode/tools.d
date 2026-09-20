@@ -18,14 +18,14 @@ version (Windows)
 }
 import std.regex : Regex, matchFirst, regex;
 import std.stdio : File, stdin, stdout, stderr;
-import std.string : indexOf, replace, strip, toLower;
+import std.string : indexOf, lastIndexOf, replace, strip, toLower;
 import std.utf : toUTF8, toUTF16z, validate;
 import std.conv : to;
 import std.exception : collectException;
 import core.time : seconds, Duration, MonoTime, msecs;
 import std.datetime.stopwatch : StopWatch, AutoStart;
 import std.datetime : Clock;
-import std.algorithm : canFind, sort, map, filter;
+import std.algorithm : canFind, sort, map, filter, startsWith;
 import std.array : appender, array;
 import std.range : take;
 import std.typecons : Tuple;
@@ -186,6 +186,23 @@ private OpenCodeToolDef processToolDefinition()
     );
 }
 
+/// The D-native `webfetch` tool: fetch an HTTP(S) URL and return the response
+/// body as text. Requests run through the system `curl` (present on Windows
+/// 10+ and virtually every Unix) via the shared process runner, so no shell is
+/// involved and URLs never need quoting. HTML pages are reduced to readable
+/// text unless `raw` is set; bodies are truncated like other tool output.
+private OpenCodeToolDef webFetchToolDefinition()
+{
+    return OpenCodeToolDef(
+        "webfetch",
+        "Fetch an HTTP(S) URL and return the response body as text. Use this " ~
+        "to read a web page, API endpoint, or JSON document that is not in the " ~
+        "workspace. Redirects are followed. HTML is converted to readable " ~
+        "text unless `raw` is true; large bodies are truncated.",
+        `{"type":"object","properties":{"url":{"type":"string","description":"Absolute http(s) URL to fetch"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 30000)"},"raw":{"type":"boolean","description":"Return the response body untouched instead of converting HTML to text"}},"required":["url"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -202,6 +219,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the command in the background"}},"required":["command"]}`
         ),
         processToolDefinition(),
+        webFetchToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
         removeToolDefinition(),
@@ -252,6 +270,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),
+        webFetchToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
         removeToolDefinition(),
@@ -1083,6 +1102,174 @@ private ToolExecution runProgramTool(string args, string workspace,
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
         cancellation);
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
+}
+
+/// The D-native `webfetch` tool: fetch an HTTP(S) URL through the system
+/// `curl` and return the body as text. `curl` ships with Windows 10+ and is
+/// present on almost every Unix, so a fetch needs no shell and no URL
+/// quoting. HTML is reduced to readable text unless `raw` is set, and the
+/// result is truncated like every other tool's output.
+private ToolExecution runWebFetch(string args, string workspace,
+    ToolCancellation cancellation = null)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+
+    string url;
+    int timeoutMs = 30_000;
+    bool raw;
+    if (value.type == JSONType.object)
+    {
+        if (auto field = "url" in value.object)
+            if (field.type == JSONType.string)
+                url = field.str;
+        if (auto field = "timeout" in value.object)
+            if (field.type == JSONType.integer)
+                timeoutMs = cast(int) field.integer;
+        if (auto field = "raw" in value.object)
+            raw = field.type == JSONType.true_;
+    }
+    url = strip(url);
+    if (url.length == 0)
+        return ToolExecution("webfetch",
+            "Error: webfetch requires a non-empty `url` argument.", true);
+    if (indexOf(url, "://") < 0)
+        url = "https://" ~ url;
+    const loweredUrl = toLower(url);
+    if (!startsWith(loweredUrl, "http://") &&
+        !startsWith(loweredUrl, "https://"))
+        return ToolExecution("webfetch",
+            "Error: only http:// and https:// URLs are supported.", true);
+    if (timeoutMs <= 0)
+        timeoutMs = 30_000;
+
+    version (Windows)
+        auto argv = ["curl.exe"];
+    else
+        auto argv = ["curl"];
+    argv ~= "-sS";
+    argv ~= "-L";
+    argv ~= "--max-time";
+    argv ~= to!string((timeoutMs + 999) / 1000);
+    argv ~= url;
+
+    auto result = runProcess(argv, workspace, timeoutMs + 10_000, "webfetch",
+        cancellation);
+    string output = result[0];
+    bool failed = result[1];
+
+    // curl can exit non-zero (for example the schannel close_notify quirk on
+    // some Windows builds) while still delivering a complete body. When a real
+    // body was captured, drop the runner's exit-code note and treat the fetch
+    // as successful so the model does not discard good content.
+    if (failed)
+    {
+        const note = lastIndexOf(output, "\nProcess exited with code ");
+        if (note > 0)
+        {
+            const body = output[0 .. cast(size_t) note];
+            if (strip(body).length > 0)
+            {
+                output = body;
+                failed = false;
+            }
+        }
+    }
+
+    if (!failed && !raw)
+    {
+        const loweredBody = toLower(output);
+        if (canFind(loweredBody, "<html") ||
+            canFind(loweredBody, "<!doctype html"))
+            output = htmlToText(output);
+    }
+
+    if (strip(output).length == 0)
+        output = "(empty response body)";
+
+    return ToolExecution("webfetch", truncateOutput(output), failed);
+}
+
+/// Reduce an HTML document to readable plain text: tags are dropped, a small
+/// set of common entities is decoded, and whitespace runs are collapsed. This
+/// is deliberately tiny - enough to make a fetched page legible, not an HTML
+/// parser. Script/style bodies survive as text, which is acceptable for a
+/// first-pass fetch.
+private string htmlToText(string html)
+{
+    auto builder = appender!string();
+    string pending;
+    bool inTag;
+    bool maybeEntity;
+
+    void flushEntity()
+    {
+        const name = toLower(pending);
+        if (name == "amp") builder.put('&');
+        else if (name == "lt") builder.put('<');
+        else if (name == "gt") builder.put('>');
+        else if (name == "quot") builder.put('"');
+        else if (name == "apos" || name == "#39") builder.put('\'');
+        else if (name == "nbsp") builder.put(' ');
+        else if (name == "hellip") builder.put('.');
+        else if (name == "mdash" || name == "ndash") builder.put('-');
+        else if (name == "rsquo" || name == "lsquo" || name == "ldquo" ||
+            name == "rdquo") builder.put('\'');
+        else builder.put("&" ~ pending ~ ";");
+        pending = "";
+        maybeEntity = false;
+    }
+
+    foreach (ch; html)
+    {
+        if (inTag)
+        {
+            if (ch == '>')
+            {
+                inTag = false;
+                builder.put(' ');
+            }
+            continue;
+        }
+        if (maybeEntity)
+        {
+            if (ch == ';')
+            {
+                flushEntity();
+                continue;
+            }
+            if (ch != '&' && ch != '<' && ch != ' ' && pending.length < 10)
+            {
+                pending ~= ch;
+                continue;
+            }
+            builder.put("&" ~ pending);
+            pending = "";
+            maybeEntity = false;
+        }
+        if (ch == '<') { inTag = true; continue; }
+        if (ch == '&') { maybeEntity = true; pending = ""; continue; }
+        builder.put(ch);
+    }
+    if (maybeEntity)
+        builder.put("&" ~ pending);
+
+    auto collapsed = appender!string();
+    bool pendingSpace;
+    foreach (ch; builder.data)
+    {
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f')
+        {
+            pendingSpace = true;
+            continue;
+        }
+        if (pendingSpace && collapsed.data.length > 0)
+            collapsed.put(' ');
+        pendingSpace = false;
+        collapsed.put(ch);
+    }
+    return strip(collapsed.data);
 }
 
 /// Identity attached to mutations initiated by a real GUI conversation. An
@@ -3246,6 +3433,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runGlob(call.arguments, workspace);
         case "grep":
             return runGrep(call.arguments, workspace, cancellation);
+        case "webfetch":
+            return runWebFetch(call.arguments, workspace, cancellation);
         default:
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);
