@@ -641,14 +641,17 @@ int main()
     assert(toolSteeringPrompt(false).indexOf("# Execution loop") >= 0,
         "Steering prompt must define the execution loop");
     assert(toolSteeringPrompt(false).indexOf(
-        "first mutation normally within six") >= 0,
-        "Steering prompt must bound read-only exploration");
+        "name the remaining unknown") >= 0,
+        "Steering prompt must guide exploration from evidence");
     assert(toolSteeringPrompt(false).indexOf(
-        "used to evade an exploration checkpoint") >= 0,
-        "Steering prompt must forbid run-based exploration bypasses");
+        "legitimate validation and rereading") >= 0,
+        "Steering prompt must preserve justified inspection");
     assert(toolSteeringPrompt(false).indexOf(
-        "Verification is a terminal phase") >= 0,
-        "Steering prompt must bound post-edit verification");
+        "evidence phase, not a quota") >= 0,
+        "Steering prompt must guide verification without a fixed budget");
+    assert(toolSteeringPrompt(false).indexOf("within six") < 0 &&
+        toolSteeringPrompt(false).indexOf("at most three") < 0,
+        "Steering prompt must not impose artificial call quotas");
     assert(toolSteeringPrompt(false).indexOf(
         "Do not finish with pending checklist items") >= 0,
         "Steering prompt must enforce the durable completion contract");

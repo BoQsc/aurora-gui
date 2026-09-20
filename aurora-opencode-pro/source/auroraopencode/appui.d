@@ -4428,7 +4428,7 @@ private final class ConversationRuntime
     int lastToolRepeatCount;
     string lastFailureSignature;
     int lastFailureRepeatCount;
-    bool failureLoopDetected;
+    string pendingProgressGuidance;
     long liveOutputBytes;
     long liveOutputTokens;
     int liveTokenRateTenths;
@@ -4592,34 +4592,33 @@ public final class OpenCodeRoot : VBox
     // mid-file (observed 2026-09-14 on the "last stand" task: the cap fired at
     // rounds 27/83/113 while the model was still editing). The doom-loop guard
     // below catches genuine repetition; this is only a backstop against a truly
-    // runaway turn, so keep it high.
+    // runaway-resource guard, so keep it high.
     private static immutable int maxToolRounds = 300;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
-    // Doom-loop recovery (mirrors the original opencode app): when the model
-    // repeats the same tool call with identical input, it is likely stuck in a
-    // loop. After the same signature repeats a few times, break the loop and
-    // ask the model to answer directly instead of running more tools.
+    // Repetition is a signal for guidance, not permission to reject a tool.
+    // The requested call still runs; after its result is recorded, a hidden
+    // progress note asks the model to explain what changed or vary its approach.
     private string _lastToolSignature;
     private int _lastToolRepeatCount;
-    private static immutable int doomLoopRepeatThreshold = 3;
+    private static immutable int repeatGuidanceThreshold = 3;
 
-    // Progress-based loop recovery: a model can also get stuck retrying a
+    // Progress guidance: a model can also get stuck retrying a
     // failing command with slightly different arguments (so the exact-call
     // signature above never matches). Track the last failure's signature
     // (tool name + first line of output); when the SAME failure repeats, the
-    // model is not making progress and the loop is broken. A success clears it.
+    // model may not be making progress. A success clears it; repeated failures
+    // still execute and receive a hidden suggestion to change approach.
     private string _lastFailureSignature;
     private int _lastFailureRepeatCount;
-    private bool _failureLoopDetected;
-    private static immutable int failureLoopRepeatThreshold = 3;
+    private string _pendingProgressGuidance;
+    private static immutable int failureGuidanceThreshold = 3;
     // Successful context calls are not automatically useful progress. Count
     // exploration across the whole user request (a mutation does not buy a new
     // search budget), then force the model to act on the evidence already read.
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
-    private static immutable int maxVerificationAttempts = 3;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -4762,7 +4761,7 @@ public final class OpenCodeRoot : VBox
         rt.lastToolRepeatCount = _lastToolRepeatCount;
         rt.lastFailureSignature = _lastFailureSignature;
         rt.lastFailureRepeatCount = _lastFailureRepeatCount;
-        rt.failureLoopDetected = _failureLoopDetected;
+        rt.pendingProgressGuidance = _pendingProgressGuidance;
         rt.liveOutputBytes = _liveOutputBytes;
         rt.liveOutputTokens = _liveOutputTokens;
         rt.liveTokenRateTenths = _liveTokenRateTenths;
@@ -4817,7 +4816,7 @@ public final class OpenCodeRoot : VBox
         _lastToolRepeatCount = rt.lastToolRepeatCount;
         _lastFailureSignature = rt.lastFailureSignature;
         _lastFailureRepeatCount = rt.lastFailureRepeatCount;
-        _failureLoopDetected = rt.failureLoopDetected;
+        _pendingProgressGuidance = rt.pendingProgressGuidance;
         _liveOutputBytes = rt.liveOutputBytes;
         _liveOutputTokens = rt.liveOutputTokens;
         _liveTokenRateTenths = rt.liveTokenRateTenths;
@@ -7350,7 +7349,7 @@ public final class OpenCodeRoot : VBox
         _lastToolRepeatCount = 0;
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
-        _failureLoopDetected = false;
+        _pendingProgressGuidance = "";
         clearActivity();
         // Branching away abandons the turn: stop its clock so it cannot keep
         // ticking while another branch is displayed.
@@ -7539,35 +7538,6 @@ public final class OpenCodeRoot : VBox
         return found;
     }
 
-    private static int verificationAttemptsSinceMutation(
-        const ref ChatSession session)
-    {
-        int attempts;
-        bool mutated;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal)
-            {
-                attempts = 0;
-                mutated = false;
-                continue;
-            }
-            if (message.role != "tool") continue;
-            if (isSubstantiveMutation(message.toolName, message.failed,
-                message.diffAdditions, message.diffDeletions,
-                message.toolDiff))
-            {
-                attempts = 0;
-                mutated = true;
-                continue;
-            }
-            if (mutated && isVerificationTool(message.toolName,
-                message.toolArgs)) ++attempts;
-        }
-        return attempts;
-    }
-
     private static bool hasExplorationCheckpoint(
         const ref ChatSession session)
     {
@@ -7587,73 +7557,22 @@ public final class OpenCodeRoot : VBox
         return found;
     }
 
-    private static bool hasUnnecessaryPostVerificationCall(
-        const(OpenCodeToolCall)[] calls)
+    /// Add orchestration guidance only after the current assistant tool_calls
+    /// has received every tool result. This preserves strict tool pairing and
+    /// keeps the note hidden from the user-facing transcript.
+    private bool appendPendingProgressGuidance(ref ChatSession session)
     {
-        foreach (call; calls)
-            if (call.name != "update_plan" && !isMutatingTool(call.name))
-                return true;
-        return false;
-    }
-
-    private static bool hasInternalInstructionSinceUser(
-        const ref ChatSession session, string instruction)
-    {
-        const path = activeMessagePath(session);
-        foreach_reverse (index; path)
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal) break;
-            if (message.internal && message.content == instruction) return true;
-        }
-        return false;
-    }
-
-    /// A guard may ask the model once to stop calling tools and provide its
-    /// answer. If the very next response requests tools again, finish locally
-    /// instead of recursively issuing the same request forever.
-    private void finishRepeatedGuard(ref ChatSession session, string result)
-    {
-        ChatMessage finalMessage;
-        finalMessage.role = "assistant";
-        finalMessage.content = session.verificationStatus == "passed"
-            ? "Finished. The focused verification already passed; Aurora " ~
-                "stopped an additional unnecessary tool request."
-            : "Stopped the repeated tool request. " ~ result;
-        finalMessage.time = currentTimestamp();
-        appendMessage(session, finalMessage);
-        _pendingToolCalls.length = 0;
-        _liveToolCalls.length = 0;
-        _preparingToolCalls.length = 0;
-        _pendingToolResults = 0;
-        session.taskStatus = session.verificationStatus == "passed"
-            ? "completed" : "blocked";
+        if (_pendingProgressGuidance.length == 0) return false;
+        ChatMessage guidance;
+        guidance.role = "user";
+        guidance.internal = true;
+        guidance.content = "Progress guidance: " ~ _pendingProgressGuidance;
+        appendMessage(session, guidance);
+        _pendingProgressGuidance = "";
         publishThreadUpdated(session);
-        finishAssistantMessage(false);
-        _activeRequestId = 0;
-        _activeRequestSession = -1;
-        updateSessionList(false);
-    }
-
-    private void skipToolsAndFinalize(ref ChatSession session,
-        const(OpenCodeToolCall)[] calls, string result, string instruction)
-    {
-        const repeated = hasInternalInstructionSinceUser(session, instruction);
-        appendSkippedToolResults(session, calls, result);
-        if (repeated)
-        {
-            finishRepeatedGuard(session, result);
-            return;
-        }
-        ChatMessage finalize;
-        finalize.role = "user";
-        finalize.internal = true;
-        finalize.content = instruction;
-        appendMessage(session, finalize);
         markDirty();
         if (viewingTurnOwner()) rebuildMessageColumn();
-        if (!_toolContinuationPaused)
-            startChatRequest(turnOwnerSessionIndex(), false);
+        return true;
     }
 
     private void appendExplorationCheckpoint(ref ChatSession session)
@@ -7721,34 +7640,9 @@ public final class OpenCodeRoot : VBox
         }
         markDirty();
 
-        if (session.verificationStatus == "passed" &&
-            hasUnnecessaryPostVerificationCall(event.toolCalls))
-        {
-            skipToolsAndFinalize(*session, event.toolCalls,
-                "Tool call skipped: focused verification already passed.",
-                "Verification passed. Stop inspecting and answer the user now " ~
-                "with the outcome, changed locations, and verification result.");
-            return;
-        }
-
-        if (session.verificationStatus == "required" &&
-            verificationAttemptsSinceMutation(*session) >=
-                maxVerificationAttempts &&
-            hasUnnecessaryPostVerificationCall(event.toolCalls))
-        {
-            skipToolsAndFinalize(*session, event.toolCalls,
-                "Tool call skipped: the verification attempt budget is " ~
-                    "exhausted.",
-                "You have used the verification budget. Do not inspect or " ~
-                "rerun the same checks. Make a concrete corrective edit if " ~
-                "the failure identifies one; otherwise report the exact " ~
-                "verification blocker to the user now.");
-            return;
-        }
-
-        // Doom-loop recovery: the same tool call repeated with identical input
-        // means the model is stuck. Break the loop and ask it to answer with
-        // what it already knows instead of running more tools.
+        // Repeated calls still execute. On the third consecutive identical
+        // batch, schedule a hidden note for the next model round so it can use
+        // the fresh result while reconsidering its approach.
         const signature = toolCallSignature(event.toolCalls);
         if (signature.length > 0 && signature == _lastToolSignature)
         {
@@ -7759,32 +7653,13 @@ public final class OpenCodeRoot : VBox
             _lastToolSignature = signature;
             _lastToolRepeatCount = 1;
         }
-        if (_lastToolRepeatCount >= doomLoopRepeatThreshold)
+        if (_lastToolRepeatCount == repeatGuidanceThreshold)
         {
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the model repeated the same request " ~
-                "without making progress.");
-            ChatMessage recovery;
-            recovery.role = "user";
-            recovery.internal = true;
-            recovery.content = "You appear to be repeating the same tool call " ~
-                "(" ~ signature ~ ") without making progress. Stop calling " ~
-                "tools and answer the user's question directly with what you " ~
-                "have already learned.";
-            appendMessage(*session, recovery);
-            markDirty();
-            // Re-render the wrapper (now a hidden slot) and the recovery prompt
-            // in one pass; there is no live row for this path.
-            if (_current == sessionIndex) rebuildMessageColumn();
-            _toolRounds = 0;
-            _lastToolSignature = "";
-            _lastToolRepeatCount = 0;
-            updateStatus("Tool loop detected — asking the model to answer…");
-            _messagesScroll.follow = true;
-            _messagesScroll.invalidate();
-            if (!_toolContinuationPaused)
-                startChatRequest(sessionIndex, false);
-            return;
+            _pendingProgressGuidance = "The same tool batch has now run three " ~
+                "consecutive times. Its newest result is available. Before " ~
+                "requesting it again, identify what changed or what new fact " ~
+                "another repetition would establish; otherwise choose the " ~
+                "next different action that advances the task.";
         }
 
         if (_toolRounds >= maxToolRounds)
@@ -8034,7 +7909,7 @@ public final class OpenCodeRoot : VBox
             publishThreadUpdated(*session);
         }
 
-        // Progress-based loop detection: remember the last failure signature
+        // Progress guidance: remember the last failure signature
         // (tool name + first output line) and how many times in a row it has
         // repeated. Any success is progress and clears it.
         if (event.toolFailed)
@@ -8048,8 +7923,11 @@ public final class OpenCodeRoot : VBox
                 _lastFailureSignature = failSignature;
                 _lastFailureRepeatCount = 1;
             }
-            if (_lastFailureRepeatCount >= failureLoopRepeatThreshold)
-                _failureLoopDetected = true;
+            if (_lastFailureRepeatCount == failureGuidanceThreshold)
+                _pendingProgressGuidance = "The same tool failure occurred " ~
+                    "three times. The failure is recorded; do not assume the " ~
+                    "tool is forbidden, but change inputs or approach unless " ~
+                    "another attempt tests a specific new hypothesis.";
         }
         else
         {
@@ -8075,18 +7953,7 @@ public final class OpenCodeRoot : VBox
             _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
-            if (_failureLoopDetected)
-            {
-                _failureLoopDetected = false;
-                _lastFailureSignature = "";
-                _lastFailureRepeatCount = 0;
-                breakToolLoop(session, "The same tool failure repeated " ~
-                    to!string(failureLoopRepeatThreshold) ~ " times without " ~
-                    "making progress. Do not repeat that command. Explain the " ~
-                    "blocker to the user and either change approach or ask " ~
-                    "how to proceed.");
-                return;
-            }
+            appendPendingProgressGuidance(*session);
             if (!_toolContinuationPaused)
             {
                 appendQueuedGuidance(*session);
@@ -8192,32 +8059,6 @@ public final class OpenCodeRoot : VBox
             if (trimmed.length > 0) return trimmed;
         }
         return "";
-    }
-
-    /// Break a detected tool loop: append a hidden control turn that tells the
-    /// model to stop repeating and answer / change approach, then re-send the
-    /// enriched history. Shared by the exact-repeat and repeated-failure paths.
-    private void breakToolLoop(ChatSession* session, string instruction)
-    {
-        const sessionIndex = turnOwnerSessionIndex();
-        ChatMessage recovery;
-        recovery.role = "user";
-        recovery.internal = true;
-        recovery.content = instruction;
-        appendMessage(*session, recovery);
-        markDirty();
-        rebuildMessageColumn();
-        _toolRounds = 0;
-        _lastToolSignature = "";
-        _lastToolRepeatCount = 0;
-        _lastFailureSignature = "";
-        _lastFailureRepeatCount = 0;
-        _failureLoopDetected = false;
-        updateStatus("Tool loop detected - asking the model to change approach...");
-        _messagesScroll.follow = true;
-        _messagesScroll.invalidate();
-        if (!_toolContinuationPaused)
-            startChatRequest(sessionIndex, false);
     }
 
     // -- sending ----------------------------------------------------------
@@ -8372,7 +8213,7 @@ public final class OpenCodeRoot : VBox
         _lastToolRepeatCount = 0;
         _lastFailureSignature = "";
         _lastFailureRepeatCount = 0;
-        _failureLoopDetected = false;
+        _pendingProgressGuidance = "";
         _pendingToolCalls.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -13023,7 +12864,7 @@ public final class OpenCodeRoot : VBox
         handleToolCalls(event);
     }
 
-    /// Test-only: the current doom-loop repeat count for the last tool call.
+    /// Test-only: consecutive repeat count used to trigger progress guidance.
     public int toolRepeatCountForTesting()
     {
         return _lastToolRepeatCount;
@@ -13091,7 +12932,7 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Test-only: number of `user` role messages (used to detect the injected
-    /// doom-loop recovery message).
+    /// hidden progress-guidance message).
     public int userMessageCountForTesting()
     {
         if (_current < 0) return 0;

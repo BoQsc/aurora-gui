@@ -1582,8 +1582,12 @@ int main(string[] args)
     assert(systemPrompt.indexOf("# Execution loop") >= 0 &&
         systemPrompt.indexOf("# Operating contract") >= 0,
         "system prompt is missing the execution contract: " ~ systemPrompt);
-    assert(systemPrompt.indexOf("first mutation normally within six") >= 0,
-        "system prompt does not bound read-only exploration");
+    assert(systemPrompt.indexOf("name the remaining unknown") >= 0 &&
+        systemPrompt.indexOf("evidence phase, not a quota") >= 0,
+        "system prompt does not guide progress from evidence");
+    assert(systemPrompt.indexOf("within six") < 0 &&
+        systemPrompt.indexOf("at most three") < 0,
+        "system prompt still contains artificial work quotas");
     writeln("Concise execution-contract prompt is viewable from Settings");
     const promptShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
     if (!exists(promptShots)) mkdirRecurse(promptShots);
@@ -2493,50 +2497,61 @@ int main(string[] args)
         writeln("Replies and tool rows share one gap (no timestamp band)");
     }
 
-    // Doom-loop recovery: repeating the same tool call with identical input
-    // must break the loop and inject a recovery message asking for an answer,
-    // instead of running tools forever until the round cap.
-    root.addConversationForTesting(["assistant"], [""]);
+    // Repetition guides rather than controls: all three identical calls execute
+    // and the third result adds a hidden note asking the model to reconsider
+    // its approach. No tool result is fabricated or skipped.
     const userCountBefore = root.userMessageCountForTesting();
+    const repeatedToolCountBefore = root.toolMessageCountForTesting();
     OpenCodeToolCall loopCall;
     loopCall.id = "call_loop";
     loopCall.name = "dshell";
     loopCall.arguments = `{"command":"list"}`;
-    root.injectToolCallsForTesting([loopCall]);
-    root.injectToolCallsForTesting([loopCall]);
-    assert(root.toolRepeatCountForTesting() == 2,
-        "Repeat count did not accumulate: " ~
-        to!string(root.toolRepeatCountForTesting()));
-    root.injectToolCallsForTesting([loopCall]);
-    root.tickTree(0.02);
-    // The third identical call triggers recovery: a recovery user message is
-    // injected and the loop stops running tools.
+    foreach (round; 0 .. 3)
+    {
+        root.addConversationForTesting(["assistant"], [""]);
+        const target = repeatedToolCountBefore + cast(int) round + 1;
+        root.injectToolCallsForTesting([loopCall]);
+        const repeatDeadline = Clock.currTime + 2.seconds;
+        while (root.toolMessageCountForTesting() < target &&
+            Clock.currTime < repeatDeadline)
+        {
+            root.tickTree(0.01);
+            Thread.sleep(5.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == target,
+            "repeated tool request was not executed at round " ~
+            to!string(round));
+    }
     assert(root.userMessageCountForTesting() == userCountBefore + 1,
-        "Doom-loop recovery did not inject a recovery message");
-    assert(root.toolRepeatCountForTesting() == 0,
-        "Doom-loop recovery did not reset the repeat counter");
-    writeln("Doom-loop recovery breaks repeated identical tool calls");
+        "repeat guidance was not appended after the completed result");
+    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0,
+        "repeat guidance was not marked as internal progress context");
+    assert(root.toolRepeatCountForTesting() == 3,
+        "repeat tracking was reset as if the tool had been blocked");
+    assert(root.lastToolResultForTesting().indexOf("skipped") < 0,
+        "repeated tool execution was replaced by a skipped result");
+    writeln("Repeated identical tools execute and receive hidden guidance");
 
-    // Progress-based loop recovery: the same FAILING tool (slightly different
-    // arguments each time, so the exact-call signature never matches) must also
-    // be broken once the identical failure repeats.
+    // Repeated failures likewise remain real tool results. The runtime adds
+    // guidance after the third result but does not block, finalize, or pretend
+    // that the user supplied the instruction.
     root.addConversationForTesting(["assistant"], [""]);
     const failUserCountBefore = root.userMessageCountForTesting();
     root.injectToolResultForTesting("bash", "Error: module not found", true);
     root.injectToolResultForTesting("bash", "Error: module not found", true);
     root.injectToolResultForTesting("bash", "Error: module not found", true);
     assert(root.userMessageCountForTesting() == failUserCountBefore + 1,
-        "Repeated-failure recovery did not inject a recovery message");
-    assert(root.lastUserMessageForTesting().indexOf("repeated") >= 0,
-        "Repeated-failure recovery message did not explain the loop: " ~
+        "repeated-failure guidance was not appended");
+    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0,
+        "repeated-failure guidance was not marked as internal: " ~
         root.lastUserMessageForTesting());
     auto recoveryRequest = root.requestMessagesForTesting();
     assert(recoveryRequest.length > 0 && recoveryRequest[$ - 1].role == "system",
-        "Internal loop recovery was sent as a fake user message");
+        "Internal progress guidance was sent as a fake user message");
     assert(recoveryRequest[$ - 1].content.indexOf(
         "Internal agent-control instruction") >= 0,
-        "Internal loop recovery lost its control-role marker");
-    writeln("Repeated-failure recovery breaks a failing tool loop");
+        "Internal progress guidance lost its control-role marker");
+    writeln("Repeated failures execute and receive hidden guidance");
 
     // Let the earlier real workers settle before starting the sequential
     // long-horizon probe; otherwise their late result can consume its pending
@@ -2654,13 +2669,22 @@ int main(string[] args)
     root.addConversationForTesting(["assistant"], [""]);
     OpenCodeToolCall postVerifyRead;
     postVerifyRead.id = "call_post_verify_read";
-    postVerifyRead.name = "read";
-    postVerifyRead.arguments = `{"filePath":"app.d"}`;
+    postVerifyRead.name = "dshell";
+    postVerifyRead.arguments = `{"command":"list"}`;
+    const postVerifyTarget = root.toolMessageCountForTesting() + 1;
     root.injectToolCallsForTesting([postVerifyRead]);
-    assert(root.lastToolResultForTesting().indexOf(
-        "verification already passed") >= 0,
-        "inspection continued after verification passed");
-    writeln("Passed verification terminates further inspection");
+    const postVerifyDeadline = Clock.currTime + 2.seconds;
+    while (root.toolMessageCountForTesting() < postVerifyTarget &&
+        Clock.currTime < postVerifyDeadline)
+    {
+        root.tickTree(0.01);
+        Thread.sleep(5.msecs);
+    }
+    assert(root.toolMessageCountForTesting() == postVerifyTarget,
+        "a post-verification inspection was blocked");
+    assert(root.lastToolResultForTesting().indexOf("skipped") < 0,
+        "post-verification inspection received a fabricated skipped result");
+    writeln("Passed verification does not revoke tool access");
     assert(!root.responseIsStalledForTesting(89) &&
         root.responseIsStalledForTesting(90),
         "stalled-response watchdog threshold is not 90 seconds");
@@ -2670,7 +2694,7 @@ int main(string[] args)
         "watchdog meaningful-progress classification is incorrect");
     writeln("Stalled model responses have a meaningful-event watchdog");
 
-    // The doom-loop injections run real local tool workers and a follow-up
+    // The repetition-guidance injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the
     // middle of the cache/perf block below and calls rebuildMessageColumn(),
     // discarding the tool-row cache and making "re-expand shaped 0 rows" flaky.
