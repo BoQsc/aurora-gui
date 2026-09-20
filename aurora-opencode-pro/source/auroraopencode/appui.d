@@ -95,6 +95,22 @@ private void openFolderInExplorer(string path)
     ShellExecuteW(null, toUTF16z("explore"), toUTF16z(path), null, null, 1);
 }
 
+/// Directory that holds every persisted chat (sessions, pins, runtime
+/// journal). Shared by the "Chats" button in the Settings dialog.
+private string chatsDirectory()
+{
+    return opencodeStateDirectory();
+}
+
+/// Reveal the folder that stores the user's chats in the file manager.
+private void openChatsFolder()
+{
+    const dir = chatsDirectory();
+    if (!exists(dir)) mkdirRecurse(dir);
+    version (Windows)
+        openFolderInExplorer(dir);
+}
+
 /// Baseline offset of the first shaped line inside a layout box. The stats
 /// (monospace) line box is taller than the UI label's, so centring each by its
 /// own box height left the counters slightly above the visual middle; aligning
@@ -8972,6 +8988,10 @@ public final class OpenCodeRoot : VBox
         auto promptButton = footer.add(new Button("System prompt"));
         promptButton.setId("oc-system-prompt-open");
         promptButton.onClick = delegate() { showSystemPromptDialog(); };
+        auto chatsButton = footer.add(new Button("Chats folder"));
+        chatsButton.setId("oc-chats-folder-open");
+        // Reveals the directory that stores persisted chats in the file manager.
+        chatsButton.onClick = delegate() { openChatsFolder(); };
         footer.add(new Spacer());
         auto cancelButton = footer.add(new Button("Cancel"));
         cancelButton.onClick = delegate() { dismissPopup(); };
@@ -12059,6 +12079,14 @@ public final class OpenCodeRoot : VBox
     {
         showSettingsDialog();
         return findWidgetById(this, "oc-system-prompt-open") !is null;
+    }
+
+    /// Test-only: open Settings and report whether the "Chats folder" button
+    /// that reveals the chats directory is present.
+    public bool chatsFolderButtonPresentForTesting()
+    {
+        showSettingsDialog();
+        return findWidgetById(this, "oc-chats-folder-open") !is null;
     }
 
     /// Test-only: open the system-prompt viewer and return the exact text it

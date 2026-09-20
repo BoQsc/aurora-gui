@@ -1486,6 +1486,10 @@ int main(string[] args)
     // in the API tool schemas instead of being duplicated here.
     assert(root.systemPromptButtonPresentForTesting(),
         "Settings dialog missing the System prompt button");
+    // Settings reveals the folder that stores the user's chats.
+    assert(root.chatsFolderButtonPresentForTesting(),
+        "Settings dialog missing the Chats folder button");
+    writeln("Chats folder button is available from Settings");
     const systemPrompt = root.systemPromptViewerTextForTesting();
     assert(systemPrompt.indexOf("Aurora OpenCode") >= 0,
         "system prompt is missing the identity line");
