@@ -396,6 +396,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         if (f.type == JSONType.string) message.time = f.str;
     if (auto f = "failed" in payload.object)
         message.failed = f.type == JSONType.true_;
+    if (auto f = "finishReason" in payload.object)
+        if (f.type == JSONType.string) message.finishReason = f.str;
     if (auto f = "internal" in payload.object)
         message.internal = f.type == JSONType.true_;
     if (auto f = "toolCallId" in payload.object)

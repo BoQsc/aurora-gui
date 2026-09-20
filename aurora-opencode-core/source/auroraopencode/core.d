@@ -499,6 +499,7 @@ public struct ChatMessage
     string reasoning;
     string time;       // "HH:MM" local wall-clock, empty when unknown
     bool failed;       // assistant reply that ended in an error
+    string finishReason; // provider stop reason; identifies truncated replies
     int promptTokens;  // usage the API reported for the reply (0 = unknown)
     int completionTokens;
     int totalTokens;

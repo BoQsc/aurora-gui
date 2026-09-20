@@ -215,6 +215,10 @@ private final class MessageBubble : Widget
     private void delegate() _actionCallback;
     private Rect _actionRect;
     private bool _actionHover;
+    private string _secondaryActionLabel;
+    private void delegate() _secondaryActionCallback;
+    private Rect _secondaryActionRect;
+    private bool _secondaryActionHover;
     // Branch navigation (Pro): when an edited prompt or a regenerated reply has
     // sibling versions, the footer shows `‹ n/m ›` so the user can flip between
     // the kept runs. The callbacks switch the session's active leaf.
@@ -647,12 +651,24 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    void setSecondaryAction(string label, void delegate() callback)
+    {
+        _secondaryActionLabel = label;
+        _secondaryActionCallback = callback;
+        invalidate();
+    }
+
     void clearAction()
     {
-        if (_actionLabel.length == 0 && _actionCallback is null) return;
+        if (_actionLabel.length == 0 && _actionCallback is null &&
+            _secondaryActionLabel.length == 0 &&
+            _secondaryActionCallback is null) return;
         _actionLabel = "";
         _actionCallback = null;
         _actionHover = false;
+        _secondaryActionLabel = "";
+        _secondaryActionCallback = null;
+        _secondaryActionHover = false;
         invalidate();
     }
 
@@ -694,6 +710,11 @@ private final class MessageBubble : Widget
         return _actionRect;
     }
 
+    public Rect secondaryActionBoundsForTesting() const
+    {
+        return _secondaryActionRect;
+    }
+
     /// Test-only: invoke the previous-version arrow, if present.
     public bool invokeVersionPrevForTesting()
     {
@@ -716,11 +737,24 @@ private final class MessageBubble : Widget
         return _actionLabel;
     }
 
+    public string secondaryActionLabelForTesting()
+    {
+        return _secondaryActionLabel;
+    }
+
     /// Test-only: invoke the current action pill's callback, if any.
     public bool invokeActionForTesting()
     {
         if (_actionLabel.length == 0 || _actionCallback is null) return false;
         _actionCallback();
+        return true;
+    }
+
+    public bool invokeSecondaryActionForTesting()
+    {
+        if (_secondaryActionLabel.length == 0 ||
+            _secondaryActionCallback is null) return false;
+        _secondaryActionCallback();
         return true;
     }
 
@@ -1064,6 +1098,7 @@ private final class MessageBubble : Widget
     private void drawActionPill(ref Canvas canvas, int width, int height)
     {
         _actionRect = Rect.init;
+        _secondaryActionRect = Rect.init;
         if (_actionLabel.length == 0 || _actionCallback is null) return;
         auto labelLayout = canvas.layoutText(toUTF32(_actionLabel), 1,
             FontRole.ui, cast(FontFace) theme().uiFont, 200, false);
@@ -1075,6 +1110,22 @@ private final class MessageBubble : Widget
         canvas.drawTextInRect(_actionRect, toUTF32(_actionLabel),
             _actionHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
             HorizontalAlign.center, VerticalAlign.middle, true);
+        if (_secondaryActionLabel.length == 0 ||
+            _secondaryActionCallback is null) return;
+        auto secondaryLayout = canvas.layoutText(
+            toUTF32(_secondaryActionLabel), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, 200, false);
+        const secondaryWidth = maxInt(52,
+            cast(int) secondaryLayout.width + 18);
+        _secondaryActionRect = Rect(_actionRect.right() + 6,
+            height - padV - 19, secondaryWidth, 18);
+        canvas.fillRoundedRect(_secondaryActionRect, 9,
+            _secondaryActionHover ? opencodeAccent.withAlpha(150) :
+                opencodeBorder);
+        canvas.drawTextInRect(_secondaryActionRect,
+            toUTF32(_secondaryActionLabel),
+            _secondaryActionHover ? Color.rgb(255, 255, 255) : opencodeMuted,
+            1, HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
     /// Footer branch navigation: `‹ n/m ›`. `m > 1` means this prompt or reply
@@ -1692,6 +1743,7 @@ private final class MessageBubble : Widget
     {
         if (_role == "tool") return false;
         return _usageText.length > 0 || _actionLabel.length > 0 ||
+            _secondaryActionLabel.length > 0 ||
             _versionTotal > 1;
     }
 
@@ -1753,6 +1805,9 @@ private final class MessageBubble : Widget
         }
         const overAction = _actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position);
+        const overSecondaryAction = _secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null &&
+            _secondaryActionRect.contains(event.position);
         const overCollapse = _role == "tool" &&
             _collapseRect.contains(event.position);
         const overThinking = _thinking.length > 0 &&
@@ -1767,18 +1822,22 @@ private final class MessageBubble : Widget
         size_t hoverChar;
         const overText = selectSegmentAt(event.position, hoverSeg, hoverChar);
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
-            overAction != _actionHover || overCollapse != _collapseHover ||
+            overAction != _actionHover ||
+            overSecondaryAction != _secondaryActionHover ||
+            overCollapse != _collapseHover ||
             overThinking != _thinkingHover || overVersion != _versionHover ||
             overText != _textHover)
         {
             _hoverCopy = nextCopy;
             _hoverLink = nextLink;
             _actionHover = overAction;
+            _secondaryActionHover = overSecondaryAction;
             _collapseHover = overCollapse;
             _thinkingHover = overThinking;
             _versionHover = overVersion;
             _textHover = overText;
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
+                overSecondaryAction ||
                 overCollapse || overThinking || overVersion != 0
                 ? CursorKind.hand :
                 (overText ? CursorKind.text : CursorKind.arrow));
@@ -1837,6 +1896,13 @@ private final class MessageBubble : Widget
             _actionRect.contains(event.position))
         {
             _actionCallback();
+            return true;
+        }
+        if (_secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null &&
+            _secondaryActionRect.contains(event.position))
+        {
+            _secondaryActionCallback();
             return true;
         }
         if (_hoverCopy >= 0 && _hoverCopy < cast(int) _copyRects.length)
@@ -5932,6 +5998,8 @@ public final class OpenCodeRoot : VBox
             payload["reasoning"] = message.reasoning;
         if (message.time.length > 0) payload["time"] = message.time;
         if (message.failed) payload["failed"] = true;
+        if (message.finishReason.length > 0)
+            payload["finishReason"] = message.finishReason;
         if (message.internal) payload["internal"] = true;
         if (message.toolCallId.length > 0)
             payload["toolCallId"] = message.toolCallId;
@@ -6655,8 +6723,13 @@ public final class OpenCodeRoot : VBox
             // Only a real assistant reply gets a visible pill; a tool-call
             // wrapper (empty content + tool requests) is not a reply.
             if (message.role == "assistant" && message.toolCalls.length == 0)
+            {
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
                     regenerateAction(_current, messageIndex));
+                if (!message.failed)
+                    bubble.setSecondaryAction("Continue",
+                        continueAction(_current, messageIndex));
+            }
         }
     }
 
@@ -6908,7 +6981,8 @@ public final class OpenCodeRoot : VBox
     }
 
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
-        int completionTokens = 0, int totalTokens = 0, bool terminal = true)
+        int completionTokens = 0, int totalTokens = 0, bool terminal = true,
+        string finishReason = "")
     {
         const sessionIndex = turnOwnerSessionIndex();
         _requestProgressSet = false;
@@ -6945,6 +7019,7 @@ public final class OpenCodeRoot : VBox
         {
             auto message = &_sessions[sessionIndex].messages[$ - 1];
             if (message.time.length == 0) message.time = currentTimestamp();
+            message.finishReason = cancelled ? "cancelled" : finishReason;
             if (completionTokens > 0 || totalTokens > 0)
             {
                 message.promptTokens = promptTokens;
@@ -6980,6 +7055,11 @@ public final class OpenCodeRoot : VBox
         markDirty();
         refreshBubbleActions();
         refreshUsageBadge();
+    }
+
+    private void delegate() continueAction(int sessionIndex, int messageIndex)
+    {
+        return delegate() { continueFromReply(sessionIndex, messageIndex); };
     }
 
     /// A provider `done` is not automatically task completion.  First consume
@@ -8876,6 +8956,77 @@ public final class OpenCodeRoot : VBox
         startChatRequest(sessionIndex);
     }
 
+    private static bool truncatedFinishReason(string reason)
+    {
+        const lower = reason.toLower();
+        return lower == "length" || lower == "max_tokens" ||
+            lower == "max_output_tokens" || lower == "max_output_length";
+    }
+
+    /// Extend the current branch after a settled assistant reply. Unlike
+    /// Regenerate, this keeps the reply as context and appends a hidden control
+    /// turn. The instruction is derived from the actual terminal/task state so
+    /// the model resumes rather than repeating completed work.
+    private void continueFromReply(int sessionIndex, int messageIndex)
+    {
+        if (!prepareContinue(sessionIndex, messageIndex)) return;
+        startChatRequest(sessionIndex);
+    }
+
+    private bool prepareContinue(int sessionIndex, int messageIndex)
+    {
+        if (sessionIndex != _current || _client.busy() || _turnTiming ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0 ||
+            _liveToolCalls.length > 0 || _preparingToolCalls.length > 0)
+            return false;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length) return false;
+        const message = session.messages[cast(size_t) messageIndex];
+        if (message.role != "assistant" || message.failed ||
+            message.toolCalls.length > 0 ||
+            session.activeLeafId != message.id) return false;
+
+        ChatMessage continuation;
+        continuation.role = "user";
+        continuation.internal = true;
+        continuation.time = currentTimestamp();
+        if (truncatedFinishReason(message.finishReason))
+            continuation.content = "Continuation request: the provider ended " ~
+                "the previous response at its output limit. Continue exactly " ~
+                "from the point where it stopped. Do not repeat or summarize " ~
+                "text already present, and preserve the current branch.";
+        else if (message.finishReason == "cancelled" ||
+            session.taskStatus == "active" ||
+            session.taskStatus == "blocked" ||
+            session.taskStatus == "reviewing" ||
+            session.taskStatus == "verifying" ||
+            hasIncompleteTaskSteps(*session) ||
+            session.verificationStatus == "required")
+        {
+            continuation.content = "Continuation request: resume the current " ~
+                "task from its durable objective, checklist, files, and tool " ~
+                "results. Keep completed work, do not repeat successful " ~
+                "inspection or edits, take the next concrete pending action, " ~
+                "then run only the focused verification still needed. If a " ~
+                "real blocker remains, report it precisely.";
+            session.taskStatus = "active";
+        }
+        else
+            continuation.content = "Continuation request: extend the previous " ~
+                "answer with the next useful details. Do not repeat or " ~
+                "summarize material already present.";
+
+        appendMessage(*session, continuation);
+        publishThreadUpdated(*session);
+        markDirty();
+        rebuildMessageColumn();
+        updateStatus("Continuing from the current reply…");
+        return true;
+    }
+
     /// Point the active leaf just before an assistant reply so a fresh reply is
     /// generated as a sibling branch. The old reply (and its continuation) stays
     /// in `messages`, available through the `‹ n/m ›` branch switcher. Returns
@@ -10103,6 +10254,13 @@ public final class OpenCodeRoot : VBox
                 {
                     regenerateLastReply(_current, messageIndex);
                 });
+            if (!message.failed && message.toolCalls.length == 0)
+                items ~= ContextMenuItem.command("Continue",
+                    IconKind.chevronRight,
+                    delegate()
+                    {
+                        continueFromReply(_current, messageIndex);
+                    });
         }
         else if (message.role == "user")
         {
@@ -10497,6 +10655,8 @@ public final class OpenCodeRoot : VBox
                 messageJson["time"] = message.time;
             if (message.failed)
                 messageJson["failed"] = true;
+            if (message.finishReason.length > 0)
+                messageJson["finishReason"] = message.finishReason;
             if (message.internal)
                 messageJson["internal"] = true;
             if (message.totalTokens > 0 || message.completionTokens > 0)
@@ -10673,6 +10833,10 @@ public final class OpenCodeRoot : VBox
                                         message.time = f.str;
                                     if (auto f = "failed" in messageValue.object)
                                         message.failed = f.type == JSONType.true_;
+                                    if (auto f = "finishReason" in
+                                        messageValue.object)
+                                        if (f.type == JSONType.string)
+                                            message.finishReason = f.str;
                                     if (auto f = "internal" in messageValue.object)
                                         message.internal = f.type == JSONType.true_;
                                     if (auto f = "promptTokens" in messageValue.object)
@@ -11057,7 +11221,7 @@ public final class OpenCodeRoot : VBox
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
-                        !taskContinues);
+                        !taskContinues, event.finishReason);
                     continueOrCompleteTask(event.cancelled);
                     // A continuation started above owns a new id. Only clear the
                     // completed request when no replacement was launched.
@@ -11263,6 +11427,19 @@ public final class OpenCodeRoot : VBox
         _sessions[_current].verificationStatus = verification;
         publishThreadUpdated(_sessions[_current]);
         markDirty();
+    }
+
+    public void setLastFinishReasonForTesting(string reason)
+    {
+        if (_current < 0) return;
+        const path = activeMessagePath(_sessions[_current]);
+        if (path.length == 0) return;
+        auto message = &_sessions[_current].messages[path[$ - 1]];
+        message.finishReason = reason;
+        publishMessageEvent(AgentEventKind.itemUpdated,
+            _sessions[_current], *message);
+        markDirty();
+        rebuildMessageColumn();
     }
 
     public string taskObjectiveForTesting() const
@@ -11900,6 +12077,13 @@ public final class OpenCodeRoot : VBox
         return bubble is null ? Rect.init : bubble.actionBoundsForTesting();
     }
 
+    public Rect bubbleSecondaryActionBoundsForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Rect.init :
+            bubble.secondaryActionBoundsForTesting();
+    }
+
     /// Test-only: click the previous-version arrow on the bubble at child
     /// `index`, exactly as a mouse click would.
     public bool invokeBubbleVersionPrevForTesting(int index)
@@ -11925,6 +12109,16 @@ public final class OpenCodeRoot : VBox
         return prepareRegenerate(_current, cast(int) path[$ - 1]);
     }
 
+    /// Test-only: append the same state-aware hidden turn as the Continue pill
+    /// without opening a network request.
+    public bool prepareContinueForTesting()
+    {
+        if (_current < 0) return false;
+        const path = activeMessagePath(_sessions[_current]);
+        if (path.length == 0) return false;
+        return prepareContinue(_current, cast(int) path[$ - 1]);
+    }
+
     /// Test-only: action-pill label on the last bubble ("" when none).
     public string lastBubbleActionForTesting()
     {
@@ -11932,6 +12126,14 @@ public final class OpenCodeRoot : VBox
         if (children.length == 0) return "";
         auto bubble = cast(MessageBubble) children[$ - 1];
         return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    public string lastBubbleSecondaryActionForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return "";
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
     }
 
     /// Test-only: action-pill label on the bubble at `index`.

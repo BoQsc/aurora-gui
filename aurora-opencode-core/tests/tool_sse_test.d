@@ -43,6 +43,8 @@ private void assertToolCallFixture()
     const event = events[0];
     assert(event.kind == OpenCodeEventKind.toolCalls,
         "Expected toolCalls terminal event");
+    assert(event.finishReason == "tool_calls",
+        "provider finish reason was not preserved");
     assert(event.toolCalls.length == 1, "Expected one accumulated tool call");
     assert(event.toolCalls[0].id == "call_00_abc", "Tool call id lost");
     assert(event.toolCalls[0].name == "sum", "Tool call name lost");
@@ -50,6 +52,22 @@ private void assertToolCallFixture()
         "Tool call arguments not stitched: " ~ event.toolCalls[0].arguments);
     writeln("SSE tool_calls accumulation OK: ",
         event.toolCalls[0].arguments);
+    client.closeSession();
+}
+
+private void assertFinishReasonFixture()
+{
+    auto client = new OpenCodeClient("https://example.com/v1", "test-key");
+    const payload =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n" ~
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n" ~
+        "data: [DONE]\n";
+    const events = runFixture(client, payload);
+    assert(events.length == 1 && events[0].kind == OpenCodeEventKind.done);
+    assert(events[0].text == "partial");
+    assert(events[0].finishReason == "length",
+        "truncation finish reason was lost");
+    writeln("Provider finish reasons survive SSE parsing");
     client.closeSession();
 }
 
@@ -213,6 +231,7 @@ int main()
     assert(!transientChatStatusForTesting(429));
     writeln("Only transient upstream server failures are retried");
     assertToolCallFixture();
+    assertFinishReasonFixture();
     assertRequestBody();
     assertPlainBody();
     assertLlamaServerCompatibility();

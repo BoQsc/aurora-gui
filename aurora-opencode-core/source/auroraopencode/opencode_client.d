@@ -57,6 +57,9 @@ struct OpenCodeEvent
     // Opaque UI-supplied identity for routing late events. Zero is reserved for
     // standalone parser tests and callers that do not need request isolation.
     ulong requestId;
+    // Provider terminal reason (`stop`, `length`, `max_tokens`, ...). Kept
+    // separate from cancellation so the UI can offer a safe continuation.
+    string finishReason;
 }
 
 private struct HttpTarget
@@ -206,6 +209,7 @@ final class OpenCodeClient
     private MonoTime _lastToolProgressTime;
     private size_t _streamToolArgBytes;
     private bool _streamWantedTools;
+    private string _streamFinishReason;
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
     private int _lastTotalTokens;
@@ -520,6 +524,7 @@ final class OpenCodeClient
             _streamToolArgBytes = 0;
             _lastToolProgressTime = MonoTime.currTime;
             _streamWantedTools = false;
+            _streamFinishReason = "";
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
             _lastTotalTokens = 0;
@@ -682,15 +687,18 @@ final class OpenCodeClient
     /// toolCalls event when the model requested tools, otherwise done.
     private void pushStreamEnd()
     {
+        OpenCodeEvent event;
         if (_streamWantedTools)
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.toolCalls,
+            event = OpenCodeEvent(OpenCodeEventKind.toolCalls,
                 _streamContent, false, null, false, _lastPromptTokens,
                 _lastCompletionTokens, _lastTotalTokens,
-                _streamToolCalls.dup));
+                _streamToolCalls.dup);
         else
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
+            event = OpenCodeEvent(OpenCodeEventKind.done,
                 _streamContent, false, null, false, _lastPromptTokens,
-                _lastCompletionTokens, _lastTotalTokens));
+                _lastCompletionTokens, _lastTotalTokens);
+        event.finishReason = _streamFinishReason;
+        pushStreamEvent(event);
     }
 
     // -- test hooks --------------------------------------------------------
@@ -721,6 +729,7 @@ final class OpenCodeClient
         _streamToolArgBytes = 0;
         _lastToolProgressTime = MonoTime.currTime;
         _streamWantedTools = false;
+        _streamFinishReason = "";
         _lastPromptTokens = 0;
         _lastCompletionTokens = 0;
         _lastTotalTokens = 0;
@@ -1097,8 +1106,11 @@ final class OpenCodeClient
         // Some providers signal tool-call completion through the chunk's
         // finish_reason before [DONE]; others only through the delta shape.
         if (auto found = "finish_reason" in choice.object)
-            if (found.type == JSONType.string && found.str == "tool_calls")
-                _streamWantedTools = true;
+            if (found.type == JSONType.string)
+            {
+                _streamFinishReason = found.str;
+                if (found.str == "tool_calls") _streamWantedTools = true;
+            }
 
         if (auto found = "tool_calls" in delta.object)
         {

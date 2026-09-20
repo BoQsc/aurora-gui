@@ -432,6 +432,8 @@ int main(string[] args)
     root.addConversationForTesting(["assistant"], ["A normal reply."]);
     assert(root.lastBubbleActionForTesting() == "Regenerate",
         "Latest assistant reply did not get the Regenerate pill");
+    assert(root.lastBubbleSecondaryActionForTesting() == "Continue",
+        "Latest assistant reply did not get the Continue pill");
     // Older bubbles (including the user message) have no visible pill.
     const count = root.messageCountForTesting();
     assert(root.bubbleActionForTesting(cast(int) count - 2) == "",
@@ -750,6 +752,41 @@ int main(string[] args)
         "Version nav overlaps the action pill");
     window.saveScreenshot(buildPath(branchShots, "branch-nav.ppm"));
     writeln("Branch screenshot: ", branchShots);
+
+    // Continue extends the current branch instead of replacing the assistant
+    // reply. A provider truncation gets a precise non-repetition instruction,
+    // and its finish reason survives persistence.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Write a long answer", "The first portion."]);
+    root.setLastFinishReasonForTesting("length");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    assert(root.lastBubbleSecondaryActionForTesting() == "Continue",
+        "Continue disappeared after session reload");
+    const beforeContinueTotal = root.totalMessageCountForTesting();
+    assert(root.prepareContinueForTesting(),
+        "Continue rejected a settled truncated reply");
+    assert(root.totalMessageCountForTesting() == beforeContinueTotal + 1,
+        "Continue replaced history instead of extending the branch");
+    assert(root.lastUserMessageForTesting().indexOf("output limit") >= 0 &&
+        root.lastUserMessageForTesting().indexOf("Do not repeat") >= 0,
+        "truncated reply received the wrong continuation instruction: " ~
+        root.lastUserMessageForTesting());
+
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Implement the feature", "I stopped partway through."]);
+    root.setTaskStateForTesting("Implement the feature", "blocked", "required");
+    assert(root.prepareContinueForTesting(),
+        "Continue rejected an incomplete durable task");
+    assert(root.lastUserMessageForTesting().indexOf("durable objective") >= 0 &&
+        root.lastUserMessageForTesting().indexOf("do not repeat successful") >= 0,
+        "incomplete task received the wrong continuation instruction: " ~
+        root.lastUserMessageForTesting());
+    assert(root.taskStatusForTesting() == "active",
+        "Continue did not resume the durable task state");
+    writeln("Continue extends the branch with state-aware instructions");
 
     // Outgoing-request sanitizer: a stored assistant `tool_calls` message with
     // no (or partial) tool replies must never reach the provider, which
@@ -2373,7 +2410,11 @@ int main(string[] args)
         const pill = root.bubbleActionBoundsForTesting(2);
         assert(pill.height == 18 && pill.bottom() <= withPill,
             "Regenerate pill must fit inside the reply bubble");
-        writeln("Regenerate pill reserves a footer with a top gap");
+        const continuePill = root.bubbleSecondaryActionBoundsForTesting(2);
+        assert(continuePill.height == 18 && pill.right() < continuePill.x &&
+            continuePill.bottom() <= withPill,
+            "Continue pill overlaps Regenerate or leaves the reply bubble");
+        writeln("Regenerate and Continue share a padded reply footer");
     }
 
     // Real transcript shape: collapsed tool rows interleaved with assistant
