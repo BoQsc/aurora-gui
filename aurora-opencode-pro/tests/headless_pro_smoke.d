@@ -2099,6 +2099,61 @@ int main(string[] args)
         writeln("Tool-call transition preserves Thinking token throughput");
     }
 
+    // A tool-only round starts with a durable but empty assistant slot. That
+    // slot must be excluded from layout immediately; otherwise it disappears
+    // only when execution starts and the action group visibly jumps upward.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Inspect the target"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        assert(driver.paint(), "Empty assistant start did not paint");
+        assert(root.bubbleHiddenForTesting(1),
+            "an empty streaming assistant slot reserved transcript space");
+        const int waitingIndex = root.activityRowVisualIndexForTesting();
+        const int waitingY = root.bubbleBoundsForTesting(waitingIndex).y;
+
+        OpenCodeToolCall stableCall;
+        stableCall.id = "call-stable-position";
+        stableCall.name = "read";
+        stableCall.arguments = `{"filePath":"missing-stable-position.txt"}`;
+        root.injectToolProgressForTesting([stableCall]);
+        assert(driver.paint(), "Preparing action group did not paint");
+        auto preparingLines = root.columnDebugForTesting();
+        int preparingIndex = -1;
+        foreach (i, line; preparingLines)
+            if (line.indexOf("GROUP ") >= 0) preparingIndex = cast(int) i;
+        assert(preparingIndex >= 0 &&
+            root.bubbleBoundsForTesting(preparingIndex).y == waitingY,
+            "the collapsible moved when tool preparation replaced waiting");
+
+        root.pauseToolContinuationForTesting();
+        root.injectToolCallsForTesting([stableCall]);
+        assert(driver.paint(), "Running action group did not paint");
+        auto runningLines = root.columnDebugForTesting();
+        int runningIndex = -1;
+        foreach (i, line; runningLines)
+            if (line.indexOf("GROUP ") >= 0) runningIndex = cast(int) i;
+        assert(runningIndex == preparingIndex &&
+            root.bubbleBoundsForTesting(runningIndex).y == waitingY,
+            "the collapsible changed position when it started working");
+        root.toggleFirstToolGroupForTesting();
+        assert(!root.firstToolGroupCollapsedForTesting(),
+            "the running action group did not expand");
+        const stableDeadline = Clock.currTime + 5.seconds;
+        while (root.toolMessageCountForTesting() < 1 &&
+            Clock.currTime < stableDeadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(10.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == 1 &&
+            !root.firstToolGroupCollapsedForTesting(),
+            "the action group reset its collapse state when it settled");
+        root.clickSendButtonForTesting();
+        writeln("Tool collapsible keeps one position from waiting through running");
+    }
+
     // Codex-style live group: each in-flight tool is its own child row under
     // one action group whose header speaks in the present tense while the tools
     // run. The rows carry the streamed body so the user sees progress, and they
@@ -2182,6 +2237,7 @@ int main(string[] args)
         assert(groups.length == 2,
             "Each tool round should keep its own action group, got " ~
             to!string(groups.length));
+        const auto visualOrder = root.columnDebugForTesting();
         // Stability: a canonical rebuild must render the identical transcript.
         root.rebuildForTesting();
         root.tickTree(0.02);
@@ -2191,6 +2247,20 @@ int main(string[] args)
         foreach (i; 0 .. after.length)
             assert(after[i] == texts[i],
                 "A rebuild reordered the Thinking blocks at " ~ to!string(i));
+        const auto rebuiltOrder = root.columnDebugForTesting();
+        assert(rebuiltOrder.length == visualOrder.length,
+            "A rebuild changed the number of transcript visuals");
+        foreach (i; 0 .. rebuiltOrder.length)
+        {
+            // Layout height may settle on the next frame, but the semantic
+            // visual at every position must be identical.
+            const beforeLayout = visualOrder[i].indexOf(" vis=");
+            const afterLayout = rebuiltOrder[i].indexOf(" vis=");
+            assert(visualOrder[i][0 .. beforeLayout] ==
+                rebuiltOrder[i][0 .. afterLayout],
+                "A rebuild changed transcript order at " ~ to!string(i) ~
+                ": " ~ visualOrder[i] ~ " -> " ~ rebuiltOrder[i]);
+        }
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
         assert(driver.paint(), "Expanded per-round Thinking did not paint");
@@ -3216,6 +3286,11 @@ int main(string[] args)
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Build durable recovery"]);
+        root.appendToolRequestTurnForTesting("I should plan the durable work.",
+            "plan-1", "update_plan",
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.appendToolReplyForTesting("plan-1", "Plan updated.");
         root.setTaskStateForTesting("Build durable recovery", "active",
             "not_required");
         root.applyPlanForTesting(
@@ -3233,6 +3308,23 @@ int main(string[] args)
         assert(root.planCardTitleForTesting().indexOf("1/2 done") >= 0,
             "the plan card progress line is wrong: " ~
             root.planCardTitleForTesting());
+        const auto planOrder = root.columnDebugForTesting();
+        int promptPosition = -1;
+        int actionPosition = -1;
+        int planPosition = -1;
+        foreach (i, line; planOrder)
+        {
+            if (line.indexOf("bubble role=user") >= 0)
+                promptPosition = cast(int) i;
+            if (line.indexOf("GROUP ") >= 0)
+                actionPosition = cast(int) i;
+            if (line.indexOf("PLAN ") >= 0)
+                planPosition = cast(int) i;
+        }
+        assert(promptPosition >= 0 && actionPosition > promptPosition &&
+            planPosition > actionPosition,
+            "the plan card must stay after its planning action instead of " ~
+            "jumping above the transcript");
         assert(driver.paint(), "the plan card did not paint");
         root.startTurnClockForTesting();
         root.setInputForTesting("Keep it GUI-first");

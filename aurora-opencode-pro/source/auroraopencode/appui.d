@@ -2938,8 +2938,10 @@ private final class TurnCompletionSeparator : Widget
 // Durable plan card (Pro): the session's objective + checklist
 // ---------------------------------------------------------------------------
 
-/// The durable task plan for the active conversation, pinned at the top of the
-/// transcript: the objective, a progress line, and one row per checklist step.
+/// The durable task plan for the active conversation: the objective, a progress
+/// line, and one row per checklist step. The transcript anchors it immediately
+/// after the first planning action instead of pinning it above older messages;
+/// that keeps its position stable as later assistant rounds stream in.
 /// The model owns this state through `update_plan`. The checklist is advisory
 /// progress state rather than an automatic continuation trigger, and this card
 /// keeps that state visible without expanding the tool group that updated it.
@@ -5972,6 +5974,11 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setRole("assistant");
             _streamBubble.setContent(message.content);
             _streamBubble.setThinking(message.reasoning);
+            // An assistant slot exists before its first visible token. Keep the
+            // empty slot out of layout so a tool-only round does not move its
+            // action group upward when the slot becomes a hidden tool wrapper.
+            _streamBubble.setHidden(message.content.length == 0 &&
+                message.reasoning.length == 0);
             _streamBubble.setThinkingLive(true);
             _streamBubble.setStreaming(true);
             _streamBubble.setMessageIndex(
@@ -6256,16 +6263,6 @@ public final class OpenCodeRoot : VBox
             };
             _messageColumn.add(older);
         }
-        // The durable task plan belongs at the very top of the transcript: the
-        // objective and checklist the model maintains through `update_plan`,
-        // rendered live so progress is visible without expanding a tool group.
-        if (session.taskSteps.length > 0)
-        {
-            auto planCard = new PlanCard();
-            planCard.update(session.objective, _sessions[_current].taskSteps,
-                session.taskStatus);
-            _messageColumn.add(planCard);
-        }
         // Only the latest real assistant reply shows its token usage in the
         // footer. Tool-call wrappers (empty content + tool requests) never do.
         int latestAssistantIndex = -1;
@@ -6297,6 +6294,50 @@ public final class OpenCodeRoot : VBox
         auto thinkingText = new string[](path.length);
         foreach (slot, index; path)
             thinkingText[slot] = session.messages[index].reasoning;
+
+        // Keep the durable plan in chronological flow. Pinning it above the
+        // whole transcript meant that the first update_plan result inserted a
+        // variable-height widget above whatever the reader was looking at.
+        // Anchor it after the earliest visible planning round instead. If that
+        // round is outside the paged window (or the plan came from an older
+        // snapshot without tool metadata), use the first visible user prompt.
+        size_t planHostSlot = size_t.max;
+        if (session.taskSteps.length > 0)
+        {
+            foreach (candidateSlot, index; path)
+            {
+                const candidate = session.messages[index];
+                if (candidate.internal || candidate.role != "assistant")
+                    continue;
+                foreach (call; candidate.toolCalls)
+                    if (call.name == "update_plan")
+                    {
+                        planHostSlot = candidateSlot;
+                        break;
+                    }
+                if (planHostSlot != size_t.max) break;
+            }
+            if (planHostSlot == size_t.max)
+                foreach (candidateSlot, index; path)
+                {
+                    const candidate = session.messages[index];
+                    if (!candidate.internal && candidate.role == "user")
+                    {
+                        planHostSlot = candidateSlot;
+                        break;
+                    }
+                }
+        }
+        bool planAdded = false;
+        void addPlanAfter(size_t candidateSlot)
+        {
+            if (planAdded || candidateSlot != planHostSlot) return;
+            auto planCard = new PlanCard();
+            planCard.update(session.objective, session.taskSteps,
+                session.taskStatus);
+            _messageColumn.add(planCard);
+            planAdded = true;
+        }
 
         // Nesting: a `tool` result belongs to the assistant turn that requested
         // it. Match each result's `toolCallId` to the assistant whose `toolCalls`
@@ -6470,12 +6511,16 @@ public final class OpenCodeRoot : VBox
                         session.messages[path[slot]].id);
                     if (slot == liveHostSlot)
                     {
+                        // Use the same key before, during and after execution.
+                        // A different live key reset an expanded action group
+                        // as soon as its first result settled.
                         group = addLiveToolRows(group, nest,
-                            "assistant:" ~ session.messages[path[slot]].id);
+                            session.messages[path[slot]].id);
                         liveRowsAdded = true;
                     }
                     _messageColumn.add(nest);
                 }
+                addPlanAfter(slot);
                 ++slot;
                 continue;
             }
@@ -6510,8 +6555,13 @@ public final class OpenCodeRoot : VBox
             _messageColumn.add(buildMessageBubble(index,
                 session.messages[index], latestAssistantIndex,
                 versionPositions, versionTotals));
+            addPlanAfter(slot);
             ++slot;
         }
+        // A plan-only recovered snapshot can have no visible message to host
+        // the card. Keep it discoverable without perturbing normal ordering.
+        if (session.taskSteps.length > 0 && !planAdded)
+            addPlanAfter(planHostSlot);
         // Live rows with no assistant turn to nest under (e.g. a tool progress
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
@@ -7021,6 +7071,10 @@ public final class OpenCodeRoot : VBox
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
+        // The durable assistant message must exist now, but an empty visual
+        // bubble must not reserve padding above the activity/tool row. Reveal
+        // it only when actual reasoning or answer text arrives.
+        _streamBubble.setHidden(true);
         // Tag it with its message slot so a rebuild mid-stream (e.g. when a
         // tool-call progress event arrives) can re-add the same live bubble
         // instead of orphaning it.
@@ -7065,6 +7119,7 @@ public final class OpenCodeRoot : VBox
             message.reasoning ~= text;
             if (_streamBubble !is null && _current == sessionIndex)
             {
+                _streamBubble.setHidden(false);
                 _streamBubble.appendThinking(text);
                 _streamBubble.setThinkingLive(true);
             }
@@ -7074,7 +7129,10 @@ public final class OpenCodeRoot : VBox
         else
         {
             if (_streamBubble !is null && _current == sessionIndex)
+            {
+                _streamBubble.setHidden(false);
                 _streamBubble.setThinkingLive(false);
+            }
             message.content ~= text;
             if (_streamBubble !is null && _current == sessionIndex)
                 _streamBubble.appendContent(text);
@@ -12673,6 +12731,8 @@ public final class OpenCodeRoot : VBox
                 desc ~= "LIVEROW " ~ row.textForTesting();
             else if (auto act = cast(ActivityRow) child)
                 desc ~= "ACTROW " ~ act.textForTesting();
+            else if (auto plan = cast(PlanCard) child)
+                desc ~= "PLAN " ~ plan.titleForTesting();
             else
                 desc ~= child.id();
             desc ~= " vis=" ~ (child.visible() ? "1" : "0") ~
