@@ -7062,6 +7062,17 @@ public final class OpenCodeRoot : VBox
         return delegate() { continueFromReply(sessionIndex, messageIndex); };
     }
 
+    private static string incompleteChecklistGatePrompt()
+    {
+        return "Completion gate: reconcile the durable checklist before " ~
+            "producing another user-facing report. If the unfinished items " ~
+            "are already complete, call update_plan once to mark them " ~
+            "completed, then respond with only a brief checklist " ~
+            "confirmation; do not repeat the completion report. Otherwise " ~
+            "continue with the next concrete unfinished item and update the " ~
+            "checklist. If blocked, report the exact blocker.";
+    }
+
     /// A provider `done` is not automatically task completion.  First consume
     /// queued steering; then, for file-changing work, require a focused check
     /// before the durable task can enter the completed state.
@@ -7096,11 +7107,7 @@ public final class OpenCodeRoot : VBox
                 ChatMessage gate;
                 gate.role = "user";
                 gate.internal = true;
-                gate.content = "Completion gate: the durable checklist still " ~
-                    "contains pending or in-progress work. Continue the work " ~
-                    "and update the checklist. Do not claim completion while " ~
-                    "an item remains unfinished; if blocked, report the exact " ~
-                    "blocker.";
+                gate.content = incompleteChecklistGatePrompt();
                 appendMessage(*session, gate);
                 publishThreadUpdated(*session);
                 markDirty();
@@ -8242,7 +8249,11 @@ public final class OpenCodeRoot : VBox
         cancelPendingTools();
 
         auto session = &_sessions[sessionIndex];
-        session.queuedGuidance.length = 0;
+        // Guidance was already submitted by the user and persisted while this
+        // turn was live. Stopping must not silently erase it. Move it into the
+        // visible transcript without starting another request; the following
+        // turn can then apply it with its original wording intact.
+        const preservedGuidance = appendQueuedGuidance(*session);
         session.taskStatus = "blocked";
         publishThreadUpdated(*session);
         publishRuntimeEvent(AgentEventKind.turnInterrupted, *session,
@@ -8250,8 +8261,12 @@ public final class OpenCodeRoot : VBox
         markDirty();
         if (_current == sessionIndex) rebuildMessageColumn();
         updateSessionList(false);
-        updateStatus(_stopPending
-            ? "Stopped. Releasing the network request…" : "Stopped.");
+        const preservedStatus = preservedGuidance
+            ? " Queued guidance was preserved in the chat and was not applied."
+            : "";
+        updateStatus((_stopPending
+            ? "Stopped. Releasing the network request…" : "Stopped.") ~
+            preservedStatus);
         updateSendButton();
     }
 
@@ -11508,6 +11523,11 @@ public final class OpenCodeRoot : VBox
     public bool completionWouldContinueForTesting() const
     {
         return taskContinuesAfterDone(false);
+    }
+
+    public string incompleteChecklistGatePromptForTesting() const
+    {
+        return incompleteChecklistGatePrompt();
     }
 
     public int explorationCountForTesting() const

@@ -916,6 +916,28 @@ int main(string[] args)
         "Stopped task did not leave active state");
     writeln("One Stop click immediately releases the turn");
 
+    // Text that was explicitly submitted during a live turn is different from
+    // untouched composer text: it is durable queued guidance. Stop must retain
+    // it as a visible user turn rather than silently deleting the user's words.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["keep working"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.queueGuidanceForTesting("also check the rebuild helper");
+    root.clickSendButtonForTesting();
+    assert(!root.turnBusyForTesting(),
+        "Stop did not release a turn with queued guidance");
+    assert(root.queuedGuidanceCountForTesting() == 0,
+        "preserved guidance remained stranded in the queue");
+    const preservedIndex = root.totalMessageCountForTesting() - 1;
+    assert(root.messageRoleForTesting(preservedIndex) == "user" &&
+        root.messageContentForTesting(preservedIndex) ==
+            "also check the rebuild helper",
+        "Stop did not preserve submitted guidance as a visible user turn");
+    assert(root.taskStatusForTesting() == "blocked",
+        "preserving guidance incorrectly kept the stopped task active");
+    writeln("Stop preserves already-submitted guidance in the transcript");
+
     // Compaction: old completed tool envelopes are structurally collapsed even
     // before the hard context limit. Replaying every stale call on every round
     // is quadratic; only the actively continuing newest pair needs to remain.
@@ -3160,6 +3182,11 @@ int main(string[] args)
             "consumed guidance remained queued");
         assert(root.completionWouldContinueForTesting(),
             "unfinished durable checklist did not hold completion open");
+        const checklistGate = root.incompleteChecklistGatePromptForTesting();
+        assert(checklistGate.indexOf("call update_plan once") >= 0 &&
+            checklistGate.indexOf("do not repeat the completion report") >= 0,
+            "checklist reconciliation gate can still provoke a duplicate " ~
+            "completion report: " ~ checklistGate);
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);

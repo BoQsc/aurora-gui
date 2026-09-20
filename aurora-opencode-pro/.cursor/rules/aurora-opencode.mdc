@@ -1,0 +1,13 @@
+---
+description: Aurora OpenCode build and rebuild workflow
+globs: ["**/*.d"]
+alwaysApply: true
+---
+
+See `AGENTS.md` at the repository root for the full instructions.
+
+Editing `.d` sources does **not** change the running
+`aurora-opencode-pro.exe`. After any change: `dub build` (release), confirm the
+binary is newer than the sources, relaunch the app, then report what you
+verified. A stale binary produces errors such as `undefined identifier` for code
+that is actually present in the source.
