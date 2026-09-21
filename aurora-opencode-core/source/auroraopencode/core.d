@@ -241,6 +241,67 @@ public bool isDeepSeekV41Model(string model)
     return id == "deepseek-v4.1" || id.startsWith("deepseek-v4.1-");
 }
 
+/// Vision-capable ids known to the gateway, in both bare and `vendor/` forms.
+private immutable string[] visionModelIds = [
+    // The whole DeepSeek 4.x line accepts inline images, including the default
+    // 4.1-flash used by new chats.
+    "deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash",
+    "deepseek-v4-flash-fast",
+    "deepseek/deepseek-v4-flash-fast",
+    "deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek/deepseek-v4-flash-vision-exp",
+];
+
+/// Model ids (or prefixes) added through AURORA_VISION_MODELS.
+private string[] visionModelOverrides()
+{
+    import std.algorithm : canFind;
+    import std.process : environment;
+    import std.string : split;
+    const raw = environment.get("AURORA_VISION_MODELS", "");
+    if (raw.length == 0) return null;
+    string[] result;
+    foreach (part; raw.split(','))
+    {
+        const trimmed = part.strip().toLower();
+        if (trimmed.length > 0 && !result.canFind(trimmed))
+            result ~= trimmed;
+    }
+    return result;
+}
+
+/**
+ * Whether a model accepts inline images.
+ *
+ * The catalog has no per-model capability flag, so this recognizes the vision
+ * families the gateway serves (the whole DeepSeek 4.x line, including the
+ * default `deepseek-v4.1-flash`) plus any id named `*-vision*`. An unrecognized
+ * model is treated as text-only, which is the safe default: an OpenAI
+ * `image_url` part sent to a text-only route is a hard 400. Add a local or
+ * newly published vision model with AURORA_VISION_MODELS (comma-separated ids
+ * or id prefixes).
+ */
+public bool isVisionModel(string model)
+{
+    import std.algorithm : canFind, endsWith;
+    const id = normalizedModelId(model);
+    if (visionModelIds.canFind(id)) return true;
+    // Any DeepSeek 4.x id, so a new point release (4.2-flash, 4.1-pro, ...)
+    // does not silently fall back to text-only.
+    if (id.startsWith("deepseek-v4") ||
+        id.startsWith("deepseek/deepseek-v4"))
+        return true;
+    if (id.endsWith("-vision") || id.endsWith("-vision-exp")) return true;
+    foreach (extra; visionModelOverrides())
+        if (id == extra || id.startsWith(extra)) return true;
+    return false;
+}
+
 /**
  * Effective context window (tokens) for a model, as used by the usage meter
  * and the compaction budget.
@@ -395,6 +456,27 @@ unittest
     assert(contextLimitForModel("gpt-5.5", true) == 400_000);
 }
 
+unittest
+{
+    // Vision capability decides whether an image part may be sent at all, in
+    // both the bare and `vendor/` id forms. The DeepSeek 4.x line is
+    // multimodal, so the default model and its point releases must match.
+    assert(isVisionModel(defaultModel));
+    assert(isVisionModel("deepseek-v4.1-flash"));
+    assert(isVisionModel("deepseek/deepseek-v4.1-flash"));
+    assert(isVisionModel("deepseek-v4.2-flash"));
+    assert(isVisionModel("deepseek-v4-pro"));
+    assert(isVisionModel("deepseek-v4-flash-vision-exp"));
+    assert(isVisionModel("deepseek/deepseek-v4-flash-vision-exp"));
+    assert(isVisionModel("somevendor/MyModel-Vision-Exp"));
+    // Text-only models must not match, or a dropped screenshot turns a working
+    // chat into a 400.
+    assert(!isVisionModel("glm-5.3"));
+    assert(!isVisionModel("kimi-k3"));
+    assert(!isVisionModel("Qwen/Qwen3.8-27B"));
+    assert(!isVisionModel(""));
+}
+
 // ---------------------------------------------------------------------------
 // Palette
 // ---------------------------------------------------------------------------
@@ -520,6 +602,16 @@ public struct OpenCodeToolDef
     string parametersJson;
 }
 
+/// One image carried inline with a user message. `base64Data` is the raw
+/// base64 payload (no `data:` prefix); serialization builds the data URL so
+/// the wire format stays in one place.
+public struct ChatImageAttachment
+{
+    string mimeType;    // e.g. "image/png"
+    string base64Data;  // base64 of the image bytes, no data-URL prefix
+    string name;        // original file name, for display and diagnostics
+}
+
 /// One message sent in a chat request. Richer than the parallel role/content
 /// arrays: assistant messages may carry `toolCalls`, and `tool` role messages
 /// carry the `toolCallId` they answer to.
@@ -533,6 +625,10 @@ public struct ChatRequestMessage
     string reasoningContent;  // role == "assistant" -> reasoning_content
     string toolCallId;        // role == "tool"
     OpenCodeToolCall[] toolCalls; // role == "assistant"
+    // Inline images for a multimodal request (role == "user"). When present,
+    // `content` is serialized as an OpenAI-compatible parts array
+    // (`text` + `image_url`) instead of a bare string.
+    ChatImageAttachment[] images;
 }
 
 public struct ChatMessage
@@ -556,6 +652,10 @@ public struct ChatMessage
     string toolDiff;    // file-mutating tools: unified diff for the expanded view
     long toolElapsedMs; // wall-clock tool duration in ms; 0 hides the label
     double workedSeconds; // user turns: assistant working seconds for this turn
+    // Images the user dropped or pasted with this turn. Persisted with the
+    // session so a continued or replayed conversation still reaches the model
+    // as a vision request instead of silently degrading to text.
+    ChatImageAttachment[] images;
     // Message graph: every message names its parent, so an edited prompt or a
     // regenerated reply can be kept alongside the run it replaced (a sibling
     // branch) instead of being discarded. `id` is unique within a session and

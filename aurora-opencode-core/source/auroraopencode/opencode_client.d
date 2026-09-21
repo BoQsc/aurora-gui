@@ -17,8 +17,9 @@ import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf, strip, toLower;
 import std.utf : toUTF16z;
-import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
-    OpenCodeToolDef, isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
+import auroraopencode.core : ChatImageAttachment, ChatRequestMessage,
+    OpenCodeToolCall, OpenCodeToolDef, isLoopbackApiBaseUrl,
+    isOpenCodeApiBaseUrl, isVisionModel;
 import auroraopencode.logging : logError, logInfo;
 
 /** Kinds of events the client delivers to the UI thread. */
@@ -596,6 +597,14 @@ final class OpenCodeClient
             copy.content = message.content.dup;
             copy.reasoningContent = message.reasoningContent.dup;
             copy.toolCallId = message.toolCallId.dup;
+            foreach (image; message.images)
+            {
+                ChatImageAttachment imageCopy;
+                imageCopy.mimeType = image.mimeType.dup;
+                imageCopy.base64Data = image.base64Data.dup;
+                imageCopy.name = image.name.dup;
+                copy.images ~= imageCopy;
+            }
             foreach (call; message.toolCalls)
             {
                 OpenCodeToolCall callCopy;
@@ -841,6 +850,11 @@ final class OpenCodeClient
                 headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
+            // Log the request shape once per turn. Without it, a request that
+            // carries inline images is indistinguishable from a text-only one
+            // in the log, and "the model did not answer about the image" cannot
+            // be separated from "the image never left the app".
+            logRequestShape(messages, model, _baseUrl);
             auto session = openSession();
             uint attempt;
             // Deliberately no attempt ceiling: a 429 is replayed until the
@@ -1130,6 +1144,14 @@ final class OpenCodeClient
             forceReasoningReplay);
     }
 
+    /// Pure helper exposed for the multimodal request-shape regression.
+    public static JSONValue chatMessageJsonForTesting(
+        const ref ChatRequestMessage message)
+    {
+        return chatMessageToJson(message);
+    }
+
+
     /// Test-only: verify URL transport selection without opening a connection.
     public bool secureTransportForTesting(string baseUrl)
     {
@@ -1225,7 +1247,13 @@ final class OpenCodeClient
     {
         JSONValue json;
         json["role"] = message.role;
-        json["content"] = message.content;
+        // A user turn with inline images uses the OpenAI-compatible parts
+        // array. Text-only messages keep the plain string form, which is what
+        // every non-vision route and the local llama.cpp templates expect.
+        if (message.images.length > 0)
+            json["content"] = chatContentParts(message);
+        else
+            json["content"] = message.content;
         // DeepSeek/CommandCode-style reasoning models require the assistant's
         // reasoning_content to be echoed on the following tool round. Include
         // an empty value for legacy persisted tool calls: presence is required
@@ -1258,6 +1286,41 @@ final class OpenCodeClient
         return json;
     }
 
+    /// The multimodal `content` array: the text (when present) first, then one
+    /// `image_url` part per image as a base64 data URL.
+    private static JSONValue chatContentParts(
+        const ref ChatRequestMessage message)
+    {
+        JSONValue parts = JSONValue(string[].init);
+        if (message.content.length > 0)
+        {
+            JSONValue text;
+            text["type"] = "text";
+            text["text"] = message.content;
+            parts.array ~= text;
+        }
+        foreach (image; message.images)
+        {
+            if (image.base64Data.length == 0) continue;
+            JSONValue part;
+            part["type"] = "image_url";
+            JSONValue url;
+            url["url"] = chatImageDataUrl(image);
+            part["image_url"] = url;
+            parts.array ~= part;
+        }
+        return parts;
+    }
+
+    /// `data:<mime>;base64,<payload>`, defaulting the mime type so a caller
+    /// that only captured bytes still produces a valid URL.
+    public static string chatImageDataUrl(const ref ChatImageAttachment image)
+    {
+        const mime = image.mimeType.length > 0
+            ? image.mimeType : "image/png";
+        return "data:" ~ mime ~ ";base64," ~ image.base64Data;
+    }
+
     /// llama.cpp chat templates (including Qwen 3/3.5 templates) commonly
     /// require the system/developer instruction to be the first message and
     /// allow only one such block. Aurora can add later system checkpoints when
@@ -1287,6 +1350,10 @@ final class OpenCodeClient
                 copy.reasoningContent = message.reasoningContent;
                 copy.toolCallId = message.toolCallId;
                 copy.toolCalls = message.toolCalls.dup;
+                // The fold rebuilds every non-system message, so inline images
+                // must be copied here too: dropping them silently turned a
+                // vision turn into a text turn with no error anywhere.
+                copy.images = message.images.dup;
                 ordinary ~= copy;
             }
         }
@@ -1361,6 +1428,39 @@ final class OpenCodeClient
             result ~= cast(string) buffer[0 .. cast(size_t) readBytes];
         }
         return result;
+    }
+
+    /// One INFO line per request describing what the model will actually
+    /// receive: model, message count, inline image count and total base64
+    /// bytes. This is the evidence that separates "the image reached the
+    /// provider" from "the image was dropped before the request was built".
+    private static void logRequestShape(const(ChatRequestMessage)[] messages,
+        string model, string baseUrl)
+    {
+        auto normalized = normalizeSystemMessages(messages);
+        size_t images;
+        size_t imageBytes;
+        size_t requestBytes;
+        foreach (message; normalized)
+        {
+            requestBytes += message.content.length + message.role.length + 16;
+            foreach (image; message.images)
+            {
+                if (image.base64Data.length == 0) continue;
+                ++images;
+                imageBytes += image.base64Data.length;
+            }
+        }
+        // Base64 inflates by roughly a third, so the payload the socket sees is
+        // the text bytes plus the inflated image bytes.
+        const wireBytes = requestBytes + imageBytes + (imageBytes / 2);
+        logInfo("chat request: model=" ~ (model.length > 0 ? model : "?") ~
+            " messages=" ~ to!string(normalized.length) ~
+            " images=" ~ to!string(images) ~
+            " imageBase64Bytes=" ~ to!string(imageBytes) ~
+            " approxWireBytes=" ~ to!string(wireBytes) ~
+            (isVisionModel(model) ? " vision=yes" : " vision=no") ~
+            " [" ~ baseUrl ~ "]");
     }
 
     private static string truncateForError(string value)

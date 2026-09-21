@@ -16,7 +16,7 @@ import std.path : dirName;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
-    TaskStep, ensureMessageGraph;
+    ChatImageAttachment, TaskStep, ensureMessageGraph;
 
 public enum AgentEventKind
 {
@@ -452,6 +452,29 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
             message.workedSeconds = cast(double) f.integer;
         else if (f.type == JSONType.float_)
             message.workedSeconds = f.floating;
+    }
+    // Inline images replay with their item. A payload that omits `images` is
+    // left alone (the snapshot's value stands) so an older journal written
+    // before image support existed cannot erase them on restore.
+    if (auto f = "images" in payload.object)
+    {
+        if (f.type == JSONType.array)
+        {
+            ChatImageAttachment[] images;
+            foreach (imageValue; f.array)
+            {
+                if (imageValue.type != JSONType.object) continue;
+                ChatImageAttachment image;
+                if (auto g = "mimeType" in imageValue.object)
+                    if (g.type == JSONType.string) image.mimeType = g.str;
+                if (auto g = "base64Data" in imageValue.object)
+                    if (g.type == JSONType.string) image.base64Data = g.str;
+                if (auto g = "name" in imageValue.object)
+                    if (g.type == JSONType.string) image.name = g.str;
+                if (image.base64Data.length > 0) images ~= image;
+            }
+            message.images = images;
+        }
     }
     if (auto f = "toolCalls" in payload.object)
         if (f.type == JSONType.array)

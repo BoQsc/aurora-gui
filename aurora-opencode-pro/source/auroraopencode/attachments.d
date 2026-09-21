@@ -29,12 +29,14 @@ module auroraopencode.attachments;
 // ===========================================================================
 
 import aurora;
+import auroraopencode.core : ChatImageAttachment;
 import std.algorithm : canFind;
 import std.array : appender;
 import std.conv : to;
-import std.file : exists, getSize, isFile, readText;
-import std.path : baseName;
+import std.file : exists, getSize, isFile, read, readText;
+import std.path : baseName, extension;
 import std.process : environment;
+import std.stdio : File;
 import std.string : splitLines, strip, toLower;
 
 /// Env switch. Anything other than the values below leaves the feature enabled,
@@ -51,6 +53,11 @@ public enum size_t attachmentPasteLineThreshold = 20;
 /// Files at or below this size are read into the message body; larger ones are
 /// referenced by name only so a huge binary cannot blow up the request.
 public immutable size_t attachmentFileMaxBytes = 64 * 1024;
+
+/// Images at or below this size are sent inline as `image_url` parts. Larger
+/// ones fall back to the name-only note: base64 inflates by a third, and a
+/// multi-megabyte body is rejected by most gateways.
+public immutable size_t attachmentImageMaxBytes = 4 * 1024 * 1024;
 
 /// Whether the experimental attachments feature is active. Read on every use so
 /// tests (and a relaunch with a different environment) see the current value.
@@ -84,6 +91,10 @@ public struct Attachment
     string name;
     string body;
     long bytes;
+    // Set for a dropped/pasted image: the bytes travel as an inline
+    // `image_url` part instead of `body` text.
+    bool isImage;
+    ChatImageAttachment image;
 }
 
 /// The text a paste inserted, derived without the clipboard API: the bytes that
@@ -151,6 +162,29 @@ public Attachment attachmentForFile(string path)
         }
         const size = getSize(path);
         attachment.bytes = cast(long) size;
+        // Images are multimodal content, not text: probe the magic bytes (the
+        // extension alone is not trustworthy) and send them inline when the
+        // model can see them.
+        // `if (auto kind = ...)` would be wrong here: an empty string is
+        // truthy in D, so a non-image would be marked as an image with an
+        // empty mime type and serialized as a malformed `data:;base64,` URL.
+        const kind = attachmentImageKindForPath(path);
+        if (kind.length > 0)
+        {
+            if (size > attachmentImageMaxBytes)
+            {
+                attachment.body = "Attached image " ~ path ~ " is larger than " ~
+                    to!string(attachmentImageMaxBytes / 1024) ~
+                    " KiB, so it was not sent inline. Use the file tools to " ~
+                    "inspect or convert it first.";
+                return attachment;
+            }
+            attachment.isImage = true;
+            attachment.image = attachmentImageForData(kind, attachment.name,
+                cast(ubyte[]) read(path));
+            attachment.body = "";
+            return attachment;
+        }
         if (size > attachmentFileMaxBytes)
         {
             attachment.body = "Attached file " ~ path ~ " is larger than " ~
@@ -169,6 +203,155 @@ public Attachment attachmentForFile(string path)
     return attachment;
 }
 
+/// Whether the attachments sent with the next message include an image, which
+/// only a vision-capable model can see.
+public bool attachmentsContainImage(const(Attachment)[] attachments)
+{
+    foreach (attachment; attachments)
+        if (attachment.isImage) return true;
+    return false;
+}
+
+/// The images from a pending attachment list, ready for a chat request.
+public ChatImageAttachment[] attachmentImages(const(Attachment)[] attachments)
+{
+    ChatImageAttachment[] images;
+    foreach (attachment; attachments)
+        if (attachment.isImage && attachment.image.base64Data.length > 0)
+            images ~= attachment.image;
+    return images;
+}
+
+/// A dropped/pasted image transferred as text because the selected model has
+/// no vision support. The bytes are deliberately not dumped into the prompt.
+public string attachmentImageUnsupportedNote(string model)
+{
+    return "Images attached but not sent: the selected model (" ~
+        (model.length > 0 ? model : "unknown") ~
+        ") is not marked vision-capable, so inline images would be rejected. " ~
+        "Switch to a vision model, or use the file tools to inspect the image.";
+}
+
+/// The image mime type for a path, or null when the file is not an image
+/// Aurora sends inline. Content sniffing is authoritative; the extension is
+/// only a fallback for a truncated or unusual header.
+public string attachmentImageKindForPath(string path)
+{
+    const ext = extension(path).toLower();
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
+        ext == ".gif")
+    {
+        try
+        {
+            if (exists(path) && isFile(path))
+            {
+                const size = getSize(path);
+                if (size > 0)
+                {
+                    auto file = File(path, "rb");
+                    ubyte[16] header;
+                    const readBytes = file.rawRead(header[]).length;
+                    const sniffed = attachmentImageKindForBytes(
+                        header[0 .. readBytes]);
+                    if (sniffed.length > 0) return sniffed;
+                }
+            }
+        }
+        catch (Exception) {}
+        // Header unreadable: trust the extension for the common cases.
+        if (ext == ".png") return "image/png";
+        if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+        if (ext == ".webp") return "image/webp";
+        if (ext == ".gif") return "image/gif";
+    }
+    try
+    {
+        if (!exists(path) || !isFile(path)) return null;
+        if (getSize(path) == 0) return null;
+        auto file = File(path, "rb");
+        ubyte[16] header;
+        const readBytes = file.rawRead(header[]).length;
+        return attachmentImageKindForBytes(header[0 .. readBytes]);
+    }
+    catch (Exception)
+    {
+        return null;
+    }
+}
+
+/// Magic-byte sniffing, so a `.png` that is really a PDF is not advertised to
+/// the model as an image. Returns the mime type or "".
+public string attachmentImageKindForBytes(const(ubyte)[] header)
+{
+    if (header.length >= 8 &&
+        header[0] == 0x89 && header[1] == 'P' && header[2] == 'N' &&
+        header[3] == 'G' && header[4] == 0x0D && header[5] == 0x0A &&
+        header[6] == 0x1A && header[7] == 0x0A)
+        return "image/png";
+    if (header.length >= 3 &&
+        header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF)
+        return "image/jpeg";
+    if (header.length >= 12 &&
+        header[0] == 'R' && header[1] == 'I' && header[2] == 'F' &&
+        header[3] == 'F' && header[8] == 'W' && header[9] == 'E' &&
+        header[10] == 'B' && header[11] == 'P')
+        return "image/webp";
+    if (header.length >= 6 &&
+        header[0] == 'G' && header[1] == 'I' && header[2] == 'F')
+        return "image/gif";
+    return "";
+}
+
+/// The inline image payload for already-read bytes.
+public ChatImageAttachment attachmentImageForData(string mimeType, string name,
+    in ubyte[] data)
+{
+    ChatImageAttachment image;
+    image.mimeType = mimeType;
+    image.name = name;
+    image.base64Data = base64Encode(data);
+    return image;
+}
+
+/// Standard base64. Kept local so the pro app does not add a dependency for
+/// one encoder.
+public string base64Encode(in ubyte[] data)
+{
+    static immutable char[] alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    auto builder = appender!string();
+    builder.reserve(((data.length + 2) / 3) * 4);
+    size_t index;
+    while (index + 3 <= data.length)
+    {
+        const value = (cast(uint) data[index] << 16) |
+            (cast(uint) data[index + 1] << 8) | data[index + 2];
+        builder.put(alphabet[(value >> 18) & 0x3F]);
+        builder.put(alphabet[(value >> 12) & 0x3F]);
+        builder.put(alphabet[(value >> 6) & 0x3F]);
+        builder.put(alphabet[value & 0x3F]);
+        index += 3;
+    }
+    const remaining = data.length - index;
+    if (remaining == 1)
+    {
+        const value = cast(uint) data[index] << 16;
+        builder.put(alphabet[(value >> 18) & 0x3F]);
+        builder.put(alphabet[(value >> 12) & 0x3F]);
+        builder.put("==");
+    }
+    else if (remaining == 2)
+    {
+        const value = (cast(uint) data[index] << 16) |
+            (cast(uint) data[index + 1] << 8);
+        builder.put(alphabet[(value >> 18) & 0x3F]);
+        builder.put(alphabet[(value >> 12) & 0x3F]);
+        builder.put(alphabet[(value >> 6) & 0x3F]);
+        builder.put('=');
+    }
+    return builder.data;
+}
+
 /// A short, human-readable size for a chip label ("" when unknown).
 public string attachmentSizeSummary(const Attachment attachment)
 {
@@ -185,7 +368,18 @@ public string attachmentChipLabel(const Attachment attachment)
     string name = attachment.name;
     if (name.length > 28) name = name[0 .. 28] ~ "…";
     const size = attachmentSizeSummary(attachment);
-    return size.length == 0 ? name : name ~ "  " ~ size;
+    const prefix = attachment.isImage ? "image: " : "";
+    const label = prefix ~ name;
+    return size.length == 0 ? label : label ~ "  " ~ size;
+}
+
+/// The one-line note for an attachment that travels as inline image parts
+/// rather than text, so the model is told what it received.
+public string attachmentImageSummary(const Attachment attachment)
+{
+    const size = attachmentSizeSummary(attachment);
+    return "attached as an inline " ~ attachment.image.mimeType ~
+        " image" ~ (size.length == 0 ? "" : " (" ~ size ~ ")");
 }
 
 /// The one-line summary appended to the visible user message so the transcript
@@ -198,8 +392,13 @@ public string attachmentVisibleSummary(const(Attachment)[] attachments)
     foreach (attachment; attachments)
     {
         const size = attachmentSizeSummary(attachment);
-        builder.put("- " ~ attachment.name ~
-            (size.length == 0 ? "" : " (" ~ size ~ ")") ~ "\n");
+        if (attachment.isImage)
+            builder.put("- " ~ attachment.name ~ " (" ~
+                (size.length == 0 ? "image" : size) ~ ") - sent as inline " ~
+                attachment.image.mimeType ~ " image\n");
+        else
+            builder.put("- " ~ attachment.name ~
+                (size.length == 0 ? "" : " (" ~ size ~ ")") ~ "\n");
     }
     return strip(builder.data);
 }
@@ -214,6 +413,15 @@ public string attachmentContextBlock(const(Attachment)[] attachments)
         "provided inline because it was not typed):\n");
     foreach (index, attachment; attachments)
     {
+        if (attachment.isImage)
+        {
+            builder.put("\n--- attachment " ~ to!string(index + 1) ~ ": " ~
+                attachment.name ~ " ---\n");
+            builder.put("The image itself is attached to this message as an " ~
+                "inline " ~ attachment.image.mimeType ~
+                " image; describe what you see in it.\n");
+            continue;
+        }
         builder.put("\n--- attachment " ~ to!string(index + 1) ~ ": " ~
             attachment.name ~ " ---\n");
         builder.put(attachment.body);
@@ -283,6 +491,7 @@ public final class AttachmentStrip : HBox
         {
             const current = _items[index];
             if (attachment.isFile != current.isFile ||
+                attachment.isImage != current.isImage ||
                 attachment.name != current.name ||
                 attachment.body != current.body)
                 return false;
@@ -328,4 +537,42 @@ unittest
     strip.setAttachments([]);
     assert(strip.countForTesting() == 0);
     assert(!strip.visible());
+}
+
+unittest
+{
+    // Base64, including the two partial-tail cases and the empty input.
+    assert(base64Encode(cast(ubyte[]) []) == "");
+    assert(base64Encode(cast(ubyte[]) "M") == "TQ==");
+    assert(base64Encode(cast(ubyte[]) "Ma") == "TWE=");
+    assert(base64Encode(cast(ubyte[]) "Man") == "TWFu");
+    assert(base64Encode(cast(ubyte[]) "hello world") ==
+        "aGVsbG8gd29ybGQ=");
+
+    // Magic bytes decide the mime type, not the extension.
+    ubyte[12] pngHeader = [0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+        0, 0, 0, 0];
+    assert(attachmentImageKindForBytes(pngHeader[]) == "image/png");
+    ubyte[3] jpegHeader = [0xFF, 0xD8, 0xFF];
+    assert(attachmentImageKindForBytes(jpegHeader[]) == "image/jpeg");
+    ubyte[12] webpHeader = ['R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B',
+        'P'];
+    assert(attachmentImageKindForBytes(webpHeader[]) == "image/webp");
+    assert(attachmentImageKindForBytes(cast(ubyte[]) "not an image") == "");
+
+    auto image = attachmentImageForData("image/png", "shot.png",
+        cast(ubyte[]) "Man");
+    assert(image.base64Data == "TWFu" && image.mimeType == "image/png");
+    Attachment attached;
+    attached.isFile = true;
+    attached.isImage = true;
+    attached.name = "shot.png";
+    attached.image = image;
+    attached.bytes = 3;
+    assert(attachmentsContainImage([attached]));
+    assert(attachmentImages([attached]).length == 1);
+    assert(attachmentChipLabel(attached).startsWith("image: shot.png"));
+    assert(attachmentContextBlock([attached]).indexOf("inline image/png") >= 0);
+    assert(attachmentVisibleSummary([attached]).indexOf("inline") >= 0);
+    assert(attachmentImageUnsupportedNote("glm-5.3").indexOf("glm-5.3") >= 0);
 }

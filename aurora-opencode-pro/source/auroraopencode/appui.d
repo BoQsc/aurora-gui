@@ -22,8 +22,9 @@ import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
-    attachmentForText, attachmentInsertedText, attachmentIsLargePaste,
-    attachmentStripHeight, attachmentVisibleSummary,
+    attachmentForText, attachmentImages, attachmentImageUnsupportedNote,
+    attachmentInsertedText, attachmentIsLargePaste, attachmentStripHeight,
+    attachmentVisibleSummary, attachmentsContainImage,
     experimentalAttachmentsEnabled;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
@@ -6884,6 +6885,22 @@ public final class OpenCodeRoot : VBox
         if (message.toolDiff.length > 0) payload["toolDiff"] = message.toolDiff;
         if (message.toolElapsedMs > 0)
             payload["toolElapsedMs"] = message.toolElapsedMs;
+        // Inline images are part of the item: the journal replays items over
+        // the snapshot on restore, so omitting them here silently dropped a
+        // vision turn back to text on the next launch.
+        if (message.images.length > 0)
+        {
+            JSONValue images = JSONValue(string[].init);
+            foreach (image; message.images)
+            {
+                JSONValue value;
+                value["mimeType"] = image.mimeType;
+                value["base64Data"] = image.base64Data;
+                if (image.name.length > 0) value["name"] = image.name;
+                images.array ~= value;
+            }
+            payload["images"] = images;
+        }
         if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
             payload["workedSeconds"] = message.workedSeconds;
         return payload.toString();
@@ -9379,9 +9396,20 @@ public final class OpenCodeRoot : VBox
         userMessage.role = "user";
         userMessage.content = baseText ~ attachmentSuffix;
         userMessage.time = currentTimestamp();
+        // experimental: attachments - dropped images reaching the request
+        // depend on the model, so say so in the transcript instead of leaving
+        // a silent difference between what was attached and what was sent.
+        auto images = visionImagesForAttachments(attachments, session.model);
+        if (attachmentsContainImage(attachments))
+            userMessage.content ~= "\n\n" ~ (images.length > 0
+                ? attachmentImagesSentNote(attachments)
+                : attachmentImageUnsupportedNote(session.model));
+        userMessage.images = images;
         appendMessage(*session, userMessage);
         // experimental: attachments - hidden inline context carries the full
-        // dropped-file / pasted bodies to the model.
+        // dropped-file / pasted bodies to the model. A vision-capable model
+        // gets dropped images as real inline image parts on the user turn
+        // instead, so `content` stays honest about what is text.
         if (attachments.length > 0)
         {
             ChatMessage context;
@@ -9439,6 +9467,50 @@ public final class OpenCodeRoot : VBox
     }
 
     // -- experimental: attachments ------------------------------------------
+
+    /// The images to send inline for this request, or none when the model
+    /// cannot see them. Sending an `image_url` part to a text-only route is a
+    /// hard 400, so an unclear capability answer means "text only".
+    private ChatImageAttachment[] visionImagesForAttachments(
+        const(Attachment)[] attachments, string model)
+    {
+        if (!attachmentsContainImage(attachments)) return null;
+        if (!isVisionModel(model)) return null;
+        return attachmentImages(attachments);
+    }
+
+    /// The transcript note for images that were sent inline, so the recorded
+    /// turn matches what the model actually received.
+    private string attachmentImagesSentNote(const(Attachment)[] attachments)
+    {
+        size_t count;
+        foreach (attachment; attachments)
+            if (attachment.isImage) ++count;
+        return count == 1
+            ? "Sent 1 image inline with this message."
+            : "Sent " ~ to!string(count) ~ " images inline with this message.";
+    }
+
+    /// The images carried by the most recent image-bearing user turn of the
+    /// active path, for tests and diagnostics.
+    ///
+    /// Requests no longer need a carrier hunt: `buildRequestMessages` copies a
+    /// turn's images onto its own request message, so an image stays part of
+    /// the conversation instead of disappearing when the next message arrives.
+    /// Compaction is the only thing that can drop it, on the same budget as
+    /// the text it accompanies.
+    private ChatImageAttachment[] activeRequestImages(const ref ChatSession session)
+    {
+        const path = activeMessagePath(session);
+        auto target = cast(ChatSession*) &session;
+        foreach_reverse (slot; 0 .. path.length)
+        {
+            const message = target.messages[path[slot]];
+            if (message.images.length == 0) continue;
+            return target.messages[path[slot]].images.dup;
+        }
+        return null;
+    }
 
     /// Keep the composer panel and its wrapper in step with whether the chip
     /// row is showing, so the extra row never overlaps the prompt.
@@ -9581,9 +9653,20 @@ public final class OpenCodeRoot : VBox
             total += m.role.length + m.content.length + m.toolCallId.length + 16;
             foreach (call; m.toolCalls)
                 total += call.name.length + call.arguments.length + 16;
+            // Inline images are counted as a fixed per-image cost. Their base64
+            // would otherwise dominate a text estimate and trigger compaction
+            // on a request whose text is tiny; a vision model bills an image by
+            // its tiles, not by the size of the encoded payload.
+            foreach (image; m.images)
+                total += requestImageTokenBytes;
         }
         return total;
     }
+
+    /// The bytes-per-image stand-in used by the local token estimate. A
+    /// full-size image is billed in the low thousands of tokens, and this
+    /// estimate runs at four bytes per token.
+    private enum size_t requestImageTokenBytes = 4 * 1400;
 
     /// Conservative local fallback for providers that omit streamed usage.
     /// Count the exact compacted messages plus advertised tool schemas, then
@@ -9984,6 +10067,12 @@ public final class OpenCodeRoot : VBox
             if (message.role == "assistant")
                 request.reasoningContent = message.reasoning;
             request.toolCallId = message.toolCallId;
+            // Images belong to the turn that carried them, exactly like content
+            // and tool ids. Attaching them only to the newest user turn meant a
+            // screenshot vanished from the conversation as soon as one more
+            // message followed it, which made every later "what is in this
+            // image" turn a text-only request.
+            if (message.images.length > 0) request.images = message.images.dup;
             messages ~= request;
             ++slot;
         }
@@ -10173,6 +10262,9 @@ public final class OpenCodeRoot : VBox
             fixedRequestBytes);
         _contextWasCompacted[session.id] =
             requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
+        // Inline images ride on their own turn's request message (copied in
+        // buildRequestMessages), so a screenshot stays part of the conversation
+        // rather than expiring as soon as another message follows it.
         messages ~= compactedRequestMessages;
         // Cache this request's local estimate so the meter still shows a value
         // when the provider omits usage. Provider-reported usage, when present,
@@ -12388,6 +12480,21 @@ public final class OpenCodeRoot : VBox
             // reloaded transcript still shows how long each command took.
             if (message.toolElapsedMs > 0)
                 messageJson["toolElapsedMs"] = message.toolElapsedMs;
+            // Inline images are part of the conversation: a continued or
+            // replayed turn must still reach the model as a vision request.
+            if (message.images.length > 0)
+            {
+                JSONValue images = JSONValue(string[].init);
+                foreach (image; message.images)
+                {
+                    JSONValue imageJson;
+                    imageJson["mimeType"] = image.mimeType;
+                    imageJson["base64Data"] = image.base64Data;
+                    if (image.name.length > 0) imageJson["name"] = image.name;
+                    images.array ~= imageJson;
+                }
+                messageJson["images"] = images;
+            }
             // A finished turn's working time is stored on its opening user
             // message, so the conversation timer survives a restart.
             if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
@@ -12603,6 +12710,30 @@ public final class OpenCodeRoot : VBox
                                             message.workedSeconds = cast(double) f.integer;
                                         else if (f.type == JSONType.float_)
                                             message.workedSeconds = f.floating;
+                                    }
+                                    if (auto f = "images" in messageValue.object)
+                                    {
+                                        if (f.type == JSONType.array)
+                                        {
+                                            foreach (imageValue; f.array)
+                                            {
+                                                if (imageValue.type !=
+                                                    JSONType.object)
+                                                    continue;
+                                                ChatImageAttachment image;
+                                                if (auto g = "mimeType" in
+                                                    imageValue.object)
+                                                    image.mimeType = g.str;
+                                                if (auto g = "base64Data" in
+                                                    imageValue.object)
+                                                    image.base64Data = g.str;
+                                                if (auto g = "name" in
+                                                    imageValue.object)
+                                                    image.name = g.str;
+                                                if (image.base64Data.length > 0)
+                                                    message.images ~= image;
+                                            }
+                                        }
                                     }
                                     if (auto f = "toolCalls" in messageValue.object)
                                     {
@@ -13183,6 +13314,19 @@ public final class OpenCodeRoot : VBox
     public string pendingAttachmentContextForTesting() const
     {
         return attachmentContextBlock(_pendingAttachments);
+    }
+
+    /// Test-only: the images that would be sent inline for the current model.
+    public ChatImageAttachment[] pendingAttachmentImagesForTesting()
+    {
+        return visionImagesForAttachments(_pendingAttachments, _settings.model);
+    }
+
+    /// Test-only: images riding on the newest user turn of the active path.
+    public ChatImageAttachment[] activeRequestImagesForTesting()
+    {
+        if (_current < 0) return null;
+        return activeRequestImages(_sessions[_current]);
     }
 
     // -- test accessors ---------------------------------------------------
