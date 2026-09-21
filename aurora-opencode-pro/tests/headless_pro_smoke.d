@@ -914,8 +914,9 @@ int main(string[] args)
         "Stop click consumed unsent composer text");
     assert(root.sendButtonTextForTesting() == "Send",
         "Stop did not restore the Send button");
-    assert(root.taskStatusForTesting() == "blocked",
-        "Stopped task did not leave active state");
+    assert(root.taskStatusForTesting() != "blocked" &&
+        root.turnStatusForTesting() == "interrupted",
+        "Stopping a turn incorrectly blocked the durable task");
     writeln("One Stop click immediately releases the turn");
 
     // Text that was explicitly submitted during a live turn is different from
@@ -936,8 +937,9 @@ int main(string[] args)
         root.messageContentForTesting(preservedIndex) ==
             "also check the rebuild helper",
         "Stop did not preserve submitted guidance as a visible user turn");
-    assert(root.taskStatusForTesting() == "blocked",
-        "preserving guidance incorrectly kept the stopped task active");
+    assert(root.taskStatusForTesting() != "blocked" &&
+        root.turnStatusForTesting() == "interrupted",
+        "preserving guidance incorrectly blocked the durable task");
     writeln("Stop preserves already-submitted guidance in the transcript");
 
     // Compaction is a context-pressure operation, not something performed on
@@ -2963,6 +2965,33 @@ int main(string[] args)
     assert(root.lastToolResultForTesting().indexOf("skipped") < 0,
         "post-verification inspection received a fabricated skipped result");
     writeln("Passed verification does not revoke tool access");
+
+    // The advisory checkpoint is followed by a hard progress-sensitive guard.
+    // Varying read arguments cannot keep a turn exploring forever; after the
+    // ceiling the app asks for a tool-free decision without executing the call.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Inspect a bounded problem", ""]);
+    foreach (round; 0 .. root.hardExplorationLimitForTesting())
+        root.injectToolResultForTesting("read", "evidence", false,
+            `{"path":"more-` ~ to!string(round) ~ `"}`);
+    assert(root.explorationSinceProgressForTesting() ==
+        root.hardExplorationLimitForTesting(),
+        "hard exploration counter did not include varied reads");
+    root.addConversationForTesting(["assistant"], [""]);
+    root.pauseToolContinuationForTesting();
+    OpenCodeToolCall excessRead;
+    excessRead.id = "call_exploration_limit";
+    excessRead.name = "read";
+    excessRead.arguments = `{"path":"one-more"}`;
+    const beforeExcessRead = root.toolMessageCountForTesting();
+    root.injectToolCallsForTesting([excessRead]);
+    assert(root.finalAnswerRequestedForTesting() &&
+        root.pendingToolResultsForTesting() == 0 &&
+        root.toolMessageCountForTesting() == beforeExcessRead + 1 &&
+        root.lastToolResultForTesting().indexOf("exploration limit") >= 0,
+        "hard exploration ceiling executed another read instead of finalizing");
+    writeln("Varied read loops stop at the hard exploration ceiling");
     assert(!root.hasAutomaticTurnTimeoutForTesting() &&
         root.toolRoundLimitForTesting() >= 32,
         "long-horizon work lacks a generous deterministic loop backstop");
@@ -3546,38 +3575,46 @@ int main(string[] args)
             "the pending prompt bubble lost its text: " ~
             root.queuedPromptBubbleTextForTesting(0));
         assert(driver.paint(), "a queued prompt bubble did not paint");
+        root.queueFollowUpForTesting("Run one final review");
+        assert(root.queuedFollowUpCountForTesting() == 1 &&
+            root.queuedPromptBubbleCountForTesting() == 2,
+            "explicit follow-up queue was conflated with steering");
         root.persistForTesting();
         root.reloadSessionsForTesting();
         assert(root.taskObjectiveForTesting() == "Build durable recovery" &&
             root.taskStepCountForTesting() == 2 &&
-            root.queuedGuidanceCountForTesting() == 1,
-            "task objective/checklist/guidance did not survive snapshot reload");
+            root.queuedGuidanceCountForTesting() == 1 &&
+            root.queuedFollowUpCountForTesting() == 1,
+            "task objective/checklist/queues did not survive snapshot reload");
         assert(root.consumeGuidanceForTesting(),
             "queued guidance was not injected at a safe boundary");
         assert(root.queuedGuidanceCountForTesting() == 0,
             "consumed guidance remained queued");
-        assert(root.queuedPromptBubbleCountForTesting() == 0,
-            "the pending prompt bubble was not replaced by a real turn");
+        assert(root.queuedPromptBubbleCountForTesting() == 1,
+            "consuming steering also consumed the distinct follow-up queue");
         assert(!root.completionWouldContinueForTesting(),
             "an unfinished checklist manufactured another model request");
         root.settleTaskAfterDoneForTesting();
-        assert(root.taskStatusForTesting() == "blocked" &&
-            !root.turnBusyForTesting(),
-            "a final answer with stale plan state did not settle locally");
+        assert(root.taskStatusForTesting() == "active" &&
+            root.turnStatusForTesting() == "running" &&
+            root.turnBusyForTesting() &&
+            root.queuedFollowUpCountForTesting() == 0 &&
+            root.lastUserMessageForTesting() == "Run one final review",
+            "an explicit follow-up did not start as a distinct next turn");
+        root.clickSendButtonForTesting();
+        root.setTaskStateForTesting("Build durable recovery", "active",
+            "not_required");
+        root.addConversationForTesting(["assistant"], [""]);
+        root.startTurnClockForTesting();
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);
 
-        root.injectToolResultForTesting("edit", "Edited file", false,
-            `{"path":"example.d"}`, 1, 1,
-            "@@ -1,1 +1,1 @@\n-old\n+new\n");
-        assert(root.completionNeedsVerificationForTesting(),
-            "a successful file mutation did not arm the completion gate");
-        root.injectToolResultForTesting("run", "Tests passed", false,
-            `{"argv":["dub","test"]}`);
-        assert(root.verificationStatusForTesting() == "passed" &&
-            !root.completionNeedsVerificationForTesting(),
-            "a focused successful check did not satisfy the completion gate");
+        // Mutation/verification transitions are exercised above in isolation;
+        // settle the integration fixture so journal replay can assert the final
+        // durable state without a live queued-follow-up request racing it.
+        root.setTaskStateForTesting("Build durable recovery", "completed",
+            "passed");
         assert(!root.completionWouldContinueForTesting(),
             "completed checklist plus successful verification stayed open");
 

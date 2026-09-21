@@ -278,13 +278,22 @@ public ChatSession[] projectAgentRuntimeEvents(
         }
         if (event.kind == AgentEventKind.turnStarted)
         {
-            session.taskStatus = "active";
+            session.turnStatus = "running";
             continue;
         }
-        if (event.kind == AgentEventKind.turnInterrupted ||
-            event.kind == AgentEventKind.turnFailed)
+        if (event.kind == AgentEventKind.turnCompleted)
         {
-            session.taskStatus = "blocked";
+            session.turnStatus = "completed";
+            continue;
+        }
+        if (event.kind == AgentEventKind.turnInterrupted)
+        {
+            session.turnStatus = "interrupted";
+            continue;
+        }
+        if (event.kind == AgentEventKind.turnFailed)
+        {
+            session.turnStatus = "failed";
             continue;
         }
         if (event.kind != AgentEventKind.itemAdded &&
@@ -353,6 +362,8 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
         if (f.type == JSONType.string) session.objective = f.str;
     if (auto f = "taskStatus" in payload.object)
         if (f.type == JSONType.string) session.taskStatus = f.str;
+    if (auto f = "turnStatus" in payload.object)
+        if (f.type == JSONType.string) session.turnStatus = f.str;
     if (auto f = "verificationStatus" in payload.object)
         if (f.type == JSONType.string) session.verificationStatus = f.str;
     if (auto f = "taskSteps" in payload.object)
@@ -378,6 +389,14 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
             foreach (item; f.array)
                 if (item.type == JSONType.string)
                     session.queuedGuidance ~= item.str;
+        }
+    if (auto f = "queuedFollowUps" in payload.object)
+        if (f.type == JSONType.array)
+        {
+            session.queuedFollowUps.length = 0;
+            foreach (item; f.array)
+                if (item.type == JSONType.string)
+                    session.queuedFollowUps ~= item.str;
         }
 }
 

@@ -27,13 +27,13 @@ import std.conv : to;
 import std.datetime : Clock, SysTime;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
-import std.file : exists, isDir, fileRemove = remove, mkdirRecurse, readText, rename,
-    thisExePath, timeLastModified, write;
+import std.file : exists, getSize, isDir, isFile, fileRemove = remove,
+    mkdirRecurse, readText, rename, thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
-import std.string : indexOf, replace, startsWith, strip, toLower;
+import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32;
 version (Windows)
 {
@@ -3773,6 +3773,7 @@ private final class ChatTimerBadge : Widget
 private final class ChatInput : TextArea
 {
     void delegate() onSendRequested;
+    void delegate() onQueueRequested;
 
     this()
     {
@@ -3781,6 +3782,11 @@ private final class ChatInput : TextArea
 
     override bool onKeyDown(ref Event event)
     {
+        if (event.key == Key.enter && event.alt() && !event.shift())
+        {
+            if (onQueueRequested !is null) onQueueRequested();
+            return true;
+        }
         if (event.key == Key.enter && !event.shift())
         {
             if (onSendRequested !is null) onSendRequested();
@@ -4830,6 +4836,10 @@ public final class OpenCodeRoot : VBox
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
+    // Unlike the checkpoint above, this is an enforced no-more-reading gate.
+    // It counts varied reads as well as exact repeats and resets only when the
+    // turn makes substantive progress (a mutation or successful verification).
+    private static immutable int hardExplorationCallLimit = 20;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -4846,7 +4856,7 @@ public final class OpenCodeRoot : VBox
     // tool results collapse to one save, while shutdown/restart still flushes.
     private bool _stateDirty;
     private MonoTime _persistDue;
-    private static immutable int persistDebounceMs = 150;
+    private static immutable int persistDebounceMs = 5_000;
 
     // Backend-neutral lifecycle stream. sessions.json remains the compatibility
     // snapshot while this append-only journal becomes the durable seam between
@@ -5231,6 +5241,26 @@ public final class OpenCodeRoot : VBox
             }
             else
                 buildStamp = rebuildSuccessStamp();
+        }
+        if (cause == "rebuild" && rebuildReport.length == 0 &&
+            buildStamp.length > 0)
+        {
+            auto session = &_sessions[_current];
+            foreach (ref step; session.taskSteps)
+            {
+                const lower = step.text.toLower();
+                if (step.status == "in_progress" &&
+                    (lower.canFind("build") || lower.canFind("compile") ||
+                     lower.canFind("relaunch") || lower.canFind("restart")))
+                    step.status = "completed";
+            }
+            if (session.verificationStatus == "required")
+                session.verificationStatus = "passed";
+            session.taskStatus = hasIncompleteTaskSteps(*session)
+                ? "active" : "completed";
+            session.turnStatus = "completed";
+            publishThreadUpdated(*session);
+            markDirty();
         }
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
@@ -5791,8 +5821,9 @@ public final class OpenCodeRoot : VBox
         _input.setFocusDecoration(false);
         _input.setPadding(6);
         _input.setWordWrap(true);
-        _input.setPlaceholder("Ask anything...");
+        _input.setPlaceholder("Ask anything…  @file · /btw · /review");
         _input.onSendRequested = delegate() { sendMessage(); };
+        _input.onQueueRequested = delegate() { queueFollowUp(); };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate()
@@ -6366,6 +6397,7 @@ public final class OpenCodeRoot : VBox
         payload["activeLeafId"] = session.activeLeafId;
         payload["objective"] = session.objective;
         payload["taskStatus"] = session.taskStatus;
+        payload["turnStatus"] = session.turnStatus;
         payload["verificationStatus"] = session.verificationStatus;
         JSONValue steps = JSONValue(string[].init);
         foreach (step; session.taskSteps)
@@ -6379,6 +6411,10 @@ public final class OpenCodeRoot : VBox
         JSONValue guidance = JSONValue(string[].init);
         foreach (item; session.queuedGuidance) guidance.array ~= JSONValue(item);
         payload["queuedGuidance"] = guidance;
+        JSONValue followUps = JSONValue(string[].init);
+        foreach (item; session.queuedFollowUps)
+            followUps.array ~= JSONValue(item);
+        payload["queuedFollowUps"] = followUps;
         return payload.toString();
     }
 
@@ -6404,6 +6440,8 @@ public final class OpenCodeRoot : VBox
             prompt.put("Current request: " ~ currentRequest ~ "\n");
         prompt.put("Status: " ~ (session.taskStatus.length > 0
             ? session.taskStatus : "active") ~ "\n");
+        prompt.put("Turn: " ~ (session.turnStatus.length > 0
+            ? session.turnStatus : "idle") ~ "\n");
         prompt.put("Verification: " ~ (session.verificationStatus.length > 0
             ? session.verificationStatus : "not_required") ~ "\n");
         if (session.taskSteps.length > 0)
@@ -6899,8 +6937,8 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(null, _messageColumn, "live");
-        // A prompt typed while this turn is still running is queued durably and
-        // only injected at the next valid message boundary. Show it now as a
+        // Steering typed while this turn is still running is queued durably and
+        // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
         // it vanished; `appendQueuedGuidance` turns each queued entry into a
         // real turn (and clears the queue) in the same rebuild that applies it.
@@ -6914,7 +6952,18 @@ public final class OpenCodeRoot : VBox
                 // menu, branch nav or action pill.
                 queuedBubble.setMessageIndex(-1);
                 queuedBubble.setQueued(true,
-                    "Queued · sending at the next safe step");
+                    "Steering · applying at the next safe step");
+                _messageColumn.add(queuedBubble);
+            }
+        if (session.queuedFollowUps.length > 0)
+            foreach (text; session.queuedFollowUps)
+            {
+                auto queuedBubble = new MessageBubble();
+                queuedBubble.setRole("user");
+                queuedBubble.setContent(to!string(text));
+                queuedBubble.setMessageIndex(-1);
+                queuedBubble.setQueued(true,
+                    "Queued · starts after the current turn");
                 _messageColumn.add(queuedBubble);
             }
         // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
@@ -7640,10 +7689,10 @@ public final class OpenCodeRoot : VBox
         return delegate() { continueFromReply(sessionIndex, messageIndex); };
     }
 
-    /// A prose `done` event is a real turn boundary. Queued user guidance is the
-    /// only reason to open another request automatically. A stale checklist or
-    /// missing verification remains visible as incomplete state, but never
-    /// manufactures hidden follow-up turns after the model has answered.
+    /// A prose `done` event is a real turn boundary. Steering may continue the
+    /// same turn; an explicitly queued follow-up opens a distinct user turn.
+    /// Incomplete durable work remains active/verifying instead of being
+    /// mislabeled as blocked merely because one transport turn ended.
     private void continueOrCompleteTask(bool cancelled)
     {
         const sessionIndex = turnOwnerSessionIndex();
@@ -7652,7 +7701,8 @@ public final class OpenCodeRoot : VBox
         auto session = &_sessions[sessionIndex];
         if (cancelled)
         {
-            session.taskStatus = "blocked";
+            session.turnStatus = "interrupted";
+            if (session.taskStatus.length == 0) session.taskStatus = "active";
             publishThreadUpdated(*session);
             markDirty();
             return;
@@ -7669,21 +7719,26 @@ public final class OpenCodeRoot : VBox
         }
         if (hasIncompleteTaskSteps(*session))
         {
-            session.taskStatus = "blocked";
-            updateStatus("Stopped with checklist items still incomplete.");
+            session.turnStatus = "completed";
+            session.taskStatus = "active";
+            updateStatus("Turn complete · task still has checklist items.");
             publishThreadUpdated(*session);
             markDirty();
-            return;
         }
-        if (session.verificationStatus == "required")
+        else if (session.verificationStatus == "required")
         {
-            session.taskStatus = "blocked";
-            updateStatus("Stopped without the required verification.");
+            session.turnStatus = "completed";
+            session.taskStatus = "verifying";
+            updateStatus("Turn complete · verification is still required.");
         }
         else
+        {
+            session.turnStatus = "completed";
             session.taskStatus = "completed";
+        }
         publishThreadUpdated(*session);
         markDirty();
+        startNextQueuedFollowUp(sessionIndex);
     }
 
     private bool taskContinuesAfterDone(bool cancelled) const
@@ -7728,6 +7783,7 @@ public final class OpenCodeRoot : VBox
             "Error:\n\n```text\n" ~
             error.replace("```", "`` `") ~ "\n```";
         message.failed = true;
+        session.turnStatus = "failed";
         session.taskStatus = "blocked";
         publishThreadUpdated(*session);
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
@@ -7933,6 +7989,46 @@ public final class OpenCodeRoot : VBox
                 ++count;
         }
         return count;
+    }
+
+    /// Count read-only calls since the last concrete progress in this user turn.
+    /// Varying grep/read arguments cannot reset this enforced budget.
+    private static int readOnlyCallsSinceProgress(const ref ChatSession session)
+    {
+        int count;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                count = 0;
+                continue;
+            }
+            if (message.role != "tool") continue;
+            if (isSubstantiveMutation(message.toolName, message.failed,
+                message.diffAdditions, message.diffDeletions,
+                message.toolDiff) || (!message.failed &&
+                    isVerificationTool(message.toolName, message.toolArgs)))
+            {
+                count = 0;
+                continue;
+            }
+            if (isReadOnlyExplorationTool(message.toolName) ||
+                message.toolName == "run" || message.toolName == "bash")
+                ++count;
+        }
+        return count;
+    }
+
+    private static bool allReadOnlyExplorationCalls(
+        const(OpenCodeToolCall)[] calls)
+    {
+        if (calls.length == 0) return false;
+        foreach (call; calls)
+            if (isVerificationTool(call.name, call.arguments) ||
+                (!isReadOnlyExplorationTool(call.name) && call.name != "run" &&
+                    call.name != "bash")) return false;
+        return true;
     }
 
     /// The largest number of times any single exact tool call (name + arguments)
@@ -8161,6 +8257,33 @@ public final class OpenCodeRoot : VBox
             markDirty();
             if (_current == sessionIndex) rebuildMessageColumn();
             updateStatus("Tool limit reached — requesting a final answer…");
+            if (!_toolContinuationPaused)
+                startChatRequest(sessionIndex, false);
+            return;
+        }
+
+        const explorationCount = readOnlyCallsSinceProgress(*session);
+        if (allReadOnlyExplorationCalls(event.toolCalls) &&
+            explorationCount + cast(int) event.toolCalls.length >
+                hardExplorationCallLimit)
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: the turn has reached its read-only " ~
+                "exploration limit without a mutation or successful " ~
+                "verification.");
+            ChatMessage bounded;
+            bounded.role = "user";
+            bounded.internal = true;
+            bounded.content = "Exploration limit reached. Do not call more " ~
+                "tools in this turn. Use the evidence already collected to " ~
+                "make the smallest justified change or answer now; if that is " ~
+                "impossible, state the one concrete missing fact as a blocker.";
+            appendMessage(*session, bounded);
+            _finalAnswerRequested = true;
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Exploration limit reached — requesting an answer…");
             if (!_toolContinuationPaused)
                 startChatRequest(sessionIndex, false);
             return;
@@ -8410,7 +8533,8 @@ public final class OpenCodeRoot : VBox
             session.verificationStatus == "required")
         {
             session.verificationStatus = "passed";
-            session.taskStatus = "active";
+            session.taskStatus = hasIncompleteTaskSteps(*session)
+                ? "active" : "completed";
             publishThreadUpdated(*session);
         }
 
@@ -8521,7 +8645,10 @@ public final class OpenCodeRoot : VBox
         bool complete = steps.length > 0;
         foreach (step; steps)
             if (step.status != "completed") complete = false;
-        if (session.taskStatus != "reviewing" || complete)
+        if (complete)
+            session.taskStatus = session.verificationStatus == "required"
+                ? "verifying" : "completed";
+        else if (session.taskStatus != "reviewing")
             session.taskStatus = "active";
         publishThreadUpdated(session);
     }
@@ -8575,6 +8702,14 @@ public final class OpenCodeRoot : VBox
             _pendingToolCalls.length > 0 || _pendingToolResults > 0;
     }
 
+    private bool anyTurnIsBusy()
+    {
+        if (turnIsBusy()) return true;
+        foreach (runtime; _conversationRuntimes)
+            if (runtime.busy()) return true;
+        return false;
+    }
+
     /// Stop is a local state transition first and an I/O cancellation second.
     /// Invalidate the request id before closing handles so already-queued or
     /// late events cannot append output, restart a tool continuation, or keep
@@ -8612,7 +8747,8 @@ public final class OpenCodeRoot : VBox
         // visible transcript without starting another request; the following
         // turn can then apply it with its original wording intact.
         const preservedGuidance = appendQueuedGuidance(*session);
-        session.taskStatus = "blocked";
+        session.turnStatus = "interrupted";
+        if (session.taskStatus.length == 0) session.taskStatus = "active";
         publishThreadUpdated(*session);
         publishRuntimeEvent(AgentEventKind.turnInterrupted, *session,
             runtimeTurnId(*session));
@@ -8628,8 +8764,109 @@ public final class OpenCodeRoot : VBox
         updateSendButton();
     }
 
+    /// Attach small explicitly mentioned files as hidden request context. The
+    /// visible user message keeps the original `@path` text while the model gets
+    /// a stable snapshot, so subsequent disk changes cannot rewrite history.
+    private void appendComposerContext(ref ChatSession session, string text,
+        string workspace)
+    {
+        int attached;
+        foreach (token; text.split())
+        {
+            if (attached >= 3 || token.length < 2 || token[0] != '@') continue;
+            auto candidate = token[1 .. $];
+            while (candidate.length > 0 &&
+                (candidate[$ - 1] == ',' || candidate[$ - 1] == '.' ||
+                 candidate[$ - 1] == ';' || candidate[$ - 1] == ':' ||
+                 candidate[$ - 1] == ')' || candidate[$ - 1] == ']'))
+                candidate = candidate[0 .. $ - 1];
+            const path = resolveDisplayedPath(candidate, workspace);
+            if (path.length == 0 || !exists(path) || !isFile(path)) continue;
+
+            ChatMessage context;
+            context.role = "user";
+            context.internal = true;
+            try
+            {
+                if (getSize(path) > 32 * 1024)
+                    context.content = "Referenced file @" ~ candidate ~
+                        " is larger than 32 KiB. Read it with the file tools " ~
+                        "only if the request requires its contents.";
+                else
+                    context.content = "Referenced file @" ~ candidate ~
+                        ":\n\n```\n" ~ readText(path) ~ "\n```";
+            }
+            catch (Exception error)
+            {
+                context.content = "Referenced file @" ~ candidate ~
+                    " could not be read: " ~ error.msg;
+            }
+            appendMessage(session, context);
+            ++attached;
+        }
+
+        if (text == "/review" || text.startsWith("/review "))
+        {
+            ChatMessage review;
+            review.role = "user";
+            review.internal = true;
+            review.content = "Review mode: inspect the current working changes " ~
+                "and report correctness, regressions, missing tests, and risky " ~
+                "edge cases before proposing edits. Keep findings concrete.";
+            appendMessage(session, review);
+            session.taskStatus = "reviewing";
+        }
+    }
+
+    /// `/btw` opens an independent lightweight conversation seeded with the
+    /// durable objective and latest user request. The main task can keep running
+    /// in its own runtime and its checklist/status are not changed.
+    private bool startSideQuestion(string text)
+    {
+        if (!(text == "/btw" || text.startsWith("/btw "))) return false;
+        const question = text.length > 4 ? text[4 .. $].strip() : "";
+        if (question.length == 0)
+        {
+            updateStatus("Add a question after /btw.");
+            return true;
+        }
+        string context;
+        string projectId;
+        if (_current >= 0)
+        {
+            const origin = _sessions[_current];
+            projectId = origin.projectId;
+            if (origin.objective.length > 0)
+                context ~= "Main task objective: " ~ origin.objective ~ "\n";
+            foreach (index; activeMessagePath(origin))
+                if (origin.messages[index].role == "user" &&
+                    !origin.messages[index].internal)
+                    context = "Main task objective: " ~ origin.objective ~
+                        "\nLatest request: " ~ origin.messages[index].content;
+        }
+        newChat();
+        auto side = &_sessions[_current];
+        if (projectId.length > 0) side.projectId = projectId;
+        side.title = "BTW: " ~ (question.length > 48
+            ? question[0 .. 48] ~ "…" : question);
+        if (context.length > 0)
+        {
+            ChatMessage note;
+            note.role = "user";
+            note.internal = true;
+            note.content = "Side-question context (do not modify the main " ~
+                "task state):\n" ~ context;
+            appendMessage(*side, note);
+        }
+        _input.setText(question);
+        sendMessage();
+        return true;
+    }
+
     private void sendMessage()
     {
+        const composerText = _input.textUtf8().strip();
+        if (startSideQuestion(composerText)) return;
         if (_stopPending)
         {
             updateStatus("Stopped. Waiting for the previous request to close…");
@@ -8660,7 +8897,7 @@ public final class OpenCodeRoot : VBox
                 // instead of only flashing a status line.
                 _messagesScroll.follow = true;
                 rebuildMessageColumn();
-                updateStatus("Guidance queued — applying at the next safe step…");
+                updateStatus("Steering queued — applying at the next safe step…");
                 return;
             }
             stopActiveTurn();
@@ -8694,6 +8931,7 @@ public final class OpenCodeRoot : VBox
             session.verificationStatus = "not_required";
         }
         session.taskStatus = "active";
+        session.turnStatus = "running";
         publishThreadUpdated(*session);
 
         // Editing a prompt: branch from the original prompt's parent so the
@@ -8729,6 +8967,67 @@ public final class OpenCodeRoot : VBox
         _pendingToolResults = 0;
         _turnCancelled = false;
         startChatRequest(_current);
+    }
+
+    /// Alt+Enter is an explicit next-turn queue. It never steers or interrupts
+    /// the active request, which keeps the two interaction contracts distinct.
+    private void queueFollowUp()
+    {
+        const text = _input.textUtf8().strip();
+        if (text.length == 0) return;
+        if (!turnIsBusy())
+        {
+            sendMessage();
+            return;
+        }
+        if (_current != turnOwnerSessionIndex())
+        {
+            updateStatus("Select the working conversation before queuing a follow-up.");
+            return;
+        }
+        auto session = &_sessions[_current];
+        session.queuedFollowUps ~= text;
+        _input.setText("");
+        publishThreadUpdated(*session);
+        markDirty();
+        _messagesScroll.follow = true;
+        rebuildMessageColumn();
+        updateStatus("Follow-up queued · it will start after this turn.");
+    }
+
+    private void startNextQueuedFollowUp(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
+        if (session.queuedFollowUps.length == 0) return;
+        const text = session.queuedFollowUps[0];
+        session.queuedFollowUps = session.queuedFollowUps[1 .. $].dup;
+
+        ChatMessage userMessage;
+        userMessage.role = "user";
+        userMessage.content = text;
+        userMessage.time = currentTimestamp();
+        appendMessage(*session, userMessage);
+        appendComposerContext(*session, text, workspaceForSession(_current));
+        session.taskStatus = "active";
+        session.turnStatus = "running";
+        publishThreadUpdated(*session);
+        markDirty();
+        if (_current == sessionIndex)
+        {
+            addUserBubble(text);
+            rebuildMessageColumn();
+        }
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _pendingProgressGuidance = "";
+        _toolRounds = 0;
+        _finalAnswerRequested = false;
+        updateStatus("Starting queued follow-up…");
+        startChatRequest(sessionIndex);
     }
 
     /// Start the streaming request for the current session history. When
@@ -9363,6 +9662,9 @@ public final class OpenCodeRoot : VBox
         // whole turn (and one action group owns its tools).
         if (userTurn)
         {
+            session.turnStatus = "running";
+            publishThreadUpdated(*session);
+            markDirty();
             _toolRounds = 0;
             _finalAnswerRequested = false;
             _reportedToolCallIds = null;
@@ -11203,8 +11505,9 @@ public final class OpenCodeRoot : VBox
 
     private void markDirty()
     {
+        if (!_stateDirty)
+            _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
         _stateDirty = true;
-        _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
         // Message/task mutations are already appended synchronously to the
         // durable runtime journal, which startup treats as the recovery
         // authority. Re-serializing every conversation here made each streamed
@@ -11326,6 +11629,8 @@ public final class OpenCodeRoot : VBox
         if (session.objective.length > 0) root["objective"] = session.objective;
         if (session.taskStatus.length > 0)
             root["taskStatus"] = session.taskStatus;
+        if (session.turnStatus.length > 0)
+            root["turnStatus"] = session.turnStatus;
         if (session.verificationStatus.length > 0)
             root["verificationStatus"] = session.verificationStatus;
         if (session.taskSteps.length > 0)
@@ -11346,6 +11651,13 @@ public final class OpenCodeRoot : VBox
             foreach (item; session.queuedGuidance)
                 guidance.array ~= JSONValue(item);
             root["queuedGuidance"] = guidance;
+        }
+        if (session.queuedFollowUps.length > 0)
+        {
+            JSONValue followUps = JSONValue(string[].init);
+            foreach (item; session.queuedFollowUps)
+                followUps.array ~= JSONValue(item);
+            root["queuedFollowUps"] = followUps;
         }
         if (session.activeLeafId.length > 0)
             root["activeLeaf"] = session.activeLeafId;
@@ -11461,7 +11773,26 @@ public final class OpenCodeRoot : VBox
         catch (Exception scanError)
             logError("could not scan the state directory: " ~ scanError.msg);
 
+        // Trust the selection from the most complete snapshot, not merely the
+        // first one read. A stale `sessions.recovery.json` (left by a build
+        // that refreshed it on every message, before that save was moved off
+        // the hot path) still carries its own `current` and a shorter session
+        // list, so preferring it reopened an old chat at startup instead of the
+        // one selected when the app last closed.
         int preferredCurrent = -1;
+        int preferredCurrentCount = -1;
+        string preferredCurrentId;
+        // The id recorded at a snapshot's `current` index, so the selection can
+        // be re-resolved against the merged list even when snapshots order
+        // their sessions differently.
+        string sessionIdAt(const JSONValue[] list, int index)
+        {
+            if (index < 0 || index >= cast(int) list.length) return "";
+            if (list[cast(size_t) index].type != JSONType.object) return "";
+            if (auto idField = "id" in list[cast(size_t) index].object)
+                if (idField.type == JSONType.string) return idField.str;
+            return "";
+        }
         foreach (candidate; candidates)
         {
             if (!exists(candidate)) continue;
@@ -11469,13 +11800,25 @@ public final class OpenCodeRoot : VBox
             {
                 auto value = parseJSON(readText(candidate));
                 if (value.type != JSONType.object) continue;
-                if (auto found = "current" in value.object)
-                    if (preferredCurrent < 0)
-                        preferredCurrent = cast(int) found.integer;
-                if (auto found = "sessions" in value.object)
+                auto sessionsField = "sessions" in value.object;
+                const snapshotCount = sessionsField !is null &&
+                    sessionsField.type == JSONType.array
+                    ? cast(int) sessionsField.array.length : 0;
+                if (auto currentField = "current" in value.object)
+                    if (currentField.type == JSONType.integer &&
+                        snapshotCount > preferredCurrentCount)
+                    {
+                        preferredCurrent = cast(int) currentField.integer;
+                        preferredCurrentCount = snapshotCount;
+                        preferredCurrentId = sessionsField !is null &&
+                            sessionsField.type == JSONType.array
+                            ? sessionIdAt(sessionsField.array, preferredCurrent)
+                            : "";
+                    }
+                if (sessionsField !is null)
                 {
-                    if (found.type != JSONType.array) continue;
-                    foreach (sessionValue; found.array)
+                    if (sessionsField.type != JSONType.array) continue;
+                    foreach (sessionValue; sessionsField.array)
                     {
                         if (sessionValue.type != JSONType.object) continue;
                         ChatSession session;
@@ -11493,6 +11836,8 @@ public final class OpenCodeRoot : VBox
                             session.objective = field.str;
                         if (auto field = "taskStatus" in sessionValue.object)
                             session.taskStatus = field.str;
+                        if (auto field = "turnStatus" in sessionValue.object)
+                            session.turnStatus = field.str;
                         if (auto field = "verificationStatus" in
                             sessionValue.object)
                             session.verificationStatus = field.str;
@@ -11516,6 +11861,11 @@ public final class OpenCodeRoot : VBox
                                 foreach (item; field.array)
                                     if (item.type == JSONType.string)
                                         session.queuedGuidance ~= item.str;
+                        if (auto field = "queuedFollowUps" in sessionValue.object)
+                            if (field.type == JSONType.array)
+                                foreach (item; field.array)
+                                    if (item.type == JSONType.string)
+                                        session.queuedFollowUps ~= item.str;
                         if (session.projectId.length == 0)
                             session.projectId = sandboxProjectId;
                         if (auto field = "activeLeaf" in sessionValue.object)
@@ -11652,6 +12002,18 @@ public final class OpenCodeRoot : VBox
                     ? "t-" ~ session.messages[0].id : newSessionId();
             }
         }
+        // Re-resolve the remembered selection by id before trusting the raw
+        // index: the snapshots can list the same chats in different orders, so
+        // the index of the snapshot we preferred may not address the merged
+        // list. The opening-message repair above gives every session a stable
+        // id, so the match is reliable.
+        if (preferredCurrentId.length > 0)
+            foreach (index, session; _sessions)
+                if (session.id == preferredCurrentId)
+                {
+                    preferredCurrent = cast(int) index;
+                    break;
+                }
         if (preferredCurrent >= 0 && preferredCurrent < cast(int) _sessions.length)
             _current = preferredCurrent;
         if (_sessions.length > 0)
@@ -11729,11 +12091,14 @@ public final class OpenCodeRoot : VBox
                 existing.objective = recovered.objective;
             if (recovered.taskStatus.length > 0)
                 existing.taskStatus = recovered.taskStatus;
+            if (recovered.turnStatus.length > 0)
+                existing.turnStatus = recovered.turnStatus;
             if (recovered.verificationStatus.length > 0)
                 existing.verificationStatus = recovered.verificationStatus;
             if (recovered.taskSteps.length > 0)
                 existing.taskSteps = recovered.taskSteps.dup;
             existing.queuedGuidance = recovered.queuedGuidance.dup;
+            existing.queuedFollowUps = recovered.queuedFollowUps.dup;
             foreach (message; recovered.messages)
             {
                 bool found;
@@ -12052,7 +12417,8 @@ public final class OpenCodeRoot : VBox
             saveProjects(_projectState);
         }
 
-        if (_stateDirty && MonoTime.currTime >= _persistDue)
+        if (_stateDirty && MonoTime.currTime >= _persistDue &&
+            !anyTurnIsBusy())
             persistState();
 
         // Tick the conversation stopwatch a few times a second rather than every
@@ -12198,6 +12564,11 @@ public final class OpenCodeRoot : VBox
         return _current < 0 ? "" : _sessions[_current].taskStatus;
     }
 
+    public string turnStatusForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].turnStatus;
+    }
+
     public string verificationStatusForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].verificationStatus;
@@ -12291,6 +12662,20 @@ public final class OpenCodeRoot : VBox
         return "";
     }
 
+    public void queueFollowUpForTesting(string followUp)
+    {
+        if (_current < 0 || followUp.strip().length == 0) return;
+        _sessions[_current].queuedFollowUps ~= followUp.strip();
+        publishThreadUpdated(_sessions[_current]);
+        markDirty();
+        rebuildMessageColumn();
+    }
+
+    public size_t queuedFollowUpCountForTesting() const
+    {
+        return _current < 0 ? 0 : _sessions[_current].queuedFollowUps.length;
+    }
+
     public bool consumeGuidanceForTesting()
     {
         return _current >= 0 && appendQueuedGuidance(_sessions[_current]);
@@ -12319,6 +12704,17 @@ public final class OpenCodeRoot : VBox
     {
         return _current < 0 ? 0 :
             readOnlyExplorationCount(_sessions[_current]);
+    }
+
+    public int explorationSinceProgressForTesting() const
+    {
+        return _current < 0 ? 0 :
+            readOnlyCallsSinceProgress(_sessions[_current]);
+    }
+
+    public int hardExplorationLimitForTesting() const
+    {
+        return hardExplorationCallLimit;
     }
 
     public bool applyExplorationCheckpointForTesting()

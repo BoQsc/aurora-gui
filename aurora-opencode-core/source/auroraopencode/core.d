@@ -586,11 +586,19 @@ public struct ChatSession
     string projectId;  // owning project; empty/unknown maps to the sandbox
     string objective;
     string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"
+    // Transport/execution lifecycle is intentionally separate from the
+    // durable objective. A turn can finish successfully while its objective
+    // remains active, and an interrupted turn does not make the objective a
+    // blocker by itself.
+    string turnStatus; // "idle" | "running" | "completed" | "interrupted" | "failed"
     TaskStep[] taskSteps;
     string verificationStatus; // "not_required" | "required" | "passed" | "failed"
-    // Guidance entered while a turn is running is queued until a safe model
-    // boundary.  Keeping it here makes steering survive an application restart.
+    // Guidance entered with Enter while a turn is running steers it at the
+    // next safe tool boundary. Keeping it here makes steering survive a crash.
     string[] queuedGuidance;
+    // Alt+Enter explicitly queues a separate follow-up turn. Unlike steering,
+    // these prompts are not injected into the active turn.
+    string[] queuedFollowUps;
     ChatMessage[] messages;
     // The id of the message at the tip of the branch currently shown. The
     // visible conversation is the path from this leaf up through `parentId`s;
