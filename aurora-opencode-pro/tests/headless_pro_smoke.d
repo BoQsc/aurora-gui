@@ -1274,6 +1274,29 @@ int main(string[] args)
         writeln("500K DeepSeek 4.1 toggle caps the effective window");
     }
 
+    // A failed rebuild is reported back into the resumed conversation. The
+    // helper leaves `rebuild-report.txt` only on failure; the resume prompt
+    // must quote it so the agent knows its changes are not live and can fix
+    // them, instead of the "rebuilt" success wording.
+    {
+        const failed = OpenCodeRoot.resumePromptForTesting("rebuild", "tweak",
+            "command: dub build --force --build=release\n" ~
+            "exit:    1\n\ncompiler errors (1):\n" ~
+            "  app.d(3): Error: undefined identifier foo\n");
+        assert(failed.indexOf("FAILED to compile") >= 0,
+            "a failed rebuild must be reported as failed: " ~ failed);
+        assert(failed.indexOf("undefined identifier foo") >= 0,
+            "the compiler errors must be quoted back to the agent");
+        assert(failed.indexOf("rebuild tool again") >= 0,
+            "the prompt must tell the agent to rebuild after fixing");
+        const succeeded = OpenCodeRoot.resumePromptForTesting("rebuild",
+            "tweak", "");
+        assert(succeeded.indexOf("rebuilt and relaunched") >= 0 &&
+            succeeded.indexOf("FAILED") < 0,
+            "a successful rebuild keeps the success wording");
+        writeln("Rebuild outcome is reported back into the resumed conversation");
+    }
+
     // --- Projects -------------------------------------------------------
     // The sandbox is the default project (first in the rail) and owns the
     // restored chats. Creating, switching, persisting, and removing projects

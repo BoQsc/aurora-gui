@@ -5172,19 +5172,65 @@ public final class OpenCodeRoot : VBox
                     }
         }
         catch (Exception) {}
+        // A rebuild that fails to compile relaunches the PREVIOUS binary. The
+        // helper removes `rebuild-report.txt` after a good build and writes it
+        // only on failure, so its presence is the reliable "your changes are
+        // not live" signal. Quote it into the prompt so the agent can fix the
+        // errors and rebuild rather than assume the edit took effect.
+        string rebuildReport;
         if (cause == "rebuild")
-            _resumePrompt = "The application was rebuilt and relaunched " ~
-                "with your latest source changes. Continue the durable " ~
-                "objective and checklist from where you left off" ~
-                (reason.length > 0 ? " — " ~ reason : "") ~
-                ". Apply any queued guidance before claiming completion.";
-        else
-            _resumePrompt = "The application closed unexpectedly (" ~
-                (cause.length > 0 ? cause : "cause unknown") ~
-                "). Continue the durable objective and checklist from where you " ~
-                "left off. Apply any queued guidance before claiming completion.";
+        {
+            const reportPath = buildPath(opencodeStateDirectory(),
+                "rebuild-report.txt");
+            if (exists(reportPath))
+            {
+                try rebuildReport = readText(reportPath);
+                catch (Exception) {}
+            }
+        }
+        _resumePrompt = resumePromptFor(cause, reason, rebuildReport);
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
+    }
+
+    /// Build the resume prompt from a recorded cause and, for a rebuild, the
+    /// failure report the helper left behind ("" when the build succeeded).
+    /// Pure so the smoke test can check both outcomes without a second launch.
+    private static string resumePromptFor(string cause, string reason,
+        string rebuildReport)
+    {
+        if (cause == "rebuild")
+        {
+            if (rebuildReport.length > 0)
+                return "Your rebuild FAILED to compile, so the app " ~
+                    "relaunched the previous binary and your source changes " ~
+                    "are NOT live. Fix the compiler errors below, then call " ~
+                    "the rebuild tool again. Continue the durable objective " ~
+                    "and checklist from where you left off; apply any queued " ~
+                    "guidance before claiming completion.\n\n" ~
+                    promptReportExcerpt(rebuildReport) ~
+                    "\n\n(full report: " ~ buildPath(opencodeStateDirectory(),
+                        "rebuild-report.txt") ~ ")";
+            return "The application was rebuilt and relaunched with your " ~
+                "latest source changes. Continue the durable objective and " ~
+                "checklist from where you left off" ~
+                (reason.length > 0 ? " — " ~ reason : "") ~
+                ". Apply any queued guidance before claiming completion.";
+        }
+        return "The application closed unexpectedly (" ~
+            (cause.length > 0 ? cause : "cause unknown") ~
+            "). Continue the durable objective and checklist from where you " ~
+            "left off. Apply any queued guidance before claiming completion.";
+    }
+
+    /// Cap the report text quoted into the prompt; the compiler errors are near
+    /// the top and the full file stays on disk for a complete read.
+    private static string promptReportExcerpt(string report)
+    {
+        enum size_t maxChars = 2_000;
+        if (report.length <= maxChars) return report;
+        return report[0 .. maxChars] ~
+            "\n...(report truncated; read the file for the rest)";
     }
 
     /// Test-only / shutdown hook: release the shared network session.
@@ -5202,6 +5248,14 @@ public final class OpenCodeRoot : VBox
     public bool rebuildPendingForTesting() const
     {
         return _rebuildPending;
+    }
+
+    /// Test-only: the resume prompt the app would inject for a given resume
+    /// cause and rebuild-failure report ("" when the build succeeded).
+    public static string resumePromptForTesting(string cause, string reason,
+        string rebuildReport)
+    {
+        return resumePromptFor(cause, reason, rebuildReport);
     }
 
     /// Test-only: whether this build can rebuild itself in place (the

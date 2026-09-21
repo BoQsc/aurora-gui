@@ -708,6 +708,9 @@ int main()
             `{"reason":"apply the new edit"}`), dir);
         assert(!requested.failed && capturedReason == "apply the new edit",
             "rebuild must forward its reason to the host handler");
+        assert(requested.output.indexOf("reports the compiler errors") >= 0,
+            "the tool must tell the agent a failed build is reported back: " ~
+            requested.output);
         // The app installs the handler on its UI thread but the tool runs on
         // its worker thread, so the global must be shared across threads
         // (module-level variables are thread-local by default in D). Calling it

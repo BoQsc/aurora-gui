@@ -3535,7 +3535,10 @@ private ToolExecution runRebuildTool(string arguments)
             "running app is not built from its own source package.", true);
     return ToolExecution("rebuild",
         "Rebuild and relaunch started. The app will persist this " ~
-        "conversation, close, run `dub build`, relaunch, and continue here.");
+        "conversation, close, run `dub build`, relaunch, and continue here. " ~
+        "If the build fails to compile, the app relaunches the previous " ~
+        "binary and reports the compiler errors in the resumed conversation " ~
+        "so you can fix them and call the rebuild tool again.");
 }
 
 /// Dispatch a tool call. Split out of `executeTool` so the timing wrapper has a
