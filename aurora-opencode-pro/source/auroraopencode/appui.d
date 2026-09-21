@@ -10152,16 +10152,18 @@ public final class OpenCodeRoot : VBox
         keyField.layoutHints().flex = 1.0;
         _settingsKeyField = keyField;
 
-        // Additional key: a spare credential kept in its own field next to the
-        // main one. The checkbox below picks which of the two is the live key.
+        // Additional key: every provider keeps a spare credential in its own
+        // field next to the main key. The checkbox below picks which of the two
+        // is the live key for the provider the dialog is pointed at.
+        const activePair = findProviderApiKeys(_settings, _settings.baseUrl);
         auto additionalKeyRow = new HBox(8);
         additionalKeyRow.layoutHints().preferredHeight = 32;
         auto additionalKeyLabel = additionalKeyRow.add(
             new Label("Additional key"));
         additionalKeyLabel.layoutHints().preferredWidth = 110;
         additionalKeyLabel.setScale(1);
-        auto additionalKeyField = additionalKeyRow.add(
-            new TextField(_settings.additionalApiKey));
+        auto additionalKeyField = additionalKeyRow.add(new TextField(
+            activePair !is null ? activePair.additionalApiKey : ""));
         additionalKeyField.setId("oc-settings-extrakey");
         additionalKeyField.layoutHints().flex = 1.0;
         _settingsAdditionalKeyField = additionalKeyField;
@@ -10171,13 +10173,14 @@ public final class OpenCodeRoot : VBox
         auto activeKeyCheck = new CheckBox(
             "Use the additional key as the active API key");
         activeKeyCheck.setId("oc-settings-useextrakey");
-        activeKeyCheck.setChecked(_settings.additionalKeyActive, false);
+        activeKeyCheck.setChecked(
+            activePair !is null && activePair.additionalKeyActive, false);
         _settingsAdditionalKeyToggle = activeKeyCheck;
         activeKeyRow.add(activeKeyCheck);
 
         auto keysHint = new Label(
-            "Both fields are kept; the checkbox picks which one requests are " ~
-            "sent with. \"Save\" applies the choice.");
+            "Each provider keeps its own two keys; the checkbox picks which " ~
+            "one that provider's requests use. \"Save\" applies the choice.");
         keysHint.setScale(1);
         keysHint.setColor(opencodeMuted);
 
@@ -10368,13 +10371,23 @@ public final class OpenCodeRoot : VBox
 
     /// Fill the Settings base URL/key/model fields for a provider preset.
     /// Staged: nothing is written to disk until the dialog's Save is pressed.
+    /// Each provider shows its OWN key pair, so switching provider never mixes
+    /// one provider's spare key into another provider's form.
     private void applyProviderPreset(int index)
     {
         if (index < 0 || index >= cast(int) providerPresets.length) return;
         const preset = providerPresets[cast(size_t) index];
+        const keys = findProviderApiKeys(_settings, preset.baseUrl);
         if (_settingsBaseField !is null) _settingsBaseField.setText(preset.baseUrl);
         if (_settingsKeyField !is null)
-            _settingsKeyField.setText(readProviderKey(preset.id));
+            _settingsKeyField.setText(keys !is null
+                ? keys.apiKey : readProviderKey(preset.id));
+        if (_settingsAdditionalKeyField !is null)
+            _settingsAdditionalKeyField.setText(
+                keys !is null ? keys.additionalApiKey : "");
+        if (_settingsAdditionalKeyToggle !is null)
+            _settingsAdditionalKeyToggle.setChecked(
+                keys !is null && keys.additionalKeyActive, false);
         if (_settingsModelField !is null)
             _settingsModelField.setText(preset.model);
         if (_settingsProviderButton !is null)
@@ -10382,19 +10395,26 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Read the two API key fields plus the active-key toggle out of the
-    /// Settings dialog, push the resulting credential to the live clients, and
-    /// persist it. Shared by the dialog's Save and the smoke harness so both
-    /// exercise the same path.
+    /// Settings dialog, store them as the pair of the provider the dialog is
+    /// pointed at, and make that provider's active key live. Shared by the
+    /// dialog's Save and the smoke harness so both exercise the same path.
     private void commitApiKeysFromFields()
     {
+        const baseUrl = _settingsBaseField !is null
+            ? _settingsBaseField.textUtf8().strip() : _settings.baseUrl;
+        string mainKey;
+        string spareKey;
+        bool spareActive;
         if (_settingsKeyField !is null)
-            _settings.apiKey = _settingsKeyField.textUtf8().strip();
+            mainKey = _settingsKeyField.textUtf8().strip();
         if (_settingsAdditionalKeyField !is null)
-            _settings.additionalApiKey =
-                _settingsAdditionalKeyField.textUtf8().strip();
+            spareKey = _settingsAdditionalKeyField.textUtf8().strip();
         if (_settingsAdditionalKeyToggle !is null)
-            _settings.additionalKeyActive =
-                _settingsAdditionalKeyToggle.checked();
+            spareActive = _settingsAdditionalKeyToggle.checked();
+        storeProviderApiKeys(_settings, baseUrl, mainKey, spareKey, spareActive);
+        // The live credential is whichever key this provider has toggled.
+        if (auto entry = findProviderApiKeys(_settings, baseUrl))
+            _settings.apiKey = activeKeyOf(*entry);
         applyApiKeyToClient();
     }
 
@@ -13731,30 +13751,52 @@ public final class OpenCodeRoot : VBox
         return baseUrl ~ "\n" ~ model;
     }
 
-    /// Test-only: open Settings, fill both API key fields, set the active-key
-    /// toggle, and run the dialog's key commit (without the model refresh,
-    /// which would need a network). Returns "primary\nadditional\nlive".
-    public string configureApiKeysForTesting(string primary, string additional,
-        bool additionalActive)
+    /// Test-only: open Settings, pick the provider preset at `index`, fill both
+    /// of its API key fields, set the active-key toggle, and run the dialog's
+    /// key commit (without the model refresh, which would need a network).
+    /// Returns the resulting live key, as "live\nlive".
+    public string configureProviderKeysForTesting(int index, string primary,
+        string additional, bool additionalActive)
     {
         showSettingsDialog();
+        applyProviderPreset(index);
+        // Mirror the dialog's Save: the picked endpoint is committed too, so
+        // the pair is stored under the provider it belongs to.
+        if (_settingsBaseField !is null)
+            _settings.baseUrl = _settingsBaseField.textUtf8().strip();
         if (_settingsKeyField !is null) _settingsKeyField.setText(primary);
         if (_settingsAdditionalKeyField !is null)
             _settingsAdditionalKeyField.setText(additional);
         if (_settingsAdditionalKeyToggle !is null)
             _settingsAdditionalKeyToggle.setChecked(additionalActive, false);
         commitApiKeysFromFields();
-        return _settings.apiKey ~ "\n" ~ _settings.additionalApiKey ~ "\n" ~
-            activeApiKey(_settings);
+        return _settings.apiKey ~ "\n" ~ activeApiKey(_settings);
     }
 
-    /// Test-only: the stored key values and which one is active, as
-    /// "primary\nadditional\nactive=<0|1>\nlive".
-    public string apiKeyStateForTesting()
+    /// Test-only: pick the provider preset at `index` in an open dialog and
+    /// return the fields it shows, as "key\nadditional\nactive=<0|1>".
+    public string loadProviderKeysForTesting(int index)
     {
-        return _settings.apiKey ~ "\n" ~ _settings.additionalApiKey ~
-            "\nactive=" ~ (_settings.additionalKeyActive ? "1" : "0") ~
-            "\n" ~ activeApiKey(_settings);
+        showSettingsDialog();
+        applyProviderPreset(index);
+        const key = _settingsKeyField !is null
+            ? _settingsKeyField.textUtf8() : "";
+        const additional = _settingsAdditionalKeyField !is null
+            ? _settingsAdditionalKeyField.textUtf8() : "";
+        const active = _settingsAdditionalKeyToggle !is null &&
+            _settingsAdditionalKeyToggle.checked();
+        return key ~ "\n" ~ additional ~ "\nactive=" ~ (active ? "1" : "0");
+    }
+
+    /// Test-only: the live key for the provider preset at `index`, without
+    /// changing what the app has configured, as "baseUrl\nlive".
+    public string liveKeyForProviderForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) providerPresets.length) return "";
+        const preset = providerPresets[cast(size_t) index];
+        Settings probe = _settings;
+        probe.baseUrl = preset.baseUrl;
+        return preset.baseUrl ~ "\n" ~ activeApiKey(probe);
     }
 
 

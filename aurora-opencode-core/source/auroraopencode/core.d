@@ -790,17 +790,29 @@ public struct ProjectState
     bool projectsCollapsed = true;
 }
 
+/**
+ * The two credentials kept for one provider: the main key from Settings, a
+ * spare key, and which of the two is currently live. Identified by the preset
+ * id when the endpoint is one of `providerPresets`, otherwise by the endpoint
+ * itself, so every provider keeps its own pair.
+ */
+public struct ProviderApiKeys
+{
+    string providerId;        // preset id, or "" for a hand-edited endpoint
+    string baseUrl;           // the endpoint this pair belongs to
+    string apiKey;            // main key field
+    string additionalApiKey;  // spare key field
+    bool additionalKeyActive; // true => the spare key is the live one
+}
+
 public struct Settings
 {
     string baseUrl = defaultBaseUrl;
-    // The main API key field in Settings.
+    // The LIVE credential for `baseUrl`; see `activeApiKey`.
     string apiKey = "";
-    // A spare key kept next to the main one, so a second credential can be
-    // stored and switched to without retyping (or losing) the secret.
-    string additionalApiKey = "";
-    // Which of the two key fields above is the live credential: true sends
-    // `additionalApiKey`, false sends `apiKey`. See `activeApiKey`.
-    bool additionalKeyActive;
+    // Per-provider key pairs: each provider keeps its own main and spare key
+    // and remembers which of the two is active.
+    ProviderApiKeys[] providerKeys;
     string model = defaultModel;
     bool thinking;
     bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
@@ -994,19 +1006,51 @@ public Settings loadSettings()
                 if (auto found = "workspace" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.workspace = found.str;
+                // Per-provider key pairs; entries carrying no key at all are
+                // dropped rather than half-restored.
+                if (auto found = "providerKeys" in value.object)
+                {
+                    if (found.type == JSONType.array)
+                    {
+                        foreach (entry; found.array)
+                        {
+                            if (entry.type != JSONType.object) continue;
+                            ProviderApiKeys keys;
+                            if (auto f = "providerId" in entry.object)
+                                keys.providerId = f.str;
+                            if (auto f = "baseUrl" in entry.object)
+                                keys.baseUrl = f.str;
+                            if (auto f = "apiKey" in entry.object)
+                                keys.apiKey = f.str;
+                            if (auto f = "additionalApiKey" in entry.object)
+                                keys.additionalApiKey = f.str;
+                            if (auto f = "additionalKeyActive" in entry.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    keys.additionalKeyActive =
+                                        f.type == JSONType.true_;
+                            if (keys.providerId.length == 0 ||
+                                (keys.apiKey.length == 0 &&
+                                 keys.additionalApiKey.length == 0))
+                                continue;
+                            settings.providerKeys ~= keys;
+                        }
+                    }
+                }
+                // Migration: earlier builds kept one global spare key, and
+                // before that a list of named keys with the active value in
+                // `apiKey`. Fold whatever they had into the configured
+                // provider's pair so no credential is lost on upgrade.
+                string legacyAdditionalKey;
+                bool legacyAdditionalActive;
                 if (auto found = "additionalApiKey" in value.object)
                     if (found.type == JSONType.string)
-                        settings.additionalApiKey = found.str;
+                        legacyAdditionalKey = found.str;
                 if (auto found = "additionalKeyActive" in value.object)
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
-                        settings.additionalKeyActive =
-                            found.type == JSONType.true_;
-                // Migration: older builds kept a list of named keys plus the
-                // name of the active one, with the active value in `apiKey`.
-                // Keep the other credential as the additional key instead of
-                // dropping it on upgrade.
-                if (settings.additionalApiKey.length == 0)
+                        legacyAdditionalActive = found.type == JSONType.true_;
+                if (legacyAdditionalKey.length == 0)
                 {
                     if (auto found = "savedKeys" in value.object)
                     {
@@ -1020,11 +1064,18 @@ public Settings loadSettings()
                                     key = f.str;
                                 if (key.length == 0 || key == settings.apiKey)
                                     continue;
-                                settings.additionalApiKey = key;
+                                legacyAdditionalKey = key;
                                 break;
                             }
                         }
                     }
+                }
+                if (legacyAdditionalKey.length > 0 &&
+                    findProviderApiKeys(settings, settings.baseUrl) is null)
+                {
+                    storeProviderApiKeys(settings, settings.baseUrl,
+                        settings.apiKey, legacyAdditionalKey,
+                        legacyAdditionalActive);
                 }
                 // Version 2 makes native, structured tools the reliable
                 // default for existing installations too. Older builds wrote
@@ -1072,6 +1123,11 @@ public Settings loadSettings()
         settings.apiKey = readDefaultKeyFile();
         break;
     }
+    // The provider's stored pair is authoritative: the live key is whichever of
+    // its two keys the user toggled active.
+    if (auto entry = findProviderApiKeys(settings, settings.baseUrl))
+        if (activeKeyOf(*entry).length > 0)
+            settings.apiKey = activeKeyOf(*entry);
     return settings;
 }
 
@@ -1082,8 +1138,18 @@ public void saveSettings(const ref Settings settings)
     root["settingsVersion"] = 2;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
-    root["additionalApiKey"] = settings.additionalApiKey;
-    root["additionalKeyActive"] = settings.additionalKeyActive;
+    JSONValue providerKeys = JSONValue(string[].init);
+    foreach (keys; settings.providerKeys)
+    {
+        JSONValue item;
+        item["providerId"] = keys.providerId;
+        item["baseUrl"] = keys.baseUrl;
+        item["apiKey"] = keys.apiKey;
+        item["additionalApiKey"] = keys.additionalApiKey;
+        item["additionalKeyActive"] = keys.additionalKeyActive;
+        providerKeys.array ~= item;
+    }
+    root["providerKeys"] = providerKeys;
     root["model"] = settings.model;
     root["thinking"] = settings.thinking;
     root["toolsEnabled"] = settings.toolsEnabled;
@@ -1100,39 +1166,107 @@ public void saveSettings(const ref Settings settings)
 }
 
 // ---------------------------------------------------------------------------
-// Two API key fields
+// Per-provider API keys
 // ---------------------------------------------------------------------------
 
-/// The key actually sent with requests: the additional key when the user has
-/// toggled it active (and it holds a value), otherwise the main `apiKey`. An
-/// empty additional key never shadows a filled main key, so switching to a
-/// blank spare cannot silently drop the credential.
+/// Identity of the provider serving `baseUrl`: the preset id for a known
+/// endpoint, otherwise the normalized endpoint itself, so a hand-edited host
+/// still keeps its own key pair.
+public string apiKeyOwnerForBaseUrl(string baseUrl)
+{
+    const index = providerPresetIndexForBaseUrl(baseUrl);
+    if (index >= 0) return providerPresets[cast(size_t) index].id;
+    return normalizedBaseUrl(baseUrl);
+}
+
+/// The stored key pair for `baseUrl`, or null when that provider has none yet.
+public const(ProviderApiKeys)* findProviderApiKeys(const ref Settings settings,
+    string baseUrl)
+{
+    const owner = apiKeyOwnerForBaseUrl(baseUrl);
+    if (owner.length == 0) return null;
+    foreach (ref const entry; settings.providerKeys)
+        if (entry.providerId == owner) return &entry;
+    return null;
+}
+
+/// Store the two keys and the active-key toggle for the provider serving
+/// `baseUrl`, replacing any previous pair for it. A blank endpoint is ignored
+/// (there is nothing to key the pair on).
+public void storeProviderApiKeys(ref Settings settings, string baseUrl,
+    string apiKey, string additionalApiKey, bool additionalKeyActive)
+{
+    const owner = apiKeyOwnerForBaseUrl(baseUrl);
+    if (owner.length == 0) return;
+    foreach (ref entry; settings.providerKeys)
+    {
+        if (entry.providerId != owner) continue;
+        entry.baseUrl = baseUrl;
+        entry.apiKey = apiKey;
+        entry.additionalApiKey = additionalApiKey;
+        entry.additionalKeyActive = additionalKeyActive;
+        return;
+    }
+    settings.providerKeys ~= ProviderApiKeys(owner, baseUrl, apiKey,
+        additionalApiKey, additionalKeyActive);
+}
+
+/// The live key of one stored pair: the spare when it is toggled active and
+/// holds a value, otherwise the main key. An empty spare never shadows a
+/// filled main key, so switching to it cannot silently drop the credential.
+public string activeKeyOf(const ref ProviderApiKeys keys)
+{
+    return keys.additionalKeyActive && keys.additionalApiKey.length > 0
+        ? keys.additionalApiKey : keys.apiKey;
+}
+
+/// The key actually sent with requests for the configured `baseUrl`: the
+/// provider's own active key when it has a stored pair, else `apiKey`.
 public string activeApiKey(const ref Settings settings)
 {
-    return settings.additionalKeyActive &&
-        settings.additionalApiKey.length > 0
-        ? settings.additionalApiKey : settings.apiKey;
+    if (auto entry = findProviderApiKeys(settings, settings.baseUrl))
+        return activeKeyOf(*entry);
+    return settings.apiKey;
 }
 
 unittest
 {
-    // The toggle picks the live key; a blank spare falls back to the main key
-    // so switching to it can never drop the credential.
+    // Every provider keeps its own main + spare key, and the toggle decides
+    // which of the two is live for that provider only.
     Settings settings;
     assert(activeApiKey(settings) == "");
-    settings.apiKey = "sk-primary";
-    assert(activeApiKey(settings) == "sk-primary");
-    settings.additionalApiKey = "sk-spare";
-    assert(activeApiKey(settings) == "sk-primary");
-    settings.additionalKeyActive = true;
-    assert(activeApiKey(settings) == "sk-spare");
-    settings.additionalApiKey = "";
-    assert(activeApiKey(settings) == "sk-primary");
+    storeProviderApiKeys(settings, opencodeGoBaseUrl, "k-open", "s-open", false);
+    storeProviderApiKeys(settings, commandcodeBaseUrl, "k-cc", "s-cc", true);
+    assert(settings.providerKeys.length == 2);
+    settings.baseUrl = opencodeGoBaseUrl;
+    assert(activeApiKey(settings) == "k-open");
+    settings.baseUrl = commandcodeBaseUrl;
+    assert(activeApiKey(settings) == "s-cc");
+    // The toggle is per provider: flipping CommandCode back leaves OpenCode's
+    // own pair untouched.
+    storeProviderApiKeys(settings, commandcodeBaseUrl, "k-cc", "s-cc", false);
+    assert(activeApiKey(settings) == "k-cc");
+    settings.baseUrl = opencodeGoBaseUrl;
+    assert(activeApiKey(settings) == "k-open");
+    // A hand-edited endpoint is its own provider, and an empty spare never
+    // shadows the main key.
+    storeProviderApiKeys(settings, "https://example.com/v1", "k-custom", "",
+        true);
+    settings.baseUrl = "https://example.com/v1/";
+    assert(activeApiKey(settings) == "k-custom");
+    // A provider with no stored pair falls back to the live key.
+    settings.baseUrl = "https://unknown.example/v1";
+    settings.apiKey = "k-live";
+    assert(activeApiKey(settings) == "k-live");
+    // Re-storing a provider replaces its pair instead of adding another.
+    storeProviderApiKeys(settings, commandcodeBaseUrl, "k-cc2", "s-cc2", false);
+    assert(settings.providerKeys.length == 3);
 }
 
 unittest
 {
-    // Both key fields and the active toggle survive a save/load round-trip.
+    // Per-provider key pairs and their toggles survive a save/load round-trip,
+    // and the live key follows the configured provider.
     const dir = buildPath(tempDir(), "aurora-opencode-keys-test");
     if (exists(dir)) rmdirRecurse(dir);
     mkdirRecurse(dir);
@@ -1145,16 +1279,18 @@ unittest
 
     Settings saved;
     saved.baseUrl = commandcodeBaseUrl;
-    saved.apiKey = "user_aaa";
-    saved.additionalApiKey = "user_bbb";
-    saved.additionalKeyActive = true;
+    storeProviderApiKeys(saved, opencodeGoBaseUrl, "k-open", "s-open", false);
+    storeProviderApiKeys(saved, commandcodeBaseUrl, "k-cc", "s-cc", true);
+    saved.apiKey = "s-cc";
     saveSettings(saved);
 
     Settings loaded = loadSettings();
-    assert(loaded.apiKey == "user_aaa");
-    assert(loaded.additionalApiKey == "user_bbb");
-    assert(loaded.additionalKeyActive);
-    assert(activeApiKey(loaded) == "user_bbb");
+    assert(loaded.baseUrl == commandcodeBaseUrl);
+    assert(loaded.providerKeys.length == 2);
+    assert(activeApiKey(loaded) == "s-cc");
+    Settings probe = loaded;
+    probe.baseUrl = opencodeGoBaseUrl;
+    assert(activeApiKey(probe) == "k-open");
 }
 
 // ---------------------------------------------------------------------------

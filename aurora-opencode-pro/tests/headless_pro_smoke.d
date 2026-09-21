@@ -1644,34 +1644,49 @@ int main(string[] args)
     dismissContextMenus(root);
     root.tickTree(0.02);
 
-    // API keys: Settings keeps a second credential in its own field, and a
-    // toggle selects which of the two keys requests are sent with.
+    // API keys are per provider: each provider keeps its own main + spare key,
+    // and the toggle picks which of the two that provider's requests use.
     root.dismissPopupForTesting();
     root.tickTree(0.02);
-    const primaryOnly = root.configureApiKeysForTesting(
-        "sk-primary-0001", "sk-spare-0002", false);
-    assert(primaryOnly == "sk-primary-0001\nsk-spare-0002\nsk-primary-0001",
-        "Both API key fields were not stored: " ~ primaryOnly);
-    const spareActive = root.configureApiKeysForTesting(
-        "sk-primary-0001", "sk-spare-0002", true);
-    assert(spareActive == "sk-primary-0001\nsk-spare-0002\nsk-spare-0002",
-        "Toggling the additional key did not make it active: " ~ spareActive);
-    // Toggling to a blank spare must not silently drop the credential.
-    const emptySpare = root.configureApiKeysForTesting(
-        "sk-primary-0003", "", true);
-    assert(emptySpare == "sk-primary-0003\n\nsk-primary-0003",
-        "An empty additional key shadowed the main key: " ~ emptySpare);
-    assert(root.apiKeyStateForTesting() ==
-        "sk-primary-0003\n\nactive=1\nsk-primary-0003",
-        "The active-key toggle was not applied");
-    // The two fields and the toggle must survive a reload.
-    const savedKeysSettings = parseJSON(readText(buildPath(stateDir,
+    const opencodeKeys = root.configureProviderKeysForTesting(
+        0, "sk-open-main", "sk-open-spare", false);
+    assert(opencodeKeys == "sk-open-main\nsk-open-main",
+        "OpenCode's own key pair was not stored: " ~ opencodeKeys);
+    const commandcodeKeys = root.configureProviderKeysForTesting(
+        1, "sk-cc-main", "sk-cc-spare", true);
+    assert(commandcodeKeys == "sk-cc-spare\nsk-cc-spare",
+        "CommandCode's toggled spare key is not the live one: " ~
+        commandcodeKeys);
+    // Switching providers must show that provider's own pair, never the other's.
+    assert(root.loadProviderKeysForTesting(0) ==
+        "sk-open-main\nsk-open-spare\nactive=0",
+        "OpenCode did not keep its own key pair");
+    assert(root.loadProviderKeysForTesting(1) ==
+        "sk-cc-main\nsk-cc-spare\nactive=1",
+        "CommandCode did not keep its own key pair");
+    // The live key follows the provider and its per-provider toggle.
+    assert(root.liveKeyForProviderForTesting(0) ==
+        "https://opencode.ai/zen/go/v1\nsk-open-main",
+        "OpenCode's live key is wrong");
+    assert(root.liveKeyForProviderForTesting(1) ==
+        "https://api.commandcode.ai/provider/v1\nsk-cc-spare",
+        "CommandCode's live key is wrong");
+    // An empty spare must not shadow the main key.
+    const qwenKeys = root.configureProviderKeysForTesting(
+        2, "sk-qwen-main", "", true);
+    assert(qwenKeys == "sk-qwen-main\nsk-qwen-main",
+        "An empty spare key shadowed the main key: " ~ qwenKeys);
+    // Every provider's pair is persisted.
+    const keysSettings = parseJSON(readText(buildPath(stateDir,
         "settings.json")));
-    assert(savedKeysSettings["apiKey"].str == "sk-primary-0003" &&
-        savedKeysSettings["additionalApiKey"].str == "" &&
-        savedKeysSettings["additionalKeyActive"].type == JSONType.true_,
-        "The API key fields were not persisted");
-    writeln("Settings stores a second API key and toggles the active one");
+    assert(keysSettings["providerKeys"].array.length == 3,
+        "The per-provider key pairs were not persisted");
+    // Leave OpenCode configured, as the rest of the suite expects.
+    root.configureProviderKeysForTesting(0, "sk-open-main",
+        "sk-open-spare", false);
+    root.dismissPopupForTesting();
+    root.tickTree(0.02);
+    writeln("Settings keeps a second API key per provider and toggles the active one");
 
     // Settings exposes the concise system prompt. Tool-specific syntax remains
 
