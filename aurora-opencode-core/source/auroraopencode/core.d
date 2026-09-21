@@ -790,30 +790,17 @@ public struct ProjectState
     bool projectsCollapsed = true;
 }
 
-/**
- * One named API key the user saved, so more than one credential can be kept
- * and swapped with a single click instead of retyping (or losing) the secret.
- *
- * The stash is provider-agnostic: a saved key is just a labelled value that can
- * be activated for any base URL. `Settings.apiKey` always holds the ACTIVE
- * key's value; `savedKeys` keeps the others and `activeKeyName` records which
- * saved entry (if any) is live.
- */
-public struct SavedApiKey
-{
-    string name; // user-facing label, e.g. "Work" or "Personal"
-    string key;  // the secret itself
-}
-
 public struct Settings
 {
     string baseUrl = defaultBaseUrl;
+    // The main API key field in Settings.
     string apiKey = "";
-    // Named keys kept for one-click switching. `apiKey` above is the live one.
-    SavedApiKey[] savedKeys;
-    // Name of the saved key currently active; "" means the live key is an ad-hoc
-    // value that is not (or no longer) one of `savedKeys`.
-    string activeKeyName;
+    // A spare key kept next to the main one, so a second credential can be
+    // stored and switched to without retyping (or losing) the secret.
+    string additionalApiKey = "";
+    // Which of the two key fields above is the live credential: true sends
+    // `additionalApiKey`, false sends `apiKey`. See `activeApiKey`.
+    bool additionalKeyActive;
     string model = defaultModel;
     bool thinking;
     bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
@@ -1007,27 +994,38 @@ public Settings loadSettings()
                 if (auto found = "workspace" in value.object)
                     if (found.type == JSONType.string && found.str.length > 0)
                         settings.workspace = found.str;
-                // Named keys are a bare array of {name, key} objects; entries
-                // missing either half are dropped rather than half-restored.
-                if (auto found = "savedKeys" in value.object)
+                if (auto found = "additionalApiKey" in value.object)
+                    if (found.type == JSONType.string)
+                        settings.additionalApiKey = found.str;
+                if (auto found = "additionalKeyActive" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.additionalKeyActive =
+                            found.type == JSONType.true_;
+                // Migration: older builds kept a list of named keys plus the
+                // name of the active one, with the active value in `apiKey`.
+                // Keep the other credential as the additional key instead of
+                // dropping it on upgrade.
+                if (settings.additionalApiKey.length == 0)
                 {
-                    if (found.type == JSONType.array)
+                    if (auto found = "savedKeys" in value.object)
                     {
-                        foreach (entry; found.array)
+                        if (found.type == JSONType.array)
                         {
-                            if (entry.type != JSONType.object) continue;
-                            SavedApiKey saved;
-                            if (auto f = "name" in entry.object) saved.name = f.str;
-                            if (auto f = "key" in entry.object) saved.key = f.str;
-                            if (saved.name.length == 0 || saved.key.length == 0)
-                                continue;
-                            settings.savedKeys ~= saved;
+                            foreach (entry; found.array)
+                            {
+                                if (entry.type != JSONType.object) continue;
+                                string key;
+                                if (auto f = "key" in entry.object)
+                                    key = f.str;
+                                if (key.length == 0 || key == settings.apiKey)
+                                    continue;
+                                settings.additionalApiKey = key;
+                                break;
+                            }
                         }
                     }
                 }
-                if (auto found = "activeKeyName" in value.object)
-                    if (found.type == JSONType.string)
-                        settings.activeKeyName = found.str;
                 // Version 2 makes native, structured tools the reliable
                 // default for existing installations too. Older builds wrote
                 // `legacyTools: true` by default, which kept steering models
@@ -1074,9 +1072,6 @@ public Settings loadSettings()
         settings.apiKey = readDefaultKeyFile();
         break;
     }
-    // A stored activeKeyName only counts when the live key still matches that
-    // saved entry (e.g. after provider auto-resolution at first launch).
-    syncActiveApiKeyName(settings);
     return settings;
 }
 
@@ -1087,6 +1082,8 @@ public void saveSettings(const ref Settings settings)
     root["settingsVersion"] = 2;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
+    root["additionalApiKey"] = settings.additionalApiKey;
+    root["additionalKeyActive"] = settings.additionalKeyActive;
     root["model"] = settings.model;
     root["thinking"] = settings.thinking;
     root["toolsEnabled"] = settings.toolsEnabled;
@@ -1094,16 +1091,6 @@ public void saveSettings(const ref Settings settings)
     root["showWorkedFor"] = settings.showWorkedFor;
     root["compactDeepSeek500k"] = settings.compactDeepSeek500k;
     root["workspace"] = settings.workspace;
-    root["activeKeyName"] = settings.activeKeyName;
-    JSONValue savedKeys = JSONValue(string[].init);
-    foreach (saved; settings.savedKeys)
-    {
-        JSONValue item;
-        item["name"] = saved.name;
-        item["key"] = saved.key;
-        savedKeys.array ~= item;
-    }
-    root["savedKeys"] = savedKeys;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());
     catch (Exception error)
@@ -1113,128 +1100,39 @@ public void saveSettings(const ref Settings settings)
 }
 
 // ---------------------------------------------------------------------------
-// Named API keys
+// Two API key fields
 // ---------------------------------------------------------------------------
 
-/// Add or replace the saved key called `name` with `key`, and make it active.
-/// Blank names or keys are rejected (there is nothing to remember). Returns
-/// true when something was stored.
-public bool saveNamedApiKey(ref Settings settings, string name, string key)
+/// The key actually sent with requests: the additional key when the user has
+/// toggled it active (and it holds a value), otherwise the main `apiKey`. An
+/// empty additional key never shadows a filled main key, so switching to a
+/// blank spare cannot silently drop the credential.
+public string activeApiKey(const ref Settings settings)
 {
-    name = name.strip();
-    key = key.strip();
-    if (name.length == 0 || key.length == 0) return false;
-    bool replaced;
-    foreach (ref saved; settings.savedKeys)
-    {
-        if (saved.name != name) continue;
-        saved.key = key;
-        replaced = true;
-        break;
-    }
-    if (!replaced) settings.savedKeys ~= SavedApiKey(name, key);
-    settings.apiKey = key;
-    settings.activeKeyName = name;
-    return true;
-}
-
-/// Make the saved key called `name` the active one by copying its value into
-/// `settings.apiKey`. Returns false when no such key exists.
-public bool activateSavedApiKey(ref Settings settings, string name)
-{
-    foreach (ref saved; settings.savedKeys)
-    {
-        if (saved.name != name) continue;
-        settings.apiKey = saved.key;
-        settings.activeKeyName = name;
-        return true;
-    }
-    return false;
-}
-
-/// Drop the saved key called `name`. If it was the active one the active
-/// pointer is cleared (the value stays in `settings.apiKey`). Returns true when
-/// an entry was removed.
-public bool removeSavedApiKey(ref Settings settings, string name)
-{
-    foreach (index, saved; settings.savedKeys)
-    {
-        if (saved.name != name) continue;
-        settings.savedKeys = settings.savedKeys[0 .. index] ~
-            settings.savedKeys[index + 1 .. $];
-        if (settings.activeKeyName == name) settings.activeKeyName = "";
-        return true;
-    }
-    return false;
-}
-
-/// Re-point `activeKeyName` at the saved entry whose value equals the current
-/// `apiKey`, or clear it when the live key is ad hoc (typed/pasted or resolved
-/// from the provider auth store) or blank. Call after editing `apiKey` so the
-/// picker's label matches reality.
-public void syncActiveApiKeyName(ref Settings settings)
-{
-    settings.activeKeyName = "";
-    if (settings.apiKey.length == 0) return;
-    foreach (ref saved; settings.savedKeys)
-    {
-        if (saved.key != settings.apiKey) continue;
-        settings.activeKeyName = saved.name;
-        return;
-    }
-}
-
-/// Label for the active key: the saved key's name, "Custom" for a live key that
-/// is not one of the saved entries, or "None" when no key is set.
-public string activeApiKeyLabel(const ref Settings settings)
-{
-    if (settings.activeKeyName.length > 0) return settings.activeKeyName;
-    return settings.apiKey.length > 0 ? "Custom" : "None";
+    return settings.additionalKeyActive &&
+        settings.additionalApiKey.length > 0
+        ? settings.additionalApiKey : settings.apiKey;
 }
 
 unittest
 {
-    // Saving a named key stores it, replaces the same name in place, makes it
-    // active, and rejects blank input.
+    // The toggle picks the live key; a blank spare falls back to the main key
+    // so switching to it can never drop the credential.
     Settings settings;
-    assert(!saveNamedApiKey(settings, "", "sk-a"));
-    assert(!saveNamedApiKey(settings, "Work", ""));
-    assert(saveNamedApiKey(settings, "Work", "sk-work"));
-    assert(saveNamedApiKey(settings, "Personal", "sk-personal"));
-    assert(settings.savedKeys.length == 2);
-    assert(settings.apiKey == "sk-personal");
-    assert(settings.activeKeyName == "Personal");
-    assert(activeApiKeyLabel(settings) == "Personal");
-    // Re-saving the same name replaces the value without growing the list.
-    assert(saveNamedApiKey(settings, "Work", "sk-work2"));
-    assert(settings.savedKeys.length == 2);
-    assert(settings.activeKeyName == "Work");
-    assert(settings.apiKey == "sk-work2");
-    // Switching copies the value and moves the active pointer.
-    assert(activateSavedApiKey(settings, "Personal"));
-    assert(settings.apiKey == "sk-personal");
-    assert(settings.activeKeyName == "Personal");
-    assert(!activateSavedApiKey(settings, "missing"));
-    // A hand-typed key is "Custom"; syncing recognises a saved value.
-    settings.apiKey = "sk-typed";
-    syncActiveApiKeyName(settings);
-    assert(settings.activeKeyName == "");
-    assert(activeApiKeyLabel(settings) == "Custom");
-    settings.apiKey = "sk-work2";
-    syncActiveApiKeyName(settings);
-    assert(activeApiKeyLabel(settings) == "Work");
-    // Removing the active key clears the pointer but keeps the live value.
-    assert(removeSavedApiKey(settings, "Work"));
-    assert(settings.savedKeys.length == 1);
-    assert(settings.activeKeyName == "");
-    assert(settings.apiKey == "sk-work2");
-    settings.apiKey = "";
-    assert(activeApiKeyLabel(settings) == "None");
+    assert(activeApiKey(settings) == "");
+    settings.apiKey = "sk-primary";
+    assert(activeApiKey(settings) == "sk-primary");
+    settings.additionalApiKey = "sk-spare";
+    assert(activeApiKey(settings) == "sk-primary");
+    settings.additionalKeyActive = true;
+    assert(activeApiKey(settings) == "sk-spare");
+    settings.additionalApiKey = "";
+    assert(activeApiKey(settings) == "sk-primary");
 }
 
 unittest
 {
-    // Named keys survive a save/load round-trip with the active pointer intact.
+    // Both key fields and the active toggle survive a save/load round-trip.
     const dir = buildPath(tempDir(), "aurora-opencode-keys-test");
     if (exists(dir)) rmdirRecurse(dir);
     mkdirRecurse(dir);
@@ -1247,19 +1145,16 @@ unittest
 
     Settings saved;
     saved.baseUrl = commandcodeBaseUrl;
-    saveNamedApiKey(saved, "CommandCode A", "user_aaa");
-    saveNamedApiKey(saved, "CommandCode B", "user_bbb");
-    activateSavedApiKey(saved, "CommandCode A");
+    saved.apiKey = "user_aaa";
+    saved.additionalApiKey = "user_bbb";
+    saved.additionalKeyActive = true;
     saveSettings(saved);
 
     Settings loaded = loadSettings();
-    assert(loaded.savedKeys.length == 2);
-    assert(loaded.savedKeys[0].name == "CommandCode A");
-    assert(loaded.savedKeys[0].key == "user_aaa");
-    assert(loaded.savedKeys[1].name == "CommandCode B");
     assert(loaded.apiKey == "user_aaa");
-    assert(loaded.activeKeyName == "CommandCode A");
-    assert(activeApiKeyLabel(loaded) == "CommandCode A");
+    assert(loaded.additionalApiKey == "user_bbb");
+    assert(loaded.additionalKeyActive);
+    assert(activeApiKey(loaded) == "user_bbb");
 }
 
 // ---------------------------------------------------------------------------
