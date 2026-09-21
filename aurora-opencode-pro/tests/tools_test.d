@@ -12,6 +12,7 @@ import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
 import std.path : buildPath;
+import std.process : environment;
 import std.json : parseJSON;
 import std.stdio : writeln;
 import std.string : indexOf, replace;
@@ -633,6 +634,42 @@ int main()
     assert(nativeHasWebfetch, "Native toolset must include webfetch");
     assert(toolSteeringPrompt(true).indexOf("webfetch") >= 0,
         "Steering prompt must advertise webfetch");
+    // experimental: websearch - delete with source/auroraopencode/websearch.d
+    // Discovery (websearch) stays separate from retrieval (webfetch).
+    bool defaultHasWebsearch;
+    foreach (tool; defaults)
+        if (tool.name == "websearch") defaultHasWebsearch = true;
+    bool nativeHasWebsearch;
+    foreach (tool; natives)
+        if (tool.name == "websearch") nativeHasWebsearch = true;
+    assert(defaultHasWebsearch, "Default toolset must include websearch");
+    assert(nativeHasWebsearch, "Native toolset must include websearch");
+    assert(toolSteeringPrompt(true).indexOf("websearch") >= 0,
+        "Steering prompt must advertise websearch");
+
+    // A search with no query fails deterministically before any network call.
+    auto missingQuery = executeTool(makeCall("websearch", `{}`), dir);
+    assert(missingQuery.failed, "websearch must require a query");
+    assert(missingQuery.output.indexOf("query") >= 0,
+        "websearch error must mention the missing query: " ~
+        missingQuery.output);
+
+    // AURORA_WEBSEARCH=off drops the tool from the toolset and the prompt
+    // without any source edit.
+    const previousWebSearch = environment.get("AURORA_WEBSEARCH", null);
+    environment["AURORA_WEBSEARCH"] = "off";
+    bool hiddenWhenDisabled;
+    foreach (tool; builtinToolDefinitions())
+        if (tool.name == "websearch") hiddenWhenDisabled = true;
+    assert(!hiddenWhenDisabled,
+        "AURORA_WEBSEARCH=off must remove websearch from the toolset");
+    assert(toolSteeringPrompt(true).indexOf("websearch") < 0,
+        "disabled websearch must not appear in the steering prompt");
+    if (previousWebSearch is null) environment.remove("AURORA_WEBSEARCH");
+    else environment["AURORA_WEBSEARCH"] = previousWebSearch;
+    assert(toolSteeringPrompt(true).indexOf("websearch") >= 0,
+        "websearch must return once the switch is restored");
+    writeln("experimental websearch is advertised, validated and switchable");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&

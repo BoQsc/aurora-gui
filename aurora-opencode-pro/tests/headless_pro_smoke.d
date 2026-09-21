@@ -3543,11 +3543,74 @@ int main(string[] args)
         writeln("Rebuild tool is advertised and wired to the app");
     }
 
+    // The durable plan is shown detached from the transcript by default: a
+    // floating panel pinned to the transcript's top-right corner. It is
+    // optional in Settings and can be turned off to return the plan inline.
+    {
+        root.newChatForTesting();
+        auto planCheck = root.detachedPlanCheckboxForTesting();
+        assert(planCheck !is null,
+            "Settings dialog missing the Detached plan checkbox");
+        assert(planCheck.checked(),
+            "Detached plan panel should be on by default");
+        root.dismissPopupForTesting();
+        root.addConversationForTesting(["user"], ["Build durable recovery"]);
+        root.appendToolRequestTurnForTesting("I should plan the durable work.",
+            "plan-1", "update_plan",
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.appendToolReplyForTesting("plan-1", "Plan updated.");
+        root.setTaskStateForTesting("Build durable recovery", "active",
+            "not_required");
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.rebuildForTesting();
+        assert(root.detachedPlanVisibleForTesting(),
+            "the detached plan panel did not show by default");
+        assert(root.detachedPlanStepCountForTesting() == 2,
+            "the detached plan panel lost the checklist steps: " ~
+            to!string(root.detachedPlanStepCountForTesting()));
+        // The transcript must not also render an inline plan card.
+        foreach (line; root.columnDebugForTesting())
+            assert(line.indexOf("PLAN ") < 0,
+                "the plan rendered inline while the detached panel was on: " ~
+                line);
+        assert(driver.paint(), "the detached plan panel did not paint");
+        const planRect = root.detachedPlanRectForTesting();
+        const viewportWidth = root.messageCenterWidthForTesting();
+        assert(planRect.width > 0 && planRect.height > 0,
+            "the detached plan panel had no laid-out rect");
+        assert(planRect.y <= 24,
+            "the detached plan panel was not pinned near the top: " ~
+            to!string(planRect));
+        assert(planRect.x >= viewportWidth / 2,
+            "the detached plan panel was not on the right: " ~
+            to!string(planRect));
+        assert(planRect.x + planRect.width >= viewportWidth - 60,
+            "the detached plan panel was not at the right edge: " ~
+            to!string(planRect));
+        // Turning the setting off returns the plan to the transcript.
+        root.setDetachedPlanForTesting(false);
+        assert(!root.detachedPlanVisibleForTesting(),
+            "the detached panel stayed visible after the setting was off");
+        int inlinePlanOff = -1;
+        foreach (i, line; root.columnDebugForTesting())
+            if (line.indexOf("PLAN ") >= 0) inlinePlanOff = cast(int) i;
+        assert(inlinePlanOff >= 0,
+            "the plan did not return to the transcript when detached was off");
+        root.setDetachedPlanForTesting(true);
+        writeln("Detached plan panel shows by default and returns inline when off");
+    }
+
     // The UI now publishes backend-neutral thread/item lifecycle records to an
     // append-only journal. This is the compatibility seam for future Codex and
     // provider-neutral runtimes, and must survive independently of sessions.json.
     {
         root.newChatForTesting();
+        // This block exercises the inline plan card's transcript ordering, so
+        // turn the detached panel off for it.
+        root.setDetachedPlanForTesting(false);
         root.addConversationForTesting(["user"], ["Build durable recovery"]);
         root.appendToolRequestTurnForTesting("I should plan the durable work.",
             "plan-1", "update_plan",
@@ -3694,6 +3757,8 @@ int main(string[] args)
         assert(sawThread, "runtime journal has no thread.started event");
         assert(sawItem, "runtime journal has no item.added event");
         writeln("Durable agent runtime journal records thread/item events");
+        // Restore the default so later blocks see the detached plan panel.
+        root.setDetachedPlanForTesting(true);
     }
 
     // Cumulative repetition backstop: repetition must be counted across the

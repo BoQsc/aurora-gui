@@ -2,6 +2,9 @@ module auroraopencode.tools;
 
 import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef,
     ensureStateDirectory, opencodeStateDirectory;
+// experimental: websearch - delete with source/auroraopencode/websearch.d
+import auroraopencode.websearch : experimentalWebSearchExecute,
+    experimentalWebSearchTools;
 import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
     write, mkdirRecurse, remove, rmdirRecurse, tempDir, getSize,
     timeLastModified;
@@ -228,7 +231,7 @@ private OpenCodeToolDef rebuildToolDefinition()
 public OpenCodeToolDef[] builtinToolDefinitions()
 {
     const shell = defaultShellName();
-    return [
+    OpenCodeToolDef[] defs = [
         OpenCodeToolDef(
             "bash",
             "Execute shell commands in the workspace. Use this to run build " ~
@@ -269,6 +272,8 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
         ),
     ];
+    defs ~= experimentalWebSearchTools(); // experimental: websearch
+    return defs;
 }
 
 /// Native-only tool definitions: the D-native `run` tool replaces the shell
@@ -277,7 +282,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
 /// mode.
 public OpenCodeToolDef[] nativeOnlyToolDefinitions()
 {
-    return [
+    OpenCodeToolDef[] defs = [
         OpenCodeToolDef(
             "run",
             "Execute a program directly with an argument list, never through " ~
@@ -321,6 +326,8 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
         ),
     ];
+    defs ~= experimentalWebSearchTools(); // experimental: websearch
+    return defs;
 }
 
 /// Stable, outcome-first instructions for the coding agent. Tool-specific
@@ -3578,6 +3585,13 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runGrep(call.arguments, workspace, cancellation);
         case "webfetch":
             return runWebFetch(call.arguments, workspace, cancellation);
+        // experimental: websearch - delete with source/auroraopencode/websearch.d
+        case "websearch":
+        {
+            auto search = experimentalWebSearchExecute(call.arguments,
+                workspace);
+            return ToolExecution("websearch", search[0], search[1]);
+        }
         case "rebuild":
             return runRebuildTool(call.arguments);
         default:

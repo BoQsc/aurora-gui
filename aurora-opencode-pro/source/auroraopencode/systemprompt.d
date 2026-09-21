@@ -1,6 +1,8 @@
 module auroraopencode.systemprompt;
 
 import std.array : appender;
+// experimental: websearch - delete with source/auroraopencode/websearch.d
+import auroraopencode.websearch : experimentalWebSearchEnabled;
 
 /// Everything a module may need when rendering its own section. Values are
 /// resolved once, before any module runs, so modules stay pure and cheap.
@@ -215,6 +217,10 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "`start` or PowerShell `Start-Process`.\n";
     text ~= "Use `webfetch` to read the body of a web page or API endpoint " ~
         "instead of a shell download command; it needs no shell.\n";
+    // experimental: websearch - delete with source/auroraopencode/websearch.d
+    if (experimentalWebSearchEnabled())
+        text ~= "Use `websearch` to discover pages from a search query, " ~
+            "then `webfetch` to read a chosen result URL.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

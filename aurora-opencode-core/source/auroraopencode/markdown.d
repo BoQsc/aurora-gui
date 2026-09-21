@@ -24,6 +24,7 @@ struct InlineRun
     InlineStyle style = InlineStyle.text;
     dstring text;
     dstring target;
+    bool strike;
 }
 
 enum BlockType : ubyte
@@ -43,6 +44,10 @@ struct MarkdownBlock
     int level;
     InlineRun[] runs;
     InlineRun[][] items;
+    // Source indentation depth of each list item (0 = top level), so nested
+    // sub-lists render indented under their parent instead of collapsing to
+    // the same left edge.
+    int[] itemDepths;
     dstring[] codeLines;
     int orderedStart;
     InlineRun[] flowPieces;
@@ -72,6 +77,7 @@ struct MdItem
     TextLayout layout;
     Color color;
     bool underline;
+    bool strike;
     bool codePill;
     bool clipText;
     double clipX;
@@ -112,11 +118,32 @@ private bool isSpace(dchar c) @safe pure nothrow @nogc
     return c == ' ' || c == '\t';
 }
 
+// Treat non-ASCII letters as word characters too, so emphasis delimiters do not
+// split words written in scripts such as Cyrillic or Greek.
+private bool isAlnum(dchar c) @safe pure nothrow @nogc
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') || c > 0x7f;
+}
+
 private dstring trimStart(dstring s)
 {
     size_t i;
     while (i < s.length && isSpace(s[i])) ++i;
     return s[i .. $];
+}
+
+// Count leading indentation in spaces, treating a tab as four columns.
+private int lineIndent(dstring line)
+{
+    int spaces;
+    foreach (ch; line)
+    {
+        if (ch == ' ') ++spaces;
+        else if (ch == '\t') spaces += 4;
+        else break;
+    }
+    return spaces;
 }
 
 private dstring trimEnd(dstring s)
@@ -295,7 +322,8 @@ private InlineStyle mergeStyle(InlineStyle outer, InlineStyle inner)
     return InlineStyle.boldItalic;
 }
 
-private size_t findCloser(dstring text, size_t start, size_t end, dchar ch, int n)
+private size_t findCloser(dstring text, size_t start, size_t end, dchar ch, int n,
+    bool wordBoundary = false)
 {
     for (size_t i = start; i + n <= end; ++i)
     {
@@ -308,7 +336,16 @@ private size_t findCloser(dstring text, size_t start, size_t end, dchar ch, int 
                 break;
             }
         }
-        if (match) return i;
+        if (!match) continue;
+        if (wordBoundary)
+        {
+            // CommonMark: a `_` run bounded by alphanumerics on both sides is
+            // intraword and may neither open nor close emphasis.
+            const beforeWord = i > 0 && isAlnum(text[i - 1]);
+            const afterWord = i + n < end && isAlnum(text[i + n]);
+            if (beforeWord && afterWord) continue;
+        }
+        return i;
     }
     return end;
 }
@@ -403,11 +440,44 @@ private InlineRun[] parseRuns(dstring text, size_t start, size_t end)
             ++i;
             continue;
         }
+        if (c == '~' && i + 1 < end && text[i + 1] == '~')
+        {
+            // GitHub-flavoured strikethrough: `~~text~~`.
+            const close = findCloser(text, i + 2, end, '~', 2);
+            if (close < end)
+            {
+                flush();
+                foreach (run; parseRuns(text, i + 2, close))
+                {
+                    run.strike = true;
+                    result ~= run;
+                }
+                i = close + 2;
+                continue;
+            }
+            buf ~= c;
+            ++i;
+            continue;
+        }
         if (c == '*' || c == '_')
         {
             int n = 1;
             while (i + n < end && text[i + n] == c) ++n;
-            const close = findCloser(text, i + n, end, c, n);
+            const underscore = c == '_';
+            if (underscore)
+            {
+                // Underscores inside a word (`snake_case`, `file_name`) are
+                // literal text, not emphasis, per CommonMark.
+                const beforeWord = i > 0 && isAlnum(text[i - 1]);
+                const afterWord = i + n < end && isAlnum(text[i + n]);
+                if (beforeWord && afterWord)
+                {
+                    buf ~= c;
+                    ++i;
+                    continue;
+                }
+            }
+            const close = findCloser(text, i + n, end, c, n, underscore);
             if (close < end)
             {
                 flush();
@@ -457,6 +527,7 @@ MarkdownBlock[] parseMarkdown(dstring text)
     int listKind;
     int listStart;
     InlineRun[][] listItems;
+    int[] listDepths;
     dstring[] quoteLines;
 
     void flushPara()
@@ -478,8 +549,10 @@ MarkdownBlock[] parseMarkdown(dstring text)
         block.type = listKind == 2 ? BlockType.orderedList : BlockType.bulletList;
         block.orderedStart = listStart;
         block.items = listItems;
+        block.itemDepths = listDepths;
         blocks ~= block;
         listItems.length = 0;
+        listDepths.length = 0;
         listKind = 0;
     }
 
@@ -569,6 +642,7 @@ MarkdownBlock[] parseMarkdown(dstring text)
                 listStart = orderedStart;
             }
             listItems ~= parseInline(trim(t[contentStart .. $]));
+            listDepths ~= min(6, lineIndent(lines[li]) / 2);
             continue;
         }
 
@@ -582,6 +656,7 @@ MarkdownBlock[] parseMarkdown(dstring text)
                 listKind = 1;
             }
             listItems ~= parseInline(trim(t[1 .. $]));
+            listDepths ~= min(6, lineIndent(lines[li]) / 2);
             continue;
         }
 
@@ -626,6 +701,7 @@ private struct PendingText
     double x;
     double w;
     dstring target;
+    bool strike;
     double ascent;
 }
 
@@ -681,6 +757,7 @@ private void addTextItem(ref MdComposition c, PendingText p, double lineTop,
     item.y = lineTop + lineAscent - p.ascent;
     item.color = styleColor(p.style, mdText);
     item.underline = p.style == InlineStyle.link;
+    item.strike = p.strike;
     item.codePill = p.style == InlineStyle.code;
     item.target = p.target;
     if (p.layout.lines.length > 0)
@@ -756,7 +833,8 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
                 if (x + remainderLine.width <= lineWidth)
                 {
                     pending ~= PendingText(remainderLayout, run.style, x,
-                        remainderLine.width, run.target, remainderLine.ascent);
+                        remainderLine.width, run.target, run.strike,
+                        remainderLine.ascent);
                     lineAscent = max(lineAscent, remainderLine.ascent);
                     lineDescent = max(lineDescent, remainderLine.descent);
                     x += remainderLine.width;
@@ -774,7 +852,8 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
                 {
                     const prefixLine = prefixLayout.lines[0];
                     pending ~= PendingText(prefixLayout, run.style, x,
-                        prefixLine.width, run.target, prefixLine.ascent);
+                        prefixLine.width, run.target, run.strike,
+                        prefixLine.ascent);
                     lineAscent = max(lineAscent, prefixLine.ascent);
                     lineDescent = max(lineDescent, prefixLine.descent);
                     x += prefixLine.width;
@@ -785,7 +864,8 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
             continue;
         }
 
-        pending ~= PendingText(layout, run.style, x, w, run.target, line.ascent);
+        pending ~= PendingText(layout, run.style, x, w, run.target, run.strike,
+            line.ascent);
         lineAscent = max(lineAscent, line.ascent);
         lineDescent = max(lineDescent, line.descent);
         x += w;
@@ -812,7 +892,8 @@ private InlineRun[] splitFlowRuns(InlineRun[] runs)
             while (end < run.text.length &&
                 isSpace(run.text[end]) == whitespace)
                 ++end;
-            pieces ~= InlineRun(run.style, run.text[first .. end], run.target);
+            pieces ~= InlineRun(run.style, run.text[first .. end], run.target,
+                run.strike);
             first = end;
         }
     }
@@ -959,14 +1040,32 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
             case BlockType.bulletList:
             case BlockType.orderedList:
             {
-                const indent = 22;
+                const baseIndent = 22;
+                const depthStep = 16;
+                int[] orderedCounters;
                 for (int index = 0; index < cast(int) block.items.length; ++index)
                 {
+                    // Indented items keep their nesting depth so a sub-list
+                    // sits under its parent rather than at the same left edge.
+                    const depth = index < cast(int) block.itemDepths.length
+                        ? block.itemDepths[index] : 0;
+                    const markerX = depth * depthStep;
+                    const indent = baseIndent + markerX;
                     const startIndex = c.items.length;
                     const itemTop = y;
-                    auto markerText = block.type == BlockType.orderedList
-                        ? (to!dstring(block.orderedStart + index) ~ ".") ~ " "
-                        : "- "d;
+                    dstring markerText;
+                    if (block.type == BlockType.orderedList)
+                    {
+                        // Number each nesting level independently so a nested
+                        // ordered list restarts at 1 (or its own start).
+                        if (depth >= cast(int) orderedCounters.length)
+                            orderedCounters.length = depth + 1;
+                        const number = block.orderedStart + orderedCounters[depth];
+                        ++orderedCounters[depth];
+                        markerText = (to!dstring(number) ~ ".") ~ " ";
+                    }
+                    else
+                        markerText = "- "d;
                     auto marker = shapeOne(markerText, bodyPx, false, false);
                     const itemHeight = composeRuns(c, block.itemFlowPieces[index],
                         lineWidth, itemTop, mdText, bodyPx, indent);
@@ -975,7 +1074,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                         MdItem markerItem;
                         markerItem.kind = MdItemKind.text;
                         markerItem.layout = marker;
-                        markerItem.x = 0;
+                        markerItem.x = markerX;
                         markerItem.y = itemTop;
                         markerItem.w = marker.lines[0].width;
                         markerItem.color = mdText;
@@ -1186,5 +1285,42 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
                 cast(int)(dy + item.y + line.ascent + 1)),
                 item.color, 1);
         }
+        if (item.strike && item.layout.lines.length == 1)
+        {
+            const line = item.layout.lines[0];
+            const midY = cast(int)(dy + item.y + line.ascent * 0.55);
+            canvas.drawLine(Point(cast(int)(dx + item.x), midY),
+                Point(cast(int)(dx + item.x + item.w), midY),
+                item.color, 1);
+        }
     }
+}
+
+unittest
+{
+    // CommonMark forbids intraword underscore emphasis, so identifiers must
+    // survive parsing untouched rather than turning into italics.
+    foreach (run; parseMarkdown("use snake_case and file_name here"d)[0].runs)
+        assert(run.style == InlineStyle.text,
+            "an intraword underscore created emphasis");
+
+    bool sawItalic;
+    foreach (run; parseMarkdown("an _emphasised_ word"d)[0].runs)
+        if (run.style == InlineStyle.italic) sawItalic = true;
+    assert(sawItalic, "underscore emphasis stopped working");
+
+    bool sawStrike;
+    foreach (run; parseMarkdown("~~done~~"d)[0].runs)
+        if (run.strike) sawStrike = true;
+    assert(sawStrike, "~~strikethrough~~ did not parse");
+}
+
+unittest
+{
+    // A nested bullet keeps its depth so it can render indented.
+    auto blocks = parseMarkdown("- parent\n  - child\n"d);
+    assert(blocks.length == 1, "nested bullets should form one list block");
+    assert(blocks[0].itemDepths.length == 2, "missing per-item depth");
+    assert(blocks[0].itemDepths[0] == 0 && blocks[0].itemDepths[1] == 1,
+        "nested bullet depth was not recorded");
 }

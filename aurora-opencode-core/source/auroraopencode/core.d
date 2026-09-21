@@ -826,6 +826,9 @@ public struct Settings
     bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
     bool legacyTools;          // additionally expose the bash/cmd/powershell shell tool; off by default
     bool showWorkedFor;        // show the "Worked for …" completion separator; off by default
+    // Show the durable plan as a floating panel in the transcript's top-right
+    // corner, detached from the message flow; on by default.
+    bool detachedPlan = true;
     bool compactDeepSeek500k;  // cap DeepSeek 4.1's effective window (meter + compaction) at 500k; off by default
     string workspace;          // working directory the tools run in
 }
@@ -1001,6 +1004,9 @@ public Settings loadSettings()
                 if (auto found = "showWorkedFor" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.showWorkedFor = found.type == JSONType.true_;
+                if (auto found = "detachedPlan" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.detachedPlan = found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1163,6 +1169,7 @@ public void saveSettings(const ref Settings settings)
     root["toolsEnabled"] = settings.toolsEnabled;
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
+    root["detachedPlan"] = settings.detachedPlan;
     root["compactDeepSeek500k"] = settings.compactDeepSeek500k;
     root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),

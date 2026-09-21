@@ -2077,6 +2077,9 @@ private string humanToolTitle(string toolName)
             return "Grep";
         case "webfetch":
             return "Web fetch";
+        // experimental: websearch - delete with source/auroraopencode/websearch.d
+        case "websearch":
+            return "Web search";
         default:
             if (toolName.length == 0) return "Tool";
             return capitalizeFirst(toolName);
@@ -2113,6 +2116,9 @@ private string humanToolProgressTitle(string toolName)
             return "Searching";
         case "webfetch":
             return "Fetching";
+        // experimental: websearch - delete with source/auroraopencode/websearch.d
+        case "websearch":
+            return "Searching";
         default:
             if (toolName.length == 0) return "Preparing";
             return "Preparing " ~ toolName;
@@ -2168,6 +2174,9 @@ private string humanToolSubtitle(string toolName, string toolArgs)
             return basenameOf(path);
         case "open":
             return partialStringArg(toolArgs, "target");
+        // experimental: websearch - delete with source/auroraopencode/websearch.d
+        case "websearch":
+            return partialStringArg(toolArgs, "query");
         default:
             return partialStringArg(toolArgs, "path");
     }
@@ -3081,6 +3090,100 @@ private final class PlanCard : Widget
 }
 
 // ---------------------------------------------------------------------------
+// Detached plan panel (Pro): the durable plan pinned to the top-right corner
+// ---------------------------------------------------------------------------
+
+/// The durable plan shown detached from the message flow: a floating card
+/// pinned to the transcript's top-right corner so the checklist stays visible
+/// without scrolling. Optional via `Settings.detachedPlan` (on by default);
+/// when it is off the transcript renders the inline `PlanCard` instead.
+/// The overlay fills the scroll viewport so it tracks resizes, but it claims
+/// pointer input only inside its card (`hoverTransparentAt`), so the transcript
+/// underneath stays fully interactive.
+private final class DetachedPlanPanel : Widget
+{
+    private static immutable int cardWidth = 300;
+    private static immutable int margin = 12;
+    // Clear the transcript's scrollbar (10 px wide, 2 px from the edge) so the
+    // card never sits under it.
+    private static immutable int rightMargin = 18;
+
+    private PlanCard _card;
+    // The card's rect within the overlay's full-viewport bounds, refreshed on
+    // each layout so `hoverTransparentAt` can be a cheap, attribute-safe read.
+    private Rect _cardRect;
+
+    this()
+    {
+        setId("oc-plan-panel");
+        layoutHints().excludeFromLayout = true;
+        layoutHints().overlayFillParent = true;
+        layoutHints().allowOverflow = true;
+        _card = new PlanCard();
+        add(_card);
+    }
+
+    /// Replace the rendered plan and show the panel only while steps exist.
+    void update(string objective, const(TaskStep)[] steps, string status)
+    {
+        _card.update(objective, steps, status);
+        setVisible(steps.length > 0);
+        invalidate();
+    }
+
+    /// The card's rect inside the overlay: pinned to the top-right corner with
+    /// a fixed width and its natural height.
+    private Rect computeCardRect()
+    {
+        const available = maxInt(0, bounds().width - margin - rightMargin);
+        const width = minInt(cardWidth, available);
+        const height = _card.totalHeight();
+        return Rect(maxInt(margin, bounds().width - rightMargin - width), margin,
+            width, height);
+    }
+
+    size_t stepCountForTesting() const { return _card.stepCountForTesting(); }
+    string titleForTesting() const { return _card.titleForTesting(); }
+    string objectiveForTesting() const { return _card.objectiveForTesting(); }
+    string stepStatusForTesting(size_t index) const
+    {
+        return _card.stepStatusForTesting(index);
+    }
+    /// Test-only: the card's rect relative to the transcript viewport.
+    Rect cardBoundsForTesting() const { return _cardRect; }
+
+    protected override Size onMeasure(Size available)
+    {
+        // The overlay fills its parent and takes its bounds from the layout
+        // pass; it never contributes an intrinsic size.
+        return available;
+    }
+
+    protected override void onLayout()
+    {
+        _cardRect = computeCardRect();
+        _card.setBounds(_cardRect);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        _cardRect = computeCardRect();
+        const rect = _cardRect;
+        if (rect.width <= 0 || rect.height <= 0) return;
+        // A one-pixel frame lifts the card off the transcript behind it.
+        canvas.fillRoundedRect(Rect(rect.x - 1, rect.y - 1, rect.width + 2,
+            rect.height + 2), 9, opencodeBorder);
+    }
+
+    /// Pointer-transparent outside the card so clicks, hovers and wheel
+    /// scrolling reach the transcript underneath.
+    override bool hoverTransparentAt(Point localPoint) const
+        @safe pure nothrow @nogc
+    {
+        return !_cardRect.contains(localPoint);
+    }
+}
+
 // Action tool group (Pro): one foldable row for an assistant round's tools
 // ---------------------------------------------------------------------------
 
@@ -4729,6 +4832,7 @@ public final class OpenCodeRoot : VBox
     private ChatScrollView _messagesScroll;
     private VBox _messageColumn;
     private IntroOverlay _introOverlay;
+    private DetachedPlanPanel _planPanel;
     private ChatInput _input;
     private ChatSendButton _sendButton;
     private ChatComposer _composer;
@@ -5818,6 +5922,17 @@ public final class OpenCodeRoot : VBox
         };
         _introOverlay.setVisible(false);
 
+        // Detached plan: the durable plan as a floating card pinned to the
+        // transcript's top-right corner. It is an overlay child of the scroll
+        // view (full viewport bounds, excluded from message layout) and is
+        // pointer-transparent outside its card. On by default; the inline
+        // PlanCard replaces it when `Settings.detachedPlan` is off.
+        _planPanel = _messagesScroll.add(new DetachedPlanPanel());
+        _planPanel.layoutHints().excludeFromLayout = true;
+        _planPanel.layoutHints().overlayFillParent = true;
+        _planPanel.layoutHints().allowOverflow = true;
+        _planPanel.setVisible(false);
+
         _input = new ChatInput();
         _input.setId("oc-input");
         _input.setShowBorder(false);
@@ -6617,6 +6732,7 @@ public final class OpenCodeRoot : VBox
         if (_current < 0)
         {
             updateIntroOverlay();
+            updatePlanPanel();
             return;
         }
         const session = &_sessions[_current];
@@ -6676,8 +6792,11 @@ public final class OpenCodeRoot : VBox
         // below it. Anchor it at the latest visible planning round instead. If
         // that round is outside the paged window (or metadata is unavailable),
         // use the latest visible user prompt.
+        // When the detached plan panel is on (the default) the transcript omits
+        // the inline card; the floating panel shows the same durable state.
+        const bool inlinePlan = !_settings.detachedPlan;
         size_t planHostSlot = size_t.max;
-        if (session.taskSteps.length > 0)
+        if (inlinePlan && session.taskSteps.length > 0)
         {
             foreach_reverse (candidateSlot, index; path)
             {
@@ -6706,7 +6825,7 @@ public final class OpenCodeRoot : VBox
         bool planAdded = false;
         void addPlanAfter(size_t candidateSlot)
         {
-            if (planAdded || candidateSlot != planHostSlot) return;
+            if (!inlinePlan || planAdded || candidateSlot != planHostSlot) return;
             auto planCard = new PlanCard();
             planCard.update(session.objective, session.taskSteps,
                 session.taskStatus);
@@ -6935,7 +7054,7 @@ public final class OpenCodeRoot : VBox
         }
         // A plan-only recovered snapshot can have no visible message to host
         // the card. Keep it discoverable without perturbing normal ordering.
-        if (session.taskSteps.length > 0 && !planAdded)
+        if (inlinePlan && session.taskSteps.length > 0 && !planAdded)
             addPlanAfter(planHostSlot);
         // Live rows with no assistant turn to nest under (e.g. a tool progress
         // event before any reply exists) stay at the end of the column.
@@ -6982,7 +7101,26 @@ public final class OpenCodeRoot : VBox
         // Now that the column is populated, decide whether the welcome overlay
         // belongs over it (empty conversation) or not.
         updateIntroOverlay();
+        // The detached plan panel mirrors the durable state that would
+        // otherwise be an inline card; keep it in step with the rebuild.
+        updatePlanPanel();
         refreshBubbleActions();
+    }
+
+    /// Sync the detached plan panel with the active conversation's durable
+    /// plan. Hidden unless `Settings.detachedPlan` is on and the conversation
+    /// actually has checklist steps.
+    private void updatePlanPanel()
+    {
+        if (_planPanel is null) return;
+        if (!_settings.detachedPlan || _current < 0)
+        {
+            _planPanel.setVisible(false);
+            return;
+        }
+        const session = &_sessions[_current];
+        _planPanel.update(session.objective, session.taskSteps,
+            session.taskStatus);
     }
 
     /// Show the welcome overlay only while the active conversation has no
@@ -10554,6 +10692,23 @@ public final class OpenCodeRoot : VBox
         workedRow.add(workedCheck);
         content.add(workedRow);
 
+        // Detached plan: the durable plan as a floating card pinned to the
+        // transcript's top-right corner. On by default; turning it off returns
+        // the plan to an inline card inside the transcript.
+        auto planRow = new HBox(8);
+        planRow.layoutHints().preferredHeight = 32;
+        auto planCheck = new CheckBox("Detached plan panel");
+        planCheck.setId("oc-detachedplan");
+        planCheck.setChecked(_settings.detachedPlan, false);
+        planCheck.onChanged = delegate(bool value)
+        {
+            _settings.detachedPlan = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        planRow.add(planCheck);
+        content.add(planRow);
+
         // DeepSeek 4.1 advertises a 1,000,000-token window but its reliable
         // context is smaller. When on, the usage meter and the compaction
         // budget both use a 500,000-token effective window so older context is
@@ -10638,7 +10793,9 @@ public final class OpenCodeRoot : VBox
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(540, 620));
+        // Tall enough for every option row, including the detached-plan
+        // checkbox, without clipping the footer.
+        popup.setRequestedSize(Size(540, 664));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate()
         {
@@ -14030,6 +14187,50 @@ public final class OpenCodeRoot : VBox
         _settings.showWorkedFor = value;
         if (_current >= 0) rebuildMessageColumn();
     }
+
+    /// Test-only: open the settings dialog and return the "Detached plan
+    /// panel" checkbox, or null when absent.
+    public CheckBox detachedPlanCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-detachedplan");
+    }
+
+    /// Test-only: flip the detached-plan setting as the dialog checkbox does,
+    /// without opening the dialog.
+    public void setDetachedPlanForTesting(bool value)
+    {
+        _settings.detachedPlan = value;
+        if (_current >= 0) rebuildMessageColumn();
+    }
+
+    /// Test-only: whether the detached plan panel is currently shown.
+    public bool detachedPlanVisibleForTesting()
+    {
+        return _planPanel !is null && _planPanel.visible();
+    }
+
+    /// Test-only: the step count rendered by the detached plan panel.
+    public int detachedPlanStepCountForTesting()
+    {
+        return _planPanel is null ? 0
+            : cast(int) _planPanel.stepCountForTesting();
+    }
+
+    /// Test-only: the detached plan panel's title line.
+    public string detachedPlanTitleForTesting()
+    {
+        return _planPanel is null ? "" : _planPanel.titleForTesting();
+    }
+
+    /// Test-only: the detached plan panel's card rect relative to the
+    /// transcript viewport (empty when hidden).
+    public Rect detachedPlanRectForTesting()
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.cardBoundsForTesting();
+    }
+
 
     /// Test-only: open the settings dialog and return the "Compact DeepSeek
     /// 4.1 at 500K" checkbox, or null when absent.
