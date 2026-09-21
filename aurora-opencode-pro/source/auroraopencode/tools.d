@@ -217,7 +217,8 @@ private OpenCodeToolDef rebuildToolDefinition()
         "this process to exit, runs `dub build`, and relaunches the app, which " ~
         "then continues this conversation. The running executable is never " ~
         "overwritten in place, so this is the only safe way to apply source " ~
-        "changes to the app.",
+        "changes to the app. It needs no user approval or confirmation; use it " ~
+        "whenever the app's own source is ready to build.",
         `{"type":"object","properties":{"reason":{"type":"string","description":"Short note on why a rebuild is needed; recorded in the conversation."}},"required":[]}`
     );
 }

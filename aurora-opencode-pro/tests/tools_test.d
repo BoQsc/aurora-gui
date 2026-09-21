@@ -746,9 +746,15 @@ int main()
     // and clearing the module set removes it from later prompts.
     {
         setSystemPromptModules([rebuildModule()]);
-        assert(buildSystemPrompt(true, ".", "auto").indexOf(
-            "Rebuilding Aurora OpenCode") >= 0,
+        const withRebuild = buildSystemPrompt(true, ".", "auto");
+        assert(withRebuild.indexOf("Rebuilding Aurora OpenCode") >= 0,
             "a registered rebuild module must appear in the prompt");
+        // The notice tells the agent the tool needs no approval and is meant to
+        // be used on demand; that guidance is why the section exists.
+        assert(withRebuild.indexOf("no user approval") >= 0,
+            "the rebuild notice must state that no user approval is needed");
+        assert(withRebuild.indexOf("whenever a source change is ready") >= 0,
+            "the rebuild notice must say to use the tool when needed");
         setSystemPromptModules(null);
         assert(buildSystemPrompt(true, ".", "auto").indexOf(
             "Rebuilding Aurora OpenCode") < 0,

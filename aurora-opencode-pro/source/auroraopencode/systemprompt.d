@@ -285,5 +285,11 @@ public SystemPromptModule rebuildModule()
         "runs `dub build`, and relaunches the app, which then continues this " ~
         "conversation. The live executable is never overwritten while the app " ~
         "is running: do not try to rebuild it in place with `dub` yourself, " ~
-        "and never kill the app.\n");
+        "and never kill the app. Use the tool whenever a source change is " ~
+        "ready to test: it needs no user approval or confirmation, and it is " ~
+        "the normal way to apply an edit to the running app. If the build " ~
+        "fails, the resumed conversation reports the compiler errors so you " ~
+        "can fix them and rebuild. This notice appears only because the " ~
+        "active project is Aurora's own source; the tool is not relevant to " ~
+        "any other project.\n");
 }

@@ -1282,18 +1282,26 @@ int main(string[] args)
         const failed = OpenCodeRoot.resumePromptForTesting("rebuild", "tweak",
             "command: dub build --force --build=release\n" ~
             "exit:    1\n\ncompiler errors (1):\n" ~
-            "  app.d(3): Error: undefined identifier foo\n");
+            "  app.d(3): Error: undefined identifier foo\n", "");
         assert(failed.indexOf("FAILED to compile") >= 0,
             "a failed rebuild must be reported as failed: " ~ failed);
         assert(failed.indexOf("undefined identifier foo") >= 0,
             "the compiler errors must be quoted back to the agent");
         assert(failed.indexOf("rebuild tool again") >= 0,
             "the prompt must tell the agent to rebuild after fixing");
+        // The success acknowledgement is concrete: it names the build time and
+        // whether the binary is newer than the sources, so "it rebuilt" can be
+        // verified instead of assumed.
+        const successStamp = root.rebuildStampForTesting();
+        assert(successStamp.indexOf("running binary was built") >= 0,
+            "the success stamp must name the binary build time: " ~ successStamp);
         const succeeded = OpenCodeRoot.resumePromptForTesting("rebuild",
-            "tweak", "");
+            "tweak", "", successStamp);
         assert(succeeded.indexOf("rebuilt and relaunched") >= 0 &&
             succeeded.indexOf("FAILED") < 0,
             "a successful rebuild keeps the success wording");
+        assert(succeeded.indexOf(successStamp) >= 0,
+            "the success prompt must include the concrete build stamp");
         writeln("Rebuild outcome is reported back into the resumed conversation");
     }
 

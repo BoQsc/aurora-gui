@@ -24,7 +24,7 @@ import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
 import std.array : appender;
 import std.conv : to;
-import std.datetime : Clock;
+import std.datetime : Clock, SysTime;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
 import std.file : exists, isDir, fileRemove = remove, mkdirRecurse, readText, rename,
@@ -5178,6 +5178,7 @@ public final class OpenCodeRoot : VBox
         // not live" signal. Quote it into the prompt so the agent can fix the
         // errors and rebuild rather than assume the edit took effect.
         string rebuildReport;
+        string buildStamp;
         if (cause == "rebuild")
         {
             const reportPath = buildPath(opencodeStateDirectory(),
@@ -5187,17 +5188,22 @@ public final class OpenCodeRoot : VBox
                 try rebuildReport = readText(reportPath);
                 catch (Exception) {}
             }
+            else
+                buildStamp = rebuildSuccessStamp();
         }
-        _resumePrompt = resumePromptFor(cause, reason, rebuildReport);
+        _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
+            buildStamp);
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
     }
 
     /// Build the resume prompt from a recorded cause and, for a rebuild, the
     /// failure report the helper left behind ("" when the build succeeded).
-    /// Pure so the smoke test can check both outcomes without a second launch.
+    /// `buildStamp` is the concrete success acknowledgement (build time and
+    /// source freshness); it is empty when it could not be determined. Pure so
+    /// the smoke test can check every outcome without a second launch.
     private static string resumePromptFor(string cause, string reason,
-        string rebuildReport)
+        string rebuildReport, string buildStamp)
     {
         if (cause == "rebuild")
         {
@@ -5212,8 +5218,8 @@ public final class OpenCodeRoot : VBox
                     "\n\n(full report: " ~ buildPath(opencodeStateDirectory(),
                         "rebuild-report.txt") ~ ")";
             return "The application was rebuilt and relaunched with your " ~
-                "latest source changes. Continue the durable objective and " ~
-                "checklist from where you left off" ~
+                "latest source changes." ~ buildStamp ~ " Continue the " ~
+                "durable objective and checklist from where you left off" ~
                 (reason.length > 0 ? " — " ~ reason : "") ~
                 ". Apply any queued guidance before claiming completion.";
         }
@@ -5231,6 +5237,66 @@ public final class OpenCodeRoot : VBox
         if (report.length <= maxChars) return report;
         return report[0 .. maxChars] ~
             "\n...(report truncated; read the file for the rest)";
+    }
+
+    /// `2026-09-21 17:54:10` in local time, matching the helper's log format.
+    private static string formatStamp(SysTime value)
+    {
+        const text = value.toLocalTime.toISOExtString.replace("T", " ");
+        return text.length >= 19 ? text[0 .. 19] : text;
+    }
+
+    /// A short, verifiable acknowledgement of a successful rebuild: when the
+    /// running binary was built, relative to the newest source file, so the
+    /// resumed agent can tell the build really includes its edits instead of
+    /// taking it on faith.
+    private string rebuildSuccessStamp()
+    {
+        import std.file : dirEntries, SpanMode;
+        const exe = thisExePath();
+        if (exe.length == 0 || !exists(exe)) return "";
+        SysTime builtTime;
+        try builtTime = timeLastModified(exe);
+        catch (Exception) return "";
+        const built = formatStamp(builtTime);
+        const packageDir = planRebuild(opencodeStateDirectory(), true,
+            thisProcessID, exe).workingDir;
+        const sourceDir = packageDir.length > 0
+            ? buildPath(packageDir, "source") : "";
+        if (sourceDir.length == 0 || !exists(sourceDir))
+            return " The running binary was built " ~ built ~ ".";
+        SysTime newestTime;
+        string newestName;
+        bool haveNewest;
+        try
+        {
+            foreach (entry; dirEntries(sourceDir, SpanMode.depth))
+            {
+                if (!entry.isFile) continue;
+                const name = entry.name;
+                if (name.length < 2 || name[$ - 2 .. $] != ".d") continue;
+                SysTime stamp;
+                try stamp = timeLastModified(name);
+                catch (Exception) continue;
+                if (!haveNewest || stamp > newestTime)
+                {
+                    newestTime = stamp;
+                    newestName = name;
+                    haveNewest = true;
+                }
+            }
+        }
+        catch (Exception) {}
+        if (!haveNewest)
+            return " The running binary was built " ~ built ~ ".";
+        if (builtTime >= newestTime)
+            return " The running binary was built " ~ built ~ ", newer than " ~
+                "the newest source change (" ~ formatStamp(newestTime) ~ "), " ~
+                "so it includes your edits.";
+        return " The running binary was built " ~ built ~ " but " ~
+            baseName(newestName) ~ " changed later (" ~
+            formatStamp(newestTime) ~ "); the build may be stale — rebuild " ~
+            "again.";
     }
 
     /// Test-only / shutdown hook: release the shared network session.
@@ -5253,9 +5319,16 @@ public final class OpenCodeRoot : VBox
     /// Test-only: the resume prompt the app would inject for a given resume
     /// cause and rebuild-failure report ("" when the build succeeded).
     public static string resumePromptForTesting(string cause, string reason,
-        string rebuildReport)
+        string rebuildReport, string buildStamp)
     {
-        return resumePromptFor(cause, reason, rebuildReport);
+        return resumePromptFor(cause, reason, rebuildReport, buildStamp);
+    }
+
+    /// Test-only: the concrete success acknowledgement the resume note appends
+    /// after a rebuild (build time and source freshness).
+    public string rebuildStampForTesting()
+    {
+        return rebuildSuccessStamp();
     }
 
     /// Test-only: whether this build can rebuild itself in place (the
