@@ -1644,7 +1644,40 @@ int main(string[] args)
     dismissContextMenus(root);
     root.tickTree(0.02);
 
+    // Named API keys: Settings keeps more than one credential and switches the
+    // active one with a click, so a second key is one menu pick away.
+    root.dismissPopupForTesting();
+    root.tickTree(0.02);
+    const savedOne = root.saveNamedKeyForTesting("Work", "sk-work-0001");
+    assert(savedOne == "Work\nsk-work-0001",
+        "Saving a named key did not activate it: " ~ savedOne);
+    const savedTwo = root.saveNamedKeyForTesting("Personal", "sk-personal-0002");
+    assert(savedTwo == "Personal\nsk-personal-0002",
+        "A second named key was not saved and activated: " ~ savedTwo);
+    assert(root.savedKeyNamesForTesting() == ["Work", "Personal"],
+        "Both named keys should be stored");
+    assert(root.savedKeyEntriesForTesting() ==
+        ["Work=sk-work-0001", "Personal=sk-personal-0002"],
+        "Saved keys lost their values");
+    // The dropdown lists both keys plus a delete action (2 keys + separator +
+    // delete = 4 items), and picking the first makes it active.
+    assert(root.savedKeysMenuCountForTesting() == 4,
+        "Saved-keys menu should list two keys and a delete item");
+    const switched = root.activateSavedKeyForTesting(0);
+    assert(switched == "Work\nsk-work-0001",
+        "Selecting a saved key did not make it active: " ~ switched);
+    // Deleting the active key keeps its value live but drops the label.
+    const afterDelete = root.deleteActiveSavedKeyForTesting();
+    assert(afterDelete == "Custom\nsk-work-0001",
+        "Deleting the active key behaved unexpectedly: " ~ afterDelete);
+    assert(root.savedKeyNamesForTesting() == ["Personal"],
+        "Deleting should remove exactly one key");
+    root.dismissPopupForTesting();
+    root.tickTree(0.02);
+    writeln("Settings saves, switches, and deletes named API keys");
+
     // Settings exposes the concise system prompt. Tool-specific syntax remains
+
     // in the API tool schemas instead of being duplicated here.
     assert(root.systemPromptButtonPresentForTesting(),
         "Settings dialog missing the System prompt button");

@@ -4770,6 +4770,11 @@ public final class OpenCodeRoot : VBox
     private TextField _settingsKeyField;
     private TextField _settingsModelField;
     private Button _settingsProviderButton;
+    // Named-key controls: the picker button shows the active key's label, and
+    // the name field + Save key button store whatever is in the key field.
+    private Button _settingsSavedKeysButton;
+    private Button _settingsSaveKeyButton;
+    private TextField _settingsKeyNameField;
     // Recycled by OpenCodeClient.drain. Keeping it on the root makes event
     // delivery allocation-free after the queue reaches its normal capacity.
     private OpenCodeEvent[] _eventScratch;
@@ -10147,6 +10152,79 @@ public final class OpenCodeRoot : VBox
         keyField.layoutHints().flex = 1.0;
         _settingsKeyField = keyField;
 
+        // Saved keys: keep more than one credential and switch the active one
+        // with a click. The picker lists every saved key (a check marks the
+        // active one) and can delete the active entry; the name field + "Save
+        // key" store whatever is currently in the API key field under a label.
+        auto savedKeysRow = new HBox(8);
+        savedKeysRow.layoutHints().preferredHeight = 32;
+        auto savedKeysLabel = savedKeysRow.add(new Label("Saved keys"));
+        savedKeysLabel.layoutHints().preferredWidth = 110;
+        savedKeysLabel.setScale(1);
+        auto savedKeysButton = savedKeysRow.add(
+            new Button(activeApiKeyLabel(_settings)));
+        savedKeysButton.setId("oc-settings-savedkeys");
+        savedKeysButton.layoutHints().flex = 1.0;
+        savedKeysButton.onClick = delegate()
+        {
+            ContextMenuItem[] items;
+            foreach (index; 0 .. _settings.savedKeys.length)
+                items ~= savedKeyMenuItem(cast(int) index);
+            if (items.length > 0)
+            {
+                items ~= ContextMenuItem.separatorItem();
+                const activeName = _settings.activeKeyName;
+                items ~= ContextMenuItem.command(
+                    activeName.length > 0
+                        ? "Delete \"" ~ activeName ~ "\""
+                        : "Delete active key",
+                    delegate() { deleteActiveSavedKey(); },
+                    "", activeName.length > 0);
+            }
+            const origin = savedKeysButton.globalOrigin();
+            // Same keep-popups menu as the Provider picker: showContextMenuBelow
+            // would dismiss the Settings dialog it was opened from.
+            showContextMenuKeepPopups(savedKeysButton,
+                Point(origin.x, origin.y + savedKeysButton.size().height),
+                items);
+        };
+        _settingsSavedKeysButton = savedKeysButton;
+
+        auto keyNameRow = new HBox(8);
+        keyNameRow.layoutHints().preferredHeight = 32;
+        auto keyNameLabel = keyNameRow.add(new Label("Key name"));
+        keyNameLabel.layoutHints().preferredWidth = 110;
+        keyNameLabel.setScale(1);
+        auto keyNameField = keyNameRow.add(new TextField(""));
+        keyNameField.setId("oc-settings-keyname");
+        keyNameField.layoutHints().flex = 1.0;
+        _settingsKeyNameField = keyNameField;
+        auto saveKeyButton = keyNameRow.add(new Button("Save key"));
+        saveKeyButton.setId("oc-settings-savekey");
+        saveKeyButton.onClick = delegate()
+        {
+            const name = keyNameField.textUtf8().strip();
+            const key = keyField.textUtf8().strip();
+            if (name.length == 0 || key.length == 0)
+            {
+                updateStatus("Enter a key and a name to save it.");
+                return;
+            }
+            saveNamedApiKey(_settings, name, key);
+            keyNameField.setText("");
+            applyActiveKeyToClient();
+            refreshSavedKeysButton();
+            _settingsKeyField.setText(_settings.apiKey);
+            updateStatus("Saved key \"" ~ name ~ "\".");
+        };
+        _settingsSaveKeyButton = saveKeyButton;
+
+        auto savedKeysHint = new Label(
+            "Save more than one key, then pick the active one from the list. " ~
+            "Type a name, paste the key above, then \"Save key\".");
+        savedKeysHint.setScale(1);
+        savedKeysHint.setColor(opencodeMuted);
+
         auto hint = content.add(new Label(
             "llama-server: http://127.0.0.1:8080/v1 (API key may be blank)."));
         hint.setScale(1);
@@ -10269,6 +10347,9 @@ public final class OpenCodeRoot : VBox
             const workspace = workspaceField.textUtf8().strip();
             if (baseUrl.length > 0) _settings.baseUrl = baseUrl;
             _settings.apiKey = apiKey;
+            // A key typed or pasted by hand may no longer match a saved entry,
+            // so re-point the active label at whatever is now live.
+            syncActiveApiKeyName(_settings);
             if (model.length > 0)
             {
                 _settings.model = model;
@@ -10292,6 +10373,7 @@ public final class OpenCodeRoot : VBox
             _client.setCredentials(_settings.baseUrl, _settings.apiKey);
             saveSettingsNow();
             updateKeyBadge();
+            refreshSavedKeysButton();
             _client.fetchModels();
             updateStatus("Settings saved.");
             dismissPopup();
@@ -10300,6 +10382,9 @@ public final class OpenCodeRoot : VBox
         content.add(providerRow);
         content.add(baseRow);
         content.add(keyRow);
+        content.add(savedKeysRow);
+        content.add(keyNameRow);
+        content.add(savedKeysHint);
         content.add(modelRow);
         content.add(hint);
         content.add(workspaceRow);
@@ -10308,7 +10393,7 @@ public final class OpenCodeRoot : VBox
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(540, 510));
+        popup.setRequestedSize(Size(540, 620));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate()
         {
@@ -10317,6 +10402,9 @@ public final class OpenCodeRoot : VBox
             _settingsKeyField = null;
             _settingsModelField = null;
             _settingsProviderButton = null;
+            _settingsSavedKeysButton = null;
+            _settingsSaveKeyButton = null;
+            _settingsKeyNameField = null;
         };
         openPopup(popup);
         popup.focusFirst();
@@ -10344,6 +10432,62 @@ public final class OpenCodeRoot : VBox
             _settingsModelField.setText(preset.model);
         if (_settingsProviderButton !is null)
             _settingsProviderButton.setText(preset.name);
+    }
+
+    /// A saved key as a check item bound to its own index (a factory, so each
+    /// item captures a distinct index) that activates it when chosen.
+    private ContextMenuItem savedKeyMenuItem(int index)
+    {
+        const name = _settings.savedKeys[cast(size_t) index].name;
+        return ContextMenuItem.check(name, name == _settings.activeKeyName,
+            delegate() { activateSavedKey(index); });
+    }
+
+    /// Update the Saved-keys picker's caption to the current active key.
+    private void refreshSavedKeysButton()
+    {
+        if (_settingsSavedKeysButton !is null)
+            _settingsSavedKeysButton.setText(activeApiKeyLabel(_settings));
+    }
+
+    /// Make the saved key at `index` active: copy its value into the API key
+    /// field, persist immediately, and point the live clients at it. Immediate
+    /// (not staged to the dialog's Save) so switching is one click.
+    private void activateSavedKey(int index)
+    {
+        if (index < 0 || index >= cast(int) _settings.savedKeys.length) return;
+        const name = _settings.savedKeys[cast(size_t) index].name;
+        activateSavedApiKey(_settings, name);
+        if (_settingsKeyField !is null) _settingsKeyField.setText(_settings.apiKey);
+        refreshSavedKeysButton();
+        applyActiveKeyToClient();
+        updateStatus("Active key: " ~ name);
+    }
+
+    /// Remove the currently active saved key. Its value stays in the API key
+    /// field so the live credential is not dropped by deleting the label.
+    private void deleteActiveSavedKey()
+    {
+        if (_settings.activeKeyName.length == 0) return;
+        const name = _settings.activeKeyName;
+        removeSavedApiKey(_settings, name);
+        syncActiveApiKeyName(_settings);
+        refreshSavedKeysButton();
+        applyActiveKeyToClient();
+        updateStatus("Removed saved key \"" ~ name ~ "\".");
+    }
+
+    /// Push the current base URL + active key to every live client, persist the
+    /// settings, and refresh the toolbar key badge. Shared by the named-key
+    /// Save/Switch/Delete actions (the dialog's Save does the same inline).
+    private void applyActiveKeyToClient()
+    {
+        foreach (rt; _conversationRuntimes)
+            rt.client.setCredentials(_settings.baseUrl, _settings.apiKey);
+        if (_client !is null)
+            _client.setCredentials(_settings.baseUrl, _settings.apiKey);
+        saveSettingsNow();
+        updateKeyBadge();
     }
 
     /// Show the exact system prompt that is sent with every request, in a
@@ -13663,6 +13807,79 @@ public final class OpenCodeRoot : VBox
         dismissContextMenus(this);
         return baseUrl ~ "\n" ~ model;
     }
+
+    /// Test-only: the Saved-keys picker's current caption ("" when no dialog).
+    public string savedKeysButtonLabelForTesting()
+    {
+        return _settingsSavedKeysButton is null
+            ? "" : to!string(_settingsSavedKeysButton.text());
+    }
+
+    /// Test-only: the names of the saved keys, in order.
+    public string[] savedKeyNamesForTesting()
+    {
+        string[] names;
+        foreach (saved; _settings.savedKeys) names ~= saved.name;
+        return names;
+    }
+
+    /// Test-only: open Settings, open the Saved-keys dropdown, and return the
+    /// number of items in it (negative = a failure stage).
+    public int savedKeysMenuCountForTesting()
+    {
+        showSettingsDialog();
+        if (_settingsSavedKeysButton is null) return -1;
+        _settingsSavedKeysButton.onClick();
+        auto root = popupRoot(this);
+        if (root is null) return -2;
+        foreach (child; root.children())
+            if (auto menu = cast(ContextMenu) child)
+                return cast(int) menu.items().length;
+        return -3;
+    }
+
+    /// Test-only: open Settings, type `name`/`key`, click "Save key", and return
+    /// the picker caption and the resulting active key as "label\nkey".
+    public string saveNamedKeyForTesting(string name, string key)
+    {
+        showSettingsDialog();
+        if (_settingsKeyField !is null) _settingsKeyField.setText(key);
+        if (_settingsKeyNameField !is null) _settingsKeyNameField.setText(name);
+        if (_settingsSaveKeyButton !is null) _settingsSaveKeyButton.onClick();
+        return savedKeysButtonLabelForTesting() ~ "\n" ~ _settings.apiKey;
+    }
+
+    /// Test-only: open Settings, activate the saved key at `index` through the
+    /// picker action, and return the picker caption plus the key field text.
+    public string activateSavedKeyForTesting(int index)
+    {
+        showSettingsDialog();
+        activateSavedKey(index);
+        const fieldText = _settingsKeyField !is null
+            ? _settingsKeyField.textUtf8() : "";
+        return savedKeysButtonLabelForTesting() ~ "\n" ~ fieldText;
+    }
+
+    /// Test-only: open Settings, remove the active saved key, and return the
+    /// picker caption plus the live key as "label\nkey".
+    public string deleteActiveSavedKeyForTesting()
+    {
+        showSettingsDialog();
+        deleteActiveSavedKey();
+        return savedKeysButtonLabelForTesting() ~ "\n" ~ _settings.apiKey;
+    }
+
+    /// Test-only: the saved keys as "name=key" entries (verifies persistence
+    /// writes the value, not just the label).
+    public string[] savedKeyEntriesForTesting()
+    {
+        string[] entries;
+        foreach (saved; _settings.savedKeys)
+            entries ~= saved.name ~ "=" ~ saved.key;
+        return entries;
+    }
+
+
 
     /// Test-only: depth-first search for a widget by id.
     private static Widget findWidgetById(Widget widget, string requestedId)

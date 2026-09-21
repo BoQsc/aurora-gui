@@ -20,6 +20,44 @@ app keeps running the old build, and the change appears to do nothing (or the
 next interaction fails with an error such as `undefined identifier ...` because
 the running binary is stale).
 
+## Agent discipline: tool-call budget and rebuilds
+
+Two failures to avoid, with a shared root cause: acting as if actions are free.
+
+**The tool-call budget is counted in rounds, not time.** Every `read`, `grep`,
+`dshell`, `edit`, and `rebuild` costs one, and the round cap ends the turn
+mid-work.
+
+- One file = one patch. Batch all edits to a file into a single
+  `apply_patch`/`write`; many small sequential `edit` calls lose track of what
+  is on disk and can leave a file half-written (e.g. a deleted function
+  signature).
+- Spend reads only on the unknown that gates the next edit; do not re-read for
+  confidence or to restate what is already known.
+- Reserve the last call for the build/verify step: edit then verify, never end
+  on a mutation with unverified state.
+- If the work will not fit, ship a coherent, compiling stage and stop with a
+  clean tree and a stated next step. Never end a turn with unapplied or broken
+  edits.
+- Tell: running out of rounds with a broken file means the granularity was
+  wrong, not that the cap was too small.
+
+**A rebuild is a deploy, not a save.** `rebuild` persists the conversation,
+**closes the running app**, runs `dub build`, and relaunches it with whatever the
+source currently is - including half-finished changes.
+
+- Rebuild only when the source is complete and coherent *and* applying it to the
+  running app is the goal, and announce it at that moment.
+- Never rebuild as a byproduct of answering a question, mid-discussion, on
+  half-applied code, or twice for the same change.
+- The rebuild *is* required to make a change real (see above); the point is to
+  do it deliberately, not to skip it.
+
+**General rule.** State-changing actions - writing files, and especially
+rebuilding/relaunching the app - happen only when they are the requested outcome
+or when they have been explicitly announced. Investigation and explanation are
+read-only and produce no side effects.
+
 ## Build
 
 - Run `dub build` from the repository root (release builds use
