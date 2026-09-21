@@ -2976,6 +2976,13 @@ private final class PlanCard : Widget
     private static immutable int padH = 12;
     private static immutable int padV = 8;
     private static immutable int lineH = opencodeFontBase + 6;
+    // Graphical status glyphs and progress bar, replacing the ASCII
+    // "[ ]/[x]/[>]" mark; the glyph mirrors the toolkit CheckBox indicator.
+    private static immutable int glyphSize = 14;
+    private static immutable int glyphGap = 8;
+    private static immutable int progressH = 6;
+    private static immutable int progressTopGap = 4;
+    private static immutable int progressBottomGap = 6;
 
     private string _objective;
     private string _status;
@@ -3021,21 +3028,34 @@ private final class PlanCard : Widget
 
     private bool hasObjective() const { return _objective.length > 0; }
 
-    private string titleText() const
+    private int doneCount() const
     {
         int done;
         foreach (status; _statuses)
             if (status == "completed") ++done;
-        string title = "Plan  " ~ to!string(done) ~ "/" ~
+        return done;
+    }
+
+    private string titleText() const
+    {
+        string title = "Plan  " ~ to!string(doneCount()) ~ "/" ~
             to!string(_texts.length) ~ " done";
         if (_status.length > 0) title ~= "  -  " ~ _status;
         return title;
     }
 
+    /// Vertical space reserved for the graphical progress bar and its gaps,
+    /// present only while the plan has at least one step.
+    private int progressBlock() const
+    {
+        return _texts.length > 0
+            ? progressTopGap + progressH + progressBottomGap : 0;
+    }
+
     private int totalHeight() const
     {
         return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) +
-            cast(int) _texts.length);
+            cast(int) _texts.length) + progressBlock();
     }
 
     protected override Size onMeasure(Size available)
@@ -3070,28 +3090,74 @@ private final class PlanCard : Widget
                 HorizontalAlign.left, VerticalAlign.middle, true);
             y += lineH;
         }
-        canvas.fillRect(Rect(padH, y, textWidth, 1), opencodeBorder);
+        // Graphical progress bar: an accent fill over a track, proportional to
+        // the completed steps, replacing the old text-only counter.
+        if (_texts.length > 0)
+        {
+            y += progressTopGap;
+            canvas.fillRoundedRect(Rect(padH, y, textWidth, progressH),
+                progressH / 2, opencodeBorder);
+            const total = cast(int) _texts.length;
+            const done = doneCount();
+            if (done > 0 && total > 0)
+            {
+                int fillWidth = cast(int) (cast(long) textWidth * done / total);
+                fillWidth = maxInt(fillWidth, progressH);
+                fillWidth = minInt(fillWidth, textWidth);
+                canvas.fillRoundedRect(Rect(padH, y, fillWidth, progressH),
+                    progressH / 2, opencodeAccent);
+            }
+            y += progressH + progressBottomGap;
+        }
         foreach (index, text; _texts)
         {
             const status = index < _statuses.length
                 ? _statuses[index] : "pending";
-            string marker = "[ ]";
-            Color color = opencodeText;
-            if (status == "completed")
-            {
-                marker = "[x]";
-                color = opencodeMuted;
-            }
-            else if (status == "in_progress")
-            {
-                marker = "[>]";
-                color = opencodeAccent;
-            }
-            canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
-                toUTF32(marker ~ " " ~ text), color, 1,
+            drawStepGlyph(canvas, y, status);
+            const textX = padH + glyphSize + glyphGap;
+            canvas.drawTextInRect(Rect(textX, y,
+                maxInt(0, textWidth - glyphSize - glyphGap), lineH),
+                toUTF32(text), statusColor(status), 1,
                 HorizontalAlign.left, VerticalAlign.middle, true);
             y += lineH;
         }
+    }
+
+    /// The graphical status glyph for one step, mirroring the CheckBox
+    /// indicator: an accent box with a white tick when completed, an accent ring
+    /// with a centre dot while in progress, and an empty framed box when
+    /// pending.
+    private void drawStepGlyph(ref Canvas canvas, int rowY, string status)
+    {
+        const box = Rect(padH, rowY + (lineH - glyphSize) / 2,
+            glyphSize, glyphSize);
+        if (status == "completed")
+        {
+            canvas.drawRoundedRect(box, 3, opencodeAccent, opencodeAccent, 1);
+            const tick = Color.rgb(255, 255, 255);
+            canvas.drawLine(Point(box.x + 3, box.y + 7),
+                Point(box.x + 6, box.y + 10), tick, 2);
+            canvas.drawLine(Point(box.x + 6, box.y + 10),
+                Point(box.x + 11, box.y + 4), tick, 2);
+        }
+        else if (status == "in_progress")
+        {
+            canvas.drawRoundedRect(box, 3, opencodeField, opencodeAccent, 2);
+            canvas.fillCircle(
+                Point(box.x + glyphSize / 2, box.y + glyphSize / 2), 3,
+                opencodeAccent);
+        }
+        else
+        {
+            canvas.drawRoundedRect(box, 3, opencodeField, opencodeBorder, 1);
+        }
+    }
+
+    private static Color statusColor(string status)
+    {
+        if (status == "completed") return opencodeMuted;
+        if (status == "in_progress") return opencodeAccent;
+        return opencodeText;
     }
 }
 
