@@ -1169,7 +1169,38 @@ int main(string[] args)
                 e.text == "Thinking")
                 sawDetail = true;
         assert(sawDetail, "Client dropped a reasoning_details delta");
-        writeln("Client surfaces streamed reasoning as it arrives");
+        // A chunk that carries the final reasoning record AND the answer's
+        // first token must surface BOTH. Treating reasoning and content as
+        // mutually exclusive dropped the answer's opening letter or word, so
+        // replies arrived truncated ("I've made…" showed as "'ve made…").
+        client.feedSseForTesting(
+            `data: {"choices":[{"delta":{"reasoning":"done","reasoning_details":[{"type":"reasoning.text","text":"done"}],"content":"I've"}}]}` ~
+            "\n");
+        OpenCodeEvent[] bothEvents;
+        client.drain(bothEvents);
+        bool sawBothReasoning, sawBothContent;
+        size_t reasoningIndex = size_t.max, contentIndex = size_t.max;
+        foreach (i, e; bothEvents)
+        {
+            if (e.kind != OpenCodeEventKind.delta) continue;
+            if (e.reasoning && e.text == "done")
+            {
+                sawBothReasoning = true;
+                reasoningIndex = i;
+            }
+            if (!e.reasoning && e.text == "I've")
+            {
+                sawBothContent = true;
+                contentIndex = i;
+            }
+        }
+        assert(sawBothReasoning,
+            "Client dropped reasoning when the chunk also carried content");
+        assert(sawBothContent,
+            "Client dropped content when the chunk also carried reasoning");
+        assert(reasoningIndex < contentIndex,
+            "Reasoning must precede the answer token from the same chunk");
+        writeln("A chunk with reasoning and answer text keeps both");
     }
 
     // Context usage meter: the toolbar badge shows the exact model-visible

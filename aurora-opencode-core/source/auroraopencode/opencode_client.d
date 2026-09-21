@@ -1560,17 +1560,19 @@ final class OpenCodeClient
             }
         }
 
-        string fragment;
-        bool reasoningFragment;
+        // A single chunk can carry BOTH the chain of thought and the start of
+        // the answer: gateways that stream the final reasoning record attach
+        // the answer's first token to it. Treating reasoning and content as one
+        // mutually exclusive `fragment` silently dropped that `content`, so the
+        // reply's first letter or word vanished ("I've made…" arrived as
+        // "'ve made…"). Extract the two channels independently and emit each.
+        string reasoningFragment;
         if (auto found = "reasoning_content" in delta.object)
         {
             if (found.type == JSONType.string && found.str.length > 0)
-            {
-                fragment = found.str;
-                reasoningFragment = true;
-            }
+                reasoningFragment = found.str;
         }
-        if (fragment.length == 0)
+        if (reasoningFragment.length == 0)
         {
             // CommandCode/DeepSeek-style gateways stream the chain of thought
             // as `reasoning` (a plain string), usually next to a parallel
@@ -1581,13 +1583,10 @@ final class OpenCodeClient
             if (auto found = "reasoning" in delta.object)
             {
                 if (found.type == JSONType.string && found.str.length > 0)
-                {
-                    fragment = found.str;
-                    reasoningFragment = true;
-                }
+                    reasoningFragment = found.str;
             }
         }
-        if (fragment.length == 0 && !reasoningFragment)
+        if (reasoningFragment.length == 0)
         {
             if (auto details = "reasoning_details" in delta.object)
             {
@@ -1598,26 +1597,32 @@ final class OpenCodeClient
                         if (entry.type != JSONType.object) continue;
                         if (auto text = "text" in entry.object)
                             if (text.type == JSONType.string)
-                                fragment ~= text.str;
+                                reasoningFragment ~= text.str;
                     }
-                    if (fragment.length > 0) reasoningFragment = true;
                 }
             }
         }
-        if (fragment.length == 0)
+
+        string contentFragment;
+        if (auto found = "content" in delta.object)
         {
-            if (auto found = "content" in delta.object)
-            {
-                if (found.type == JSONType.string && found.str.length > 0)
-                    fragment = found.str;
-            }
+            if (found.type == JSONType.string && found.str.length > 0)
+                contentFragment = found.str;
         }
 
-        if (fragment.length == 0) return;
-        if (reasoningFragment) _streamReasoning ~= fragment;
-        else _streamContent ~= fragment;
-        pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta, fragment,
-            reasoningFragment));
+        if (reasoningFragment.length == 0 && contentFragment.length == 0) return;
+        if (reasoningFragment.length > 0)
+        {
+            _streamReasoning ~= reasoningFragment;
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta,
+                reasoningFragment, true));
+        }
+        if (contentFragment.length > 0)
+        {
+            _streamContent ~= contentFragment;
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta,
+                contentFragment, false));
+        }
     }
 
     private void captureUsage(const JSONValue value)
