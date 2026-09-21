@@ -204,6 +204,24 @@ private OpenCodeToolDef webFetchToolDefinition()
     );
 }
 
+/// Agent-facing rebuild tool. It does no building itself: the executable is
+/// locked while the app runs, so the work is delegated to the host application
+/// through `rebuildRequestHandler` (see `runRebuildTool`).
+private OpenCodeToolDef rebuildToolDefinition()
+{
+    return OpenCodeToolDef(
+        "rebuild",
+        "Rebuild the Aurora OpenCode application itself and relaunch it. Only " ~
+        "useful when you are working on Aurora's own source. It persists the " ~
+        "conversation, hands the build to a detached helper that waits for " ~
+        "this process to exit, runs `dub build`, and relaunches the app, which " ~
+        "then continues this conversation. The running executable is never " ~
+        "overwritten in place, so this is the only safe way to apply source " ~
+        "changes to the app.",
+        `{"type":"object","properties":{"reason":{"type":"string","description":"Short note on why a rebuild is needed; recorded in the conversation."}},"required":[]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -227,6 +245,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        rebuildToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -278,6 +297,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        rebuildToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -3478,6 +3498,46 @@ public string changeRecordDiff(const ref ChangeRecord record)
         return "Could not load snapshot diff: " ~ error.msg;
 }
 
+/// The host application installs this to run its rebuild-and-relaunch flow.
+/// The tool worker thread calls it, so it must only record the request; the
+/// application performs the rebuild (which persists state and closes the
+/// window) on its own UI thread. Returns false when a rebuild cannot be
+/// started: none registered, one already pending, or the running app cannot
+/// locate its own package to build.
+///
+/// `__gshared` is required: the app installs the handler on the UI thread but
+/// the tool runs on a worker thread, and a plain module-level variable is
+/// thread-local in D, so the worker would otherwise read its own null copy.
+public __gshared bool delegate(string reason) rebuildRequestHandler;
+
+/// Bridge the model's `rebuild` request to the host application. The tool
+/// performs no build itself: `dub` cannot replace the running image, so only
+/// the app can drive the detached-helper flow. Returns a clear result either
+/// way so the model is never left believing a rebuild happened when it did not.
+private ToolExecution runRebuildTool(string arguments)
+{
+    if (rebuildRequestHandler is null)
+        return ToolExecution("rebuild",
+            "Error: the rebuild tool is only available inside the Aurora " ~
+            "OpenCode application, where a rebuild handler is registered.", true);
+    string reason;
+    try
+    {
+        auto root = parseJSON(arguments);
+        if (root.type == JSONType.object)
+            if (auto field = "reason" in root.object)
+                if (field.type == JSONType.string) reason = field.str;
+    }
+    catch (Exception) {}
+    if (!rebuildRequestHandler(reason))
+        return ToolExecution("rebuild",
+            "Rebuild was not started: a rebuild is already pending, or the " ~
+            "running app is not built from its own source package.", true);
+    return ToolExecution("rebuild",
+        "Rebuild and relaunch started. The app will persist this " ~
+        "conversation, close, run `dub build`, relaunch, and continue here.");
+}
+
 /// Dispatch a tool call. Split out of `executeTool` so the timing wrapper has a
 /// single return point and every exit (including the unknown-tool error) is
 /// measured.
@@ -3514,6 +3574,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runGrep(call.arguments, workspace, cancellation);
         case "webfetch":
             return runWebFetch(call.arguments, workspace, cancellation);
+        case "rebuild":
+            return runRebuildTool(call.arguments);
         default:
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);

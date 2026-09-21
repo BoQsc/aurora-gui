@@ -77,6 +77,18 @@ string rebuilderPath(in RebuildPlan plan)
     return exists(candidate) ? candidate : "";
 }
 
+/**
+ * True when `dir` is Aurora OpenCode's own package: it ships this module's
+ * source. Used both to decide whether the running app can rebuild itself and to
+ * gate the agent-facing rebuild tool and its system-prompt awareness, so a
+ * packaged copy with no sources never offers a rebuild it cannot perform.
+ */
+bool isAuroraProject(string dir)
+{
+    if (dir.length == 0) return false;
+    return exists(buildPath(dir, "source", "auroraopencode", "rebuild.d"));
+}
+
 /// The argv for the detached helper process.
 string[] rebuildHelperArgv(in RebuildPlan plan)
 {

@@ -8,7 +8,7 @@ import std.file : exists, mkdirRecurse, readText, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : environment;
-import std.string : indexOf, strip, toLower;
+import std.string : indexOf, startsWith, strip, toLower;
 
 // ---------------------------------------------------------------------------
 // Shared defaults for the OpenAI-compatible opencode API mirror.
@@ -227,8 +227,27 @@ private immutable string[] defaultKeyFileCandidates = [
 /// Fallback context window (tokens) used when a model is not in the catalog.
 private immutable int defaultContextLimit = 128_000;
 
+/// DeepSeek 4.1 advertises a 1,000,000-token window, but its reliable context
+/// is smaller. When the "500K compaction" setting is on, this is the effective
+/// window used by both the usage meter and the compaction budget.
+public immutable int deepSeekV41CompactLimit = 500_000;
+
+/// True for any DeepSeek 4.1 model, under both the bare OpenCode id
+/// (`deepseek-v4.1-flash`) and the CommandCode `vendor/` form
+/// (`deepseek/deepseek-v4.1-flash`).
+public bool isDeepSeekV41Model(string model)
+{
+    const id = normalizedModelId(model);
+    return id == "deepseek-v4.1" || id.startsWith("deepseek-v4.1-");
+}
+
 /**
- * Context window (tokens) for a model.
+ * Effective context window (tokens) for a model, as used by the usage meter
+ * and the compaction budget.
+ *
+ * By default this is the catalog window (below). When `compactDeepSeek500k` is
+ * set, DeepSeek 4.1 models use `deepSeekV41CompactLimit` instead so compaction
+ * happens earlier than their advertised 1,000,000-token limit.
  *
  * The real opencode reads `model.limit.context` from provider metadata and
  * meters context as `tokens.used / limit.context`. The values below mirror the
@@ -238,7 +257,15 @@ private immutable int defaultContextLimit = 128_000;
  * CommandCode switch still meters correctly. The fallback is a conservative
  * estimate for unknown models.
  */
-public int contextLimitForModel(string model)
+public int contextLimitForModel(string model, bool compactDeepSeek500k = false)
+{
+    if (compactDeepSeek500k && isDeepSeekV41Model(model))
+        return deepSeekV41CompactLimit;
+    return catalogContextLimitForModel(model);
+}
+
+/// The raw catalog window for a model; see `contextLimitForModel`.
+private int catalogContextLimitForModel(string model)
 {
     switch (model)
     {
@@ -354,6 +381,18 @@ public int contextLimitForModel(string model)
         case "hy3-preview":               return 256_000;
         default:                   return defaultContextLimit;
     }
+}
+
+unittest
+{
+    // The 500K compaction toggle caps DeepSeek 4.1's effective window for the
+    // usage meter and the compaction budget, and leaves every other model
+    // (and DeepSeek 4.1 itself when the toggle is off) at its catalog window.
+    assert(contextLimitForModel("deepseek/deepseek-v4.1-flash") == 1_000_000);
+    assert(contextLimitForModel("deepseek/deepseek-v4.1-flash", true) == 500_000);
+    assert(contextLimitForModel("deepseek-v4.1-flash", true) == 500_000);
+    assert(contextLimitForModel("deepseek/deepseek-v4-pro", true) == 1_000_000);
+    assert(contextLimitForModel("gpt-5.5", true) == 400_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +799,7 @@ public struct Settings
     bool toolsEnabled = true;  // native D tools (run/read/write/remove/glob/grep/dshell); main, on by default
     bool legacyTools;          // additionally expose the bash/cmd/powershell shell tool; off by default
     bool showWorkedFor;        // show the "Worked for …" completion separator; off by default
+    bool compactDeepSeek500k;  // cap DeepSeek 4.1's effective window (meter + compaction) at 500k; off by default
     string workspace;          // working directory the tools run in
 }
 
@@ -934,6 +974,9 @@ public Settings loadSettings()
                 if (auto found = "showWorkedFor" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.showWorkedFor = found.type == JSONType.true_;
+                if (auto found = "compactDeepSeek500k" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.compactDeepSeek500k = found.type == JSONType.true_;
                 // Migration: the old "nativeTools" flag was a separate native-only
                 // mode. Native tools are now the default, so a user who had them
                 // ON wants no legacy shell; someone who had them OFF (shell mode)
@@ -1005,6 +1048,7 @@ public void saveSettings(const ref Settings settings)
     root["toolsEnabled"] = settings.toolsEnabled;
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
+    root["compactDeepSeek500k"] = settings.compactDeepSeek500k;
     root["workspace"] = settings.workspace;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());

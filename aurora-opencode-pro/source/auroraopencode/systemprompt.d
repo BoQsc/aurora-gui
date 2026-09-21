@@ -279,9 +279,11 @@ private string environmentSection(in SystemPromptContext ctx)
 public SystemPromptModule rebuildModule()
 {
     return textModule("rebuild", "\n# Rebuilding Aurora OpenCode\n" ~
-        "This project is Aurora OpenCode itself. You can rebuild it with the " ~
-        "`rebuild` tool, which plans the build and launches it into a separate " ~
-        "output; the running instance keeps the current binary until restart. " ~
-        "Never kill Aurora or overwrite the live executable. Report when an " ~
-        "external rebuild is still required.\n");
+        "This is Aurora OpenCode itself, so you can rebuild and relaunch the " ~
+        "application with the `rebuild` tool. It persists this conversation, " ~
+        "hands the build to a detached helper that waits for the app to exit, " ~
+        "runs `dub build`, and relaunches the app, which then continues this " ~
+        "conversation. The live executable is never overwritten while the app " ~
+        "is running: do not try to rebuild it in place with `dub` yourself, " ~
+        "and never kill the app.\n");
 }

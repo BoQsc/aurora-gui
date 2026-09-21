@@ -16,7 +16,8 @@ import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
     parseMarkdown;
 import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
-import auroraopencode.tools : previewToolDiff;
+import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
+    previewToolDiff, rebuildRequestHandler;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.array : join;
@@ -1237,6 +1238,41 @@ int main(string[] args)
     assert(root.contextUsageTextForTesting() == "3%",
         "Fresh prompt usage must replace the estimate without counting output");
     writeln("Context meter follows the active session");
+
+    // The "500K DeepSeek 4.1" compaction toggle caps DeepSeek 4.1's effective
+    // context window: the meter percentage and the compaction budget both read
+    // the same effective limit, so they cannot disagree.
+    {
+        root.recordContextUsageForTesting(240000, 10000, 250000);
+        assert(root.contextUsageTextForTesting() == "24%",
+            "DeepSeek 4.1 should meter against its full 1,000,000 window");
+        assert(root.contextLimitForTesting() == 1_000_000,
+            "The effective limit should default to the catalog window");
+        // The Settings dialog exposes the toggle, off by default.
+        auto compactCheck = root.compact500kCheckboxForTesting();
+        assert(compactCheck !is null,
+            "Settings must offer the 500K DeepSeek 4.1 compaction toggle");
+        assert(!compactCheck.checked(),
+            "The 500K compaction toggle must be off by default");
+        root.dismissPopupForTesting();
+        // With the toggle on, the same 240k request is 48% of a 500k window,
+        // and the effective limit the meter reports drops to 500,000.
+        root.setCompactDeepSeek500kForTesting(true);
+        assert(root.contextLimitForTesting() == 500_000,
+            "The 500K toggle must cap DeepSeek 4.1's effective limit, got " ~
+            to!string(root.contextLimitForTesting()));
+        assert(root.contextUsageTextForTesting() == "48%",
+            "The same usage must read 48% against a 500k window, got " ~
+            root.contextUsageTextForTesting());
+        // The toggle is DeepSeek-specific: a non-DeepSeek model keeps its full
+        // catalog window.
+        root.setCompactDeepSeek500kForTesting(false);
+        assert(root.contextLimitForTesting() == 1_000_000,
+            "Turning the toggle off must restore the full window");
+        assert(root.contextUsageTextForTesting() == "24%",
+            "Turning the toggle off must restore the 24% reading");
+        writeln("500K DeepSeek 4.1 toggle caps the effective window");
+    }
 
     // --- Projects -------------------------------------------------------
     // The sandbox is the default project (first in the rail) and owns the
@@ -3333,6 +3369,19 @@ int main(string[] args)
         else
             writeln("Rebuild helper not built; argv inspection skipped");
         writeln("Rebuild button present; rebuild-in-place available");
+
+        // The agent-facing rebuild tool is advertised, and the running app
+        // installs the handler it delegates to. The handler is deliberately not
+        // invoked here: doing so would record a real rebuild request and close
+        // the app on the next tick.
+        bool advertised;
+        foreach (toolset; [builtinToolDefinitions(), nativeOnlyToolDefinitions()])
+            foreach (tool; toolset)
+                if (tool.name == "rebuild") advertised = true;
+        assert(advertised, "the rebuild tool must be advertised to the model");
+        assert(rebuildRequestHandler !is null,
+            "the running app must register its rebuild tool handler");
+        writeln("Rebuild tool is advertised and wired to the app");
     }
 
     // The UI now publishes backend-neutral thread/item lifecycle records to an

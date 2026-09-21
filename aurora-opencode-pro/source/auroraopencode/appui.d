@@ -11,13 +11,14 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import auroraopencode.rebuild : launchRebuild, planRebuild;
+import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
-    revertChangeRecord, ChangeContext, ChangeRecord, ToolCancellation,
-    ToolExecution;
+    rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
+    ToolCancellation, ToolExecution;
+import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -3610,9 +3611,9 @@ private final class ContextUsageBadge : Widget
         layoutHints().preferredHeight = 22;
     }
 
-    void setModel(string model)
+    void setModel(string model, bool compactDeepSeek500k = false)
     {
-        const limit = contextLimitForModel(model);
+        const limit = contextLimitForModel(model, compactDeepSeek500k);
         if (limit == _limit) return;
         _limit = limit;
         invalidate();
@@ -4914,6 +4915,13 @@ public final class OpenCodeRoot : VBox
     // helper does the work after this window closes (see auroraopencode.rebuild);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
+    // An agent-triggered rebuild arrives on the tool worker thread. Record it
+    // there and perform it a few ticks later on the UI thread, by which point
+    // the tool result has been drained and persisted into the transcript.
+    private bool _agentRebuildRequested;
+    private string _agentRebuildReason;
+    private int _agentRebuildCountdown;
+    private static immutable int agentRebuildDelayTicks = 4;
 
     private ConversationRuntime runtimeForSession(int sessionIndex)
     {
@@ -5077,6 +5085,9 @@ public final class OpenCodeRoot : VBox
         _client.fetchModels();
         _input.requestFocus();
         prepareResumeAfterCrash();
+        // Let the agent rebuild this app through the `rebuild` tool. The
+        // handler only records the request; onTick performs it.
+        rebuildRequestHandler = &onAgentRebuildRequested;
     }
 
     // -- resume after an unexpected shutdown ------------------------------
@@ -5127,11 +5138,14 @@ public final class OpenCodeRoot : VBox
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
         if (!exists(path)) return;
         string cause;
+        string reason;
         try
         {
             auto value = parseJSON(readText(path));
             if (auto field = "cause" in value.object)
                 cause = field.str;
+            if (auto field = "reason" in value.object)
+                reason = field.str;
         }
         catch (Exception error)
             logError("resume note unreadable: " ~ error.msg);
@@ -5158,10 +5172,17 @@ public final class OpenCodeRoot : VBox
                     }
         }
         catch (Exception) {}
-        _resumePrompt = "The application closed unexpectedly (" ~
-            (cause.length > 0 ? cause : "cause unknown") ~
-            "). Continue the durable objective and checklist from where you " ~
-            "left off. Apply any queued guidance before claiming completion.";
+        if (cause == "rebuild")
+            _resumePrompt = "The application was rebuilt and relaunched " ~
+                "with your latest source changes. Continue the durable " ~
+                "objective and checklist from where you left off" ~
+                (reason.length > 0 ? " — " ~ reason : "") ~
+                ". Apply any queued guidance before claiming completion.";
+        else
+            _resumePrompt = "The application closed unexpectedly (" ~
+                (cause.length > 0 ? cause : "cause unknown") ~
+                "). Continue the durable objective and checklist from where you " ~
+                "left off. Apply any queued guidance before claiming completion.";
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
     }
@@ -5200,9 +5221,11 @@ public final class OpenCodeRoot : VBox
     /// the build, and relaunches the binary. State is persisted before the
     /// window closes so the new instance restores where we left off.
     ///
-    public void requestRebuild()
+    /// Returns true when the helper was started and the window is closing.
+    ///
+    public bool requestRebuild()
     {
-        if (_rebuildPending) return;
+        if (_rebuildPending) return false;
         _rebuildPending = true;
         updateStatus("Rebuilding with DUB, then relaunching...");
 
@@ -5217,9 +5240,99 @@ public final class OpenCodeRoot : VBox
         {
             _rebuildPending = false;
             updateStatus("Rebuild failed: could not start the rebuild helper.");
-            return;
+            return false;
         }
         _window.close();
+        return true;
+    }
+
+    /// Whether this build can rebuild itself: the executable lives under a
+    /// package that is Aurora OpenCode's own source.
+    private bool canSelfRebuild() const
+    {
+        return isAuroraProject(planRebuild(opencodeStateDirectory(), true,
+            thisProcessID, thisExePath()).workingDir);
+    }
+
+    /// Tool handler for the agent-facing `rebuild` tool. Runs on the tool
+    /// worker thread, so it only records the request; `onTick` performs it on
+    /// the UI thread once the tool result has settled into the transcript.
+    private bool onAgentRebuildRequested(string reason)
+    {
+        if (_rebuildPending || _agentRebuildRequested) return false;
+        if (!canSelfRebuild()) return false;
+        _agentRebuildReason = reason;
+        _agentRebuildRequested = true;
+        _agentRebuildCountdown = agentRebuildDelayTicks;
+        return true;
+    }
+
+    /// Perform an agent-requested rebuild on the UI thread. Unlike the toolbar
+    /// button, a deliberate rebuild exits cleanly, so the supervisor writes no
+    /// crash note; the app leaves its own resume request first so the relaunched
+    /// instance returns to this conversation and continues with a "rebuilt" note.
+    private void requestAgentRebuild()
+    {
+        if (_rebuildPending) return;
+        const reason = _agentRebuildReason;
+        _agentRebuildReason = "";
+        if (!canSelfRebuild())
+        {
+            if (_current >= 0)
+            {
+                ChatMessage note;
+                note.role = "assistant";
+                note.failed = true;
+                note.content = "Rebuild is unavailable: this app is not built " ~
+                    "from its own source package, so there is nothing to build.";
+                note.time = currentTimestamp();
+                appendMessage(_sessions[_current], note);
+                markDirty();
+                rebuildMessageColumn();
+            }
+            return;
+        }
+        // Keep the requesting conversation's active-turn marker set so the
+        // relaunched app resumes the right chat even if the sidebar selection
+        // was saved differently.
+        const sessionId = _current >= 0 ? _sessions[_current].id : "";
+        writeResumeNoteForRebuild(reason);
+        if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
+        if (!requestRebuild()) removeResumeNoteForRebuild();
+    }
+
+    /// Leave a resume request the next launch consumes, so a deliberate rebuild
+    /// reopens the requesting conversation with a "rebuilt" note rather than
+    /// looking like a crash.
+    private void writeResumeNoteForRebuild(string reason)
+    {
+        const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
+        string json;
+        json ~= "{\n";
+        json ~= "  \"cause\": \"rebuild\",\n";
+        json ~= "  \"reason\": " ~ resumeNoteJsonString(reason) ~ "\n";
+        json ~= "}\n";
+        try write(path, json);
+        catch (Exception error)
+            logError("could not write the rebuild resume note: " ~ error.msg);
+    }
+
+    /// Drop the resume request when the rebuild could not actually start.
+    private void removeResumeNoteForRebuild()
+    {
+        const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
+        if (!exists(path)) return;
+        try fileRemove(path);
+        catch (Exception) {}
+    }
+
+    /// Minimal JSON string escaper for the resume note; the reasoning text is
+    /// model-supplied and may contain quotes or newlines.
+    private static string resumeNoteJsonString(string value)
+    {
+        import std.string : replace;
+        return "\"" ~ value.replace("\\", "\\\\").replace("\"", "\\\"")
+            .replace("\r", "\\r").replace("\n", "\\n") ~ "\"";
     }
 
     /// The stock CheckBox reserves a fixed 12 px per character, which leaves a
@@ -5265,7 +5378,7 @@ public final class OpenCodeRoot : VBox
 
         _usageBadge = composerControls.add(new ContextUsageBadge());
         _usageBadge.setId("oc-usage");
-        _usageBadge.setModel(_settings.model);
+        _usageBadge.setModel(_settings.model, _settings.compactDeepSeek500k);
         _usageBadge.onHoverChanged = delegate(bool open)
         {
             if (open)
@@ -5633,6 +5746,25 @@ public final class OpenCodeRoot : VBox
         if (index < 0) return ".";
         const path = _projectState.projects[cast(size_t) index].path;
         return path.length > 0 ? path : ".";
+    }
+
+    /// Register the prompt modules that depend on the active project, just
+    /// before each prompt build. The set is replaced (not appended to), so a
+    /// module such as rebuild awareness cannot leak from one project's prompt
+    /// into another's.
+    private void registerContextSystemPromptModules(string workspace)
+    {
+        setSystemPromptModules(isSelfProjectWorkspace(workspace)
+            ? [rebuildModule()] : null);
+    }
+
+    /// Whether the prompt should carry Aurora self-hosting awareness: either
+    /// the conversation's project is Aurora's own package, or the running app
+    /// can rebuild itself (a dev checkout), which is the same capability.
+    private bool isSelfProjectWorkspace(string workspace) const
+    {
+        if (isAuroraProject(workspace)) return true;
+        return canSelfRebuild();
     }
 
     private Project* activeProject()
@@ -8972,6 +9104,7 @@ public final class OpenCodeRoot : VBox
                 const platform = "unknown";
             // Native tools are the main tool set; the legacy shell tool is an
             // opt-in addition from Settings.
+            registerContextSystemPromptModules(workspace);
             systemPrompt.content = buildSystemPrompt(!_settings.legacyTools,
                 workspace, platform) ~ durableTaskPrompt(*session);
             messages ~= systemPrompt;
@@ -8997,7 +9130,8 @@ public final class OpenCodeRoot : VBox
         const fixedRequestBytes = requestMessageBytes(messages) +
             requestToolDefinitionBytes(tools);
         auto compactedRequestMessages = compactRequestMessages(
-            rawRequestMessages, contextLimitForModel(session.model),
+            rawRequestMessages,
+            contextLimitForModel(session.model, _settings.compactDeepSeek500k),
             fixedRequestBytes);
         _contextWasCompacted[session.id] =
             requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
@@ -9008,7 +9142,8 @@ public final class OpenCodeRoot : VBox
         _estimatedContextTokens[session.id] = estimateRequestTokens(messages, tools);
         if (_current == sessionIndex)
         {
-            if (_usageBadge !is null) _usageBadge.setModel(session.model);
+            if (_usageBadge !is null)
+                _usageBadge.setModel(session.model, _settings.compactDeepSeek500k);
             refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
@@ -9893,6 +10028,30 @@ public final class OpenCodeRoot : VBox
         workedRow.add(workedCheck);
         content.add(workedRow);
 
+        // DeepSeek 4.1 advertises a 1,000,000-token window but its reliable
+        // context is smaller. When on, the usage meter and the compaction
+        // budget both use a 500,000-token effective window so older context is
+        // shed earlier.
+        auto compactRow = new HBox(8);
+        compactRow.layoutHints().preferredHeight = 32;
+        auto compactCheck = new CheckBox("Compact DeepSeek 4.1 at 500K");
+        compactCheck.setId("oc-compact500k");
+        compactCheck.setChecked(_settings.compactDeepSeek500k, false);
+        compactCheck.onChanged = delegate(bool value)
+        {
+            _settings.compactDeepSeek500k = value;
+            saveSettingsNow();
+            refreshUsageBadge();
+        };
+        compactRow.add(compactCheck);
+        content.add(compactRow);
+        auto compactHint = content.add(new Label(
+            "Caps DeepSeek 4.1's effective context at 500,000 tokens for the " ~
+            "usage meter and compaction. Off by default (the model advertises " ~
+            "1,000,000)."));
+        compactHint.setScale(1);
+        compactHint.setColor(opencodeMuted);
+
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
         auto promptButton = footer.add(new Button("System prompt"));
@@ -10005,6 +10164,7 @@ public final class OpenCodeRoot : VBox
             const platform = "posix";
         else
             const platform = "unknown";
+        registerContextSystemPromptModules(activeWorkspace());
         string prompt = buildSystemPrompt(!_settings.legacyTools,
             activeWorkspace(), platform);
         if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current]);
@@ -10165,7 +10325,7 @@ public final class OpenCodeRoot : VBox
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
-        _usageBadge.setModel(_settings.model);
+        _usageBadge.setModel(_settings.model, _settings.compactDeepSeek500k);
         int prompt = -1, completion = -1, total = -1;
         bool estimated;
         if (_current >= 0)
@@ -11622,6 +11782,18 @@ public final class OpenCodeRoot : VBox
             refreshTimerBadge();
         }
 
+        // Perform an agent-requested rebuild on the UI thread, a few ticks after
+        // the request so the tool result has been drained and persisted first.
+        if (_agentRebuildRequested)
+        {
+            if (_agentRebuildCountdown > 0) --_agentRebuildCountdown;
+            if (_agentRebuildCountdown == 0)
+            {
+                _agentRebuildRequested = false;
+                requestAgentRebuild();
+            }
+        }
+
         updateSendButton();
     }
 
@@ -12534,6 +12706,14 @@ public final class OpenCodeRoot : VBox
         return _usageBadge is null ? "" : _usageBadge.labelForTesting();
     }
 
+    /// Test-only: the effective context limit the badge (and the compaction
+    /// budget, which derives from the same function) use for the active model,
+    /// after any 500K DeepSeek 4.1 cap.
+    public int contextLimitForTesting()
+    {
+        return _usageBadge is null ? 0 : _usageBadge.limit();
+    }
+
     /// Test-only: the context tooltip text ("" when closed).
     public string contextTooltipTextForTesting()
     {
@@ -13160,6 +13340,22 @@ public final class OpenCodeRoot : VBox
     {
         _settings.showWorkedFor = value;
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    /// Test-only: open the settings dialog and return the "Compact DeepSeek
+    /// 4.1 at 500K" checkbox, or null when absent.
+    public CheckBox compact500kCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-compact500k");
+    }
+
+    /// Test-only: flip the 500K compaction setting as the dialog checkbox does,
+    /// without opening the dialog, and refresh the meter.
+    public void setCompactDeepSeek500kForTesting(bool value)
+    {
+        _settings.compactDeepSeek500k = value;
+        refreshUsageBadge();
     }
 
     /// Test-only: open Settings and report whether the "System prompt" button

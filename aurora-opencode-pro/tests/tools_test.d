@@ -3,9 +3,11 @@ module auroraopencode_pro_tools_test;
 import auroraopencode.core : OpenCodeToolCall,
     setOpencodeStateDirectoryForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
-    builtinToolDefinitions, cancelRunningCommands, executeTool,
+    buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
-    resolveToolPath, revertChangeRecord, toolSteeringPrompt;
+    rebuildRequestHandler, resolveToolPath, revertChangeRecord,
+    toolSteeringPrompt;
+import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
 import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
@@ -679,6 +681,77 @@ int main()
         "outside the change journal") >= 0,
         "Steering prompt must keep mutations inside the snapshot journal");
     writeln("Default vs native-only toolset shapes OK");
+
+    // The agent-facing rebuild tool is advertised in both toolsets and delegates
+    // to the host application: the tool cannot build the locked executable
+    // itself, and it reports a clear failure when no handler is installed.
+    {
+        foreach (tools; [builtinToolDefinitions(), nativeOnlyToolDefinitions()])
+        {
+            bool hasRebuild;
+            foreach (tool; tools)
+                if (tool.name == "rebuild") hasRebuild = true;
+            assert(hasRebuild, "both toolsets must advertise the rebuild tool");
+        }
+        auto noHandler = executeTool(makeCall("rebuild", `{}`), dir);
+        assert(noHandler.failed &&
+            noHandler.output.indexOf("only available inside") >= 0,
+            "rebuild without a host handler must fail clearly: " ~
+            noHandler.output);
+        string capturedReason;
+        rebuildRequestHandler = delegate bool(string reason)
+        {
+            capturedReason = reason;
+            return true;
+        };
+        auto requested = executeTool(makeCall("rebuild",
+            `{"reason":"apply the new edit"}`), dir);
+        assert(!requested.failed && capturedReason == "apply the new edit",
+            "rebuild must forward its reason to the host handler");
+        // The app installs the handler on its UI thread but the tool runs on
+        // its worker thread, so the global must be shared across threads
+        // (module-level variables are thread-local by default in D). Calling it
+        // from a worker thread catches a thread-local handler, which reads null
+        // here and makes the tool report "only available inside".
+        rebuildRequestHandler = null;
+        auto capture = new class
+        {
+            string reason;
+            bool reached;
+        };
+        rebuildRequestHandler = delegate bool(string reason)
+        {
+            capture.reason = reason;
+            capture.reached = true;
+            return true;
+        };
+        auto rebuildWorker = new Thread(delegate()
+        {
+            executeTool(makeCall("rebuild",
+                `{"reason":"from a worker"}`), dir);
+        });
+        rebuildWorker.start();
+        rebuildWorker.join();
+        assert(capture.reached && capture.reason == "from a worker",
+            "the rebuild handler must be visible to the tool worker thread " ~
+            "(it must be __gshared, not thread-local)");
+        rebuildRequestHandler = null;
+        writeln("Rebuild tool is advertised and reaches the host application");
+    }
+
+    // The rebuild awareness module is opt-in: it appears only when registered,
+    // and clearing the module set removes it from later prompts.
+    {
+        setSystemPromptModules([rebuildModule()]);
+        assert(buildSystemPrompt(true, ".", "auto").indexOf(
+            "Rebuilding Aurora OpenCode") >= 0,
+            "a registered rebuild module must appear in the prompt");
+        setSystemPromptModules(null);
+        assert(buildSystemPrompt(true, ".", "auto").indexOf(
+            "Rebuilding Aurora OpenCode") < 0,
+            "clearing the modules must remove the rebuild section");
+        writeln("Rebuild awareness is opt-in and does not leak between prompts");
+    }
 
     // Native open validates targets before asking the OS to launch anything,
     // avoiding shell retries and making missing-path failures deterministic.
