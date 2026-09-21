@@ -3885,6 +3885,26 @@ int main(string[] args)
         writeln("Cumulative repetition skips only the stuck call and continues");
     }
 
+    // A conversation carries its own model id. Switching to it must not send an
+    // id the current endpoint does not serve (upstream "Model is unavailable");
+    // it is reconciled against the fetched catalog instead.
+    {
+        root.newChatForTesting();
+        const index = cast(int) root.sessionCountForTesting() - 1;
+        root.seedModelsForTesting(["alpha-1", "beta-2"]);
+        root.setSessionModelForTesting(index, "ghost/model-x");
+        root.selectSessionForTesting(index);
+        assert(root.activeSessionModelForTesting() == "alpha-1",
+            "a stale conversation model was not reconciled: " ~
+            root.activeSessionModelForTesting());
+        root.setSessionModelForTesting(index, "vendor/beta-2");
+        root.selectSessionForTesting(index);
+        assert(root.activeSessionModelForTesting() == "beta-2",
+            "a vendor-normalized model was not matched: " ~
+            root.activeSessionModelForTesting());
+        writeln("Conversation model reconciled against the catalog on switch");
+    }
+
     root.shutdownClient();
     window.close();
     try rmdirRecurse(stateDir);

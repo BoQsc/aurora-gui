@@ -4917,6 +4917,10 @@ public final class OpenCodeRoot : VBox
     private size_t _visibleMessageLimit = messageHistoryPageSize;
     private static immutable size_t messageHistoryPageSize = 120;
     private string[] _models = defaultModels.dup;
+    // True once `/models` returned a real catalog (not the local default list),
+    // so a saved model id can be validated against what the endpoint actually
+    // serves without clobbering a custom/self-hosted model before discovery.
+    private bool _modelsFetched;
 
     private ProjectState _projectState;
     private ProjectListView _projectRail;
@@ -6594,7 +6598,8 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setTokenRate(_liveTokenRateTenths);
         }
         rebuildMessageColumn();
-        _settings.model = _sessions[index].model;
+        _settings.model = resolveAvailableModel(_sessions[index].model);
+        _sessions[index].model = _settings.model;
         _settings.thinking = _sessions[index].thinking;
         _modelButton.setText(_settings.model);
         _thinkingBox.setChecked(_settings.thinking, false);
@@ -10015,6 +10020,15 @@ public final class OpenCodeRoot : VBox
         // rejects requests without one. The first message id is stable for
         // this conversation across turns and restarts.
         _client.setOpenCodeSession(sessionRoutingKey(*session));
+        // Never send an id the endpoint does not serve: a conversation saved
+        // under another provider carries its own model, which may be missing
+        // from the current catalog (upstream "Model is unavailable").
+        session.model = resolveAvailableModel(session.model);
+        if (_current == sessionIndex)
+        {
+            _settings.model = session.model;
+            if (_modelButton !is null) _modelButton.setText(session.model);
+        }
         _client.startChatMessages(messages, tools, session.model,
             session.thinking, ++_nextRequestId);
         _activeRequestId = _nextRequestId;
@@ -11199,6 +11213,7 @@ public final class OpenCodeRoot : VBox
     private void applyModels(string[] modelIds)
     {
         _models = modelIds.dup;
+        if (modelIds.length > 0) _modelsFetched = true;
         // The OpenCode Go endpoint's /models lists models served over other
         // API shapes (Anthropic /messages, OpenAI /responses). This client
         // speaks /chat/completions only, so drop those ids instead of letting
@@ -11233,6 +11248,19 @@ public final class OpenCodeRoot : VBox
         }
         if (!found && _models.length > 0)
             _settings.model = _models[0];
+        // A conversation keeps its own model id. If the refreshed catalog no
+        // longer serves it, realign it now so the next send is not rejected as
+        // "Model is unavailable".
+        if (_current >= 0)
+        {
+            const resolved = resolveAvailableModel(_sessions[_current].model);
+            if (resolved != _sessions[_current].model)
+            {
+                _sessions[_current].model = resolved;
+                _settings.model = resolved;
+                if (_modelButton !is null) _modelButton.setText(resolved);
+            }
+        }
         if (!_client.busy())
             updateStatus("Models refreshed.");
         refreshUsageBadge();
@@ -11241,6 +11269,22 @@ public final class OpenCodeRoot : VBox
     private void updateModelButton()
     {
         _modelButton.setText(_settings.model);
+    }
+
+    /// A model id guaranteed usable on the current endpoint: `wanted` unchanged
+    /// when the catalog has not been fetched yet or already contains it (directly
+    /// or by its `vendor/`-normalized form), otherwise the first catalog entry.
+    /// Stops a conversation saved under another provider from being sent an id
+    /// the endpoint rejects as "Model is unavailable".
+    private string resolveAvailableModel(string wanted)
+    {
+        if (!_modelsFetched || _models.length == 0) return wanted;
+        foreach (model; _models)
+            if (model == wanted) return model;
+        const normalized = normalizedModelId(wanted);
+        foreach (model; _models)
+            if (normalizedModelId(model) == normalized) return model;
+        return _models[0];
     }
 
     private void updateKeyBadge()
@@ -12929,6 +12973,26 @@ public final class OpenCodeRoot : VBox
     public void selectSessionForTesting(int index)
     {
         selectSession(index);
+    }
+
+    /// Test-only: seed the fetched model catalog and reconcile as a refresh
+    /// would, so a switch can be checked against known-available ids.
+    public void seedModelsForTesting(string[] modelIds)
+    {
+        applyModels(modelIds);
+    }
+
+    /// Test-only: overwrite a conversation's stored model id.
+    public void setSessionModelForTesting(int index, string model)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return;
+        _sessions[index].model = model;
+    }
+
+    /// Test-only: the model the active conversation would send.
+    public string activeSessionModelForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].model;
     }
 
     public string lastMessageContentInSessionForTesting(int index) const
