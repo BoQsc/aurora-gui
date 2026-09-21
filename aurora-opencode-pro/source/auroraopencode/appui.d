@@ -3096,7 +3096,7 @@ private final class PlanCard : Widget
         {
             y += progressTopGap;
             canvas.fillRoundedRect(Rect(padH, y, textWidth, progressH),
-                progressH / 2, opencodeBorder);
+                progressH / 2, opencodeMuted.withAlpha(80));
             const total = cast(int) _texts.length;
             const done = doneCount();
             if (done > 0 && total > 0)
@@ -3149,7 +3149,7 @@ private final class PlanCard : Widget
         }
         else
         {
-            canvas.drawRoundedRect(box, 3, opencodeField, opencodeBorder, 1);
+            canvas.drawRoundedRect(box, 3, opencodeField, opencodeMuted, 1);
         }
     }
 

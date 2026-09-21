@@ -140,8 +140,10 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "criteria. Use `update_plan` only when the work is genuinely substantial, " ~
         "has multiple dependent phases, or benefits from durable checkpoints. " ~
         "Skip a plan for direct answers, quick exploration, and a single " ~
-        "localized change. When a plan exists, keep exactly one step in progress " ~
-        "and update it as work finishes.\n" ~
+        "localized change. When the work qualifies, record the plan with a " ~
+        "single `update_plan` call before the first action — list every step " ~
+        "with the first marked `in_progress` and the rest `pending` — then " ~
+        "keep exactly one step in progress and update it as work finishes.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
         "working directory. Read a file before changing it.\n" ~

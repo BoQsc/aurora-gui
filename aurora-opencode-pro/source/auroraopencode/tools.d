@@ -154,8 +154,10 @@ private OpenCodeToolDef updatePlanToolDefinition()
     return OpenCodeToolDef(
         "update_plan",
         "Update the task plan with a list of steps, each carrying a status " ~
-        "of `pending`, `in_progress` or `completed`. Use it for multi-step " ~
-        "work; at most one step may be in_progress at a time.",
+        "of `pending`, `in_progress` or `completed`. Record the plan before " ~
+        "starting a multi-step task: list every step up front, mark the first " ~
+        "`in_progress` and the rest `pending`, then update statuses as you go. " ~
+        "At most one step may be in_progress at a time.",
         `{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The list of steps"}},"required":["plan"]}`
     );
 }
