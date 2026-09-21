@@ -2515,6 +2515,46 @@ int main(string[] args)
         writeln("Failure before chatBegin attaches to the reply, not the prompt");
     }
 
+    // Regression: a Retry that fails before the model streams must land on the
+    // ACTIVE branch. After a regenerate the abandoned reply stays last in
+    // `messages`, so attaching the error to the array tail wrote it off-branch:
+    // the visible path ended at the prompt, with no error row and no Retry pill,
+    // so the turn could never be retried again.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["Retry me.", "First attempt."]);
+        // First failure attaches to the existing reply and offers Retry.
+        root.failAssistantMessageForTesting("HTTP 429: provider busy");
+        assert(root.lastBubbleActionForTesting() == "Retry",
+            "A failed reply must offer Retry, got " ~
+            root.lastBubbleActionForTesting());
+        const storedAfterFirstFailure = root.totalMessageCountForTesting();
+        // Click Retry: the failed reply becomes an abandoned sibling branch.
+        assert(root.prepareRegenerateForTesting(),
+            "Retry was not offered after a failure");
+        // The retry dies before any byte streams (early rejection).
+        root.failAssistantMessageForTesting("HTTP 429: provider busy again");
+        assert(root.messageCountForTesting() == 2,
+            "A failed retry did not land on the active branch: visible " ~
+            to!string(root.messageCountForTesting()));
+        assert(root.messageRoleForTesting(
+            root.totalMessageCountForTesting() - 1) == "assistant",
+            "The active branch tip after a failed retry is not a reply");
+        assert(root.lastAssistantContentForTesting().indexOf("busy again") >= 0,
+            "The retry's error is missing from the visible branch: " ~
+            root.lastAssistantContentForTesting());
+        assert(root.lastBubbleActionForTesting() == "Retry",
+            "A failed retry must still offer Retry, got " ~
+            root.lastBubbleActionForTesting());
+        assert(root.totalMessageCountForTesting() ==
+            storedAfterFirstFailure + 1,
+            "A failed retry should store one new reply, got " ~
+            to!string(root.totalMessageCountForTesting()) ~ " stored");
+        assert(driver.paint(), "Failed-retry layout did not paint");
+        writeln("A failed retry stays on the active branch and offers Retry");
+    }
+
     // Edit tool: a real file edit must report a unified diff with green/red
     // counters (the collapsed part shows +N -M; the body shows line numbers).
     write(buildPath(workspaceDir, "editme.txt"), "alpha\nbeta\ngamma\n");

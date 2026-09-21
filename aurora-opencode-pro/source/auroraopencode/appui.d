@@ -7345,8 +7345,12 @@ public final class OpenCodeRoot : VBox
                 continue;
             const message = session.messages[cast(size_t) messageIndex];
             // Only a real assistant reply gets a visible pill; a tool-call
-            // wrapper (empty content + tool requests) is not a reply.
-            if (message.role == "assistant" && message.toolCalls.length == 0)
+            // wrapper (empty content + tool requests) is not a reply. A failed
+            // turn is the exception: however it died, the user must always be
+            // able to send it again, so it keeps its Retry pill even when it had
+            // requested tools.
+            if (message.role == "assistant" &&
+                (message.toolCalls.length == 0 || message.failed))
             {
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
                     regenerateAction(_current, messageIndex));
@@ -7768,21 +7772,36 @@ public final class OpenCodeRoot : VBox
             return;
         }
         auto session = &_sessions[sessionIndex];
-        // The failure can arrive before any assistant turn exists (the request
-        // was rejected before the first streamed byte, so `chatBegin` never
-        // fired). Create the reply turn first: without this the error text was
-        // appended to the USER's prompt and marked it failed, corrupting the
-        // history and rendering the user's own message as an error.
-        if (session.messages.length == 0 ||
-            session.messages[$ - 1].role != "assistant")
+        // Attach the failure to the reply the ACTIVE branch is waiting on, not
+        // merely the last stored message. The two differ after a Retry: the
+        // re-run branches from the abandoned reply's parent, so the old failed
+        // reply is still last in `messages` but off the active branch. Writing
+        // the error there hid the failure (no error row, no Retry pill) and
+        // corrupted a turn the user had already branched past. The request can
+        // also die before `beginAssistantMessage` ran (an early rejection, so
+        // `chatBegin` never fired): then there is no reply for the active leaf,
+        // and the error must go on a fresh assistant reply rather than the tail
+        // (which would be the user's own prompt and corrupt it).
+        size_t replyIndex = session.messages.length;
+        if (session.activeLeafId.length > 0)
+            foreach (i, existing; session.messages)
+                if (existing.id == session.activeLeafId)
+                {
+                    replyIndex = i;
+                    break;
+                }
+        const leafIsAssistant = replyIndex < session.messages.length &&
+            session.messages[replyIndex].role == "assistant";
+        if (!leafIsAssistant)
         {
             ChatMessage reply;
             reply.role = "assistant";
             reply.time = currentTimestamp();
             appendMessage(*session, reply);
+            replyIndex = session.messages.length - 1;
         }
         clearActivity();
-        auto message = &session.messages[$ - 1];
+        auto message = &session.messages[replyIndex];
         message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
             "Error:\n\n```text\n" ~
             error.replace("```", "`` `") ~ "\n```";
