@@ -4816,10 +4816,9 @@ public final class OpenCodeRoot : VBox
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
     private int _toolRounds;
-    // A bounded tool loop gets one final, tool-free answer request. If the model
-    // asks for tools again, settle the turn instead of starting another cycle.
+    // A recovery request may temporarily omit tools. If the provider asks for
+    // tools anyway, restore them and continue the same turn automatically.
     private bool _finalAnswerRequested;
-    private static immutable int maxToolRounds = 64;
     private bool _toolContinuationPaused; // test-only: hold the loop after results
 
     // Repetition is a signal for guidance, not permission to reject a tool.
@@ -4840,22 +4839,18 @@ public final class OpenCodeRoot : VBox
     private string _pendingProgressGuidance;
     private static immutable int failureGuidanceThreshold = 3;
     // Successful context calls are not automatically useful progress. Count
-    // exploration across the whole user request (a mutation does not buy a new
-    // search budget), then force the model to act on the evidence already read.
-    // This catches varied read/grep loops and prevents trivial edits from being
-    // used to reset the guard.
+    // exploration across the whole user request so a checkpoint can encourage
+    // action, without turning that heuristic into a hard ceiling. Large tasks
+    // may legitimately need far more inspection than ordinary tasks.
     private static immutable int explorationCheckpointCalls = 10;
-    // Unlike the checkpoint above, this is an enforced no-more-reading gate.
-    // It counts varied reads as well as exact repeats and resets only when the
-    // turn makes substantive progress (a mutation or successful verification).
-    private static immutable int hardExplorationCallLimit = 20;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
     // many times one exact call (name + arguments) has run across the whole
-    // conversation; once it is reached the app stops executing that call and
-    // forces a tool-free final answer (see `handleToolCalls`). It is set well
-    // above the tolerated repeat streak so ordinary re-reads are unaffected.
+    // conversation. Once reached, only that repeated request is suppressed;
+    // the task and tool loop remain active so the model can choose another
+    // action. It is set well above the tolerated repeat streak so ordinary
+    // re-reads are unaffected.
     private static immutable int cumulativeRepeatLimit = 12;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
@@ -8040,26 +8035,33 @@ public final class OpenCodeRoot : VBox
         return true;
     }
 
-    /// The largest number of times any single exact tool call (name + arguments)
-    /// appears on the active path. Computed from persisted history rather than a
-    /// runtime counter, so it spans every turn of the conversation and survives
-    /// a restart. A model that re-issues the same read/grep across many turns
-    /// (each turn resetting the per-turn counters) still trips this cap.
-    private static int mostRepeatedToolCallCount(const ref ChatSession session)
+    /// Number of completed executions of one exact call on the active path.
+    /// Persisted history makes this survive turns and restarts, while checking
+    /// the currently requested calls avoids penalizing unrelated productive
+    /// work merely because some older call repeated.
+    private static int toolCallRunCount(const ref ChatSession session,
+        const ref OpenCodeToolCall call)
     {
-        int[string] counts;
-        int worst;
+        int count;
+        const signature = call.name ~ "|" ~ call.arguments;
         foreach (index; activeMessagePath(session))
         {
             const message = session.messages[index];
             if (message.role != "tool" || message.toolName.length == 0)
                 continue;
-            const signature = message.toolName ~ "|" ~ message.toolArgs;
-            const seen = counts.get(signature, 0) + 1;
-            counts[signature] = seen;
-            if (seen > worst) worst = seen;
+            if (message.toolName ~ "|" ~ message.toolArgs == signature)
+                ++count;
         }
-        return worst;
+        return count;
+    }
+
+    private static bool hasExhaustedRepeatedCall(
+        const ref ChatSession session, const(OpenCodeToolCall)[] calls)
+    {
+        foreach (ref call; calls)
+            if (toolCallRunCount(session, call) >= cumulativeRepeatLimit)
+                return true;
+        return false;
     }
 
     private static bool hasSubstantiveMutation(
@@ -8191,108 +8193,60 @@ public final class OpenCodeRoot : VBox
         }
         markDirty();
 
-        // A hard backstop is deliberately generous: normal stopping is still
-        // the model returning prose with no tool calls. The cap exists only so
-        // a provider that continually asks for tools cannot own a conversation
-        // forever. It gets one explicit chance to summarize without tools.
+        // A provider can occasionally emit a structured tool request even when
+        // a recovery request offered no tools. Pair that request with skipped
+        // results, restore tools, and continue in the same active turn. This is
+        // internal protocol recovery, never a reason to stop the user's task.
         if (_finalAnswerRequested)
         {
             appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the bounded tool loop already requested " ~
-                "a final answer.");
-            ChatMessage stopped;
-            stopped.role = "assistant";
-            stopped.failed = true;
-            stopped.content = "Stopped: the model continued requesting tools " ~
-                "after the tool-loop limit. You can continue this task " ~
-                "explicitly.";
-            stopped.time = currentTimestamp();
-            appendMessage(*session, stopped);
-            session.taskStatus = "blocked";
+                "Tool call deferred while the provider was in a tool-free " ~
+                "recovery request; tool access is being restored automatically.");
+            ChatMessage recovery;
+            recovery.role = "user";
+            recovery.internal = true;
+            recovery.content = "The provider requested tools during a tool-free " ~
+                "recovery response. Tool access is restored. Continue the same " ~
+                "task from the gathered evidence; choose the next action that " ~
+                "makes progress and do not repeat a known no-progress call.";
+            appendMessage(*session, recovery);
+            _finalAnswerRequested = false;
+            session.turnStatus = "running";
+            session.taskStatus = "active";
             publishThreadUpdated(*session);
-            finishAssistantMessage(true, 0, 0, 0, true,
-                "tool_loop_limit");
-            _activeRequestId = 0;
-            _activeRequestSession = -1;
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Provider recovery complete — continuing automatically…");
+            if (!_toolContinuationPaused)
+                startChatRequest(sessionIndex, false);
             return;
         }
 
-        // Cumulative repetition backstop. The per-turn counters above reset on
-        // every new user turn (and on any different call), so a model can loop
-        // for hours across "continue" turns without ever tripping the consecutive
-        // streak. Once one exact call has already run `cumulativeRepeatLimit`
-        // times in this conversation, stop running it and force a tool-free
-        // final answer; if the model still asks for tools, the
-        // `_finalAnswerRequested` branch above marks the turn blocked instead of
-        // looping again.
-        if (mostRepeatedToolCallCount(*session) >= cumulativeRepeatLimit)
+        // Suppress only a currently requested exact call that has already run
+        // excessively. This prevents a hot loop without limiting the number of
+        // distinct, productive calls a difficult task may need.
+        if (hasExhaustedRepeatedCall(*session, event.toolCalls))
         {
             appendSkippedToolResults(*session, event.toolCalls,
                 "Tool call skipped: this exact call has already run " ~
                 to!string(cumulativeRepeatLimit) ~ " times in this " ~
-                "conversation. Repeating it cannot add new evidence.");
+                "conversation. Tool access remains available for a different " ~
+                "action that can add new evidence.");
             ChatMessage repeated;
             repeated.role = "user";
             repeated.internal = true;
             repeated.content = "Repetition limit reached: the same tool call " ~
-                "has already run many times without new information. Do not " ~
-                "call more tools. Answer with what you have learned, or state " ~
-                "the one concrete blocker that prevents progress.";
+                "has already run many times without new information. Continue " ~
+                "the task automatically with a different tool, different " ~
+                "arguments, or the evidence already gathered. Tool access is " ~
+                "still available and the task remains active.";
             appendMessage(*session, repeated);
-            _finalAnswerRequested = true;
+            session.turnStatus = "running";
+            session.taskStatus = "active";
             publishThreadUpdated(*session);
             markDirty();
             if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Repetition limit reached — requesting a final answer…");
-            if (!_toolContinuationPaused)
-                startChatRequest(sessionIndex, false);
-            return;
-        }
-
-        if (_toolRounds >= maxToolRounds)
-        {
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the maximum number of tool rounds was " ~
-                "reached.");
-            ChatMessage finalize;
-            finalize.role = "user";
-            finalize.internal = true;
-            finalize.content = "The bounded tool loop is complete. Do not call " ~
-                "more tools. Give the user a concise final answer from the " ~
-                "evidence already collected, including any unresolved blocker.";
-            appendMessage(*session, finalize);
-            _finalAnswerRequested = true;
-            publishThreadUpdated(*session);
-            markDirty();
-            if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Tool limit reached — requesting a final answer…");
-            if (!_toolContinuationPaused)
-                startChatRequest(sessionIndex, false);
-            return;
-        }
-
-        const explorationCount = readOnlyCallsSinceProgress(*session);
-        if (allReadOnlyExplorationCalls(event.toolCalls) &&
-            explorationCount + cast(int) event.toolCalls.length >
-                hardExplorationCallLimit)
-        {
-            appendSkippedToolResults(*session, event.toolCalls,
-                "Tool call skipped: the turn has reached its read-only " ~
-                "exploration limit without a mutation or successful " ~
-                "verification.");
-            ChatMessage bounded;
-            bounded.role = "user";
-            bounded.internal = true;
-            bounded.content = "Exploration limit reached. Do not call more " ~
-                "tools in this turn. Use the evidence already collected to " ~
-                "make the smallest justified change or answer now; if that is " ~
-                "impossible, state the one concrete missing fact as a blocker.";
-            appendMessage(*session, bounded);
-            _finalAnswerRequested = true;
-            publishThreadUpdated(*session);
-            markDirty();
-            if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Exploration limit reached — requesting an answer…");
+            updateStatus("Repeated no-progress call skipped — continuing…");
             if (!_toolContinuationPaused)
                 startChatRequest(sessionIndex, false);
             return;
@@ -9610,11 +9564,21 @@ public final class OpenCodeRoot : VBox
                 const platform = "posix";
             else
                 const platform = "unknown";
-            // Native tools are the main tool set; the legacy shell tool is an
-            // opt-in addition from Settings.
-            registerContextSystemPromptModules(workspace);
-            systemPrompt.content = buildSystemPrompt(!_settings.legacyTools,
-                workspace, platform) ~ durableTaskPrompt(*session);
+            if (_finalAnswerRequested)
+                systemPrompt.content = "Produce the final response now from " ~
+                    "the evidence already gathered. No tools are available in " ~
+                    "this request. Give the useful result, or state one " ~
+                    "specific unresolved blocker. Do not ask to call tools." ~
+                    durableTaskPrompt(*session);
+            else
+            {
+                // Native tools are the main tool set; the legacy shell tool is
+                // an opt-in addition from Settings.
+                registerContextSystemPromptModules(workspace);
+                systemPrompt.content = buildSystemPrompt(
+                    !_settings.legacyTools, workspace, platform) ~
+                    durableTaskPrompt(*session);
+            }
             messages ~= systemPrompt;
         }
         else
@@ -9629,7 +9593,7 @@ public final class OpenCodeRoot : VBox
             }
         }
         OpenCodeToolDef[] tools;
-        if (_settings.toolsEnabled)
+        if (_settings.toolsEnabled && !_finalAnswerRequested)
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
@@ -12721,11 +12685,6 @@ public final class OpenCodeRoot : VBox
             readOnlyCallsSinceProgress(_sessions[_current]);
     }
 
-    public int hardExplorationLimitForTesting() const
-    {
-        return hardExplorationCallLimit;
-    }
-
     public bool applyExplorationCheckpointForTesting()
     {
         if (_current < 0 || readOnlyExplorationCount(_sessions[_current]) <
@@ -14313,11 +14272,11 @@ public final class OpenCodeRoot : VBox
         return _client !is null && _client.busy();
     }
 
-    /// Healthy long-horizon turns have no inactivity timeout. A generous round
-    /// cap remains as a deterministic backstop for providers that never emit a
-    /// final answer.
+    /// Healthy long-horizon turns have neither an inactivity timeout nor an
+    /// arbitrary tool-round ceiling. Exact no-progress repetition is handled
+    /// separately without stopping the task.
     public bool hasAutomaticTurnTimeoutForTesting() const { return false; }
-    public int toolRoundLimitForTesting() const { return maxToolRounds; }
+    public bool toolRoundsAreUnboundedForTesting() const { return true; }
 
     public void setToolRoundsForTesting(int rounds)
     {
@@ -14327,6 +14286,11 @@ public final class OpenCodeRoot : VBox
     public bool finalAnswerRequestedForTesting() const
     {
         return _finalAnswerRequested;
+    }
+
+    public void requestToolFreeRecoveryForTesting()
+    {
+        _finalAnswerRequested = true;
     }
 
     /// Test-only: tool calls injected but not yet reported back.

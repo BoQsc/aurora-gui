@@ -2974,50 +2974,38 @@ int main(string[] args)
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],
         ["Inspect a bounded problem", ""]);
-    foreach (round; 0 .. root.hardExplorationLimitForTesting())
+    enum longExplorationRun = 80;
+    foreach (round; 0 .. longExplorationRun)
         root.injectToolResultForTesting("read", "evidence", false,
             `{"path":"more-` ~ to!string(round) ~ `"}`);
     assert(root.explorationSinceProgressForTesting() ==
-        root.hardExplorationLimitForTesting(),
-        "hard exploration counter did not include varied reads");
-    root.addConversationForTesting(["assistant"], [""]);
-    root.pauseToolContinuationForTesting();
-    OpenCodeToolCall excessRead;
-    excessRead.id = "call_exploration_limit";
-    excessRead.name = "read";
-    excessRead.arguments = `{"path":"one-more"}`;
-    const beforeExcessRead = root.toolMessageCountForTesting();
-    root.injectToolCallsForTesting([excessRead]);
-    assert(root.finalAnswerRequestedForTesting() &&
-        root.pendingToolResultsForTesting() == 0 &&
-        root.toolMessageCountForTesting() == beforeExcessRead + 1 &&
-        root.lastToolResultForTesting().indexOf("exploration limit") >= 0,
-        "hard exploration ceiling executed another read instead of finalizing");
-    writeln("Varied read loops stop at the hard exploration ceiling");
+        longExplorationRun && !root.finalAnswerRequestedForTesting(),
+        "a long varied exploration run was incorrectly forced to stop");
+    writeln("Large tasks may perform long varied exploration runs");
     assert(!root.hasAutomaticTurnTimeoutForTesting() &&
-        root.toolRoundLimitForTesting() >= 32,
-        "long-horizon work lacks a generous deterministic loop backstop");
-    writeln("Long-horizon turns have no timeout and a generous loop backstop");
+        root.toolRoundsAreUnboundedForTesting(),
+        "long-horizon work still has an arbitrary turn or tool-round ceiling");
+    writeln("Long-horizon turns have no timeout or tool-round ceiling");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],
         ["bounded task", ""]);
     root.pauseToolContinuationForTesting();
-    root.setToolRoundsForTesting(root.toolRoundLimitForTesting());
+    root.setToolRoundsForTesting(10_000);
+    assert(!root.finalAnswerRequestedForTesting(),
+        "a large productive tool-round count forced finalization");
+    root.requestToolFreeRecoveryForTesting();
     OpenCodeToolCall overLimit;
     overLimit.id = "call_over_limit";
     overLimit.name = "read";
     overLimit.arguments = `{"path":"again"}`;
     root.injectToolCallsForTesting([overLimit]);
-    assert(root.finalAnswerRequestedForTesting() &&
-        root.pendingToolResultsForTesting() == 0,
-        "the tool-loop limit executed another batch instead of finalizing");
-    root.addConversationForTesting(["assistant"], [""]);
-    root.injectToolCallsForTesting([overLimit]);
-    assert(root.taskStatusForTesting() == "blocked" &&
-        root.lastAssistantContentForTesting().indexOf("Stopped:") >= 0,
-        "a model that ignored finalization restarted the tool loop");
-    writeln("Tool-loop backstop finalizes once, then settles deterministically");
+    assert(!root.finalAnswerRequestedForTesting() &&
+        root.taskStatusForTesting() == "active" &&
+        root.lastAssistantContentForTesting().indexOf("Stopped:") < 0 &&
+        root.lastAssistantContentForTesting().indexOf("choose Continue") < 0,
+        "tool-free provider recovery stopped or burdened the user");
+    writeln("Tool-free provider recovery restores tools automatically");
 
     // The repetition-guidance injections run real local tool workers and a follow-up
     // request. Drain their queued events here; otherwise one lands in the
@@ -3688,18 +3676,14 @@ int main(string[] args)
         overRepeat.name = "dshell";
         overRepeat.arguments = `{"command":"list"}`;
         root.injectToolCallsForTesting([overRepeat]);
-        assert(root.finalAnswerRequestedForTesting(),
-            "the cumulative repeat limit did not force a final answer");
+        assert(!root.finalAnswerRequestedForTesting(),
+            "the cumulative repeat guard incorrectly forced a final answer");
         assert(root.lastToolResultForTesting().indexOf("has already run") >= 0,
             "the over-limit call was executed instead of skipped: " ~
             root.lastToolResultForTesting());
-        // A model that ignores the stop and asks for tools again must settle
-        // blocked rather than start another cycle.
-        root.addConversationForTesting(["assistant"], [""]);
-        root.injectToolCallsForTesting([overRepeat]);
-        assert(root.taskStatusForTesting() == "blocked",
-            "a tool request after the repetition backstop did not settle blocked");
-        writeln("Cumulative repetition is stopped across turns");
+        assert(root.taskStatusForTesting() == "active",
+            "suppressing one repeated call stopped the task");
+        writeln("Cumulative repetition skips only the stuck call and continues");
     }
 
     root.shutdownClient();
