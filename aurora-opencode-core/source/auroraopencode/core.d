@@ -415,6 +415,10 @@ public immutable Color opencodeThinkingText = Color.fromHex(0x8d8d99);
 public immutable Color opencodeErrorRed = Color.fromHex(0xff6b6b);
 public immutable Color opencodeKeyOk = Color.fromHex(0x6fd08c);
 public immutable Color opencodeKeyMissing = Color.fromHex(0xffa94d);
+// A conversation whose last turn stopped without completing (a crash, a silent
+// stream death, or a user Stop) is flagged in the sidebar with this amber, so
+// "needs continue" reads differently from a hard failure red.
+public immutable Color opencodeWarning = Color.fromHex(0xf5a623);
 // Diff rendering: `+N`/added lines use the green, `-M`/removed lines the red,
 // with a faint row tint behind each so changes are scannable at a glance.
 public immutable Color opencodeDiffAdd = Color.fromHex(0x6fd08c);
@@ -591,6 +595,12 @@ public struct ChatSession
     // remains active, and an interrupted turn does not make the objective a
     // blocker by itself.
     string turnStatus; // "idle" | "running" | "completed" | "interrupted" | "failed"
+    // Set when a turn reaches a terminal state (completed, interrupted or
+    // failed) while the user was looking at a different conversation, and
+    // cleared when this conversation is opened. It drives the sidebar's "done,
+    // not yet read" dot and must survive a restart so a background turn is not
+    // silently missed.
+    bool unread;
     TaskStep[] taskSteps;
     string verificationStatus; // "not_required" | "required" | "passed" | "failed"
     // Guidance entered with Enter while a turn is running steers it at the

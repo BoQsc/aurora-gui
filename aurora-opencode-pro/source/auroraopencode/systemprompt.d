@@ -118,8 +118,10 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "new update only when the phase changes, a useful result is found, or " ~
         "a blocker appears.\n" ~
         "- Keep the user's request as the completion contract. A durable plan " ~
-        "is a progress aid, not permission to enlarge the scope. Keep it " ~
-        "current when one exists; do not create work merely to satisfy it.\n" ~
+        "is a progress aid, not permission to enlarge the scope. When a plan " ~
+        "exists, keep it current: call `update_plan` whenever a step starts " ~
+        "or finishes, and never leave a completed step shown as " ~
+        "pending/in_progress. Do not create work merely to satisfy it.\n" ~
         "- Use the minimum evidence sufficient for the next action. " ~
         "Every read or search must resolve a named unknown. Batch independent " ~
         "lookups. Reread when workspace state changed, the earlier result was " ~
@@ -142,8 +144,13 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "Skip a plan for direct answers, quick exploration, and a single " ~
         "localized change. When the work qualifies, record the plan with a " ~
         "single `update_plan` call before the first action — list every step " ~
-        "with the first marked `in_progress` and the rest `pending` — then " ~
-        "keep exactly one step in progress and update it as work finishes.\n" ~
+        "with the first marked `in_progress` and the rest `pending`. Then " ~
+        "keep exactly one step in progress, and call `update_plan` again the " ~
+        "moment a step's status changes — mark a finished step `completed` " ~
+        "and set the next one `in_progress` before moving on. A checklist " ~
+        "left showing pending/in_progress steps after the work has moved on " ~
+        "misleads the user, so keeping the plan current is part of doing the " ~
+        "task, not an opening formality.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
         "working directory. Read a file before changing it.\n" ~

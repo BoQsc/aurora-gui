@@ -960,6 +960,52 @@ int main(string[] args)
     root.finishStreamInSessionForTesting(concurrentA);
     writeln("Two conversations run concurrently with isolated Stop/output");
 
+    // A turn that finishes while the user is viewing another conversation is
+    // flagged "done, unread" in the sidebar, and opening that conversation
+    // clears the flag. This is the "the chat is done but I never looked at it"
+    // indicator; it must survive a save + reload.
+    root.newChatForTesting();
+    const unreadOwner = root.currentSessionForTesting();
+    root.addConversationForTesting(["user"], ["finish while I am away"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.newChatForTesting();
+    const unreadViewer = root.currentSessionForTesting();
+    assert(unreadViewer != unreadOwner, "New chat did not change the view");
+    root.completeTurnInSessionForTesting(unreadOwner);
+    assert(root.sessionUnreadForTesting(unreadOwner),
+        "A background turn that completed was not marked unread");
+    assert(!root.sessionUnreadForTesting(unreadViewer),
+        "The viewed chat was wrongly marked unread");
+    assert(root.sessionRowStatusForTesting().indexOf("*") >= 0,
+        "Sidebar did not paint the unread indicator");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    assert(root.sessionUnreadForTesting(unreadOwner),
+        "The unread indicator did not survive a save + reload");
+    root.selectSessionForTesting(unreadOwner);
+    assert(!root.sessionUnreadForTesting(unreadOwner),
+        "Opening the conversation did not clear its unread indicator");
+    writeln("Background completion is flagged unread until opened");
+
+    // A conversation left mid-turn (a crash or a silent stream death) warns
+    // that it needs continue; the warning clears once its turn settles cleanly.
+    root.newChatForTesting();
+    const incompleteOwner = root.currentSessionForTesting();
+    root.addConversationForTesting(["user"], ["start and never finish"]);
+    root.setSessionTurnStatusForTesting(incompleteOwner, "completed");
+    const quietStatus = root.sessionRowStatusForTesting();
+    root.setSessionTurnStatusForTesting(incompleteOwner, "running");
+    const warnStatus = root.sessionRowStatusForTesting();
+    assert(root.sessionIncompleteForTesting(incompleteOwner),
+        "A stale running turn was not flagged as incomplete");
+    assert(quietStatus != warnStatus && warnStatus.indexOf("!") >= 0,
+        "Sidebar did not paint the incomplete warning");
+    root.setSessionTurnStatusForTesting(incompleteOwner, "completed");
+    assert(!root.sessionIncompleteForTesting(incompleteOwner),
+        "A completed turn still warned as incomplete");
+    writeln("A turn that stopped without completing warns in the sidebar");
+
     // The button says Stop while a turn is active, so clicking it must stop
     // unconditionally—even when unsent composer text is present. Previously
     // that text was silently queued as guidance and the turn kept running.
@@ -980,6 +1026,11 @@ int main(string[] args)
     assert(root.taskStatusForTesting() != "blocked" &&
         root.turnStatusForTesting() == "interrupted",
         "Stopping a turn incorrectly blocked the durable task");
+    // The warning must reach the sidebar through the production settle path,
+    // for the conversation on screen - not only via a direct list rebuild.
+    assert(root.sessionIncompleteForTesting(root.currentSessionForTesting()) &&
+        root.sessionRowStatusForTesting().indexOf("!") >= 0,
+        "a turn stopped on screen did not warn in the sidebar");
     writeln("One Stop click immediately releases the turn");
 
     // Text that was explicitly submitted during a live turn is different from
@@ -2862,6 +2913,31 @@ int main(string[] args)
         writeln("Regenerate and Continue share a padded reply footer");
     }
 
+    // A turn in flight must not leave Regenerate/Continue in the middle of the
+    // transcript. While the live reply streams below the previous one, the
+    // previous reply is no longer the conversation tip, so its pill is hidden
+    // until the turn settles and a settled reply owns the tip again.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["ask", "first answer"]);
+        assert(root.lastBubbleActionForTesting() == "Regenerate" &&
+            root.lastBubbleSecondaryActionForTesting() == "Continue",
+            "a settled reply lost its Regenerate/Continue pill");
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.streamReasoningForTesting("working on the next one");
+        const duringTurn = root.messageCountForTesting();
+        foreach (i; 0 .. duringTurn)
+            assert(root.bubbleActionForTesting(i) == "",
+                "Regenerate/Continue showed mid-conversation during a turn");
+        root.finishStreamForTesting();
+        assert(root.lastBubbleActionForTesting() == "Regenerate" &&
+            root.lastBubbleSecondaryActionForTesting() == "Continue",
+            "the reply pill did not return once its turn settled");
+        writeln("No reply pill mid-transcript while a turn is in flight");
+    }
+
     // Real transcript shape: collapsed tool rows interleaved with assistant
     // replies that carry reasoning + answer text, exactly like a restored
     // session (tools and replies alternate). Every restored message has a
@@ -3069,6 +3145,41 @@ int main(string[] args)
     assert(root.explorationCountForTesting() == exhaustedExplorationCount,
         "substantive mutation reset the request-wide exploration budget");
     writeln("Exploration checkpoint guides action without disabling inspection");
+
+    // A recorded plan the model stops refreshing must not silently drift: the
+    // checklist would keep showing finished work as pending/in_progress. Once a
+    // plan with unfinished steps goes unrefreshed for enough tool results, the
+    // runtime queues a hidden reminder to call update_plan again.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Refactor and verify"]);
+    root.applyPlanForTesting(
+        `{"plan":[{"step":"Implement the change","status":"in_progress"},` ~
+        `{"step":"Verify it","status":"pending"}]}`);
+    assert(root.toolResultsSincePlanUpdateForTesting() == 0,
+        "a freshly recorded plan was treated as stale");
+    root.addConversationForTesting(["assistant"], [""]);
+    const stalePlanToolBase = root.toolMessageCountForTesting();
+    foreach (i; 0 .. 8)
+        root.injectToolResultForTesting("read", "file " ~ to!string(i), false,
+            `{"filePath":"src/file` ~ to!string(i) ~ `.d"}`);
+    assert(root.toolMessageCountForTesting() == stalePlanToolBase + 8,
+        "the stale-plan fixture did not run eight tool results");
+    assert(root.toolResultsSincePlanUpdateForTesting() == 8,
+        "tool results since the last update_plan were miscounted: " ~
+        to!string(root.toolResultsSincePlanUpdateForTesting()));
+    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
+        root.lastUserMessageForTesting().indexOf("checklist") >= 0,
+        "a stale plan did not queue a refresh reminder: " ~
+        root.lastUserMessageForTesting());
+    // Refreshing the plan clears the staleness and stops the reminders.
+    root.injectToolResultForTesting("update_plan", "Plan updated", false,
+        `{"plan":[{"step":"Implement the change","status":"completed"},` ~
+        `{"step":"Verify it","status":"in_progress"}]}`);
+    assert(root.toolResultsSincePlanUpdateForTesting() == 0,
+        "an update_plan call did not clear plan staleness");
+    assert(root.taskStepStatusForTesting(0) == "completed",
+        "update_plan did not update the durable checklist");
+    writeln("Stale plans receive a hidden refresh reminder");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);

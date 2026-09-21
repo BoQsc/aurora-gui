@@ -4585,6 +4585,12 @@ public final class SessionListView : ListView
     private int[] _activityRows;
     private double _activityElapsed;
     private bool _activityAnimating;
+    // Per-row status flags aligned with `items()`. `_incompleteRows` marks a
+    // conversation whose last turn stopped without completing (needs continue);
+    // `_unreadRows` marks one that finished while the user was elsewhere and
+    // has not been opened since.
+    private bool[] _incompleteRows;
+    private bool[] _unreadRows;
 
     this()
     {
@@ -4614,6 +4620,58 @@ public final class SessionListView : ListView
             out_.put(to!string(row));
         }
         return out_.data;
+    }
+
+    /// Set the per-row status flags (aligned with the items). The list only
+    /// repaints when either set actually changes.
+    void setRowStatus(bool[] incomplete, bool[] unread)
+    {
+        if (_incompleteRows == incomplete && _unreadRows == unread) return;
+        _incompleteRows = incomplete;
+        _unreadRows = unread;
+        invalidate();
+    }
+
+    /// `!` incomplete, `*` unread, `-` neither; one character per row. Exposed
+    /// so a smoke test can prove the sidebar reflects each conversation.
+    string rowStatusForTesting() const
+    {
+        auto out_ = appender!string();
+        const count = cast(int) items().length;
+        foreach (i; 0 .. count)
+        {
+            if (i > 0) out_.put(",");
+            const incomplete = i < cast(int) _incompleteRows.length &&
+                _incompleteRows[i];
+            const unread = i < cast(int) _unreadRows.length && _unreadRows[i];
+            out_.put(incomplete ? "!" : unread ? "*" : "-");
+        }
+        return out_.data;
+    }
+
+    // A filled triangle with a cut-out exclamation mark: the "stopped without
+    // completing, continue this" warning. Drawn from scanlines so it needs no
+    // glyph the font may lack.
+    private static void drawWarningGlyph(Canvas canvas, Rect rect, Color color)
+    {
+        const w = rect.width;
+        const h = rect.height;
+        if (w <= 0 || h <= 0) return;
+        const centerX = rect.x + w / 2;
+        foreach (row; 0 .. h)
+        {
+            const t = h <= 1 ? 1.0 : cast(double) row / (h - 1);
+            const half = maxInt(1, cast(int) ((w / 2) * t));
+            canvas.fillRect(Rect(centerX - half, rect.y + row, half * 2, 1),
+                color);
+        }
+        // The mark is cut in the window background so it reads on any row tint.
+        const markTop = rect.y + cast(int) (h * 0.34);
+        const markBottom = rect.y + cast(int) (h * 0.62);
+        canvas.fillRect(Rect(centerX - 1, markTop, 2,
+            maxInt(1, markBottom - markTop)), opencodeBackground);
+        canvas.fillRect(Rect(centerX - 1, rect.y + cast(int) (h * 0.72), 2, 2),
+            opencodeBackground);
     }
 
     private int activityPulseStep() const
@@ -4678,21 +4736,50 @@ public final class SessionListView : ListView
             // (setScrollbarInset(0) in the constructor).
             enum rightPad = 18;
             enum titleGap = 10;
+            enum warnSize = 12;
+            enum dotSize = 6;
+            enum statusGap = 7;
+            // A right-aligned status cluster: a warning triangle for a chat
+            // that stopped without completing, and/or a dot for one that
+            // finished while the user was elsewhere and has not been opened.
+            const incomplete = index < cast(int) _incompleteRows.length &&
+                _incompleteRows[index];
+            const unread = index < cast(int) _unreadRows.length &&
+                _unreadRows[index];
+            int statusWidth = 0;
+            if (incomplete) statusWidth += warnSize;
+            if (unread) statusWidth += (incomplete ? statusGap : 0) + dotSize;
+            const statusLeft = width - rightPad - statusWidth;
+            const timeRight = width - rightPad -
+                (statusWidth > 0 ? statusWidth + statusGap : 0);
             int trailWidth = 0;
             if (item.secondary.length > 0)
             {
                 trailWidth = content.measureText(item.secondary, 1).width;
                 content.drawTextInRect(
-                    Rect(width - trailWidth - rightPad, y, trailWidth, rowHeight),
+                    Rect(timeRight - trailWidth, y, trailWidth, rowHeight),
                     item.secondary, opencodeMuted, 1,
                     HorizontalAlign.right, VerticalAlign.middle, true);
+            }
+            if (incomplete)
+                drawWarningGlyph(content,
+                    Rect(statusLeft, y + (rowHeight - warnSize) / 2, warnSize,
+                        warnSize), opencodeWarning);
+            if (unread)
+            {
+                const dotLeft = statusLeft +
+                    (incomplete ? warnSize + statusGap : 0);
+                content.fillCircle(
+                    Point(dotLeft + dotSize / 2, y + rowHeight / 2),
+                    dotSize / 2, opencodeAccent);
             }
 
             const titleColor = item.disabled || item.dimmed ? opencodeMuted
                 : (index == selected ? opencodeText : opencodeText.withAlpha(230));
             const textLeft = 14;
             const textWidth = maxInt(0, width - textLeft -
-                (trailWidth > 0 ? trailWidth + rightPad + titleGap : rightPad));
+                (trailWidth > 0 ? trailWidth + rightPad + titleGap : rightPad) -
+                (statusWidth > 0 ? statusWidth + statusGap : 0));
             content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
                 item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
@@ -5056,12 +5143,21 @@ public final class OpenCodeRoot : VBox
     private string _lastFailureSignature;
     private int _lastFailureRepeatCount;
     private string _pendingProgressGuidance;
+    // Session id -> tool-result count at the last stale-plan reminder, so a
+    // single unrefreshed plan produces a bounded number of nudges instead of
+    // one on every tool round.
+    private int[string] _planNudgedAt;
     private static immutable int failureGuidanceThreshold = 3;
     // Successful context calls are not automatically useful progress. Count
     // exploration across the whole user request so a checkpoint can encourage
     // action, without turning that heuristic into a hard ceiling. Large tasks
     // may legitimately need far more inspection than ordinary tasks.
     private static immutable int explorationCheckpointCalls = 10;
+    // A recorded plan only helps while it stays current. When a plan still has
+    // unfinished steps and the model runs this many tool results without an
+    // update_plan call, the checklist has drifted from the actual work; nudge
+    // the model to refresh it before continuing.
+    private static immutable int planRefreshNudgeCalls = 8;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -6573,6 +6669,13 @@ public final class OpenCodeRoot : VBox
         loadRuntime(index);
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
+        // Opening a conversation is the "attention" its unread dot waits for.
+        bool clearedUnread;
+        if (_sessions[index].unread)
+        {
+            _sessions[index].unread = false;
+            clearedUnread = true;
+        }
         if (turnIsBusy() && index == turnOwnerSessionIndex() &&
             _sessions[index].messages.length > 0 &&
             _sessions[index].messages[$ - 1].role == "assistant")
@@ -6607,6 +6710,7 @@ public final class OpenCodeRoot : VBox
         updateStatus("");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        if (clearedUnread) updateSessionList();
     }
 
     private void selectSessionByRow(int row)
@@ -7569,12 +7673,14 @@ public final class OpenCodeRoot : VBox
         return bubble;
     }
 
-    /// Only the latest assistant REPLY carries an action pill ("Regenerate",
-    /// or "Retry" when it failed). Tool-call wrappers (assistant messages that
+    /// Only the conversation's tip carries an action pill ("Regenerate", or
+    /// "Retry" when it failed). Tool-call wrappers (assistant messages that
     /// merely requested tools) and every other bubble stay clean — their
     /// actions are available from the right-click context menu instead. The
-    /// live streaming reply shows no pill. Runs after every message change so
-    /// the pills always match the messages.
+    /// tip is the active leaf, so while a turn is in flight the pill is gone
+    /// (the leaf is the live reply, or the prompt it answers); it returns only
+    /// once a settled reply becomes the leaf again. Runs after every message
+    /// change so the pills always match the messages.
     private void refreshBubbleActions()
     {
         if (_current < 0) return;
@@ -7611,6 +7717,13 @@ public final class OpenCodeRoot : VBox
                 messageIndex >= cast(int) session.messages.length)
                 continue;
             const message = session.messages[cast(size_t) messageIndex];
+            // The pill belongs to the tip of the conversation only. While a
+            // turn is in flight the leaf is the live reply (or the prompt it
+            // answers), so the previous reply keeps no pill - otherwise
+            // Regenerate/Continue appeared mid-conversation while a new turn
+            // streamed below it.
+            if (message.id.length == 0 || message.id != session.activeLeafId)
+                continue;
             // Only a real assistant reply gets a visible pill; a tool-call
             // wrapper (empty content + tool requests) is not a reply. A failed
             // turn is the exception: however it died, the user must always be
@@ -7978,6 +8091,7 @@ public final class OpenCodeRoot : VBox
         {
             session.turnStatus = "interrupted";
             if (session.taskStatus.length == 0) session.taskStatus = "active";
+            markUnreadIfBackground(sessionIndex);
             publishThreadUpdated(*session);
             markDirty();
             return;
@@ -8011,6 +8125,7 @@ public final class OpenCodeRoot : VBox
             session.turnStatus = "completed";
             session.taskStatus = "completed";
         }
+        markUnreadIfBackground(sessionIndex);
         publishThreadUpdated(*session);
         markDirty();
         startNextQueuedFollowUp(sessionIndex);
@@ -8075,6 +8190,7 @@ public final class OpenCodeRoot : VBox
         message.failed = true;
         session.turnStatus = "failed";
         session.taskStatus = "blocked";
+        markUnreadIfBackground(sessionIndex);
         publishThreadUpdated(*session);
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
         publishRuntimeEvent(AgentEventKind.turnFailed, *session,
@@ -8389,6 +8505,32 @@ public final class OpenCodeRoot : VBox
         return found;
     }
 
+    /// Number of tool results on the active path since the last `update_plan`
+    /// call in this user turn. A new real user turn and any `update_plan`
+    /// result both reset it, so it measures how long the recorded plan has
+    /// gone unrefreshed rather than how long the turn has run.
+    private static int toolResultsSincePlanUpdate(const ref ChatSession session)
+    {
+        int count;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                count = 0;
+                continue;
+            }
+            if (message.role != "tool") continue;
+            if (message.toolName == "update_plan")
+            {
+                count = 0;
+                continue;
+            }
+            ++count;
+        }
+        return count;
+    }
+
     /// Add orchestration guidance only after the current assistant tool_calls
     /// has received every tool result. This preserves strict tool pairing and
     /// keeps the note hidden from the user-facing transcript.
@@ -8404,6 +8546,31 @@ public final class OpenCodeRoot : VBox
         publishThreadUpdated(session);
         markDirty();
         if (viewingTurnOwner()) rebuildMessageColumn();
+        return true;
+    }
+
+    /// Queue a reminder when the model stopped refreshing a plan it recorded.
+    /// The checklist silently drifts otherwise: finished steps stay
+    /// pending/in_progress while the work has moved on. Bounded to one
+    /// reminder per plan-refresh cycle (a fresh `update_plan` restarts the
+    /// count) so the model is nudged without being spammed every round.
+    /// Returns true when a reminder was queued.
+    private bool queueStalePlanGuidance(ref ChatSession session)
+    {
+        if (!hasIncompleteTaskSteps(session)) return false;
+        const since = toolResultsSincePlanUpdate(session);
+        int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
+        if (since < lastNudged) lastNudged = 0; // the plan was refreshed
+        if (since < planRefreshNudgeCalls ||
+            since < lastNudged + planRefreshNudgeCalls) return false;
+        _planNudgedAt[session.id] = since;
+        if (_pendingProgressGuidance.length == 0)
+            _pendingProgressGuidance = "Your durable checklist is stale: it " ~
+                "still shows steps pending or in_progress, but no update_plan " ~
+                "call has refreshed it for " ~ to!string(since) ~ " tool " ~
+                "results. Call update_plan now to mark finished steps " ~
+                "completed and set exactly one remaining step in_progress " ~
+                "(rewrite the steps if they no longer match the work).";
         return true;
     }
 
@@ -8832,6 +8999,7 @@ public final class OpenCodeRoot : VBox
             _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
+            queueStalePlanGuidance(*session);
             appendPendingProgressGuidance(*session);
             if (!_toolContinuationPaused)
             {
@@ -11563,6 +11731,72 @@ public final class OpenCodeRoot : VBox
         if (_turnInFlight == active) return;
         _turnInFlight = active;
         if (_sessionList !is null) _sessionList.setActivityRows(activeSessionRows());
+        // The in-flight flag is half of what makes a "running" turn look
+        // incomplete (the other half is a live request), so a turn starting or
+        // settling here can add or clear the sidebar warning.
+        refreshSessionRowStatus();
+    }
+
+    /// Whether a conversation currently owns an in-flight request. Used to tell
+    /// a genuinely running turn from one left "running" on disk by a crash.
+    private bool sessionIsBusy(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        const id = _sessions[sessionIndex].id;
+        if (id == _loadedRuntimeId)
+            return _turnInFlight || _turnTiming || _stopPending ||
+                _activeRequestId != 0 || _pendingToolResults > 0;
+        if (auto found = id in _conversationRuntimes)
+            return (*found).busy();
+        return false;
+    }
+
+    /// True when a conversation's last turn stopped without completing: it was
+    /// left "running" by a crash/kill (nothing is actually in flight now), it
+    /// failed, or the user stopped it. Such a chat "needs continue" and gets a
+    /// warning glyph in the sidebar.
+    private bool sessionTurnIncomplete(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        const session = _sessions[sessionIndex];
+        if (session.messages.length == 0) return false;
+        if (session.turnStatus == "failed" ||
+            session.turnStatus == "interrupted") return true;
+        if (session.turnStatus != "running") return false;
+        return !sessionIsBusy(sessionIndex);
+    }
+
+    /// Recompute the sidebar status flags (incomplete / unread) from the current
+    /// sessions and push them to the list. No item rebuild, so it is cheap
+    /// enough to run the moment a turn settles - including for the conversation
+    /// on screen, whose row must show the "stopped without completing" warning
+    /// (or clear it) right away.
+    private void refreshSessionRowStatus()
+    {
+        if (_sessionList is null) return;
+        bool[] incompleteRows;
+        bool[] unreadRows;
+        foreach (sessionIndex; _sessionIndices)
+        {
+            incompleteRows ~= sessionTurnIncomplete(sessionIndex);
+            unreadRows ~= _sessions[sessionIndex].unread;
+        }
+        _sessionList.setRowStatus(incompleteRows, unreadRows);
+    }
+
+    /// Flag a conversation the user is not currently viewing as needing
+    /// attention once its turn settles, so the sidebar shows it finished
+    /// without being read, then refresh the sidebar status either way so the
+    /// on-screen conversation still gets its warning the instant it appears.
+    private void markUnreadIfBackground(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        if (sessionIndex != _current && !_sessions[sessionIndex].unread)
+            _sessions[sessionIndex].unread = true;
+        refreshSessionRowStatus();
     }
 
     private void updateSessionList(bool revealCurrent = true)
@@ -11599,6 +11833,7 @@ public final class OpenCodeRoot : VBox
         _sessionIndices = indices;
         _sessionList.setItems(items);
         _sessionList.setActivityRows(activeSessionRows());
+        refreshSessionRowStatus();
         int row = -1;
         foreach (i, sessionIndex; _sessionIndices)
             if (sessionIndex == _current) row = cast(int) i;
@@ -12060,6 +12295,7 @@ public final class OpenCodeRoot : VBox
             root["taskStatus"] = session.taskStatus;
         if (session.turnStatus.length > 0)
             root["turnStatus"] = session.turnStatus;
+        if (session.unread) root["unread"] = true;
         if (session.verificationStatus.length > 0)
             root["verificationStatus"] = session.verificationStatus;
         if (session.taskSteps.length > 0)
@@ -12267,6 +12503,8 @@ public final class OpenCodeRoot : VBox
                             session.taskStatus = field.str;
                         if (auto field = "turnStatus" in sessionValue.object)
                             session.turnStatus = field.str;
+                        if (auto field = "unread" in sessionValue.object)
+                            session.unread = field.type == JSONType.true_;
                         if (auto field = "verificationStatus" in
                             sessionValue.object)
                             session.verificationStatus = field.str;
@@ -12462,6 +12700,13 @@ public final class OpenCodeRoot : VBox
         }
         else
             _current = -1;
+        // The app opens the restored selection, so that conversation counts as
+        // read; only background chats keep their unread dot.
+        if (_current >= 0 && _sessions[_current].unread)
+        {
+            _sessions[_current].unread = false;
+            markDirty();
+        }
         refreshUsageBadge();
     }
 
@@ -12499,8 +12744,13 @@ public final class OpenCodeRoot : VBox
         foreach (ref existing; _sessions)
         {
             if (!sameRestoredConversation(existing, session)) continue;
+            // An "unread" mark is sticky across snapshots: a later, more
+            // complete copy must not erase it just because that copy was saved
+            // before the turn finished.
+            const unread = existing.unread || session.unread;
             if (session.messages.length > existing.messages.length)
                 existing = session;
+            existing.unread = unread;
             return;
         }
         _sessions ~= session;
@@ -13009,15 +13259,63 @@ public final class OpenCodeRoot : VBox
 
     public bool sessionTurnBusyForTesting(int sessionIndex)
     {
+        return sessionIsBusy(sessionIndex);
+    }
+
+    /// Test-only: whether the sidebar flags this conversation as stopped
+    /// without completing (the amber warning glyph).
+    public bool sessionIncompleteForTesting(int sessionIndex)
+    {
+        return sessionTurnIncomplete(sessionIndex);
+    }
+
+    /// Test-only: whether the sidebar marks this conversation "done, unread".
+    public bool sessionUnreadForTesting(int sessionIndex) const
+    {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return false;
-        const id = _sessions[sessionIndex].id;
-        if (id == _loadedRuntimeId)
-            return _turnInFlight || _turnTiming || _stopPending ||
-                _activeRequestId != 0 || _pendingToolResults > 0;
-        if (auto found = id in _conversationRuntimes)
-            return (*found).busy();
-        return false;
+        return _sessions[sessionIndex].unread;
+    }
+
+    /// Test-only: the painted row statuses (`!` incomplete, `*` unread, `-`
+    /// neither), one character per visible row in list order.
+    public string sessionRowStatusForTesting() const
+    {
+        return _sessionList is null ? "" : _sessionList.rowStatusForTesting();
+    }
+
+    /// Test-only: overwrite a conversation's turn status so the incomplete
+    /// warning can be exercised without a real crash.
+    public void setSessionTurnStatusForTesting(int sessionIndex, string status)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        _sessions[sessionIndex].turnStatus = status;
+        markDirty();
+        updateSessionList();
+    }
+
+    /// Test-only: settle one conversation's turn exactly as its `done` event
+    /// does, in that conversation's own runtime context (so a background
+    /// completion is attributed to its owner, not the viewed chat).
+    public void completeTurnInSessionForTesting(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        const selected = _current;
+        loadRuntime(sessionIndex);
+        // The `done` handler settles the reply, then closes out the turn. Keep
+        // the settle pointed at this conversation even though its runtime is
+        // not the one on screen.
+        _activeRequestSession = sessionIndex;
+        finishAssistantMessage(false);
+        _turnSessionIndex = sessionIndex;
+        _turnTiming = true;
+        continueOrCompleteTask(false);
+        _turnTiming = false;
+        _turnSessionIndex = -1;
+        saveLoadedRuntime();
+        if (selected >= 0) loadRuntime(selected);
     }
 
     public void setTaskStateForTesting(string objective, string status,
@@ -13209,6 +13507,20 @@ public final class OpenCodeRoot : VBox
             hasExplorationCheckpoint(_sessions[_current])) return false;
         appendExplorationCheckpoint(_sessions[_current]);
         return true;
+    }
+
+    /// Test-only: tool results since the last `update_plan` on the active path.
+    public int toolResultsSincePlanUpdateForTesting() const
+    {
+        return _current < 0 ? 0 :
+            toolResultsSincePlanUpdate(_sessions[_current]);
+    }
+
+    /// Test-only: run the stale-plan reminder check and report whether it
+    /// queued a reminder for the active session.
+    public bool queueStalePlanGuidanceForTesting()
+    {
+        return _current >= 0 && queueStalePlanGuidance(_sessions[_current]);
     }
 
     /// Discard the compatibility snapshot in memory and replay only the durable
