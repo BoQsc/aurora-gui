@@ -124,6 +124,10 @@ class TextEditor : Widget
     private bool _dragSelecting;
     private int _scrollLine;
     private int _scrollX;
+    // Set by a wheel notch or thumb drag. While true, the next paint must not
+    // force the caret back into view: the caret commonly rests on the last line
+    // while composing, so doing so would instantly undo the user's scroll.
+    private bool _userScrolled;
     private Scrollbar _verticalScrollbar;
     private int _preferredX = -1;
     private CaretAffinity _caretAffinity = CaretAffinity.downstream;
@@ -189,6 +193,7 @@ class TextEditor : Widget
         _verticalScrollbar.onValueChanged = delegate(int value)
         {
             if (_scrollLine == value) return;
+            _userScrolled = true;
             _scrollLine = value;
             invalidate();
         };
@@ -789,6 +794,7 @@ class TextEditor : Widget
 
     private void notifyChanged()
     {
+        _userScrolled = false;
         if (onChanged !is null) onChanged();
         if (onCursorMoved !is null) onCursorMoved();
         invalidate();
@@ -796,6 +802,7 @@ class TextEditor : Widget
 
     private void notifyCursor()
     {
+        _userScrolled = false;
         if (onCursorMoved !is null) onCursorMoved();
         invalidate();
     }
@@ -1131,7 +1138,7 @@ class TextEditor : Widget
         const inset = !_transparentBackground && _showBorder ? 2 : 0;
         auto content = canvas.clipped(full.inset(inset));
         auto layout = ensureLayout(canvas);
-        ensureCursorVisible();
+        if (!_userScrolled) ensureCursorVisible();
         synchronizeVerticalScrollbar();
         const originX = contentOriginX(layout);
         const originY = _padding - cast(int) floor(scrollOriginY(layout));
