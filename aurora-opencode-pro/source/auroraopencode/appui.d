@@ -4042,6 +4042,11 @@ private immutable string[] defaultIntroSuggestions = [
     "Summarize the project",
 ];
 
+/// Empty-state pill that points the agent at Aurora OpenCode's own source: its
+/// click inserts a prompt naming the running program's path, so a "fix the app"
+/// request starts from the right folder without the user pasting it.
+private immutable string selfFixSuggestion = "Fix Aurora OpenCode";
+
 /// Shown over the transcript while the active conversation still has no
 /// messages: a centered welcome block with tappable prompt suggestions that
 /// prefill the composer. It is an overlay child of the scroll view (full
@@ -4065,6 +4070,11 @@ private final class IntroOverlay : Widget
     private string _title = "What can I help you with?";
     private string _subtitle;
     private string[] _suggestions;
+    // Text each pill inserts when clicked, parallel to `_suggestions`. A pill
+    // reads short ("Fix Aurora OpenCode") but can prefill something longer,
+    // such as a prompt naming the app's own source path. When shorter than
+    // `_suggestions` (or absent) the label itself is inserted.
+    private string[] _prompts;
     private double _fade;
     private int _hover = -1;
     // Pill geometry is recorded during paint (like MessageBubble's copy/link
@@ -4072,6 +4082,7 @@ private final class IntroOverlay : Widget
     // without measuring anything twice.
     private Rect[] _pillRects;
     private string[] _pillLabels;
+    private string[] _pillPrompts;
 
     void setSubtitle(string value)
     {
@@ -4080,12 +4091,25 @@ private final class IntroOverlay : Widget
         invalidate();
     }
 
-    void setSuggestions(const(string)[] values)
+    /// Set the pill labels. `prompts` optionally supplies, per pill, the text a
+    /// click inserts; it must be parallel to `values`, otherwise the labels are
+    /// used so a mismatch can never desync display from behavior.
+    void setSuggestions(const(string)[] values, const(string)[] prompts = null)
     {
-        if (sameLabels(_suggestions, values)) return;
+        if (sameStrings(_suggestions, values) && sameStrings(_prompts, prompts))
+            return;
         _suggestions = values.dup;
+        _prompts = prompts.length == values.length ? prompts.dup : null;
         _hover = -1;
         invalidate();
+    }
+
+    /// The text the pill at `index` inserts when clicked.
+    private string promptFor(int index) const
+    {
+        if (index < 0 || index >= cast(int) _suggestions.length) return "";
+        if (_prompts.length == _suggestions.length) return _prompts[index];
+        return _suggestions[index];
     }
 
     /// Restart the fade-in. Called every time the overlay becomes visible again
@@ -4103,6 +4127,16 @@ private final class IntroOverlay : Widget
     /// Test-only: the suggestion labels rendered as pills.
     public string[] suggestionsForTesting() const { return _suggestions.dup; }
 
+    /// Test-only: the text each pill inserts when clicked, parallel to
+    /// `suggestionsForTesting`.
+    public string[] promptsForTesting() const
+    {
+        string[] result;
+        foreach (index; 0 .. _suggestions.length)
+            result ~= promptFor(cast(int) index);
+        return result;
+    }
+
     /// Test-only: bounds of the pill at `index` (empty before the first paint).
     public Rect suggestionBoundsForTesting(int index) const
     {
@@ -4113,13 +4147,13 @@ private final class IntroOverlay : Widget
     /// Test-only: click the pill at `index` exactly as a left click would.
     public bool clickSuggestionForTesting(int index)
     {
-        if (index < 0 || index >= cast(int) _pillLabels.length) return false;
+        if (index < 0 || index >= cast(int) _pillPrompts.length) return false;
         if (onSuggestion is null) return false;
-        onSuggestion(_pillLabels[index]);
+        onSuggestion(_pillPrompts[index]);
         return true;
     }
 
-    private static bool sameLabels(const(string)[] a, const(string)[] b)
+    private static bool sameStrings(const(string)[] a, const(string)[] b)
     {
         if (a.length != b.length) return false;
         foreach (index; 0 .. a.length)
@@ -4251,6 +4285,7 @@ private final class IntroOverlay : Widget
 
         _pillRects.length = 0;
         _pillLabels.length = 0;
+        _pillPrompts.length = 0;
         if (rows.length == 0) return;
         y += 26;
         foreach (row; rows)
@@ -4275,6 +4310,7 @@ private final class IntroOverlay : Widget
                     FontRole.ui, cast(FontFace) theme().uiFont);
                 _pillRects ~= rect;
                 _pillLabels ~= _suggestions[index];
+                _pillPrompts ~= promptFor(cast(int) index);
                 x += pillWidths[index] + pillGap;
             }
             y += pillHeight + rowGap;
@@ -4305,7 +4341,7 @@ private final class IntroOverlay : Widget
         if (event.button != MouseButton.left) return false;
         const index = pillAt(event.position);
         if (index < 0 || onSuggestion is null) return false;
-        onSuggestion(_pillLabels[index]);
+        onSuggestion(_pillPrompts[index]);
         return true;
     }
 }
@@ -5734,7 +5770,7 @@ public final class OpenCodeRoot : VBox
         _introOverlay.layoutHints().excludeFromLayout = true;
         _introOverlay.layoutHints().overlayFillParent = true;
         _introOverlay.layoutHints().allowOverflow = true;
-        _introOverlay.setSuggestions(defaultIntroSuggestions);
+        configureIntroSuggestions();
         _introOverlay.onSuggestion = delegate(string prompt)
         {
             _input.setText(prompt);
@@ -6915,6 +6951,38 @@ public final class OpenCodeRoot : VBox
         const workspace = activeWorkspace();
         _introOverlay.setSubtitle(workspace.length > 0 && workspace != "."
             ? "Working in " ~ workspace : "");
+    }
+
+    /// Build the empty-state prompt starters: the standard set, plus a
+    /// self-repair pill whose click inserts a prompt naming the running
+    /// program's own source path. Without a source package there is nothing
+    /// useful to point the agent at, so the pill is omitted.
+    private void configureIntroSuggestions()
+    {
+        auto labels = appender!(string[])();
+        auto prompts = appender!(string[])();
+        foreach (suggestion; defaultIntroSuggestions)
+        {
+            labels.put(suggestion);
+            prompts.put(suggestion);
+        }
+        const source = programSourcePath();
+        if (source.length > 0)
+        {
+            labels.put(selfFixSuggestion);
+            prompts.put("Investigate and fix an issue in Aurora OpenCode. Its "
+                ~ "program source is at " ~ source ~ "\n\nWhat's wrong: ");
+        }
+        _introOverlay.setSuggestions(labels.data, prompts.data);
+    }
+
+    /// The running Aurora OpenCode program's source directory: the nearest
+    /// ancestor of the executable holding a DUB recipe, or "" when the binary
+    /// sits outside a source package.
+    private string programSourcePath() const
+    {
+        return planRebuild(opencodeStateDirectory(), true, thisProcessID,
+            thisExePath()).workingDir;
     }
 
     /// Every transcript widget in visual reading order, flattening an assistant
@@ -12416,6 +12484,14 @@ public final class OpenCodeRoot : VBox
     {
         return _introOverlay is null ? null
             : _introOverlay.suggestionsForTesting();
+    }
+
+    /// Test-only: the text each intro suggestion inserts when clicked,
+    /// parallel to `introSuggestionsForTesting`.
+    public string[] introSuggestionPromptsForTesting() const
+    {
+        return _introOverlay is null ? null
+            : _introOverlay.promptsForTesting();
     }
 
     /// Test-only: bounds of the intro suggestion pill at `index`.

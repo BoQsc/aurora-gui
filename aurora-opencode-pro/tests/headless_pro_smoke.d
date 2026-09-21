@@ -22,7 +22,8 @@ import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.array : join;
 import std.datetime : Clock;
-import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir, write;
+import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
+    thisExePath, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.conv : to;
 import std.path : buildPath;
@@ -3307,6 +3308,29 @@ int main(string[] args)
             "Intro overlay should fill the transcript viewport");
         const suggestions = root.introSuggestionsForTesting();
         assert(suggestions.length > 0, "Intro overlay has no suggestions");
+        // A pill's label can differ from the text it inserts: the self-repair
+        // pill reads short but prefills a prompt naming the running program's
+        // own source path. It appears exactly when that path is known.
+        const prompts = root.introSuggestionPromptsForTesting();
+        assert(prompts.length == suggestions.length,
+            "Intro prompts should be parallel to the suggestion labels");
+        const program = planRebuild("", false, 0, thisExePath()).workingDir;
+        bool selfFixSeen;
+        foreach (i, prompt; prompts)
+        {
+            if (prompt == suggestions[i]) continue;
+            selfFixSeen = true;
+            assert(program.length > 0 && prompt.indexOf(program) >= 0,
+                "Self-fix prompt should name the running program's source");
+            assert(root.clickIntroSuggestionForTesting(cast(int) i),
+                "Clicking the self-fix pill should prefill the composer");
+            root.tickTree(0.02);
+            assert(root.inputTextForTesting() == prompt,
+                "Self-fix pill did not insert its own prompt text");
+            root.setInputForTesting("");
+        }
+        assert(selfFixSeen == (program.length > 0),
+            "The self-fix pill should appear exactly when the source is known");
         // Staggered fade-in: visible immediately, fully opaque within a tick.
         assert(root.introFadeForTesting() < 1.0,
             "Intro overlay should still be fading in on first paint");
