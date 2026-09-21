@@ -3771,6 +3771,10 @@ int main(string[] args)
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"in_progress"}]}`);
         root.rebuildForTesting();
+        // Park the pointer clear of the panel first: hovering the card expands
+        // it, so the geometry assertions below must measure the resting state.
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "leaving the plan card did not repaint");
         assert(root.detachedPlanVisibleForTesting(),
             "the detached plan panel did not show by default");
         assert(root.detachedPlanStepCountForTesting() == 2,
@@ -3795,6 +3799,62 @@ int main(string[] args)
         assert(planRect.x + planRect.width >= viewportWidth - 60,
             "the detached plan panel was not at the right edge: " ~
             to!string(planRect));
+        // Hovering the card's contents expands it so long step text has room
+        // to read, and clicking its left border collapses it toward the right
+        // edge into a slim tab that a second click restores.
+        auto planPanel = requireWidget!Widget(root, "oc-plan-panel");
+        const restingWidth = planRect.width;
+        // The border must stay put while the pointer is on it: expanding there
+        // would move it out from under the pointer and make it hard to click.
+        driver.moveTo(planPanel.localToGlobal(Point(planRect.x + 3,
+            planRect.y + 10)));
+        assert(driver.paint(), "hovering the plan border did not repaint");
+        assert(!root.detachedPlanHoverExpandedForTesting(),
+            "hovering the plan border expanded the card out from under " ~
+            "the pointer");
+        assert(root.detachedPlanRectForTesting().width == restingWidth,
+            "the plan card grew while the pointer was on its border");
+        driver.moveTo(planPanel.localToGlobal(Point(
+            planRect.x + planRect.width / 2, planRect.y + 12)));
+        assert(driver.paint(), "hovering the plan card did not repaint");
+        assert(root.detachedPlanHoverExpandedForTesting(),
+            "hovering the detached plan card did not expand it");
+        const hoverRect = root.detachedPlanRectForTesting();
+        assert(hoverRect.width > restingWidth,
+            "the hovered plan card did not grow: " ~ to!string(hoverRect));
+        // The left border is the collapse handle.
+        driver.click(planPanel.localToGlobal(Point(hoverRect.x + 3,
+            hoverRect.y + 10)));
+        assert(driver.paint(), "collapsing the plan card did not repaint");
+        assert(root.detachedPlanCollapsedForTesting(),
+            "clicking the plan card's left border did not collapse it");
+        const collapsedRect = root.detachedPlanRectForTesting();
+        assert(collapsedRect.width > 0 && collapsedRect.width <= 32,
+            "the collapsed plan card is not a slim tab: " ~
+            to!string(collapsedRect));
+        assert(collapsedRect.height < hoverRect.height,
+            "the collapsed plan card kept its full height: " ~
+            to!string(collapsedRect));
+        assert(collapsedRect.x + collapsedRect.width >= viewportWidth - 60,
+            "the collapsed plan card is not against the right edge: " ~
+            to!string(collapsedRect));
+        // Clicking the tab itself brings the card back.
+        driver.click(planPanel.localToGlobal(Point(
+            collapsedRect.x + collapsedRect.width / 2,
+            collapsedRect.y + collapsedRect.height / 2)));
+        assert(driver.paint(), "restoring the plan card did not repaint");
+        assert(!root.detachedPlanCollapsedForTesting(),
+            "clicking the collapsed tab did not restore the plan card");
+        assert(root.detachedPlanRectForTesting().width > 32,
+            "the restored plan card is still a tab: " ~
+            to!string(root.detachedPlanRectForTesting()));
+        // Leave the pointer clear so the card settles back to its resting size.
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "leaving the plan card did not repaint");
+        assert(!root.detachedPlanHoverExpandedForTesting(),
+            "the plan card stayed expanded after the pointer left it");
+        assert(root.detachedPlanRectForTesting().width == restingWidth,
+            "the plan card did not return to its resting width");
         // Turning the setting off returns the plan to the transcript.
         root.setDetachedPlanForTesting(false);
         assert(!root.detachedPlanVisibleForTesting(),

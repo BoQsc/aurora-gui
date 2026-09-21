@@ -2989,6 +2989,25 @@ private final class PlanCard : Widget
     private string _status;
     private string[] _texts;
     private string[] _statuses;
+    // The left border is a collapse handle while the card floats detached: the
+    // panel parks the card against the right edge and this handle is what the
+    // pointer clicks. `_railOnly` keeps just that handle on screen.
+    private static immutable int handleWidth = 10;
+    private bool _railOnly;
+    private bool _handleHot;
+    // Whether the pointer is asking for the hover expansion. The left border
+    // freezes this while the pointer is on it: growing the card there would
+    // slide the border out from under the pointer that is trying to click it.
+    private bool _expandWanted;
+
+    /// Notified when the pointer enters or leaves the card, so the detached
+    /// panel can expand the card while the user reads it.
+    void delegate() onHoverChanged;
+    /// Notified when the left-border handle is clicked.
+    void delegate() onHandleActivated;
+
+    /// Whether hovering should expand the card; only meaningful while hovered.
+    bool expandWanted() const { return _expandWanted; }
 
     this()
     {
@@ -3012,6 +3031,21 @@ private final class PlanCard : Widget
         _status = status;
         _texts = texts;
         _statuses = statuses;
+        invalidate();
+    }
+
+    /// Collapse to the left-border handle alone (detached panel): the card
+    /// keeps its frame and handle but drops the title, objective, progress bar
+    /// and steps until the handle is clicked again.
+    void setRailOnly(bool value)
+    {
+        if (_railOnly == value) return;
+        _railOnly = value;
+        if (_railOnly)
+        {
+            _handleHot = false;
+            _expandWanted = false;
+        }
         invalidate();
     }
 
@@ -3074,9 +3108,14 @@ private final class PlanCard : Widget
         const height = bounds().height;
         if (width <= 0 || height <= 0) return;
         canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodeField);
-        // A left accent rail marks the card as the plan, not a message bubble.
-        canvas.fillRect(Rect(0, padV, 3, maxInt(0, height - 2 * padV)),
-            opencodeAccent);
+        if (_railOnly)
+        {
+            paintCollapsedRail(canvas, width, height);
+            return;
+        }
+        // A left accent rail marks the card as the plan, not a message bubble;
+        // it doubles as the collapse handle while the card floats detached.
+        paintHandle(canvas, height);
 
         const textWidth = maxInt(0, width - 2 * padH);
         int y = padV;
@@ -3122,6 +3161,97 @@ private final class PlanCard : Widget
                 HorizontalAlign.left, VerticalAlign.middle, true);
             y += lineH;
         }
+    }
+
+    /// The left border: an accent rail that doubles as the collapse handle.
+    /// Hovering it widens the rail and shows a right-pointing chevron, so the
+    /// click that slides the card toward the right edge is discoverable.
+    private void paintHandle(ref Canvas canvas, int height)
+    {
+        const railHeight = maxInt(0, height - 2 * padV);
+        if (!_handleHot)
+        {
+            canvas.fillRect(Rect(0, padV, 3, railHeight), opencodeAccent);
+            return;
+        }
+        canvas.fillRoundedRect(Rect(0, padV, handleWidth, railHeight), 5,
+            opencodeAccent);
+        drawChevron(canvas, Point(handleWidth / 2, padV + lineH / 2), false,
+            Color.rgb(255, 255, 255));
+    }
+
+    /// Collapsed state: only the left-border handle remains, with a
+    /// left-pointing chevron inviting a click to slide the card back out.
+    private void paintCollapsedRail(ref Canvas canvas, int width, int height)
+    {
+        const handle = minInt(handleWidth, width);
+        canvas.fillRoundedRect(Rect(0, 0, handle, height), 8, opencodeAccent);
+        drawChevron(canvas, Point(handle / 2, height / 2), true,
+            Color.rgb(255, 255, 255));
+    }
+
+    /// A small '<' or '>' caret used by the collapse handle.
+    private static void drawChevron(ref Canvas canvas, Point center, bool left,
+        Color color)
+    {
+        const half = 3;
+        const tipX = left ? center.x - half : center.x + half;
+        const baseX = left ? center.x + half : center.x - half;
+        canvas.drawLine(Point(baseX, center.y - 4), Point(tipX, center.y),
+            color, 2);
+        canvas.drawLine(Point(tipX, center.y), Point(baseX, center.y + 4),
+            color, 2);
+    }
+
+    protected override void onMouseEnter()
+    {
+        if (onHoverChanged !is null) onHoverChanged();
+    }
+
+    protected override void onMouseLeave()
+    {
+        const changed = _handleHot || _expandWanted;
+        _handleHot = false;
+        _expandWanted = false;
+        if (changed)
+        {
+            invalidate();
+        }
+        setCursor(CursorKind.arrow);
+        if (onHoverChanged !is null) onHoverChanged();
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const onHandle = _railOnly || (event.position.x >= 0 &&
+            event.position.x < handleWidth);
+        const hot = onHandle && !_railOnly;
+        if (hot != _handleHot)
+        {
+            _handleHot = hot;
+            invalidate();
+        }
+        setCursor(onHandle ? CursorKind.hand : CursorKind.arrow);
+        // On the border the layout is frozen (the flag keeps its value), so the
+        // border stays under the pointer and can be clicked; anywhere else in
+        // the card the pointer asks for the expansion.
+        if (!onHandle && !_expandWanted)
+        {
+            _expandWanted = true;
+            if (onHoverChanged !is null) onHoverChanged();
+        }
+        return false;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        // The whole collapsed tab is the handle; expanded, only the rail is.
+        if (!_railOnly &&
+            (event.position.x < 0 || event.position.x >= handleWidth))
+            return false;
+        if (onHandleActivated !is null) onHandleActivated();
+        return true;
     }
 
     /// The graphical status glyph for one step, mirroring the CheckBox
@@ -3173,18 +3303,31 @@ private final class PlanCard : Widget
 /// The overlay fills the scroll viewport so it tracks resizes, but it claims
 /// pointer input only inside its card (`hoverTransparentAt`), so the transcript
 /// underneath stays fully interactive.
+/// Hovering the card expands it (wider, so long steps have room to read) and
+/// clicking its left border collapses it toward the right edge into a slim
+/// tab; clicking that tab restores the card. Hovering the border itself never
+/// expands: the card would grow leftward and slide the border out from under
+/// the pointer, so the layout is frozen while the pointer is on it.
 private final class DetachedPlanPanel : Widget
 {
     private static immutable int cardWidth = 300;
+    // Hovered width: the extra room keeps long step text from being clipped.
+    private static immutable int hoverCardWidth = 440;
     private static immutable int margin = 12;
     // Clear the transcript's scrollbar (10 px wide, 2 px from the edge) so the
     // card never sits under it.
     private static immutable int rightMargin = 18;
+    // Collapsed state: a slim tab parked against the right edge, just wide
+    // enough for the left-border handle and its chevron.
+    private static immutable int collapsedWidth = 26;
+    private static immutable int collapsedHeight = 40;
 
     private PlanCard _card;
     // The card's rect within the overlay's full-viewport bounds, refreshed on
     // each layout so `hoverTransparentAt` can be a cheap, attribute-safe read.
     private Rect _cardRect;
+    private bool _collapsed;
+    private bool _hoverExpanded;
 
     this()
     {
@@ -3193,6 +3336,15 @@ private final class DetachedPlanPanel : Widget
         layoutHints().overlayFillParent = true;
         layoutHints().allowOverflow = true;
         _card = new PlanCard();
+        _card.onHoverChanged = delegate()
+        {
+            const expanded = !_collapsed && _card.hovered() &&
+                _card.expandWanted();
+            if (expanded == _hoverExpanded) return;
+            _hoverExpanded = expanded;
+            layoutCard();
+        };
+        _card.onHandleActivated = delegate() { setCollapsed(!_collapsed); };
         add(_card);
     }
 
@@ -3204,15 +3356,45 @@ private final class DetachedPlanPanel : Widget
         invalidate();
     }
 
+    /// Collapse the card toward the right edge into a slim tab, or restore it.
+    /// The left-border handle toggles this; the choice persists across the
+    /// rebuilds that re-render the same plan while a reply streams.
+    void setCollapsed(bool value)
+    {
+        if (_collapsed == value) return;
+        _collapsed = value;
+        // Restoring the card leaves it at its resting width while the pointer
+        // still sits on the border tab, so the handle stays where it was
+        // clicked; moving onto the contents expands it as usual.
+        _hoverExpanded = !_collapsed && _card.hovered() && _card.expandWanted();
+        _card.setRailOnly(_collapsed);
+        layoutCard();
+    }
+
+    bool collapsedForTesting() const { return _collapsed; }
+    bool hoverExpandedForTesting() const { return _hoverExpanded; }
+
     /// The card's rect inside the overlay: pinned to the top-right corner with
     /// a fixed width and its natural height.
     private Rect computeCardRect()
     {
         const available = maxInt(0, bounds().width - margin - rightMargin);
-        const width = minInt(cardWidth, available);
-        const height = _card.totalHeight();
+        const width = _collapsed
+            ? minInt(collapsedWidth, available)
+            : minInt(_hoverExpanded ? hoverCardWidth : cardWidth, available);
+        const height = _collapsed ? collapsedHeight : _card.totalHeight();
         return Rect(maxInt(margin, bounds().width - rightMargin - width), margin,
             width, height);
+    }
+
+    /// Recompute the card's rect from the current hover/collapse state and
+    /// apply it immediately, so hit testing and `hoverTransparentAt` agree with
+    /// the frame that is about to paint instead of lagging one frame behind.
+    private void layoutCard()
+    {
+        _cardRect = computeCardRect();
+        _card.setBounds(_cardRect);
+        invalidate();
     }
 
     size_t stepCountForTesting() const { return _card.stepCountForTesting(); }
@@ -3234,6 +3416,8 @@ private final class DetachedPlanPanel : Widget
 
     protected override void onLayout()
     {
+        // Layout runs on every base rebuild, so only apply the rect here; the
+        // state-change path (`layoutCard`) owns the repaint request.
         _cardRect = computeCardRect();
         _card.setBounds(_cardRect);
     }
@@ -15026,6 +15210,27 @@ public final class OpenCodeRoot : VBox
     {
         if (_planPanel is null || !_planPanel.visible()) return Rect.init;
         return _planPanel.cardBoundsForTesting();
+    }
+
+    /// Test-only: whether the detached plan panel is collapsed to its
+    /// left-border tab.
+    public bool detachedPlanCollapsedForTesting()
+    {
+        return _planPanel !is null && _planPanel.collapsedForTesting();
+    }
+
+    /// Test-only: whether hovering the detached plan card has expanded it.
+    public bool detachedPlanHoverExpandedForTesting()
+    {
+        return _planPanel !is null && _planPanel.hoverExpandedForTesting();
+    }
+
+    /// Test-only: toggle the detached plan panel's collapse, as clicking its
+    /// left-border handle does.
+    public void toggleDetachedPlanCollapsedForTesting()
+    {
+        if (_planPanel is null) return;
+        _planPanel.setCollapsed(!_planPanel.collapsedForTesting());
     }
 
 
