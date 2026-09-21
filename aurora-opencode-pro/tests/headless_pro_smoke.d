@@ -603,6 +603,69 @@ int main(string[] args)
         writeln("Ctrl+C copies transcript selection and Ctrl+V pastes into composer");
     }
 
+    // experimental: attachments - a dropped file becomes a removable chip above
+    // the prompt, and its body rides along as inline context; a large paste is
+    // diverted out of the text box and into a text chip.
+    {
+        const droppedPath = buildPath(stateDir, "dropped-note.txt");
+        write(droppedPath, "dropped attachment body\nsecond line\n");
+        auto composerInput = requireWidget!TextArea(root, "oc-input");
+        composerInput.setText("");
+        root.tickTree(0.02);
+
+        driver.dropFiles(globalCenter(composerInput), [droppedPath]);
+        root.tickTree(0.02);
+        assert(root.pendingAttachmentCountForTesting() == 1,
+            "Dropped file did not become an attachment");
+        assert(root.pendingAttachmentNamesForTesting() == "dropped-note.txt",
+            "Attachment kept the wrong name: " ~
+            root.pendingAttachmentNamesForTesting());
+        assert(root.pendingAttachmentContextForTesting()
+            .indexOf("dropped attachment body") >= 0,
+            "Attachment context did not carry the file body");
+        // Layout runs on the next frame (invalidate marks the base dirty), so
+        // paint once before reading the chip row's geometry.
+        assert(driver.paint(), "Attachment chip row did not repaint");
+        auto attachmentStrip = requireWidget!Widget(root, "oc-attachments");
+        assert(attachmentStrip.visible() && attachmentStrip.bounds().height > 0,
+            "Attachment chip row is not visible after a drop");
+        assert(root.composerHeightForTesting() > opencodeComposerHeight,
+            "Composer did not grow to make room for the chip row");
+        writeln("Dropped file becomes a removable attachment chip");
+
+        // A large paste becomes a text attachment instead of flooding the box.
+        string bigPaste;
+        foreach (i; 0 .. 2200) bigPaste ~= 'p';
+        assert(root.pasteLargeTextForTesting(bigPaste),
+            "Large paste was not diverted into an attachment");
+        assert(root.pendingAttachmentCountForTesting() == 2,
+            "Large paste did not add a second attachment");
+        assert(composerInput.textUtf8().length == 0,
+            "Large paste left text in the composer");
+        assert(root.pendingAttachmentNamesForTesting()
+            .indexOf("Pasted text") >= 0, "Large paste chip is missing");
+
+        // Clicking a chip removes that attachment and only that one.
+        assert(driver.paint(), "Attachment chips did not relayout");
+        driver.click(globalCenter(requireWidget!Button(root, "oc-attachment")));
+        root.tickTree(0.02);
+        assert(root.pendingAttachmentCountForTesting() == 1,
+            "Clicking a chip did not remove its attachment");
+
+        // Remove the rest so the composer returns to its resting height.
+        while (root.pendingAttachmentCountForTesting() > 0)
+        {
+            assert(driver.paint(), "Attachment layout did not refresh");
+            driver.click(globalCenter(requireWidget!Button(root,
+                "oc-attachment")));
+            root.tickTree(0.02);
+        }
+        assert(driver.paint(), "Attachment clear did not repaint");
+        assert(root.composerHeightForTesting() == opencodeComposerHeight,
+            "Composer did not shrink back after clearing attachments");
+        writeln("Large paste becomes a text attachment; chips remove cleanly");
+    }
+
     // Regenerate still works after an edit.
     root.addConversationForTesting(
         ["assistant"], ["A reply that will be regenerated."]);

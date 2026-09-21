@@ -1,3 +1,27 @@
+## Application icon on the executable (aurora-opencode-pro)
+
+- Two independent halves, because a Windows app shows two icons:
+  - **Window / taskbar / alt-tab** come from `WindowOptions.iconPath`. The pro
+    app now sets it to `applicationIconPath()`
+    (`source/auroraopencode/appicon.d`), which resolves
+    `assets/aurora-opencode-pro.ico` (cwd or beside the exe) and otherwise
+    unpacks the `.ico` embedded in the binary via `import()`
+    (`stringImportPaths: ["assets"]`) into `%TEMP%\Aurora-OpenCode-assets`. No
+    assets folder needs to ship beside the exe.
+  - **Explorer's file icon** is the PE `.rsrc` resource, which DMD's bundled
+    lld-link 9 cannot link. `postBuildCommands-windows` runs
+    `tools/embed-icon.bat`, a best-effort wrapper around the existing
+    `scripts/patch-pe-icon.py` (post-link `.rsrc` append). The wrapper never
+    fails a build: a missing Python/icon or a locked target just skips it.
+- `patch-pe-icon.py` is now idempotent: it strips a previously appended `.rsrc`
+  (always the last section) before appending, so repeat patches — a build hook
+  plus `build-portable-windows.py` — cannot stack sections or grow the file.
+- `build-portable-windows.py` applies the icon patch to **every** app that ships
+  an `.ico` (`assets/<name>.ico` or `<name>.ico`), not only the `--single-exe`
+  payloads, so release exes carry the Explorer icon.
+- The icon asset is generated and reproducible: `tools/make-app-icon.py`
+  (Pillow, PNG frames 16–256, matching the other Aurora icons).
+
 ## Portable Windows CRT linkage
 
 - Every Aurora DUB package provides a `portable-release` build type that passes

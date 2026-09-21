@@ -124,6 +124,54 @@ def build_rsrc_section(root, data, section_rva):
 def align_up(v, a): return (v + a - 1) // a * a
 
 
+def strip_previous_rsrc(orig):
+    """Remove a `.rsrc` section appended by an earlier run of this tool.
+
+    The section this tool appends is always the last one in the table, so a
+    second patch would otherwise stack another copy and grow the file on every
+    build. Truncating to that section's raw offset and clearing the resource
+    directory restores the freshly linked image, which `patch_icon` then patches
+    from scratch. Returns True when a section was removed.
+    """
+    if len(orig) < 0x40 or orig[:2] != b'MZ':
+        return False
+    pe = read_u32(orig, 0x3C)
+    if pe + 24 > len(orig) or orig[pe:pe+4] != b'PE\0\0':
+        return False
+    coff = pe + 4
+    n_sections = read_u16(orig, coff + 2)
+    opt_size = read_u16(orig, coff + 16)
+    if n_sections == 0:
+        return False
+    opt = coff + 20
+    magic = read_u16(orig, opt)
+    if magic == 0x20B:
+        dir_base = opt + 112
+    elif magic == 0x10B:
+        dir_base = opt + 96
+    else:
+        return False
+    last_off = opt + opt_size + (n_sections - 1) * 40
+    if last_off + 40 > len(orig):
+        return False
+    if orig[last_off:last_off+8].rstrip(b'\x00') != b'.rsrc':
+        return False
+    res_dir = dir_base + 2 * 8
+    res_rva = read_u32(orig, res_dir)
+    last_va = read_u32(orig, last_off + 12)
+    last_span = max(read_u32(orig, last_off + 8), read_u32(orig, last_off + 16))
+    if res_rva < last_va or res_rva >= last_va + last_span:
+        return False
+    praw = read_u32(orig, last_off + 20)
+    if praw <= 0 or praw > len(orig):
+        return False
+    del orig[praw:]
+    write_u16(orig, coff + 2, n_sections - 1)
+    write_u32(orig, res_dir, 0)
+    write_u32(orig, res_dir + 4, 0)
+    return True
+
+
 def patch_icon(ico_path, exe_path, out_path=None):
     entries = read_ico(ico_path)
     root, data = build_tree_and_data(entries)
@@ -131,6 +179,8 @@ def patch_icon(ico_path, exe_path, out_path=None):
     orig = bytearray(open(exe_path, 'rb').read())
     if orig[:2] != b'MZ':
         raise SystemExit(f'{exe_path}: not a PE executable')
+    if strip_previous_rsrc(orig):
+        print(f'{exe_path}: replaced the previously appended .rsrc section')
     pe = read_u32(orig, 0x3C)
     if orig[pe:pe+4] != b'PE\0\0':
         raise SystemExit(f'{exe_path}: invalid PE signature')

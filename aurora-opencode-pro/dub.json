@@ -13,6 +13,9 @@
     "source",
     "../vendor/aurora-d-0.4.5/source"
   ],
+  "stringImportPaths": [
+    "assets"
+  ],
   "dependencies": {
     "aurora-opencode-core": {
       "path": "../aurora-opencode-core"
@@ -23,13 +26,19 @@
       "name": "application",
       "targetType": "executable",
       "targetName": "aurora-opencode-pro",
-      "mainSourceFile": "source/app.d"
+      "mainSourceFile": "source/app.d",
+      "postBuildCommands-windows": [
+        "cmd /c tools\\embed-icon.bat"
+      ]
     },
     {
       "name": "newbuild",
       "targetType": "executable",
       "targetName": "aurora-opencode-pro-new",
-      "mainSourceFile": "source/app.d"
+      "mainSourceFile": "source/app.d",
+      "postBuildCommands-windows": [
+        "cmd /c tools\\embed-icon.bat"
+      ]
     },
     {
       "name": "rebuilder",

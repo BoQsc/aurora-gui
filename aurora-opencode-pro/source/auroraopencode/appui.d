@@ -19,6 +19,12 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution;
 import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
+// experimental: attachments - drop a file or large paste as an attachment.
+import auroraopencode.attachments :
+    Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
+    attachmentForText, attachmentInsertedText, attachmentIsLargePaste,
+    attachmentStripHeight, attachmentVisibleSummary,
+    experimentalAttachmentsEnabled;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -3886,6 +3892,10 @@ private final class ChatInput : TextArea
 {
     void delegate() onSendRequested;
     void delegate() onQueueRequested;
+    // experimental: attachments - invoked with the text box before and after a
+    // Ctrl+V paste. Return true when the paste was diverted into an attachment
+    // (and the box was already reverted by the handler).
+    bool delegate(string before, string after) onLargePaste;
 
     this()
     {
@@ -3904,7 +3914,22 @@ private final class ChatInput : TextArea
             if (onSendRequested !is null) onSendRequested();
             return true;
         }
+        // experimental: attachments - intercept Ctrl+V so a large paste is
+        // pulled out into a text attachment instead of flooding the text box.
+        if ((event.control() || event.meta()) && event.key == Key.v)
+            return handlePaste();
         return super.onKeyDown(event);
+    }
+
+    // experimental: attachments - paste through handlePaste so a large
+    // clipboard block can be diverted into a text attachment.
+    public bool handlePaste()
+    {
+        const before = textUtf8();
+        pasteFromClipboard();
+        const after = textUtf8();
+        if (onLargePaste !is null && onLargePaste(before, after)) return true;
+        return true;
     }
 }
 
@@ -3975,15 +4000,25 @@ private final class ChatComposer : Widget
     private Widget _field;
     private Widget _send;
     private Widget _controls;
+    // experimental: attachments - optional chip row shown above the prompt.
+    private Widget _strip;
 
-    this(Widget field, Widget send, Widget controls = null)
+    this(Widget field, Widget send, Widget controls = null, Widget strip = null)
     {
         _field = field;
         _send = send;
         _controls = controls;
+        _strip = strip;
         add(field);
         add(send);
         if (controls !is null) add(controls);
+        if (strip !is null) add(strip);
+    }
+
+    /// Height the attachment chip row currently occupies (0 when hidden).
+    private int stripHeight() const
+    {
+        return _strip !is null && _strip.visible() ? attachmentStripHeight : 0;
     }
 
     protected override Size onMeasure(Size available)
@@ -3991,17 +4026,22 @@ private final class ChatComposer : Widget
         const width = maxInt(0, available.width);
         // Publish the intended height rather than a provisional-clamped one;
         // the first measure can arrive before the window has any bounds.
+        const height = opencodeComposerHeight + stripHeight();
         layoutHints().preferredWidth = width;
-        layoutHints().preferredHeight = opencodeComposerHeight;
-        return Size(width, opencodeComposerHeight);
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
     }
 
     protected override void onLayout()
     {
         const width = bounds().width;
         const height = bounds().height;
-        const fieldHeight = maxInt(0, height - pad * 2 - buttonHeight - gap);
-        _field.setBounds(Rect(pad, pad, maxInt(0, width - pad * 2),
+        const top = pad + stripHeight();
+        if (_strip !is null && _strip.visible())
+            _strip.setBounds(Rect(pad, pad, maxInt(0, width - pad * 2),
+                attachmentStripHeight));
+        const fieldHeight = maxInt(0, height - top - pad - buttonHeight - gap);
+        _field.setBounds(Rect(pad, top, maxInt(0, width - pad * 2),
             fieldHeight));
         const bottomY = maxInt(pad, height - pad - buttonHeight);
         _send.setBounds(Rect(maxInt(pad, width - pad - buttonWidth), bottomY,
@@ -4836,6 +4876,11 @@ public final class OpenCodeRoot : VBox
     private ChatInput _input;
     private ChatSendButton _sendButton;
     private ChatComposer _composer;
+    // experimental: attachments - pending dropped files / large pastes and the
+    // chip row that shows them. See source/auroraopencode/attachments.d.
+    private Attachment[] _pendingAttachments;
+    private AttachmentStrip _attachmentStrip;
+    private CenteredColumn _composerCenter;
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
@@ -5943,6 +5988,11 @@ public final class OpenCodeRoot : VBox
         _input.setPlaceholder("Ask anything…  @file · /btw · /review");
         _input.onSendRequested = delegate() { sendMessage(); };
         _input.onQueueRequested = delegate() { queueFollowUp(); };
+        // experimental: attachments - turn a large paste into a text chip.
+        _input.onLargePaste = delegate(string before, string after)
+        {
+            return handleLargePaste(before, after);
+        };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate()
@@ -5954,16 +6004,24 @@ public final class OpenCodeRoot : VBox
             else sendMessage();
         };
 
-        auto composer = new ChatComposer(_input, _sendButton, composerControls);
+        // experimental: attachments - chip row sits inside the composer panel,
+        // above the prompt, and only reserves height while it has chips.
+        _attachmentStrip = new AttachmentStrip();
+        _attachmentStrip.setId("oc-attachments");
+        _attachmentStrip.onRemove = delegate(size_t index) {
+            removeAttachment(index);
+        };
+        auto composer = new ChatComposer(_input, _sendButton, composerControls,
+            _attachmentStrip);
         composer.setId("oc-composer");
         _composer = composer;
         auto composerCenter = new CenteredColumn(composer,
             opencodeContentMaxWidth);
         composerCenter.setId("oc-composer-center");
+        _composerCenter = composerCenter;
         // The top-level VBox sizes children from hints and is never measured
         // itself, so publish the composer's height here or it lays out to zero.
-        composerCenter.layoutHints().preferredHeight = opencodeComposerHeight;
-        composerCenter.layoutHints().minHeight = opencodeComposerHeight;
+        syncComposerHeight();
 
         chatPanel.add(_messagesScroll);
         chatPanel.add(composerCenter);
@@ -9005,12 +9063,18 @@ public final class OpenCodeRoot : VBox
             // boundary.  Clicking the stop-shaped send button with no text
             // keeps the explicit cancellation behaviour.
             const guidance = _input.textUtf8().strip();
-            if (guidance.length > 0 && _current >= 0)
+            // experimental: attachments - steering carries pending attachments
+            // as inline context too; they are not silently dropped.
+            const hasAttachments = _pendingAttachments.length > 0 &&
+                experimentalAttachmentsEnabled();
+            if ((guidance.length > 0 || hasAttachments) && _current >= 0)
             {
                 auto session = &_sessions[_current];
-                session.queuedGuidance ~= guidance;
+                session.queuedGuidance ~= guidance ~
+                    attachmentContextBlock(_pendingAttachments);
                 session.taskStatus = "active";
                 _input.setText("");
+                clearAttachments();
                 publishThreadUpdated(*session);
                 markDirty();
                 // Materialize the pending prompt so it is visible immediately
@@ -9025,13 +9089,20 @@ public final class OpenCodeRoot : VBox
         }
 
         const text = _input.textUtf8().strip();
-        if (text.length == 0) return;
+        // experimental: attachments - a message may consist only of attachments.
+        if (text.length == 0 && _pendingAttachments.length == 0) return;
+        const attachments = _pendingAttachments.dup;
+        const baseText = text.length > 0 ? text
+            : "Please review the attached content.";
+        const attachmentSuffix = attachments.length == 0 ? "" :
+            "\n\n" ~ attachmentVisibleSummary(attachments);
 
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
         if (session.title == "New chat" || session.title.length == 0)
         {
-            session.title = text.length > 60 ? text[0 .. 60] ~ "…" : text;
+            session.title = baseText.length > 60
+                ? baseText[0 .. 60] ~ "…" : baseText;
             updateSessionList();
         }
         session.model = _settings.model;
@@ -9044,7 +9115,7 @@ public final class OpenCodeRoot : VBox
         const resetTaskState = session.objective.length == 0 ||
             session.taskStatus == "completed" || session.taskStatus == "blocked";
         if (session.objective.length == 0)
-            session.objective = text;
+            session.objective = baseText;
         if (resetTaskState)
         {
             session.taskSteps.length = 0;
@@ -9067,11 +9138,22 @@ public final class OpenCodeRoot : VBox
 
         ChatMessage userMessage;
         userMessage.role = "user";
-        userMessage.content = text;
+        userMessage.content = baseText ~ attachmentSuffix;
         userMessage.time = currentTimestamp();
         appendMessage(*session, userMessage);
-        addUserBubble(text);
+        // experimental: attachments - hidden inline context carries the full
+        // dropped-file / pasted bodies to the model.
+        if (attachments.length > 0)
+        {
+            ChatMessage context;
+            context.role = "user";
+            context.internal = true;
+            context.content = strip(attachmentContextBlock(attachments));
+            appendMessage(*session, context);
+        }
+        addUserBubble(baseText ~ attachmentSuffix);
         _input.setText("");
+        clearAttachments();
         markDirty();
         _lastToolSignature = "";
         _lastToolRepeatCount = 0;
@@ -9094,7 +9176,7 @@ public final class OpenCodeRoot : VBox
     private void queueFollowUp()
     {
         const text = _input.textUtf8().strip();
-        if (text.length == 0) return;
+        if (text.length == 0 && _pendingAttachments.length == 0) return;
         if (!turnIsBusy())
         {
             sendMessage();
@@ -9106,13 +9188,101 @@ public final class OpenCodeRoot : VBox
             return;
         }
         auto session = &_sessions[_current];
-        session.queuedFollowUps ~= text;
+        session.queuedFollowUps ~= text ~
+            attachmentContextBlock(_pendingAttachments);
         _input.setText("");
+        clearAttachments();
         publishThreadUpdated(*session);
         markDirty();
         _messagesScroll.follow = true;
         rebuildMessageColumn();
         updateStatus("Follow-up queued · it will start after this turn.");
+    }
+
+    // -- experimental: attachments ------------------------------------------
+
+    /// Keep the composer panel and its wrapper in step with whether the chip
+    /// row is showing, so the extra row never overlaps the prompt.
+    private void syncComposerHeight()
+    {
+        if (_composerCenter is null) return;
+        const extra = _attachmentStrip !is null && _attachmentStrip.visible()
+            ? attachmentStripHeight : 0;
+        _composerCenter.layoutHints().preferredHeight =
+            opencodeComposerHeight + extra;
+        _composerCenter.layoutHints().minHeight =
+            opencodeComposerHeight + extra;
+    }
+
+    private void syncAttachments()
+    {
+        if (_attachmentStrip !is null)
+            _attachmentStrip.setAttachments(_pendingAttachments);
+        syncComposerHeight();
+        if (_composer !is null) _composer.invalidate();
+        markDirty();
+    }
+
+    private void clearAttachments()
+    {
+        if (_pendingAttachments.length == 0) return;
+        _pendingAttachments.length = 0;
+        syncAttachments();
+    }
+
+    /// Add dropped files as attachments. Returns true when anything was added.
+    private bool addFileAttachments(const(string)[] paths)
+    {
+        size_t added;
+        foreach (path; paths)
+        {
+            if (path.length == 0) continue;
+            _pendingAttachments ~= attachmentForFile(path);
+            ++added;
+        }
+        if (added == 0) return false;
+        syncAttachments();
+        updateStatus("Attached " ~ to!string(added) ~
+            (added == 1 ? " file" : " files") ~ " to the next message.");
+        return true;
+    }
+
+    private void addTextAttachment(string text)
+    {
+        _pendingAttachments ~= attachmentForText(text);
+        syncAttachments();
+        updateStatus("Large paste attached as text (" ~
+            to!string(text.length) ~ " chars). It will be sent with your " ~
+            "message.");
+    }
+
+    private void removeAttachment(size_t index)
+    {
+        if (index >= _pendingAttachments.length) return;
+        _pendingAttachments = _pendingAttachments[0 .. index] ~
+            _pendingAttachments[index + 1 .. $];
+        syncAttachments();
+    }
+
+    /// Experimental attachments: divert a too-large clipboard paste out of the
+    /// text box and into a text chip. Returns true when it did.
+    private bool handleLargePaste(string before, string after)
+    {
+        if (!experimentalAttachmentsEnabled()) return false;
+        const inserted = attachmentInsertedText(before, after);
+        if (!attachmentIsLargePaste(inserted)) return false;
+        _input.setText(before);
+        addTextAttachment(inserted);
+        return true;
+    }
+
+    /// Experimental attachments: files dropped anywhere in the window become
+    /// attachments on the next message. The bubble reaches this override from
+    /// whatever widget was under the pointer.
+    override bool onFilesDropped(ref Event event)
+    {
+        if (!experimentalAttachmentsEnabled()) return false;
+        return addFileAttachments(event.paths);
     }
 
     private void startNextQueuedFollowUp(int sessionIndex)
@@ -12606,12 +12776,53 @@ public final class OpenCodeRoot : VBox
         {
             // Paste into the composer from anywhere in the window. After
             // selecting transcript text the bubble holds focus, so Ctrl+V must
-            // bring the caret back to the input before pasting.
+            // bring the caret back to the input before pasting. The input's
+            // handlePaste also diverts a large paste into an attachment.
             _input.requestFocus();
-            _input.pasteFromClipboard();
+            _input.handlePaste();
             return true;
         }
         return false;
+    }
+
+    // -- experimental: attachments (test accessors) -------------------------
+
+    /// Test-only: number of attachments queued for the next message.
+    public size_t pendingAttachmentCountForTesting() const
+    {
+        return _pendingAttachments.length;
+    }
+
+    /// Test-only: comma-joined names of the queued attachments.
+    public string pendingAttachmentNamesForTesting() const
+    {
+        string names;
+        foreach (attachment; _pendingAttachments)
+        {
+            if (names.length > 0) names ~= ", ";
+            names ~= attachment.name;
+        }
+        return names;
+    }
+
+    /// Test-only: run the same large-paste path a Ctrl+V would, from an empty
+    /// composer, without touching the real clipboard.
+    public bool pasteLargeTextForTesting(string text)
+    {
+        return handleLargePaste("", text);
+    }
+
+    /// Test-only: add a file attachment the way a drop would.
+    public bool addFileAttachmentForTesting(string path)
+    {
+        return addFileAttachments([path]);
+    }
+
+    /// Test-only: the inline context that will ride along with the next
+    /// message for the queued attachments.
+    public string pendingAttachmentContextForTesting() const
+    {
+        return attachmentContextBlock(_pendingAttachments);
     }
 
     // -- test accessors ---------------------------------------------------

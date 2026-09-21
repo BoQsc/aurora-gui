@@ -1,6 +1,7 @@
 module app;
 
 import aurora;
+import auroraopencode.appicon : applicationIconPath;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
@@ -21,6 +22,7 @@ private int runScreenshot(string path, bool withChat, string message)
     options.height = 800;
     options.decorated = false;
     options.darkTitleBar = true;
+    options.iconPath = applicationIconPath();
     options.renderer = RendererPreference.automatic;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
@@ -124,6 +126,7 @@ private int runApp(string[] args)
     options.height = 800;
     options.decorated = false;
     options.darkTitleBar = true;
+    options.iconPath = applicationIconPath();
     // The custom titlebar owns window moves; keep the native pointer during
     // those drags (Aurora's synchronized drawn cursor is for compositor drags).
     options.synchronizedDragPointer = false;

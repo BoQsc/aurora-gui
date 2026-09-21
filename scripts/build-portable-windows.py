@@ -313,9 +313,15 @@ def main() -> int:
         if not args.no_force:
             command.append("--force")
         run(command, repo_root / package_root)
-        if single_exe:
-            patch_icon(repo_root, package_root / "assets" / f"{name}.ico",
-                       repo_root / executable)
+        # The icon is added POST-LINK for every app that ships one (not just the
+        # single-exe payloads): DMD's bundled lld-link cannot link a resource
+        # object, so `patch-pe-icon.py` appends the .rsrc section instead. Apps
+        # without an icon asset keep the linker's default icon.
+        icon = package_root / "assets" / f"{name}.ico"
+        if not icon.is_file():
+            icon = package_root / f"{name}.ico"
+        if icon.is_file():
+            patch_icon(repo_root, icon, repo_root / executable)
         run(
             [
                 sys.executable,
