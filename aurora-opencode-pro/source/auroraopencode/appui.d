@@ -4789,6 +4789,14 @@ public final class OpenCodeRoot : VBox
     // This catches varied read/grep loops and prevents trivial edits from being
     // used to reset the guard.
     private static immutable int explorationCheckpointCalls = 10;
+    // Adaptive backstop for cross-turn repetition. The consecutive-batch
+    // counter above only sees a run of identical calls: a model can evade it by
+    // alternating calls, and every new user turn resets it. This cap counts how
+    // many times one exact call (name + arguments) has run across the whole
+    // conversation; once it is reached the app stops executing that call and
+    // forces a tool-free final answer (see `handleToolCalls`). It is set well
+    // above the tolerated repeat streak so ordinary re-reads are unaffected.
+    private static immutable int cumulativeRepeatLimit = 12;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -7595,6 +7603,28 @@ public final class OpenCodeRoot : VBox
         return count;
     }
 
+    /// The largest number of times any single exact tool call (name + arguments)
+    /// appears on the active path. Computed from persisted history rather than a
+    /// runtime counter, so it spans every turn of the conversation and survives
+    /// a restart. A model that re-issues the same read/grep across many turns
+    /// (each turn resetting the per-turn counters) still trips this cap.
+    private static int mostRepeatedToolCallCount(const ref ChatSession session)
+    {
+        int[string] counts;
+        int worst;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role != "tool" || message.toolName.length == 0)
+                continue;
+            const signature = message.toolName ~ "|" ~ message.toolArgs;
+            const seen = counts.get(signature, 0) + 1;
+            counts[signature] = seen;
+            if (seen > worst) worst = seen;
+        }
+        return worst;
+    }
+
     private static bool hasSubstantiveMutation(
         const ref ChatSession session)
     {
@@ -7663,6 +7693,14 @@ public final class OpenCodeRoot : VBox
             "still blocks the edit, but do not repeat known reads or broaden " ~
             "the search scope. If a command reaches a soft deadline, inspect " ~
             "its progress report and decide whether a longer wait is justified.";
+        // The completion gate can only reconcile a durable checklist that
+        // exists. Long evidence-gathering runs often never call `update_plan`,
+        // leaving the plan empty, so nudge the model to record one. The app
+        // never invents the steps itself: the plan stays model-owned.
+        if (session.taskSteps.length == 0)
+            checkpoint.content ~= "\n\nBefore editing, record the durable plan " ~
+                "with a single update_plan call (the concrete remaining steps " ~
+                "and their statuses) so the checklist reflects the work.";
         appendMessage(session, checkpoint);
         publishThreadUpdated(session);
         markDirty();
@@ -7739,6 +7777,38 @@ public final class OpenCodeRoot : VBox
                 "tool_loop_limit");
             _activeRequestId = 0;
             _activeRequestSession = -1;
+            return;
+        }
+
+        // Cumulative repetition backstop. The per-turn counters above reset on
+        // every new user turn (and on any different call), so a model can loop
+        // for hours across "continue" turns without ever tripping the consecutive
+        // streak. Once one exact call has already run `cumulativeRepeatLimit`
+        // times in this conversation, stop running it and force a tool-free
+        // final answer; if the model still asks for tools, the
+        // `_finalAnswerRequested` branch above marks the turn blocked instead of
+        // looping again.
+        if (mostRepeatedToolCallCount(*session) >= cumulativeRepeatLimit)
+        {
+            appendSkippedToolResults(*session, event.toolCalls,
+                "Tool call skipped: this exact call has already run " ~
+                to!string(cumulativeRepeatLimit) ~ " times in this " ~
+                "conversation. Repeating it cannot add new evidence.");
+            ChatMessage repeated;
+            repeated.role = "user";
+            repeated.internal = true;
+            repeated.content = "Repetition limit reached: the same tool call " ~
+                "has already run many times without new information. Do not " ~
+                "call more tools. Answer with what you have learned, or state " ~
+                "the one concrete blocker that prevents progress.";
+            appendMessage(*session, repeated);
+            _finalAnswerRequested = true;
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Repetition limit reached — requesting a final answer…");
+            if (!_toolContinuationPaused)
+                startChatRequest(sessionIndex, false);
             return;
         }
 

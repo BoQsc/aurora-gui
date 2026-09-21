@@ -3461,6 +3461,40 @@ int main(string[] args)
         writeln("Durable agent runtime journal records thread/item events");
     }
 
+    // Cumulative repetition backstop: repetition must be counted across the
+    // whole conversation, not just the current turn (which the "guides rather
+    // than controls" test above covers). Seed one identical completed call up to
+    // the limit, then prove the next identical request is skipped and the turn
+    // settles instead of looping forever.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Loop on one call"]);
+        foreach (i; 0 .. 12)
+        {
+            root.addConversationForTesting(["assistant"], [""]);
+            root.injectToolResultForTesting("dshell", "entries: none", false,
+                `{"command":"list"}`);
+        }
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall overRepeat;
+        overRepeat.id = "call_over_repeat";
+        overRepeat.name = "dshell";
+        overRepeat.arguments = `{"command":"list"}`;
+        root.injectToolCallsForTesting([overRepeat]);
+        assert(root.finalAnswerRequestedForTesting(),
+            "the cumulative repeat limit did not force a final answer");
+        assert(root.lastToolResultForTesting().indexOf("has already run") >= 0,
+            "the over-limit call was executed instead of skipped: " ~
+            root.lastToolResultForTesting());
+        // A model that ignores the stop and asks for tools again must settle
+        // blocked rather than start another cycle.
+        root.addConversationForTesting(["assistant"], [""]);
+        root.injectToolCallsForTesting([overRepeat]);
+        assert(root.taskStatusForTesting() == "blocked",
+            "a tool request after the repetition backstop did not settle blocked");
+        writeln("Cumulative repetition is stopped across turns");
+    }
+
     root.shutdownClient();
     window.close();
     try rmdirRecurse(stateDir);
