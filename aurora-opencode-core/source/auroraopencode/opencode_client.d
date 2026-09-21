@@ -71,18 +71,96 @@ private struct HttpTarget
 }
 
 private enum DWORD defaultConnectTimeoutMs = 30_000;
+/// Attempts for a momentary upstream blip (5xx). Bounded, so a request the
+/// server refuses every single time still fails instead of hanging the turn.
 private enum uint maxTransientChatAttempts = 3;
+/// Interval between replays of a 429. The gateway says "the upstream model
+/// provider is temporarily unavailable, please try again in a moment", so the
+/// retries are steady rather than a growing backoff: a fixed three seconds is
+/// frequent enough to pick the answer up moments after the provider returns,
+/// and an exponential cap would leave the reply waiting up to its ceiling
+/// longer than necessary.
+private enum int rateLimitRetryIntervalMs = 3_000;
 
 private bool isTransientChatStatus(DWORD status)
 {
-    return status == 500 || status == 502 || status == 503 || status == 504;
+    // 429 is the gateway's "provider temporarily unavailable / slow down"
+    // signal (not just a hard quota refusal), so the turn is replayed instead
+    // of failing outright.
+    return status == 429 || status == 500 || status == 502 ||
+        status == 503 || status == 504;
 }
 
 /// Exposes the deliberately narrow retry policy without requiring a live HTTP
-/// server in unit tests. Client errors are never replayed automatically.
+/// server in unit tests. Transient upstream conditions (provider busy or a
+/// momentary 5xx) are replayed; client errors are never replayed automatically.
 public bool transientChatStatusForTesting(uint status)
 {
     return isTransientChatStatus(cast(DWORD) status);
+}
+
+/// Test-only: the retry decision for `nextAttempt` (1-based) after `status`.
+public bool transientRetryAllowedForTesting(uint status, uint nextAttempt)
+{
+    return mayRetryTransientStatus(cast(DWORD) status, nextAttempt);
+}
+
+/// Test-only: the pause taken before attempt `attempt` of a retry sequence.
+public int transientRetryBackoffMsForTesting(uint status, uint attempt)
+{
+    return transientRetryBackoffMs(cast(DWORD) status, attempt);
+}
+
+/**
+ * Whether another attempt may follow a transient failure.
+ *
+ * A 5xx is usually a momentary blip, so it keeps the short bounded budget. A
+ * 429 says the upstream model provider itself is unavailable ("try again in a
+ * moment"); those clear on their own, so the turn is replayed until the
+ * provider answers rather than failing and making the user re-send by hand.
+ * The wait stays safe because it is interruptible: Stop, and closing the
+ * session, both end the retry loop immediately.
+ */
+private bool mayRetryTransientStatus(DWORD status, uint nextAttempt)
+{
+    if (!isTransientChatStatus(status)) return false;
+    if (status == 429) return true;
+    return nextAttempt < maxTransientChatAttempts;
+}
+
+/**
+ * True when a 429 states a usage limit and a reset time, i.e. the caller is out
+ * of quota rather than catching the provider at a bad moment.
+ *
+ * The OpenCode Go gateway answers that way: "5-hour usage limit reached.
+ * Resets in 3hr 52min. To continue using this model now, enable usage from your
+ * available balance: ...". That will not clear on its next three-second poll,
+ * and retrying it forever hides both the reason and the reset time, so the
+ * turn fails immediately and shows the provider's own sentence.
+ */
+private bool isPersistentRateLimit(string detail)
+{
+    return containsAsciiIgnoreCase(detail, "usage limit") ||
+        containsAsciiIgnoreCase(detail, "limit reached") ||
+        containsAsciiIgnoreCase(detail, "resets in") ||
+        containsAsciiIgnoreCase(detail, "reset in") ||
+        containsAsciiIgnoreCase(detail, "quota") ||
+        containsAsciiIgnoreCase(detail, "available balance");
+}
+
+/// Test-only: exposes the quota-wall decision.
+public bool persistentRateLimitForTesting(string detail)
+{
+    return isPersistentRateLimit(detail);
+}
+
+/// Pause before replaying a transient failure. A 5xx keeps the original short
+/// interval; a 429 waits `rateLimitRetryIntervalMs` so the provider is polled
+/// at a steady rate until it answers.
+private int transientRetryBackoffMs(DWORD status, uint attempt)
+{
+    if (status != 429) return cast(int) attempt * 250;
+    return rateLimitRetryIntervalMs;
 }
 
 /// Thinking-mode providers (DeepSeek-class routes behind the OpenCode Go
@@ -269,6 +347,11 @@ final class OpenCodeClient
     private Mutex _mutex;
     private OpenCodeEvent[] _pending;
     private bool _chatBusy;
+    // True while the worker is paused between replays of a transient upstream
+    // failure. A 429 is replayed until the provider answers, which can take a
+    // minute or more, so the UI reads this to say the provider is busy instead
+    // of leaving a retrying request looking frozen.
+    private bool _transientRetrying;
     private bool _modelsBusy;
     private bool _cancel;
     private HINTERNET _chatHandle;
@@ -345,6 +428,29 @@ final class OpenCodeClient
         _mutex.lock();
         scope (exit) _mutex.unlock();
         return _modelsBusy;
+    }
+
+    /// True while the chat request is waiting out a transient upstream failure
+    /// (HTTP 429 or a 5xx) before replaying it. Polled by the UI.
+    bool retryingTransient()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _transientRetrying;
+    }
+
+    private void setTransientRetry()
+    {
+        _mutex.lock();
+        _transientRetrying = true;
+        _mutex.unlock();
+    }
+
+    private void clearTransientRetry()
+    {
+        _mutex.lock();
+        _transientRetrying = false;
+        _mutex.unlock();
     }
 
     /** Start a streaming chat completion. Roles/contents are parallel arrays. */
@@ -633,7 +739,11 @@ final class OpenCodeClient
                 "Accept: text/event-stream\r\n";
             auto session = openSession();
             uint attempt;
-            while (attempt < maxTransientChatAttempts)
+            // Deliberately no attempt ceiling: a 429 is replayed until the
+            // provider answers (see mayRetryTransientStatus). The only way out
+            // other than success or a fatal error is the backoff's shutdown
+            // poll, so Stop and a closing window both end the wait immediately.
+            while (true)
             {
                 if (replayReasoning || droppedReasoning)
                     body = buildChatBody(messages, tools, model,
@@ -645,6 +755,7 @@ final class OpenCodeClient
                 bool retry;
                 DWORD retryStatus;
                 string retryNote;
+                string retryReason;
                 try
                 {
                     connection = InternetConnectW(session,
@@ -676,11 +787,20 @@ final class OpenCodeClient
                         const detail = readAllAsUtf8(request);
                         const reasoningRejected =
                             isReasoningReplayRejection(detail);
-                        if (isTransientChatStatus(statusCode) &&
-                            attempt + 1 < maxTransientChatAttempts)
+                        // A 429 that names a usage limit with a reset time is a
+                        // quota wall, not a momentary outage. Replaying it would
+                        // hide the one line the user needs ("Resets in 3hr
+                        // 52min"), so it fails at once with the provider's own
+                        // words instead of retrying every few seconds for hours.
+                        const quotaWall = statusCode == 429 &&
+                            isPersistentRateLimit(detail);
+                        if (!quotaWall &&
+                            mayRetryTransientStatus(statusCode, attempt + 1))
                         {
                             retry = true;
                             retryStatus = statusCode;
+                            retryReason = condenseUpstreamDetail(
+                                formatHttpErrorDetail(detail));
                         }
                         else if (reasoningRejected && !droppedReasoning &&
                             attempt + 1 < maxTransientChatAttempts)
@@ -758,6 +878,12 @@ final class OpenCodeClient
                                 break;
                             }
                         }
+                        // SSE normally terminates every data line with `\n`,
+                        // but compatible local/proxy servers sometimes close
+                        // immediately after their last JSON event. Do not drop
+                        // that final (occasionally one-character) content chunk.
+                        if (!_cancel && lineBuffer.length > 0)
+                            processSseLine(lineBuffer);
                     }
                 }
                 finally
@@ -773,24 +899,29 @@ final class OpenCodeClient
 
                 if (!retry) break;
                 ++attempt;
+                const backoffMs = transientRetryBackoffMs(retryStatus, attempt);
                 logInfo("chat upstream returned HTTP " ~
                     to!string(retryStatus) ~
                     (retryNote.length > 0 ? " (" ~ retryNote ~ ")" : "") ~
-                    "; retrying attempt " ~
-                    to!string(attempt + 1) ~ "/" ~
-                    to!string(maxTransientChatAttempts) ~ " [" ~
+                    (retryReason.length > 0 ? " (" ~ retryReason ~ ")" : "") ~
+                    "; backing off " ~ to!string(backoffMs) ~
+                    " ms, retrying (attempt " ~ to!string(attempt + 1) ~ ") [" ~
                     _baseUrl ~ "]");
-                // Short bounded backoff. Poll cancellation so Stop remains
-                // immediate even while the provider is recovering.
-                foreach (_; 0 .. attempt * 5)
+                // Publish the wait so the UI can show the retry and its age
+                // rather than a request that looks frozen.
+                setTransientRetry();
+                // Poll shutdown so Stop stays immediate, and closing the window
+                // never waits on this loop.
+                foreach (_; 0 .. backoffMs / 50)
                 {
                     Thread.sleep(50.msecs);
-                    if (_cancel)
+                    if (shuttingDown())
                     {
                         cancelled = true;
                         break;
                     }
                 }
+                clearTransientRetry();
                 if (cancelled) break;
             }
 
@@ -842,6 +973,14 @@ final class OpenCodeClient
     public void feedSseForTesting(string payload)
     {
         dispatchSseLines(payload);
+    }
+
+    /// Test-only: simulate a server closing after a final SSE event without a
+    /// trailing newline, exercising the network reader's EOF flush.
+    public void feedSseEofForTesting(string payload)
+    {
+        auto remainder = dispatchSseLines(payload);
+        if (remainder.length > 0) processSseLine(remainder);
     }
 
     /// Test-only: emit the terminal event for the parsed stream (done or

@@ -2100,6 +2100,32 @@ int main(string[] args)
         writeln("Live token count grows on the Thinking header and stays");
     }
 
+    // Providers often stream prose one character at a time. The live bubble
+    // and durable assistant message must stay byte-for-byte identical through
+    // the transition to the settled Markdown renderer.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Stream exactly"]);
+        root.beginStreamForTesting();
+        const pieces = ["F", "i", "n", "a", "l", " ", "g", "l", "y", "p",
+            "h", " ", "W"];
+        string expected;
+        foreach (piece; pieces)
+        {
+            expected ~= piece;
+            root.streamContentForTesting(piece);
+            assert(root.lastAssistantContentForTesting() == expected,
+                "a one-character delta was lost while streaming: " ~ expected);
+        }
+        assert(driver.paint(), "one-character streaming reply did not paint");
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        assert(root.lastAssistantContentForTesting() == expected &&
+            driver.paint(),
+            "settling the reply lost its final character");
+        writeln("One-character answer deltas survive streaming and settlement");
+    }
+
     // A reasoning round that ends in tool calls does not pass through
     // finishAssistantMessage. Its live count/rate must be persisted before the
     // transient stream bubble is replaced by the settled tool-call wrapper.

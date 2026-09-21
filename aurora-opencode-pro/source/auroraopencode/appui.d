@@ -4840,6 +4840,7 @@ public final class OpenCodeRoot : VBox
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
+    private int _lastRetryStatusSeconds = -1;
 
     // Per-user-turn clock for the action-group header ("Worked for 0m 3s"). The
     // clock spans the whole turn — every tool-continuation round re-enters the
@@ -8922,6 +8923,7 @@ public final class OpenCodeRoot : VBox
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
+        _lastRetryStatusSeconds = -1;
         // A user-initiated request opens a new turn clock; a tool-continuation
         // round re-enters here without `userTurn`, so the one clock spans the
         // whole turn (and one action group owns its tools).
@@ -11318,11 +11320,26 @@ public final class OpenCodeRoot : VBox
             updateSendButton();
         }
 
+        // The client replays a transient upstream failure (429 "the model
+        // provider is temporarily unavailable") until it is answered, which can
+        // last a minute or more. Say so and keep the count moving: an otherwise
+        // silent wait is what makes a retrying request look like a stalled one.
+        if (_client.busy() && _client.retryingTransient())
+        {
+            const elapsed = MonoTime.currTime - _chatStartedAt;
+            const seconds = cast(int) elapsed.total!"seconds";
+            if (seconds != _lastRetryStatusSeconds)
+            {
+                _lastRetryStatusSeconds = seconds;
+                updateStatus("The model provider is busy — retrying… " ~
+                    to!string(seconds) ~ "s (Stop to cancel)");
+            }
+        }
         // The upstream model can take several seconds to return its first
         // token (cold start). Surface that as a live countdown so the UI
         // never looks frozen, and switch back to a normal status the moment
         // the first streamed fragment arrives.
-        if (_client.busy() && !_receivedFirstDelta)
+        else if (_client.busy() && !_receivedFirstDelta)
         {
             const elapsed = MonoTime.currTime - _chatStartedAt;
             const seconds = cast(int) elapsed.total!"seconds";

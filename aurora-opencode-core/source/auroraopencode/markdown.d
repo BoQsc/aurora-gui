@@ -1025,22 +1025,10 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 break;
         }
     }
-    if (streaming && c.cursorPx > 0)
-    {
-        auto cursor = shapeOne("▌"d, c.cursorPx, false, false);
-        if (cursor !is null && cursor.lines.length > 0)
-        {
-            MdItem item;
-            item.kind = MdItemKind.text;
-            item.layout = cursor;
-            item.x = c.cursorX;
-            item.y = c.cursorY;
-            item.w = cursor.lines[0].width;
-            item.color = mdText;
-            item.h = cursor.lines[0].height;
-            c.items ~= item;
-        }
-    }
+    // Do not paint an inline block cursor after the final glyph. It used the
+    // exact glyph advance as its x coordinate, so letters with a right-side
+    // overhang could be covered while streaming and appear cut off. The live
+    // Thinking/token indicators already communicate that generation continues.
     c.trailingGap = trailingGap;
     c.height = y;
 }
@@ -1051,6 +1039,17 @@ MdComposition composeMarkdown(MarkdownBlock[] blocks, int lineWidth,
     MdComposition result;
     composeMarkdownInto(result, blocks, lineWidth, streaming);
     return result;
+}
+
+unittest
+{
+    // Streaming used to append a solid block cursor at the exact advance of
+    // the last glyph. Besides adding a synthetic text item, it could cover the
+    // right edge of letters such as W/f/y until the stream settled.
+    auto live = composeMarkdown(parseMarkdown("Final glyph W"), 400, true);
+    auto settled = composeMarkdown(parseMarkdown("Final glyph W"), 400, false);
+    assert(live.items.length == settled.items.length,
+        "streaming composition added an overlapping cursor item");
 }
 
 /// Incrementally composes a growing markdown document at a fixed line width.

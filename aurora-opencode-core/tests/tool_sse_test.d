@@ -2,7 +2,9 @@ module auroraopencode_core_tool_sse;
 
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind, condenseUpstreamDetailForTesting,
-    recoverableReasoningErrorForTesting, transientChatStatusForTesting;
+    persistentRateLimitForTesting, recoverableReasoningErrorForTesting,
+    transientChatStatusForTesting, transientRetryAllowedForTesting,
+    transientRetryBackoffMsForTesting;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -69,6 +71,31 @@ private void assertFinishReasonFixture()
     assert(events[0].finishReason == "length",
         "truncation finish reason was lost");
     writeln("Provider finish reasons survive SSE parsing");
+    client.closeSession();
+}
+
+/// A few OpenAI-compatible proxies close immediately after the final data
+/// event instead of writing the customary newline. The EOF path must still
+/// deliver that event; it is often only the answer's last character.
+private void assertFinalLineWithoutNewline()
+{
+    auto client = new OpenCodeClient("https://example.com/v1", "test-key");
+    client.resetStreamStateForTesting();
+    client.feedSseEofForTesting(
+        `data: {"choices":[{"delta":{"content":"Z"}}]}`);
+    const events = client.finishStreamForTesting();
+    bool sawDelta;
+    bool sawDone;
+    foreach (event; events)
+    {
+        if (event.kind == OpenCodeEventKind.delta && event.text == "Z")
+            sawDelta = true;
+        if (event.kind == OpenCodeEventKind.done && event.text == "Z")
+            sawDone = true;
+    }
+    assert(sawDelta && sawDone,
+        "an unterminated final SSE line lost the last content character");
+    writeln("Final SSE content survives EOF without a trailing newline");
     client.closeSession();
 }
 
@@ -327,10 +354,55 @@ int main()
     assert(transientChatStatusForTesting(504));
     assert(!transientChatStatusForTesting(400));
     assert(!transientChatStatusForTesting(401));
-    assert(!transientChatStatusForTesting(429));
-    writeln("Only transient upstream server failures are retried");
+    // 429 ("provider temporarily unavailable / rate limited") is replayed
+    // instead of failing the turn.
+    assert(transientChatStatusForTesting(429));
+    // A 5xx keeps its short bounded budget: three attempts, then the turn fails
+    // rather than hanging on a request the server refuses every time.
+    assert(transientRetryAllowedForTesting(500, 1));
+    assert(transientRetryAllowedForTesting(500, 2));
+    assert(!transientRetryAllowedForTesting(500, 3));
+    assert(!transientRetryAllowedForTesting(400, 1));
+    // A 429 is replayed until it succeeds, at a steady three-second interval:
+    // frequent enough to catch the provider the moment it returns, and slow
+    // enough not to hammer a gateway that is already refusing requests.
+    assert(transientRetryAllowedForTesting(429, 1));
+    assert(transientRetryAllowedForTesting(429, 50));
+    assert(transientRetryBackoffMsForTesting(429, 1) == 3_000);
+    assert(transientRetryBackoffMsForTesting(429, 2) == 3_000);
+    assert(transientRetryBackoffMsForTesting(429, 500) == 3_000);
+    // Walk a real sequence: ten attempts are ten three-second pauses, with no
+    // growing gap that would delay the reply once the provider recovers.
+    {
+        int waitedMs;
+        uint attempts;
+        foreach (uint attempt; 1 .. 11)
+        {
+            if (!transientRetryAllowedForTesting(429, attempt)) break;
+            ++attempts;
+            waitedMs += transientRetryBackoffMsForTesting(429, attempt);
+        }
+        assert(attempts == 10, "every 429 attempt is allowed");
+        assert(waitedMs == 30_000, "429 replays every 3 s");
+    }
+    writeln("HTTP 429 is replayed every 3 s until the provider answers");
+    // The two 429 bodies the app actually receives. A provider that is merely
+    // busy is replayed until it answers; a 429 that says the caller is out of
+    // quota is not, because the reason and its reset time are the point of the
+    // message and an endless replay would hide them.
+    assert(!persistentRateLimitForTesting(
+        "Upstream model provider is temporarily unavailable. Please try " ~
+        "again in a moment."));
+    assert(persistentRateLimitForTesting(
+        "5-hour usage limit reached. Resets in 3hr 52min. To continue using " ~
+        "this model now, enable usage from your available balance: " ~
+        "https://opencode.ai/workspace/wrk_01KZ5XCHTZX2Q3GZA0Q6JWAYQG/go"));
+    assert(persistentRateLimitForTesting(
+        "Weekly quota exhausted; reset in 2 days."));
+    writeln("A quota 429 keeps its reason; a busy provider is retried");
     assertToolCallFixture();
     assertFinishReasonFixture();
+    assertFinalLineWithoutNewline();
     assertRequestBody();
     assertPlainBody();
     assertForcedReasoningReplayBody();
