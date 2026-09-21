@@ -2434,6 +2434,8 @@ int main(string[] args)
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
         assert(driver.paint(), "Expanded per-round Thinking did not paint");
+        assert(root.transcriptRowsSequentialForTesting(),
+            "transcript rows overlap or move backward after a live rebuild");
         const exShots = buildPath(tempDir(), "aurora-opencode-exchange-shots");
         if (!exists(exShots)) mkdirRecurse(exShots);
         window.saveScreenshot(buildPath(exShots, "per-turn-thinking.ppm"));
@@ -3558,6 +3560,25 @@ int main(string[] args)
             planPosition > actionPosition,
             "the plan card must stay after its planning action instead of " ~
             "jumping above the transcript");
+        root.appendToolRequestTurnForTesting("I refined the plan.",
+            "plan-2", "update_plan",
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.appendToolReplyForTesting("plan-2", "Plan refined.");
+        root.rebuildForTesting();
+        const auto refinedOrder = root.columnDebugForTesting();
+        int latestActionPosition = -1;
+        planPosition = -1;
+        foreach (i, line; refinedOrder)
+        {
+            if (line.indexOf("GROUP ") >= 0)
+                latestActionPosition = cast(int) i;
+            if (line.indexOf("PLAN ") >= 0)
+                planPosition = cast(int) i;
+        }
+        assert(latestActionPosition >= 0 && planPosition > latestActionPosition,
+            "a newer plan update left the live plan card attached to an old " ~
+            "transcript position");
         assert(driver.paint(), "the plan card did not paint");
         root.startTurnClockForTesting();
         root.setInputForTesting("Keep it GUI-first");

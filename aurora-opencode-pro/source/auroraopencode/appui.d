@@ -30,7 +30,7 @@ import std.datetime : Clock, SysTime;
 import std.file : exists, getSize, isDir, isFile, fileRemove = remove,
     mkdirRecurse, readText, rename, thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.math : isFinite;
+import std.math : ceil, isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
@@ -973,7 +973,10 @@ private final class MessageBubble : Widget
             if (_thinking.length > 0 && _content.length > 0)
                 height += thinkingContentGap;
             if (_content.length > 0)
-                height += cast(int) markdownFor(innerWidth).height;
+                // Markdown line boxes use fractional metrics. Flooring the
+                // total clipped the last pixel row of some fonts and made the
+                // next transcript row appear to cut into the reply.
+                height += cast(int) ceil(markdownFor(innerWidth).height);
         }
         else
         {
@@ -1231,7 +1234,11 @@ private final class MessageBubble : Widget
             (statsWidth > 0 ? 8 : 0));
         auto layout = canvas.layoutText(toUTF32(left), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, available, false);
-        auto labelCanvas = canvas.clipped(Rect(padH, top, available, h));
+        // Leave two pixels for negative glyph bearings (italic/antialiased
+        // first letters). Clipping exactly at the text origin shaved their
+        // left edge even though the row itself had ample padding.
+        auto labelCanvas = canvas.clipped(Rect(padH - 2, top,
+            available + 4, h));
         labelCanvas.drawLayout(Point(padH, top), layout,
             _collapseHover ? opencodeText : opencodeMuted);
 
@@ -1443,7 +1450,8 @@ private final class MessageBubble : Widget
             const color = line.kind == ToolLineKind.add ? opencodeDiffAdd :
                 line.kind == ToolLineKind.del ? opencodeDiffDelete :
                 line.kind == ToolLineKind.hunk ? opencodeMuted : opencodeText;
-            auto clipped = canvas.clipped(Rect(padH, y, fullW, rowH));
+            auto clipped = canvas.clipped(Rect(padH - 2, y,
+                fullW + 4, rowH));
             clipped.drawLayout(Point(padH, y), line.layout, color);
             if (line.layout.lines.length > 0)
                 _selSegments ~= SelectSegment(line.layout, padH, y, fullW, rowH);
@@ -3329,7 +3337,8 @@ private final class ToolGroupBubble : Widget
             (statsWidth > 0 ? 8 : 0));
         auto layout = canvas.layoutText(toUTF32(headerText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, textWidth, false);
-        auto labelCanvas = canvas.clipped(Rect(padH, padV, textWidth, h));
+        auto labelCanvas = canvas.clipped(Rect(padH - 2, padV,
+            textWidth + 4, h));
         labelCanvas.drawLayout(Point(padH, padV), layout,
             _hover ? opencodeText : opencodeMuted);
 
@@ -6666,16 +6675,16 @@ public final class OpenCodeRoot : VBox
         foreach (slot, index; path)
             thinkingText[slot] = session.messages[index].reasoning;
 
-        // Keep the durable plan in chronological flow. Pinning it above the
-        // whole transcript meant that the first update_plan result inserted a
-        // variable-height widget above whatever the reader was looking at.
-        // Anchor it after the earliest visible planning round instead. If that
-        // round is outside the paged window (or the plan came from an older
-        // snapshot without tool metadata), use the first visible user prompt.
+        // Keep the durable plan in chronological flow. The card represents the
+        // newest plan state, so anchoring it at the first update made later plan
+        // changes resize an old part of the transcript and shift every message
+        // below it. Anchor it at the latest visible planning round instead. If
+        // that round is outside the paged window (or metadata is unavailable),
+        // use the latest visible user prompt.
         size_t planHostSlot = size_t.max;
         if (session.taskSteps.length > 0)
         {
-            foreach (candidateSlot, index; path)
+            foreach_reverse (candidateSlot, index; path)
             {
                 const candidate = session.messages[index];
                 if (candidate.internal || candidate.role != "assistant")
@@ -6689,7 +6698,7 @@ public final class OpenCodeRoot : VBox
                 if (planHostSlot != size_t.max) break;
             }
             if (planHostSlot == size_t.max)
-                foreach (candidateSlot, index; path)
+                foreach_reverse (candidateSlot, index; path)
                 {
                     const candidate = session.messages[index];
                     if (!candidate.internal && candidate.role == "user")
@@ -13793,6 +13802,22 @@ public final class OpenCodeRoot : VBox
     public int messageColumnVisualCountForTesting()
     {
         return cast(int) messageColumnVisuals().length;
+    }
+
+    /// Every top-level transcript row must advance downward without overlap.
+    /// Hidden tool-call wrappers are excluded by visibility/layout hints.
+    public bool transcriptRowsSequentialForTesting()
+    {
+        int previousBottom = int.min;
+        foreach (child; _messageColumn.children())
+        {
+            if (!child.visible() || child.layoutHints().excludeFromLayout)
+                continue;
+            if (previousBottom != int.min && child.bounds().y < previousBottom)
+                return false;
+            previousBottom = child.bounds().bottom();
+        }
+        return true;
     }
 
     /// Test-only: messages retained in the graph but not materialized in the

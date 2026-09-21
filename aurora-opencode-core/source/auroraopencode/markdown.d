@@ -5,6 +5,7 @@ import auroraopencode.core : opencodeFontBase, opencodeFontTitle;
 import std.algorithm.comparison : max, min;
 import std.array : insertInPlace;
 import std.conv : to;
+import std.math : ceil;
 import std.string : indexOf, lastIndexOf;
 import std.typecons : Tuple, tuple;
 
@@ -1160,9 +1161,16 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
         if (item.kind != MdItemKind.text || item.layout is null) continue;
         if (item.clipText)
         {
+            // The first glyph can extend slightly left of its logical origin
+            // (italic bearings and antialiasing). Give only the first code-line
+            // segment a two-pixel ink margin; continuation segments stay
+            // strictly clipped so text from the previous segment cannot leak.
+            const firstSegment = item.x >= item.clipX - 0.01;
+            const bleed = firstSegment ? 2 : 0;
             auto clipped = canvas.clipped(Rect(
-                cast(int)(dx + item.clipX), cast(int)(dy + item.y),
-                cast(int) item.clipW, cast(int) item.h));
+                cast(int)(dx + item.clipX) - bleed, cast(int)(dy + item.y),
+                cast(int) item.clipW + bleed * 2,
+                cast(int) ceil(item.h)));
             clipped.drawLayout(Point(cast(int)(dx + item.x),
                 cast(int)(dy + item.y)), item.layout, item.color);
         }
