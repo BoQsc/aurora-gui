@@ -622,7 +622,14 @@ final class TextLayoutEngine
             foreach (range; ranges)
                 buildLine(result, text, paragraph, range[0], range[1], y, options);
 
-            if (breakEnd >= text.length) break;
+            // A line break at the very end of the text still opens a final
+            // empty paragraph: "a\n" is two lines, not one. Without this the
+            // caret after a trailing newline has no line of its own and snaps
+            // back onto the previous line (Shift+Enter in a multiline editor
+            // looked like it stayed on the same line). `paragraphEnd` reaching
+            // the end means the last paragraph was not terminated by a break,
+            // which is the only case with no following line.
+            if (breakEnd >= text.length && paragraphEnd >= text.length) break;
             paragraphStart = breakEnd;
         }
         if (result.lines.length == 0)
