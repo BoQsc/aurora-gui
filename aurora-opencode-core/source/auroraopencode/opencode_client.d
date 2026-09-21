@@ -15,7 +15,7 @@ import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     InternetSetOptionW;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.string : indexOf, lastIndexOf, strip;
+import std.string : indexOf, lastIndexOf, strip, toLower;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef, isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
@@ -152,6 +152,110 @@ private bool isPersistentRateLimit(string detail)
 public bool persistentRateLimitForTesting(string detail)
 {
     return isPersistentRateLimit(detail);
+}
+
+/// How long an automatic re-send may be postponed. Bounds a misread duration
+/// ("reset in 9000 days") to something a running app can still honour.
+private enum long maxAutoResendDelayMs = 86_400_000;
+
+/**
+ * How long to wait before sending a failed turn again on its own, in
+ * milliseconds. Negative means "do not": the failure needs the user's
+ * decision, and replaying it would only hide the reason the provider gave.
+ *
+ * `attempt` counts the automatic re-sends already made for this turn, so a
+ * provider that stays unreachable is polled at a widening interval instead of
+ * being hammered.
+ *
+ * A failed turn used to wait for the user to press Retry even when the
+ * provider had already said exactly when it would accept work again.
+ */
+public long autoResendDelayMs(string failureText, uint attempt)
+{
+    // A stated reset time is the provider answering "when", so use it as given.
+    const resetMs = quotaResetDelayMs(failureText);
+    if (resetMs > 0)
+        return resetMs > maxAutoResendDelayMs ? maxAutoResendDelayMs : resetMs;
+    // A quota wall with no time, or a request the server rejected on its own
+    // terms (a bad key, a malformed body), fails identically when replayed.
+    if (isPersistentRateLimit(failureText)) return -1;
+    if (containsAsciiIgnoreCase(failureText, "HTTP 400") ||
+        containsAsciiIgnoreCase(failureText, "HTTP 401") ||
+        containsAsciiIgnoreCase(failureText, "HTTP 403") ||
+        containsAsciiIgnoreCase(failureText, "HTTP 404") ||
+        containsAsciiIgnoreCase(failureText, "HTTP 422"))
+        return -1;
+    // Anything else is a transport or provider blip (a stream that died, a
+    // gateway that refused, a socket error): wait, then send the same turn
+    // again, backing off to half a minute.
+    const delay = 3_000 + 3_000 * cast(long) attempt;
+    return delay > 30_000 ? 30_000 : delay;
+}
+
+/**
+ * Milliseconds until the moment a "... resets in 3hr 52min" notice names, or 0
+ * when the failure text states no reset time.
+ *
+ * The provider's own sentence is the only reliable "when" available, so it is
+ * read rather than guessed. The duration is scanned as number/unit pairs and
+ * stops at the first pair without a unit, so the prose that follows
+ * ("To continue using this model now, ...") cannot be misread as more time.
+ */
+public long quotaResetDelayMs(string failureText)
+{
+    const lower = failureText.toLower();
+    const marker = lower.indexOf("reset");
+    if (marker < 0) return 0;
+    auto rest = lower[cast(size_t) marker + 5 .. $];
+    // The notice reads "resets in <duration>" (or "reset in ...").
+    const inIndex = rest.indexOf("in ");
+    if (inIndex < 0 || inIndex > 3) return 0;
+    rest = rest[cast(size_t) inIndex + 3 .. $];
+
+    long total;
+    size_t index;
+    int fields;
+    while (index < rest.length && fields < 4)
+    {
+        while (index < rest.length &&
+            (rest[index] == ' ' || rest[index] == ',')) ++index;
+        if (index >= rest.length || rest[index] < '0' || rest[index] > '9')
+            break;
+        long value;
+        while (index < rest.length && rest[index] >= '0' && rest[index] <= '9')
+        {
+            value = value * 10 + (rest[index] - '0');
+            ++index;
+        }
+        while (index < rest.length && rest[index] == ' ') ++index;
+        size_t unitLength;
+        const unitMs = resetUnitMs(rest[index .. $], unitLength);
+        if (unitMs == 0) break;
+        index += unitLength;
+        total += value * unitMs;
+        ++fields;
+    }
+    return total;
+}
+
+/// Duration of the unit keyword at the start of `text`, and its length. Longest
+/// keyword first, so "min" is not read as "m" followed by prose.
+private long resetUnitMs(string text, out size_t length)
+{
+    static immutable string[] words = ["days", "day", "hours", "hour", "hrs",
+        "hr", "minutes", "minute", "mins", "min", "seconds", "second", "secs",
+        "sec", "h", "m", "s"];
+    static immutable long[] durations = [86_400_000, 86_400_000, 3_600_000,
+        3_600_000, 3_600_000, 3_600_000, 60_000, 60_000, 60_000, 60_000,
+        1_000, 1_000, 1_000, 1_000, 3_600_000, 60_000, 1_000];
+    foreach (index, word; words)
+        if (startsWithAscii(text, word))
+        {
+            length = word.length;
+            return durations[index];
+        }
+    length = 0;
+    return 0;
 }
 
 /// Pause before replaying a transient failure. A 5xx keeps the original short

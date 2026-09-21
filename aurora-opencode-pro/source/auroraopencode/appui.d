@@ -7,7 +7,7 @@ import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     paintMarkdown, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
-    OpenCodeEventKind;
+    OpenCodeEventKind, autoResendDelayMs, quotaResetDelayMs;
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
@@ -4841,6 +4841,28 @@ public final class OpenCodeRoot : VBox
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
     private int _lastRetryStatusSeconds = -1;
+    // A turn that failed for a reason waiting will fix is sent again on its
+    // own, on a countdown the user can see. The client replays a transient
+    // HTTP status inside one request; this covers the failures that reach the
+    // transcript (a stream that died, a provider that stated when its quota
+    // resets), so no turn waits for the user to press Retry.
+    private bool _autoResendPending;
+    private MonoTime _autoResendAt;
+    private int _autoResendSession = -1;
+    private int _autoResendMessage = -1;
+    /// Non-zero when the wait is the provider's own stated reset ("Resets in
+    /// 3hr 52min"), which is described differently from a short retry.
+    private long _autoResendResetMs;
+    private int _autoResendCount;
+    private int _lastAutoResendSeconds = -1;
+    /// True while `tickAutoResend` is the caller, so the request it starts is
+    /// not mistaken for a fresh user intent (which would reset the budget).
+    private bool _autoResending;
+
+    /// How many times one failed turn may be sent again on its own. Bounded
+    /// because each attempt keeps the previous reply as a branch version,
+    /// exactly as pressing Retry does.
+    private enum int maxAutoResends = 6;
 
     // Per-user-turn clock for the action-group header ("Worked for 0m 3s"). The
     // clock spans the whole turn — every tool-continuation round re-enters the
@@ -8162,6 +8184,8 @@ public final class OpenCodeRoot : VBox
             return;
 
         _turnCancelled = true;
+        // Stop means stop: drop any auto-retry this turn had lined up.
+        cancelAutoResend();
 
         // Reject all remaining network and tool events from this turn before
         // asking the workers to stop.
@@ -8856,6 +8880,11 @@ public final class OpenCodeRoot : VBox
 
     private void startChatRequest(int sessionIndex, bool userTurn = true)
     {
+        // Any new request supersedes a scheduled re-send. A request the user
+        // started (or a manual Retry) also starts the attempt budget over; an
+        // automatic re-send keeps it, so its interval keeps widening.
+        dropAutoResendSchedule();
+        if (userTurn && !_autoResending) _autoResendCount = 0;
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         auto session = &_sessions[sessionIndex];
@@ -8955,6 +8984,139 @@ public final class OpenCodeRoot : VBox
     {
         if (!prepareRegenerate(sessionIndex, messageIndex)) return;
         startChatRequest(sessionIndex);
+    }
+
+    // -- automatic re-send of a failed turn --------------------------------
+
+    /// Arrange for the turn that just failed to be sent again without the user
+    /// pressing Retry, when waiting will help: the provider's own reset time
+    /// when its message stated one, otherwise a short interval that widens with
+    /// each attempt. A failure that needs a decision (a bad key, a quota wall
+    /// with no time) is left alone, because replaying it only hides the reason.
+    private void scheduleAutoResend(string failureText)
+    {
+        dropAutoResendSchedule();
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
+        if (session.messages.length == 0) return;
+        const reply = session.messages[$ - 1];
+        if (reply.role != "assistant" || !reply.failed) return;
+        const delayMs = autoResendDelayMs(failureText,
+            cast(uint) _autoResendCount);
+        if (delayMs < 0) return;
+        _autoResendPending = true;
+        _autoResendAt = MonoTime.currTime + msecs(delayMs);
+        _autoResendSession = sessionIndex;
+        _autoResendMessage = cast(int) session.messages.length - 1;
+        _autoResendResetMs = quotaResetDelayMs(failureText);
+        _lastAutoResendSeconds = -1;
+        logInfo("sending this turn again automatically in " ~
+            to!string(delayMs) ~ " ms [auto-retry " ~
+            to!string(_autoResendCount + 1) ~ "/" ~
+            to!string(maxAutoResends) ~ "]");
+    }
+
+    /// Forget the scheduled re-send but keep the attempt budget, which belongs
+    /// to the turn rather than to the schedule.
+    private void dropAutoResendSchedule()
+    {
+        _autoResendPending = false;
+        _autoResendSession = -1;
+        _autoResendMessage = -1;
+        _autoResendResetMs = 0;
+        _lastAutoResendSeconds = -1;
+    }
+
+    /// Abandon the automatic re-send entirely: the user has taken over.
+    private void cancelAutoResend()
+    {
+        dropAutoResendSchedule();
+        _autoResendCount = 0;
+    }
+
+    /// Re-send a failed turn once its wait has elapsed, driven from the UI tick
+    /// so the delay is a visible countdown instead of a silent pause.
+    private void tickAutoResend()
+    {
+        if (!_autoResendPending) return;
+        if (_client.busy() || _turnTiming) return;
+        // A conversation the user has left must not start a turn behind their
+        // back, and a spent budget means the reason in the transcript is the
+        // answer for now.
+        if (_autoResendSession != _current ||
+            _autoResendCount >= maxAutoResends)
+        {
+            dropAutoResendSchedule();
+            return;
+        }
+        const remainingMs = (_autoResendAt - MonoTime.currTime).total!"msecs";
+        if (remainingMs > 0)
+        {
+            const seconds = cast(int)((remainingMs + 999) / 1_000);
+            if (seconds != _lastAutoResendSeconds)
+            {
+                _lastAutoResendSeconds = seconds;
+                updateStatus(autoResendStatusText(seconds));
+            }
+            return;
+        }
+
+        const sessionIndex = _autoResendSession;
+        const messageIndex = _autoResendMessage;
+        dropAutoResendSchedule();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+        {
+            _autoResendCount = 0;
+            return;
+        }
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length)
+        {
+            _autoResendCount = 0;
+            return;
+        }
+        // The reply must still be the failed one this schedule was made for.
+        const reply = session.messages[cast(size_t) messageIndex];
+        if (reply.role != "assistant" || !reply.failed)
+        {
+            _autoResendCount = 0;
+            return;
+        }
+        ++_autoResendCount;
+        updateStatus("Sending the failed turn again (attempt " ~
+            to!string(_autoResendCount) ~ " of " ~
+            to!string(maxAutoResends) ~ ")…");
+        _autoResending = true;
+        scope (exit) _autoResending = false;
+        regenerateLastReply(sessionIndex, messageIndex);
+    }
+
+    /// The countdown line for a scheduled automatic re-send.
+    private string autoResendStatusText(int seconds)
+    {
+        const remaining = formatWait(seconds);
+        if (_autoResendResetMs > 0)
+            return "Provider usage limit reached — sending this turn again " ~
+                "when it resets in " ~ remaining ~
+                " (send a message to cancel)";
+        return "Provider was busy — sending this turn again in " ~ remaining ~
+            " (attempt " ~ to!string(_autoResendCount + 1) ~ " of " ~
+            to!string(maxAutoResends) ~ ")";
+    }
+
+    /// A compact "3h 52m" / "1m 30s" / "12s" wait.
+    private static string formatWait(int seconds)
+    {
+        if (seconds >= 3_600)
+            return to!string(seconds / 3_600) ~ "h " ~
+                to!string((seconds % 3_600) / 60) ~ "m";
+        if (seconds >= 60)
+            return to!string(seconds / 60) ~ "m " ~
+                to!string(seconds % 60) ~ "s";
+        return to!string(seconds) ~ "s";
     }
 
     private static bool truncatedFinishReason(string reason)
@@ -11258,6 +11420,7 @@ public final class OpenCodeRoot : VBox
                     applyToolResult(event);
                     break;
                 case OpenCodeEventKind.done:
+                    if (!event.cancelled) _autoResendCount = 0;
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
@@ -11274,6 +11437,7 @@ public final class OpenCodeRoot : VBox
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
+                    scheduleAutoResend(event.text);
                     if (_activeRequestId == event.requestId)
                     {
                         _activeRequestId = 0;
@@ -11319,6 +11483,9 @@ public final class OpenCodeRoot : VBox
             updateStatus("Stopped.");
             updateSendButton();
         }
+
+        // Send a turn that failed for a reason waiting will fix, on its own.
+        tickAutoResend();
 
         // The client replays a transient upstream failure (429 "the model
         // provider is temporarily unavailable") until it is answered, which can

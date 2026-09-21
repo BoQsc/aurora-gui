@@ -1,10 +1,10 @@
 module auroraopencode_core_tool_sse;
 
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
-    OpenCodeEventKind, condenseUpstreamDetailForTesting,
+    OpenCodeEventKind, autoResendDelayMs, condenseUpstreamDetailForTesting,
     persistentRateLimitForTesting, recoverableReasoningErrorForTesting,
-    transientChatStatusForTesting, transientRetryAllowedForTesting,
-    transientRetryBackoffMsForTesting;
+    quotaResetDelayMs, transientChatStatusForTesting,
+    transientRetryAllowedForTesting, transientRetryBackoffMsForTesting;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolCall,
     OpenCodeToolDef;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -400,6 +400,32 @@ int main()
     assert(persistentRateLimitForTesting(
         "Weekly quota exhausted; reset in 2 days."));
     writeln("A quota 429 keeps its reason; a busy provider is retried");
+    // "Resets in 3hr 52min" is the provider saying when it will take work
+    // again. That time is honoured, so the turn is sent again on its own
+    // instead of waiting for the user to press Retry four hours later.
+    assert(quotaResetDelayMs(
+        "5-hour usage limit reached. Resets in 3hr 52min. To continue using " ~
+        "this model now, enable usage from your available balance: " ~
+        "https://opencode.ai/workspace/wrk_01KZ5XCHTZX2Q3GZA0Q6JWAYQG/go") ==
+        3 * 3_600_000 + 52 * 60_000);
+    assert(quotaResetDelayMs("Rate limited; reset in 45 s") == 45_000);
+    assert(quotaResetDelayMs("Weekly quota exhausted; reset in 2 days.") ==
+        2 * 86_400_000);
+    assert(quotaResetDelayMs(
+        "Upstream model provider is temporarily unavailable.") == 0);
+    assert(autoResendDelayMs(
+        "Upstream returned HTTP 429: 5-hour usage limit reached. Resets in " ~
+        "4min.", 0) == 240_000);
+    // A transport blip is replayed at once and polled less often as attempts
+    // accumulate; a failure the request itself caused is left to the user.
+    assert(autoResendDelayMs("Stream read failed (WinINet error 12002).", 0) ==
+        3_000);
+    assert(autoResendDelayMs("Stream read failed (WinINet error 12002).", 9) ==
+        30_000);
+    assert(autoResendDelayMs("Upstream returned HTTP 401: bad key", 0) < 0);
+    assert(autoResendDelayMs("Upstream returned HTTP 429: usage limit " ~
+        "reached", 0) < 0);
+    writeln("A failed turn is sent again automatically when waiting will help");
     assertToolCallFixture();
     assertFinishReasonFixture();
     assertFinalLineWithoutNewline();
