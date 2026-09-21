@@ -85,8 +85,18 @@ private bool writeSystemClipboardText(const(dchar)[] value)
     return true;
 }
 
+// Clipboard copies normally go to the OS clipboard, but a headless test drives
+// the real widgets and must not replace the user's system clipboard with its
+// fixtures (the "select this text" that showed up in an unrelated paste). When
+// isolated, copies are kept in-process and pastes read them back, so a test
+// round-trip stays self-contained.
+private bool _clipboardIsolated;
+private string _clipboardBuffer;
+
 private void copyTextToClipboard(string text)
 {
+    _clipboardBuffer = text;
+    if (_clipboardIsolated) return;
     version (Windows)
         writeSystemClipboardText(toUTF32(text));
 }
@@ -4177,7 +4187,15 @@ private final class ChatInput : TextArea
     public bool handlePaste()
     {
         const before = textUtf8();
-        pasteFromClipboard();
+        if (_clipboardIsolated)
+        {
+            // Keep the round-trip in-process: never read the OS clipboard, so a
+            // headless run cannot paste whatever the user had copied.
+            const buffered = _clipboardBuffer;
+            if (buffered.length > 0) insertTextAtCursor(toUTF32(buffered));
+        }
+        else
+            pasteFromClipboard();
         const after = textUtf8();
         if (onLargePaste !is null && onLargePaste(before, after)) return true;
         return true;
@@ -14212,6 +14230,13 @@ public final class OpenCodeRoot : VBox
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? "" : bubble.lastClipboardTextForTesting();
+    }
+
+    /// Test-only: route clipboard copies and pastes through an in-process
+    /// buffer so a headless run never overwrites the user's real clipboard.
+    public void isolateClipboardForTesting(bool isolate)
+    {
+        _clipboardIsolated = isolate;
     }
 
     /// Test-only: the global origin of the first selectable run in the bubble.

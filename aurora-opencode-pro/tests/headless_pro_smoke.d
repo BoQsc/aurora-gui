@@ -284,6 +284,10 @@ int main(string[] args)
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    // The smoke test drives the real widgets, so its clipboard copies/pastes
+    // must stay in-process; otherwise running it would leave the fixture text
+    // ("select this text") on the user's real system clipboard.
+    root.isolateClipboardForTesting(true);
 
     auto driver = new UiTestDriver(window);
     assert(driver.paint(), "Initial pro paint failed");
