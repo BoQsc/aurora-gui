@@ -19,8 +19,9 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     previewToolDiffText,
     rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution;
-import auroraopencode.systemprompt : promptVerbosityLabel, promptVerbosityNames,
-    rebuildModule, setSystemPromptModules;
+import auroraopencode.systemprompt : promptVerbosityDirective,
+    promptVerbosityLabel, promptVerbosityNames, rebuildModule,
+    setSystemPromptModules;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -11539,6 +11540,10 @@ public final class OpenCodeRoot : VBox
                     "the evidence already gathered. No tools are available in " ~
                     "this request. Give the useful result, or state one " ~
                     "specific unresolved blocker. Do not ask to call tools." ~
+                    // The final-answer round builds its own minimal prompt, so
+                    // it must re-apply the selected response style; otherwise
+                    // the answer the user reads would ignore verbosity.
+                    promptVerbosityDirective(_settings.verbosity) ~
                     durableTaskPrompt(*session);
             else
             {
@@ -11554,7 +11559,10 @@ public final class OpenCodeRoot : VBox
         }
         else
         {
-            const taskPrompt = durableTaskPrompt(*session);
+            // Tools are off, so this is the only system message; keep the
+            // selected response style in it.
+            const taskPrompt = durableTaskPrompt(*session) ~
+                promptVerbosityDirective(_settings.verbosity);
             if (taskPrompt.length > 0)
             {
                 ChatRequestMessage systemPrompt;
@@ -12614,7 +12622,9 @@ public final class OpenCodeRoot : VBox
         auto verbosityHint = optionsBody.add(new Label(
             "How much the agent writes. \"Default\" keeps the stock prompt; " ~
             "Concise and Compact trim preamble and repetition from both the " ~
-            "answer and its reasoning, without removing needed detail."));
+            "answer and its reasoning, without removing needed detail. " ~
+            "\"Caveman\" reasons in telegraphic fragments for the largest " ~
+            "saving; the answer itself is telegraphic too."));
         verbosityHint.setScale(1);
         verbosityHint.setColor(opencodeMuted);
 

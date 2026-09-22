@@ -7,9 +7,9 @@ import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
     rebuildRequestHandler, resolveToolPath, revertChangeRecord,
     toolSteeringPrompt;
-import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityFromName,
-    promptVerbosityLabel, promptVerbosityName, promptVerbosityNames,
-    rebuildModule, setSystemPromptModules;
+import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityDirective,
+    promptVerbosityFromName, promptVerbosityLabel, promptVerbosityName,
+    promptVerbosityNames, rebuildModule, setSystemPromptModules;
 import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
@@ -759,15 +759,45 @@ int main()
             concise.indexOf("# Response style") <
             concise.indexOf("# Environment"),
             "The response-style section must stay out of the dynamic tail");
-        assert(promptVerbosityNames() == ["default", "concise", "compact"],
+        assert(promptVerbosityNames() ==
+            ["default", "concise", "compact", "caveman"],
             "The picker must offer exactly the supported levels");
         assert(promptVerbosityFromName("compact") == PromptVerbosity.compact &&
+            promptVerbosityFromName("caveman") == PromptVerbosity.caveman &&
             promptVerbosityFromName("nonsense") == PromptVerbosity.default_,
             "Verbosity name parsing must be strict and safe");
         assert(promptVerbosityName(PromptVerbosity.concise) == "concise" &&
+            promptVerbosityName(PromptVerbosity.caveman) == "caveman" &&
             promptVerbosityLabel("default") == "Default" &&
-            promptVerbosityLabel("compact") == "Compact",
+            promptVerbosityLabel("compact") == "Compact" &&
+            promptVerbosityLabel("caveman") == "Caveman",
             "Verbosity name/label round-trip must hold");
+        // Caveman is the strongest level: it makes the WHOLE turn telegraphic,
+        // the visible answer included, and it must differ from Compact so the
+        // picker levels stay distinct.
+        const caveman = buildSystemPrompt(false, ".", "auto", "caveman");
+        assert(caveman.indexOf("# Response style") > 0 &&
+            caveman.indexOf("like a caveman") > 0 &&
+            caveman.indexOf("telegraphic") > 0,
+            "Caveman must instruct telegraphic reasoning");
+        assert(caveman.indexOf("final answer as well") > 0,
+            "Caveman must apply to the visible answer, not only the reasoning");
+        assert(withoutTimestamp(caveman) != withoutTimestamp(compact) &&
+            withoutTimestamp(caveman) != withoutTimestamp(concise),
+            "Caveman must be its own level, distinct from Concise/Compact");
+        // The standalone directive is what the app's final-answer round
+        // appends (that round builds its own minimal prompt), so it must be
+        // empty for the default level and identical to the section otherwise.
+        assert(promptVerbosityDirective("default").length == 0 &&
+            promptVerbosityDirective("").length == 0,
+            "The default/blank directive must be empty");
+        assert(promptVerbosityDirective("caveman").indexOf("caveman") > 0 &&
+            caveman.indexOf(promptVerbosityDirective("caveman")) > 0,
+            "The standalone caveman directive must match the prompt section");
+        assert(promptVerbosityDirective("concise").indexOf("Response style") > 0 &&
+            promptVerbosityDirective("concise") !=
+                promptVerbosityDirective("caveman"),
+            "The standalone directive must carry the style section and vary");
     }
     writeln("Optional verbosity selector shapes the prompt safely");
     assert(toolSteeringPrompt(false).length < 8_000,

@@ -30,6 +30,7 @@ public enum PromptVerbosity
     default_,
     concise,
     compact,
+    caveman,
 }
 
 /// Parse a stored verbosity name. Unknown or blank values fall back to the
@@ -40,6 +41,7 @@ public PromptVerbosity promptVerbosityFromName(string name)
     {
         case "concise": return PromptVerbosity.concise;
         case "compact": return PromptVerbosity.compact;
+        case "caveman": return PromptVerbosity.caveman;
         default: return PromptVerbosity.default_;
     }
 }
@@ -53,6 +55,7 @@ public string promptVerbosityName(PromptVerbosity verbosity)
         case PromptVerbosity.default_: return defaultVerbosityName;
         case PromptVerbosity.concise: return "concise";
         case PromptVerbosity.compact: return "compact";
+        case PromptVerbosity.caveman: return "caveman";
     }
 }
 
@@ -60,7 +63,7 @@ public string promptVerbosityName(PromptVerbosity verbosity)
 /// exactly the levels the renderer understands.
 public string[] promptVerbosityNames()
 {
-    return [defaultVerbosityName, "concise", "compact"];
+    return [defaultVerbosityName, "concise", "compact", "caveman"];
 }
 
 /// Short label for the Settings picker; unknown values echo back unchanged.
@@ -71,6 +74,7 @@ public string promptVerbosityLabel(string name)
         case PromptVerbosity.default_: return "Default";
         case PromptVerbosity.concise: return "Concise";
         case PromptVerbosity.compact: return "Compact";
+        case PromptVerbosity.caveman: return "Caveman";
     }
 }
 
@@ -341,9 +345,14 @@ private string communicationSection(in SystemPromptContext ctx)
 /// lever for reasoning tokens remains the Thinking toggle (which sets the
 /// request's `reasoning_effort`), because a provider may ignore instructions
 /// about how long to reason.
-private string verbositySection(in SystemPromptContext ctx)
+///
+/// Exposed as a standalone function because the app's final-answer round builds
+/// its own minimal system prompt (no tools, "produce the final response now");
+/// that round must append this directive too, or the answer the user actually
+/// reads would ignore the selected verbosity.
+public string promptVerbosityDirective(string verbosity)
 {
-    final switch (promptVerbosityFromName(ctx.verbosity))
+    final switch (promptVerbosityFromName(verbosity))
     {
         case PromptVerbosity.default_:
             return "";
@@ -362,7 +371,23 @@ private string verbositySection(in SystemPromptContext ctx)
                 "detail only when asked. Keep your internal reasoning short " ~
                 "as well: plan briefly, don't re-derive known facts, and stop " ~
                 "thinking once the next action is clear.\n";
+        case PromptVerbosity.caveman:
+            // The strongest level: caveman speak for the WHOLE turn, the
+            // visible answer included, so the user actually sees the terse
+            // telegraphic style and not just a shorter hidden reasoning trace.
+            return "\n# Response style\nTalk and think like a caveman. " ~
+                "Fewest words possible: short telegraphic fragments, no " ~
+                "full sentences, no articles, no pleasantries, no preamble, " ~
+                "no recap, no closing summary. Example: \"bug in parse. read " ~
+                "file. null check missing. patch. test. done.\" This applies " ~
+                "to the final answer as well, not only the reasoning.\n";
     }
+}
+
+/// The built-in module wrapper around `promptVerbosityDirective`.
+private string verbositySection(in SystemPromptContext ctx)
+{
+    return promptVerbosityDirective(ctx.verbosity);
 }
 
 /// Dynamic values stay last so the stable instruction prefix can be cached.
