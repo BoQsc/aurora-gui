@@ -6,7 +6,7 @@ import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
     runResolveCrashMode;
-import auroraopencode.logging : logLaunch;
+import auroraopencode.logging : logInfo, logLaunch;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
 import std.conv : to;
@@ -130,9 +130,16 @@ private int runApp(string[] args)
     // The custom titlebar owns window moves; keep the native pointer during
     // those drags (Aurora's synchronized drawn cursor is for compositor drags).
     options.synchronizedDragPointer = false;
+    // Record how long startup actually takes, so the number is visible in
+    // logs/errors.log next to the launch banner instead of being guessed at.
+    // Restoring the conversation is the expensive part and happens entirely in
+    // the OpenCodeRoot constructor.
+    const startupBegan = MonoTime.currTime;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    logInfo("startup: ui built in " ~ to!string((MonoTime.currTime -
+        startupBegan).total!"msecs") ~ " ms");
     logLaunch("Aurora OpenCode Pro");
     // Shut down on every exit path, not just a clean window close. An
     // uncaught `Error` unwinds straight past the code after `run()` and lands

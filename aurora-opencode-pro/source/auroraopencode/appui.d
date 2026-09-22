@@ -5632,17 +5632,32 @@ public final class OpenCodeRoot : VBox
     {
         super(0);
         _window = window;
+        // Phase timing, so a slow start can be attributed to a specific step
+        // rather than guessed at from the total.
+        auto phaseMark = MonoTime.currTime;
+        void phase(string what)
+        {
+            const now = MonoTime.currTime;
+            logInfo("startup phase: " ~ what ~ " " ~
+                to!string((now - phaseMark).total!"msecs") ~ " ms");
+            phaseMark = now;
+        }
         setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
         _runtime = new DurableAgentRuntime(buildPath(opencodeStateDirectory(),
             "runtime-events.jsonl"));
+        phase("journal runtime");
         _settings = loadSettings();
         _projectState = loadProjects();
         migrateWorkspaceIntoProjects();
         foreach (project; _projectState.projects)
             ensureProjectDirectory(project);
+        phase("settings/projects");
         buildUi();
+        phase("buildUi");
         updateProjectRail();
+        phase("project rail");
         restoreSessions();
+        phase("restoreSessions");
         syncCurrentToActiveProject();
         if (_current >= 0)
             loadRuntime(_current);
@@ -5652,6 +5667,7 @@ public final class OpenCodeRoot : VBox
                 activeApiKey(_settings));
             _toolCancellation = new ToolCancellation();
         }
+        phase("load runtime");
         // The restored selection is applied before the first layout. Revealing
         // it at that point would measure against a zero-height viewport and
         // seed the list's scroll offset at the bottom.
@@ -5659,9 +5675,11 @@ public final class OpenCodeRoot : VBox
         updateSessionsHeader();
         updateKeyBadge();
         updateSendButton();
+        phase("session list/header");
         _client.fetchModels();
         _input.requestFocus();
         prepareResumeAfterCrash();
+        phase("finish");
         // Let the agent rebuild this app through the `rebuild` tool. The
         // handler only records the request; onTick performs it.
         rebuildRequestHandler = &onAgentRebuildRequested;
@@ -12846,6 +12864,14 @@ public final class OpenCodeRoot : VBox
         _sessions.length = 0;
         loadPinnedSessions();
         const dir = opencodeStateDirectory();
+        auto restoreMark = MonoTime.currTime;
+        void restorePhase(string what)
+        {
+            const now = MonoTime.currTime;
+            logInfo("restore phase: " ~ what ~ " " ~
+                to!string((now - restoreMark).total!"msecs") ~ " ms");
+            restoreMark = now;
+        }
         // Crash-safe saving renames sessions.json through .bak/.tmp in several
         // steps and also writes a per-message recovery copy, so a crash can
         // leave the live file holding only the newest conversation while the
@@ -12883,6 +12909,21 @@ public final class OpenCodeRoot : VBox
         }
         catch (Exception scanError)
             logError("could not scan the state directory: " ~ scanError.msg);
+        // The scan sees the canonical files too, so `sessions.json` and
+        // `sessions.recovery.json` were each parsed twice - seconds of startup
+        // work re-reading the same megabytes. Keep the first occurrence of
+        // each path.
+        {
+            bool[string] seen;
+            string[] unique;
+            foreach (candidate; candidates)
+            {
+                if (candidate in seen) continue;
+                seen[candidate] = true;
+                unique ~= candidate;
+            }
+            candidates = unique;
+        }
 
         // Trust the selection from the most complete snapshot, not merely the
         // first one read. A stale `sessions.recovery.json` (left by a build
@@ -12923,7 +12964,11 @@ public final class OpenCodeRoot : VBox
             if (canonicalLoaded && isBackupSnapshot(candidate)) continue;
             try
             {
+                const parseBegan = MonoTime.currTime;
                 auto value = parseJSON(readText(candidate));
+                logInfo("restore: parsed " ~ candidate ~ " in " ~
+                    to!string((MonoTime.currTime - parseBegan).total!"msecs") ~
+                    " ms");
                 if (value.type != JSONType.object) continue;
                 // Only the live file is authoritative enough to make the
                 // backups redundant; a stale recovery copy is not.
@@ -13126,6 +13171,7 @@ public final class OpenCodeRoot : VBox
                                 candidate ~ ": " ~ error.msg);
                         }
                         }
+        restorePhase("snapshots parsed+merged");
         // The event journal is the recovery authority. Merge it after every
         // snapshot so the latest flushed item/task update wins even when the
         // compatibility JSON cache was missing or saved a moment earlier.
@@ -13153,6 +13199,7 @@ public final class OpenCodeRoot : VBox
                     mergeJournalSession(session);
             }
         }
+        restorePhase("journal merge");
         // Repair/backfill the message graph for sessions saved before branching
         // existed (or with dangling links), once, after the snapshots have been
         // merged. Repairing during parsing minted ids for legacy (id-less)
@@ -13169,6 +13216,7 @@ public final class OpenCodeRoot : VBox
                     ? "t-" ~ session.messages[0].id : newSessionId();
             }
         }
+        restorePhase("graph repair");
         // Re-resolve the remembered selection by id before trusting the raw
         // index: the snapshots can list the same chats in different orders, so
         // the index of the snapshot we preferred may not address the merged
@@ -13207,6 +13255,7 @@ public final class OpenCodeRoot : VBox
             _sessions[_current].unread = false;
             markDirty();
         }
+        restorePhase("selection + message column");
         refreshUsageBadge();
     }
 

@@ -758,3 +758,51 @@ unittest
     assert(projectAgentRuntimeEvents(events).length == 0);
     assert(deletedAgentRuntimeThreadIds(events) == ["thread-durable"]);
 }
+
+unittest
+{
+    import std.conv : to;
+    import std.file : remove, tempDir;
+    import std.path : buildPath;
+
+    const path = buildPath(tempDir(), "aurora-runtime-offset-" ~
+        to!string(Clock.currTime.stdTime) ~ ".jsonl");
+    scope (exit) if (exists(path)) remove(path);
+
+    auto runtime = new DurableAgentRuntime(path);
+    AgentRuntimeEvent first;
+    first.kind = AgentEventKind.threadStarted;
+    first.threadId = "t1";
+    first.payloadJson = `{"title":"A"}`;
+    assert(runtime.publish(first));
+    const offsetAfterFirst = runtime.journalSize();
+    assert(runtime.latestSequence() == 1);
+
+    AgentRuntimeEvent second;
+    second.kind = AgentEventKind.itemAdded;
+    second.threadId = "t1";
+    second.itemId = "m1";
+    second.payloadJson = `{"content":"hi"}`;
+    assert(runtime.publish(second));
+    assert(runtime.latestSequence() == 2);
+    assert(runtime.journalSize() > offsetAfterFirst);
+
+    // Resuming from a recorded offset returns only what was appended after it,
+    // and reuses the payload parsed while reading - the whole point of the
+    // checkpoint.
+    auto tail = runtime.eventsFrom(offsetAfterFirst);
+    assert(tail.length == 1);
+    assert(tail[0].sequence == 2);
+    assert(tail[0].itemId == "m1");
+    assert(tail[0].payloadJson == `{"content":"hi"}`);
+    assert(tail[0].parsedPayload.type == JSONType.object);
+
+    // An offset at the end yields nothing; an impossible offset re-reads all.
+    assert(runtime.eventsFrom(runtime.journalSize()).length == 0);
+    assert(runtime.eventsFrom(ulong.max).length == 2);
+    assert(runtime.eventsAfter(1).length == 1);
+
+    // A fresh runtime resumes numbering from the last record on disk.
+    auto resumed = new DurableAgentRuntime(path);
+    assert(resumed.latestSequence() == 2);
+}
