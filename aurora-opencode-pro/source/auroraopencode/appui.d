@@ -6730,6 +6730,13 @@ public final class OpenCodeRoot : VBox
         _rebuildPending = true;
         updateStatus("Rebuilding with DUB, then relaunching...");
 
+        // A rebuild that lands mid-turn would otherwise relaunch with the
+        // conversation stopped and nothing telling the new instance to
+        // continue, so the turn sits idle until the user sends again. Leave the
+        // same resume request the agent-facing rebuild writes; an idle rebuild
+        // leaves no note and so never spends an unsolicited model request.
+        writeResumeNoteIfTurnActive();
+
         // Flush every piece of state the new instance reads on startup.
         persistState();
         saveProjects(_projectState);
@@ -6816,6 +6823,22 @@ public final class OpenCodeRoot : VBox
         try write(path, json);
         catch (Exception error)
             logError("could not write the rebuild resume note: " ~ error.msg);
+    }
+
+    /// Leave a resume request for a deliberate rebuild that interrupts a
+    /// running turn, so the relaunched instance picks the conversation back up
+    /// instead of waiting for a manual Send. No-op when a note already exists
+    /// (the agent-facing rebuild wrote its own, with its reason) or when no
+    /// turn is in flight, so an idle rebuild stays silent.
+    private void writeResumeNoteIfTurnActive()
+    {
+        const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
+        if (exists(path)) return;
+        if (!turnIsBusy()) return;
+        const sessionId = _current >= 0 ? _sessions[_current].id : "";
+        if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
+        writeResumeNoteForRebuild(
+            "the rebuild was requested while this turn was running");
     }
 
     /// Drop the resume request when the rebuild could not actually start.
