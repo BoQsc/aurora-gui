@@ -337,6 +337,17 @@ private final class MessageBubble : Widget
     private Rect _collapseRect;
     private bool _collapseHover;
 
+    // Absolute path(s) of the file or folder this tool row names, already
+    // resolved against the workspace by the app and shown as a hover tooltip
+    // over the row's header. Empty when the tool names no file or folder (or it
+    // no longer exists), so the tooltip never invents a location.
+    private string _pathTooltipText;
+    private bool _pathHover;
+
+    // Fired when the pointer enters or leaves the row's header, so the app can
+    // show or hide the absolute-path tooltip.
+    void delegate(bool hovered) onPathHoverChanged;
+
     // File-mutating tool results (edit/write/remove) carry a computed diff: the
     // `+N -M` counters and the unified diff rendered as a line-numbered body
     // with green additions and red deletions. Non-diff tool output is rendered
@@ -481,6 +492,31 @@ private final class MessageBubble : Widget
         _toolArgs = args;
         invalidate();
     }
+
+    /// The absolute path(s) of the file or folder this row names, one per line
+    /// (the app resolves them against the workspace). Empty hides the tooltip.
+    void setPathTooltipText(string text)
+    {
+        if (_pathTooltipText == text) return;
+        _pathTooltipText = text;
+        if (_pathTooltipText.length == 0 && _pathHover)
+        {
+            _pathHover = false;
+            if (onPathHoverChanged !is null) onPathHoverChanged(false);
+        }
+    }
+
+    /// The tooltip text this row would show ("" when it names no file/folder).
+    string pathTooltipText() const { return _pathTooltipText; }
+
+    /// The row header's rect in this bubble's coordinates (the tooltip anchor).
+    Rect toolHeaderRect() const { return _collapseRect; }
+
+    /// Test-only: the absolute-path tooltip text for this row.
+    public string pathTooltipTextForTesting() const { return _pathTooltipText; }
+
+    /// Test-only: whether the pointer is currently over the row's header.
+    public bool pathHoveredForTesting() const { return _pathHover; }
 
     void setDiff(int additions, int deletions, string diff)
     {
@@ -1869,6 +1905,11 @@ private final class MessageBubble : Widget
             _secondaryActionRect.contains(event.position);
         const overCollapse = _role == "tool" &&
             _collapseRect.contains(event.position);
+        // The row's header carries the file/folder name, so pointing at the
+        // header is pointing at the file: the app shows the resolved absolute
+        // path.
+        const overPath = _role == "tool" && _pathTooltipText.length > 0 &&
+            overCollapse;
         const overThinking = _thinking.length > 0 &&
             _thinkingRect.contains(event.position);
         int overVersion;
@@ -1883,7 +1924,7 @@ private final class MessageBubble : Widget
         if (nextCopy != _hoverCopy || nextLink != _hoverLink ||
             overAction != _actionHover ||
             overSecondaryAction != _secondaryActionHover ||
-            overCollapse != _collapseHover ||
+            overCollapse != _collapseHover || overPath != _pathHover ||
             overThinking != _thinkingHover || overVersion != _versionHover ||
             overText != _textHover)
         {
@@ -1892,9 +1933,11 @@ private final class MessageBubble : Widget
             _actionHover = overAction;
             _secondaryActionHover = overSecondaryAction;
             _collapseHover = overCollapse;
+            _pathHover = overPath;
             _thinkingHover = overThinking;
             _versionHover = overVersion;
             _textHover = overText;
+            if (onPathHoverChanged !is null) onPathHoverChanged(_pathHover);
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
                 overSecondaryAction ||
                 overCollapse || overThinking || overVersion != 0
@@ -2044,8 +2087,8 @@ private final class MessageBubble : Widget
     protected override void onMouseLeave()
     {
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
-            _collapseHover || _thinkingHover || _versionHover != 0 ||
-            _textHover)
+            _collapseHover || _pathHover || _thinkingHover ||
+            _versionHover != 0 || _textHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
@@ -2054,6 +2097,11 @@ private final class MessageBubble : Widget
             _thinkingHover = false;
             _versionHover = 0;
             _textHover = false;
+            if (_pathHover)
+            {
+                _pathHover = false;
+                if (onPathHoverChanged !is null) onPathHoverChanged(false);
+            }
             setCursor(CursorKind.arrow);
             invalidate();
         }
@@ -5422,6 +5470,17 @@ public final class OpenCodeRoot : VBox
     private HoverTooltip _thinkingTooltip;
     private bool _thinkingTooltipOpen;
 
+    // Hover tooltip showing the absolute path of the file or folder a chat tool
+    // row names. Owned by the app (not the row) so it is torn down when the
+    // transcript is rebuilt, since the row it is anchored to can be discarded
+    // while its tooltip is open.
+    private HoverTooltip _pathTooltip;
+    private bool _pathTooltipOpen;
+    private MessageBubble _pathTooltipBubble;
+    // Resolved absolute path(s) per tool message id, so a rebuild does not
+    // re-probe the filesystem for every already-settled tool row.
+    private string[string] _toolPathTooltipCache;
+
     private MonoTime _chatStartedAt;
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
@@ -7195,6 +7254,10 @@ public final class OpenCodeRoot : VBox
         // crash here then names this step rather than leaving only an address.
         noteActivity("rebuildMessageColumn sessions=" ~ to!string(_sessions.length) ~
             " current=" ~ to!string(_current));
+        // The row a path tooltip is anchored to is about to be discarded, so
+        // drop the tooltip with it instead of leaving it floating over the
+        // rebuilt transcript.
+        closePathTooltip();
         // A rebuild discards the column's children; detach the two reused
         // widgets first so a nested parent (a turn container) does not leave
         // them attached and reporting visible after they are dropped.
@@ -7853,6 +7916,14 @@ public final class OpenCodeRoot : VBox
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 message.toolDiff);
             bubble.setToolElapsed(message.toolElapsedMs);
+            // Name the file or folder this row touched, resolved to an absolute
+            // path, so a collapsed row can reveal exactly where the work
+            // happened when the pointer rests on its header.
+            bubble.setPathTooltipText(toolPathTooltipText(message));
+            bubble.onPathHoverChanged = delegate(bool hovered)
+            {
+                updatePathTooltip(bubble, hovered);
+            };
         }
         // The reasoning passed in is this turn's own chain of thought, so each
         // round shows an expandable "Thinking" block attached to the reply it
@@ -12060,6 +12131,84 @@ public final class OpenCodeRoot : VBox
         tooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
+    /// The absolute path(s) of the file or folder a settled tool message names,
+    /// one per line ("" when it names none). Cached per message id: a long
+    /// transcript rebuilds often and each resolution probes the filesystem.
+    private string toolPathTooltipText(ref const ChatMessage message)
+    {
+        if (message.id.length > 0)
+        {
+            if (auto cached = message.id in _toolPathTooltipCache)
+                return *cached;
+        }
+        const paths = toolFilePaths(message.toolName, message.toolArgs,
+            message.content, workspaceForSession(_current));
+        auto builder = appender!string();
+        // A tool that lists paths (grep/glob output) can name dozens; the
+        // tooltip stays readable by showing the first few and a count.
+        enum maxRows = 8;
+        foreach (index, path; paths)
+        {
+            if (index >= maxRows)
+            {
+                builder.put("\n… (" ~ to!string(paths.length - maxRows) ~
+                    " more)");
+                break;
+            }
+            if (index > 0) builder.put("\n");
+            builder.put(path);
+        }
+        if (message.id.length > 0)
+            _toolPathTooltipCache[message.id] = builder.data;
+        return builder.data;
+    }
+
+    /// Show or hide the absolute-path tooltip for the tool row the pointer is
+    /// over. It is anchored to the row's own header so an expanded row still
+    /// labels the header rather than the whole (tall) bubble.
+    private void updatePathTooltip(MessageBubble bubble, bool open)
+    {
+        if (!open || bubble is null || bubble.pathTooltipText().length == 0)
+        {
+            closePathTooltip();
+            return;
+        }
+        if (_pathTooltip is null) _pathTooltip = new HoverTooltip(bubble);
+        _pathTooltip.setText(bubble.pathTooltipText());
+        if (_pathTooltip.parent() is null) popupRoot(this).add(_pathTooltip);
+        _pathTooltipBubble = bubble;
+        _pathTooltipOpen = true;
+        positionPathTooltip();
+    }
+
+    /// Position the path tooltip just above the hovered row header, clamped to
+    /// the window.
+    private void positionPathTooltip()
+    {
+        if (!_pathTooltipOpen || _pathTooltip is null ||
+            _pathTooltipBubble is null) return;
+        const anchor = _pathTooltipBubble.toolHeaderRect();
+        const origin = _pathTooltipBubble.localToGlobal(Point(anchor.x, anchor.y));
+        const measured = _pathTooltip.measure(Size(int.max, int.max));
+        const gap = 6;
+        const x = clampInt(origin.x, 8,
+            maxInt(8, bounds().width - measured.width - 8));
+        const y = clampInt(origin.y - measured.height - gap, 8,
+            maxInt(8, bounds().height - measured.height - 8));
+        _pathTooltip.setBounds(Rect(x, y, measured.width, measured.height));
+    }
+
+    /// Tear the path tooltip down: the pointer left the row, or the transcript
+    /// was rebuilt under it.
+    private void closePathTooltip()
+    {
+        if (_pathTooltipOpen && _pathTooltip !is null &&
+            _pathTooltip.parent() !is null)
+            _pathTooltip.parent().remove(_pathTooltip);
+        _pathTooltipOpen = false;
+        _pathTooltipBubble = null;
+    }
+
     private void refreshContextUsageTooltip()
     {
         if (!_usageTooltipOpen || _usageTooltip is null) return;
@@ -14852,6 +15001,30 @@ public final class OpenCodeRoot : VBox
     {
         return isThinkingTooltipOpenForTesting() && _thinkingTooltip !is null
             ? _thinkingTooltip.textForTesting() : "";
+    }
+
+    /// Test-only: the absolute-path tooltip text ("" when closed).
+    public string pathTooltipTextForTesting()
+    {
+        return _pathTooltipOpen && _pathTooltip !is null
+            ? _pathTooltip.textForTesting() : "";
+    }
+
+    /// Test-only: whether the file/folder absolute-path tooltip is open.
+    public bool isPathTooltipOpenForTesting()
+    {
+        return _pathTooltipOpen && _pathTooltip !is null &&
+            _pathTooltip.parent() !is null;
+    }
+
+    /// Test-only: the path tooltip's global bounds (Rect.init when closed).
+    public Rect pathTooltipBoundsForTesting()
+    {
+        if (_pathTooltip is null || _pathTooltip.parent() is null)
+            return Rect.init;
+        const origin = _pathTooltip.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, _pathTooltip.bounds().width,
+            _pathTooltip.bounds().height);
     }
 
     /// Test-only: the context badge's global bounds.
