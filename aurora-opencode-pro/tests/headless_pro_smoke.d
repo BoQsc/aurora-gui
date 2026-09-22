@@ -20,6 +20,9 @@ import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
     previewToolDiff, rebuildRequestHandler;
+import auroraopencode.usage_limits : parseCommandCodeUser,
+    parseOpenCodeGoServiceAccountName, parseUsageLimits,
+    usageProviderForBaseUrl;
 import core.time : msecs, seconds;
 import core.thread : Thread;
 import std.array : join;
@@ -2147,6 +2150,72 @@ int main(string[] args)
     // Leave OpenCode configured, as the rest of the suite expects.
     root.configureProviderKeysForTesting(0, "sk-open-main",
         "sk-open-spare", false);
+    auto openUsage = parseUsageLimits("opencode",
+        `{"usage":{"rolling":{"percent":76,"resetsAt":"2026-09-22T12:00:00Z"},` ~
+        `"weekly":{"percent":70},"monthly":{"percent":35}}}`);
+    auto commandUsage = parseUsageLimits("commandcode",
+        `{"windowLimits":{"fiveHour":{"used":7,"cap":14},` ~
+        `"weekly":{"used":34.5,"cap":35}},` ~
+        `"credits":{"monthlyCredits":0.08}}`);
+    assert(openUsage.available && openUsage.windows.length == 3 &&
+        openUsage.windows[0].label == "5 hours" &&
+        openUsage.windows[0].percent == 76);
+    assert(parseOpenCodeGoServiceAccountName(
+        "id,service_account_name,user_email\n" ~
+        "1,\"Legacy: person@example.com\",\n" ~
+        "2,\"Legacy: person@example.com\",\n") ==
+        "Legacy: person@example.com");
+    assert(parseOpenCodeGoServiceAccountName(
+        "id,service_account_name\n1,First\n2,Second\n").length == 0,
+        "Workspace usage must not be mistaken for a per-key identity");
+    assert(commandUsage.available && commandUsage.windows.length == 2 &&
+        commandUsage.windows[0].percent == 50 &&
+        commandUsage.note.indexOf("$0.08") >= 0);
+    assert(parseCommandCodeUser(
+        `{"success":true,"user":{"name":"Display","userName":"handle",` ~
+        `"email":"person@example.com"}}`) ==
+        "handle (person@example.com)");
+    assert(parseCommandCodeUser(`{"success":false,"error":"denied"}`) == "");
+    assert(usageProviderForBaseUrl("https://opencode.ai/zen/go/v1") ==
+        "opencode");
+    assert(usageProviderForBaseUrl(
+        "https://api.commandcode.ai/provider/v1") == "commandcode");
+    openUsage.serviceAccountName = "Legacy: person@example.com";
+    root.seedKeyUsageForTesting("opencode", "sk-open-main", openUsage);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Settings usage fixture did not lay out");
+    auto usageKeyField = requireWidget!Widget(root, "oc-settings-key");
+    driver.moveTo(globalCenter(usageKeyField));
+    root.tickTree(0.02);
+    assert(driver.paint(), "API key usage bars did not paint");
+    assert(root.keyUsageTooltipAboveSettingsForTesting(),
+        "API key tooltip must composite above the Settings popup");
+    const usageTooltip = root.keyUsageTooltipTextForTesting();
+    assert(usageTooltip.indexOf("5 hours: 76% used") >= 0 &&
+        usageTooltip.indexOf("Week: 70% used") >= 0 &&
+        usageTooltip.indexOf("Month: 35% used") >= 0 &&
+        usageTooltip.indexOf("Service account: Legacy: person@example.com") >= 0,
+        "API key hover did not show usage limits: " ~ usageTooltip);
+    driver.moveTo(Point(4, 700));
+    root.tickTree(0.02);
+    assert(root.keyUsageTooltipTextForTesting().length == 0,
+        "API key usage tooltip stayed open after pointer leave");
+    root.selectProviderForTesting(1);
+    commandUsage.commandCodeUser = "handle (person@example.com)";
+    root.seedKeyUsageForTesting("commandcode", "sk-cc-spare", commandUsage);
+    root.tickTree(0.02);
+    assert(driver.paint(), "CommandCode settings did not lay out");
+    auto spareUsageField = requireWidget!Widget(root, "oc-settings-extrakey");
+    driver.moveTo(globalCenter(spareUsageField));
+    root.tickTree(0.02);
+    const spareTooltip = root.keyUsageTooltipTextForTesting();
+    assert(spareTooltip.indexOf("5 hours: $7.00 / $14.00") >= 0 &&
+        spareTooltip.indexOf("User: handle (person@example.com)") >= 0 &&
+        spareTooltip.indexOf("Monthly credits left: $0.08") >= 0,
+        "Spare key hover did not show CommandCode usage: " ~ spareTooltip);
+    assert(driver.paint(), "CommandCode usage bars did not paint");
+    driver.moveTo(Point(4, 700));
+    root.selectProviderForTesting(0);
     root.dismissPopupForTesting();
     root.tickTree(0.02);
     writeln("Settings keeps a second API key per provider and toggles the active one");
@@ -2868,7 +2937,7 @@ int main(string[] args)
         assert(diffs.length == 3,
             "Expected a diff slot per live row, got " ~ to!string(diffs.length));
         auto previews = root.liveToolRowPreviewsForTesting();
-        assert(previews.length == 3 && previews[1].indexOf("a\nb") >= 0,
+        assert(previews.length == 3 && previews[1].indexOf("+a\n+b") >= 0,
             "Live write row did not preview the streamed body: " ~
             (previews.length > 1 ? previews[1] : "(none)"));
         assert(driver.paint(), "Live action group did not paint");

@@ -13,6 +13,9 @@ import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     deletedAgentRuntimeThreadIds;
 import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
 import auroraopencode.titlebar : OpenCodeTitleBar;
+import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
+    fetchCommandCodeUser, fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
+    usageProviderForBaseUrl;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
@@ -3975,10 +3978,14 @@ private final class HoverTooltip : Widget
     // Wrapped row layouts, built by onMeasure and reused by onPaint so a row is
     // shaped once per content change instead of on every frame.
     private TextLayout[] _rowLayouts;
+    private UsageLimitWindow[] _usageBars;
 
     this(Widget hoverOwner)
     {
         _hoverOwner = hoverOwner;
+        // PopupOverlay is its own compositor layer. Tooltips must be a later
+        // layer too, or the Settings panel paints over them.
+        setComposited(true);
         layoutHints().excludeFromLayout = true;
     }
 
@@ -3993,6 +4000,7 @@ private final class HoverTooltip : Widget
 
     void setContent(string title, const(string)[] rows)
     {
+        _usageBars.length = 0;
         _title = toUTF32(title);
         _rows.length = 0;
         foreach (row; rows)
@@ -4002,10 +4010,26 @@ private final class HoverTooltip : Widget
 
     void setText(string text)
     {
+        _usageBars.length = 0;
         _title.length = 0;
         _rows.length = 0;
         foreach (line; text.splitLines)
             _rows ~= toUTF32(line);
+        invalidate();
+    }
+
+    void setUsageContent(UsageLimitsResult result)
+    {
+        _title = toUTF32(result.title);
+        _usageBars = result.windows.dup;
+        _wrap = result.serviceAccountName.length > 0 ||
+            result.commandCodeUser.length > 0;
+        _rows.length = 0;
+        if (result.serviceAccountName.length > 0)
+            _rows ~= toUTF32("Service account: " ~ result.serviceAccountName);
+        if (result.commandCodeUser.length > 0)
+            _rows ~= toUTF32("User: " ~ result.commandCodeUser);
+        if (result.note.length > 0) _rows ~= toUTF32(result.note);
         invalidate();
     }
 
@@ -4018,6 +4042,12 @@ private final class HoverTooltip : Widget
         {
             if (builder.data.length > 0) builder.put("\n");
             builder.put(to!string(row));
+        }
+        foreach (bar; _usageBars)
+        {
+            if (builder.data.length > 0) builder.put("\n");
+            builder.put(bar.label ~ ": " ~ bar.detail);
+            if (bar.reset.length > 0) builder.put("; " ~ bar.reset);
         }
         return builder.data;
     }
@@ -4035,7 +4065,7 @@ private final class HoverTooltip : Widget
         const padH = 14;
         const padV = 12;
         const lineH = 18;
-        const width = _wrap ? wrapWidth : 272;
+        const width = _wrap ? wrapWidth : (_usageBars.length > 0 ? 320 : 272);
         int height = padV * 2;
         if (_title.length > 0) height += lineH + 6;
         _rowLayouts.length = 0;
@@ -4052,6 +4082,7 @@ private final class HoverTooltip : Widget
         }
         else
             height += cast(int) _rows.length * lineH;
+        height += cast(int) _usageBars.length * 57;
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
@@ -4094,13 +4125,32 @@ private final class HoverTooltip : Widget
                 canvas.drawLayout(Point(14, y), layout, opencodeMuted);
                 y += cast(int) layout.measuredSize().height + wrappedRowGap;
             }
-            return;
         }
-        foreach (row; _rows)
+        else
+            foreach (row; _rows)
+            {
+                canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+                    FontRole.ui, cast(FontFace) palette.uiFont);
+                y += 18;
+            }
+        foreach (bar; _usageBars)
         {
-            canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+            canvas.drawText(Point(14, y), toUTF32(bar.label), palette.text, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
-            y += 18;
+            canvas.drawText(Point(112, y), toUTF32(bar.detail), opencodeMuted,
+                1, FontRole.ui, cast(FontFace) palette.uiFont);
+            y += 20;
+            const railWidth = cast(int) width - 28;
+            canvas.fillRoundedRect(Rect(14, y, railWidth, 7), 3, opencodeField);
+            const fillWidth = cast(int) (railWidth * bar.percent / 100);
+            if (fillWidth > 0)
+                canvas.fillRoundedRect(Rect(14, y, fillWidth, 7), 3,
+                    bar.percent >= 90 ? opencodeWarning : opencodeAccent);
+            y += 12;
+            if (bar.reset.length > 0)
+                canvas.drawText(Point(14, y), toUTF32(bar.reset), opencodeMuted,
+                    1, FontRole.ui, cast(FontFace) palette.uiFont);
+            y += 25;
         }
     }
 }
@@ -4286,6 +4336,29 @@ private final class HoverCheckBox : CheckBox
             return true;
         }
         return super.onMouseDown(event);
+    }
+}
+
+/// Settings credential field that reports pointer entry for usage previews.
+private final class HoverKeyField : TextField
+{
+    void delegate(bool hovered) onHoverChanged;
+
+    this(string value)
+    {
+        super(value);
+    }
+
+    protected override void onMouseEnter()
+    {
+        super.onMouseEnter();
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        super.onMouseLeave();
+        if (onHoverChanged !is null) onHoverChanged(false);
     }
 }
 
@@ -6095,6 +6168,14 @@ public final class OpenCodeRoot : VBox
     // picks which of the two API keys requests are sent with.
     private TextField _settingsAdditionalKeyField;
     private CheckBox _settingsAdditionalKeyToggle;
+    private HoverTooltip _keyUsageTooltip;
+    private HoverKeyField _keyUsageAnchor;
+    private string _keyUsageRequestId;
+    private UsageLimitsResult[string] _keyUsageCache;
+    private long[string] _keyUsageCacheAt;
+    private long[string] _keyAccountCacheAt;
+    private bool[string] _keyUsageFetching;
+    private UsageLimitsResult[string] _keyUsageReady;
     // Recycled by OpenCodeClient.drain. Keeping it on the root makes event
     // delivery allocation-free after the queue reaches its normal capacity.
     private OpenCodeEvent[] _eventScratch;
@@ -12686,10 +12767,12 @@ public final class OpenCodeRoot : VBox
         auto keyLabel = keyRow.add(new Label("API key"));
         keyLabel.layoutHints().preferredWidth = 110;
         keyLabel.setScale(1);
-        auto keyField = keyRow.add(new TextField(_settings.apiKey));
+        auto keyField = keyRow.add(new HoverKeyField(_settings.apiKey));
         keyField.setId("oc-settings-key");
         keyField.layoutHints().flex = 1.0;
         _settingsKeyField = keyField;
+        keyField.onHoverChanged = (bool hovered) =>
+            setKeyUsageHover(keyField, hovered);
 
         // Additional key: every provider keeps a spare credential in its own
         // field next to the main key. The checkbox below picks which of the two
@@ -12701,11 +12784,13 @@ public final class OpenCodeRoot : VBox
             new Label("Additional key"));
         additionalKeyLabel.layoutHints().preferredWidth = 110;
         additionalKeyLabel.setScale(1);
-        auto additionalKeyField = additionalKeyRow.add(new TextField(
+        auto additionalKeyField = additionalKeyRow.add(new HoverKeyField(
             activePair !is null ? activePair.additionalApiKey : ""));
         additionalKeyField.setId("oc-settings-extrakey");
         additionalKeyField.layoutHints().flex = 1.0;
         _settingsAdditionalKeyField = additionalKeyField;
+        additionalKeyField.onHoverChanged = (bool hovered) =>
+            setKeyUsageHover(additionalKeyField, hovered);
 
         auto activeKeyRow = new HBox(8);
         activeKeyRow.layoutHints().preferredHeight = 32;
@@ -12918,6 +13003,7 @@ public final class OpenCodeRoot : VBox
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate()
         {
+            closeKeyUsageTooltip();
             _activePopup = null;
             _settingsBaseField = null;
             _settingsKeyField = null;
@@ -13433,6 +13519,89 @@ public final class OpenCodeRoot : VBox
         x = clampInt(x, 8, maxInt(8, bounds().width - measured.width - 8));
         y = clampInt(y, 8, maxInt(8, bounds().height - measured.height - 8));
         tooltip.setBounds(Rect(x, y, measured.width, measured.height));
+    }
+
+    private void closeKeyUsageTooltip()
+    {
+        _keyUsageAnchor = null;
+        _keyUsageRequestId = "";
+        if (_keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
+            _keyUsageTooltip.parent().remove(_keyUsageTooltip);
+    }
+
+    private void setKeyUsageHover(HoverKeyField field, bool hovered)
+    {
+        if (!hovered)
+        {
+            if (_keyUsageAnchor is field) closeKeyUsageTooltip();
+            return;
+        }
+        closeKeyUsageTooltip();
+        if (_settingsBaseField is null) return;
+        const provider = usageProviderForBaseUrl(_settingsBaseField.textUtf8());
+        const apiKey = field.textUtf8().strip();
+        if (provider.length == 0 || apiKey.length == 0) return;
+        const requestId = provider ~ ":" ~ apiKey;
+        _keyUsageAnchor = field;
+        _keyUsageRequestId = requestId;
+        _keyUsageTooltip = new HoverTooltip(field);
+        auto cached = requestId in _keyUsageCache;
+        const fresh = cached !is null &&
+            Clock.currTime.toUnixTime() - _keyUsageCacheAt[requestId] < 60;
+        if (fresh)
+            _keyUsageTooltip.setUsageContent(*cached);
+        else
+            _keyUsageTooltip.setContent(provider == "opencode" ?
+                "OpenCode Go usage" : "CommandCode usage", ["Loading usage limits..."]);
+        popupRoot(this).add(_keyUsageTooltip);
+        positionTooltip(field, _keyUsageTooltip);
+        if (fresh || requestId in _keyUsageFetching) return;
+        _keyUsageFetching[requestId] = true;
+        const cachedName = cached is null ? "" : provider == "opencode" ?
+            cached.serviceAccountName : cached.commandCodeUser;
+        const accountCachedAt = requestId in _keyAccountCacheAt;
+        const accountFresh = accountCachedAt !is null &&
+            Clock.currTime.toUnixTime() - *accountCachedAt <
+            (cachedName.length > 0 ? 86_400 : 3_600);
+        auto worker = new Thread({
+            auto result = fetchUsageLimits(provider, apiKey);
+            if (provider == "opencode")
+            {
+                result.serviceAccountName = accountFresh ? cachedName :
+                    fetchOpenCodeGoServiceAccountName(apiKey);
+            }
+            else if (provider == "commandcode")
+                result.commandCodeUser = accountFresh ? cachedName :
+                    fetchCommandCodeUser(apiKey);
+            result.accountChecked = !accountFresh;
+            synchronized (this) _keyUsageReady[requestId] = result;
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    private void drainKeyUsageResults()
+    {
+        UsageLimitsResult[string] ready;
+        synchronized (this)
+        {
+            ready = _keyUsageReady;
+            _keyUsageReady = null;
+        }
+        foreach (requestId, result; ready)
+        {
+            _keyUsageFetching.remove(requestId);
+            _keyUsageCache[requestId] = result;
+            _keyUsageCacheAt[requestId] = Clock.currTime.toUnixTime();
+            if (result.accountChecked)
+                _keyAccountCacheAt[requestId] = _keyUsageCacheAt[requestId];
+            if (requestId == _keyUsageRequestId && _keyUsageAnchor !is null &&
+                _keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
+            {
+                _keyUsageTooltip.setUsageContent(result);
+                positionTooltip(_keyUsageAnchor, _keyUsageTooltip);
+            }
+        }
     }
 
     /// The one path a tool row's "Open containing folder" action should use: the
@@ -15032,6 +15201,7 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        drainKeyUsageResults();
         // Resume after an unexpected shutdown, once the restored transcript has
         // been laid out. Sending earlier would extend a conversation whose
         // widgets are not built yet.
@@ -17335,6 +17505,31 @@ public final class OpenCodeRoot : VBox
     {
         showSettingsDialog();
         return findWidgetById(this, "oc-provider") !is null;
+    }
+
+    /// Test-only: prefill a usage response so pointer tests stay offline.
+    public void seedKeyUsageForTesting(string provider, string key,
+        UsageLimitsResult result)
+    {
+        const requestId = provider ~ ":" ~ key;
+        _keyUsageCache[requestId] = result;
+        _keyUsageCacheAt[requestId] = Clock.currTime.toUnixTime();
+    }
+
+    public string keyUsageTooltipTextForTesting()
+    {
+        return _keyUsageTooltip !is null &&
+            _keyUsageTooltip.parent() !is null
+            ? _keyUsageTooltip.textForTesting() : "";
+    }
+
+    public bool keyUsageTooltipAboveSettingsForTesting()
+    {
+        auto root = popupRoot(this);
+        const children = root.children();
+        return _activePopup !is null && _keyUsageTooltip !is null &&
+            children.length > 0 && children[$ - 1] is _keyUsageTooltip &&
+            _keyUsageTooltip.compositorRoot() is _keyUsageTooltip;
     }
 
     /// Test-only: open Settings, apply the provider preset at `index`, and
