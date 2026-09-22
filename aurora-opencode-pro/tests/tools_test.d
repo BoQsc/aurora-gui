@@ -11,7 +11,7 @@ import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityDirective,
     promptVerbosityFromName, promptVerbosityLabel, promptVerbosityName,
     promptVerbosityNames, rebuildModule, setSystemPromptModules;
 import std.array : replicate;
-import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
+import std.file : copy, exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
 import std.path : buildPath;
 import std.process : environment;
@@ -384,6 +384,21 @@ int main()
         assert(runResult.output.indexOf("run-ok") >= 0,
             "run did not pass args through: " ~ runResult.output);
         writeln("D-native run tool executes a program directly");
+
+        // A binary built in workdir must launch without an extra PATH lookup
+        // or a full absolute path, including an explicit relative path.
+        const localExe = buildPath(dir, "local-tool.exe");
+        copy(environment.get("COMSPEC"), localExe);
+        foreach (name; ["local-tool.exe", "./local-tool.exe"])
+        {
+            auto localRun = executeTool(makeCall("run",
+                `{"program":"` ~ name ~
+                `","args":["/d","/c","echo local-run-ok"]}`), dir);
+            assert(!localRun.failed &&
+                localRun.output.indexOf("local-run-ok") >= 0,
+                "run could not launch a workdir executable: " ~
+                localRun.output);
+        }
 
         // Long commands can detach from the model round and remain addressable
         // by a stable process id. Polling output/status must not relaunch them.

@@ -292,11 +292,13 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "run",
             "Execute a program directly with an argument list, never through " ~
             "a shell. Use this to run build tools, compilers, git, or any " ~
-            "executable. The program name is resolved against PATH; pass " ~
-            "each argument separately (no shell quoting or redirection). For " ~
-            "DMD, compiler options precede `-run`; everything after the source " ~
-            "file is a runtime argument (example: `-Isource -i -run " ~
-            "source/app.d`). Set background=true for work that may run long, " ~
+            "executable. Program names are resolved against PATH; existing " ~
+            "relative executable paths are resolved from workdir, including " ~
+            "local .exe names on Windows. Pass each argument separately (no " ~
+            "shell quoting or redirection). For DMD verification, prefer " ~
+            "`-run` to compile and execute in one call; compiler options " ~
+            "precede `-run` (example: `-Isource -i -run source/app.d`). " ~
+            "Set background=true for work that may run long, " ~
             "then inspect status and output with the process tool.",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
@@ -1127,11 +1129,28 @@ private ToolExecution runProgramTool(string args, string workspace,
     if (timeoutMs <= 0)
         timeoutMs = 3_600_000;
 
-    // The program name is resolved against PATH by spawnProcess; an explicit
-    // path may be given instead. Remaining arguments pass through verbatim.
+    // spawnProcess resolves bare names against PATH, but not against the
+    // requested workdir. Resolve local executables there so a just-built
+    // program works with either `app.exe` or `.\app.exe` on Windows.
     const resolvedWorkdir = workdir.length > 0
         ? resolveToolPath(workdir, workspace) : workspace;
     auto fullArgv = [program] ~ argv;
+    if (!isAbsolute(program))
+    {
+        const hasSeparator = program.indexOf('/') >= 0 ||
+            program.indexOf('\\') >= 0;
+        version (Windows)
+            const localName = extension(program).toLower() == ".exe";
+        else
+            const localName = false;
+        if (hasSeparator || localName)
+        {
+            const localPath = buildNormalizedPath(buildPath(
+                resolvedWorkdir, program));
+            if (exists(localPath) && isFile(localPath))
+                fullArgv[0] = localPath;
+        }
+    }
 
     if (background)
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,

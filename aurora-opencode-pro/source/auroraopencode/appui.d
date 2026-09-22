@@ -10085,13 +10085,23 @@ public final class OpenCodeRoot : VBox
         message.toolCalls = event.toolCalls.dup;
         // The tool request ends this assistant reply (reasoning phase included)
         // but the user turn continues, so `finishAssistantMessage` never runs
-        // between rounds. Persist the live output-token count and throughput
-        // onto the message BEFORE the stream bubble is torn down below; the
+        // between rounds. Save the provider's usage on this assistant message
+        // so the session total includes every tool round. Persist the live
+        // output-token estimate only when exact usage is unavailable.
+        if (event.totalTokens > 0 || event.promptTokens > 0 ||
+            event.completionTokens > 0)
+        {
+            message.promptTokens = event.promptTokens;
+            message.completionTokens = event.completionTokens;
+            message.totalTokens = event.totalTokens;
+        }
+        // Keep the output-token count and throughput on the message BEFORE the
+        // stream bubble is torn down below; the
         // rebuild that follows otherwise renders the Thinking header from a
         // message with zeroed stats and the token / t/s indicator disappears
         // instead of keeping its place. The continuation's `chatBegin` cannot
         // do this: it runs after this teardown, when `_streamBubble` is null.
-        if (_liveOutputTokens > 0 &&
+        if (event.completionTokens == 0 && _liveOutputTokens > 0 &&
             message.completionTokens < cast(int) _liveOutputTokens)
             message.completionTokens = cast(int) _liveOutputTokens;
         if (_liveTokenRateTenths > 0)

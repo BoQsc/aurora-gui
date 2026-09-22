@@ -203,22 +203,16 @@ private string operatingContractSection(in SystemPromptContext ctx)
 private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
-        "1. Translate the request into a concrete result and success " ~
-        "criteria. Use `update_plan` only when the work is genuinely substantial, " ~
-        "has multiple dependent phases, or benefits from durable checkpoints. " ~
-        "Skip a plan for direct answers, quick exploration, and a single " ~
-        "localized change. When the work qualifies, record the plan with a " ~
-        "single `update_plan` call before the first action — list every step " ~
-        "with the first marked `in_progress` and the rest `pending`. Then " ~
-        "keep exactly one step in progress, and call `update_plan` again the " ~
-        "moment a step's status changes — mark a finished step `completed` " ~
-        "and set the next one `in_progress` before moving on. A checklist " ~
-        "left showing pending/in_progress steps after the work has moved on " ~
-        "misleads the user, so keeping the plan current is part of doing the " ~
-        "task, not an opening formality.\n" ~
+        "1. Define the result and success criteria. Use `update_plan` for " ~
+        "substantial work with dependent phases. Skip a plan for direct " ~
+        "answers, quick exploration, and single edits. If used, list all " ~
+        "steps before acting, keep one `in_progress`, mark completed steps " ~
+        "promptly, and leave no stale items.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
-        "working directory. Read a file before changing it.\n" ~
+        "working directory. Read named files directly; discover the workspace " ~
+        "only when paths are unknown or a direct read fails. Read a file " ~
+        "before changing it.\n" ~
         "3. Make the smallest complete change. Include all currently " ~
         "known related edits in one patch or mutation batch instead of saving " ~
         "known work for later rounds.\n" ~
@@ -282,9 +276,10 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "edits, writes, and removals. Use `bash` only for git, builds, " ~
             "tests, package managers, or executables the native tools cannot " ~
             "perform; do not use shell listing or content commands.\n";
-    text ~= "Use `dshell list` for file discovery and `grep` for content " ~
-        "search. Avoid a broader duplicate after successful discovery unless " ~
-        "it answers a different named question. Tool schemas contain exact " ~
+    text ~= "Read exact file paths from the request directly. Use `dshell " ~
+        "list` when paths need discovery and `grep` for content search. " ~
+        "Avoid a broader duplicate after successful discovery unless it " ~
+        "answers a different named question. Tool schemas contain exact " ~
         "syntax and parameter requirements.\n";
     text ~= "Use the native `open` tool to open files, folders, or web " ~
         "pages. Never reconstruct platform launch commands such as Windows " ~
