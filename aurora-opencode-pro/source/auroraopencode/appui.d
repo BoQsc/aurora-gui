@@ -5389,6 +5389,10 @@ public final class SessionListView : ListView
     // has not been opened since.
     private bool[] _incompleteRows;
     private bool[] _unreadRows;
+    // Number of leading rows that are pinned conversations. The list draws a
+    // hairline under that group so the pinned section reads as separate from
+    // the rest of the sidebar.
+    private int _pinnedRows;
 
     this()
     {
@@ -5428,6 +5432,25 @@ public final class SessionListView : ListView
         _incompleteRows = incomplete;
         _unreadRows = unread;
         invalidate();
+    }
+
+    /// Set how many leading rows are pinned conversations. The list only
+    /// repaints when the count actually changes.
+    void setPinnedCount(int count)
+    {
+        const next = maxInt(0, count);
+        if (_pinnedRows == next) return;
+        _pinnedRows = next;
+        invalidate();
+    }
+
+    /// The row index the pinned/unpinned divider is drawn above, or -1 when no
+    /// divider shows (nothing pinned, or nothing unpinned). Exposed so a smoke
+    /// test can prove the sidebar separates the pinned group.
+    int pinnedSeparatorRowForTesting() const
+    {
+        return _pinnedRows > 0 && _pinnedRows < cast(int) items().length
+            ? _pinnedRows : -1;
     }
 
     /// `!` incomplete, `*` unread, `-` neither; one character per row. Exposed
@@ -5581,6 +5604,19 @@ public final class SessionListView : ListView
             content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
                 item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+
+        // An accent-tinted divider under the pinned group separates it from the
+        // rest of the conversations, inset from the edges so it reads as a
+        // section break rather than a row rule. Drawn only when both groups are
+        // present.
+        if (_pinnedRows > 0 && _pinnedRows < count)
+        {
+            const separatorY = _pinnedRows * rowHeight - offset;
+            const inset = 18;
+            content.fillRect(Rect(inset, separatorY,
+                maxInt(0, width - 2 * inset), 1),
+                opencodeAccent.withAlpha(190));
         }
     }
 
@@ -13189,6 +13225,7 @@ public final class OpenCodeRoot : VBox
     {
         ListItem[] items;
         int[] indices;
+        int pinnedCount = 0;
         const projectId = activeProjectId();
         // Newest conversation first: sessions are appended on creation, so walk
         // the array backwards and keep the real indices for row -> session.
@@ -13214,10 +13251,12 @@ public final class OpenCodeRoot : VBox
                     secondary = session.messages[path[$ - 1]].time;
                 items ~= ListItem(pinned ? "★ " ~ title : title,
                     IconKind.none, secondary);
+                if (pinnedPass) ++pinnedCount;
             }
         }
         _sessionIndices = indices;
         _sessionList.setItems(items);
+        _sessionList.setPinnedCount(pinnedCount);
         _sessionList.setActivityRows(activeSessionRows());
         refreshSessionRowStatus();
         int row = -1;
@@ -14833,6 +14872,14 @@ public final class OpenCodeRoot : VBox
     public string sessionRowStatusForTesting() const
     {
         return _sessionList is null ? "" : _sessionList.rowStatusForTesting();
+    }
+
+    /// Test-only: the row index the pinned/unpinned divider sits above, or -1
+    /// when the sidebar shows no divider (nothing pinned, or nothing unpinned).
+    public int sessionPinnedSeparatorRowForTesting() const
+    {
+        return _sessionList is null
+            ? -1 : _sessionList.pinnedSeparatorRowForTesting();
     }
 
     /// Test-only: overwrite a conversation's turn status so the incomplete
