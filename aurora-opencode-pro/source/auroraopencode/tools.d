@@ -3746,6 +3746,38 @@ public bool previewToolDiff(string toolName, string argsJson,
     return false;
 }
 
+/// The unified diff a file-mutating tool's arguments already imply, for a row
+/// whose tool has not reported a diff yet (an in-flight call, or a restored
+/// message that lost its stored diff). `edit` diffs `oldString` against
+/// `newString`; `write` renders the partial `content` as pure additions. Empty
+/// for tools that do not edit, or when there is nothing to show yet.
+public string previewToolDiffText(string toolName, string argsJson)
+{
+    if (toolName == "edit")
+    {
+        const oldText = partialStringArg(argsJson, "oldString");
+        const newText = partialStringArg(argsJson, "newString");
+        if (oldText.length == 0 && newText.length == 0) return "";
+        return computeTextDiff(oldText, newText).unified;
+    }
+    if (toolName == "write")
+    {
+        import std.string : splitLines;
+
+        const content = partialStringArg(argsJson, "content");
+        if (content.length == 0) return "";
+        auto builder = appender!string();
+        foreach (line; content.splitLines())
+        {
+            builder.put("+");
+            builder.put(line);
+            builder.put("\n");
+        }
+        return builder.data;
+    }
+    return "";
+}
+
 /// The D-native `dshell` tool: a tiny shell implemented in D that covers the
 /// commands the model most often reaches for (pwd, ls/dir, stat) so it never
 /// needs to invoke bash/cmd/powershell for plain directory introspection.

@@ -16,6 +16,7 @@ import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
+    previewToolDiffText,
     rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution;
 import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
@@ -2219,9 +2220,24 @@ private string humanToolSubtitle(string toolName, string toolArgs)
             return basenameOf(partialStringArg(toolArgs, "filePath"));
         case "apply_patch":
         {
-            const files = patchFileCount(partialStringArg(toolArgs, "patch"));
-            if (files == 0) return "";
-            return to!string(files) ~ (files == 1 ? " file" : " files");
+            // Name the patched files. "Patch  1 file" told the reader nothing
+            // about which file the row was about.
+            const names = patchFileNames(partialStringArg(toolArgs, "patch"));
+            if (names.length == 0) return "";
+            enum maxNames = 3;
+            auto builder = appender!string();
+            foreach (index, name; names)
+            {
+                if (index >= maxNames)
+                {
+                    builder.put(" +" ~ to!string(names.length - maxNames) ~
+                        " more");
+                    break;
+                }
+                if (index > 0) builder.put(", ");
+                builder.put(name);
+            }
+            return builder.data;
         }
         case "update_plan":
         {
@@ -2476,6 +2492,28 @@ private int patchFileCount(string patch)
         countOccurrences(patch, "*** Delete File:");
 }
 
+/// Basenames of the files a Codex-format patch touches, in patch order and
+/// without repeats, so the action row can name them instead of counting them.
+private string[] patchFileNames(string patch)
+{
+    string[] names;
+    foreach (line; splitLines(patch))
+    {
+        const text = line.strip();
+        foreach (prefix; patchFileDirectives)
+        {
+            if (!text.startsWith(prefix)) continue;
+            const name = basenameOf(text[prefix.length .. $].strip());
+            if (name.length > 0 && !names.canFind(name)) names ~= name;
+            break;
+        }
+    }
+    return names;
+}
+
+private immutable string[] patchFileDirectives =
+    ["*** Add File:", "*** Update File:", "*** Delete File:"];
+
 /// Number of steps in an `update_plan` call, for the action row subtitle.
 private int planStepCount(string toolArgs)
 {
@@ -2499,9 +2537,16 @@ private string humanToolDetail(string toolName, string toolArgs)
     switch (toolName)
     {
         case "write":
-            return partialStringArg(toolArgs, "content");
         case "edit":
-            return partialStringArg(toolArgs, "newString");
+        {
+            // An editing tool previews its diff: the row is about the change,
+            // not about the raw replacement text.
+            const diff = previewToolDiffText(toolName, toolArgs);
+            if (diff.length > 0) return diff;
+            return toolName == "write"
+                ? partialStringArg(toolArgs, "content")
+                : partialStringArg(toolArgs, "newString");
+        }
         case "bash":
         case "run":
         case "dshell":
@@ -2851,11 +2896,15 @@ private final class LiveToolRow : Widget
         const lineH = detailLineHeight();
         const bodyX = padH;
         const bodyWidth = maxInt(1, bounds().width - bodyX - padH);
+        // An editing tool previews a diff, so tint its rows the way the settled
+        // tool body does; other previews (a shell command) stay muted.
+        const diffPreview = _toolName == "edit" || _toolName == "write";
         foreach (line; _detailLines)
         {
             auto bodyLayout = canvas.layoutText(toUTF32(line), 1,
                 FontRole.monospace, null, bodyWidth, false);
-            canvas.drawLayout(Point(bodyX, y), bodyLayout, opencodeMuted);
+            canvas.drawLayout(Point(bodyX, y), bodyLayout,
+                diffPreview ? diffRowColor(line) : opencodeMuted);
             y += lineH;
         }
         if (_detailTruncated)
@@ -2865,6 +2914,16 @@ private final class LiveToolRow : Widget
                 1, FontRole.monospace, null, bodyWidth, false);
             canvas.drawLayout(Point(bodyX, y), moreLayout, opencodeMuted);
         }
+    }
+
+    /// Colour one previewed diff row like the settled diff body: additions
+    /// green, deletions red, hunk headers muted.
+    private static Color diffRowColor(string line)
+    {
+        if (line.startsWith("@@")) return opencodeMuted;
+        if (line.startsWith("+")) return opencodeDiffAdd;
+        if (line.startsWith("-")) return opencodeDiffDelete;
+        return opencodeText;
     }
 }
 
@@ -4569,6 +4628,145 @@ private final class ChatScrollView : ScrollView
         // scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
     }
+
+    /// True when the reader has scrolled away from the auto-follow position and
+    /// there is something to scroll back to, so the "jump to latest" pill is
+    /// worth offering.
+    bool awayFromBottom()
+    {
+        return !follow && maxScroll() > 0;
+    }
+
+    /// Hand automatic scrolling back: re-engage follow and jump to the newest
+    /// content (the line being thought, or the latest message). This is the way
+    /// back after the reader has scrolled up to take control.
+    void resumeFollow()
+    {
+        follow = true;
+        setScrollY(maxScroll());
+        invalidate();
+    }
+
+    /// Test-only: move the viewport up by `pixels`, as a wheel scroll would.
+    void scrollUpForTesting(int pixels)
+    {
+        setScrollY(maxInt(0, scrollY() - maxInt(1, pixels)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Jump-to-latest pill (Pro): the way back to automatic scrolling
+// ---------------------------------------------------------------------------
+
+/// A centered pill pinned near the bottom of the transcript that appears only
+/// while the reader has scrolled away from the newest content. Clicking it
+/// re-engages auto-follow, so automatic scrolling to the latest thought or
+/// message can be taken back by scrolling up and handed over again from here.
+/// It is an overlay child of the scroll view (full viewport bounds, excluded
+/// from layout) and is pointer-transparent outside its pill, so the transcript
+/// underneath stays fully interactive.
+private final class FollowPill : Widget
+{
+    private static immutable int pillWidth = 168;
+    private static immutable int pillHeight = 30;
+    private static immutable int bottomMargin = 14;
+
+    private ChatScrollView _scroll;
+    // The pill's rect within the overlay's full-viewport bounds, refreshed on
+    // each paint so hit testing and `hoverTransparentAt` agree with the frame.
+    private Rect _pillRect;
+    private bool _hover;
+    private bool _shown;
+
+    this(ChatScrollView scroll)
+    {
+        _scroll = scroll;
+        setId("oc-follow-pill");
+        layoutHints().excludeFromLayout = true;
+        layoutHints().overlayFillParent = true;
+        layoutHints().allowOverflow = true;
+    }
+
+    /// Test-only: whether the pill is currently offered.
+    public bool shownForTesting() const { return _shown; }
+
+    /// Test-only: the pill's rect within the transcript viewport.
+    public Rect pillBoundsForTesting() const { return _pillRect; }
+
+    /// Appear/disappear with the scroll position. Ticking (rather than a
+    /// callback) keeps this in step with the many places that engage follow.
+    protected override void onTick(double deltaSeconds)
+    {
+        const shouldShow = _scroll !is null && _scroll.awayFromBottom();
+        if (shouldShow == _shown) return;
+        _shown = shouldShow;
+        if (!_shown) _hover = false;
+        invalidate();
+    }
+
+    /// The overlay takes its bounds from the layout pass and never contributes
+    /// an intrinsic size.
+    protected override Size onMeasure(Size available)
+    {
+        return available;
+    }
+
+    private Rect computePillRect()
+    {
+        const width = minInt(pillWidth, maxInt(40, bounds().width - 16));
+        const x = maxInt(8, (bounds().width - width) / 2);
+        const y = maxInt(8, bounds().height - pillHeight - bottomMargin);
+        return Rect(x, y, width, pillHeight);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        _shown = _scroll !is null && _scroll.awayFromBottom();
+        _pillRect = computePillRect();
+        if (!_shown) return;
+        const rect = _pillRect;
+        canvas.drawRoundedRect(rect, rect.height / 2,
+            _hover ? opencodeAccent : opencodeElevated,
+            _hover ? opencodeAccent : opencodeBorder, 1);
+        canvas.drawTextInRect(rect, toUTF32("↓  Jump to latest"),
+            _hover ? Color.rgb(255, 255, 255) : opencodeText, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (!_shown || event.button != MouseButton.left ||
+            !_pillRect.contains(event.position)) return false;
+        if (_scroll !is null) _scroll.resumeFollow();
+        _shown = false;
+        _hover = false;
+        invalidate();
+        return true;
+    }
+
+    protected override void onMouseEnter()
+    {
+        if (!_shown || _hover) return;
+        _hover = true;
+        setCursor(CursorKind.hand);
+        invalidate();
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (!_hover) return;
+        _hover = false;
+        setCursor(CursorKind.arrow);
+        invalidate();
+    }
+
+    /// Pointer-transparent outside the pill so the transcript underneath keeps
+    /// receiving clicks, hovers and wheel scrolling.
+    override bool hoverTransparentAt(Point localPoint) const
+        @safe pure nothrow @nogc
+    {
+        return !_shown || !_pillRect.contains(localPoint);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5349,6 +5547,7 @@ public final class OpenCodeRoot : VBox
     private VBox _messageColumn;
     private IntroOverlay _introOverlay;
     private DetachedPlanPanel _planPanel;
+    private FollowPill _followPill;
     private ChatInput _input;
     private ChatSendButton _sendButton;
     // Conversation whose queued message is waiting for the stopped request to
@@ -6495,6 +6694,11 @@ public final class OpenCodeRoot : VBox
         _planPanel.layoutHints().overlayFillParent = true;
         _planPanel.layoutHints().allowOverflow = true;
         _planPanel.setVisible(false);
+
+        // Jump-to-latest pill: the centered way back to automatic scrolling
+        // after the reader has scrolled up to inspect something. Added last so
+        // it paints above the transcript and the plan card.
+        _followPill = _messagesScroll.add(new FollowPill(_messagesScroll));
 
         _input = new ChatInput();
         _input.setId("oc-input");
@@ -7981,8 +8185,14 @@ public final class OpenCodeRoot : VBox
             bubble.setToolArgs(message.toolArgs);
         if (message.role == "tool")
         {
+            // An editing row always renders a diff: when a restored message lost
+            // its stored diff, derive it from the tool arguments so the row
+            // still reads as the change it made.
+            const diffText = message.toolDiff.length > 0
+                ? message.toolDiff
+                : previewToolDiffText(message.toolName, message.toolArgs);
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
-                message.toolDiff);
+                diffText);
             bubble.setToolElapsed(message.toolElapsedMs);
             // Name the file or folder this row touched, resolved to an absolute
             // path, so a collapsed row can reveal exactly where the work
@@ -16203,6 +16413,41 @@ public final class OpenCodeRoot : VBox
     public bool followForTesting()
     {
         return _messagesScroll.follow;
+    }
+
+    /// Test-only: scroll the transcript away from the bottom, as a wheel scroll
+    /// would, so the jump-to-latest pill's behaviour can be exercised.
+    public void scrollTranscriptUpForTesting(int pixels)
+    {
+        _messagesScroll.scrollUpForTesting(pixels);
+        _messagesScroll.invalidate();
+    }
+
+    /// Test-only: whether the jump-to-latest pill is offered right now.
+    public bool followPillShownForTesting()
+    {
+        return _followPill !is null && _followPill.shownForTesting();
+    }
+
+    /// Test-only: the jump-to-latest pill's rect within the transcript viewport
+    /// (Rect.init when the pill is not offered).
+    public Rect followPillBoundsForTesting()
+    {
+        return _followPill is null
+            ? Rect.init : _followPill.pillBoundsForTesting();
+    }
+
+    /// Test-only: click the jump-to-latest pill as a pointer press would.
+    public void clickFollowPillForTesting()
+    {
+        if (_followPill is null) return;
+        const rect = _followPill.pillBoundsForTesting();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        Event event;
+        event.button = MouseButton.left;
+        event.position = Point(rect.x + rect.width / 2,
+            rect.y + rect.height / 2);
+        _followPill.onMouseDown(event);
     }
 
     /// Test-only: whether the last assistant bubble that shows a thinking block
