@@ -12614,11 +12614,56 @@ public final class OpenCodeRoot : VBox
         root["sessions"] = list;
         root["current"] = _current;
         const path = buildPath(opencodeStateDirectory(), "sessions.json");
-        try writeFileAtomically(path, root.toString());
+        try
+        {
+            writeFileAtomically(path, root.toString());
+            // Record the journal state this snapshot already folded, so the
+            // next start reads only the bytes appended since - not the whole
+            // journal. Written only after the snapshot is safely in place.
+            if (_runtime !is null)
+                writeFoldedMarker(opencodeStateDirectory(),
+                    _runtime.latestSequence(), _runtime.journalSize());
+        }
         catch (Exception error)
         {
             logError("persist sessions failed: " ~ error.msg);
         }
+    }
+
+    /// Read the snapshot checkpoint: the journal sequence folded into the
+    /// snapshot and the journal byte size at that moment. Returns false when
+    /// there is none, which makes startup replay the whole journal.
+    private static bool readFoldedMarker(string dir, out ulong sequence,
+        out ulong offset)
+    {
+        import std.algorithm : splitter;
+        import std.conv : to;
+        import std.file : exists, readText;
+        import std.path : buildPath;
+        try
+        {
+            const path = buildPath(dir, "journal.folded");
+            if (!exists(path)) return false;
+            auto fields = readText(path).splitter();
+            if (fields.empty) return false;
+            sequence = to!ulong(fields.front);
+            fields.popFront();
+            offset = fields.empty ? 0 : to!ulong(fields.front);
+            return true;
+        }
+        catch (Exception)
+            return false;
+    }
+
+    private static void writeFoldedMarker(string dir, ulong sequence,
+        ulong offset)
+    {
+        import std.conv : to;
+        import std.file : write;
+        import std.path : buildPath;
+        try write(buildPath(dir, "journal.folded"),
+            to!string(sequence) ~ " " ~ to!string(offset) ~ "\n");
+        catch (Exception) {}
     }
 
     /**
@@ -12817,7 +12862,10 @@ public final class OpenCodeRoot : VBox
             import std.algorithm.searching : startsWith;
             import std.path : baseName;
             import std.string : indexOf;
-            foreach (entry; dirEntries(dir, SpanMode.breadth))
+            // Snapshots all live in the state directory itself. Recursing into
+            // it (breadth) walked the `changes/` blob store - thousands of
+            // files - on every launch for nothing.
+            foreach (entry; dirEntries(dir, SpanMode.shallow))
             {
                 if (!entry.isFile) continue;
                 const name = baseName(entry.name);
@@ -12856,13 +12904,30 @@ public final class OpenCodeRoot : VBox
                 if (idField.type == JSONType.string) return idField.str;
             return "";
         }
+        const canonicalPath = buildPath(dir, "sessions.json");
+        // The `.bak`/`.tmp` copies are previous generations of the same file.
+        // Once the canonical snapshot has parsed they hold the same history -
+        // tens of MB re-read for no new sessions - so they are only consulted
+        // as a fallback for when it is missing or unreadable.
+        bool canonicalLoaded;
+        static bool isBackupSnapshot(string path)
+        {
+            import std.path : baseName;
+            import std.string : indexOf;
+            const name = baseName(path);
+            return name.indexOf(".bak") >= 0 || name.indexOf(".tmp") >= 0;
+        }
         foreach (candidate; candidates)
         {
             if (!exists(candidate)) continue;
+            if (canonicalLoaded && isBackupSnapshot(candidate)) continue;
             try
             {
                 auto value = parseJSON(readText(candidate));
                 if (value.type != JSONType.object) continue;
+                // Only the live file is authoritative enough to make the
+                // backups redundant; a stale recovery copy is not.
+                if (candidate == canonicalPath) canonicalLoaded = true;
                 auto sessionsField = "sessions" in value.object;
                 const snapshotCount = sessionsField !is null &&
                     sessionsField.type == JSONType.array
@@ -13066,14 +13131,27 @@ public final class OpenCodeRoot : VBox
         // compatibility JSON cache was missing or saved a moment earlier.
         if (_runtime !is null)
         {
-            const events = _runtime.history();
-            foreach (deletedId; deletedAgentRuntimeThreadIds(events))
-                foreach_reverse (index; 0 .. _sessions.length)
-                    if (_sessions[index].id == deletedId)
-                        _sessions = _sessions[0 .. index] ~
-                            _sessions[index + 1 .. $];
-            foreach (session; projectAgentRuntimeEvents(events))
-                mergeJournalSession(session);
+            // The snapshot already folded every event up to the checkpoint
+            // written beside it. Replaying them again was the single biggest
+            // startup cost, and even the unfolded tail must not force a re-scan
+            // of the whole journal: the checkpoint carries the byte offset to
+            // seek to, so only the appended bytes are parsed. With no usable
+            // checkpoint the whole journal is read once.
+            ulong foldedSequence;
+            ulong foldedOffset;
+            const latest = _runtime.latestSequence();
+            if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
+                    foldedOffset) || foldedSequence < latest)
+            {
+                const events = _runtime.eventsFrom(foldedOffset);
+                foreach (deletedId; deletedAgentRuntimeThreadIds(events))
+                    foreach_reverse (index; 0 .. _sessions.length)
+                        if (_sessions[index].id == deletedId)
+                            _sessions = _sessions[0 .. index] ~
+                                _sessions[index + 1 .. $];
+                foreach (session; projectAgentRuntimeEvents(events))
+                    mergeJournalSession(session);
+            }
         }
         // Repair/backfill the message graph for sessions saved before branching
         // existed (or with dangling links), once, after the snapshots have been

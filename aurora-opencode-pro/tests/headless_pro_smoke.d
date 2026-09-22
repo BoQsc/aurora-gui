@@ -12,8 +12,8 @@ import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     setOpencodeStateDirectoryForTesting, siblingMessages;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
-import auroraopencode.markdown : MdComposition, composeMarkdown, paintMarkdown,
-    parseMarkdown;
+import auroraopencode.markdown : BlockType, MdComposition, MdItemKind,
+    composeMarkdown, paintMarkdown, parseMarkdown;
 import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
@@ -203,6 +203,63 @@ private void verifyStrayBracketParsing()
     writeln("Stray bracket does not slice past the document");
 }
 
+/// Regression: a markdown table must parse into a table block and render each
+/// cell with a header background and a grid, and a streamed table must compose
+/// identically to a settled one.
+private void verifyMarkdownTable()
+{
+    import std.math : abs;
+    import auroraopencode.markdown : MarkdownComposer;
+
+    immutable dstring table =
+        "| Step | Result |\n"d ~
+        "|:-----|-------:|\n"d ~
+        "| parse | ok |\n"d ~
+        "| render | ok |\n"d;
+
+    auto blocks = parseMarkdown(table);
+    assert(blocks.length == 1 && blocks[0].type == BlockType.table,
+        "a markdown table did not parse into a table block");
+    assert(blocks[0].tableColumns == 2 && blocks[0].tableCells.length == 6,
+        "table shape was not recorded");
+
+    const width = 520;
+    auto reference = composeMarkdown(blocks, width, false);
+    bool sawGrid;
+    bool sawHeader;
+    int cellTexts;
+    foreach (item; reference.items)
+    {
+        if (item.kind == MdItemKind.tableLine) sawGrid = true;
+        else if (item.kind == MdItemKind.cellBackground) sawHeader = true;
+        else if (item.kind == MdItemKind.text) ++cellTexts;
+    }
+    assert(sawGrid, "the table grid was not composed");
+    assert(sawHeader, "the table header background was not composed");
+    assert(cellTexts >= 6, "table cell text was not composed");
+
+    // A streamed table must compose to exactly the settled composition.
+    MarkdownComposer composer;
+    MdComposition incremental;
+    for (size_t n = 0; n <= table.length; n += 3)
+        composer.compose(incremental, table[0 .. n], width, false);
+    composer.compose(incremental, table, width, false);
+    assert(incremental.items.length == reference.items.length,
+        "incremental table compose produced a different item count");
+    assert(abs(incremental.height - reference.height) < 0.5,
+        "incremental table compose produced a different height");
+    foreach (i; 0 .. reference.items.length)
+    {
+        assert(incremental.items[i].kind == reference.items[i].kind,
+            "incremental table compose reordered items");
+        assert(abs(incremental.items[i].y - reference.items[i].y) < 0.5,
+            "incremental table compose placed items at a different y");
+        assert(abs(incremental.items[i].x - reference.items[i].x) < 0.5,
+            "incremental table compose placed items at a different x");
+    }
+    writeln("Markdown table renders and composes incrementally");
+}
+
 private Widget findById(Widget widget, string requestedId)
 {
     if (widget is null) return null;
@@ -274,6 +331,7 @@ int main(string[] args)
     verifyInlineCodePillGlyphs();
     verifyIncrementalMarkdownCompose();
     verifyStrayBracketParsing();
+    verifyMarkdownTable();
 
     WindowOptions options;
     options.title = "Aurora OpenCode Pro headless";

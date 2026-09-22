@@ -9,6 +9,7 @@ module auroraopencode.runtime;
  * that publish the same thread/turn/item lifecycle.
  */
 
+import std.array : split;
 import std.datetime.systime : Clock;
 import std.file : exists, getSize, mkdirRecurse;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -75,6 +76,11 @@ public struct AgentRuntimeEvent
     string itemId;
     string itemKind;
     string payloadJson = "{}";
+    /// Parsed form of `payloadJson`, filled in when the event is read back from
+    /// the journal so a large payload is parsed once instead of twice (once to
+    /// read the record, again to apply it). `null` for in-memory events, where
+    /// only `payloadJson` is meaningful.
+    JSONValue parsedPayload;
 }
 
 /// The small boundary the UI and engine share. Publishing is deliberately
@@ -84,6 +90,14 @@ public interface AgentRuntime
 {
     bool publish(AgentRuntimeEvent event);
     AgentRuntimeEvent[] history();
+    /// The highest sequence already durable (0 when the journal is empty).
+    ulong latestSequence() const;
+    /// Only the events newer than `afterSequence`, for incremental recovery.
+    AgentRuntimeEvent[] eventsAfter(ulong afterSequence);
+    /// End of the journal in bytes; a snapshot saved at this offset is current.
+    ulong journalSize() const;
+    /// Events written at or after `byteOffset`, for incremental recovery.
+    AgentRuntimeEvent[] eventsFrom(ulong byteOffset);
     string lastError() const;
 }
 
@@ -96,9 +110,37 @@ public final class DurableAgentRuntime : AgentRuntime
     public this(string path)
     {
         _path = path;
-        foreach (event; readAgentRuntimeEvents(path))
-            if (event.sequence >= _nextSequence)
-                _nextSequence = event.sequence + 1;
+        // Resume numbering from the last record only. Reading and parsing the
+        // whole journal here (tens of MB after a while) just to find one
+        // integer is seconds of startup work for a value on the final line.
+        _nextSequence = readLatestSequence(path) + 1;
+    }
+
+    /// The highest sequence already on disk (0 when the journal is empty).
+    /// Bounded by a tail read instead of a full parse.
+    public ulong latestSequence() const
+    {
+        return readLatestSequence(_path);
+    }
+
+    /// Events with a sequence greater than `afterSequence`, in file order.
+    public AgentRuntimeEvent[] eventsAfter(ulong afterSequence)
+    {
+        return readAgentRuntimeEventsAfter(_path, afterSequence);
+    }
+
+    /// End of the journal in bytes. A snapshot saved after folding the journal
+    /// up to this size only needs the bytes written afterwards on the next
+    /// start, so the whole journal is never re-read.
+    public ulong journalSize() const
+    {
+        return exists(_path) ? cast(ulong) getSize(_path) : 0;
+    }
+
+    /// Events written at or after `byteOffset`, in file order.
+    public AgentRuntimeEvent[] eventsFrom(ulong byteOffset)
+    {
+        return readAgentRuntimeEventsFrom(_path, byteOffset);
     }
 
     public bool publish(AgentRuntimeEvent event)
@@ -196,7 +238,12 @@ private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event)
     if (auto field = "itemKind" in root.object)
         if (field.type == JSONType.string) event.itemKind = field.str;
     if (auto field = "payload" in root.object)
+    {
+        // Keep the JSON text (the public field) and remember the parsed form,
+        // so applying the event does not parse the same payload again.
         event.payloadJson = field.toString();
+        event.parsedPayload = *field;
+    }
     return true;
 }
 
@@ -225,6 +272,139 @@ public AgentRuntimeEvent[] readAgentRuntimeEvents(string path)
     catch (Exception)
     {
         // Startup must remain usable even when the optional journal is damaged.
+    }
+    return result;
+}
+
+/**
+ * The highest sequence number in the journal, read from the tail only.
+ *
+ * The runtime only needs this to resume numbering, and sequences are appended
+ * in order, so the last complete line carries the maximum. Reading the whole
+ * file for it is pure waste on a journal that can reach tens of megabytes. A
+ * tail that holds no complete record (one oversized line, or a torn file)
+ * falls back to the full read so the value is still correct.
+ */
+public ulong readLatestSequence(string path)
+{
+    if (!exists(path)) return 0;
+    try
+    {
+        const size_t size = getSize(path);
+        if (size == 0) return 0;
+        enum size_t tailBytes = 256 * 1024;
+        const size_t start = size > tailBytes ? size - tailBytes : 0;
+        auto file = File(path, "rb");
+        file.seek(cast(long) start);
+        auto buffer = new ubyte[cast(size_t)(size - start)];
+        const filled = file.rawRead(buffer);
+        file.close();
+        const chunk = cast(string) filled;
+        auto lines = chunk.split('\n');
+        // When the tail starts mid-file its first element is a partial line.
+        const size_t firstWhole = start > 0 ? 1 : 0;
+        foreach_reverse (index; firstWhole .. lines.length)
+        {
+            if (lines[index].length == 0) continue;
+            try
+            {
+                auto value = parseJSON(lines[index]);
+                if (value.type != JSONType.object) continue;
+                if (auto field = "sequence" in value.object)
+                    if (field.type == JSONType.integer && field.integer >= 0)
+                        return cast(ulong) field.integer;
+            }
+            catch (Exception)
+            {
+                // Torn final line: step back to the previous complete record.
+            }
+        }
+        const events = readAgentRuntimeEvents(path);
+        return events.length == 0 ? 0 : events[$ - 1].sequence;
+    }
+    catch (Exception)
+        return 0;
+}
+
+/**
+ * Read only the events newer than `afterSequence`.
+ *
+ * The startup merge replays the journal over the JSON snapshot. When the
+ * snapshot is current that replay is empty work, and even when it is not, the
+ * already-folded prefix does not need to be parsed again. Passing 0 keeps the
+ * original "read everything" behaviour.
+ */
+public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
+    ulong afterSequence)
+{
+    if (afterSequence == 0) return readAgentRuntimeEvents(path);
+    AgentRuntimeEvent[] result;
+    if (!exists(path)) return result;
+    try
+    {
+        auto file = File(path, "r");
+        foreach (line; file.byLineCopy())
+        {
+            try
+            {
+                AgentRuntimeEvent event;
+                if (eventFromJson(parseJSON(line), event) &&
+                    event.sequence > afterSequence)
+                    result ~= event;
+            }
+            catch (Exception)
+            {
+                // One torn record must not hide the records after it.
+            }
+        }
+    }
+    catch (Exception)
+    {
+        // Recovery must stay usable when the optional journal is damaged.
+    }
+    return result;
+}
+
+/**
+ * Read the events written at or after `byteOffset`.
+ *
+ * This is the incremental-recovery workhorse: a snapshot records the journal
+ * size it had already folded, so the next start seeks straight to that offset
+ * and parses only the bytes appended since. An offset past the end (the
+ * journal was replaced or truncated) falls back to reading the whole file so
+ * no events are missed.
+ */
+public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
+    ulong byteOffset)
+{
+    AgentRuntimeEvent[] result;
+    if (!exists(path)) return result;
+    try
+    {
+        const size_t size = getSize(path);
+        size_t start = byteOffset <= size ? cast(size_t) byteOffset : 0;
+        auto file = File(path, "rb");
+        file.seek(cast(long) start);
+        auto buffer = new ubyte[cast(size_t)(size - start)];
+        const filled = file.rawRead(buffer);
+        file.close();
+        foreach (line; (cast(string) filled).split('\n'))
+        {
+            if (line.length == 0) continue;
+            try
+            {
+                AgentRuntimeEvent event;
+                if (eventFromJson(parseJSON(line), event)) result ~= event;
+            }
+            catch (Exception)
+            {
+                // One torn record must not hide the records after it.
+            }
+        }
+    }
+    catch (Exception)
+    {
+        // Recovery must stay usable when the optional journal is damaged.
     }
     return result;
 }
@@ -266,9 +446,10 @@ public ChatSession[] projectAgentRuntimeEvents(
             positions[event.threadId] = index;
         }
         auto session = &sessions[index];
-        JSONValue payload;
-        try payload = parseJSON(event.payloadJson);
-        catch (Exception) payload = JSONValue.init;
+        JSONValue payload = event.parsedPayload;
+        if (payload.type != JSONType.object)
+            try payload = parseJSON(event.payloadJson);
+            catch (Exception) payload = JSONValue.init;
 
         if (event.kind == AgentEventKind.threadStarted ||
             event.kind == AgentEventKind.threadUpdated)

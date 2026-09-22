@@ -35,7 +35,8 @@ enum BlockType : ubyte
     bulletList,
     orderedList,
     blockquote,
-    rule
+    rule,
+    table
 }
 
 struct MarkdownBlock
@@ -57,6 +58,12 @@ struct MarkdownBlock
     // reshaped when only the surrounding panel width changes.
     TextLayout[] codeLineLayouts;
     int codeLayoutPixelSize;
+    // GitHub-flavoured table: row-major cells (row 0 is the header) plus the
+    // per-column alignment taken from the delimiter row.
+    InlineRun[][] tableCells;
+    InlineRun[][] tableCellPieces;
+    int tableColumns;
+    ubyte[] tableAlign;
 }
 
 enum MdItemKind : ubyte
@@ -64,7 +71,9 @@ enum MdItemKind : ubyte
     text,
     panel,
     rule,
-    quoteBar
+    quoteBar,
+    cellBackground,
+    tableLine
 }
 
 struct MdItem
@@ -110,6 +119,8 @@ private immutable Color mdPanelBg = Color.fromHex(0x1a1a20);
 private immutable Color mdLink = Color.fromHex(0x8b7cf6);
 private immutable Color mdQuote = Color.fromHex(0x9a9aa5);
 private immutable Color mdRule = Color.fromHex(0x33333d);
+private immutable Color mdTableBorder = Color.fromHex(0x3a3a45);
+private immutable Color mdTableHeaderBg = Color.fromHex(0x23232b);
 
 private immutable double boldLetterSpacing = 1.0;
 
@@ -517,6 +528,111 @@ private InlineRun[] parseInline(dstring text)
     return parseRuns(text, 0, text.length);
 }
 
+// Table column alignment, taken from the `:` markers in the delimiter row.
+private enum TableAlign : ubyte { left, center, right }
+
+/// Parse a GFM table delimiter row (`| --- | :--: |`), returning one alignment
+/// per column. Fails on anything that is not purely colons and dashes so a
+/// paragraph that merely contains a pipe is not mistaken for a table.
+private bool parseTableDelimiter(dstring line, out ubyte[] aligns)
+{
+    auto t = trim(line);
+    if (t.length == 0) return false;
+    bool sawDash;
+    foreach (ch; t)
+        if (ch == '-')
+        {
+            sawDash = true;
+            break;
+        }
+    if (!sawDash) return false;
+    if (t[0] == '|') t = t[1 .. $];
+    if (t.length > 0 && t[$ - 1] == '|') t = t[0 .. $ - 1];
+    if (t.length == 0) return false;
+
+    ubyte[] result;
+    size_t i = 0;
+    while (true)
+    {
+        size_t j = i;
+        while (j < t.length && t[j] != '|') ++j;
+        auto cell = trim(t[i .. j]);
+        size_t k = 0;
+        bool leftColon;
+        bool rightColon;
+        if (k < cell.length && cell[k] == ':')
+        {
+            leftColon = true;
+            ++k;
+        }
+        const dashStart = k;
+        while (k < cell.length && cell[k] == '-') ++k;
+        if (k == dashStart) return false;
+        if (k < cell.length && cell[k] == ':')
+        {
+            rightColon = true;
+            ++k;
+        }
+        if (k != cell.length) return false;
+        if (leftColon && rightColon) result ~= cast(ubyte) TableAlign.center;
+        else if (rightColon) result ~= cast(ubyte) TableAlign.right;
+        else result ~= cast(ubyte) TableAlign.left;
+        if (j >= t.length) break;
+        i = j + 1;
+        if (i >= t.length) break;
+    }
+    if (result.length == 0) return false;
+    aligns = result;
+    return true;
+}
+
+/// Split a table row into its cells. Escaped pipes (`\|`) stay in the cell text
+/// so `parseInline` can unescape them, matching how the inline pass handles the
+/// rest of the document.
+private InlineRun[][] splitTableRow(dstring line)
+{
+    auto t = trim(line);
+    if (t.length > 0 && t[0] == '|') t = t[1 .. $];
+    if (t.length > 0 && t[$ - 1] == '|') t = t[0 .. $ - 1];
+
+    InlineRun[][] cells;
+    dstring current;
+    size_t i = 0;
+    while (i < t.length)
+    {
+        if (t[i] == '\\' && i + 1 < t.length)
+        {
+            current ~= t[i];
+            current ~= t[i + 1];
+            i += 2;
+            continue;
+        }
+        if (t[i] == '|')
+        {
+            cells ~= parseInline(trim(current));
+            current = "";
+            ++i;
+            continue;
+        }
+        current ~= t[i];
+        ++i;
+    }
+    cells ~= parseInline(trim(current));
+    return cells;
+}
+
+// Header cells are rendered emphasised, matching common table styling.
+private InlineRun[] boldRuns(InlineRun[] runs)
+{
+    InlineRun[] result = runs.dup;
+    foreach (ref run; result)
+    {
+        if (run.style == InlineStyle.text) run.style = InlineStyle.bold;
+        else if (run.style == InlineStyle.italic) run.style = InlineStyle.boldItalic;
+    }
+    return result;
+}
+
 MarkdownBlock[] parseMarkdown(dstring text)
 {
     MarkdownBlock[] blocks;
@@ -593,6 +709,51 @@ MarkdownBlock[] parseMarkdown(dstring text)
             }
             blocks ~= block;
             continue;
+        }
+
+        // GitHub-flavoured table: a header row followed by a delimiter row and
+        // zero or more body rows. The header must contain a pipe so a bare
+        // rule/setext line is never swallowed as a one-column table.
+        if (li + 1 < lines.length)
+        {
+            auto header = trim(lines[li]);
+            if (indexOf(header, '|') >= 0)
+            {
+                ubyte[] aligns;
+                if (parseTableDelimiter(lines[li + 1], aligns))
+                {
+                    auto headerCells = splitTableRow(header);
+                    if (headerCells.length == aligns.length)
+                    {
+                        flushPara();
+                        flushList();
+                        flushQuote();
+                        MarkdownBlock block;
+                        block.type = BlockType.table;
+                        block.tableColumns = cast(int) aligns.length;
+                        block.tableAlign = aligns;
+                        block.tableCells = headerCells;
+                        foreach (ref cell; block.tableCells)
+                            cell = boldRuns(cell);
+                        size_t row = li + 2;
+                        for (; row < lines.length; ++row)
+                        {
+                            auto rowText = trim(lines[row]);
+                            if (rowText.length == 0) break;
+                            if (indexOf(rowText, '|') < 0) break;
+                            auto cells = splitTableRow(rowText);
+                            if (cells.length > cast(size_t) block.tableColumns)
+                                cells = cells[0 .. cast(size_t) block.tableColumns];
+                            while (cells.length < cast(size_t) block.tableColumns)
+                                cells ~= InlineRun[].init;
+                            block.tableCells ~= cells;
+                        }
+                        blocks ~= block;
+                        li = row - 1;
+                        continue;
+                    }
+                }
+            }
         }
 
         if (t[0] == '#')
@@ -692,6 +853,21 @@ private TextLayout shapeOne(dstring text, int pixelSize, bool mono, bool bold)
     // flow placement instead of invoking the Unicode shaper again for every
     // width visited by the window border.
     return fonts.textEngine.layoutCached(text, options);
+}
+
+// Natural (unwrapped) width of a run sequence, used to size table columns.
+private double runsWidth(InlineRun[] runs, int pixelSize)
+{
+    double width = 0;
+    foreach (run; runs)
+    {
+        if (run.text.length == 0) continue;
+        auto layout = shapeOne(run.text, pixelSize, run.style == InlineStyle.code,
+            run.style == InlineStyle.bold || run.style == InlineStyle.boldItalic);
+        if (layout is null || layout.lines.length == 0) continue;
+        width += layout.lines[0].width;
+    }
+    return width;
 }
 
 private struct PendingText
@@ -907,6 +1083,9 @@ private void prepareFlowPieces(ref MarkdownBlock block)
     block.itemFlowPieces.length = block.items.length;
     foreach (index, item; block.items)
         block.itemFlowPieces[index] = splitFlowRuns(item);
+    block.tableCellPieces.length = block.tableCells.length;
+    foreach (index, cell; block.tableCells)
+        block.tableCellPieces[index] = splitFlowRuns(cell);
     block.flowPiecesReady = true;
 }
 
@@ -1087,6 +1266,147 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 else y += blockGap(bodyPx);
                 break;
             }
+            case BlockType.table:
+            {
+                const cellPad = 8.0;
+                const cellPadV = 4.0;
+                const minColumn = 28.0;
+                const cols = maxInt(1, block.tableColumns);
+                const rows = cast(int) (block.tableCells.length /
+                    cast(size_t) cols);
+                if (rows == 0) break;
+
+                // Size each column to its widest cell, then scale the set down
+                // proportionally (never past a minimum) so the table fits the
+                // panel width instead of overflowing it.
+                double[] columnWidth;
+                columnWidth.length = cols;
+                foreach (column; 0 .. cols)
+                {
+                    double natural = 0;
+                    foreach (row; 0 .. rows)
+                        natural = max(natural, runsWidth(block.tableCellPieces[
+                            row * cols + column], bodyPx));
+                    columnWidth[column] = natural + 2 * cellPad;
+                }
+                double totalWidth = 0;
+                foreach (w; columnWidth) totalWidth += w;
+                if (totalWidth > lineWidth && totalWidth > 0)
+                {
+                    const naturalContent = totalWidth - 2 * cellPad * cols;
+                    const budget = max(naturalContent,
+                        lineWidth - 2 * cellPad * cols);
+                    if (naturalContent > 0)
+                        foreach (ref w; columnWidth)
+                        {
+                            const inner = w - 2 * cellPad;
+                            w = max(minColumn,
+                                inner * budget / naturalContent) + 2 * cellPad;
+                        }
+                    double scaled = 0;
+                    foreach (w; columnWidth) scaled += w;
+                    if (scaled > lineWidth && scaled > 0)
+                        foreach (ref w; columnWidth) w *= lineWidth / scaled;
+                }
+
+                double[] columnX;
+                columnX.length = cols;
+                double acc = 0;
+                foreach (column; 0 .. cols)
+                {
+                    columnX[column] = acc;
+                    acc += columnWidth[column];
+                }
+                const tableWidth = acc;
+
+                const tableTop = y;
+                double[] rowTops;
+                foreach (row; 0 .. rows)
+                {
+                    rowTops ~= y;
+                    const header = row == 0;
+                    const textColor = header ? mdHeading : mdText;
+                    double rowHeight = 0;
+                    foreach (column; 0 .. cols)
+                    {
+                        auto cell = block.tableCellPieces[row * cols + column];
+                        if (cell.length == 0) continue;
+                        const contentWidth = max(1.0,
+                            columnWidth[column] - 2 * cellPad);
+                        double offset = 0;
+                        const natural = runsWidth(cell, bodyPx);
+                        if (natural < contentWidth)
+                        {
+                            const alignment = column < cast(int)
+                                block.tableAlign.length
+                                ? block.tableAlign[column] : ubyte(0);
+                            if (alignment == cast(ubyte) TableAlign.center)
+                                offset = (contentWidth - natural) / 2;
+                            else if (alignment == cast(ubyte) TableAlign.right)
+                                offset = contentWidth - natural;
+                        }
+                        const cellHeight = composeRuns(c, cell,
+                            cast(int) contentWidth, y + cellPadV, textColor,
+                            bodyPx, columnX[column] + cellPad + offset);
+                        rowHeight = max(rowHeight, cellHeight);
+                    }
+                    if (rowHeight <= 0) rowHeight = bodyPx;
+                    const recordHeight = rowHeight + 2 * cellPadV;
+                    if (header)
+                    {
+                        MdItem background;
+                        background.kind = MdItemKind.cellBackground;
+                        background.x = 0;
+                        background.y = y;
+                        background.w = tableWidth;
+                        background.h = recordHeight;
+                        background.color = mdTableHeaderBg;
+                        c.items ~= background;
+                    }
+                    y += recordHeight;
+                }
+                rowTops ~= y;
+                const tableHeight = y - tableTop;
+
+                // Grid: a horizontal rule at every row boundary, a vertical one
+                // at every column boundary.
+                foreach (row; 0 .. rows + 1)
+                {
+                    MdItem line;
+                    line.kind = MdItemKind.tableLine;
+                    line.x = 0;
+                    line.y = rowTops[row] - (row == 0 ? 0 : 1);
+                    line.w = tableWidth;
+                    line.h = 1;
+                    line.color = mdTableBorder;
+                    c.items ~= line;
+                }
+                double boundary = 0;
+                foreach (column; 0 .. cols)
+                {
+                    MdItem line;
+                    line.kind = MdItemKind.tableLine;
+                    line.x = boundary;
+                    line.y = tableTop;
+                    line.w = 1;
+                    line.h = tableHeight;
+                    line.color = mdTableBorder;
+                    c.items ~= line;
+                    boundary += columnWidth[column];
+                }
+                MdItem rightEdge;
+                rightEdge.kind = MdItemKind.tableLine;
+                rightEdge.x = tableWidth - 1;
+                rightEdge.y = tableTop;
+                rightEdge.w = 1;
+                rightEdge.h = tableHeight;
+                rightEdge.color = mdTableBorder;
+                c.items ~= rightEdge;
+
+                if (isLast) trailingGap = blockGap(bodyPx);
+                else y += blockGap(bodyPx);
+                break;
+            }
             case BlockType.blockquote:
             {
                 const indent = 14;
@@ -1250,6 +1570,12 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
                     cast(int)(dy + item.y), cast(int) item.w,
                     cast(int) item.h), item.color);
                 break;
+            case MdItemKind.cellBackground:
+            case MdItemKind.tableLine:
+                canvas.fillRect(Rect(cast(int)(dx + item.x),
+                    cast(int)(dy + item.y), cast(int) item.w,
+                    cast(int) item.h), item.color);
+                break;
             default:
                 break;
         }
@@ -1323,4 +1649,39 @@ unittest
     assert(blocks[0].itemDepths.length == 2, "missing per-item depth");
     assert(blocks[0].itemDepths[0] == 0 && blocks[0].itemDepths[1] == 1,
         "nested bullet depth was not recorded");
+}
+
+unittest
+{
+    // A GFM table parses into a table block with its column alignment.
+    auto blocks = parseMarkdown(
+        "| Name | Value |\n|:-----|------:|\n| a | 1 |\n| b | 2 |\n"d);
+    assert(blocks.length == 1 && blocks[0].type == BlockType.table,
+        "a GFM table did not parse into a table block");
+    assert(blocks[0].tableColumns == 2, "table column count was not recorded");
+    assert(blocks[0].tableCells.length == 6,
+        "table header and body rows were not collected");
+    assert(blocks[0].tableAlign.length == 2 &&
+        blocks[0].tableAlign[0] == cast(ubyte) TableAlign.left &&
+        blocks[0].tableAlign[1] == cast(ubyte) TableAlign.right,
+        "column alignment markers were not parsed");
+
+    int grid;
+    int headers;
+    int texts;
+    auto composition = composeMarkdown(blocks, 500, false);
+    foreach (item; composition.items)
+    {
+        if (item.kind == MdItemKind.tableLine) ++grid;
+        else if (item.kind == MdItemKind.cellBackground) ++headers;
+        else if (item.kind == MdItemKind.text) ++texts;
+    }
+    assert(headers == 1, "the table header lost its background");
+    assert(grid >= 3, "the table grid was not composed");
+    assert(texts >= 6, "table cell text was not composed");
+
+    // A lone pipe row without a delimiter row stays a paragraph.
+    auto plain = parseMarkdown("| just | text |\n"d);
+    assert(plain.length == 1 && plain[0].type == BlockType.paragraph,
+        "a lone pipe row was misparsed as a table");
 }
