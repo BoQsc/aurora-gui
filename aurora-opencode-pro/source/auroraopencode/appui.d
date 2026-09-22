@@ -12199,9 +12199,13 @@ public final class OpenCodeRoot : VBox
         tooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
-    /// The absolute path(s) of the file or folder a settled tool message names,
-    /// one per line ("" when it names none). Cached per message id: a long
-    /// transcript rebuilds often and each resolution probes the filesystem.
+    /// The absolute path(s) of the file or folder a settled tool row names, one
+    /// per line ("" when the row names no file or folder, which suppresses the
+    /// tooltip entirely). Only the tool's own file/folder arguments count: a
+    /// Read/Write/Edit row names exactly one file and a List/Glob row names the
+    /// folder it ran in, while a Shell, Plan or web row names nothing and must
+    /// not inherit paths that merely appear in its output. Cached per message
+    /// id: a long transcript rebuilds often and each resolution probes the disk.
     private string toolPathTooltipText(ref const ChatMessage message)
     {
         if (message.id.length > 0)
@@ -12210,12 +12214,6 @@ public final class OpenCodeRoot : VBox
                 return *cached;
         }
         const workspace = workspaceForSession(_current);
-        // The tool's own arguments win: a Read/Write/Edit row names exactly one
-        // file and a List/Glob row names the folder it ran in, so the tooltip is
-        // normally a single absolute path. Paths scraped from the tool's output
-        // (a directory listing, grep matches) are only a fallback for rows that
-        // name nothing themselves, and are capped so one row cannot turn the
-        // tooltip into a wall of unrelated files.
         string[] paths;
         foreach (candidate; toolArgumentPaths(message.toolName, message.toolArgs))
         {
@@ -12223,12 +12221,10 @@ public final class OpenCodeRoot : VBox
             if (resolved.length > 0 && toolPathExists(resolved))
                 appendUniquePath(paths, resolved);
         }
-        if (paths.length == 0)
-            foreach (candidate; toolFilePaths(message.toolName, message.toolArgs,
-                message.content, workspace))
-                appendUniquePath(paths, candidate);
         auto builder = appender!string();
-        enum maxRows = 4;
+        // A patch row legitimately names several files; the cap keeps an
+        // unusually large patch from turning the tooltip into a wall of text.
+        enum maxRows = 8;
         foreach (index, path; paths)
         {
             if (index >= maxRows)
