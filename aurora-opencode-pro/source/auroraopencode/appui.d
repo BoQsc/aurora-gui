@@ -12928,6 +12928,23 @@ public final class OpenCodeRoot : VBox
         tooltip.setBounds(Rect(x, y, measured.width, measured.height));
     }
 
+    /// The one path a tool row's "Open containing folder" action should use: the
+    /// row's own file/folder argument when it names one, otherwise the first path
+    /// its output mentions. The action is deliberately a single click, so it must
+    /// never need a choice between candidate paths.
+    private string primaryToolPath(ref const ChatMessage message, string workspace)
+    {
+        foreach (candidate; toolArgumentPaths(message.toolName, message.toolArgs))
+        {
+            const resolved = resolveDisplayedPath(candidate, workspace);
+            if (resolved.length > 0 && toolPathExists(resolved)) return resolved;
+        }
+        foreach (candidate; toolFilePaths(message.toolName, message.toolArgs,
+            message.content, workspace))
+            return candidate;
+        return "";
+    }
+
     /// The absolute path(s) of the file or folder a settled tool row names, one
     /// per line ("" when the row names no file or folder, which suppresses the
     /// tooltip entirely). Only the tool's own file/folder arguments count: a
@@ -13317,10 +13334,11 @@ public final class OpenCodeRoot : VBox
                 });
         }
         const workspace = workspaceForSession(_current);
-        string[] filePaths;
-        if (message.role == "tool")
-            filePaths = toolFilePaths(message.toolName,
-                message.toolArgs, message.content, workspace);
+        // Exactly one "Open containing folder", and it goes straight there: it
+        // reveals the folder of the row's own file, or of the local link that was
+        // right-clicked. Turning it into a submenu of every path the row happened
+        // to mention made the reader pick between files they never asked about.
+        string folderTarget;
         if (linkTarget.length > 0 &&
             !linkTarget.toLower().startsWith("http://") &&
             !linkTarget.toLower().startsWith("https://"))
@@ -13331,26 +13349,14 @@ public final class OpenCodeRoot : VBox
             const resolved = resolveDisplayedPath(localTarget, workspace);
             const parent = directoryOf(resolved);
             if (exists(resolved) || (parent.length > 0 && exists(parent)))
-                appendUniquePath(filePaths, resolved);
+                folderTarget = resolved;
         }
-        if (filePaths.length == 1)
+        if (folderTarget.length == 0 && message.role == "tool")
+            folderTarget = primaryToolPath(message, workspace);
+        if (folderTarget.length > 0)
             items ~= ContextMenuItem.command("Open containing folder",
                 IconKind.folder,
-                openFileLocationAction(filePaths[0], workspace));
-        else if (filePaths.length > 1)
-        {
-            ContextMenuItem[] children;
-            foreach (filePath; filePaths)
-            {
-                auto label = basenameOf(filePath);
-                if (label.length == 0) label = filePath;
-                children ~= ContextMenuItem.command(label,
-                    IconKind.folder,
-                    openFileLocationAction(filePath, workspace));
-            }
-            items ~= ContextMenuItem.submenuItem(
-                "Open containing folder", IconKind.folder, children);
-        }
+                openFileLocationAction(folderTarget, workspace));
         showContextMenu(_messageColumn, globalPosition, items);
     }
 
