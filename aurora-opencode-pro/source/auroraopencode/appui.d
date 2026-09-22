@@ -5393,6 +5393,13 @@ public final class SessionListView : ListView
     // hairline under that group so the pinned section reads as separate from
     // the rest of the sidebar.
     private int _pinnedRows;
+    // Extra vertical room opened between the pinned group and the rest so the
+    // divider has breathing space above and below it instead of sitting in the
+    // single-pixel gap between rows.
+    private enum int pinnedDividerGap = 16;
+    // Top padding above the pinned group so it does not sit flush against the
+    // search field / header.
+    private enum int pinnedTopPad = 12;
 
     this()
     {
@@ -5442,6 +5449,49 @@ public final class SessionListView : ListView
         if (_pinnedRows == next) return;
         _pinnedRows = next;
         invalidate();
+    }
+
+    // True when the pinned/unpinned divider is showing: something pinned and
+    // something unpinned. When false the list lays out as plain rows.
+    private bool pinnedDividerVisible() const @safe pure nothrow @nogc
+    {
+        return _pinnedRows > 0 && _pinnedRows < cast(int) items().length;
+    }
+
+    // Top padding above the pinned group, applied only when something is
+    // pinned; an unpinned list starts flush at the top as before.
+    private int listTopPad() const @safe pure nothrow @nogc
+    {
+        return _pinnedRows > 0 ? pinnedTopPad : 0;
+    }
+
+    // The list opens `pinnedDividerGap` pixels between the pinned group and the
+    // rest, so the content is taller than rows * rowHeight and hit-testing has
+    // to account for the gap. Both overrides fall back to the base behavior
+    // when no divider shows.
+    override int contentHeight() const @safe pure nothrow @nogc
+    {
+        const base = super.contentHeight();
+        return base + listTopPad() +
+            (pinnedDividerVisible() ? pinnedDividerGap : 0);
+    }
+
+    override int indexAt(Point position) const @safe pure nothrow @nogc
+    {
+        const scrolled = position.y + scrollOffset() - listTopPad();
+        if (scrolled < 0) return -1;
+        const count = cast(int) items().length;
+        const rh = rowHeight();
+        if (!pinnedDividerVisible())
+        {
+            const row = scrolled / rh;
+            return row < count ? row : -1;
+        }
+        const boundary = _pinnedRows * rh;
+        if (scrolled < boundary) return scrolled / rh;
+        if (scrolled < boundary + pinnedDividerGap) return -1;
+        const row = (scrolled - pinnedDividerGap) / rh;
+        return row < count ? row : -1;
     }
 
     /// The row index the pinned/unpinned divider is drawn above, or -1 when no
@@ -5525,13 +5575,18 @@ public final class SessionListView : ListView
         const offset = scrollOffset();
         const selected = selectedIndex();
         const count = cast(int) items().length;
-        const first = offset / rowHeight;
-        const last = clampInt((offset + height) / rowHeight + 1, 0, count);
+        // The pinned group gets top padding, and the divider opens extra room
+        // between it and the rest, so rows shift down by those amounts.
+        const topPad = listTopPad();
+        const gap = pinnedDividerVisible() ? pinnedDividerGap : 0;
+        const first = maxInt(0, offset / rowHeight - 2);
+        const last = clampInt((offset + height) / rowHeight + 3, 0, count);
 
         foreach (index; first .. last)
         {
             const item = items()[cast(size_t) index];
-            const y = index * rowHeight - offset;
+            const y = topPad + index * rowHeight - offset +
+                (index >= _pinnedRows ? gap : 0);
             const row = Rect(2, y + 1, maxInt(0, width - 4), rowHeight - 2);
 
             if (index == selected)
@@ -5607,12 +5662,13 @@ public final class SessionListView : ListView
         }
 
         // An accent-tinted divider under the pinned group separates it from the
-        // rest of the conversations, inset from the edges so it reads as a
-        // section break rather than a row rule. Drawn only when both groups are
-        // present.
-        if (_pinnedRows > 0 && _pinnedRows < count)
+        // rest of the conversations. It is centered in the extra gap so it has
+        // padding above and below, and inset from the edges so it reads as a
+        // section break rather than a row rule.
+        if (gap > 0)
         {
-            const separatorY = _pinnedRows * rowHeight - offset;
+            const separatorY = topPad + _pinnedRows * rowHeight - offset +
+                gap / 2;
             const inset = 18;
             content.fillRect(Rect(inset, separatorY,
                 maxInt(0, width - 2 * inset), 1),
@@ -5647,7 +5703,19 @@ public final class SessionListView : ListView
                 onContextMenuRequested(row, localToGlobal(event.position));
             return true;
         }
-        return super.onMouseDown(event);
+        if (event.button != MouseButton.left) return false;
+        // Select through `indexAt` instead of the base handler: the pinned
+        // divider shifts every row below it, so the base class's uniform row
+        // math would mis-map clicks around the gap.
+        requestFocus();
+        const row = indexAt(event.position);
+        if (row >= 0 && !items()[cast(size_t) row].disabled)
+        {
+            setSelectedIndex(row);
+            if (event.clickCount >= 2 && onActivated !is null)
+                onActivated(row);
+        }
+        return true;
     }
 
     override bool onKeyDown(ref Event event)
@@ -13255,8 +13323,10 @@ public final class OpenCodeRoot : VBox
             }
         }
         _sessionIndices = indices;
-        _sessionList.setItems(items);
+        // Set the pinned count before the item sync so the layout (and the
+        // scrollbar range) already accounts for the divider gap.
         _sessionList.setPinnedCount(pinnedCount);
+        _sessionList.setItems(items);
         _sessionList.setActivityRows(activeSessionRows());
         refreshSessionRowStatus();
         int row = -1;
