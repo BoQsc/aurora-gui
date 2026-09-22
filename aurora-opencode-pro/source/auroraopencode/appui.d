@@ -12365,18 +12365,29 @@ public final class OpenCodeRoot : VBox
         auto title = content.add(new Label("Settings"));
         title.setPixelSize(opencodeFontTitle);
 
+        // The section rows live in a scroll viewport between the fixed title and
+        // the fixed footer, so a dialog taller than the window scrolls (with a
+        // scrollbar) instead of clipping its last rows. When everything fits,
+        // the panel is only as tall as its content and the scrollbar stays
+        // hidden, because `resizeSettingsPopup` requests exactly that height.
+        auto sections = new VBox(8);
+        auto scroll = content.add(new ScrollView(sections));
+        scroll.setId("oc-settings-scroll");
+        scroll.layoutHints().flex = 1.0;
+        scroll.layoutHints().minHeight = 40;
+
         // The dialog groups its rows under collapsible section headers: the
         // connection fields stay open while the display/tooling extras sit
         // nested behind their own header. `popup` is declared before the
         // headers so a toggle can re-fit the panel to the visible rows.
         PopupOverlay popup;
-        auto connectionBody = addSettingsSection(content, "Connection",
+        auto connectionBody = addSettingsSection(sections, "Connection",
             "oc-settings-connection", true,
             delegate() { resizeSettingsPopup(popup, content); });
-        auto workspaceBody = addSettingsSection(content, "Project",
+        auto workspaceBody = addSettingsSection(sections, "Project",
             "oc-settings-project", true,
             delegate() { resizeSettingsPopup(popup, content); });
-        auto optionsBody = addSettingsSection(content, "Options",
+        auto optionsBody = addSettingsSection(sections, "Options",
             "oc-settings-options", false,
             delegate() { resizeSettingsPopup(popup, content); });
 
@@ -16911,6 +16922,26 @@ public final class OpenCodeRoot : VBox
     {
         applyVerbosity(name);
         return _settings.verbosity;
+    }
+
+    /// Test-only: toggle a Settings section header by id, exactly as a click on
+    /// it does (it opens the dialog when none is open). Returns false when the
+    /// header is missing.
+    public bool toggleSettingsSectionForTesting(string id)
+    {
+        if (_activePopup is null) showSettingsDialog();
+        auto header = cast(Button) findWidgetById(this, id);
+        if (header is null) return false;
+        header.activate();
+        return true;
+    }
+
+    /// Test-only: how far the Settings dialog's scroll viewport can scroll.
+    /// Needs the dialog open and laid out; -1 when the viewport is missing.
+    public int settingsScrollMaxForTesting()
+    {
+        auto view = cast(ScrollView) findWidgetById(this, "oc-settings-scroll");
+        return view is null ? -1 : view.maxScroll();
     }
 
     /// Test-only: open Settings and report whether the "System prompt" button

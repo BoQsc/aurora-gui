@@ -2051,6 +2051,31 @@ int main(string[] args)
     root.dismissPopupForTesting();
     writeln("Optional verbosity selector changes the prompt and persists");
 
+    // The Settings dialog scrolls its rows instead of clipping them: the fixed
+    // title and the Save/Cancel footer stay put. Closed, the panel is only as
+    // tall as its content, so there is no scrollbar; opened out past a short
+    // window, the section viewport must scroll.
+    {
+        assert(root.providerSelectorPresentForTesting(),
+            "Settings did not open for the scroll check");
+        root.tickTree(0.02);
+        assert(driver.paint(), "Settings did not lay out for the scroll check");
+        assert(root.settingsScrollMaxForTesting() == 0,
+            "Settings showed a scrollbar while every row still fit");
+        assert(root.toggleSettingsSectionForTesting("oc-settings-options"),
+            "Settings dialog is missing its Options section header");
+        driver.resize(Size(1200, 560));
+        root.tickTree(0.02);
+        assert(driver.paint(), "Short Settings did not lay out");
+        assert(root.settingsScrollMaxForTesting() > 0,
+            "Settings could not scroll its rows in a short window");
+        root.dismissPopupForTesting();
+        driver.resize(Size(1200, 800));
+        root.tickTree(0.02);
+        assert(driver.paint(), "The restored window did not lay out");
+        writeln("Settings scrolls its rows and keeps the footer fixed");
+    }
+
     // Tool loop: with tools enabled and a workspace, an injected tool call is
     // executed locally and the result lands as a `tool` role message.
     auto workspaceDir = buildPath(stateDir, "workspace");
