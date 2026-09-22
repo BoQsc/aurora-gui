@@ -61,6 +61,7 @@ struct OpenCodeEvent
     // Provider terminal reason (`stop`, `length`, `max_tokens`, ...). Kept
     // separate from cancellation so the UI can offer a safe continuation.
     string finishReason;
+    int[string] modelContextLimits;
 }
 
 private struct HttpTarget
@@ -1213,6 +1214,8 @@ final class OpenCodeClient
 
             const body = readAllAsUtf8(request);
             string[] ids;
+            int[string] contextLimits;
+            bool llamaCppCatalog;
             auto value = parseJSON(body);
             if (value.type == JSONType.object)
             {
@@ -1223,15 +1226,33 @@ final class OpenCodeClient
                     {
                         if (entry.type != JSONType.object) continue;
                         auto id = "id" in entry.object;
-                        if (id !is null && id.type == JSONType.string &&
-                            id.str.length > 0)
-                            ids ~= id.str.dup;
+                        if (id is null || id.type != JSONType.string ||
+                            id.str.length == 0) continue;
+                        ids ~= id.str.dup;
+                        if (isLlamaCppModelEntry(entry))
+                            llamaCppCatalog = true;
+                        const contextLimit = modelContextLimit(entry);
+                        if (contextLimit > 0)
+                            contextLimits[id.str] = contextLimit;
                     }
                 }
             }
             if (ids.length == 0)
                 throw new Exception("The models endpoint returned no models.");
-            pushEvent(OpenCodeEvent(OpenCodeEventKind.models, "", false, ids));
+            // llama.cpp's model metadata describes training capacity. /props
+            // reports the actual per-slot n_ctx selected for this server run.
+            if (ids.length == 1 &&
+                (llamaCppCatalog || isLoopbackApiBaseUrl(_baseUrl)))
+            {
+                const runtimeLimit = llamaRuntimeContextLimit(session, target);
+                if (runtimeLimit > 0) contextLimits[ids[0]] = runtimeLimit;
+            }
+            OpenCodeEvent event;
+            event.kind = OpenCodeEventKind.models;
+            event.text = _baseUrl;
+            event.modelIds = ids;
+            event.modelContextLimits = contextLimits;
+            pushEvent(event);
         }
         catch (Exception error)
         {
@@ -1240,6 +1261,109 @@ final class OpenCodeClient
                     _baseUrl ~ "]");
             pushEvent(OpenCodeEvent(OpenCodeEventKind.modelsError, error.msg));
         }
+    }
+
+    private int llamaRuntimeContextLimit(HINTERNET session,
+        const ref HttpTarget modelsTarget)
+    {
+        try
+        {
+            auto connection = InternetConnectW(session,
+                toUTF16z(modelsTarget.host), modelsTarget.port, null, null,
+                INTERNET_SERVICE_HTTP, 0, 0);
+            if (connection is null) return 0;
+            scope (exit) InternetCloseHandle(connection);
+            const propsTarget = HttpTarget(modelsTarget.host,
+                modelsTarget.port, "/props", modelsTarget.secure);
+            auto request = HttpOpenRequestW(connection, "GET"w.ptr,
+                "/props"w.ptr, null, null, null,
+                requestFlags(propsTarget), 0);
+            if (request is null) return 0;
+            scope (exit) InternetCloseHandle(request);
+            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
+            if (_apiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            if (!HttpSendRequestW(request, toUTF16z(headers), -1,
+                    null, 0)) return 0;
+            DWORD statusCode;
+            DWORD statusLength = cast(DWORD) statusCode.sizeof;
+            if (!HttpQueryInfoW(request,
+                    HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                    &statusCode, &statusLength, null) || statusCode != 200)
+                return 0;
+            return runtimeContextLimit(readAllAsUtf8(request));
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private static int positiveContext(const ref JSONValue value)
+    {
+        return value.type == JSONType.integer && value.integer > 0 &&
+            value.integer <= int.max ? cast(int) value.integer : 0;
+    }
+
+    private static int modelContextLimit(const ref JSONValue entry)
+    {
+        if (entry.type != JSONType.object) return 0;
+        int result;
+        foreach (key; ["context_length", "context_window"])
+            if (auto field = key in entry.object)
+            {
+                const value = positiveContext(*field);
+                if (value > 0) result = value;
+            }
+        if (auto limit = "limit" in entry.object)
+            if (limit.type == JSONType.object)
+                if (auto context = "context" in limit.object)
+                {
+                    const value = positiveContext(*context);
+                    if (value > 0) result = value;
+                }
+        return result;
+    }
+
+    private static bool isLlamaCppModelEntry(const ref JSONValue entry)
+    {
+        if (entry.type != JSONType.object) return false;
+        if (auto owner = "owned_by" in entry.object)
+            if (owner.type == JSONType.string &&
+                (owner.str.toLower() == "llamacpp" ||
+                 owner.str.toLower() == "llama.cpp"))
+                return true;
+        if (auto meta = "meta" in entry.object)
+            if (meta.type == JSONType.object &&
+                "n_ctx_train" in meta.object) return true;
+        return false;
+    }
+
+    private static int runtimeContextLimit(string body)
+    {
+        const value = parseJSON(body);
+        if (value.type != JSONType.object) return 0;
+        auto settings = "default_generation_settings" in value.object;
+        if (settings is null || settings.type != JSONType.object) return 0;
+        auto context = "n_ctx" in settings.object;
+        return context is null ? 0 : positiveContext(*context);
+    }
+
+    public static int modelContextLimitForTesting(string json)
+    {
+        const value = parseJSON(json);
+        return modelContextLimit(value);
+    }
+
+    public static int runtimeContextLimitForTesting(string json)
+    {
+        return runtimeContextLimit(json);
+    }
+
+    public static bool isLlamaCppModelEntryForTesting(string json)
+    {
+        const value = parseJSON(json);
+        return isLlamaCppModelEntry(value);
     }
 
     private static JSONValue chatMessageToJson(

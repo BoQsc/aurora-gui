@@ -4288,9 +4288,28 @@ private immutable string thinkingToggleTooltipText =
 /// Small rectangular context meter in the toolbar. Shows the exact token
 /// usage the API reported as a percentage of the model's context window, and
 /// opens the hover tooltip with the full breakdown.
+private final class ModelContextButton : Button
+{
+    void delegate(Point) onContextMenuRequested;
+
+    this(string label) { super(label); }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (enabled() && event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
 private final class ContextUsageBadge : Widget
 {
     void delegate(bool open) onHoverChanged;
+    void delegate(Point) onMenuRequested;
 
     private int _prompt = -1;
     private int _completion = -1;
@@ -4305,9 +4324,8 @@ private final class ContextUsageBadge : Widget
         layoutHints().preferredHeight = 22;
     }
 
-    void setModel(string model, bool compactDeepSeek500k = false)
+    void setLimit(int limit)
     {
-        const limit = contextLimitForModel(model, compactDeepSeek500k);
         if (limit == _limit) return;
         _limit = limit;
         invalidate();
@@ -4384,6 +4402,18 @@ private final class ContextUsageBadge : Widget
     protected override void onMouseLeave()
     {
         if (onHoverChanged !is null) onHoverChanged(false);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.left ||
+            event.button == MouseButton.right)
+        {
+            if (onMenuRequested !is null)
+                onMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return false;
     }
 }
 
@@ -5942,6 +5972,8 @@ public final class OpenCodeRoot : VBox
     // so a saved model id can be validated against what the endpoint actually
     // serves without clobbering a custom/self-hosted model before discovery.
     private bool _modelsFetched;
+    private int[string] _providerContextLimits;
+    private string _contextLimitsBaseUrl;
 
     private ProjectState _projectState;
     private ProjectListView _projectRail;
@@ -6202,6 +6234,7 @@ public final class OpenCodeRoot : VBox
     /// True while `tickAutoResend` is the caller, so the request it starts is
     /// not mistaken for a fresh user intent (which would reset the budget).
     private bool _autoResending;
+    private bool _contextOverflowRetryUsed;
 
     /// How many times one failed turn may be sent again on its own. Bounded
     /// because each attempt keeps the previous reply as a branch version,
@@ -6896,13 +6929,15 @@ public final class OpenCodeRoot : VBox
         auto composerControls = new HBox(8);
         composerControls.setId("oc-composer-controls");
 
-        _modelButton = composerControls.add(new Button(_settings.model));
+        auto modelButton = new ModelContextButton(_settings.model);
+        _modelButton = composerControls.add(modelButton);
         _modelButton.setId("oc-model");
         _modelButton.onClick = delegate() { showModelPicker(); };
+        modelButton.onContextMenuRequested = &showContextTargetMenu;
 
         _usageBadge = composerControls.add(new ContextUsageBadge());
         _usageBadge.setId("oc-usage");
-        _usageBadge.setModel(_settings.model, _settings.compactDeepSeek500k);
+        _usageBadge.setLimit(effectiveContextLimit(_settings.model));
         _usageBadge.onHoverChanged = delegate(bool open)
         {
             if (open)
@@ -6919,6 +6954,7 @@ public final class OpenCodeRoot : VBox
                 if (_usageTooltipOpen) setContextUsageTooltipOpen(false);
             }
         };
+        _usageBadge.onMenuRequested = &showContextTargetMenu;
 
         auto thinkingBox = new HoverCheckBox("Thinking");
         _thinkingBox = composerControls.add(thinkingBox);
@@ -11292,7 +11328,6 @@ public final class OpenCodeRoot : VBox
         // Pass 2: replace older dialogue with one structured handoff rather
         // than dozens of content-free "message elided" placeholders. The full
         // transcript remains persisted; only this model request is compacted.
-        enum size_t protectTail = 8;
         if (total > budget)
         {
             size_t protectHead;
@@ -11301,6 +11336,26 @@ public final class OpenCodeRoot : VBox
                 protectHead = i + 1;
                 if (m.role != "system") break;
             }
+            // Keep a recent slice by size, not by message count. Eight large
+            // messages could otherwise exceed a local server's entire window.
+            size_t tailStart = result.length;
+            size_t tailBytes;
+            const size_t tailBudget = budget > fixedRequestBytes
+                ? (budget - fixedRequestBytes) * 3 / 4 : 0;
+            while (tailStart > protectHead)
+            {
+                const candidate = requestMessageBytes(
+                    result[tailStart - 1 .. tailStart]);
+                if (tailBytes + candidate > tailBudget &&
+                    tailStart < result.length) break;
+                tailBytes += candidate;
+                --tailStart;
+            }
+            // Always preserve the latest user instruction, even when a long
+            // tool round leaves it outside the recent byte slice.
+            size_t latestUser = result.length;
+            foreach (i, m; result)
+                if (m.role == "user") latestUser = i;
             bool[] remove = new bool[](result.length);
             string[] userDetails;
             string[] completed;
@@ -11308,7 +11363,8 @@ public final class OpenCodeRoot : VBox
             foreach (i, m; result)
             {
                 if (i < protectHead) continue;
-                if (i + protectTail >= result.length) continue;
+                if (i >= tailStart) continue;
+                if (i == latestUser) continue;
                 if (m.role == "system" || m.role == "tool") continue;
                 if (i == protectHead && m.role == "user") continue;
                 if (m.toolCalls.length > 0) continue;
@@ -11589,7 +11645,11 @@ public final class OpenCodeRoot : VBox
         // started (or a manual Retry) also starts the attempt budget over; an
         // automatic re-send keeps it, so its interval keeps widening.
         dropAutoResendSchedule();
-        if (userTurn && !_autoResending) _autoResendCount = 0;
+        if (userTurn && !_autoResending)
+        {
+            _autoResendCount = 0;
+            _contextOverflowRetryUsed = false;
+        }
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         auto session = &_sessions[sessionIndex];
@@ -11652,7 +11712,7 @@ public final class OpenCodeRoot : VBox
             requestToolDefinitionBytes(tools);
         auto compactedRequestMessages = compactRequestMessages(
             rawRequestMessages,
-            contextLimitForModel(session.model, _settings.compactDeepSeek500k),
+            requestContextBudget(session.model),
             fixedRequestBytes);
         _contextWasCompacted[session.id] =
             requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
@@ -11667,7 +11727,7 @@ public final class OpenCodeRoot : VBox
         if (_current == sessionIndex)
         {
             if (_usageBadge !is null)
-                _usageBadge.setModel(session.model, _settings.compactDeepSeek500k);
+                _usageBadge.setLimit(effectiveContextLimit(session.model));
             refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
@@ -12046,6 +12106,25 @@ public final class OpenCodeRoot : VBox
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
+    }
+
+    private void showContextTargetMenu(Point globalPosition)
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        _usageTooltipPending = false;
+        if (_usageTooltipOpen) setContextUsageTooltipOpen(false);
+
+        const model = _settings.model;
+        const providerLimit = effectiveContextLimit(model);
+        const selected = contextBudgetForModel(_settings, _settings.baseUrl, model);
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Provider limit: " ~
+            formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
+        items ~= ContextMenuItem.separatorItem();
+        foreach (target; [0, 64_000, 128_000, 200_000, 500_000])
+            items ~= contextBudgetMenuItem(model, target, selected,
+                target == 0 || target <= providerLimit);
+        showContextMenu(_modelButton, globalPosition, items);
     }
 
     private string changeConversationLabel(string id) const
@@ -12651,30 +12730,6 @@ public final class OpenCodeRoot : VBox
         planRow.add(planCheck);
         optionsBody.add(planRow);
 
-        // DeepSeek 4.1 advertises a 1,000,000-token window but its reliable
-        // context is smaller. When on, the usage meter and the compaction
-        // budget both use a 500,000-token effective window so older context is
-        // shed earlier.
-        auto compactRow = new HBox(8);
-        compactRow.layoutHints().preferredHeight = 32;
-        auto compactCheck = new CheckBox("Compact DeepSeek 4.1 at 500K");
-        compactCheck.setId("oc-compact500k");
-        compactCheck.setChecked(_settings.compactDeepSeek500k, false);
-        compactCheck.onChanged = delegate(bool value)
-        {
-            _settings.compactDeepSeek500k = value;
-            saveSettingsNow();
-            refreshUsageBadge();
-        };
-        compactRow.add(compactCheck);
-        optionsBody.add(compactRow);
-        auto compactHint = optionsBody.add(new Label(
-            "Caps DeepSeek 4.1's effective context at 500,000 tokens for the " ~
-            "usage meter and compaction. Off by default (the model advertises " ~
-            "1,000,000)."));
-        compactHint.setScale(1);
-        compactHint.setColor(opencodeMuted);
-
         // Verbosity: an optional response-style selector for the agent's prose.
         // "Default" keeps the stock prompt; the smaller levels append a short
         // directive that trims preamble, repetition, and explanation. Applied on
@@ -13136,7 +13191,7 @@ public final class OpenCodeRoot : VBox
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
-        _usageBadge.setModel(_settings.model, _settings.compactDeepSeek500k);
+        _usageBadge.setLimit(effectiveContextLimit(_settings.model));
         int prompt = -1, completion = -1, total = -1;
         bool estimated;
         if (_current >= 0)
@@ -13178,9 +13233,13 @@ public final class OpenCodeRoot : VBox
         string[] rows;
         const hasUsage = _usageBadge !is null && _usageBadge.hasUsage();
         rows ~= "Model: " ~ _settings.model;
-        rows ~= "Context limit: " ~
+        rows ~= "Provider context limit: " ~
             formatThousands(_usageBadge is null ? 0 : _usageBadge.limit()) ~
             " tokens";
+        const target = contextBudgetForModel(_settings, _settings.baseUrl,
+            _settings.model);
+        rows ~= "Request context target: " ~ contextBudgetLabel(target);
+        rows ~= "Click to change context target.";
         if (hasUsage)
         {
             rows ~= (_usageBadge.estimated() ? "Estimated active input: " :
@@ -14072,6 +14131,67 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    private static int availableContextFromError(string failureText)
+    {
+        const marker = "available context size (";
+        const offset = failureText.indexOf(marker);
+        if (offset < 0) return 0;
+        const start = cast(size_t) offset + marker.length;
+        size_t end = start;
+        while (end < failureText.length && failureText[end] >= '0' &&
+            failureText[end] <= '9') ++end;
+        if (end == start || !failureText[end .. $].startsWith(" tokens)"))
+            return 0;
+        try return to!int(failureText[start .. end]);
+        catch (Exception) return 0;
+    }
+
+    private bool scheduleContextOverflowRetry(string failureText)
+    {
+        if (_contextOverflowRetryUsed || _receivedFirstDelta) return false;
+        const available = availableContextFromError(failureText);
+        const sessionIndex = turnOwnerSessionIndex();
+        if (available <= 0 || sessionIndex < 0 ||
+            sessionIndex >= cast(int) _sessions.length) return false;
+        auto session = &_sessions[sessionIndex];
+        if (available >= effectiveContextLimit(session.model) ||
+            session.messages.length == 0 ||
+            session.messages[$ - 1].role != "assistant" ||
+            !session.messages[$ - 1].failed) return false;
+        _providerContextLimits[session.model] = available;
+        _contextLimitsBaseUrl = _settings.baseUrl;
+        _contextOverflowRetryUsed = true;
+        refreshUsageBadge();
+        _autoResendPending = true;
+        _autoResendAt = MonoTime.currTime;
+        _autoResendSession = sessionIndex;
+        _autoResendMessage = cast(int) session.messages.length - 1;
+        _autoResendResetMs = 0;
+        _lastAutoResendSeconds = -1;
+        updateStatus("Server context limit learned; compacting and retrying...");
+        return true;
+    }
+
+    private static string contextBudgetLabel(int limit)
+    {
+        return limit <= 0 ? "Auto (provider limit)" :
+            formatThousands(limit) ~ " tokens";
+    }
+
+    private ContextMenuItem contextBudgetMenuItem(string model, int limit,
+        int selected, bool enabled)
+    {
+        return ContextMenuItem.check(contextBudgetLabel(limit),
+            selected == limit,
+            delegate()
+            {
+                setContextBudgetForModel(_settings, _settings.baseUrl, model,
+                    limit);
+                saveSettingsNow();
+                refreshUsageBadge();
+            }, enabled);
+    }
+
     /// Read the snapshot checkpoint: the journal sequence folded into the
     /// snapshot and the journal byte size at that moment. Returns false when
     /// there is none, which makes startup replay the whole journal.
@@ -14683,6 +14803,23 @@ public final class OpenCodeRoot : VBox
         refreshUsageBadge();
     }
 
+    private int effectiveContextLimit(string model)
+    {
+        int limit = contextLimitForModel(model);
+        if (_contextLimitsBaseUrl == _settings.baseUrl)
+            if (auto discovered = model in _providerContextLimits)
+                limit = *discovered;
+        return limit;
+    }
+
+    private int requestContextBudget(string model)
+    {
+        const limit = effectiveContextLimit(model);
+        const target = contextBudgetForModel(_settings, _settings.baseUrl,
+            model);
+        return target > 0 && target < limit ? target : limit;
+    }
+
     /// Merge a session parsed from a snapshot into the live list. When the same
     /// conversation is already present (matched by title and opening message),
     /// keep whichever copy holds more messages so a partial snapshot can never
@@ -14969,7 +15106,8 @@ public final class OpenCodeRoot : VBox
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
-                    scheduleAutoResend(event.text);
+                    if (!scheduleContextOverflowRetry(event.text))
+                        scheduleAutoResend(event.text);
                     if (_activeRequestId == event.requestId)
                     {
                         _activeRequestId = 0;
@@ -14977,6 +15115,13 @@ public final class OpenCodeRoot : VBox
                     }
                     break;
                 case OpenCodeEventKind.models:
+                    if (event.text.length > 0 &&
+                        event.text != _settings.baseUrl) break;
+                    if (_contextLimitsBaseUrl != _settings.baseUrl)
+                        _providerContextLimits = null;
+                    foreach (model, limit; event.modelContextLimits)
+                        _providerContextLimits[model] = limit;
+                    _contextLimitsBaseUrl = _settings.baseUrl;
                     applyModels(event.modelIds);
                     break;
                 case OpenCodeEventKind.modelsError:
@@ -16250,6 +16395,30 @@ public final class OpenCodeRoot : VBox
         return _usageBadge is null ? 0 : _usageBadge.limit();
     }
 
+    public void setProviderContextLimitForTesting(string model, int limit)
+    {
+        _providerContextLimits[model] = limit;
+        _contextLimitsBaseUrl = _settings.baseUrl;
+        refreshUsageBadge();
+    }
+
+    public void setContextBudgetForTesting(int limit)
+    {
+        setContextBudgetForModel(_settings, _settings.baseUrl,
+            _settings.model, limit);
+        refreshUsageBadge();
+    }
+
+    public int requestContextBudgetForTesting(string model)
+    {
+        return requestContextBudget(model);
+    }
+
+    public int availableContextFromErrorForTesting(string text)
+    {
+        return availableContextFromError(text);
+    }
+
     /// Test-only: the context tooltip text ("" when closed).
     public string contextTooltipTextForTesting()
     {
@@ -16860,6 +17029,14 @@ public final class OpenCodeRoot : VBox
             contextLimit);
     }
 
+    public ChatRequestMessage[] activeCompactedRequestMessagesForTesting()
+    {
+        if (_current < 0) return null;
+        const session = _sessions[_current];
+        return compactRequestMessages(buildRequestMessages(session),
+            requestContextBudget(session.model));
+    }
+
     /// Test-only: append an assistant message carrying `tool_calls` and no
     /// reply, simulating a transcript persisted mid-tool (the HTTP 400 case).
     public void appendDanglingToolCallsForTesting(string callId)
@@ -16982,22 +17159,6 @@ public final class OpenCodeRoot : VBox
         _planPanel.setCollapsed(!_planPanel.collapsedForTesting());
     }
 
-
-    /// Test-only: open the settings dialog and return the "Compact DeepSeek
-    /// 4.1 at 500K" checkbox, or null when absent.
-    public CheckBox compact500kCheckboxForTesting()
-    {
-        showSettingsDialog();
-        return cast(CheckBox) findWidgetById(this, "oc-compact500k");
-    }
-
-    /// Test-only: flip the 500K compaction setting as the dialog checkbox does,
-    /// without opening the dialog, and refresh the meter.
-    public void setCompactDeepSeek500kForTesting(bool value)
-    {
-        _settings.compactDeepSeek500k = value;
-        refreshUsageBadge();
-    }
 
     /// Test-only: open the settings dialog and return the verbosity picker's
     /// current label, or "" when the picker is absent.

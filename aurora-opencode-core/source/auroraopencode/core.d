@@ -939,12 +939,48 @@ public struct Settings
     // Show the durable plan as a floating panel in the transcript's top-right
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
-    bool compactDeepSeek500k;  // cap DeepSeek 4.1's effective window (meter + compaction) at 500k; off by default
+    // Optional request targets scoped to the exact endpoint and model.
+    ModelContextBudget[] contextBudgets;
+    bool compactDeepSeek500k; // legacy migration only
     string workspace;          // working directory the tools run in
     // Optional response-verbosity selector: "default" (stock prompt),
     // "concise", or "compact". "default" is a no-op, so an existing settings
     // file that lacks the key keeps the exact previous prompt.
     string verbosity = "default";
+}
+
+public struct ModelContextBudget
+{
+    string baseUrl;
+    string model;
+    int tokens;
+}
+
+public int contextBudgetForModel(const ref Settings settings,
+    string baseUrl, string model)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    foreach (budget; settings.contextBudgets)
+        if (budget.baseUrl == endpoint && budget.model == model)
+            return budget.tokens;
+    return 0;
+}
+
+public void setContextBudgetForModel(ref Settings settings,
+    string baseUrl, string model, int tokens)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    if (endpoint.length == 0 || model.length == 0) return;
+    foreach (i, budget; settings.contextBudgets)
+        if (budget.baseUrl == endpoint && budget.model == model)
+        {
+            if (tokens > 0) settings.contextBudgets[i].tokens = tokens;
+            else settings.contextBudgets = settings.contextBudgets[0 .. i] ~
+                settings.contextBudgets[i + 1 .. $];
+            return;
+        }
+    if (tokens > 0)
+        settings.contextBudgets ~= ModelContextBudget(endpoint, model, tokens);
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1116,7 @@ public Settings loadSettings()
     Settings settings;
     bool apiKeyWasConfigured;
     int settingsVersion;
+    int legacyContextBudget;
     const path = buildPath(opencodeStateDirectory(), "settings.json");
     if (exists(path))
     {
@@ -1124,6 +1161,27 @@ public Settings loadSettings()
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
+                if (auto found = "contextBudgetTokens" in value.object)
+                    if (found.type == JSONType.integer &&
+                        found.integer >= 0 && found.integer <= 1_000_000)
+                        legacyContextBudget = cast(int) found.integer;
+                if (auto found = "contextBudgets" in value.object)
+                    if (found.type == JSONType.array)
+                        foreach (entry; found.array)
+                        {
+                            if (entry.type != JSONType.object) continue;
+                            auto base = "baseUrl" in entry.object;
+                            auto model = "model" in entry.object;
+                            auto tokens = "tokens" in entry.object;
+                            if (base is null || model is null || tokens is null ||
+                                base.type != JSONType.string ||
+                                model.type != JSONType.string ||
+                                tokens.type != JSONType.integer ||
+                                tokens.integer <= 0 ||
+                                tokens.integer > 1_000_000) continue;
+                            setContextBudgetForModel(settings, base.str,
+                                model.str, cast(int) tokens.integer);
+                        }
                 // Unknown or blank values fall through to the "default"
                 // initializer, so a hand-edited file cannot change the prompt
                 // to something the app does not understand.
@@ -1262,6 +1320,18 @@ public Settings loadSettings()
     if (auto entry = findProviderApiKeys(settings, settings.baseUrl))
         if (activeKeyOf(*entry).length > 0)
             settings.apiKey = activeKeyOf(*entry);
+    if (contextBudgetForModel(settings, settings.baseUrl,
+            settings.model) == 0)
+    {
+        if (legacyContextBudget > 0)
+            setContextBudgetForModel(settings, settings.baseUrl,
+                settings.model, legacyContextBudget);
+        else if (settings.compactDeepSeek500k &&
+            isDeepSeekV41Model(settings.model))
+            setContextBudgetForModel(settings, settings.baseUrl,
+                settings.model, deepSeekV41CompactLimit);
+    }
+    settings.compactDeepSeek500k = false;
     return settings;
 }
 
@@ -1290,7 +1360,16 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["detachedPlan"] = settings.detachedPlan;
-    root["compactDeepSeek500k"] = settings.compactDeepSeek500k;
+    JSONValue contextBudgets = JSONValue(string[].init);
+    foreach (budget; settings.contextBudgets)
+    {
+        JSONValue item;
+        item["baseUrl"] = budget.baseUrl;
+        item["model"] = budget.model;
+        item["tokens"] = budget.tokens;
+        contextBudgets.array ~= item;
+    }
+    root["contextBudgets"] = contextBudgets;
     root["workspace"] = settings.workspace;
     root["verbosity"] = settings.verbosity;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),

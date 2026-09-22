@@ -6,7 +6,8 @@ import aurora.render.software : SoftwareRenderer;
 import aurora.surface : Surface;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
-    OpenCodeToolCall,
+    OpenCodeToolCall, Settings, contextBudgetForModel, loadSettings,
+    setContextBudgetForModel,
     activeMessagePath, ensureMessageGraph, newMessageId,
     opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting, siblingMessages;
@@ -1242,6 +1243,11 @@ int main(string[] args)
             ++stableToolGroups;
     assert(stable.length == fat.length && stableToolGroups == 12,
         "under-budget request was needlessly compacted");
+    root.setContextBudgetForTesting(64_000);
+    auto budgeted = root.activeCompactedRequestMessagesForTesting();
+    assert(budgeted.length < fat.length,
+        "optional context target did not compact old history early");
+    root.setContextBudgetForTesting(0);
     auto slim = root.compactedRequestMessagesForTesting(8_000);
     size_t slimBytes;
     int toolCount, compactNotes;
@@ -1482,6 +1488,20 @@ int main(string[] args)
     // not make context occupancy jump while a response streams. The
     // limit comes from the model catalog: deepseek-v4.1-flash (the OpenCode
     // gateway id) has a 1,000,000-token context window.
+    assert(OpenCodeClient.modelContextLimitForTesting(
+        `{"id":"hosted","context_length":200000}`) == 200_000);
+    assert(OpenCodeClient.modelContextLimitForTesting(
+        `{"id":"opencode","limit":{"context":128000}}`) == 128_000);
+    assert(OpenCodeClient.runtimeContextLimitForTesting(
+        `{"default_generation_settings":{"n_ctx":91904}}`) == 91_904);
+    assert(OpenCodeClient.runtimeContextLimitForTesting(
+        `{"default_generation_settings":{"n_ctx":0}}`) == 0);
+    assert(OpenCodeClient.isLlamaCppModelEntryForTesting(
+        `{"id":"Qwen/Qwen3.8-27B","owned_by":"llamacpp"}`));
+    assert(OpenCodeClient.isLlamaCppModelEntryForTesting(
+        `{"id":"alias","meta":{"n_ctx_train":262144}}`));
+    assert(!OpenCodeClient.isLlamaCppModelEntryForTesting(
+        `{"id":"hosted","owned_by":"remote-provider"}`));
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
     root.recordContextUsageForTesting(240000, 10000, 250000);
     assert(driver.paint(), "Context badge did not paint after usage");
@@ -1547,39 +1567,92 @@ int main(string[] args)
         "Fresh prompt usage must replace the estimate without counting output");
     writeln("Context meter follows the active session");
 
-    // The "500K DeepSeek 4.1" compaction toggle caps DeepSeek 4.1's effective
-    // context window: the meter percentage and the compaction budget both read
-    // the same effective limit, so they cannot disagree.
+    // Context targets live on the model button and context badge. The meter
+    // continues to show the actual provider window when a smaller target is
+    // selected for early compaction.
     {
         root.recordContextUsageForTesting(240000, 10000, 250000);
         assert(root.contextUsageTextForTesting() == "24%",
             "DeepSeek 4.1 should meter against its full 1,000,000 window");
         assert(root.contextLimitForTesting() == 1_000_000,
             "The effective limit should default to the catalog window");
-        // The Settings dialog exposes the toggle, off by default.
-        auto compactCheck = root.compact500kCheckboxForTesting();
-        assert(compactCheck !is null,
-            "Settings must offer the 500K DeepSeek 4.1 compaction toggle");
-        assert(!compactCheck.checked(),
-            "The 500K compaction toggle must be off by default");
-        root.dismissPopupForTesting();
-        // With the toggle on, the same 240k request is 48% of a 500k window,
-        // and the effective limit the meter reports drops to 500,000.
-        root.setCompactDeepSeek500kForTesting(true);
-        assert(root.contextLimitForTesting() == 500_000,
-            "The 500K toggle must cap DeepSeek 4.1's effective limit, got " ~
-            to!string(root.contextLimitForTesting()));
-        assert(root.contextUsageTextForTesting() == "48%",
-            "The same usage must read 48% against a 500k window, got " ~
-            root.contextUsageTextForTesting());
-        // The toggle is DeepSeek-specific: a non-DeepSeek model keeps its full
-        // catalog window.
-        root.setCompactDeepSeek500kForTesting(false);
+        auto modelControl = requireWidget!Widget(root, "oc-model");
+        driver.click(globalCenter(modelControl), MouseButton.right);
+        root.tickTree(0.02);
+        auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
+        assert(targetMenu !is null,
+            "Right-clicking the model should open context targets");
+        assert(targetMenu.items().length == 7,
+            "Context menu should show provider limit and five targets");
+        assert(targetMenu.items()[0].label ==
+            toUTF32("Provider limit: 1,000,000 tokens") &&
+            !targetMenu.items()[0].enabled,
+            "Context menu must display the read-only provider limit");
+        assert(targetMenu.items()[2].checked,
+            "Auto target should be selected by default");
+        assert(targetMenu.items()[6].label == toUTF32("500,000 tokens") &&
+            targetMenu.items()[6].enabled,
+            "500K target should be available below a 1M provider limit");
+        targetMenu.items()[6].action();
+        dismissContextMenus(root);
+        root.tickTree(0.02);
+        assert(root.requestContextBudgetForTesting(
+            "deepseek-v4.1-flash") == 500_000,
+            "500K target should lower the request budget");
         assert(root.contextLimitForTesting() == 1_000_000,
-            "Turning the toggle off must restore the full window");
+            "A request target must not alter the provider limit");
         assert(root.contextUsageTextForTesting() == "24%",
-            "Turning the toggle off must restore the 24% reading");
-        writeln("500K DeepSeek 4.1 toggle caps the effective window");
+            "A request target must not alter the usage meter");
+        const targetSettings = parseJSON(readText(buildPath(stateDir,
+            "settings.json")));
+        assert(targetSettings["contextBudgets"].array.length >= 1,
+            "The selected context target should be saved");
+        assert(targetSettings["contextBudgets"].array[$ - 1]["tokens"].integer ==
+            500_000, "Saved target should be 500K");
+        const reloadedTargets = loadSettings();
+        assert(contextBudgetForModel(reloadedTargets,
+            reloadedTargets.baseUrl, "deepseek-v4.1-flash") == 500_000,
+            "The selected target should survive settings reload");
+
+        // Targets are keyed by both endpoint and model.
+        Settings scoped;
+        setContextBudgetForModel(scoped, "http://server-a/v1/",
+            "Qwen/Qwen3.8-27B", 64_000);
+        setContextBudgetForModel(scoped, "http://server-b/v1",
+            "Qwen/Qwen3.8-27B", 128_000);
+        assert(contextBudgetForModel(scoped, "http://server-a/v1",
+            "Qwen/Qwen3.8-27B") == 64_000);
+        assert(contextBudgetForModel(scoped, "http://server-b/v1",
+            "Qwen/Qwen3.8-27B") == 128_000);
+        assert(contextBudgetForModel(scoped, "http://server-a/v1",
+            "another-model") == 0);
+
+        root.setProviderContextLimitForTesting(
+            "deepseek-v4.1-flash", 300_000);
+        assert(root.contextLimitForTesting() == 300_000 &&
+            root.contextUsageTextForTesting() == "80%",
+            "Provider metadata must replace the hardcoded catalog limit");
+        driver.click(globalCenter(usageBadge));
+        root.tickTree(0.02);
+        targetMenu = cast(ContextMenu) currentTransientPopup(root);
+        assert(targetMenu !is null && !targetMenu.items()[6].enabled,
+            "Clicking the context badge should open targets and disable " ~
+            "those above the provider limit");
+        dismissContextMenus(root);
+        root.setContextBudgetForTesting(200_000);
+        assert(root.requestContextBudgetForTesting(
+            "deepseek-v4.1-flash") == 200_000 &&
+            root.contextLimitForTesting() == 300_000,
+            "The optional target must compact earlier without changing " ~
+            "the provider limit shown by the meter");
+        root.setContextBudgetForTesting(0);
+        root.setProviderContextLimitForTesting(
+            "deepseek-v4.1-flash", 1_000_000);
+        assert(root.availableContextFromErrorForTesting(
+            "request (98101 tokens) exceeds the available context size " ~
+            "(91904 tokens), try increasing it") == 91_904,
+            "llama.cpp overflow must disclose its runtime limit");
+        writeln("Model context menu saves scoped targets and keeps provider meter");
     }
 
     // A failed rebuild is reported back into the resumed conversation. The
