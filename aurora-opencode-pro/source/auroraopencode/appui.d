@@ -13397,6 +13397,85 @@ public final class OpenCodeRoot : VBox
         refreshUsageBadge();
     }
 
+    /// Copy a conversation, transcript and all, into a new independent
+    /// conversation placed directly below the source. The copy gets a fresh
+    /// session id and fresh message graph ids so editing or regenerating in
+    /// either conversation can never disturb the other.
+    private void duplicateSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        saveLoadedRuntime();
+        auto source = _sessions[sessionIndex];
+        ChatSession copy;
+        copy.id = newSessionId();
+        const baseTitle = source.title.length > 0 ? source.title : "Conversation";
+        copy.title = baseTitle ~ " (copy)";
+        copy.model = source.model;
+        copy.thinking = source.thinking;
+        copy.projectId = source.projectId;
+        copy.objective = source.objective;
+        copy.taskStatus = source.taskStatus;
+        copy.turnStatus = source.turnStatus;
+        copy.verificationStatus = source.verificationStatus;
+        copy.taskSteps = source.taskSteps;
+        copy.queuedGuidance = source.queuedGuidance;
+        copy.queuedFollowUps = source.queuedFollowUps;
+        // A copy is new work the reader has not seen yet; it starts read.
+        copy.unread = false;
+        // Re-key the whole message graph in one pass, then remap parents. A
+        // parent may appear before or after its child in `messages`, so the id
+        // map has to be complete before any parent is rewritten.
+        string[string] idMap;
+        foreach (message; source.messages)
+        {
+            ChatMessage clone = message;
+            const freshId = newMessageId();
+            if (clone.id.length > 0) idMap[clone.id] = freshId;
+            clone.id = freshId;
+            copy.messages ~= clone;
+        }
+        foreach (ref message; copy.messages)
+        {
+            if (message.parentId.length == 0) continue;
+            if (auto mapped = message.parentId in idMap)
+                message.parentId = *mapped;
+            else
+                message.parentId = "";
+        }
+        if (auto leaf = source.activeLeafId in idMap)
+            copy.activeLeafId = *leaf;
+        else
+            copy.activeLeafId = copy.messages.length > 0
+                ? copy.messages[$ - 1].id : "";
+        // Insert below the source and shift the indices of everything after it,
+        // exactly as deleteSession shifts the other way.
+        const insertAt = sessionIndex + 1;
+        _sessions = _sessions[0 .. insertAt] ~ copy ~ _sessions[insertAt .. $];
+        foreach (rt; _conversationRuntimes)
+        {
+            if (rt.activeRequestSession >= insertAt)
+                ++rt.activeRequestSession;
+            if (rt.turnSessionIndex >= insertAt)
+                ++rt.turnSessionIndex;
+        }
+        if (_current >= insertAt) ++_current;
+        publishRuntimeEvent(AgentEventKind.threadStarted, copy,
+            "", "", "", runtimeThreadPayload(copy));
+        // Show the copy so the duplication is immediately visible.
+        _current = insertAt;
+        loadRuntime(_current);
+        _visibleMessageLimit = messageHistoryPageSize;
+        _editMessageIndex = -1;
+        _streamBubble = null;
+        rebuildMessageColumn();
+        updateSessionList();
+        markDirty();
+        updateStatus("Duplicated conversation.");
+        refreshUsageBadge();
+        refreshTimerBadge(true);
+    }
+
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
         MessageBubble sourceBubble = null, string linkTarget = "")
     {
@@ -13485,6 +13564,10 @@ public final class OpenCodeRoot : VBox
             {
                 selectSession(sessionIndex);
             }, "Enter"),
+            ContextMenuItem.command("Duplicate", IconKind.newDocument, delegate()
+            {
+                duplicateSession(sessionIndex);
+            }),
             ContextMenuItem.command(
                 isSessionPinned(_sessions[sessionIndex].id)
                     ? "Unpin conversation" : "Pin conversation",

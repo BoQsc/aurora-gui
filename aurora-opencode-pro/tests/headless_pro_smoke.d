@@ -454,6 +454,55 @@ int main(string[] args)
     assert(sessions.items().length == 2, "Session list did not shrink after delete");
     writeln("Sessions after delete: ", root.sessionCountForTesting());
 
+    // Duplicate a conversation via the sidebar context menu: the copy keeps the
+    // transcript but is an independent conversation placed below its source.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["duplicate me", "copy reply"]);
+    root.tickTree(0.02);
+    const dupSource = root.currentSessionForTesting();
+    const dupSourceTitle = root.sessionTitleForTesting(dupSource);
+    int dupRow = -1;
+    foreach (row; 0 .. root.visibleSessionCountForTesting())
+        if (root.visibleSessionIndexAtRowForTesting(row) == dupSource)
+        {
+            dupRow = row;
+            break;
+        }
+    assert(dupRow >= 0, "Could not find the row of the conversation to duplicate");
+    const countBeforeDuplicate = root.sessionCountForTesting();
+    sessions.onContextMenuRequested(dupRow, Point(10, 10));
+    root.tickTree(0.02);
+    auto dupMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(dupMenu !is null, "Session context menu did not open for duplicate");
+    bool duplicated;
+    foreach (item; dupMenu.items())
+    {
+        if (item.label == toUTF32("Duplicate"))
+        {
+            item.action();
+            duplicated = true;
+            break;
+        }
+    }
+    assert(duplicated, "Duplicate item missing from the context menu");
+    root.tickTree(0.02);
+    assert(driver.paint(), "Duplicate did not repaint");
+    assert(root.sessionCountForTesting() == countBeforeDuplicate + 1,
+        "Duplicate did not add a session");
+    assert(root.currentSessionForTesting() == dupSource + 1,
+        "Duplicate did not select the copy below its source");
+    assert(root.sessionTitleForTesting(dupSource + 1) == dupSourceTitle ~ " (copy)",
+        "Duplicate did not derive a distinct title");
+    assert(root.messageCountForTesting() == 2,
+        "Duplicate did not carry the transcript");
+    assert(root.lastMessageContentInSessionForTesting(dupSource + 1) == "copy reply",
+        "Duplicate lost the last message content");
+    writeln("Duplicated conversation: ", root.sessionTitleForTesting(dupSource + 1));
+    dismissTransientPopups(root);
+    root.tickTree(0.02);
+
+
     // Markdown bubbles (code blocks + links) paint and stay interactive.
     root.addConversationForTesting(
         ["assistant"],
