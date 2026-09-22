@@ -1060,6 +1060,55 @@ int main(string[] args)
         "preserving guidance incorrectly blocked the durable task");
     writeln("Stop preserves already-submitted guidance in the transcript");
 
+    // Alt+Enter queues a message for the next turn without disturbing the run,
+    // and the pending bubble it creates carries its own Send now: clicking that
+    // pill stops the running turn and starts exactly that message, ahead of the
+    // rest of the queue.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["long running job"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.streamReasoningForTesting("working");
+    root.tickTree(0.02);
+    root.setInputForTesting("first queued");
+    root.tickTree(0.02);
+    root.queueComposerForTesting();
+    root.tickTree(0.02);
+    assert(root.queuedFollowUpCountForTesting() == 1,
+        "Alt+Enter did not queue the composer text");
+    assert(root.inputTextForTesting().length == 0,
+        "queueing left the text in the composer");
+    assert(root.turnBusyForTesting() &&
+        root.turnStatusForTesting() != "interrupted",
+        "queueing a message disturbed the running turn");
+    assert(root.queuedPromptBubbleCountForTesting() == 1,
+        "a queued message did not appear as a pending transcript bubble");
+    assert(root.queuedPromptActionForTesting(0) == "Send now",
+        "a queued prompt bubble has no Send now action: " ~
+        root.queuedPromptActionForTesting(0));
+
+    root.setInputForTesting("second queued");
+    root.tickTree(0.02);
+    root.queueComposerForTesting();
+    root.tickTree(0.02);
+    assert(root.queuedFollowUpCountForTesting() == 2 &&
+        root.queuedPromptBubbleCountForTesting() == 2,
+        "the second queued message did not join the queue");
+    assert(root.clickQueuedPromptActionForTesting(1),
+        "the queued prompt's Send now action did not fire");
+    assert(!root.turnBusyForTesting() &&
+        root.turnStatusForTesting() == "interrupted",
+        "the queued prompt's Send now did not stop the running turn");
+    root.tickTree(0.02);
+    assert(root.lastUserMessageForTesting() == "second queued",
+        "the queued prompt's Send now started the wrong message: " ~
+        root.lastUserMessageForTesting());
+    assert(root.queuedFollowUpCountForTesting() == 1,
+        "sending one queued message discarded the other");
+    root.clickSendButtonForTesting();
+    root.tickTree(0.02);
+    writeln("A queued prompt bubble sends itself now");
+
     // Compaction is a context-pressure operation, not something performed on
     // every continuation. Below the threshold the model-visible prefix remains
     // stable; above it, old completed tool envelopes are checkpointed while the

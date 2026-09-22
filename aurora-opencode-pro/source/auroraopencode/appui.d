@@ -5235,6 +5235,10 @@ public final class OpenCodeRoot : VBox
     private DetachedPlanPanel _planPanel;
     private ChatInput _input;
     private ChatSendButton _sendButton;
+    // Conversation whose queued message is waiting for the stopped request to
+    // release it, so the new turn never overlaps the cancelled one (-1 when
+    // none). Driven by the pending prompt's own "Send now" pill.
+    private int _interruptSendSession = -1;
     private ChatComposer _composer;
     // experimental: attachments - pending dropped files / large pastes and the
     // chip row that shows them. See source/auroraopencode/attachments.d.
@@ -7518,20 +7522,23 @@ public final class OpenCodeRoot : VBox
         // it vanished; `appendQueuedGuidance` turns each queued entry into a
         // real turn (and clears the queue) in the same rebuild that applies it.
         if (session.queuedGuidance.length > 0)
-            foreach (text; session.queuedGuidance)
+            foreach (index, text; session.queuedGuidance)
             {
                 auto queuedBubble = new MessageBubble();
                 queuedBubble.setRole("user");
                 queuedBubble.setContent(to!string(text));
                 // No physical message backs it yet, so it carries no context
-                // menu, branch nav or action pill.
+                // menu and no branch navigation. It does get the one action a
+                // pending prompt can have: send it now.
                 queuedBubble.setMessageIndex(-1);
                 queuedBubble.setQueued(true,
                     "Steering · applying at the next safe step");
+                queuedBubble.setAction("Send now",
+                    pendingPromptSendNowAction(true, index));
                 _messageColumn.add(queuedBubble);
             }
         if (session.queuedFollowUps.length > 0)
-            foreach (text; session.queuedFollowUps)
+            foreach (index, text; session.queuedFollowUps)
             {
                 auto queuedBubble = new MessageBubble();
                 queuedBubble.setRole("user");
@@ -7539,6 +7546,8 @@ public final class OpenCodeRoot : VBox
                 queuedBubble.setMessageIndex(-1);
                 queuedBubble.setQueued(true,
                     "Queued · starts after the current turn");
+                queuedBubble.setAction("Send now",
+                    pendingPromptSendNowAction(false, index));
                 _messageColumn.add(queuedBubble);
             }
         // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
@@ -7929,6 +7938,10 @@ public final class OpenCodeRoot : VBox
         {
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
+            // A pending prompt's own "Send now" pill is bound when the bubble is
+            // built (see `pendingPromptSendNowAction`); the reply pills below
+            // must not clear or overwrite it.
+            if (bubble.queued()) continue;
             bubble.clearAction();
             if (target is null || bubble !is target) continue;
             const messageIndex = bubble.messageIndex();
@@ -9645,7 +9658,11 @@ public final class OpenCodeRoot : VBox
     private void queueFollowUp()
     {
         const text = _input.textUtf8().strip();
-        if (text.length == 0 && _pendingAttachments.length == 0) return;
+        if (text.length == 0 && _pendingAttachments.length == 0)
+        {
+            updateStatus("Type a message to queue it for after this turn.");
+            return;
+        }
         if (!turnIsBusy())
         {
             sendMessage();
@@ -9666,6 +9683,78 @@ public final class OpenCodeRoot : VBox
         _messagesScroll.follow = true;
         rebuildMessageColumn();
         updateStatus("Follow-up queued · it will start after this turn.");
+    }
+
+    /// Open the message an "interrupt & send" click queued, once the stopped
+    /// request has released `sessionIndex`. The tick iterates conversation
+    /// runtimes, so this runs with the right client and history loaded.
+    private void startInterruptedSendIfReady(int sessionIndex)
+    {
+        if (_interruptSendSession != sessionIndex) return;
+        // Stop is a local state transition first: the network worker may still
+        // be unwinding, and a new request must never overlap the cancelled one.
+        if (_stopPending || turnIsBusy()) return;
+        _interruptSendSession = -1;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        if (_sessions[sessionIndex].queuedFollowUps.length == 0) return;
+        startNextQueuedFollowUp(sessionIndex);
+    }
+
+    /// Delegate factory for a pending prompt's "Send now" pill. Binding the
+    /// queue and index here (rather than letting the rebuild's `foreach` capture
+    /// them) keeps every pill pointed at its own message.
+    private void delegate() pendingPromptSendNowAction(bool steering,
+        size_t index)
+    {
+        return delegate() { sendPendingPromptNow(steering, index); };
+    }
+
+    /// The "Send now" pill on a queued prompt bubble: that one message becomes
+    /// the conversation's next turn and the running turn is stopped for it. The
+    /// chosen message jumps ahead of the rest of the queue, so clicking the pill
+    /// on the second of three queued messages starts exactly that one.
+    private void sendPendingPromptNow(bool steering, size_t index)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        string text;
+        if (steering)
+        {
+            if (index >= session.queuedGuidance.length) return;
+            text = session.queuedGuidance[index];
+            session.queuedGuidance = session.queuedGuidance[0 .. index] ~
+                session.queuedGuidance[index + 1 .. $];
+        }
+        else
+        {
+            if (index >= session.queuedFollowUps.length) return;
+            text = session.queuedFollowUps[index];
+            session.queuedFollowUps = session.queuedFollowUps[0 .. index] ~
+                session.queuedFollowUps[index + 1 .. $];
+        }
+        session.queuedFollowUps = text ~ session.queuedFollowUps;
+        publishThreadUpdated(*session);
+        markDirty();
+        if (turnIsBusy())
+        {
+            if (_current != turnOwnerSessionIndex())
+            {
+                rebuildMessageColumn();
+                updateStatus("Select the working conversation before " ~
+                    "interrupting it.");
+                return;
+            }
+            // Stop first, never alongside it: the queued turn opens from
+            // `startInterruptedSendIfReady` once the request has released.
+            _interruptSendSession = _current;
+            stopActiveTurn();
+            updateStatus("Interrupting — the queued message starts the next turn.");
+            return;
+        }
+        // Nothing is running, so the promoted message simply starts now.
+        rebuildMessageColumn();
+        startNextQueuedFollowUp(_current);
     }
 
     // -- experimental: attachments ------------------------------------------
@@ -13373,6 +13462,12 @@ public final class OpenCodeRoot : VBox
             updateSendButton();
         }
 
+        // Interrupt-and-send: the click that stopped this turn left a message
+        // behind, and the conversation has now released it. Opening the queued
+        // turn here (rather than inside the cancellation handler) guarantees the
+        // cancelled request and its replacement never share the client.
+        startInterruptedSendIfReady(cast(int) runtimeIndex);
+
         // Send a turn that failed for a reason waiting will fix, on its own.
         tickAutoResend();
 
@@ -13794,6 +13889,36 @@ public final class OpenCodeRoot : VBox
             ++seen;
         }
         return "";
+    }
+
+    /// Test-only: the action-pill label on the queued prompt bubble at visual
+    /// `index` ("" when that pending prompt offers no action).
+    public string queuedPromptActionForTesting(int index)
+    {
+        auto bubble = queuedPromptBubbleAt(index);
+        return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    /// Test-only: click the action pill of the queued prompt bubble at visual
+    /// `index`. False when that pending prompt does not exist.
+    public bool clickQueuedPromptActionForTesting(int index)
+    {
+        auto bubble = queuedPromptBubbleAt(index);
+        return bubble !is null && bubble.invokeActionForTesting();
+    }
+
+    /// The queued (not-yet-sent) prompt bubble at visual `index`, or null.
+    private MessageBubble queuedPromptBubbleAt(int index)
+    {
+        int seen;
+        foreach (child; messageColumnVisuals())
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble is null || !bubble.queued()) continue;
+            if (seen == index) return bubble;
+            ++seen;
+        }
+        return null;
     }
 
     public void queueFollowUpForTesting(string followUp)
@@ -14363,6 +14488,13 @@ public final class OpenCodeRoot : VBox
     public void sendForTesting()
     {
         sendMessage();
+    }
+
+    /// Test-only: dispatch the composer's Alt+Enter action (queue the typed
+    /// message for the next turn) exactly as the key handler does.
+    public void queueComposerForTesting()
+    {
+        if (_input.onQueueRequested !is null) _input.onQueueRequested();
     }
 
     public void clickSendButtonForTesting()
