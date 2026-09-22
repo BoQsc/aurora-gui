@@ -93,6 +93,16 @@ class ContextMenu : TransientPopup
     private int _rowHeight = 22;
     private int _separatorHeight = 4;
     private int _padding = 3;
+    // Icon column geometry, in pixels. drawIcon renders several glyphs wider
+    // than their 16-pixel box (folder/terminal/computer reach ~10 px and the
+    // settings gear ~14 px from the centre), so the column is wider than the
+    // box and the label starts clear of the widest glyph instead of crowding
+    // it. labelLeftOffset is the label's x offset from the item rect.
+    private enum int iconColumnLeft = 5;
+    private enum int iconColumnWidth = 22;
+    private enum int iconLabelGap = 5;
+    private enum int labelLeftOffset =
+        iconColumnLeft + iconColumnWidth + iconLabelGap;
     private int _scrollOffset;
     /**
      * Fired on mouse-move while the pointer is OUTSIDE the menu's own rect.
@@ -277,7 +287,8 @@ class ContextMenu : TransientPopup
             if (item.separator) continue;
             const estimatedLabel = cast(int) item.label.length * 7;
             const estimatedShortcut = cast(int) item.shortcut.length * 7;
-            width = maxInt(width, 48 + estimatedLabel + estimatedShortcut);
+            width = maxInt(width, labelLeftOffset + 23 + estimatedLabel +
+                estimatedShortcut);
         }
         return clampInt(width, 148, 280);
     }
@@ -492,7 +503,8 @@ class ContextMenu : TransientPopup
                     item.enabled ? palette.buttonHover : palette.buttonHover.withAlpha(55));
 
             const foreground = item.enabled ? palette.text : palette.disabled;
-            const iconRect = Rect(rect.x + 5, rect.y + (rect.height - 16) / 2, 16, 16);
+            const iconRect = Rect(rect.x + iconColumnLeft,
+                rect.y + (rect.height - 16) / 2, 16, 16);
             if (item.checked)
             {
                 const cx = iconRect.x + iconRect.width / 2;
@@ -505,8 +517,9 @@ class ContextMenu : TransientPopup
 
             const shortcutWidth = item.shortcut.length == 0 ? 0 :
                 maxInt(42, cast(int) item.shortcut.length * 7 + 8);
-            content.drawTextInRect(Rect(rect.x + 25, rect.y,
-                    maxInt(0, rect.width - 31 - shortcutWidth), rect.height),
+            content.drawTextInRect(Rect(rect.x + labelLeftOffset, rect.y,
+                    maxInt(0, rect.width - labelLeftOffset - 6 - shortcutWidth),
+                    rect.height),
                 item.label, foreground, palette.fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
             if (shortcutWidth > 0)
@@ -719,6 +732,12 @@ ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items)
 
 unittest
 {
+    // Label clearance: drawIcon draws several glyphs wider than the 16-pixel
+    // box (the settings gear reaches 14 px from the icon centre), so the label
+    // offset must keep the text clear of the widest glyph.
+    assert(ContextMenu.iconColumnLeft + 16 / 2 + 14 <=
+        ContextMenu.labelLeftOffset - 2);
+
     auto root = new ContextMenuTestRoot();
     root.setBounds(Rect(0, 0, 640, 480));
     bool activated;
