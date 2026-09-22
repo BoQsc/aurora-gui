@@ -8934,6 +8934,12 @@ public final class OpenCodeRoot : VBox
     /// (the leaf is the live reply, or the prompt it answers); it returns only
     /// once a settled reply becomes the leaf again. Runs after every message
     /// change so the pills always match the messages.
+    ///
+    /// A turn that stopped without completing (a crash, a kill, or a rebuild)
+    /// can leave the active leaf on a tool result or a tool-call wrapper, so
+    /// the tip bubble is not a reply and would get no pill — after a restart
+    /// the chat would then have no visible way to be resumed. In that case the
+    /// last real reply on the active path carries the pill instead.
     private void refreshBubbleActions()
     {
         if (_current < 0) return;
@@ -8959,6 +8965,7 @@ public final class OpenCodeRoot : VBox
             break;
         }
 
+        bool pillApplied;
         foreach (child; children)
         {
             auto bubble = cast(MessageBubble) child;
@@ -8994,6 +9001,46 @@ public final class OpenCodeRoot : VBox
                 if (!message.failed)
                     bubble.setSecondaryAction("Continue",
                         continueAction(_current, messageIndex));
+                pillApplied = true;
+            }
+        }
+        // Resume affordance for an interrupted turn: when the tip is not a
+        // reply (the turn died during a tool round, so the leaf is a tool
+        // result or a tool-call wrapper), put the pill on the last real reply
+        // on the active path. Continue appends at the current tip, so it keeps
+        // every tool result below that reply; Regenerate reruns from the
+        // prompt as usual.
+        if (!pillApplied && sessionTurnIncomplete(_current))
+        {
+            auto onPath = new bool[](session.messages.length);
+            foreach (index; activeMessagePath(*session))
+                if (index < onPath.length) onPath[index] = true;
+            MessageBubble resumable;
+            int resumableIndex = -1;
+            foreach_reverse (child; children)
+            {
+                auto bubble = cast(MessageBubble) child;
+                if (bubble is null) continue;
+                if (bubble.queued()) continue;
+                if (_streamBubble !is null && bubble is _streamBubble) continue;
+                const messageIndex = bubble.messageIndex();
+                if (messageIndex < 0 ||
+                    messageIndex >= cast(int) session.messages.length)
+                    continue;
+                if (!onPath[cast(size_t) messageIndex]) continue;
+                const message = session.messages[cast(size_t) messageIndex];
+                if (message.role != "assistant" || message.internal ||
+                    message.toolCalls.length > 0) continue;
+                resumable = bubble;
+                resumableIndex = messageIndex;
+                break;
+            }
+            if (resumable !is null)
+            {
+                resumable.setAction("Regenerate",
+                    regenerateAction(_current, resumableIndex));
+                resumable.setSecondaryAction("Continue",
+                    continueAction(_current, resumableIndex));
             }
         }
     }
@@ -11819,9 +11866,21 @@ public final class OpenCodeRoot : VBox
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length) return false;
         const message = session.messages[cast(size_t) messageIndex];
+        // The reply must be on the active path, not necessarily its leaf: an
+        // interrupted turn can leave the leaf on a tool result, and the
+        // continuation is still appended through `appendMessage` at the
+        // current leaf, so the resumed request keeps every tool result below
+        // the reply it continues.
         if (message.role != "assistant" || message.failed ||
-            message.toolCalls.length > 0 ||
-            session.activeLeafId != message.id) return false;
+            message.toolCalls.length > 0) return false;
+        bool onActivePath;
+        foreach (index; activeMessagePath(*session))
+            if (cast(int) index == messageIndex)
+            {
+                onActivePath = true;
+                break;
+            }
+        if (!onActivePath) return false;
 
         ChatMessage continuation;
         continuation.role = "user";
