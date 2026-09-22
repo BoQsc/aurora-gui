@@ -941,6 +941,10 @@ public struct Settings
     bool detachedPlan = true;
     bool compactDeepSeek500k;  // cap DeepSeek 4.1's effective window (meter + compaction) at 500k; off by default
     string workspace;          // working directory the tools run in
+    // Optional response-verbosity selector: "default" (stock prompt),
+    // "concise", or "compact". "default" is a no-op, so an existing settings
+    // file that lacks the key keeps the exact previous prompt.
+    string verbosity = "default";
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1124,12 @@ public Settings loadSettings()
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
+                // Unknown or blank values fall through to the "default"
+                // initializer, so a hand-edited file cannot change the prompt
+                // to something the app does not understand.
+                if (auto found = "verbosity" in value.object)
+                    if (found.type == JSONType.string && found.str.length > 0)
+                        settings.verbosity = found.str;
                 // Migration: the old "nativeTools" flag was a separate native-only
                 // mode. Native tools are now the default, so a user who had them
                 // ON wants no legacy shell; someone who had them OFF (shell mode)
@@ -1282,6 +1292,7 @@ public void saveSettings(const ref Settings settings)
     root["detachedPlan"] = settings.detachedPlan;
     root["compactDeepSeek500k"] = settings.compactDeepSeek500k;
     root["workspace"] = settings.workspace;
+    root["verbosity"] = settings.verbosity;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
         root.toString());
     catch (Exception error)

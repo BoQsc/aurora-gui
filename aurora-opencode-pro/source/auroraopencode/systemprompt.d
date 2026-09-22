@@ -13,6 +13,65 @@ public struct SystemPromptContext
     string platformName;
     string today;
     bool isGitRepo;
+    // Response verbosity selected in Settings. Empty or unknown values fall
+    // back to the stock prompt, so callers may leave it unset.
+    string verbosity;
+}
+
+/// The name that selects the stock prompt. Kept in one place so the Settings
+/// persistence, the picker, and the renderer cannot drift apart.
+public enum defaultVerbosityName = "default";
+
+/// Response verbosity for the agent's prose. `default_` reproduces the stock
+/// prompt exactly; the other levels append one short style directive. This is
+/// opt-in: nothing changes until the user picks a non-default level.
+public enum PromptVerbosity
+{
+    default_,
+    concise,
+    compact,
+}
+
+/// Parse a stored verbosity name. Unknown or blank values fall back to the
+/// stock prompt, so an older or hand-edited settings file cannot change it.
+public PromptVerbosity promptVerbosityFromName(string name)
+{
+    switch (name)
+    {
+        case "concise": return PromptVerbosity.concise;
+        case "compact": return PromptVerbosity.compact;
+        default: return PromptVerbosity.default_;
+    }
+}
+
+/// The stored name for a verbosity level (the inverse of
+/// `promptVerbosityFromName`).
+public string promptVerbosityName(PromptVerbosity verbosity)
+{
+    final switch (verbosity)
+    {
+        case PromptVerbosity.default_: return defaultVerbosityName;
+        case PromptVerbosity.concise: return "concise";
+        case PromptVerbosity.compact: return "compact";
+    }
+}
+
+/// Every selectable verbosity, in picker order, so the Settings dialog offers
+/// exactly the levels the renderer understands.
+public string[] promptVerbosityNames()
+{
+    return [defaultVerbosityName, "concise", "compact"];
+}
+
+/// Short label for the Settings picker; unknown values echo back unchanged.
+public string promptVerbosityLabel(string name)
+{
+    final switch (promptVerbosityFromName(name))
+    {
+        case PromptVerbosity.default_: return "Default";
+        case PromptVerbosity.concise: return "Concise";
+        case PromptVerbosity.compact: return "Compact";
+    }
 }
 
 /// A single, self-contained system prompt section.
@@ -91,6 +150,8 @@ public SystemPromptModule[] builtinModules()
             (in SystemPromptContext ctx) => specialRequestsSection(ctx)),
         SystemPromptModule("communication",
             (in SystemPromptContext ctx) => communicationSection(ctx)),
+        SystemPromptModule("verbosity",
+            (in SystemPromptContext ctx) => verbositySection(ctx)),
         SystemPromptModule("environment",
             (in SystemPromptContext ctx) => environmentSection(ctx)),
     ];
@@ -267,6 +328,41 @@ private string communicationSection(in SystemPromptContext ctx)
         "- Use GitHub-flavored Markdown lightly. Prefer short paragraphs " ~
         "and present-tense active voice; use backticks for commands, paths, " ~
         "environment variables, and code identifiers.\n";
+}
+
+/// Opt-in response-style directive. Empty for the default level, so the stock
+/// prompt (and its cached prefix) is byte-for-byte unchanged unless the user
+/// selects a smaller verbosity in Settings. Sits between the stable
+/// Communication text and the dynamic Environment block.
+///
+/// Each level covers BOTH the visible answer and the internal reasoning
+/// ("thinking"), so picking a smaller verbosity trims the thinking the model
+/// shows as well as its prose. Note this is a prompt-level nudge: the hard
+/// lever for reasoning tokens remains the Thinking toggle (which sets the
+/// request's `reasoning_effort`), because a provider may ignore instructions
+/// about how long to reason.
+private string verbositySection(in SystemPromptContext ctx)
+{
+    final switch (promptVerbosityFromName(ctx.verbosity))
+    {
+        case PromptVerbosity.default_:
+            return "";
+        case PromptVerbosity.concise:
+            return "\n# Response style\nBe concise and direct. Lead with " ~
+                "the result, skip preamble and acknowledgements, and omit " ~
+                "explanation the user did not ask for. Use the fewest " ~
+                "sentences that still convey the outcome. Keep your internal " ~
+                "reasoning brief too: don't restate the request or re-derive " ~
+                "facts you already established.\n";
+        case PromptVerbosity.compact:
+            return "\n# Response style\nAnswer as compactly as possible " ~
+                "while staying clear: no preamble, no restating the request, " ~
+                "no recap of steps, no closing summary. Prefer one short " ~
+                "sentence or a few bullet points over a paragraph, and add " ~
+                "detail only when asked. Keep your internal reasoning short " ~
+                "as well: plan briefly, don't re-derive known facts, and stop " ~
+                "thinking once the next action is clear.\n";
+    }
 }
 
 /// Dynamic values stay last so the stable instruction prefix can be cached.

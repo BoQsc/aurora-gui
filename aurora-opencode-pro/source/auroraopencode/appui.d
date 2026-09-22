@@ -19,7 +19,8 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     previewToolDiffText,
     rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution;
-import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
+import auroraopencode.systemprompt : promptVerbosityLabel, promptVerbosityNames,
+    rebuildModule, setSystemPromptModules;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -3618,6 +3619,29 @@ private final class DetachedPlanPanel : Widget
     }
 }
 
+// Settings section body (Pro)
+// ---------------------------------------------------------------------------
+
+/// The row stack under a collapsible Settings section header. A plain nested
+/// VBox is sized by its parent from layoutHints only (never from its measured
+/// size), so a body without a published height lays out at 0 px and its rows
+/// spill over the next section — which also moves what a click at those pixels
+/// hits. Publishing the measured height keeps each section's rows in place.
+private final class SettingsSectionBody : VBox
+{
+    this()
+    {
+        super(8);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const measured = super.onMeasure(available);
+        layoutHints().preferredHeight = measured.height;
+        return measured;
+    }
+}
+
 // Action tool group (Pro): one foldable row for an assistant round's tools
 // ---------------------------------------------------------------------------
 
@@ -6018,6 +6042,9 @@ public final class OpenCodeRoot : VBox
     private TextField _settingsKeyField;
     private TextField _settingsModelField;
     private Button _settingsProviderButton;
+    // Settings-dialog verbosity picker; kept so a chosen level updates its
+    // label and the smoke test can read it back. Null when the dialog is closed.
+    private Button _settingsVerbosityButton;
     // Second-credential controls: the spare key field and the toggle that
     // picks which of the two API keys requests are sent with.
     private TextField _settingsAdditionalKeyField;
@@ -11519,7 +11546,8 @@ public final class OpenCodeRoot : VBox
                 // an opt-in addition from Settings.
                 registerContextSystemPromptModules(workspace);
                 systemPrompt.content = buildSystemPrompt(
-                    !_settings.legacyTools, workspace, platform) ~
+                    !_settings.legacyTools, workspace, platform,
+                    _settings.verbosity) ~
                     durableTaskPrompt(*session);
             }
             messages ~= systemPrompt;
@@ -12337,6 +12365,21 @@ public final class OpenCodeRoot : VBox
         auto title = content.add(new Label("Settings"));
         title.setPixelSize(opencodeFontTitle);
 
+        // The dialog groups its rows under collapsible section headers: the
+        // connection fields stay open while the display/tooling extras sit
+        // nested behind their own header. `popup` is declared before the
+        // headers so a toggle can re-fit the panel to the visible rows.
+        PopupOverlay popup;
+        auto connectionBody = addSettingsSection(content, "Connection",
+            "oc-settings-connection", true,
+            delegate() { resizeSettingsPopup(popup, content); });
+        auto workspaceBody = addSettingsSection(content, "Project",
+            "oc-settings-project", true,
+            delegate() { resizeSettingsPopup(popup, content); });
+        auto optionsBody = addSettingsSection(content, "Options",
+            "oc-settings-options", false,
+            delegate() { resizeSettingsPopup(popup, content); });
+
         // Provider preset picker: choosing one fills the base URL, key and
         // model fields below, all of which stay editable.
         auto providerRow = new HBox(8);
@@ -12414,8 +12457,8 @@ public final class OpenCodeRoot : VBox
         keysHint.setScale(1);
         keysHint.setColor(opencodeMuted);
 
-        auto hint = content.add(new Label(
-            "llama-server: http://127.0.0.1:8080/v1 (API key may be blank)."));
+        auto hint = new Label(
+            "llama-server: http://127.0.0.1:8080/v1 (API key may be blank).");
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
@@ -12438,9 +12481,9 @@ public final class OpenCodeRoot : VBox
             new TextField(activeWorkspace()));
         workspaceField.setId("oc-workspace");
         workspaceField.layoutHints().flex = 1.0;
-        auto workspaceHint = content.add(new Label(
+        auto workspaceHint = new Label(
             "Folder where the active project's tools (bash/read/write/glob/" ~
-            "grep) operate. Switch projects in the rail on the left."));
+            "grep) operate. Switch projects in the rail on the left.");
         workspaceHint.setScale(1);
         workspaceHint.setColor(opencodeMuted);
 
@@ -12471,7 +12514,7 @@ public final class OpenCodeRoot : VBox
                 open);
         };
         legacyRow.add(legacyTip);
-        content.add(legacyRow);
+        optionsBody.add(legacyRow);
 
         // "Worked for …" separator: an opt-in display extra. Off by default
         // because its appearance is unreliable, so it lives here rather than in
@@ -12488,7 +12531,7 @@ public final class OpenCodeRoot : VBox
             if (_current >= 0) rebuildMessageColumn();
         };
         workedRow.add(workedCheck);
-        content.add(workedRow);
+        optionsBody.add(workedRow);
 
         // Detached plan: the durable plan as a floating card pinned to the
         // transcript's top-right corner. On by default; turning it off returns
@@ -12505,7 +12548,7 @@ public final class OpenCodeRoot : VBox
             if (_current >= 0) rebuildMessageColumn();
         };
         planRow.add(planCheck);
-        content.add(planRow);
+        optionsBody.add(planRow);
 
         // DeepSeek 4.1 advertises a 1,000,000-token window but its reliable
         // context is smaller. When on, the usage meter and the compaction
@@ -12523,13 +12566,46 @@ public final class OpenCodeRoot : VBox
             refreshUsageBadge();
         };
         compactRow.add(compactCheck);
-        content.add(compactRow);
-        auto compactHint = content.add(new Label(
+        optionsBody.add(compactRow);
+        auto compactHint = optionsBody.add(new Label(
             "Caps DeepSeek 4.1's effective context at 500,000 tokens for the " ~
             "usage meter and compaction. Off by default (the model advertises " ~
             "1,000,000)."));
         compactHint.setScale(1);
         compactHint.setColor(opencodeMuted);
+
+        // Verbosity: an optional response-style selector for the agent's prose.
+        // "Default" keeps the stock prompt; the smaller levels append a short
+        // directive that trims preamble, repetition, and explanation. Applied on
+        // the next request, so it also shows up in the System prompt viewer.
+        auto verbosityRow = new HBox(8);
+        verbosityRow.layoutHints().preferredHeight = 32;
+        auto verbosityLabel = verbosityRow.add(new Label("Verbosity"));
+        verbosityLabel.layoutHints().preferredWidth = 110;
+        verbosityLabel.setScale(1);
+        auto verbosityButton = verbosityRow.add(
+            new Button(promptVerbosityLabel(_settings.verbosity)));
+        verbosityButton.setId("oc-verbosity");
+        verbosityButton.layoutHints().flex = 1.0;
+        verbosityButton.onClick = delegate()
+        {
+            ContextMenuItem[] items;
+            foreach (name; promptVerbosityNames())
+                items ~= verbosityMenuItem(name);
+            const origin = verbosityButton.globalOrigin();
+            // Keep the Settings dialog open, exactly like the provider picker.
+            showContextMenuKeepPopups(verbosityButton,
+                Point(origin.x, origin.y + verbosityButton.size().height),
+                items);
+        };
+        _settingsVerbosityButton = verbosityButton;
+        optionsBody.add(verbosityRow);
+        auto verbosityHint = optionsBody.add(new Label(
+            "How much the agent writes. \"Default\" keeps the stock prompt; " ~
+            "Concise and Compact trim preamble and repetition from both the " ~
+            "answer and its reasoning, without removing needed detail."));
+        verbosityHint.setScale(1);
+        verbosityHint.setColor(opencodeMuted);
 
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
@@ -12577,23 +12653,24 @@ public final class OpenCodeRoot : VBox
             dismissPopup();
         };
 
-        content.add(providerRow);
-        content.add(baseRow);
-        content.add(keyRow);
-        content.add(additionalKeyRow);
-        content.add(activeKeyRow);
-        content.add(keysHint);
-        content.add(modelRow);
-        content.add(hint);
-        content.add(workspaceRow);
-        content.add(workspaceHint);
+        connectionBody.add(providerRow);
+        connectionBody.add(baseRow);
+        connectionBody.add(keyRow);
+        connectionBody.add(additionalKeyRow);
+        connectionBody.add(activeKeyRow);
+        connectionBody.add(keysHint);
+        connectionBody.add(modelRow);
+        connectionBody.add(hint);
+        workspaceBody.add(workspaceRow);
+        workspaceBody.add(workspaceHint);
         content.add(footer);
 
-        auto popup = new PopupOverlay(content, this);
+        popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        // Tall enough for every option row, including the detached-plan
-        // checkbox, without clipping the footer.
-        popup.setRequestedSize(Size(540, 664));
+        // Starting height; `resizeSettingsPopup` below fits the panel to the
+        // sections that start open, so the collapsed Options header leaves no
+        // empty space behind it.
+        popup.setRequestedSize(Size(settingsPopupWidth, 748));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate()
         {
@@ -12602,11 +12679,63 @@ public final class OpenCodeRoot : VBox
             _settingsKeyField = null;
             _settingsModelField = null;
             _settingsProviderButton = null;
+            _settingsVerbosityButton = null;
             _settingsAdditionalKeyField = null;
             _settingsAdditionalKeyToggle = null;
         };
         openPopup(popup);
+        resizeSettingsPopup(popup, content);
         popup.focusFirst();
+    }
+
+    /// Width every Settings dialog shares; only its height follows the
+    /// expanded sections (see `resizeSettingsPopup`).
+    private static immutable int settingsPopupWidth = 540;
+
+    /// Add a collapsible section to the Settings dialog and return its body, so
+    /// the caller keeps filling it with rows. The header is a flat disclosure
+    /// button (`▾` open, `▸` closed) labelled with `id`; `onToggled` runs after
+    /// each toggle so the caller can re-fit the popup around the visible rows.
+    private VBox addSettingsSection(VBox parent, string title, string id,
+        bool expanded, void delegate() onToggled)
+    {
+        // Header and body are siblings, both direct children of the dialog
+        // column: a nested section VBox would itself need a published height
+        // (see SettingsSectionBody).
+        auto body = new SettingsSectionBody();
+        // Indent the body so its rows read as the header's subsettings.
+        Insets indent;
+        indent.left = 14;
+        body.setPadding(indent);
+
+        auto header = parent.add(new Button(title,
+            expanded ? IconKind.chevronDown : IconKind.chevronRight));
+        header.setFlat(true);
+        header.setId(id);
+        header.layoutHints().preferredHeight = 30;
+        header.onClick = delegate()
+        {
+            const open = !body.visible();
+            body.setVisible(open);
+            header.setIcon(open ? IconKind.chevronDown : IconKind.chevronRight);
+            if (onToggled !is null) onToggled();
+        };
+
+        body.setVisible(expanded);
+        parent.add(body);
+        return body;
+    }
+
+    /// Re-fit an open Settings popup to the rows that are currently visible:
+    /// only its height follows the expanded sections, so collapsing one drops
+    /// the empty space instead of leaving a tall panel with a gap.
+    private void resizeSettingsPopup(PopupOverlay popup, Widget content)
+    {
+        if (popup is null || content is null) return;
+        const measured = content.measure(Size(settingsPopupWidth, int.max));
+        const height = measured.height < 240 ? 240 : measured.height;
+        popup.setRequestedSize(Size(settingsPopupWidth, height));
+        popup.layoutTree();
     }
 
     /// A provider preset as a context-menu command bound to its own index (a
@@ -12616,6 +12745,25 @@ public final class OpenCodeRoot : VBox
         const preset = providerPresets[cast(size_t) index];
         return ContextMenuItem.command(preset.name,
             delegate() { applyProviderPreset(index); });
+    }
+
+    /// One verbosity level as a context-menu command bound to its stored name.
+    /// A factory, so each item captures a distinct name.
+    private ContextMenuItem verbosityMenuItem(string name)
+    {
+        return ContextMenuItem.command(promptVerbosityLabel(name),
+            delegate() { applyVerbosity(name); });
+    }
+
+    /// Select a response verbosity, persist it, and reflect it on the picker.
+    /// The next request picks it up through `buildSystemPrompt`.
+    private void applyVerbosity(string name)
+    {
+        if (name.length == 0) return;
+        _settings.verbosity = name;
+        saveSettingsNow();
+        if (_settingsVerbosityButton !is null)
+            _settingsVerbosityButton.setText(promptVerbosityLabel(name));
     }
 
     /// Fill the Settings base URL/key/model fields for a provider preset.
@@ -12696,7 +12844,7 @@ public final class OpenCodeRoot : VBox
             const platform = "unknown";
         registerContextSystemPromptModules(activeWorkspace());
         string prompt = buildSystemPrompt(!_settings.legacyTools,
-            activeWorkspace(), platform);
+            activeWorkspace(), platform, _settings.verbosity);
         if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current]);
 
         auto content = new VBox(8, Insets(16));
@@ -16746,6 +16894,23 @@ public final class OpenCodeRoot : VBox
     {
         _settings.compactDeepSeek500k = value;
         refreshUsageBadge();
+    }
+
+    /// Test-only: open the settings dialog and return the verbosity picker's
+    /// current label, or "" when the picker is absent.
+    public string verbosityPickerLabelForTesting()
+    {
+        showSettingsDialog();
+        auto button = cast(Button) findWidgetById(this, "oc-verbosity");
+        return button is null ? "" : to!string(button.text());
+    }
+
+    /// Test-only: select a verbosity level exactly as the picker does, without
+    /// opening the dialog, and return the stored setting.
+    public string selectVerbosityForTesting(string name)
+    {
+        applyVerbosity(name);
+        return _settings.verbosity;
     }
 
     /// Test-only: open Settings and report whether the "System prompt" button

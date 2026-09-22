@@ -7,7 +7,9 @@ import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
     rebuildRequestHandler, resolveToolPath, revertChangeRecord,
     toolSteeringPrompt;
-import auroraopencode.systemprompt : rebuildModule, setSystemPromptModules;
+import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityFromName,
+    promptVerbosityLabel, promptVerbosityName, promptVerbosityNames,
+    rebuildModule, setSystemPromptModules;
 import std.array : replicate;
 import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
     write;
@@ -27,6 +29,19 @@ private OpenCodeToolCall makeCall(string name, string args)
     call.name = name;
     call.arguments = args;
     return call;
+}
+
+/// Strip the Environment section's "Local date and time" line, which embeds
+/// the wall clock. Two prompts built at different instants otherwise differ by
+/// that timestamp alone, so verbosity comparisons must ignore it.
+private string withoutTimestamp(string prompt)
+{
+    const marker = "  Local date and time: ";
+    const start = prompt.indexOf(marker);
+    if (start < 0) return prompt;
+    const end = prompt.indexOf("\n", start);
+    if (end < 0) return prompt;
+    return prompt[0 .. start] ~ prompt[end .. $];
 }
 
 int main()
@@ -707,6 +722,54 @@ int main()
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
         "Dynamic environment should follow stable instructions for caching");
+
+    // Optional verbosity selector. "default" (and any unknown value) must
+    // leave the prompt byte-identical, while Concise/Compact append exactly
+    // one style section between the stable instructions and the dynamic tail.
+    {
+        const stock = buildSystemPrompt(false, ".", "auto");
+        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", "default"))
+                == withoutTimestamp(stock),
+            "The default verbosity must not change the prompt");
+        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", ""))
+                == withoutTimestamp(stock),
+            "A blank verbosity must fall back to the stock prompt");
+        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", "bogus"))
+                == withoutTimestamp(stock),
+            "An unknown verbosity must fall back to the stock prompt");
+        assert(stock.indexOf("# Response style") < 0,
+            "The stock prompt must not carry a response-style section");
+        const concise = buildSystemPrompt(false, ".", "auto", "concise");
+        const compact = buildSystemPrompt(false, ".", "auto", "compact");
+        assert(concise.indexOf("# Response style") > 0 &&
+            compact.indexOf("# Response style") > 0,
+            "Concise/Compact must add the response-style section");
+        assert(withoutTimestamp(concise) != withoutTimestamp(compact),
+            "Concise and Compact must be distinct levels");
+        // Each level must address the internal reasoning ("thinking"), not just
+        // the visible answer, so a smaller verbosity trims thought tokens too.
+        assert(concise.indexOf("internal reasoning") >= 0 &&
+            compact.indexOf("internal reasoning") >= 0,
+            "Concise/Compact must also steer the internal reasoning");
+        // The style section sits after the stable Communication text and
+        // before the dynamic Environment block, so the cacheable prefix and
+        // the per-request tail both keep their positions.
+        assert(concise.indexOf("# Response style") >
+            concise.indexOf("# Communication") &&
+            concise.indexOf("# Response style") <
+            concise.indexOf("# Environment"),
+            "The response-style section must stay out of the dynamic tail");
+        assert(promptVerbosityNames() == ["default", "concise", "compact"],
+            "The picker must offer exactly the supported levels");
+        assert(promptVerbosityFromName("compact") == PromptVerbosity.compact &&
+            promptVerbosityFromName("nonsense") == PromptVerbosity.default_,
+            "Verbosity name parsing must be strict and safe");
+        assert(promptVerbosityName(PromptVerbosity.concise) == "concise" &&
+            promptVerbosityLabel("default") == "Default" &&
+            promptVerbosityLabel("compact") == "Compact",
+            "Verbosity name/label round-trip must hold");
+    }
+    writeln("Optional verbosity selector shapes the prompt safely");
     assert(toolSteeringPrompt(false).length < 8_000,
         "Steering prompt should stay concise; tool syntax belongs in schemas");
     // The app can edit its own source; the prompt must forbid the agent from
@@ -718,6 +781,7 @@ int main()
         "outside the change journal") >= 0,
         "Steering prompt must keep mutations inside the snapshot journal");
     writeln("Default vs native-only toolset shapes OK");
+
 
     // The agent-facing rebuild tool is advertised in both toolsets and delegates
     // to the host application: the tool cannot build the locked executable

@@ -2023,6 +2023,34 @@ int main(string[] args)
     window.saveScreenshot(buildPath(promptShots, "system-prompt.ppm"));
     root.dismissPopupForTesting();
 
+    // Optional verbosity selector. The picker opens on "Default" (the stock
+    // prompt); choosing Concise adds the response-style section to the exact
+    // system message, and the choice is persisted. Restored at the end so the
+    // rest of the suite sees the stock prompt.
+    assert(root.verbosityPickerLabelForTesting() == "Default",
+        "The verbosity picker must default to Default");
+    root.dismissPopupForTesting();
+    assert(root.selectVerbosityForTesting("concise") == "concise",
+        "Selecting a verbosity must store the chosen level");
+    const concisePrompt = root.systemPromptViewerTextForTesting();
+    assert(concisePrompt.indexOf("# Response style") >= 0,
+        "The Concise verbosity must reach the system prompt");
+    assert(concisePrompt.indexOf("# Communication") >= 0 &&
+        concisePrompt.indexOf("# Execution loop") >= 0,
+        "Concise must leave the rest of the prompt intact");
+    root.dismissPopupForTesting();
+    const verbositySettings = parseJSON(readText(buildPath(stateDir,
+        "settings.json")));
+    assert(verbositySettings["verbosity"].str == "concise",
+        "The verbosity choice must be persisted");
+    assert(root.selectVerbosityForTesting("default") == "default",
+        "Selecting Default must restore the stored level");
+    assert(root.systemPromptViewerTextForTesting().indexOf(
+        "# Response style") < 0,
+        "Default must not carry a response-style section");
+    root.dismissPopupForTesting();
+    writeln("Optional verbosity selector changes the prompt and persists");
+
     // Tool loop: with tools enabled and a workspace, an injected tool call is
     // executed locally and the result lands as a `tool` role message.
     auto workspaceDir = buildPath(stateDir, "workspace");

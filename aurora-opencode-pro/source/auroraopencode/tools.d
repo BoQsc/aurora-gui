@@ -339,7 +339,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
 /// syntax lives in each tool definition; keeping it out of this prompt avoids
 /// duplicate instructions and leaves the stable prefix eligible for caching.
 public string buildSystemPrompt(bool nativeOnly, string workspace,
-    string platformName)
+    string platformName, string verbosity = "default")
 {
     import std.datetime : Clock;
     import std.file : exists;
@@ -355,12 +355,15 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
     // so the rendered prompt is unchanged. New awareness (rebuilds, self-hosting,
     // ...) is added by registering an extra module rather than by editing this
     // function, which keeps the core text and the stable cached prefix untouched.
+    // `verbosity` stays optional: "default" (the default) renders no style
+    // section, so every existing caller keeps the byte-identical stock prompt.
     SystemPromptContext ctx;
     ctx.nativeOnly = nativeOnly;
     ctx.workspace = workspace;
     ctx.platformName = platformName;
     ctx.today = today;
     ctx.isGitRepo = isGitRepo;
+    ctx.verbosity = verbosity;
     return renderSystemPrompt(ctx);
 }
 
