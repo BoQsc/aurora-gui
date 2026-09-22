@@ -349,6 +349,11 @@ private final class MessageBubble : Widget
     // show or hide the absolute-path tooltip.
     void delegate(bool hovered) onPathHoverChanged;
 
+    // Quick-search (Ctrl+F) query this bubble should highlight. Empty means no
+    // search is running. Every occurrence in the bubble's painted text runs is
+    // highlighted, so a match is visible wherever the reader looks.
+    private string _searchQuery;
+
     // File-mutating tool results (edit/write/remove) carry a computed diff: the
     // `+N -M` counters and the unified diff rendered as a line-numbered body
     // with green additions and red deletions. Non-diff tool output is rendered
@@ -518,6 +523,18 @@ private final class MessageBubble : Widget
 
     /// Test-only: whether the pointer is currently over the row's header.
     public bool pathHoveredForTesting() const { return _pathHover; }
+
+    /// Highlight every occurrence of `query` (ASCII-case-insensitive) in this
+    /// bubble's text. Empty clears the highlights.
+    void setSearchQuery(string query)
+    {
+        if (_searchQuery == query) return;
+        _searchQuery = query;
+        invalidate();
+    }
+
+    /// Test-only: the quick-search query this bubble highlights.
+    public string searchQueryForTesting() const { return _searchQuery; }
 
     void setDiff(int additions, int deletions, string diff)
     {
@@ -1185,7 +1202,38 @@ private final class MessageBubble : Widget
         drawVersionNav(canvas, width, height);
         drawActionPill(canvas, width, height);
         drawFooter(canvas, width, height);
+        // Quick-search highlights go last: the select segments this frame just
+        // registered are the geometry of the text that was actually painted, and
+        // a translucent wash over the glyphs keeps the text readable.
+        if (_searchQuery.length > 0) drawSearchHighlights(canvas);
     }
+
+    /// Paint a translucent highlight over every quick-search match in this
+    /// bubble's painted text runs (prose, reasoning and tool bodies are all
+    /// registered as select segments, so one pass covers them).
+    private void drawSearchHighlights(ref Canvas canvas)
+    {
+        const needle = toUTF32(_searchQuery);
+        foreach (segment; _selSegments)
+        {
+            const text = segment.layout.text();
+            size_t from;
+            while (true)
+            {
+                const at = indexOfFold(text, needle, from);
+                if (at == size_t.max) break;
+                foreach (rect; segment.layout.selectionRects(at,
+                    at + needle.length))
+                    canvas.fillRect(Rect(segment.x + cast(int) rect.x,
+                        segment.y + cast(int) rect.y,
+                        maxInt(1, cast(int) rect.width),
+                        maxInt(1, cast(int) rect.height)),
+                        searchMatchHighlight);
+                from = at + needle.length;
+            }
+        }
+    }
+
     private void drawActionPill(ref Canvas canvas, int width, int height)
     {
         _actionRect = Rect.init;
@@ -4051,6 +4099,73 @@ private string[] splitLines(string text)
     return lines;
 }
 
+// ---------------------------------------------------------------------------
+// Quick-search text helpers (Ctrl+F)
+// ---------------------------------------------------------------------------
+
+/// ASCII lowercase, identity for everything else (including UTF-8 continuation
+/// bytes). Folding this way never changes a string's length, so a match index
+/// stays valid for the original text — the quick search highlights by index.
+private static dchar foldAscii(dchar ch)
+{
+    return ch >= 'A' && ch <= 'Z' ? cast(dchar) (ch + ('a' - 'A')) : ch;
+}
+
+private static char foldAscii(char ch)
+{
+    return ch >= 'A' && ch <= 'Z' ? cast(char) (ch + ('a' - 'A')) : ch;
+}
+
+/// ASCII-case-insensitive index of `needle` in `haystack` at or after `from`
+/// (size_t.max when it is absent).
+private static size_t indexOfFold(const(dchar)[] haystack,
+    const(dchar)[] needle, size_t from = 0)
+{
+    if (needle.length == 0 || haystack.length < needle.length) return size_t.max;
+    for (size_t i = from; i + needle.length <= haystack.length; ++i)
+    {
+        size_t j;
+        while (j < needle.length &&
+            foldAscii(haystack[i + j]) == foldAscii(needle[j])) ++j;
+        if (j == needle.length) return i;
+    }
+    return size_t.max;
+}
+
+private static size_t indexOfFold(string haystack, string needle,
+    size_t from = 0)
+{
+    if (needle.length == 0 || haystack.length < needle.length) return size_t.max;
+    for (size_t i = from; i + needle.length <= haystack.length; ++i)
+    {
+        size_t j;
+        while (j < needle.length &&
+            foldAscii(haystack[i + j]) == foldAscii(needle[j])) ++j;
+        if (j == needle.length) return i;
+    }
+    return size_t.max;
+}
+
+/// Number of non-overlapping ASCII-case-insensitive occurrences.
+private static int countFoldedOccurrences(string haystack, string needle)
+{
+    if (needle.length == 0) return 0;
+    int count;
+    size_t from;
+    while (true)
+    {
+        const at = indexOfFold(haystack, needle, from);
+        if (at == size_t.max) break;
+        ++count;
+        from = at + needle.length;
+    }
+    return count;
+}
+
+/// Translucent highlight painted over quick-search matches (distinct from the
+/// text-selection colour).
+private immutable Color searchMatchHighlight = Color.rgba(255, 198, 64, 96);
+
 /// Reusable hover tooltip anchor: a small "(?)" chip that opens a popup
 /// tooltip while hovered. Used in dialogs (e.g. the Legacy tools option).
 private final class TooltipAnchor : Widget
@@ -4766,6 +4881,172 @@ private final class FollowPill : Widget
         @safe pure nothrow @nogc
     {
         return !_shown || !_pillRect.contains(localPoint);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quick search bar (Pro): Ctrl+F over the open conversation
+// ---------------------------------------------------------------------------
+
+/// The floating quick-search bar: a query field, the match counter and
+/// previous/next/close controls, pinned to the top of the transcript. It is an
+/// overlay child of the scroll view (full viewport bounds, excluded from layout)
+/// and is pointer-transparent outside its panel, so the transcript underneath
+/// stays readable and scrollable while searching.
+private final class ChatSearchBar : Widget
+{
+    private static immutable int panelHeight = 40;
+    private static immutable int panelWidth = 430;
+    private static immutable int topMargin = 8;
+    private static immutable int innerInset = 8;
+
+    TextField field;
+    Label counter;
+    private HBox _bar;
+    // The panel's rect within the overlay's full-viewport bounds, refreshed on
+    // each layout so hit testing and `hoverTransparentAt` agree with the frame.
+    private Rect _panelRect;
+
+    /// Fired with the field text whenever it changes.
+    void delegate(string query) onQueryChanged;
+    /// Fired with -1 (previous) or +1 (next).
+    void delegate(int delta) onStep;
+    /// Fired when the bar should close (Esc, or the × button).
+    void delegate() onClosed;
+
+    this()
+    {
+        setId("oc-search");
+        layoutHints().excludeFromLayout = true;
+        layoutHints().overlayFillParent = true;
+        layoutHints().allowOverflow = true;
+
+        _bar = new HBox(6);
+        field = new TextField("");
+        field.setPlaceholder("Search this chat");
+        field.layoutHints().flex = 1.0;
+        field.layoutHints().minWidth = 120;
+        field.layoutHints().minHeight = 26;
+        field.onChanged = delegate()
+        {
+            if (onQueryChanged !is null) onQueryChanged(field.textUtf8());
+        };
+        // The field consumes Enter for `onSubmitted`, so the next-match step is
+        // wired here rather than from a bubbled key event.
+        field.onSubmitted = delegate()
+        {
+            if (onStep !is null) onStep(1);
+        };
+        _bar.add(field);
+
+        counter = new Label("");
+        counter.setScale(1);
+        counter.setColor(opencodeMuted);
+        counter.layoutHints().preferredWidth = 76;
+        counter.layoutHints().minWidth = 76;
+        _bar.add(counter);
+
+        _bar.add(stepButton("‹", "oc-search-prev", -1));
+        _bar.add(stepButton("›", "oc-search-next", 1));
+        auto close = new Button("×");
+        close.setFlat(true);
+        close.setId("oc-search-close");
+        close.layoutHints().preferredWidth = 28;
+        close.layoutHints().minWidth = 28;
+        close.onClick = delegate()
+        {
+            if (onClosed !is null) onClosed();
+        };
+        _bar.add(close);
+
+        add(_bar);
+    }
+
+    /// A small flat `‹`/`›` button bound to its own step direction (a factory,
+    /// so each button captures its own delta).
+    private Button stepButton(string label, string id, int delta)
+    {
+        auto button = new Button(label);
+        button.setFlat(true);
+        button.setId(id);
+        button.layoutHints().preferredWidth = 28;
+        button.layoutHints().minWidth = 28;
+        button.onClick = delegate()
+        {
+            if (onStep !is null) onStep(delta);
+        };
+        return button;
+    }
+
+    /// Show the match position. `total` < 0 means "no query yet" (blank), 0
+    /// means the query matched nothing.
+    void setCount(int current, int total)
+    {
+        counter.setText(total < 0 ? ""
+            : total == 0 ? "no matches"
+            : to!string(current + 1) ~ " / " ~ to!string(total));
+        invalidate();
+    }
+
+    void setQuery(string query)
+    {
+        if (field.textUtf8() == query) return;
+        field.setText(query);
+    }
+
+    void focusField()
+    {
+        field.requestFocus();
+    }
+
+    /// Test-only: the panel's rect within the transcript viewport.
+    public Rect panelBoundsForTesting() const { return _panelRect; }
+
+    protected override Size onMeasure(Size available)
+    {
+        return available;
+    }
+
+    protected override void onLayout()
+    {
+        _panelRect = computePanelRect();
+        _bar.setBounds(Rect(_panelRect.x + innerInset,
+            _panelRect.y + innerInset,
+            maxInt(40, _panelRect.width - 2 * innerInset),
+            maxInt(24, panelHeight - 2 * innerInset)));
+    }
+
+    private Rect computePanelRect()
+    {
+        const width = minInt(panelWidth, maxInt(180, bounds().width - 16));
+        return Rect(maxInt(8, (bounds().width - width) / 2), topMargin, width,
+            panelHeight);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        _panelRect = computePanelRect();
+        canvas.drawRoundedRect(_panelRect, 8, opencodeElevated, opencodeBorder, 1);
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        // The field consumes Enter (its `onSubmitted`) and only consumes Esc to
+        // drop a selection, so Esc reaches here and closes the bar.
+        if (event.key == Key.escape)
+        {
+            if (onClosed !is null) onClosed();
+            return true;
+        }
+        return false;
+    }
+
+    /// Pointer-transparent outside the panel so the transcript underneath keeps
+    /// receiving clicks, hovers and wheel scrolling.
+    override bool hoverTransparentAt(Point localPoint) const
+        @safe pure nothrow @nogc
+    {
+        return !_panelRect.contains(localPoint);
     }
 }
 
@@ -5548,6 +5829,19 @@ public final class OpenCodeRoot : VBox
     private IntroOverlay _introOverlay;
     private DetachedPlanPanel _planPanel;
     private FollowPill _followPill;
+    // Quick search over the open conversation (Ctrl+F).
+    private ChatSearchBar _searchBar;
+    private bool _searchOpen;
+    private string _searchQuery;
+    // One entry per match in transcript order: the message it belongs to, and
+    // where in that message it lives (so revealing it can expand the row).
+    private int[] _searchMatchMessages;
+    private bool[] _searchMatchInBody;
+    private bool[] _searchMatchInReasoning;
+    private int _searchCurrent = -1;
+    // A match whose row had to expand: the scroll is applied after that
+    // expansion has been laid out, since bounds read before it would be stale.
+    private int _pendingRevealMessage = -1;
     private ChatInput _input;
     private ChatSendButton _sendButton;
     // Conversation whose queued message is waiting for the stopped request to
@@ -6699,6 +6993,23 @@ public final class OpenCodeRoot : VBox
         // after the reader has scrolled up to inspect something. Added last so
         // it paints above the transcript and the plan card.
         _followPill = _messagesScroll.add(new FollowPill(_messagesScroll));
+
+        // Quick-search bar (Ctrl+F): pinned to the top of the transcript, hidden
+        // until the shortcut is pressed.
+        _searchBar = _messagesScroll.add(new ChatSearchBar());
+        _searchBar.setVisible(false);
+        _searchBar.onQueryChanged = delegate(string query)
+        {
+            setChatSearchQuery(query);
+        };
+        _searchBar.onStep = delegate(int delta)
+        {
+            searchStep(delta);
+        };
+        _searchBar.onClosed = delegate()
+        {
+            closeChatSearch();
+        };
 
         _input = new ChatInput();
         _input.setId("oc-input");
@@ -8011,6 +8322,212 @@ public final class OpenCodeRoot : VBox
         return result;
     }
 
+    // -- quick search (Ctrl+F) ---------------------------------------------
+
+    /// Open the quick-search bar and focus its field. Pressing Ctrl+F again
+    /// while it is open just returns the caret to the field.
+    private void openChatSearch()
+    {
+        if (_searchBar is null) return;
+        if (!_searchOpen)
+        {
+            _searchOpen = true;
+            _searchBar.setVisible(true);
+            _searchBar.setQuery(_searchQuery);
+            _searchBar.setCount(_searchMatchMessages.length == 0
+                ? (_searchQuery.length == 0 ? -1 : 0)
+                : _searchCurrent, cast(int) _searchMatchMessages.length);
+        }
+        _searchBar.focusField();
+        updateStatus("Search this chat — Enter for the next match, Esc to close.");
+    }
+
+    /// Close the quick-search bar and drop every highlight.
+    private void closeChatSearch()
+    {
+        if (!_searchOpen) return;
+        _searchOpen = false;
+        _searchQuery = "";
+        _searchMatchMessages.length = 0;
+        _searchMatchInBody.length = 0;
+        _searchMatchInReasoning.length = 0;
+        _searchCurrent = -1;
+        if (_searchBar !is null)
+        {
+            _searchBar.setVisible(false);
+            _searchBar.setQuery("");
+        }
+        applySearchQueryToBubbles();
+        updateStatus("");
+    }
+
+    /// Type into the quick-search field: re-run the match pass over the rendered
+    /// transcript and highlight the result in every bubble.
+    private void setChatSearchQuery(string query)
+    {
+        _searchQuery = query.strip();
+        recomputeSearchMatches();
+    }
+
+    /// The text a quick search covers for one message: exactly what the
+    /// transcript paints for it (prose, reasoning, or a tool row's rendered
+    /// body), so every match can be highlighted once it is revealed.
+    private string searchBodyForMessage(ref const ChatMessage message)
+    {
+        if (message.role == "tool")
+        {
+            const diffText = message.toolDiff.length > 0
+                ? message.toolDiff
+                : previewToolDiffText(message.toolName, message.toolArgs);
+            return diffText.length > 0 ? diffText : message.content;
+        }
+        return message.content;
+    }
+
+    /// Rebuild the match list for the current query over the messages the
+    /// transcript is showing, then hand the query to the bubbles.
+    private void recomputeSearchMatches()
+    {
+        _searchMatchMessages.length = 0;
+        _searchMatchInBody.length = 0;
+        _searchMatchInReasoning.length = 0;
+        _searchCurrent = -1;
+        if (_current >= 0 && _searchQuery.length > 0)
+        {
+            auto session = &_sessions[_current];
+            const fullPath = activeMessagePath(*session);
+            // Only the rendered window: a match in a message hidden behind "Load
+            // older messages" could never be scrolled to.
+            const hiddenCount = fullPath.length > _visibleMessageLimit
+                ? fullPath.length - _visibleMessageLimit : 0;
+            foreach (index; fullPath[hiddenCount .. $])
+            {
+                const message = session.messages[index];
+                const reasoning = message.role == "assistant"
+                    ? message.reasoning : "";
+                foreach (i; 0 .. countFoldedOccurrences(reasoning, _searchQuery))
+                {
+                    _searchMatchMessages ~= cast(int) index;
+                    _searchMatchInBody ~= false;
+                    _searchMatchInReasoning ~= true;
+                }
+                const body = searchBodyForMessage(message);
+                foreach (i; 0 .. countFoldedOccurrences(body, _searchQuery))
+                {
+                    _searchMatchMessages ~= cast(int) index;
+                    _searchMatchInBody ~= true;
+                    _searchMatchInReasoning ~= false;
+                }
+            }
+        }
+        applySearchQueryToBubbles();
+        if (_searchMatchMessages.length > 0)
+        {
+            // Land on the first match, which also refreshes the counter.
+            searchStep(1);
+            return;
+        }
+        if (_searchBar !is null)
+            _searchBar.setCount(_searchQuery.length == 0 ? -1 : 0, 0);
+    }
+
+    /// Move to the next (+1) or previous (-1) match, wrapping at either end.
+    private void searchStep(int delta)
+    {
+        const total = cast(int) _searchMatchMessages.length;
+        if (total == 0)
+        {
+            if (_searchBar !is null && _searchQuery.length > 0)
+                _searchBar.setCount(0, 0);
+            return;
+        }
+        auto next = _searchCurrent + delta;
+        if (next < 0) next = total - 1;
+        if (next >= total) next = 0;
+        _searchCurrent = next;
+        if (_searchBar !is null) _searchBar.setCount(_searchCurrent, total);
+        revealSearchMatch();
+    }
+
+    /// Scroll the current match's row into view, expanding the collapsible it
+    /// lives in so the highlight is actually on screen.
+    private void revealSearchMatch()
+    {
+        if (_searchCurrent < 0 ||
+            _searchCurrent >= cast(int) _searchMatchMessages.length) return;
+        const slot = cast(size_t) _searchCurrent;
+        const messageIndex = _searchMatchMessages[slot];
+        auto bubble = bubbleForMessageIndex(messageIndex);
+        if (bubble is null) return;
+        if (_searchMatchInReasoning[slot])
+            bubble.setThinkingCollapsed(false);
+        else if (_searchMatchInBody[slot] &&
+            bubble.toolNameForTesting().length > 0)
+            bubble.setCollapsed(false);
+        // A tool row lives inside a collapsed action group, so open every group
+        // above it or the row would not be on screen at all.
+        for (auto parent = bubble.parent(); parent !is null;
+            parent = parent.parent())
+            if (auto group = cast(ToolGroupBubble) parent)
+                group.setCollapsed(false);
+        // Revealing a match is a deliberate move away from the live end of the
+        // transcript, so automatic scrolling hands over (the jump-to-latest pill
+        // brings it back).
+        _messagesScroll.follow = false;
+        _messageColumn.invalidate();
+        _messagesScroll.invalidate();
+        // The row may have just been expanded, so scroll on the next frame.
+        _pendingRevealMessage = messageIndex;
+    }
+
+    /// Apply a deferred match reveal: scroll the row into view once the
+    /// expansion it triggered has been laid out.
+    private void applyPendingReveal()
+    {
+        if (_pendingRevealMessage < 0) return;
+        const messageIndex = _pendingRevealMessage;
+        _pendingRevealMessage = -1;
+        auto bubble = bubbleForMessageIndex(messageIndex);
+        if (bubble is null) return;
+        // The row's bounds are in its parent's coordinates; map them onto the
+        // scroll content so `ensureVisible` can place the row.
+        const origin = bubble.localToGlobal(Point(0, 0));
+        const contentPoint = _messageColumn.globalToLocal(origin);
+        _messagesScroll.ensureVisible(Rect(contentPoint.x, contentPoint.y,
+            bubble.bounds().width, bubble.bounds().height));
+    }
+
+    /// The transcript bubble for a message index, searching nested groups too.
+    private MessageBubble bubbleForMessageIndex(int messageIndex)
+    {
+        MessageBubble[] found;
+        collectMessageBubbles(_messageColumn, found);
+        foreach (bubble; found)
+            if (bubble.messageIndex() == messageIndex) return bubble;
+        return null;
+    }
+
+    /// Every transcript bubble under `root`, in visual order.
+    private static void collectMessageBubbles(Widget root,
+        ref MessageBubble[] found)
+    {
+        foreach (child; root.children())
+        {
+            if (auto bubble = cast(MessageBubble) child) found ~= bubble;
+            collectMessageBubbles(child, found);
+        }
+    }
+
+    /// Hand the current query to every transcript bubble so each highlights its
+    /// own matches.
+    private void applySearchQueryToBubbles()
+    {
+        MessageBubble[] bubbles;
+        collectMessageBubbles(_messageColumn, bubbles);
+        foreach (bubble; bubbles)
+            bubble.setSearchQuery(_searchQuery);
+    }
+
     /// Add one round's owned tool results to `target` as a Codex-style action
     /// group (a single collapsible summarising that round's tools) and return it
     /// so the live path can append its in-flight rows. `collapseKey` is the
@@ -8265,6 +8782,8 @@ public final class OpenCodeRoot : VBox
             bubble.setLiveTokens(message.completionTokens, false);
         if (message.tokensPerSecondTenths > 0)
             bubble.setTokenRate(message.tokensPerSecondTenths);
+        // A rebuild must not drop the running quick search's highlights.
+        if (_searchQuery.length > 0) bubble.setSearchQuery(_searchQuery);
         return bubble;
     }
 
@@ -13869,6 +14388,10 @@ public final class OpenCodeRoot : VBox
             }
         }
 
+        // A quick-search match whose row had to expand is scrolled to once that
+        // expansion has been laid out.
+        applyPendingReveal();
+
         // Each conversation owns a separate client and event queue. Service
         // all of them on every UI tick, then restore the selected context.
         saveLoadedRuntime();
@@ -14131,6 +14654,11 @@ public final class OpenCodeRoot : VBox
     override bool onKeyDown(ref Event event)
     {
         const shortcut = event.control() || event.meta();
+        if (shortcut && event.key == Key.f)
+        {
+            openChatSearch();
+            return true;
+        }
         if (shortcut && event.key == Key.n)
         {
             newChat();
@@ -16427,6 +16955,67 @@ public final class OpenCodeRoot : VBox
     public bool followPillShownForTesting()
     {
         return _followPill !is null && _followPill.shownForTesting();
+    }
+
+    /// Test-only: open the quick-search bar as Ctrl+F would.
+    public void openChatSearchForTesting()
+    {
+        openChatSearch();
+    }
+
+    /// Test-only: type a query into the quick-search bar.
+    public void setChatSearchQueryForTesting(string query)
+    {
+        setChatSearchQuery(query);
+        if (_searchBar !is null) _searchBar.setQuery(_searchQuery);
+    }
+
+    /// Test-only: whether the quick-search bar is open.
+    public bool chatSearchOpenForTesting() const
+    {
+        return _searchOpen;
+    }
+
+    /// Test-only: how many matches the current query has.
+    public int chatSearchMatchCountForTesting() const
+    {
+        return cast(int) _searchMatchMessages.length;
+    }
+
+    /// Test-only: the 1-based ordinal of the current match (0 when none).
+    public int chatSearchCurrentForTesting() const
+    {
+        return _searchCurrent < 0 ? 0 : _searchCurrent + 1;
+    }
+
+    /// Test-only: the message index the current match lives in (-1 when none).
+    public int chatSearchCurrentMessageForTesting() const
+    {
+        return _searchCurrent >= 0 &&
+            _searchCurrent < cast(int) _searchMatchMessages.length
+            ? _searchMatchMessages[cast(size_t) _searchCurrent] : -1;
+    }
+
+    /// Test-only: step to the next (+1) or previous (-1) match.
+    public void chatSearchStepForTesting(int delta)
+    {
+        searchStep(delta);
+    }
+
+    /// Test-only: the query each transcript bubble is highlighting.
+    public string chatSearchBubbleQueryForTesting(int ordinal)
+    {
+        MessageBubble[] bubbles;
+        collectMessageBubbles(_messageColumn, bubbles);
+        return ordinal >= 0 && ordinal < cast(int) bubbles.length
+            ? bubbles[cast(size_t) ordinal].searchQueryForTesting() : "";
+    }
+
+    /// Test-only: the search bar's panel rect within the transcript viewport.
+    public Rect chatSearchBarBoundsForTesting()
+    {
+        return _searchBar is null
+            ? Rect.init : _searchBar.panelBoundsForTesting();
     }
 
     /// Test-only: the jump-to-latest pill's rect within the transcript viewport
