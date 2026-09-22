@@ -2390,7 +2390,7 @@ private string[] toolFilePaths(string toolName, string toolArgs,
     void accept(string candidate)
     {
         const resolved = resolveDisplayedPath(candidate, workspace);
-        if (resolved.length == 0) return;
+        if (resolved.length == 0 || !plausiblePathCandidate(resolved)) return;
         const folder = directoryOf(resolved);
         if (exists(resolved) || (folder.length > 0 && exists(folder)))
             appendUniquePath(result, resolved);
@@ -2400,6 +2400,18 @@ private string[] toolFilePaths(string toolName, string toolArgs,
     foreach (line; toolOutput.splitLines())
         accept(outputPathCandidate(line));
     return result;
+}
+
+/// Whether a scraped candidate can be a real path. Windows forbids ':' inside a
+/// name, so the only allowed colon is the drive separator at index 1. Without
+/// this guard a `read` row's numbered output ("45: version(…)") was accepted by
+/// `exists()` as an NTFS alternate-data-stream name and flooded the row with
+/// dozens of junk "paths".
+private static bool plausiblePathCandidate(string path)
+{
+    foreach (index, ch; path)
+        if (ch == ':' && index != 1) return false;
+    return true;
 }
 
 /// Whether `path` is absolute (drive-rooted, UNC or rooted) on Windows.
@@ -3822,11 +3834,29 @@ private final class HoverTooltip : Widget
     private dstring _title;
     private dstring[] _rows;
     private Widget _hoverOwner;
+    // Opt-in word wrap: a long absolute path is wrapped instead of clipped at
+    // the tooltip edge. The plain usage-breakdown tooltip keeps its fixed
+    // one-row-per-line layout.
+    private bool _wrap;
+    private static immutable int wrapWidth = 460;
+    private static immutable int wrappedRowGap = 2;
+    // Wrapped row layouts, built by onMeasure and reused by onPaint so a row is
+    // shaped once per content change instead of on every frame.
+    private TextLayout[] _rowLayouts;
 
     this(Widget hoverOwner)
     {
         _hoverOwner = hoverOwner;
         layoutHints().excludeFromLayout = true;
+    }
+
+    /// Wrap long rows to the tooltip's width instead of clipping them.
+    void setWrap(bool value)
+    {
+        if (_wrap == value) return;
+        _wrap = value;
+        _rowLayouts.length = 0;
+        invalidate();
     }
 
     void setContent(string title, const(string)[] rows)
@@ -3873,13 +3903,37 @@ private final class HoverTooltip : Widget
         const padH = 14;
         const padV = 12;
         const lineH = 18;
-        const width = 272;
+        const width = _wrap ? wrapWidth : 272;
         int height = padV * 2;
         if (_title.length > 0) height += lineH + 6;
-        height += cast(int) _rows.length * lineH;
+        _rowLayouts.length = 0;
+        if (_wrap)
+        {
+            const contentWidth = maxInt(40, width - 2 * padH);
+            foreach (row; _rows)
+            {
+                auto layout = wrapRow(row, contentWidth);
+                _rowLayouts ~= layout;
+                height += cast(int) layout.measuredSize().height +
+                    wrappedRowGap;
+            }
+        }
+        else
+            height += cast(int) _rows.length * lineH;
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
+    }
+
+    /// Shape one row wrapped to `maxWidth` (the tooltip's content width).
+    private TextLayout wrapRow(dstring text, int maxWidth)
+    {
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.pixelSize = opencodeFontBase;
+        options.maxWidth = maxWidth;
+        options.wrap = true;
+        return fontSystem().textEngine.layout(text, options);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -3895,6 +3949,20 @@ private final class HoverTooltip : Widget
             canvas.drawText(Point(14, y), _title, palette.text, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
             y += 24;
+        }
+        if (_wrap)
+        {
+            foreach (index, row; _rows)
+            {
+                // Layouts come from onMeasure; shape on the fly if a paint ever
+                // runs without a preceding measure at the current width.
+                TextLayout layout = index < _rowLayouts.length
+                    ? _rowLayouts[index]
+                    : wrapRow(row, maxInt(40, width - 28));
+                canvas.drawLayout(Point(14, y), layout, opencodeMuted);
+                y += cast(int) layout.measuredSize().height + wrappedRowGap;
+            }
+            return;
         }
         foreach (row; _rows)
         {
@@ -12141,12 +12209,26 @@ public final class OpenCodeRoot : VBox
             if (auto cached = message.id in _toolPathTooltipCache)
                 return *cached;
         }
-        const paths = toolFilePaths(message.toolName, message.toolArgs,
-            message.content, workspaceForSession(_current));
+        const workspace = workspaceForSession(_current);
+        // The tool's own arguments win: a Read/Write/Edit row names exactly one
+        // file and a List/Glob row names the folder it ran in, so the tooltip is
+        // normally a single absolute path. Paths scraped from the tool's output
+        // (a directory listing, grep matches) are only a fallback for rows that
+        // name nothing themselves, and are capped so one row cannot turn the
+        // tooltip into a wall of unrelated files.
+        string[] paths;
+        foreach (candidate; toolArgumentPaths(message.toolName, message.toolArgs))
+        {
+            const resolved = resolveDisplayedPath(candidate, workspace);
+            if (resolved.length > 0 && toolPathExists(resolved))
+                appendUniquePath(paths, resolved);
+        }
+        if (paths.length == 0)
+            foreach (candidate; toolFilePaths(message.toolName, message.toolArgs,
+                message.content, workspace))
+                appendUniquePath(paths, candidate);
         auto builder = appender!string();
-        // A tool that lists paths (grep/glob output) can name dozens; the
-        // tooltip stays readable by showing the first few and a count.
-        enum maxRows = 8;
+        enum maxRows = 4;
         foreach (index, path; paths)
         {
             if (index >= maxRows)
@@ -12163,6 +12245,16 @@ public final class OpenCodeRoot : VBox
         return builder.data;
     }
 
+    /// Whether a resolved path still exists, or at least the folder that held
+    /// it, so a row for a deleted file keeps naming where the file lived.
+    private static bool toolPathExists(string resolved)
+    {
+        if (!plausiblePathCandidate(resolved)) return false;
+        if (exists(resolved)) return true;
+        const folder = directoryOf(resolved);
+        return folder.length > 0 && exists(folder);
+    }
+
     /// Show or hide the absolute-path tooltip for the tool row the pointer is
     /// over. It is anchored to the row's own header so an expanded row still
     /// labels the header rather than the whole (tall) bubble.
@@ -12174,6 +12266,8 @@ public final class OpenCodeRoot : VBox
             return;
         }
         if (_pathTooltip is null) _pathTooltip = new HoverTooltip(bubble);
+        // A long absolute path must wrap instead of being clipped at the edge.
+        _pathTooltip.setWrap(true);
         _pathTooltip.setText(bubble.pathTooltipText());
         if (_pathTooltip.parent() is null) popupRoot(this).add(_pathTooltip);
         _pathTooltipBubble = bubble;
