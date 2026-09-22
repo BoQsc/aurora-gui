@@ -746,8 +746,8 @@ int main()
             "Concise/Compact must add the response-style section");
         assert(withoutTimestamp(concise) != withoutTimestamp(compact),
             "Concise and Compact must be distinct levels");
-        // Each level must address the internal reasoning ("thinking"), not just
-        // the visible answer, so a smaller verbosity trims thought tokens too.
+        // The prompt can ask for shorter reasoning, but its effect depends on
+        // the provider and cannot guarantee a token reduction.
         assert(concise.indexOf("internal reasoning") >= 0 &&
             compact.indexOf("internal reasoning") >= 0,
             "Concise/Compact must also steer the internal reasoning");
@@ -772,16 +772,15 @@ int main()
             promptVerbosityLabel("compact") == "Compact" &&
             promptVerbosityLabel("caveman") == "Caveman",
             "Verbosity name/label round-trip must hold");
-        // Caveman is the strongest level: it makes the WHOLE turn telegraphic,
-        // the visible answer included, and it must differ from Compact so the
-        // picker levels stay distinct.
+        // Caveman requests telegraphic output, including the visible answer.
+        // It must differ from Compact so the picker levels stay distinct.
         const caveman = buildSystemPrompt(false, ".", "auto", "caveman");
         assert(caveman.indexOf("# Response style") > 0 &&
             caveman.indexOf("like a caveman") > 0 &&
             caveman.indexOf("telegraphic") > 0,
-            "Caveman must instruct telegraphic reasoning");
+            "Caveman must request telegraphic style");
         assert(caveman.indexOf("final answer as well") > 0,
-            "Caveman must apply to the visible answer, not only the reasoning");
+            "Caveman must request a telegraphic visible answer");
         assert(withoutTimestamp(caveman) != withoutTimestamp(compact) &&
             withoutTimestamp(caveman) != withoutTimestamp(concise),
             "Caveman must be its own level, distinct from Concise/Compact");

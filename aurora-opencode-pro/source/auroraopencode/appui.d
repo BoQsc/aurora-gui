@@ -4258,6 +4258,7 @@ private final class TooltipAnchor : Widget
 private final class HoverCheckBox : CheckBox
 {
     void delegate(bool hovered) onHoverChanged;
+    void delegate(Point) onContextMenuRequested;
 
     this(string text = "", bool checked = false)
     {
@@ -4275,15 +4276,25 @@ private final class HoverCheckBox : CheckBox
         super.onMouseLeave();
         if (onHoverChanged !is null) onHoverChanged(false);
     }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (enabled() && event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
 }
 
 /// Explanation shown when hovering the composer's Thinking toggle.
 private immutable string thinkingToggleTooltipText =
-    "Controls the model's reasoning effort. On sends " ~
-    "reasoning_effort \"high\" so the model thinks longer before " ~
-    "answering. Off sends \"none\" on a local server (disabling " ~
-    "thinking) or \"low\" on a hosted provider. Models that do not " ~
-    "support reasoning_effort ignore it.";
+    "Toggle reasoning for this chat. Right-click to choose reasoning effort for " ~
+    "this endpoint and model. Detected llama.cpp servers also offer a " ~
+    "thinking token budget. A server CLI budget can override it; providers " ~
+    "may ignore unsupported controls.";
 
 /// Small rectangular context meter in the toolbar. Shows the exact token
 /// usage the API reported as a percentage of the model's context window, and
@@ -5974,6 +5985,8 @@ public final class OpenCodeRoot : VBox
     private bool _modelsFetched;
     private int[string] _providerContextLimits;
     private string _contextLimitsBaseUrl;
+    private bool _llamaCppEndpoint;
+    private string _reasoningCapsBaseUrl;
 
     private ProjectState _projectState;
     private ProjectListView _projectRail;
@@ -6976,6 +6989,7 @@ public final class OpenCodeRoot : VBox
             setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
                 _thinkingTooltip, _thinkingTooltipOpen, open, true);
         };
+        thinkingBox.onContextMenuRequested = &showReasoningControlMenu;
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
@@ -11743,8 +11757,13 @@ public final class OpenCodeRoot : VBox
             _settings.model = session.model;
             if (_modelButton !is null) _modelButton.setText(session.model);
         }
+        const reasoningControl = reasoningControlForModel(_settings,
+            _settings.baseUrl, session.model);
+        const llamaCpp = _reasoningCapsBaseUrl == _settings.baseUrl &&
+            _llamaCppEndpoint;
         _client.startChatMessages(messages, tools, session.model,
-            session.thinking, ++_nextRequestId);
+            session.thinking, ++_nextRequestId, reasoningControl.effort,
+            llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp);
         _activeRequestId = _nextRequestId;
         _activeRequestSession = sessionIndex;
         _chatStartedAt = MonoTime.currTime;
@@ -12125,6 +12144,73 @@ public final class OpenCodeRoot : VBox
             items ~= contextBudgetMenuItem(model, target, selected,
                 target == 0 || target <= providerLimit);
         showContextMenu(_modelButton, globalPosition, items);
+    }
+
+    private void showReasoningControlMenu(Point globalPosition)
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        if (_thinkingTooltipOpen)
+            setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
+                _thinkingTooltip, _thinkingTooltipOpen, false, true);
+        const model = _settings.model;
+        const control = reasoningControlForModel(_settings,
+            _settings.baseUrl, model);
+        const selectedEffort = control.effort.length > 0
+            ? control.effort : "high";
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Reasoning effort (Thinking on)",
+            delegate() {}, "", false);
+        foreach (effort; ["low", "medium", "high"])
+            items ~= reasoningEffortMenuItem(model, effort, selectedEffort);
+        items ~= ContextMenuItem.separatorItem();
+        if (_reasoningCapsBaseUrl == _settings.baseUrl && _llamaCppEndpoint)
+        {
+            items ~= ContextMenuItem.command("llama.cpp thinking budget",
+                delegate() {}, "", false);
+            foreach (budget; [0, 1_024, 2_048, 4_096, 8_192])
+                items ~= reasoningBudgetMenuItem(model, budget,
+                    control.budgetTokens);
+        }
+        else
+            items ~= ContextMenuItem.command(
+                "Token budget requires detected llama.cpp",
+                delegate() {}, "", false);
+        showContextMenu(_thinkingBox, globalPosition, items);
+    }
+
+    private ContextMenuItem reasoningEffortMenuItem(string model,
+        string effort, string selected)
+    {
+        string label;
+        switch (effort)
+        {
+            case "low": label = "Low"; break;
+            case "medium": label = "Medium"; break;
+            default: label = "High (current default)"; break;
+        }
+        return ContextMenuItem.check(label, effort == selected, delegate()
+        {
+            auto control = reasoningControlForModel(_settings,
+                _settings.baseUrl, model);
+            setReasoningControlForModel(_settings, _settings.baseUrl, model,
+                effort == "high" ? "" : effort, control.budgetTokens);
+            saveSettingsNow();
+        });
+    }
+
+    private ContextMenuItem reasoningBudgetMenuItem(string model,
+        int budget, int selected)
+    {
+        const label = budget == 0 ? "Auto (server default)" :
+            formatThousands(budget) ~ " thinking tokens";
+        return ContextMenuItem.check(label, budget == selected, delegate()
+        {
+            auto control = reasoningControlForModel(_settings,
+                _settings.baseUrl, model);
+            setReasoningControlForModel(_settings, _settings.baseUrl, model,
+                control.effort, budget);
+            saveSettingsNow();
+        });
     }
 
     private string changeConversationLabel(string id) const
@@ -12757,11 +12843,11 @@ public final class OpenCodeRoot : VBox
         _settingsVerbosityButton = verbosityButton;
         optionsBody.add(verbosityRow);
         auto verbosityHint = optionsBody.add(new Label(
-            "How much the agent writes. \"Default\" keeps the stock prompt; " ~
-            "Concise and Compact trim preamble and repetition from both the " ~
-            "answer and its reasoning, without removing needed detail. " ~
-            "\"Caveman\" reasons in telegraphic fragments for the largest " ~
-            "saving; the answer itself is telegraphic too."));
+            "Requests a shorter response style. \"Default\" keeps the stock " ~
+            "prompt; \"Caveman\" asks for telegraphic answers. These prompt " ~
+            "instructions may influence thinking, but the provider controls " ~
+            "its reasoning style and length. Token savings are not guaranteed. " ~
+            "Right-click Thinking for direct controls."));
         verbosityHint.setScale(1);
         verbosityHint.setColor(opencodeMuted);
 
@@ -15122,6 +15208,8 @@ public final class OpenCodeRoot : VBox
                     foreach (model, limit; event.modelContextLimits)
                         _providerContextLimits[model] = limit;
                     _contextLimitsBaseUrl = _settings.baseUrl;
+                    _llamaCppEndpoint = event.llamaCppServer;
+                    _reasoningCapsBaseUrl = _settings.baseUrl;
                     applyModels(event.modelIds);
                     break;
                 case OpenCodeEventKind.modelsError:
@@ -16400,6 +16488,12 @@ public final class OpenCodeRoot : VBox
         _providerContextLimits[model] = limit;
         _contextLimitsBaseUrl = _settings.baseUrl;
         refreshUsageBadge();
+    }
+
+    public void setLlamaCppEndpointForTesting(bool value)
+    {
+        _llamaCppEndpoint = value;
+        _reasoningCapsBaseUrl = _settings.baseUrl;
     }
 
     public void setContextBudgetForTesting(int limit)

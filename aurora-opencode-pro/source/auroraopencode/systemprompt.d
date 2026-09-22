@@ -339,12 +339,10 @@ private string communicationSection(in SystemPromptContext ctx)
 /// selects a smaller verbosity in Settings. Sits between the stable
 /// Communication text and the dynamic Environment block.
 ///
-/// Each level covers BOTH the visible answer and the internal reasoning
-/// ("thinking"), so picking a smaller verbosity trims the thinking the model
-/// shows as well as its prose. Note this is a prompt-level nudge: the hard
-/// lever for reasoning tokens remains the Thinking toggle (which sets the
-/// request's `reasoning_effort`), because a provider may ignore instructions
-/// about how long to reason.
+/// These are prompt-level style requests for the visible answer. They also ask
+/// for brief reasoning, but providers may ignore that request or follow it
+/// inconsistently. The Thinking toggle changes `reasoning_effort` where the
+/// provider supports it; neither control guarantees a reasoning token count.
 ///
 /// Exposed as a standalone function because the app's final-answer round builds
 /// its own minimal system prompt (no tools, "produce the final response now");
@@ -372,9 +370,8 @@ public string promptVerbosityDirective(string verbosity)
                 "as well: plan briefly, don't re-derive known facts, and stop " ~
                 "thinking once the next action is clear.\n";
         case PromptVerbosity.caveman:
-            // The strongest level: caveman speak for the WHOLE turn, the
-            // visible answer included, so the user actually sees the terse
-            // telegraphic style and not just a shorter hidden reasoning trace.
+            // Ask for a telegraphic answer and reasoning. This is still only a
+            // style request; the provider decides how to generate reasoning.
             return "\n# Response style\nTalk and think like a caveman. " ~
                 "Fewest words possible: short telegraphic fragments, no " ~
                 "full sentences, no articles, no pleasantries, no preamble, " ~

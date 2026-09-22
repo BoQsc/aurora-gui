@@ -62,6 +62,7 @@ struct OpenCodeEvent
     // separate from cancellation so the UI can offer a safe continuation.
     string finishReason;
     int[string] modelContextLimits;
+    bool llamaCppServer;
 }
 
 private struct HttpTarget
@@ -577,7 +578,8 @@ final class OpenCodeClient
     /** Start a streaming chat completion with tool definitions. */
     void startChatMessages(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
-        ulong requestId = 0)
+        ulong requestId = 0, string reasoningEffort = "",
+        int thinkingBudgetTokens = 0, bool llamaCppServer = false)
     {
         _mutex.lock();
         if (_chatBusy)
@@ -628,7 +630,8 @@ final class OpenCodeClient
         }
 
         auto worker = new Thread({
-            runChatRequest(messageCopy, toolCopy, model, thinking, requestId);
+            runChatRequest(messageCopy, toolCopy, model, thinking, requestId,
+                reasoningEffort, thinkingBudgetTokens, llamaCppServer);
         });
         worker.isDaemon = true;
         worker.start();
@@ -810,7 +813,8 @@ final class OpenCodeClient
     }
 
     private void runChatRequest(ChatRequestMessage[] messages,
-        OpenCodeToolDef[] tools, string model, bool thinking, ulong requestId)
+        OpenCodeToolDef[] tools, string model, bool thinking, ulong requestId,
+        string reasoningEffort, int thinkingBudgetTokens, bool llamaCppServer)
     {
         scope (exit)
         {
@@ -830,7 +834,8 @@ final class OpenCodeClient
             bool replayReasoning;
             bool droppedReasoning;
             string body = buildChatBody(messages, tools, model, thinking,
-                _baseUrl);
+                _baseUrl, false, reasoningEffort, thinkingBudgetTokens,
+                llamaCppServer);
             _streamReasoning = "";
             _streamContent = "";
             _streamRequestId = requestId;
@@ -867,7 +872,9 @@ final class OpenCodeClient
                 if (replayReasoning || droppedReasoning)
                     body = buildChatBody(messages, tools, model,
                         droppedReasoning ? false : thinking, _baseUrl,
-                        replayReasoning);
+                        replayReasoning, reasoningEffort,
+                        droppedReasoning ? 0 : thinkingBudgetTokens,
+                        llamaCppServer);
                 auto bodyBytes = cast(ubyte[]) body.dup;
                 HINTERNET connection;
                 HINTERNET request;
@@ -1139,10 +1146,12 @@ final class OpenCodeClient
     /// Test-only: build the request JSON body without sending anything.
     public string buildBodyForTesting(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
-        bool forceReasoningReplay = false)
+        bool forceReasoningReplay = false, string reasoningEffort = "",
+        int thinkingBudgetTokens = 0, bool llamaCppServer = false)
     {
         return buildChatBody(messages, tools, model, thinking, _baseUrl,
-            forceReasoningReplay);
+            forceReasoningReplay, reasoningEffort, thinkingBudgetTokens,
+            llamaCppServer);
     }
 
     /// Pure helper exposed for the multimodal request-shape regression.
@@ -1215,7 +1224,7 @@ final class OpenCodeClient
             const body = readAllAsUtf8(request);
             string[] ids;
             int[string] contextLimits;
-            bool llamaCppCatalog;
+            bool llamaCppServer;
             auto value = parseJSON(body);
             if (value.type == JSONType.object)
             {
@@ -1230,7 +1239,9 @@ final class OpenCodeClient
                             id.str.length == 0) continue;
                         ids ~= id.str.dup;
                         if (isLlamaCppModelEntry(entry))
-                            llamaCppCatalog = true;
+                        {
+                            llamaCppServer = true;
+                        }
                         const contextLimit = modelContextLimit(entry);
                         if (contextLimit > 0)
                             contextLimits[id.str] = contextLimit;
@@ -1240,18 +1251,23 @@ final class OpenCodeClient
             if (ids.length == 0)
                 throw new Exception("The models endpoint returned no models.");
             // llama.cpp's model metadata describes training capacity. /props
-            // reports the actual per-slot n_ctx selected for this server run.
-            if (ids.length == 1 &&
-                (llamaCppCatalog || isLoopbackApiBaseUrl(_baseUrl)))
+            // reports the active n_ctx and also detects remote servers whose
+            // model catalog does not identify them as llama.cpp.
+            if (ids.length == 1)
             {
                 const runtimeLimit = llamaRuntimeContextLimit(session, target);
-                if (runtimeLimit > 0) contextLimits[ids[0]] = runtimeLimit;
+                if (runtimeLimit > 0)
+                {
+                    contextLimits[ids[0]] = runtimeLimit;
+                    llamaCppServer = true;
+                }
             }
             OpenCodeEvent event;
             event.kind = OpenCodeEventKind.models;
             event.text = _baseUrl;
             event.modelIds = ids;
             event.modelContextLimits = contextLimits;
+            event.llamaCppServer = llamaCppServer;
             pushEvent(event);
         }
         catch (Exception error)
@@ -1487,7 +1503,9 @@ final class OpenCodeClient
 
     private static string buildChatBody(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
-        string baseUrl, bool forceReasoningReplay = false)
+        string baseUrl, bool forceReasoningReplay = false,
+        string reasoningEffort = "", int thinkingBudgetTokens = 0,
+        bool llamaCppServer = false)
     {
         JSONValue root;
         root["model"] = model;
@@ -1532,8 +1550,14 @@ final class OpenCodeClient
         // when thinking is disabled and let the provider's non-reasoning
         // default apply.
         if (thinking)
-            root["reasoning_effort"] = "high";
-        else if (isLoopbackApiBaseUrl(baseUrl))
+        {
+            root["reasoning_effort"] = reasoningEffort == "low" ||
+                reasoningEffort == "medium" || reasoningEffort == "high"
+                ? reasoningEffort : "high";
+            if (llamaCppServer && thinkingBudgetTokens > 0)
+                root["thinking_budget_tokens"] = thinkingBudgetTokens;
+        }
+        else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl))
             root["reasoning_effort"] = "none";
         return root.toString();
     }

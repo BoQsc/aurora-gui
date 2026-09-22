@@ -7,7 +7,8 @@ import aurora.surface : Surface;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     OpenCodeToolCall, Settings, contextBudgetForModel, loadSettings,
-    setContextBudgetForModel,
+    reasoningControlForModel, setContextBudgetForModel,
+    setReasoningControlForModel,
     activeMessagePath, ensureMessageGraph, newMessageId,
     opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting, siblingMessages;
@@ -1567,6 +1568,44 @@ int main(string[] args)
         "Fresh prompt usage must replace the estimate without counting output");
     writeln("Context meter follows the active session");
 
+    // Hosted routes receive a selected reasoning effort, while the
+    // llama.cpp-only token budget is sent only after server detection.
+    {
+        ChatRequestMessage prompt;
+        prompt.role = "user";
+        prompt.content = "hello";
+        auto hosted = new OpenCodeClient("https://example.invalid/v1", "k");
+        const hostedBody = parseJSON(hosted.buildBodyForTesting([prompt],
+            null, "deepseek-v4.1-flash", true, false, "low", 2_048));
+        assert(hostedBody["reasoning_effort"].str == "low" &&
+            "thinking_budget_tokens" !in hostedBody.object,
+            "Hosted effort must not carry a llama.cpp-only budget");
+        auto llama = new OpenCodeClient("http://192.0.2.1:8080/v1", "");
+        const llamaBody = parseJSON(llama.buildBodyForTesting([prompt],
+            null, "Qwen/Qwen3.8-27B", true, false, "medium", 2_048,
+            true));
+        assert(llamaBody["reasoning_effort"].str == "medium" &&
+            llamaBody["thinking_budget_tokens"].integer == 2_048,
+            "Detected remote llama.cpp must receive its thinking budget");
+        const offBody = parseJSON(llama.buildBodyForTesting([prompt],
+            null, "Qwen/Qwen3.8-27B", false, false, "low", 2_048,
+            true));
+        assert(offBody["reasoning_effort"].str == "none" &&
+            "thinking_budget_tokens" !in offBody.object,
+            "Thinking off must suppress a remote llama.cpp budget");
+        Settings controls;
+        setReasoningControlForModel(controls, "http://server-a/v1/",
+            "qwen", "low", 2_048);
+        assert(reasoningControlForModel(controls,
+            "http://server-a/v1", "qwen").budgetTokens == 2_048 &&
+            reasoningControlForModel(controls,
+                "http://server-b/v1", "qwen").budgetTokens == 0 &&
+            reasoningControlForModel(controls,
+                "http://server-a/v1", "other").effort.length == 0,
+            "Reasoning controls must stay scoped to endpoint and model");
+        writeln("Reasoning effort and llama.cpp budget follow provider capability");
+    }
+
     // Context targets live on the model button and context badge. The meter
     // continues to show the actual provider window when a smaller target is
     // selected for early compaction.
@@ -1946,6 +1985,50 @@ int main(string[] args)
     assert(!root.isThinkingTooltipOpenForTesting(),
         "Thinking tooltip stayed open after pointer leave");
     writeln("Thinking tooltip opens above the toggle and dismisses on leave");
+
+    // Right-clicking Thinking changes effort without toggling the checkbox.
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    auto reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(reasoningMenu !is null && reasoningMenu.items().length == 6 &&
+        reasoningMenu.items()[3].checked,
+        "Thinking menu must offer Low, Medium and default High effort");
+    reasoningMenu.items()[1].action();
+    dismissContextMenus(root);
+    auto reloadedReasoningSettings = loadSettings();
+    auto savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
+        "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
+    assert(savedReasoning.effort == "low" && savedReasoning.budgetTokens == 0,
+        "Low reasoning effort must persist for this endpoint and model");
+
+    root.setLlamaCppEndpointForTesting(true);
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(reasoningMenu !is null && reasoningMenu.items().length == 11 &&
+        reasoningMenu.items()[6].checked,
+        "Detected llama.cpp should expose token budget presets");
+    reasoningMenu.items()[8].action();
+    dismissContextMenus(root);
+    reloadedReasoningSettings = loadSettings();
+    savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
+        "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
+    assert(savedReasoning.effort == "low" &&
+        savedReasoning.budgetTokens == 2_048,
+        "Budget selection must preserve effort and persist");
+    // Restore the smoke fixture's default request behavior.
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    reasoningMenu.items()[3].action();
+    dismissContextMenus(root);
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    reasoningMenu.items()[6].action();
+    dismissContextMenus(root);
+    root.setLlamaCppEndpointForTesting(false);
+    writeln("Thinking menu saves per-model effort and detected llama budget");
 
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);

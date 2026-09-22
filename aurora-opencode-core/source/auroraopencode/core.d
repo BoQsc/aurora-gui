@@ -941,6 +941,8 @@ public struct Settings
     bool detachedPlan = true;
     // Optional request targets scoped to the exact endpoint and model.
     ModelContextBudget[] contextBudgets;
+    // Optional reasoning effort and llama.cpp budget for each endpoint/model.
+    ModelReasoningControl[] reasoningControls;
     bool compactDeepSeek500k; // legacy migration only
     string workspace;          // working directory the tools run in
     // Optional response-verbosity selector: "default" (stock prompt),
@@ -954,6 +956,51 @@ public struct ModelContextBudget
     string baseUrl;
     string model;
     int tokens;
+}
+
+public struct ModelReasoningControl
+{
+    string baseUrl;
+    string model;
+    // Empty keeps the existing Thinking-on default of "high".
+    string effort;
+    // Zero leaves the server's reasoning budget unchanged.
+    int budgetTokens;
+}
+
+public ModelReasoningControl reasoningControlForModel(const ref Settings settings,
+    string baseUrl, string model)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    foreach (control; settings.reasoningControls)
+        if (control.baseUrl == endpoint && control.model == model)
+            return control;
+    return ModelReasoningControl(endpoint, model, "", 0);
+}
+
+public void setReasoningControlForModel(ref Settings settings,
+    string baseUrl, string model, string effort, int budgetTokens)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    if (endpoint.length == 0 || model.length == 0 ||
+        (effort.length > 0 && effort != "low" && effort != "medium" &&
+            effort != "high") || budgetTokens < 0 ||
+        budgetTokens > 32_768) return;
+    foreach (i, control; settings.reasoningControls)
+        if (control.baseUrl == endpoint && control.model == model)
+        {
+            if (effort.length > 0 || budgetTokens > 0)
+            {
+                settings.reasoningControls[i].effort = effort;
+                settings.reasoningControls[i].budgetTokens = budgetTokens;
+            }
+            else settings.reasoningControls = settings.reasoningControls[0 .. i] ~
+                settings.reasoningControls[i + 1 .. $];
+            return;
+        }
+    if (effort.length > 0 || budgetTokens > 0)
+        settings.reasoningControls ~= ModelReasoningControl(endpoint, model,
+            effort, budgetTokens);
 }
 
 public int contextBudgetForModel(const ref Settings settings,
@@ -1182,6 +1229,28 @@ public Settings loadSettings()
                             setContextBudgetForModel(settings, base.str,
                                 model.str, cast(int) tokens.integer);
                         }
+                if (auto found = "reasoningControls" in value.object)
+                    if (found.type == JSONType.array)
+                        foreach (entry; found.array)
+                        {
+                            if (entry.type != JSONType.object) continue;
+                            auto base = "baseUrl" in entry.object;
+                            auto model = "model" in entry.object;
+                            auto effort = "effort" in entry.object;
+                            auto budget = "budgetTokens" in entry.object;
+                            if (base is null || model is null ||
+                                base.type != JSONType.string ||
+                                model.type != JSONType.string ||
+                                (effort !is null &&
+                                    effort.type != JSONType.string) ||
+                                (budget !is null &&
+                                    (budget.type != JSONType.integer ||
+                                     budget.integer < 0 ||
+                                     budget.integer > 32_768))) continue;
+                            setReasoningControlForModel(settings, base.str,
+                                model.str, effort is null ? "" : effort.str,
+                                budget is null ? 0 : cast(int) budget.integer);
+                        }
                 // Unknown or blank values fall through to the "default"
                 // initializer, so a hand-edited file cannot change the prompt
                 // to something the app does not understand.
@@ -1370,6 +1439,17 @@ public void saveSettings(const ref Settings settings)
         contextBudgets.array ~= item;
     }
     root["contextBudgets"] = contextBudgets;
+    JSONValue reasoningControls = JSONValue(string[].init);
+    foreach (control; settings.reasoningControls)
+    {
+        JSONValue item;
+        item["baseUrl"] = control.baseUrl;
+        item["model"] = control.model;
+        item["effort"] = control.effort;
+        item["budgetTokens"] = control.budgetTokens;
+        reasoningControls.array ~= item;
+    }
+    root["reasoningControls"] = reasoningControls;
     root["workspace"] = settings.workspace;
     root["verbosity"] = settings.verbosity;
     try write(buildPath(opencodeStateDirectory(), "settings.json"),
