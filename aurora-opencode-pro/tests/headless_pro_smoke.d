@@ -7,7 +7,8 @@ import aurora.surface : Surface;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     OpenCodeToolCall, Settings, contextBudgetForModel, loadSettings,
-    reasoningControlForModel, setContextBudgetForModel,
+    contextCompactionForModel, reasoningControlForModel,
+    setContextBudgetForModel, setContextCompactionForModel,
     setReasoningControlForModel,
     activeMessagePath, ensureMessageGraph, newMessageId,
     opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
@@ -1228,7 +1229,8 @@ int main(string[] args)
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["big job"]);
     import std.array : replicate;
-    const bigOutput = replicate("x", 20_000);
+    const bigOutput = "BEGIN: edited config path\n" ~
+        replicate("x", 20_000) ~ "\nEND: test passed";
     foreach (i; 0 .. 12)
     {
         const id = "call_big_" ~ to!string(i);
@@ -1248,14 +1250,35 @@ int main(string[] args)
     assert(stable.length == fat.length && stableToolGroups == 12,
         "under-budget request was needlessly compacted");
     root.setContextBudgetForTesting(64_000);
+    auto optedOut = root.activeCompactedRequestMessagesForTesting();
+    assert(optedOut.length == fat.length &&
+        optedOut[$ - 2].content == fat[$ - 2].content,
+        "automatic compaction must be off until explicitly enabled");
+    root.setContextCompactionForTesting(true);
     auto budgeted = root.activeCompactedRequestMessagesForTesting();
-    assert(budgeted.length < fat.length,
-        "optional context target did not compact old history early");
+    size_t budgetedBytes;
+    int budgetedToolGroups;
+    bool keptToolOutcome;
+    foreach (m; budgeted)
+    {
+        budgetedBytes += m.content.length;
+        if (m.role == "assistant" && m.toolCalls.length > 0)
+            ++budgetedToolGroups;
+        if (m.role == "tool" && m.content.length < bigOutput.length &&
+            m.content.indexOf("BEGIN: edited config path") >= 0 &&
+            m.content.indexOf("END: test passed") >= 0)
+            keptToolOutcome = true;
+    }
+    assert(budgetedBytes < fatBytes && budgetedToolGroups == 12 &&
+        keptToolOutcome,
+        "near-limit compaction should trim old output without forgetting " ~
+        "completed tool rounds");
     root.setContextBudgetForTesting(0);
     auto slim = root.compactedRequestMessagesForTesting(8_000);
     size_t slimBytes;
     int toolCount, compactNotes;
     bool sawPair;
+    bool checkpointKeptOutcome;
     foreach (i, m; slim)
     {
         slimBytes += m.content.length;
@@ -1268,7 +1291,10 @@ int main(string[] args)
         if (m.role == "system" && m.content.indexOf("## Objective") >= 0 &&
             m.content.indexOf("## Work State") >= 0 &&
             m.content.indexOf("## Next Move") >= 0)
+        {
             ++compactNotes;
+            checkpointKeptOutcome = m.content.indexOf("END: test passed") >= 0;
+        }
         assert(m.content.indexOf("earlier message elided") < 0,
             "compaction still emits content-free message placeholders");
         if (m.role == "assistant" && m.toolCalls.length == 1)
@@ -1280,10 +1306,19 @@ int main(string[] args)
     }
     assert(toolCount == 1,
         "compaction did not retain exactly the active newest tool group");
-    assert(compactNotes == 1,
-        "compaction did not replace old tool groups with one control note");
+    assert(compactNotes == 1 && checkpointKeptOutcome,
+        "compaction checkpoint lost the outcome of old tool groups");
     assert(sawPair, "compaction dropped the tool-call messages");
     assert(slimBytes < fatBytes, "compaction did not shrink the request");
+    assert(root.prepareContinueForTesting(),
+        "could not prepare a context-limited continuation");
+    auto continued = root.compactedRequestMessagesForTesting(8_000);
+    int continuedToolGroups;
+    foreach (m; continued)
+        if (m.role == "assistant" && m.toolCalls.length > 0)
+            ++continuedToolGroups;
+    assert(continuedToolGroups == 1,
+        "Continue control erased the newest completed tool round");
     root.addConversationForTesting(["user"], ["Now verify the result."]);
     auto followupHistory = root.compactedRequestMessagesForTesting(8_000);
     foreach (m; followupHistory)
@@ -1291,12 +1326,28 @@ int main(string[] args)
             "new user turn replayed a completed tool/reasoning envelope");
     writeln("Compaction bounds old tool history and preserves recent pairing");
 
+    // Hidden reasoning is part of the serialized request. Under pressure,
+    // older reasoning should go before visible conversation details.
+    root.newChatForTesting();
+    root.addConversationForTestingWithReasoning(
+        ["user", "assistant", "user", "assistant"],
+        ["Build feature A", "Feature A done", "Now verify", "Verification underway"],
+        ["", replicate("r", 80_000), "", replicate("n", 300)]);
+    auto reasoningCompacted = root.compactedRequestMessagesForTesting(20_000);
+    assert(reasoningCompacted.length == 4 &&
+        reasoningCompacted[1].content == "Feature A done" &&
+        reasoningCompacted[1].reasoningContent.length == 0 &&
+        reasoningCompacted[3].reasoningContent.length == 300,
+        "context pressure should discard old reasoning before visible work");
+    writeln("Compaction drops old hidden reasoning before visible dialogue");
+
     // Oversized ordinary dialogue is summarized into one structured handoff,
     // preserving objective/work/blocker/next-move semantics for continuation.
     root.newChatForTesting();
     string[] checkpointRoles, checkpointBodies;
     checkpointRoles ~= "user";
-    checkpointBodies ~= "Add per-chat draft autosave and verify restart recovery.";
+    checkpointBodies ~= "Add per-chat draft autosave.\n" ~
+        "Persist a draft per conversation and verify restart recovery.";
     foreach (i; 0 .. 20)
     {
         checkpointRoles ~= (i % 2 == 0 ? "assistant" : "user");
@@ -1306,6 +1357,7 @@ int main(string[] args)
     root.addConversationForTesting(checkpointRoles, checkpointBodies);
     auto checkpointed = root.compactedRequestMessagesForTesting(2_000);
     int structuredCheckpoints;
+    bool keptMultilineObjective;
     foreach (m; checkpointed)
     {
         if (m.role == "system" && m.content.indexOf("## Objective") >= 0 &&
@@ -1313,13 +1365,39 @@ int main(string[] args)
             m.content.indexOf("### Active") >= 0 &&
             m.content.indexOf("### Blocked") >= 0 &&
             m.content.indexOf("## Next Move") >= 0)
+        {
             ++structuredCheckpoints;
+            keptMultilineObjective = m.content.indexOf(
+                "Persist a draft per conversation") >= 0;
+        }
         assert(m.content.indexOf("earlier message elided") < 0,
             "dialogue compaction emitted a lossy placeholder");
     }
-    assert(structuredCheckpoints == 1,
-        "oversized dialogue did not produce one structured checkpoint");
+    assert(structuredCheckpoints == 1 && keptMultilineObjective,
+        "oversized dialogue checkpoint lost multi-line task requirements");
     writeln("Oversized dialogue compacts to a structured continuation checkpoint");
+    root.setContextCompactionForTesting(false);
+
+    // A compaction notice belongs to the visible transcript, never to the
+    // request sent to the model, and survives a session save and reload.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Keep this request intact"]);
+    const beforeNotice = root.requestMessagesForTesting();
+    assert(root.contextCompactionNoticeCountForTesting() == 0);
+    root.markContextCompactionNoticeForTesting();
+    root.markContextCompactionNoticeForTesting();
+    assert(root.contextCompactionNoticeCountForTesting() == 1,
+        "compaction should show one in-chat notice for the request");
+    assert(driver.paint(), "in-chat compaction notice did not paint");
+    const afterNotice = root.requestMessagesForTesting();
+    assert(afterNotice.length == beforeNotice.length &&
+        afterNotice[$ - 1].content == beforeNotice[$ - 1].content,
+        "the in-chat compaction notice leaked into model context");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    assert(root.contextCompactionNoticeCountForTesting() == 1,
+        "the in-chat compaction notice disappeared after reload");
+    writeln("Compaction notices appear in chat without entering model context");
 
     // Long transcripts stay complete in the message graph but only the newest
     // page is materialized. This prevents a pathological chat from allocating
@@ -1624,18 +1702,21 @@ int main(string[] args)
         auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null,
             "Right-clicking the model should open context targets");
-        assert(targetMenu.items().length == 7,
-            "Context menu should show provider limit and five targets");
+        assert(targetMenu.items().length == 10,
+            "Context menu should show a compaction switch and five targets");
         assert(targetMenu.items()[0].label ==
             toUTF32("Provider limit: 1,000,000 tokens") &&
             !targetMenu.items()[0].enabled,
             "Context menu must display the read-only provider limit");
-        assert(targetMenu.items()[2].checked,
+        assert(!targetMenu.items()[2].checked,
+            "Automatic compaction should be off by default");
+        assert(targetMenu.items()[5].checked,
             "Auto target should be selected by default");
-        assert(targetMenu.items()[6].label == toUTF32("500,000 tokens") &&
-            targetMenu.items()[6].enabled,
+        assert(targetMenu.items()[9].label == toUTF32("500,000 tokens") &&
+            targetMenu.items()[9].enabled,
             "500K target should be available below a 1M provider limit");
-        targetMenu.items()[6].action();
+        targetMenu.items()[2].action();
+        targetMenu.items()[9].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
         assert(root.requestContextBudgetForTesting(
@@ -1655,6 +1736,23 @@ int main(string[] args)
         assert(contextBudgetForModel(reloadedTargets,
             reloadedTargets.baseUrl, "deepseek-v4.1-flash") == 500_000,
             "The selected target should survive settings reload");
+        assert(contextCompactionForModel(reloadedTargets,
+            reloadedTargets.baseUrl, "deepseek-v4.1-flash"),
+            "The compaction choice should survive settings reload");
+        driver.click(globalCenter(modelControl), MouseButton.right);
+        root.tickTree(0.02);
+        targetMenu = cast(ContextMenu) currentTransientPopup(root);
+        assert(targetMenu !is null && targetMenu.items()[2].checked,
+            "The model menu should show the saved compaction choice");
+        targetMenu.items()[2].action();
+        dismissContextMenus(root);
+        root.tickTree(0.02);
+        const optedOutSettings = loadSettings();
+        assert(!contextCompactionForModel(optedOutSettings,
+            optedOutSettings.baseUrl, "deepseek-v4.1-flash") &&
+            contextBudgetForModel(optedOutSettings,
+                optedOutSettings.baseUrl, "deepseek-v4.1-flash") == 500_000,
+            "Turning compaction off should persist without erasing its target");
 
         // Targets are keyed by both endpoint and model.
         Settings scoped;
@@ -1668,6 +1766,22 @@ int main(string[] args)
             "Qwen/Qwen3.8-27B") == 128_000);
         assert(contextBudgetForModel(scoped, "http://server-a/v1",
             "another-model") == 0);
+        assert(!contextCompactionForModel(scoped, "http://server-a/v1",
+            "Qwen/Qwen3.8-27B"));
+        setContextCompactionForModel(scoped, "http://server-a/v1/",
+            "Qwen/Qwen3.8-27B", true);
+        assert(contextCompactionForModel(scoped, "http://server-a/v1",
+            "Qwen/Qwen3.8-27B") &&
+            !contextCompactionForModel(scoped, "http://server-b/v1",
+                "Qwen/Qwen3.8-27B") &&
+            !contextCompactionForModel(scoped, "http://server-a/v1",
+                "another-model"),
+            "Compaction switch must stay scoped to endpoint and model");
+        setContextCompactionForModel(scoped, "http://server-a/v1",
+            "Qwen/Qwen3.8-27B", false);
+        assert(!contextCompactionForModel(scoped, "http://server-a/v1",
+            "Qwen/Qwen3.8-27B"),
+            "Turning compaction off should remove the saved override");
 
         root.setProviderContextLimitForTesting(
             "deepseek-v4.1-flash", 300_000);
@@ -1677,7 +1791,7 @@ int main(string[] args)
         driver.click(globalCenter(usageBadge));
         root.tickTree(0.02);
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
-        assert(targetMenu !is null && !targetMenu.items()[6].enabled,
+        assert(targetMenu !is null && !targetMenu.items()[9].enabled,
             "Clicking the context badge should open targets and disable " ~
             "those above the provider limit");
         dismissContextMenus(root);

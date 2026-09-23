@@ -667,6 +667,9 @@ public struct ChatMessage
     // app instruction rather than the user's own words, so the transcript hides
     // it instead of rendering it as a fake user bubble.
     bool internal;
+    // UI-only marker: this message preceded a request whose older context was
+    // compacted. It is persisted with the transcript but never sent to a model.
+    bool contextCompacted;
 }
 
 /// Durable work state kept independently of transcript prose.  The model may
@@ -941,6 +944,8 @@ public struct Settings
     bool detachedPlan = true;
     // Optional request targets scoped to the exact endpoint and model.
     ModelContextBudget[] contextBudgets;
+    // Automatic request compaction is opt-in for each endpoint and model.
+    ModelContextCompaction[] contextCompactions;
     // Optional reasoning effort and llama.cpp budget for each endpoint/model.
     ModelReasoningControl[] reasoningControls;
     bool compactDeepSeek500k; // legacy migration only
@@ -956,6 +961,12 @@ public struct ModelContextBudget
     string baseUrl;
     string model;
     int tokens;
+}
+
+public struct ModelContextCompaction
+{
+    string baseUrl;
+    string model;
 }
 
 public struct ModelReasoningControl
@@ -1011,6 +1022,33 @@ public int contextBudgetForModel(const ref Settings settings,
         if (budget.baseUrl == endpoint && budget.model == model)
             return budget.tokens;
     return 0;
+}
+
+public bool contextCompactionForModel(const ref Settings settings,
+    string baseUrl, string model)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    foreach (entry; settings.contextCompactions)
+        if (entry.baseUrl == endpoint && entry.model == model)
+            return true;
+    return false;
+}
+
+public void setContextCompactionForModel(ref Settings settings,
+    string baseUrl, string model, bool enabled)
+{
+    const endpoint = normalizedBaseUrl(baseUrl);
+    if (endpoint.length == 0 || model.length == 0) return;
+    foreach (i, entry; settings.contextCompactions)
+        if (entry.baseUrl == endpoint && entry.model == model)
+        {
+            if (!enabled)
+                settings.contextCompactions = settings.contextCompactions[0 .. i] ~
+                    settings.contextCompactions[i + 1 .. $];
+            return;
+        }
+    if (enabled)
+        settings.contextCompactions ~= ModelContextCompaction(endpoint, model);
 }
 
 public void setContextBudgetForModel(ref Settings settings,
@@ -1229,6 +1267,19 @@ public Settings loadSettings()
                             setContextBudgetForModel(settings, base.str,
                                 model.str, cast(int) tokens.integer);
                         }
+                if (auto found = "contextCompactions" in value.object)
+                    if (found.type == JSONType.array)
+                        foreach (entry; found.array)
+                        {
+                            if (entry.type != JSONType.object) continue;
+                            auto base = "baseUrl" in entry.object;
+                            auto model = "model" in entry.object;
+                            if (base is null || model is null ||
+                                base.type != JSONType.string ||
+                                model.type != JSONType.string) continue;
+                            setContextCompactionForModel(settings, base.str,
+                                model.str, true);
+                        }
                 if (auto found = "reasoningControls" in value.object)
                     if (found.type == JSONType.array)
                         foreach (entry; found.array)
@@ -1439,6 +1490,15 @@ public void saveSettings(const ref Settings settings)
         contextBudgets.array ~= item;
     }
     root["contextBudgets"] = contextBudgets;
+    JSONValue contextCompactions = JSONValue(string[].init);
+    foreach (entry; settings.contextCompactions)
+    {
+        JSONValue item;
+        item["baseUrl"] = entry.baseUrl;
+        item["model"] = entry.model;
+        contextCompactions.array ~= item;
+    }
+    root["contextCompactions"] = contextCompactions;
     JSONValue reasoningControls = JSONValue(string[].init);
     foreach (control; settings.reasoningControls)
     {

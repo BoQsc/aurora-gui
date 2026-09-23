@@ -4339,6 +4339,32 @@ private final class HoverCheckBox : CheckBox
     }
 }
 
+/// A saved, display-only notice placed after the message that triggered a
+/// compacted request. It is not a chat message and never enters model context.
+private final class ContextCompactionNoticeRow : Widget
+{
+    this() { setId("oc-context-compacted"); }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = 30;
+        return Size(width, 30);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        canvas.fillCircle(Point(7, 15), 3, opencodeAccent.withAlpha(180));
+        auto layout = canvas.layoutText(toUTF32(
+            "Context compacted for this request · full chat saved"), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont,
+            maxInt(1, bounds().width - 20), false);
+        canvas.drawLayout(Point(16, (30 - cast(int) layout.height) / 2),
+            layout, opencodeMuted);
+    }
+}
+
 /// Settings credential field that reports pointer entry for usage previews.
 private final class HoverKeyField : TextField
 {
@@ -8012,6 +8038,7 @@ public final class OpenCodeRoot : VBox
         if (message.finishReason.length > 0)
             payload["finishReason"] = message.finishReason;
         if (message.internal) payload["internal"] = true;
+        if (message.contextCompacted) payload["contextCompacted"] = true;
         if (message.toolCallId.length > 0)
             payload["toolCallId"] = message.toolCallId;
         if (message.toolName.length > 0) payload["toolName"] = message.toolName;
@@ -8093,6 +8120,21 @@ public final class OpenCodeRoot : VBox
         session.activeLeafId = message.id;
         publishMessageEvent(AgentEventKind.itemAdded, session,
             session.messages[$ - 1]);
+    }
+
+    private bool markContextCompactionNotice(ref ChatSession session)
+    {
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            auto message = &session.messages[index];
+            if (message.internal || message.role == "tool") continue;
+            if (message.contextCompacted) return false;
+            message.contextCompacted = true;
+            publishMessageEvent(AgentEventKind.itemUpdated, session, *message);
+            markDirty();
+            return true;
+        }
+        return false;
     }
 
     /// When a tool batch is abandoned (the loop guard or the round cap fired),
@@ -8428,6 +8470,8 @@ public final class OpenCodeRoot : VBox
                     _messageColumn.add(nest);
                 }
                 addPlanAfter(slot);
+                if (message.contextCompacted)
+                    _messageColumn.add(new ContextCompactionNoticeRow());
                 ++slot;
                 continue;
             }
@@ -8463,6 +8507,8 @@ public final class OpenCodeRoot : VBox
                 session.messages[index], latestAssistantIndex,
                 versionPositions, versionTotals));
             addPlanAfter(slot);
+            if (message.contextCompacted)
+                _messageColumn.add(new ContextCompactionNoticeRow());
             ++slot;
         }
         // A plan-only recovered snapshot can have no visible message to host
@@ -11177,7 +11223,11 @@ public final class OpenCodeRoot : VBox
         size_t total;
         foreach (m; messages)
         {
-            total += m.role.length + m.content.length + m.toolCallId.length + 16;
+            // The client serializes saved assistant reasoning_content too.
+            // Omitting it from this estimate let thinking-heavy local chats
+            // exceed llama.cpp's n_ctx before compaction ran.
+            total += m.role.length + m.content.length +
+                m.reasoningContent.length + m.toolCallId.length + 16;
             foreach (call; m.toolCalls)
                 total += call.name.length + call.arguments.length + 16;
             // Inline images are counted as a fixed per-image cost. Their base64
@@ -11218,55 +11268,81 @@ public final class OpenCodeRoot : VBox
         return bytes;
     }
 
-    /// A short, UTF-8-safe first-line excerpt for deterministic checkpoints.
+    /// A short, UTF-8-safe excerpt for deterministic checkpoints. Keep text
+    /// across line breaks so a multi-line task does not lose its requirements.
     /// Compaction must never copy a multi-megabyte message into its summary.
     private static string checkpointSnippet(string text, size_t limit = 480)
     {
-        const line = firstLineOf(text);
-        if (line.length <= limit) return line;
-        size_t cut = limit;
+        size_t cut = text.length < limit ? text.length : limit;
         while (cut > 0 &&
-            (cast(ubyte) line[cut] & cast(ubyte) 0xC0) == cast(ubyte) 0x80)
+            cut < text.length &&
+            (cast(ubyte) text[cut] & cast(ubyte) 0xC0) == cast(ubyte) 0x80)
             --cut;
-        return line[0 .. cut] ~ "...";
+        const excerpt = text[0 .. cut].replace("\r", " ").replace("\n", " ").strip();
+        return cut < text.length ? excerpt ~ "..." : excerpt;
     }
 
-    /// Remove old, completed tool-call envelopes instead of replaying hundreds
-    /// of stale calls on every continuation. The real user/assistant dialogue
-    /// remains intact and the newest tool groups remain verbatim. A compact
-    /// system note tells the model what was removed so omission cannot be
-    /// mistaken for work that never happened.
-    private static ChatRequestMessage[] collapseCompletedToolHistory(
-        ChatRequestMessage[] messages)
+    /// Keep both the opening and the outcome of an old tool result. A bare
+    /// "output shortened" marker erased the only record of what a read,
+    /// build, or test returned when a local model first hit its context cap.
+    private static string shortenToolOutput(string content,
+        size_t edgeBytes = 512)
+    {
+        if (content.length <= edgeBytes * 2 + 64) return content;
+        size_t head = edgeBytes;
+        while (head > 0 &&
+            (cast(ubyte) content[head] & cast(ubyte) 0xC0) ==
+                cast(ubyte) 0x80) --head;
+        size_t tail = content.length - edgeBytes;
+        while (tail < content.length &&
+            (cast(ubyte) content[tail] & cast(ubyte) 0xC0) ==
+                cast(ubyte) 0x80) ++tail;
+        return content[0 .. head] ~
+            "\n... middle of older tool output omitted ...\n" ~
+            content[tail .. $];
+    }
+
+    /// A completed group can be removed only if it is outside the active tool
+    /// round. Preserve that round's envelope and replies for the provider.
+    private static size_t collapsibleToolGroupCount(
+        const(ChatRequestMessage)[] messages)
     {
         size_t groupCount;
-        size_t lastInstruction;
-        bool haveInstruction;
+        size_t lastUser;
+        bool haveUser;
         foreach (i, m; messages)
         {
-            if (m.role == "user" || m.role == "system" ||
-                m.role == "developer")
+            // Internal Continue and recovery controls are system messages;
+            // they do not end the tool round being continued.
+            if (m.role == "user")
             {
-                lastInstruction = i;
-                haveInstruction = true;
+                lastUser = i;
+                haveUser = true;
             }
             if (m.role == "assistant" && m.toolCalls.length > 0)
                 ++groupCount;
         }
         // Only an actively continuing tool round needs its exact envelope. A
-        // later user/control instruction starts a new round, so every earlier
+        // later real user instruction starts a new round, so every earlier
         // completed envelope can be checkpointed. Keeping eight old groups was
         // both expensive and fragile: one legacy group with missing reasoning
         // could make the provider reject an otherwise unrelated follow-up.
         size_t groupsAfterInstruction;
         foreach (i, m; messages)
             if (m.role == "assistant" && m.toolCalls.length > 0 &&
-                (!haveInstruction || i > lastInstruction))
+                (!haveUser || i > lastUser))
                 ++groupsAfterInstruction;
         const size_t keepRecentToolGroups = groupsAfterInstruction > 0 ? 1 : 0;
-        if (groupCount <= keepRecentToolGroups) return messages;
+        return groupCount > keepRecentToolGroups
+            ? groupCount - keepRecentToolGroups : 0;
+    }
 
-        const collapseCount = groupCount - keepRecentToolGroups;
+    /// Collapse only the oldest `collapseCount` completed tool groups. The
+    /// caller chooses the smallest count needed to fit the request budget.
+    private static ChatRequestMessage[] collapseCompletedToolHistory(
+        ChatRequestMessage[] messages, size_t collapseCount)
+    {
+        if (collapseCount == 0) return messages;
         int[string] callCounts;
         string[] callOrder;
         size_t seenGroups;
@@ -11303,7 +11379,8 @@ public final class OpenCodeRoot : VBox
             if (groupsSeen > 0 && groupsSeen <= collapseCount &&
                 m.role == "tool")
             {
-                const excerpt = checkpointSnippet(m.content, 700);
+                const excerpt = checkpointSnippet(
+                    shortenToolOutput(m.content, 300), 700);
                 if (excerpt.length == 0) continue;
                 const lower = excerpt.toLower();
                 const failed = lower.canFind("error") ||
@@ -11404,17 +11481,28 @@ public final class OpenCodeRoot : VBox
         size_t total = fixedRequestBytes + requestMessageBytes(messages);
         if (total <= budget) return messages;
 
-        messages = collapseCompletedToolHistory(messages);
-        total = fixedRequestBytes + requestMessageBytes(messages);
-        if (total <= budget) return messages;
-
         auto result = messages.dup;
-        immutable toolNote =
-            "(tool output shortened during checkpoint compaction)";
-
-        // Pass 1: shorten old tool results while keeping the newest exact. The
-        // assistant tool-call envelope remains adjacent, so the provider still
-        // receives a structurally valid exchange.
+        // Saved reasoning is sent to the provider, but older non-tool
+        // reasoning is not needed to preserve the visible conversation.
+        // Remove it before shortening tool results or dialogue. Keep the
+        // newest assistant's reasoning unless pressure still remains.
+        size_t newestAssistant = result.length;
+        foreach (i, m; result)
+            if (m.role == "assistant" && m.toolCalls.length == 0)
+                newestAssistant = i;
+        foreach (i, ref m; result)
+        {
+            if (total <= budget) break;
+            if (i == newestAssistant || m.role != "assistant" ||
+                m.toolCalls.length > 0 || m.reasoningContent.length == 0)
+                continue;
+            total -= m.reasoningContent.length;
+            m.reasoningContent = "";
+        }
+        if (total <= budget) return result;
+        // Pass 1: shorten only as many old tool results as needed. Previously
+        // we collapsed every completed tool round first, even when a single
+        // shortened output would have put the request under budget.
         enum size_t keepRecentTools = 1;
         size_t[] toolIndexes;
         foreach (i, m; result)
@@ -11424,13 +11512,45 @@ public final class OpenCodeRoot : VBox
             foreach (idx; toolIndexes[0 .. $ - keepRecentTools])
             {
                 if (total <= budget) break;
-                if (result[idx].content.length <= toolNote.length) continue;
-                total -= result[idx].content.length - toolNote.length;
-                result[idx].content = toolNote;
+                const shortened = shortenToolOutput(result[idx].content);
+                if (shortened.length >= result[idx].content.length) continue;
+                total -= result[idx].content.length - shortened.length;
+                result[idx].content = shortened;
             }
         }
+        if (total <= budget) return result;
 
-        // Pass 2: replace older dialogue with one structured handoff rather
+        if (newestAssistant < result.length &&
+            result[newestAssistant].reasoningContent.length > 0)
+        {
+            total -= result[newestAssistant].reasoningContent.length;
+            result[newestAssistant].reasoningContent = "";
+            if (total <= budget) return result;
+        }
+
+        // Pass 2: if output trimming was insufficient, collapse the smallest
+        // number of oldest completed envelopes that gets under budget. Keep
+        // recent exact tool exchanges so a continuation can use their results.
+        const maxCollapse = collapsibleToolGroupCount(result);
+        if (maxCollapse > 0)
+        {
+            size_t low = 1;
+            size_t high = maxCollapse;
+            while (low < high)
+            {
+                const mid = low + (high - low) / 2;
+                const candidate = collapseCompletedToolHistory(result, mid);
+                if (fixedRequestBytes + requestMessageBytes(candidate) <= budget)
+                    high = mid;
+                else
+                    low = mid + 1;
+            }
+            result = collapseCompletedToolHistory(result, low);
+            total = fixedRequestBytes + requestMessageBytes(result);
+            if (total <= budget) return result;
+        }
+
+        // Pass 3: replace older dialogue with one structured handoff rather
         // than dozens of content-free "message elided" placeholders. The full
         // transcript remains persisted; only this model request is compacted.
         if (total > budget)
@@ -11815,12 +11935,16 @@ public final class OpenCodeRoot : VBox
         const rawRequestBytes = requestMessageBytes(rawRequestMessages);
         const fixedRequestBytes = requestMessageBytes(messages) +
             requestToolDefinitionBytes(tools);
-        auto compactedRequestMessages = compactRequestMessages(
-            rawRequestMessages,
-            requestContextBudget(session.model),
-            fixedRequestBytes);
+        const compactionEnabled = contextCompactionForModel(_settings,
+            _settings.baseUrl, session.model);
+        auto compactedRequestMessages = compactionEnabled
+            ? compactRequestMessages(rawRequestMessages,
+                requestContextBudget(session.model), fixedRequestBytes)
+            : rawRequestMessages;
         _contextWasCompacted[session.id] =
             requestMessageBytes(compactedRequestMessages) < rawRequestBytes;
+        const newCompactionNotice = _contextWasCompacted[session.id] &&
+            markContextCompactionNotice(*session);
         // Inline images ride on their own turn's request message (copied in
         // buildRequestMessages), so a screenshot stays part of the conversation
         // rather than expiring as soon as another message follows it.
@@ -11881,10 +12005,13 @@ public final class OpenCodeRoot : VBox
             publishRuntimeEvent(AgentEventKind.turnStarted, *session,
                 _turnUserId, "", "", payload.toString());
         }
-        updateStatus("Generating…");
+        updateStatus(_contextWasCompacted[session.id]
+            ? "Context compacted · generating…" : "Generating…");
         // Fill the request round-trip immediately: the transcript shows a live
         // "waiting" row from the moment Send is pressed until the first event.
         setActivity("Waiting for the model…");
+        if (newCompactionNotice && _current == sessionIndex)
+            rebuildMessageColumn();
         updateSendButton();
     }
 
@@ -12231,6 +12358,20 @@ public final class OpenCodeRoot : VBox
         items ~= ContextMenuItem.command("Provider limit: " ~
             formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
         items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.check("Compact old context automatically",
+            contextCompactionForModel(_settings, _settings.baseUrl, model),
+            delegate()
+            {
+                const enabled = !contextCompactionForModel(_settings,
+                    _settings.baseUrl, model);
+                setContextCompactionForModel(_settings, _settings.baseUrl,
+                    model, enabled);
+                saveSettingsNow();
+                refreshUsageBadge();
+            });
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Compaction target (when enabled)",
+            delegate() {}, "", false);
         foreach (target; [0, 64_000, 128_000, 200_000, 500_000])
             items ~= contextBudgetMenuItem(model, target, selected,
                 target == 0 || target <= providerLimit);
@@ -13420,8 +13561,11 @@ public final class OpenCodeRoot : VBox
             " tokens";
         const target = contextBudgetForModel(_settings, _settings.baseUrl,
             _settings.model);
+        rows ~= "Automatic compaction: " ~
+            (contextCompactionForModel(_settings, _settings.baseUrl,
+                _settings.model) ? "On" : "Off");
         rows ~= "Request context target: " ~ contextBudgetLabel(target);
-        rows ~= "Click to change context target.";
+        rows ~= "Click for context options.";
         if (hasUsage)
         {
             rows ~= (_usageBadge.estimated() ? "Estimated active input: " :
@@ -13430,7 +13574,7 @@ public final class OpenCodeRoot : VBox
                 " tokens (" ~ to!string(_usageBadge.usagePercent()) ~ "%)";
             if (_usageBadge.estimated())
                 rows ~= "Provider usage unavailable; estimate includes " ~
-                    "instructions, compacted messages, and tool schemas.";
+                    "instructions, sent messages, and tool schemas.";
             else
             {
                 rows ~= "Last output: " ~
@@ -14425,6 +14569,14 @@ public final class OpenCodeRoot : VBox
             !session.messages[$ - 1].failed) return false;
         _providerContextLimits[session.model] = available;
         _contextLimitsBaseUrl = _settings.baseUrl;
+        if (!contextCompactionForModel(_settings, _settings.baseUrl,
+            session.model))
+        {
+            refreshUsageBadge();
+            updateStatus("Context full. Enable compaction in the model menu " ~
+                "to continue this chat.");
+            return false;
+        }
         _contextOverflowRetryUsed = true;
         refreshUsageBadge();
         _autoResendPending = true;
@@ -14601,6 +14753,8 @@ public final class OpenCodeRoot : VBox
                 messageJson["finishReason"] = message.finishReason;
             if (message.internal)
                 messageJson["internal"] = true;
+            if (message.contextCompacted)
+                messageJson["contextCompacted"] = true;
             if (message.totalTokens > 0 || message.completionTokens > 0)
             {
                 messageJson["promptTokens"] = message.promptTokens;
@@ -14883,6 +15037,10 @@ public final class OpenCodeRoot : VBox
                                             message.finishReason = f.str;
                                     if (auto f = "internal" in messageValue.object)
                                         message.internal = f.type == JSONType.true_;
+                                    if (auto f = "contextCompacted" in
+                                        messageValue.object)
+                                        message.contextCompacted =
+                                            f.type == JSONType.true_;
                                     if (auto f = "promptTokens" in messageValue.object)
                                         if (f.type == JSONType.integer)
                                             message.promptTokens = cast(int) f.integer;
@@ -16683,6 +16841,13 @@ public final class OpenCodeRoot : VBox
         refreshUsageBadge();
     }
 
+    public void setContextCompactionForTesting(bool enabled)
+    {
+        setContextCompactionForModel(_settings, _settings.baseUrl,
+            _settings.model, enabled);
+        refreshUsageBadge();
+    }
+
     public int requestContextBudgetForTesting(string model)
     {
         return requestContextBudget(model);
@@ -16802,6 +16967,21 @@ public final class OpenCodeRoot : VBox
     public void reloadSessionsForTesting()
     {
         restoreSessions();
+    }
+
+    public void markContextCompactionNoticeForTesting()
+    {
+        if (_current < 0) return;
+        if (markContextCompactionNotice(_sessions[_current]))
+            rebuildMessageColumn();
+    }
+
+    public int contextCompactionNoticeCountForTesting()
+    {
+        int count;
+        foreach (child; _messageColumn.children())
+            if (child.id() == "oc-context-compacted") ++count;
+        return count;
     }
 
     /// Test-only: labels of the in-progress tool rows currently in the column
@@ -17307,8 +17487,11 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return null;
         const session = _sessions[_current];
-        return compactRequestMessages(buildRequestMessages(session),
-            requestContextBudget(session.model));
+        auto messages = buildRequestMessages(session);
+        return contextCompactionForModel(_settings, _settings.baseUrl,
+            session.model)
+            ? compactRequestMessages(messages, requestContextBudget(session.model))
+            : messages;
     }
 
     /// Test-only: append an assistant message carrying `tool_calls` and no

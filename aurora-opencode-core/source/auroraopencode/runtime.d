@@ -600,6 +600,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         if (f.type == JSONType.string) message.finishReason = f.str;
     if (auto f = "internal" in payload.object)
         message.internal = f.type == JSONType.true_;
+    if (auto f = "contextCompacted" in payload.object)
+        message.contextCompacted = f.type == JSONType.true_;
     if (auto f = "toolCallId" in payload.object)
         if (f.type == JSONType.string) message.toolCallId = f.str;
     if (auto f = "toolName" in payload.object)
