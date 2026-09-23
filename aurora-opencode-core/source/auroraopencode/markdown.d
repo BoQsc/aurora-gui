@@ -1270,15 +1270,63 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
             {
                 const cellPad = 8.0;
                 const cellPadV = 4.0;
-                const minColumn = 28.0;
+                const minColumn = 96.0;
                 const cols = maxInt(1, block.tableColumns);
                 const rows = cast(int) (block.tableCells.length /
                     cast(size_t) cols);
                 if (rows == 0) break;
 
+                // If readable columns cannot fit, show each row as labelled
+                // fields. Squeezing every column to a few pixels makes words
+                // flow one letter per line even with correct cell coordinates.
+                if (lineWidth < cols * minColumn)
+                {
+                    const firstRow = rows > 1 ? 1 : 0;
+                    foreach (row; firstRow .. rows)
+                    {
+                        const rowTop = y;
+                        foreach (column; 0 .. cols)
+                        {
+                            auto label = block.tableCellPieces[column];
+                            if (label.length > 0)
+                            {
+                                const height = composeRuns(c, label,
+                                    maxInt(1, lineWidth - cast(int) cellPad),
+                                    y + cellPadV, mdHeading, bodyPx, cellPad);
+                                y += max(height, cast(double) bodyPx) + cellPadV;
+                            }
+                            if (row > 0)
+                            {
+                                auto value = block.tableCellPieces[
+                                    row * cols + column];
+                                if (value.length > 0)
+                                {
+                                    const height = composeRuns(c, value,
+                                        maxInt(1, lineWidth - cast(int) cellPad),
+                                        y, mdText, bodyPx, cellPad);
+                                    y += max(height, cast(double) bodyPx) +
+                                        cellPadV;
+                                }
+                            }
+                        }
+                        y += cellPadV;
+                        MdItem divider;
+                        divider.kind = MdItemKind.tableLine;
+                        divider.x = 0;
+                        divider.y = y - 1;
+                        divider.w = lineWidth;
+                        divider.h = 1;
+                        divider.color = mdTableBorder;
+                        c.items ~= divider;
+                        if (y <= rowTop) y = rowTop + bodyPx;
+                    }
+                    if (isLast) trailingGap = blockGap(bodyPx);
+                    else y += blockGap(bodyPx);
+                    break;
+                }
+
                 // Size each column to its widest cell, then scale the set down
-                // proportionally (never past a minimum) so the table fits the
-                // panel width instead of overflowing it.
+                // proportionally while keeping enough room for ordinary words.
                 double[] columnWidth;
                 columnWidth.length = cols;
                 foreach (column; 0 .. cols)
@@ -1287,26 +1335,18 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     foreach (row; 0 .. rows)
                         natural = max(natural, runsWidth(block.tableCellPieces[
                             row * cols + column], bodyPx));
-                    columnWidth[column] = natural + 2 * cellPad;
+                    columnWidth[column] = max(minColumn,
+                        natural + 2 * cellPad);
                 }
                 double totalWidth = 0;
                 foreach (w; columnWidth) totalWidth += w;
                 if (totalWidth > lineWidth && totalWidth > 0)
                 {
-                    const naturalContent = totalWidth - 2 * cellPad * cols;
-                    const budget = max(naturalContent,
-                        lineWidth - 2 * cellPad * cols);
-                    if (naturalContent > 0)
-                        foreach (ref w; columnWidth)
-                        {
-                            const inner = w - 2 * cellPad;
-                            w = max(minColumn,
-                                inner * budget / naturalContent) + 2 * cellPad;
-                        }
-                    double scaled = 0;
-                    foreach (w; columnWidth) scaled += w;
-                    if (scaled > lineWidth && scaled > 0)
-                        foreach (ref w; columnWidth) w *= lineWidth / scaled;
+                    const extra = totalWidth - minColumn * cols;
+                    const available = lineWidth - minColumn * cols;
+                    foreach (ref w; columnWidth)
+                        w = minColumn + (extra > 0
+                            ? (w - minColumn) * available / extra : 0);
                 }
 
                 double[] columnX;
@@ -1346,7 +1386,9 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                                 offset = contentWidth - natural;
                         }
                         const cellHeight = composeRuns(c, cell,
-                            cast(int) contentWidth, y + cellPadV, textColor,
+                            cast(int) (columnX[column] +
+                                columnWidth[column] - cellPad),
+                            y + cellPadV, textColor,
                             bodyPx, columnX[column] + cellPad + offset);
                         rowHeight = max(rowHeight, cellHeight);
                     }

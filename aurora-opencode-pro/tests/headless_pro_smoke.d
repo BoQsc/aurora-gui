@@ -244,6 +244,24 @@ private void verifyMarkdownTable()
     assert(sawHeader, "the table header background was not composed");
     assert(cellTexts >= 6, "table cell text was not composed");
 
+    // Later columns use absolute x coordinates. Passing their relative width
+    // as the line's right edge wrapped each word into single-letter lines.
+    auto fourColumns = composeMarkdown(parseMarkdown(
+        "| Stage | File | Status | Outcome |\n"d ~
+        "| --- | --- | --- | --- |\n"d ~
+        "| build | appui.d | passed | completed |\n"d), 520, false);
+    assert(fourColumns.height < 140,
+        "later table columns still render as vertical letters");
+
+    auto narrow = composeMarkdown(parseMarkdown(
+        "| First | Second | Third | Fourth | Fifth | Sixth |\n"d ~
+        "| --- | --- | --- | --- | --- | --- |\n"d ~
+        "| alpha | bravo | charlie | delta | echo | foxtrot |\n"d),
+        300, false);
+    foreach (item; narrow.items)
+        assert(item.kind != MdItemKind.tableLine || item.w > 1,
+            "a narrow table should use labelled rows, not tiny columns");
+
     // A streamed table must compose to exactly the settled composition.
     MarkdownComposer composer;
     MdComposition incremental;
@@ -1222,6 +1240,57 @@ int main(string[] args)
     root.tickTree(0.02);
     writeln("A queued prompt bubble sends itself now");
 
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["ongoing task"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.queueGuidanceForTesting("steer one");
+    root.queueFollowUpForTesting("follow one");
+    root.queueFollowUpForTesting("follow two");
+    root.tickTree(0.02);
+    assert(root.queuedPromptBubbleCountForTesting() == 3 &&
+        root.queuedPromptEditActionForTesting(1) == "Edit" &&
+        root.queuedPromptRemoveActionForTesting(1) == "×",
+        "pending bubbles must offer Edit and Remove beside Send now");
+    root.setInputForTesting("unfinished draft");
+    assert(root.clickQueuedPromptEditForTesting(1),
+        "Edit button did not fire");
+    assert(root.inputTextForTesting() == "unfinished draft" &&
+        root.queuedFollowUpCountForTesting() == 2,
+        "editing a queued message replaced an existing draft");
+    root.setInputForTesting("");
+    assert(root.clickQueuedPromptEditForTesting(1),
+        "Edit button did not move the chosen follow-up into the composer");
+    assert(root.inputTextForTesting() == "follow one" &&
+        root.queuedFollowUpCountForTesting() == 1 &&
+        root.queuedGuidanceCountForTesting() == 1,
+        "editing a follow-up removed the wrong queued item");
+    root.setInputForTesting("follow one edited");
+    root.queueComposerForTesting();
+    root.tickTree(0.02);
+    assert(root.queuedFollowUpCountForTesting() == 2 &&
+        root.queuedPromptBubbleTextForTesting(2).indexOf("follow one edited") >= 0,
+        "the edited follow-up could not be queued again");
+    assert(root.clickQueuedPromptRemoveForTesting(1),
+        "Remove button did not fire");
+    assert(root.queuedFollowUpCountForTesting() == 1 &&
+        root.queuedPromptBubbleTextForTesting(1).indexOf("follow one edited") >= 0,
+        "Remove discarded the wrong follow-up");
+    assert(root.clickQueuedPromptEditForTesting(0) &&
+        root.inputTextForTesting() == "steer one" &&
+        root.queuedGuidanceCountForTesting() == 0,
+        "editing queued steering did not move it into the composer");
+    root.setInputForTesting("steer one edited");
+    root.sendForTesting();
+    root.tickTree(0.02);
+    assert(root.queuedGuidanceCountForTesting() == 1 &&
+        root.queuedPromptBubbleTextForTesting(0).indexOf("steer one edited") >= 0 &&
+        root.turnBusyForTesting(),
+        "edited steering did not rejoin the running turn's queue");
+    root.clickSendButtonForTesting();
+    root.tickTree(0.02);
+    writeln("Queued prompts can be edited and removed independently");
+
     // Compaction is a context-pressure operation, not something performed on
     // every continuation. Below the threshold the model-visible prefix remains
     // stable; above it, old completed tool envelopes are checkpointed while the
@@ -1398,6 +1467,99 @@ int main(string[] args)
     assert(root.contextCompactionNoticeCountForTesting() == 1,
         "the in-chat compaction notice disappeared after reload");
     writeln("Compaction notices appear in chat without entering model context");
+
+    // A checkpoint must be reused across the next tool round and after a
+    // restart. Rebuilding from the full transcript here used to compact again
+    // on each continuation, changing the model's history every few seconds.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Keep the original task in view " ~
+        replicate("detail ", 500) ~ "Critical final constraint"]);
+    foreach (i; 0 .. 12)
+    {
+        const id = "rolling_" ~ to!string(i);
+        root.appendDanglingToolCallsForTesting(id);
+        root.appendToolReplyForTesting(id, bigOutput);
+    }
+    root.addConversationForTesting(["assistant"], ["Build and test passed"]);
+    bool checkpointCreated;
+    auto firstRolling = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(checkpointCreated && root.compactionAnchorForTesting().length > 0,
+        "near-limit history did not create a durable checkpoint");
+    const firstAnchor = root.compactionAnchorForTesting();
+    assert(firstRolling.length > 0 && firstRolling[0].role == "system" &&
+        firstRolling[0].content.indexOf("Keep the original task") >= 0 &&
+        firstRolling[0].content.indexOf("Critical final constraint") >= 0,
+        "checkpoint failed to carry the user's original objective");
+    auto secondRolling = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(!checkpointCreated && root.compactionAnchorForTesting() == firstAnchor &&
+        secondRolling == firstRolling,
+        "an unchanged request compacted a second time");
+    root.appendDanglingToolCallsForTesting("rolling_recent");
+    root.appendToolReplyForTesting("rolling_recent", "Latest tool: test passed");
+    auto afterTool = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(!checkpointCreated && root.compactionAnchorForTesting() == firstAnchor &&
+        afterTool[0].content == firstRolling[0].content &&
+        afterTool[$ - 1].content == "Latest tool: test passed",
+        "a small tool continuation rebuilt or changed the checkpoint");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    auto afterRestart = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(!checkpointCreated && root.compactionAnchorForTesting() == firstAnchor &&
+        afterRestart[0].content == firstRolling[0].content &&
+        afterRestart[$ - 1].content == "Latest tool: test passed",
+        "the saved checkpoint was lost on restart");
+    foreach (i; 0 .. 10)
+    {
+        const id = "rolling_more_" ~ to!string(i);
+        root.appendDanglingToolCallsForTesting(id);
+        root.appendToolReplyForTesting(id, bigOutput);
+    }
+    root.addConversationForTesting(["assistant"], ["Second build passed"]);
+    auto rolledAgain = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(checkpointCreated && root.compactionAnchorForTesting() != firstAnchor &&
+        rolledAgain[0].content.indexOf("Keep the original task") >= 0,
+        "a later checkpoint forgot the original objective");
+    const summarySource = root.compactionSourceForTesting(8_000,
+        firstAnchor, firstRolling[0].content);
+    assert(summarySource.indexOf("Earlier messages:") >= 0 &&
+        summarySource.indexOf("BEGIN: edited config path") >= 0 &&
+        summarySource.indexOf("Prior checkpoint:") >= 0,
+        "the summary model would not see the newly retired work");
+    const modelSummary = "The task remains to keep the original objective " ~
+        "and critical final constraint. The second build passed after " ~
+        "the latest tool returned a passing test result. Next, inspect the " ~
+        "remaining files and finish verification before reporting.";
+    assert(root.finishModelCompactionEventsForTesting(modelSummary, 8_000),
+        "a completed summary stream did not replace the extractive draft");
+    auto summarized = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(!checkpointCreated && summarized[0].content.indexOf(modelSummary) >= 0 &&
+        summarized[0].content.indexOf("Critical final constraint") >= 0,
+        "the outgoing request lost the model summary or durable constraint");
+    root.editAndResendForTesting(0);
+    assert(root.commitEditForTesting("A different task branch") >= 0,
+        "could not create a sibling branch for checkpoint validation");
+    auto siblingRequest = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(!checkpointCreated && siblingRequest.length == 1 &&
+        siblingRequest[0].content == "A different task branch",
+        "a checkpoint from another branch leaked into the request");
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Inspect the large tool result"]);
+    root.appendDanglingToolCallsForTesting("single_oversized_tool");
+    root.appendToolReplyForTesting("single_oversized_tool", bigOutput);
+    auto oversizedResult = root.rollingRequestMessagesForTesting(8_000,
+        checkpointCreated);
+    assert(checkpointCreated && oversizedResult.length == 1 &&
+        oversizedResult[0].role == "system" &&
+        oversizedResult[0].content.indexOf("END: test passed") >= 0,
+        "a single oversized final tool result was not checkpointed");
+    writeln("Rolling checkpoint survives tool rounds and restart");
 
     // Long transcripts stay complete in the message graph but only the newest
     // page is materialized. This prevents a pathological chat from allocating

@@ -713,6 +713,11 @@ public struct ChatSession
     // these prompts are not injected into the active turn.
     string[] queuedFollowUps;
     ChatMessage[] messages;
+    // Model-visible rolling checkpoint. The complete message graph above stays
+    // available for display and branch switching; requests on this branch use
+    // this note followed by messages after the anchored message.
+    string compactionSummary;
+    string compactedThroughMessageId;
     // The id of the message at the tip of the branch currently shown. The
     // visible conversation is the path from this leaf up through `parentId`s;
     // messages that belong to abandoned branches stay in `messages` untouched
