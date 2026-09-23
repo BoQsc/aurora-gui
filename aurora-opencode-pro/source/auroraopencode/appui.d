@@ -6260,6 +6260,9 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private PopupOverlay _activePopup;
+    // The model picker popup is open. Its button toggles instead of
+    // reopening: activation while this is set closes the picker.
+    private bool _modelPickerOpen;
     // Settings-dialog input fields, kept while the dialog is open so a chosen
     // provider preset can fill them and the smoke test can read them back.
     // Null when the dialog is closed.
@@ -12846,11 +12849,25 @@ public final class OpenCodeRoot : VBox
 
     private void showModelPicker()
     {
+        // Toggle: activating the model button while the picker is open closes
+        // it. The pointer path never reaches here (setConsumeAnchorPress below
+        // swallows that press); this guard covers activation through the
+        // still-focused button (Enter/Space) and direct onClick calls.
+        if (_modelPickerOpen)
+        {
+            if (_activePopup !is null) _activePopup.dismiss();
+            _modelPickerOpen = false;
+            return;
+        }
         if (_activePopup !is null) _activePopup.dismiss();
 
         auto content = new VBox(4, Insets(6));
         content.layoutHints().preferredWidth = 280;
         auto list = content.add(new ListView());
+        list.setId("oc-model-picker");
+        // A dropdown row is picked with one click; the stock double-click
+        // activation made the first click look like it did nothing.
+        list.setActivateOnSingleClick(true);
         list.layoutHints().preferredHeight = 340;
         ListItem[] items;
         foreach (model; _models)
@@ -12884,8 +12901,22 @@ public final class OpenCodeRoot : VBox
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
             _modelButton.size().height), PopupPlacement.above);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
-        popup.onDismissed = delegate() { _activePopup = null; };
+        // A second press on the anchor button must close the picker and be
+        // swallowed; otherwise it falls through, re-fires the button's
+        // onClick, and immediately reopens the picker on the same click.
+        popup.setConsumeAnchorPress(true);
+        popup.onDismissed = delegate()
+        {
+            _activePopup = null;
+            _modelPickerOpen = false;
+        };
+        _modelPickerOpen = true;
         openPopup(popup);
+        // The list pre-selected the current model before it had bounds, so its
+        // visibility pass was skipped. Lay the popup out and scroll the
+        // selected model into view now that the row geometry is known.
+        popup.layoutTree();
+        list.revealSelection();
     }
 
     private void showContextTargetMenu(Point globalPosition)
@@ -13440,9 +13471,14 @@ public final class OpenCodeRoot : VBox
             const origin = providerButton.globalOrigin();
             // Keep the Settings dialog open: showContextMenuBelow dismisses
             // every transient popup, including this dialog.
-            showContextMenuKeepPopups(providerButton,
+            auto menu = showContextMenuKeepPopups(providerButton,
                 Point(origin.x, origin.y + providerButton.size().height),
                 items);
+            // A second press on the button closes the menu and must be
+            // swallowed, or it falls through and reopens the menu at once.
+            if (menu !is null)
+                menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                    providerButton.size().width, providerButton.size().height));
         };
         _settingsProviderButton = providerButton;
 
@@ -13616,9 +13652,13 @@ public final class OpenCodeRoot : VBox
                 items ~= verbosityMenuItem(name);
             const origin = verbosityButton.globalOrigin();
             // Keep the Settings dialog open, exactly like the provider picker.
-            showContextMenuKeepPopups(verbosityButton,
+            auto menu = showContextMenuKeepPopups(verbosityButton,
                 Point(origin.x, origin.y + verbosityButton.size().height),
                 items);
+            // Closing press must not fall through and reopen the menu.
+            if (menu !is null)
+                menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
+                    verbosityButton.size().width, verbosityButton.size().height));
         };
         _settingsVerbosityButton = verbosityButton;
         optionsBody.add(verbosityRow);

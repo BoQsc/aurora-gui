@@ -218,7 +218,11 @@ class PopupOverlay : TransientPopup
 
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
     {
-        const consume = _consumeAnchorPress && _anchorGlobal.contains(globalPoint);
+        // Only the left press that toggles the anchor is swallowed; a
+        // right-click still passes through so the anchor's context menu can
+        // open while this popup closes.
+        const consume = _consumeAnchorPress && button == MouseButton.left &&
+            _anchorGlobal.contains(globalPoint);
         dismiss();
         return consume;
     }

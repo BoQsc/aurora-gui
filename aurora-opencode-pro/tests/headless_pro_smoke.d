@@ -2229,6 +2229,84 @@ int main(string[] args)
     }
     writeln("Model/context/thinking/tools controls sit in the composer footer");
 
+    // Regression: the model selector is a dropdown. A second click on its
+    // button must close it (the closing press used to fall through to the
+    // button and reopen the picker), and one click on a row must select it.
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+    auto pickerButton = requireWidget!Button(root, "oc-model");
+    const pickerModelBefore = pickerButton.text();
+    driver.click(globalCenter(pickerButton));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Model picker did not repaint after opening");
+    assert(findById(root, "oc-model-picker") !is null,
+        "Clicking the model button did not open the picker");
+    // The picker pre-selects the current model before it has bounds; the
+    // selection must be visible once it opens (a zero-height visibility clamp
+    // used to scroll it just past the top edge).
+    auto openedList = requireWidget!ListView(root, "oc-model-picker");
+    const openedRow = openedList.selectedIndex();
+    assert(openedRow >= 0 &&
+        openedRow * openedList.rowHeight() >= openedList.scrollOffset() &&
+        (openedRow + 1) * openedList.rowHeight() <=
+            openedList.scrollOffset() + openedList.bounds().height,
+        "Open picker must show the selected model row");
+    driver.click(globalCenter(pickerButton));
+    root.tickTree(0.02);
+    assert(findById(root, "oc-model-picker") is null,
+        "Second click on the model button must close the picker");
+
+    driver.click(globalCenter(pickerButton));
+    root.tickTree(0.02);
+    assert(driver.paint(), "Model picker did not lay out for the row click");
+    auto pickerList = requireWidget!ListView(root, "oc-model-picker");
+    assert(pickerList.items().length > 1,
+        "Model picker needs at least two models for this test");
+    int pickerOrigRow = -1;
+    int pickerAltRow = -1;
+    foreach (index, item; pickerList.items())
+    {
+        if (item.text == pickerModelBefore) pickerOrigRow = cast(int) index;
+        else if (pickerAltRow < 0) pickerAltRow = cast(int) index;
+    }
+    assert(pickerOrigRow >= 0 && pickerAltRow >= 0,
+        "Model picker rows do not cover the current model");
+    const pickerListOrigin = pickerList.localToGlobal(Point(0, 0));
+    const pickerRowHeight = pickerList.rowHeight();
+    const pickerRowX = pickerListOrigin.x + pickerList.bounds().width / 2;
+    // A single click (no double-click needed) selects the row and closes.
+    driver.click(Point(pickerRowX,
+        pickerListOrigin.y + pickerAltRow * pickerRowHeight +
+        pickerRowHeight / 2 - pickerList.scrollOffset()));
+    root.tickTree(0.02);
+    assert(findById(root, "oc-model-picker") is null,
+        "Selecting a model must close the picker");
+    assert(pickerButton.text() != pickerModelBefore,
+        "Single click did not select a different model");
+    assert(loadSettings().model == to!string(pickerButton.text()),
+        "Selected model was not saved: " ~ loadSettings().model);
+
+    // Restore the fixture's original selection through the same single click.
+    driver.click(globalCenter(pickerButton));
+    root.tickTree(0.02);
+    assert(driver.paint(),
+        "Model picker did not lay out for the restore row click");
+    pickerList = requireWidget!ListView(root, "oc-model-picker");
+    const restoreOrigin = pickerList.localToGlobal(Point(0, 0));
+    const restoreRowHeight = pickerList.rowHeight();
+    // Opening the picker reveals the current model, so map the row through the
+    // live scroll offset rather than assuming the list is at the top.
+    const restoreX = restoreOrigin.x + pickerList.bounds().width / 2;
+    const restoreY = restoreOrigin.y + pickerOrigRow * restoreRowHeight +
+        restoreRowHeight / 2 - pickerList.scrollOffset();
+    driver.click(Point(restoreX, restoreY));
+    root.tickTree(0.02);
+    assert(pickerButton.text() == pickerModelBefore,
+        "Restore click did not reselect the original model");
+    assert(findById(root, "oc-model-picker") is null,
+        "Restore row click did not close the picker");
+    writeln("Model picker toggles closed and selects on a single click");
+
     // Regression: the stock CheckBox reserves 34 + 12*len px, so "Thinking"
     // claimed 130 px and left a ~70 px dead gap before Tools (which looked
     // detached). Both toggles must now hug their labels and sit as a tight pair.
@@ -2383,6 +2461,14 @@ int main(string[] args)
     assert(findById(root, "oc-settings-base") !is null,
         "Provider dropdown dismissed the Settings dialog");
     writeln("Provider dropdown opens on a real click and keeps Settings open");
+    // Regression: a second click on the Provider button closes its dropdown;
+    // the closing press used to fall through and reopen the menu at once.
+    driver.click(globalCenter(providerButton));
+    root.tickTree(0.02);
+    assert(cast(ContextMenu) currentTransientPopup(root) is null,
+        "Second click on the Provider button must close its dropdown");
+    assert(findById(root, "oc-settings-base") !is null,
+        "Closing the Provider dropdown must keep Settings open");
     dismissContextMenus(root);
     root.tickTree(0.02);
 

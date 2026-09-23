@@ -46,6 +46,10 @@ class ListView : Widget
     // ring is suppressed for pointer focus so a clicked list does not keep a
     // blue outline after the click.
     private bool _focusedByPointer;
+    // Dropdown/picker semantics: one click activates the row instead of
+    // requiring a double click. Off by default so file/session style lists
+    // keep their select-once, open-on-double-click behavior.
+    private bool _activateOnSingleClick;
 
     void delegate(int index) onSelectionChanged;
     void delegate(int index) onActivated;
@@ -84,6 +88,16 @@ class ListView : Widget
     int indexAt(Point position) const @safe pure nothrow @nogc
     {
         return rowAt(position);
+    }
+
+    bool activateOnSingleClick() const @safe pure nothrow @nogc
+    {
+        return _activateOnSingleClick;
+    }
+
+    void setActivateOnSingleClick(bool value) @safe pure nothrow @nogc
+    {
+        _activateOnSingleClick = value;
     }
 
     void setItems(ListItem[] value)
@@ -191,6 +205,11 @@ class ListView : Widget
     private void ensureSelectionVisible()
     {
         if (_selected < 0) return;
+        // A selection set before the first layout (a popup list that preselects
+        // its current value) has no viewport yet. Clamping against a zero
+        // height would scroll the selection just past the top edge, hiding it
+        // once the real bounds arrive. Skip until the list has been laid out.
+        if (bounds().height <= 0) return;
         const top = _selected * _rowHeight;
         const bottom = top + _rowHeight;
         int next = _scrollOffset;
@@ -198,6 +217,12 @@ class ListView : Widget
         else if (bottom > next + bounds().height)
             next = bottom - bounds().height;
         setScrollOffset(next);
+    }
+
+    /** Scroll the selected row into view; safe to call after the first layout. */
+    void revealSelection()
+    {
+        ensureSelectionVisible();
     }
 
     private int rowAt(Point position) const @safe pure nothrow @nogc
@@ -355,7 +380,8 @@ class ListView : Widget
         if (row >= 0 && !_items[cast(size_t) row].disabled)
         {
             setSelectedIndex(row);
-            if (event.clickCount >= 2 && onActivated !is null)
+            if ((event.clickCount >= 2 || _activateOnSingleClick) &&
+                onActivated !is null)
                 onActivated(row);
         }
         return true;

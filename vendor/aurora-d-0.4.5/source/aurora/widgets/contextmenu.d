@@ -161,7 +161,10 @@ class ContextMenu : TransientPopup
 
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
     {
-        const consume = _consumeAnchorPress && _consumeAnchorGlobal.contains(globalPoint);
+        // Swallow only the left press that toggles the anchor button; other
+        // presses dismiss the menu and pass through unchanged.
+        const consume = _consumeAnchorPress && button == MouseButton.left &&
+            _consumeAnchorGlobal.contains(globalPoint);
         dismiss();
         return consume;
     }
