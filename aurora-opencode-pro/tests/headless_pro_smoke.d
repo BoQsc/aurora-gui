@@ -2406,6 +2406,13 @@ int main(string[] args)
     assert(root.loadProviderKeysForTesting(1) ==
         "sk-cc-main\nsk-cc-spare\nactive=1",
         "CommandCode did not keep its own key pair");
+    // Reopening Settings after selecting the spare must still show the saved
+    // main key in the main field, rather than the globally active spare key.
+    root.dismissPopupForTesting();
+    root.tickTree(0.02);
+    assert(root.loadProviderKeysForTesting(-1) ==
+        "sk-cc-main\nsk-cc-spare\nactive=1",
+        "Reopening Settings replaced the main key with the active spare key");
     // The live key follows the provider and its per-provider toggle.
     assert(root.liveKeyForProviderForTesting(0) ==
         "https://opencode.ai/zen/go/v1\nsk-open-main",

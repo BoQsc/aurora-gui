@@ -13461,7 +13461,9 @@ public final class OpenCodeRoot : VBox
         auto keyLabel = keyRow.add(new Label("API key"));
         keyLabel.layoutHints().preferredWidth = 110;
         keyLabel.setScale(1);
-        auto keyField = keyRow.add(new HoverKeyField(_settings.apiKey));
+        const activePair = findProviderApiKeys(_settings, _settings.baseUrl);
+        auto keyField = keyRow.add(new HoverKeyField(activePair !is null
+            ? activePair.apiKey : _settings.apiKey));
         keyField.setId("oc-settings-key");
         keyField.layoutHints().flex = 1.0;
         _settingsKeyField = keyField;
@@ -13471,7 +13473,6 @@ public final class OpenCodeRoot : VBox
         // Additional key: every provider keeps a spare credential in its own
         // field next to the main key. The checkbox below picks which of the two
         // is the live key for the provider the dialog is pointed at.
-        const activePair = findProviderApiKeys(_settings, _settings.baseUrl);
         auto additionalKeyRow = new HBox(8);
         additionalKeyRow.layoutHints().preferredHeight = 32;
         auto additionalKeyLabel = additionalKeyRow.add(
@@ -18435,12 +18436,13 @@ public final class OpenCodeRoot : VBox
         return _settings.apiKey ~ "\n" ~ activeApiKey(_settings);
     }
 
-    /// Test-only: pick the provider preset at `index` in an open dialog and
-    /// return the fields it shows, as "key\nadditional\nactive=<0|1>".
+    /// Test-only: open Settings and return the fields it shows, as
+    /// "key\nadditional\nactive=<0|1>". A negative index leaves the selected
+    /// provider unchanged, so tests can inspect the initial fields.
     public string loadProviderKeysForTesting(int index)
     {
         showSettingsDialog();
-        applyProviderPreset(index);
+        if (index >= 0) applyProviderPreset(index);
         const key = _settingsKeyField !is null
             ? _settingsKeyField.textUtf8() : "";
         const additional = _settingsAdditionalKeyField !is null
