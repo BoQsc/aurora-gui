@@ -6366,6 +6366,12 @@ public final class OpenCodeRoot : VBox
     private bool _stateDirty;
     private MonoTime _persistDue;
     private static immutable int persistDebounceMs = 5_000;
+    // Settings writes are debounced off the click path for the same reason as
+    // the session snapshot: a synchronous file write inside an input handler
+    // delays the frame that shows the result of the click.
+    private bool _settingsDirty;
+    private MonoTime _settingsPersistDue;
+    private static immutable int settingsPersistDebounceMs = 250;
 
     // Backend-neutral lifecycle stream. sessions.json remains the compatibility
     // snapshot while this append-only journal becomes the durable seam between
@@ -12880,16 +12886,18 @@ public final class OpenCodeRoot : VBox
         }
         list.onActivated = delegate(int index)
         {
+            // Close the picker before any persistence so the dismissal is not
+            // held up by the settings write.
+            dismissPopup();
             if (index >= 0 && index < cast(int) _models.length)
             {
                 _settings.model = _models[cast(size_t) index];
                 if (_current >= 0) _sessions[_current].model = _settings.model;
                 _modelButton.setText(_settings.model);
-                saveSettingsNow();
+                saveSettingsSoon();
                 markDirty();
                 refreshUsageBadge();
             }
-            dismissPopup();
         };
         list.onSelectionChanged = delegate(int index) {};
 
@@ -15097,6 +15105,22 @@ public final class OpenCodeRoot : VBox
         saveSettings(_settings);
     }
 
+    /// Debounced settings write: a click handler must not block on the disk.
+    private void saveSettingsSoon()
+    {
+        if (!_settingsDirty)
+            _settingsPersistDue = MonoTime.currTime +
+                msecs(settingsPersistDebounceMs);
+        _settingsDirty = true;
+    }
+
+    private void flushSettings()
+    {
+        if (!_settingsDirty) return;
+        _settingsDirty = false;
+        saveSettings(_settings);
+    }
+
     private void persistState()
     {
         _stateDirty = false;
@@ -16253,6 +16277,9 @@ public final class OpenCodeRoot : VBox
         if (_stateDirty && MonoTime.currTime >= _persistDue &&
             !anyTurnIsBusy())
             persistState();
+
+        if (_settingsDirty && MonoTime.currTime >= _settingsPersistDue)
+            flushSettings();
 
         // Tick the conversation stopwatch a few times a second rather than every
         // frame: the displayed value only changes once per whole second.
@@ -17584,6 +17611,12 @@ public final class OpenCodeRoot : VBox
     public void persistForTesting()
     {
         persistState();
+    }
+
+    /// Test-only: flush the debounced settings write immediately.
+    public void flushSettingsForTesting()
+    {
+        flushSettings();
     }
 
     /// Test-only: reload sessions.json exactly as app startup does, so a test

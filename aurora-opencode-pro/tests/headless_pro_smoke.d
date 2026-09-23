@@ -2279,6 +2279,9 @@ int main(string[] args)
         pickerListOrigin.y + pickerAltRow * pickerRowHeight +
         pickerRowHeight / 2 - pickerList.scrollOffset()));
     root.tickTree(0.02);
+    // The settings write is debounced off the click path, so flush it before
+    // reading the persisted model back from disk.
+    root.flushSettingsForTesting();
     assert(findById(root, "oc-model-picker") is null,
         "Selecting a model must close the picker");
     assert(pickerButton.text() != pickerModelBefore,
