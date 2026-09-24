@@ -2055,6 +2055,53 @@ int main(string[] args)
         "The newest conversation should be the top row");
     writeln("Conversations are listed newest-first");
 
+    // Drag a conversation into the pinned zone to pin it, then drag it back out
+    // to unpin. The sidebar has no reordering, so a drop only toggles the pin.
+    {
+        const rowH = sessions.rowHeight();
+        const rowCount = cast(int) sessions.items().length;
+        assert(rowCount >= 2,
+            "Need at least two conversations for the pin drag test");
+        // Only rows inside the viewport can be pressed; the list can hold more
+        // conversations than it shows, so pick one well above the bottom edge.
+        int visibleRows = cast(int) sessions.bounds().height / rowH;
+        if (visibleRows < 2) visibleRows = 2;
+        int srcRow = visibleRows - 2;
+        if (srcRow > rowCount - 1) srcRow = rowCount - 1;
+        const pinSource = root.visibleSessionIndexAtRowForTesting(srcRow);
+        assert(!root.sessionPinnedForTesting(pinSource),
+            "Conversation should start unpinned");
+        // A tooltip popup from an earlier hover would swallow the press (the
+        // first click outside a transient popup only dismisses it), so clear any
+        // before driving a drag through the real dispatch path.
+        dismissTransientPopups(root);
+        root.tickTree(0.02);
+        // Nothing is pinned yet, so rows start flush at the top with no divider.
+        driver.drag(
+            sessions.localToGlobal(Point(20, srcRow * rowH + rowH / 2)),
+            sessions.localToGlobal(Point(20, rowH / 2)));
+        root.tickTree(0.02);
+        assert(root.sessionPinnedForTesting(pinSource),
+            "Dropping a conversation in the pinned zone should pin it");
+        assert(root.sessionPinnedSeparatorRowForTesting() > 0,
+            "Pinning should separate the pinned group with a divider");
+        assert(sessions.items()[0].text.length > 0 &&
+            sessions.items()[0].text[0] == '★',
+            "The pinned conversation should lead the list with a star");
+        writeln("Dragging a conversation onto the pinned zone pins it");
+
+        // Drag the pinned row down past the divider to unpin it again.
+        driver.drag(
+            sessions.localToGlobal(Point(20, rowH / 2)),
+            sessions.localToGlobal(Point(20, 2 * rowH)));
+        root.tickTree(0.02);
+        assert(!root.sessionPinnedForTesting(pinSource),
+            "Dropping a pinned conversation below the divider should unpin it");
+        assert(root.sessionPinnedSeparatorRowForTesting() < 0,
+            "Unpinning every conversation should remove the divider");
+        writeln("Dragging a pinned conversation below the divider unpins it");
+    }
+
     // The merged custom titlebar owns the top band and the project rail starts
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),

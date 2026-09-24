@@ -5673,6 +5673,9 @@ public final class SessionListView : ListView
 {
     void delegate(int index, Point globalPosition) onContextMenuRequested;
     void delegate(int index) onDeleteRequested;
+    // Fired when a row is dropped onto the pinned group (pinned=true) or a
+    // pinned row is dropped below it (pinned=false).
+    void delegate(int row, bool pinned) onPinDropRequested;
 
     private int _hoverRow = -1;
     // List indices whose conversation is actively working. A small pulsing
@@ -5699,6 +5702,27 @@ public final class SessionListView : ListView
     // Top padding above the pinned group so it does not sit flush against the
     // search field / header.
     private enum int pinnedTopPad = 12;
+
+    // What a drop would do to the dragged row. There is no reordering: a drop
+    // only ever toggles the pin state, and leaves it alone when the pointer is
+    // over the group the row already belongs to.
+    private enum DragIntent
+    {
+        none,
+        pin,
+        unpin
+    }
+
+    // Internal drag-to-pin state. A left press arms a drag; moving past
+    // `dragThreshold` promotes it, and the zone under the pointer on release
+    // decides the outcome.
+    private enum int dragThreshold = 4;
+    private bool _pressing;
+    private bool _dragging;
+    private int _pressRow = -1;
+    private bool _pressRowPinned;
+    private Point _pressPosition;
+    private DragIntent _dragIntent;
 
     this()
     {
@@ -5806,6 +5830,24 @@ public final class SessionListView : ListView
     {
         return _pinnedRows > 0 && _pinnedRows < cast(int) items().length
             ? _pinnedRows : -1;
+    }
+
+    // Content-space y of the bottom of the pin drop zone. With something pinned
+    // the whole pinned group is the target; with nothing pinned the first row's
+    // slot stands in so a drag still has a place to land.
+    private int pinDropZoneBottom() const @safe pure nothrow @nogc
+    {
+        return _pinnedRows > 0 ? _pinnedRows * rowHeight() : rowHeight();
+    }
+
+    // Decide what a drop at `position` would do, given the row being dragged.
+    private DragIntent dropIntentAt(Point position) const @safe pure nothrow @nogc
+    {
+        const contentY = position.y + scrollOffset() - listTopPad();
+        const boundary = pinDropZoneBottom();
+        if (_pressRowPinned)
+            return contentY >= boundary ? DragIntent.unpin : DragIntent.none;
+        return contentY < boundary ? DragIntent.pin : DragIntent.none;
     }
 
     /// `!` incomplete, `*` unread, `-` neither; one character per row. Exposed
@@ -5978,16 +6020,67 @@ public final class SessionListView : ListView
                 maxInt(0, width - 2 * inset), 1),
                 opencodeAccent.withAlpha(190));
         }
+
+        if (_dragging && _dragIntent != DragIntent.none)
+            paintDropIndicator(content, width, offset, rowHeight, gap);
+    }
+
+    // While a drag is in flight, tint the zone the drop would apply to so the
+    // pin/unpin outcome is visible before the release.
+    private void paintDropIndicator(Canvas canvas, int width, int offset,
+        int rowHeight, int gap)
+    {
+        const accent = opencodeAccent;
+        immutable(dchar)[] label;
+        Rect band;
+        if (_dragIntent == DragIntent.pin)
+        {
+            const top = listTopPad() - offset;
+            const bottom = pinDropZoneBottom() - offset;
+            band = Rect(2, top, maxInt(0, width - 4),
+                maxInt(rowHeight, bottom - top));
+            label = "Pin conversation"d;
+        }
+        else
+        {
+            const top = pinDropZoneBottom() + gap - offset;
+            band = Rect(2, top, maxInt(0, width - 4), rowHeight);
+            label = "Unpin conversation"d;
+        }
+        canvas.fillRoundedRect(band, 6, accent.withAlpha(38));
+        canvas.strokeRect(band, accent.withAlpha(150), 1);
+        canvas.drawTextInRect(
+            Rect(band.x + 12, band.y, maxInt(0, band.width - 24), band.height),
+            label, accent, theme().fontScale, HorizontalAlign.left,
+            VerticalAlign.middle, true);
     }
 
     override bool onMouseMove(ref Event event)
     {
-        setCursor(CursorKind.arrow);
+        setCursor(_dragging ? CursorKind.move : CursorKind.arrow);
         const next = indexAt(event.position);
         if (next != _hoverRow)
         {
             _hoverRow = next;
             invalidate();
+        }
+        if (_pressing && _pressRow >= 0)
+        {
+            int dx = event.position.x - _pressPosition.x;
+            int dy = event.position.y - _pressPosition.y;
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            if (!_dragging && maxInt(dx, dy) >= dragThreshold)
+                _dragging = true;
+            if (_dragging)
+            {
+                const intent = dropIntentAt(event.position);
+                if (intent != _dragIntent)
+                {
+                    _dragIntent = intent;
+                    invalidate();
+                }
+            }
         }
         return true;
     }
@@ -6019,6 +6112,33 @@ public final class SessionListView : ListView
             if (event.clickCount >= 2 && onActivated !is null)
                 onActivated(row);
         }
+        // Arm a drag-to-pin. Capturing the pointer keeps the drop landing here
+        // even if the pointer leaves the sidebar before the release.
+        _pressing = true;
+        _dragging = false;
+        _dragIntent = DragIntent.none;
+        _pressRow = row;
+        _pressRowPinned = row >= 0 && row < _pinnedRows;
+        _pressPosition = event.position;
+        captureMouse();
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        const row = _pressRow;
+        const wasDragging = _dragging;
+        const intent = _dragIntent;
+        _pressing = false;
+        _dragging = false;
+        _dragIntent = DragIntent.none;
+        _pressRow = -1;
+        releaseMouse();
+        if (wasDragging && intent != DragIntent.none && row >= 0 &&
+            onPinDropRequested !is null)
+            onPinDropRequested(row, intent == DragIntent.pin);
+        invalidate();
         return true;
     }
 
@@ -7425,6 +7545,10 @@ public final class OpenCodeRoot : VBox
         _sessionList.onDeleteRequested = delegate(int row)
         {
             deleteSessionAtRow(row);
+        };
+        _sessionList.onPinDropRequested = delegate(int row, bool pinned)
+        {
+            setSessionPinnedAtRow(row, pinned);
         };
 
         auto chatPanel = new VBox(0);
@@ -15203,16 +15327,34 @@ public final class OpenCodeRoot : VBox
             return;
         const id = _sessions[sessionIndex].id;
         if (id.length == 0) return;
-        if (_pinnedSessionIds.canFind(id))
+        setSessionPinned(sessionIndex, !_pinnedSessionIds.canFind(id));
+    }
+
+    private void setSessionPinnedAtRow(int row, bool pinned)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        setSessionPinned(_sessionIndices[row], pinned);
+    }
+
+    // Pin or unpin a conversation. Idempotent so a drag drop that matches the
+    // current state does not rewrite the pins file.
+    private void setSessionPinned(int sessionIndex, bool pinned)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        const id = _sessions[sessionIndex].id;
+        if (id.length == 0) return;
+        if (_pinnedSessionIds.canFind(id) == pinned) return;
+        if (pinned)
+        {
+            _pinnedSessionIds ~= id;
+        }
+        else
         {
             string[] kept;
             foreach (pin; _pinnedSessionIds)
                 if (pin != id) kept ~= pin;
             _pinnedSessionIds = kept;
-        }
-        else
-        {
-            _pinnedSessionIds ~= id;
         }
         savePinnedSessions();
         updateSessionList(false);
@@ -16815,6 +16957,15 @@ public final class OpenCodeRoot : VBox
     {
         return _sessionList is null
             ? -1 : _sessionList.pinnedSeparatorRowForTesting();
+    }
+
+    /// Test-only: whether a conversation is currently pinned to the top of the
+    /// sidebar.
+    public bool sessionPinnedForTesting(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        return isSessionPinned(_sessions[sessionIndex].id);
     }
 
     /// Test-only: overwrite a conversation's turn status so the incomplete
