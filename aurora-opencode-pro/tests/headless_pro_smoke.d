@@ -1168,6 +1168,25 @@ int main(string[] args)
         "a turn stopped on screen did not warn in the sidebar");
     writeln("One Stop click immediately releases the turn");
 
+    // A prompt the user typed but never submitted must survive a restart or a
+    // rebuild. The draft is saved with its conversation and put back into the
+    // composer when the sessions are reloaded; before this it was dropped with
+    // the process.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["first prompt"]);
+        root.setInputForTesting("unfinished draft prompt");
+        root.persistForTesting();
+        // Clear the live composer so the assertion can only pass if the draft
+        // came back from disk, not from the still-mounted widget.
+        root.setInputForTesting("");
+        root.reloadSessionsForTesting();
+        assert(root.inputTextForTesting() == "unfinished draft prompt",
+            "unsent composer draft did not survive a save + reload");
+        writeln("Unsent composer draft survives a save + reload");
+    }
+
+
     // Text that was explicitly submitted during a live turn is different from
     // untouched composer text: it is durable queued guidance. Stop must retain
     // it as a visible user turn rather than silently deleting the user's words.

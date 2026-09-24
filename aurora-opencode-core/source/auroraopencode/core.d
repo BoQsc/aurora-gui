@@ -723,6 +723,10 @@ public struct ChatSession
     // messages that belong to abandoned branches stay in `messages` untouched
     // so the user can switch back and continue from them.
     string activeLeafId;
+    // Composer text the user typed but has not submitted. Persisted so a draft
+    // prompt survives a restart or a rebuild-and-relaunch instead of vanishing
+    // with the process. Empty once the prompt is sent.
+    string draft;
 }
 
 // ---------------------------------------------------------------------------

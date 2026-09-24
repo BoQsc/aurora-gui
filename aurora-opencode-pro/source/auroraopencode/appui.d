@@ -7980,6 +7980,8 @@ public final class OpenCodeRoot : VBox
     private void newChat()
     {
         saveLoadedRuntime();
+        // Keep the outgoing conversation's draft, then start the new one empty.
+        syncComposerDraft();
         if (_loadedRuntimeId.length == 0 && _sessions.length == 0 &&
             _client !is null)
             _client.closeSession();
@@ -7992,6 +7994,7 @@ public final class OpenCodeRoot : VBox
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         loadRuntime(_current);
+        if (_input !is null) _input.setText("", false);
         publishRuntimeEvent(AgentEventKind.threadStarted, session,
             "", "", "", runtimeThreadPayload(session));
         _visibleMessageLimit = messageHistoryPageSize;
@@ -8011,10 +8014,15 @@ public final class OpenCodeRoot : VBox
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
         saveLoadedRuntime();
+        // Drafts are per conversation: store the text of the one we are leaving
+        // and show the one we are opening, so the persisted draft matches the
+        // conversation it belongs to.
+        syncComposerDraft();
         _current = index;
         loadRuntime(index);
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
+        if (_input !is null) _input.setText(_sessions[index].draft, false);
         // Opening a conversation is the "attention" its unread dot waits for.
         bool clearedUnread;
         if (_sessions[index].unread)
@@ -15384,6 +15392,19 @@ public final class OpenCodeRoot : VBox
 
     private bool _recoveryBlocked;
 
+    /**
+     * Copy the composer's unsubmitted text into the active conversation so a
+     * draft prompt is persisted with it. Called right before a snapshot is
+     * written; the composer is the single source of truth while running, so the
+     * draft only has to be mirrored at save time.
+     */
+    private void syncComposerDraft()
+    {
+        if (_input is null) return;
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        _sessions[_current].draft = _input.textUtf8();
+    }
+
     private void saveSettingsNow()
     {
         saveSettings(_settings);
@@ -15408,6 +15429,9 @@ public final class OpenCodeRoot : VBox
     private void persistState()
     {
         _stateDirty = false;
+        // Fold the live composer into the active conversation first, so a prompt
+        // typed but not sent is written with the same snapshot as the messages.
+        syncComposerDraft();
         ensureStateDirectory();
         JSONValue root;
         JSONValue list = JSONValue(string[].init);
@@ -15625,6 +15649,10 @@ public final class OpenCodeRoot : VBox
         }
         if (session.activeLeafId.length > 0)
             root["activeLeaf"] = session.activeLeafId;
+        // An unsubmitted prompt must survive a restart or rebuild; without this
+        // the text the user was typing is lost with the process.
+        if (session.draft.length > 0)
+            root["draft"] = session.draft;
         if (session.compactionSummary.length > 0 &&
             session.compactedThroughMessageId.length > 0)
         {
@@ -15907,6 +15935,9 @@ public final class OpenCodeRoot : VBox
                             session.projectId = sandboxProjectId;
                         if (auto field = "activeLeaf" in sessionValue.object)
                             session.activeLeafId = field.str;
+                        if (auto field = "draft" in sessionValue.object)
+                            if (field.type == JSONType.string)
+                                session.draft = field.str;
                         if (auto field = "compactionSummary" in
                             sessionValue.object)
                             if (field.type == JSONType.string)
@@ -16118,6 +16149,11 @@ public final class OpenCodeRoot : VBox
             _settings.thinking = _sessions[_current].thinking;
             _modelButton.setText(_settings.model);
             _thinkingBox.setChecked(_settings.thinking, false);
+            // Put back a prompt the user typed but never sent, so a restart or
+            // rebuild does not silently drop it. notify=false: this is a
+            // restore, not a user edit.
+            if (_input !is null && _sessions[_current].draft.length > 0)
+                _input.setText(_sessions[_current].draft, false);
             rebuildMessageColumn();
         }
         else
@@ -16188,9 +16224,15 @@ public final class OpenCodeRoot : VBox
             // complete copy must not erase it just because that copy was saved
             // before the turn finished.
             const unread = existing.unread || session.unread;
-            if (session.messages.length > existing.messages.length)
+            // Keep a draft too, from whichever copy has one, so merging a
+            // snapshot that predates the composer text cannot drop it.
+            const oldDraft = existing.draft;
+            const replace = session.messages.length > existing.messages.length;
+            if (replace)
                 existing = session;
             existing.unread = unread;
+            if (existing.draft.length == 0)
+                existing.draft = replace ? oldDraft : session.draft;
             return;
         }
         _sessions ~= session;
