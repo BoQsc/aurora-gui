@@ -28,10 +28,9 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
-    attachmentForText, attachmentImages, attachmentImageUnsupportedNote,
-    attachmentInsertedText, attachmentIsLargePaste, attachmentStripHeight,
-    attachmentVisibleSummary, attachmentsContainImage,
-    experimentalAttachmentsEnabled;
+    attachmentForText, attachmentImages, attachmentInsertedText,
+    attachmentIsLargePaste, attachmentStripHeight, attachmentVisibleSummary,
+    attachmentsContainImage, experimentalAttachmentsEnabled;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -238,6 +237,11 @@ private final class MessageBubble : Widget
     // queued bubble renders dimmed with a "queued" footer instead — the prompt
     // stays visible instead of looking like it silently vanished.
     private bool _queued;
+    // Images already sent with this user turn. Reuse the composer's attachment
+    // strip in display-only mode; a future thumbnail renderer can replace this
+    // child without changing the persisted message data.
+    private AttachmentStrip _sentAttachments;
+    private static immutable int sentAttachmentHeight = 26;
 
     // Chat-quality actions (Pro): regenerate/retry the last reply, edit &
     // resend a user message.
@@ -697,6 +701,35 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    void setImages(const(ChatImageAttachment)[] images)
+    {
+        Attachment[] attachments;
+        foreach (image; images)
+        {
+            Attachment attachment;
+            attachment.isFile = true;
+            attachment.isImage = true;
+            attachment.name = image.name.length > 0 ? image.name : "image";
+            attachment.image = image;
+            attachments ~= attachment;
+        }
+        if (_sentAttachments is null && attachments.length > 0)
+        {
+            _sentAttachments = new AttachmentStrip(false);
+            _sentAttachments.setId("oc-sent-attachments");
+            add(_sentAttachments);
+        }
+        if (_sentAttachments !is null)
+            _sentAttachments.setAttachments(attachments);
+        invalidate();
+    }
+
+    public size_t sentAttachmentCountForTesting() const
+    {
+        return _sentAttachments is null ? 0 :
+            _sentAttachments.countForTesting();
+    }
+
     void appendThinking(string chunk)
     {
         _thinking ~= toUTF32(chunk);
@@ -1113,6 +1146,14 @@ private final class MessageBubble : Widget
                 innerWidth;
             if (_content.length > 0)
                 height += shapedContent(wrapWidth).measuredSize().height;
+            if (_role == "user" && _sentAttachments !is null &&
+                _sentAttachments.visible())
+            {
+                _sentAttachments.measure(Size(wrapWidth,
+                    sentAttachmentHeight));
+                if (_content.length > 0) height += gap;
+                height += sentAttachmentHeight;
+            }
         }
         if (_failed)
             height += fontPixelSize(1) + 4;
@@ -1125,6 +1166,19 @@ private final class MessageBubble : Widget
         layoutHints().preferredWidth = result.width;
         layoutHints().preferredHeight = result.height;
         return result;
+    }
+
+    protected override void onLayout()
+    {
+        if (_role != "user" || _sentAttachments is null ||
+            !_sentAttachments.visible()) return;
+        const panelW = userPanelWidth(bounds().width);
+        const stripWidth = maxInt(24, panelW - 2 * padH);
+        int y = padV;
+        if (_content.length > 0)
+            y += shapedContent(stripWidth).measuredSize().height + gap;
+        _sentAttachments.setBounds(Rect(maxInt(0, bounds().width - panelW) +
+            padH, y, stripWidth, sentAttachmentHeight));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -6367,6 +6421,7 @@ private final class ConversationRuntime
     bool toolTranscriptDirty;
     OpenCodeToolCall[] pendingToolCalls;
     int pendingToolResults;
+    ChatImageAttachment[] pendingToolImages;
     bool[string] reportedToolCallIds;
     OpenCodeToolCall[] liveToolCalls;
     OpenCodeToolCall[] preparingToolCalls;
@@ -6584,6 +6639,10 @@ public final class OpenCodeRoot : VBox
     // the enriched history is re-sent until the model answers with text.
     private OpenCodeToolCall[] _pendingToolCalls;
     private int _pendingToolResults;
+    // `view_image` results wait here until the entire tool batch is complete.
+    // They are then appended after every `tool` message in one hidden user
+    // message, preserving assistant tool_calls -> tool-result adjacency.
+    private ChatImageAttachment[] _pendingToolImages;
     // A local worker should publish exactly one result for every requested id.
     // Keep an explicit ledger anyway: duplicate or unknown results must never
     // decrement the batch and start the next model round early.
@@ -6818,6 +6877,7 @@ public final class OpenCodeRoot : VBox
         rt.toolTranscriptDirty = _toolTranscriptDirty;
         rt.pendingToolCalls = _pendingToolCalls;
         rt.pendingToolResults = _pendingToolResults;
+        rt.pendingToolImages = _pendingToolImages;
         rt.reportedToolCallIds = _reportedToolCallIds;
         rt.liveToolCalls = _liveToolCalls;
         rt.preparingToolCalls = _preparingToolCalls;
@@ -6870,6 +6930,7 @@ public final class OpenCodeRoot : VBox
         _toolTranscriptDirty = rt.toolTranscriptDirty;
         _pendingToolCalls = rt.pendingToolCalls;
         _pendingToolResults = rt.pendingToolResults;
+        _pendingToolImages = rt.pendingToolImages;
         _reportedToolCallIds = rt.reportedToolCallIds;
         _liveToolCalls = rt.liveToolCalls;
         _preparingToolCalls = rt.preparingToolCalls;
@@ -7926,6 +7987,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble = null;
         _activityRow = null;
         _pendingToolCalls.length = 0;
+        _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -9422,6 +9484,8 @@ public final class OpenCodeRoot : VBox
                 versionAction(index, -1), versionAction(index, +1));
         }
         bubble.setContent(message.content);
+        if (message.role == "user" && message.images.length > 0)
+            bubble.setImages(message.images);
         // A tool-call wrapper with no prose and no reasoning to show is not a
         // visible reply; keep its slot (for index mapping) but collapse it away.
         // A tool-request turn that DID reason stays visible as its own
@@ -9734,11 +9798,13 @@ public final class OpenCodeRoot : VBox
     }
 
 
-    private void addUserBubble(string text)
+    private void addUserBubble(string text,
+        const(ChatImageAttachment)[] images = null)
     {
         auto bubble = new MessageBubble();
         bubble.setRole("user");
         bubble.setContent(text);
+        bubble.setImages(images);
         if (_current >= 0 && _sessions[_current].messages.length > 0)
         {
             const last = _sessions[_current].messages[$ - 1];
@@ -10195,6 +10261,7 @@ public final class OpenCodeRoot : VBox
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
         _pendingToolCalls.length = 0;
+        _pendingToolImages.length = 0;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
@@ -10721,6 +10788,7 @@ public final class OpenCodeRoot : VBox
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
         _pendingToolCalls = event.toolCalls.dup;
+        _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
         _liveToolCalls = event.toolCalls.dup;
         _pendingToolResults = cast(int) event.toolCalls.length;
@@ -10830,7 +10898,8 @@ public final class OpenCodeRoot : VBox
     private static bool toolSupportsParallel(const ref OpenCodeToolCall call)
     {
         return call.name == "read" || call.name == "glob" ||
-            call.name == "grep" || call.name == "dshell";
+            call.name == "grep" || call.name == "dshell" ||
+            call.name == "view_image";
     }
 
     private static final class ParallelToolJob
@@ -10868,6 +10937,7 @@ public final class OpenCodeRoot : VBox
         result.diffDeletions = execution.deletions;
         result.diffText = execution.diff;
         result.elapsedMs = execution.elapsedMs;
+        result.images = execution.images.dup;
         result.reasoning = false;
         result.requestId = requestId;
         client.pushLocalEvent(result);
@@ -10923,6 +10993,8 @@ public final class OpenCodeRoot : VBox
         toolMessage.toolElapsedMs = event.elapsedMs;
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
+        if (!event.toolFailed && event.images.length > 0)
+            _pendingToolImages ~= event.images;
 
         if (!event.toolFailed && event.toolName == "update_plan")
             applyDurablePlan(*session, toolArgs);
@@ -10990,6 +11062,19 @@ public final class OpenCodeRoot : VBox
             refreshBubbleActions();
             queueStalePlanGuidance(*session);
             appendPendingProgressGuidance(*session);
+            if (_pendingToolImages.length > 0)
+            {
+                ChatMessage imageMessage;
+                imageMessage.role = "user";
+                imageMessage.internal = true;
+                imageMessage.content = _pendingToolImages.length == 1
+                    ? "Image loaded by view_image for visual inspection."
+                    : "Images loaded by view_image for visual inspection.";
+                imageMessage.images = _pendingToolImages.dup;
+                imageMessage.time = currentTimestamp();
+                appendMessage(*session, imageMessage);
+                _pendingToolImages.length = 0;
+            }
             if (!_toolContinuationPaused)
             {
                 appendQueuedGuidance(*session);
@@ -11322,8 +11407,9 @@ public final class OpenCodeRoot : VBox
         const attachments = _pendingAttachments.dup;
         const baseText = text.length > 0 ? text
             : "Please review the attached content.";
-        const attachmentSuffix = attachments.length == 0 ? "" :
-            "\n\n" ~ attachmentVisibleSummary(attachments);
+        const visibleAttachmentSummary = attachmentVisibleSummary(attachments);
+        const attachmentSuffix = visibleAttachmentSummary.length == 0 ? "" :
+            "\n\n" ~ visibleAttachmentSummary;
 
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
@@ -11368,14 +11454,9 @@ public final class OpenCodeRoot : VBox
         userMessage.role = "user";
         userMessage.content = baseText ~ attachmentSuffix;
         userMessage.time = currentTimestamp();
-        // experimental: attachments - dropped images reaching the request
-        // depend on the model, so say so in the transcript instead of leaving
-        // a silent difference between what was attached and what was sent.
-        auto images = visionImagesForAttachments(attachments, session.model);
-        if (attachmentsContainImage(attachments))
-            userMessage.content ~= "\n\n" ~ (images.length > 0
-                ? attachmentImagesSentNote(attachments)
-                : attachmentImageUnsupportedNote(session.model));
+        // Explicit images are always forwarded. Their durable names render as
+        // transcript pills instead of being appended as transport prose.
+        auto images = visionImagesForAttachments(attachments);
         userMessage.images = images;
         appendMessage(*session, userMessage);
         // experimental: attachments - hidden inline context carries the full
@@ -11390,7 +11471,7 @@ public final class OpenCodeRoot : VBox
             context.content = strip(attachmentContextBlock(attachments));
             appendMessage(*session, context);
         }
-        addUserBubble(baseText ~ attachmentSuffix);
+        addUserBubble(userMessage.content, images);
         _input.setText("");
         clearAttachments();
         markDirty();
@@ -11402,6 +11483,7 @@ public final class OpenCodeRoot : VBox
         _toolRounds = 0;
         _finalAnswerRequested = false;
         _pendingToolCalls.length = 0;
+        _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
         _liveToolCalls.length = 0;
         _preparingToolCalls.length = 0;
@@ -11578,27 +11660,13 @@ public final class OpenCodeRoot : VBox
 
     // -- experimental: attachments ------------------------------------------
 
-    /// The images to send inline for this request, or none when the model
-    /// cannot see them. Sending an `image_url` part to a text-only route is a
-    /// hard 400, so an unclear capability answer means "text only".
+    /// Every explicitly attached image is sent inline. The endpoint, rather
+    /// than a model-name allowlist, decides whether it supports the payload.
     private ChatImageAttachment[] visionImagesForAttachments(
-        const(Attachment)[] attachments, string model)
+        const(Attachment)[] attachments)
     {
         if (!attachmentsContainImage(attachments)) return null;
-        if (!isVisionModel(model)) return null;
         return attachmentImages(attachments);
-    }
-
-    /// The transcript note for images that were sent inline, so the recorded
-    /// turn matches what the model actually received.
-    private string attachmentImagesSentNote(const(Attachment)[] attachments)
-    {
-        size_t count;
-        foreach (attachment; attachments)
-            if (attachment.isImage) ++count;
-        return count == 1
-            ? "Sent 1 image inline with this message."
-            : "Sent " ~ to!string(count) ~ " images inline with this message.";
     }
 
     /// The images carried by the most recent image-bearing user turn of the
@@ -12631,8 +12699,14 @@ public final class OpenCodeRoot : VBox
             // something the user said. Keep it in the durable graph for replay,
             // but send it under the system role so it cannot overwrite or
             // impersonate the user's intent in later model turns.
-            request.role = message.internal ? "system" : message.role;
-            request.content = message.internal
+            // A view_image payload is hidden from the transcript as internal,
+            // but must stay a user-role multimodal message on the wire. System
+            // messages are folded together by the client and most vision chat
+            // templates accept image parts only on user messages.
+            const internalImage = message.internal && message.images.length > 0;
+            request.role = message.internal && !internalImage
+                ? "system" : message.role;
+            request.content = message.internal && !internalImage
                 ? "Internal agent-control instruction:\n" ~ message.content
                 : message.content;
             if (message.role == "assistant")
@@ -17006,7 +17080,7 @@ public final class OpenCodeRoot : VBox
     /// Test-only: the images that would be sent inline for the current model.
     public ChatImageAttachment[] pendingAttachmentImagesForTesting()
     {
-        return visionImagesForAttachments(_pendingAttachments, _settings.model);
+        return visionImagesForAttachments(_pendingAttachments);
     }
 
     /// Test-only: images riding on the newest user turn of the active path.
@@ -17594,6 +17668,39 @@ public final class OpenCodeRoot : VBox
         const(string)[] contents)
     {
         addConversationForTestingWithReasoning(roles, contents, null);
+    }
+
+    /// Test-only: append a user turn carrying one durable image attachment,
+    /// without starting a provider request.
+    public void addImageMessageForTesting(string content, string name)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "user";
+        message.content = content;
+        ChatImageAttachment image;
+        image.name = name;
+        image.mimeType = "image/png";
+        image.base64Data = "TWFu";
+        message.images ~= image;
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+        markDirty();
+    }
+
+    /// Test-only: number of display-only attachment pills on the newest user
+    /// bubble in the visible transcript.
+    public size_t lastUserAttachmentPillCountForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentAttachmentCountForTesting();
+        }
+        return 0;
     }
 
     /// Test-only: like `addConversationForTesting` but with optional reasoning
@@ -19316,7 +19423,8 @@ public final class OpenCodeRoot : VBox
     /// batch when none is open so a test can feed repeated failures.
     public void injectToolResultForTesting(string name, string output,
         bool failed, string arguments = "{}", int additions = 0,
-        int deletions = 0, string diff = "")
+        int deletions = 0, string diff = "",
+        const(ChatImageAttachment)[] images = null)
     {
         if (_pendingToolCalls.length == 0)
         {
@@ -19337,6 +19445,7 @@ public final class OpenCodeRoot : VBox
         event.diffAdditions = additions;
         event.diffDeletions = deletions;
         event.diffText = diff;
+        event.images = images.dup;
         applyToolResult(event);
     }
 

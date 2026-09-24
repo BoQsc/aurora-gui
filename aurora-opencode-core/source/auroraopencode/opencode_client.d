@@ -55,6 +55,9 @@ struct OpenCodeEvent
     int diffDeletions;
     string diffText;
     long elapsedMs; // tool wall-clock duration in ms, carried to the UI
+    // A local image-view tool carries pixels out-of-band from its textual tool
+    // result. The UI inserts them only after all tool results in the batch.
+    ChatImageAttachment[] images;
     // Opaque UI-supplied identity for routing late events. Zero is reserved for
     // standalone parser tests and callers that do not need request isolation.
     ulong requestId;

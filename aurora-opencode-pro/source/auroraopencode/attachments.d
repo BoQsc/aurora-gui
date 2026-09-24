@@ -382,23 +382,20 @@ public string attachmentImageSummary(const Attachment attachment)
         " image" ~ (size.length == 0 ? "" : " (" ~ size ~ ")");
 }
 
-/// The one-line summary appended to the visible user message so the transcript
-/// records what was attached.
+/// The one-line summary appended to the visible user message for attachments
+/// that do not have durable UI metadata. Images are represented by transcript
+/// pills instead, using `ChatMessage.images`.
 public string attachmentVisibleSummary(const(Attachment)[] attachments)
 {
     if (attachments.length == 0) return "";
     auto builder = appender!string();
-    builder.put("Attached:\n");
     foreach (attachment; attachments)
     {
+        if (attachment.isImage) continue;
+        if (builder.data.length == 0) builder.put("Attached:\n");
         const size = attachmentSizeSummary(attachment);
-        if (attachment.isImage)
-            builder.put("- " ~ attachment.name ~ " (" ~
-                (size.length == 0 ? "image" : size) ~ ") - sent as inline " ~
-                attachment.image.mimeType ~ " image\n");
-        else
-            builder.put("- " ~ attachment.name ~
-                (size.length == 0 ? "" : " (" ~ size ~ ")") ~ "\n");
+        builder.put("- " ~ attachment.name ~
+            (size.length == 0 ? "" : " (" ~ size ~ ")") ~ "\n");
     }
     return strip(builder.data);
 }
@@ -440,11 +437,13 @@ public alias AttachmentRemoveHandler = void delegate(size_t index);
 public final class AttachmentStrip : HBox
 {
     private Attachment[] _items;
+    private bool _removable;
     public AttachmentRemoveHandler onRemove;
 
-    public this()
+    public this(bool removable = true)
     {
         super(6);
+        _removable = removable;
         setVisible(false);
     }
 
@@ -457,11 +456,12 @@ public final class AttachmentStrip : HBox
         clearChildren();
         foreach (index, attachment; attachments)
         {
-            auto chip = new Button(attachmentChipLabel(attachment) ~ "  ×");
-            chip.setId("oc-attachment");
+            auto chip = new Button(attachmentChipLabel(attachment) ~
+                (_removable ? "  ×" : ""));
+            chip.setId(_removable ? "oc-attachment" : "oc-sent-attachment");
             chip.layoutHints().preferredHeight = 26;
             chip.layoutHints().minHeight = 26;
-            chip.onClick = makeRemove(index);
+            if (_removable) chip.onClick = makeRemove(index);
             add(chip);
         }
         setVisible(attachments.length != 0);
@@ -573,6 +573,6 @@ unittest
     assert(attachmentImages([attached]).length == 1);
     assert(attachmentChipLabel(attached).startsWith("image: shot.png"));
     assert(attachmentContextBlock([attached]).indexOf("inline image/png") >= 0);
-    assert(attachmentVisibleSummary([attached]).indexOf("inline") >= 0);
+    assert(attachmentVisibleSummary([attached]).length == 0);
     assert(attachmentImageUnsupportedNote("glm-5.3").indexOf("glm-5.3") >= 0);
 }

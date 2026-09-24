@@ -1,7 +1,9 @@
 module auroraopencode.tools;
 
-import auroraopencode.core : OpenCodeToolCall, OpenCodeToolDef,
-    ensureStateDirectory, opencodeStateDirectory;
+import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
+    OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
+import auroraopencode.attachments : attachmentImageForData,
+    attachmentImageKindForBytes, attachmentImageMaxBytes;
 // experimental: websearch - delete with source/auroraopencode/websearch.d
 import auroraopencode.websearch : experimentalWebSearchExecute,
     experimentalWebSearchTools;
@@ -180,6 +182,20 @@ private OpenCodeToolDef openToolDefinition()
     );
 }
 
+/// Load image pixels into the model's next turn. `open` only launches the
+/// user's desktop viewer; this tool is the model-visible counterpart.
+private OpenCodeToolDef viewImageToolDefinition()
+{
+    return OpenCodeToolDef(
+        "view_image",
+        "Load a local PNG, JPEG, WebP, or GIF and attach its pixels to your " ~
+        "next turn for visual inspection. Use this when the user asks about " ~
+        "an image by path: `read` is text-only, while `open` only shows the " ~
+        "image to the user. Paths may be workspace-relative or absolute.",
+        `{"type":"object","properties":{"filePath":{"type":"string","description":"Image path, relative to the workspace or absolute"}},"required":["filePath"]}`
+    );
+}
+
 /// Inspect and control commands launched with `background:true`.
 private OpenCodeToolDef processToolDefinition()
 {
@@ -250,6 +266,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         webFetchToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
+        viewImageToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -259,7 +276,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
             "with its 1-indexed line number. Use `offset`/`limit` to page " ~
-            "through large files.",
+            "through large files. To inspect image pixels, use `view_image`.",
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"offset":{"type":"integer","description":"1-indexed line to start from (default 1)"},"limit":{"type":"integer","description":"Maximum number of lines to return (default: all, up to the output cap)"}},"required":["filePath"]}`
         ),
         OpenCodeToolDef(
@@ -306,6 +323,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         webFetchToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
+        viewImageToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -315,7 +333,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
             "with its 1-indexed line number. Use `offset`/`limit` to page " ~
-            "through large files.",
+            "through large files. To inspect image pixels, use `view_image`.",
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"offset":{"type":"integer","description":"1-indexed line to start from (default 1)"},"limit":{"type":"integer","description":"Maximum number of lines to return (default: all, up to the output cap)"}},"required":["filePath"]}`
         ),
         OpenCodeToolDef(
@@ -391,6 +409,10 @@ public struct ToolExecution
     // it on the tool row (and aggregated on the action-group header) the same
     // way the file-mutating tools show their `+N -M` counters.
     long elapsedMs;
+    // Image payloads are staged by the UI until every result in the current
+    // tool batch has been appended, then sent in a model-visible user message.
+    // Keeping them off the `tool` message preserves strict tool-call ordering.
+    ChatImageAttachment[] images;
 }
 
 /// A line-based diff between two file bodies. `unified` uses the standard
@@ -2202,6 +2224,57 @@ private ToolExecution runRead(string args, string workspace)
     return ToolExecution("read", truncateOutput(builder.data), false);
 }
 
+private ToolExecution runViewImage(string args, string workspace)
+{
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception) value = JSONValue.init;
+    string filePath;
+    if (value.type == JSONType.object)
+        if (auto field = "filePath" in value.object)
+            if (field.type == JSONType.string)
+                filePath = field.str;
+    if (filePath.length == 0)
+        return ToolExecution("view_image",
+            "Error: view_image requires a `filePath` argument.", true);
+
+    const path = resolveToolPath(filePath, workspace);
+    if (!exists(path) || !isFile(path))
+        return ToolExecution("view_image", "Error: image file not found: " ~
+            path, true);
+
+    ulong size;
+    try size = getSize(path);
+    catch (Exception error)
+        return ToolExecution("view_image", "Error: could not inspect image: " ~
+            error.msg, true);
+    if (size == 0)
+        return ToolExecution("view_image", "Error: image file is empty: " ~
+            path, true);
+    if (size > attachmentImageMaxBytes)
+        return ToolExecution("view_image", "Error: image is " ~
+            to!string(size) ~ " bytes; the maximum is " ~
+            to!string(attachmentImageMaxBytes) ~ " bytes. Resize or convert " ~
+            "it before viewing.", true);
+
+    ubyte[] data;
+    try data = cast(ubyte[]) read(path);
+    catch (Exception error)
+        return ToolExecution("view_image", "Error: could not read image: " ~
+            error.msg, true);
+    const mimeType = attachmentImageKindForBytes(data);
+    if (mimeType.length == 0)
+        return ToolExecution("view_image", "Error: unsupported image format: " ~
+            path ~ ". Expected PNG, JPEG, WebP, or GIF.", true);
+
+    ToolExecution result;
+    result.name = "view_image";
+    result.output = "Loaded image for visual inspection: " ~ path ~ " (" ~
+        to!string(size) ~ " bytes, " ~ mimeType ~ ").";
+    result.images = [attachmentImageForData(mimeType, baseName(path), data)];
+    return result;
+}
+
 private ToolExecution runWrite(string args, string workspace)
 {
     JSONValue value;
@@ -3336,7 +3409,8 @@ private bool fileMatchesInclude(string fileName, string include)
 
 /// Execute a single tool call against the workspace directory and record how
 /// long it took. The result is a plain-text string ready to be fed back to the
-/// model as a `tool` message.
+/// model as a `tool` message. A view_image result additionally carries pixels
+/// out-of-band so the UI can attach them after the batch's tool messages.
 public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
     ChangeContext changeContext = ChangeContext.init)
@@ -3596,6 +3670,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runOpenTool(call.arguments, workspace);
         case "read":
             return runRead(call.arguments, workspace);
+        case "view_image":
+            return runViewImage(call.arguments, workspace);
         case "write":
             return runWrite(call.arguments, workspace);
         case "edit":

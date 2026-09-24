@@ -799,6 +799,7 @@ int main(string[] args)
         assert(root.composerHeightForTesting() == opencodeComposerHeight,
             "Composer did not shrink back after clearing attachments");
         writeln("Large paste becomes a text attachment; chips remove cleanly");
+
     }
 
     // Regenerate still works after an edit.
@@ -809,6 +810,24 @@ int main(string[] args)
     assert(root.lastBubbleActionForTesting() == "Regenerate",
         "Pill did not refresh after the final regenerate");
     writeln("Chat-quality pill stays on the latest assistant reply");
+
+    // Once sent, an image keeps a display-only filename pill in its user
+    // bubble. The payload is intentionally not rendered as an image yet. This
+    // test owns a fresh chat because the regeneration check above deliberately
+    // depends on the edit history built earlier in the smoke flow.
+    root.newChatForTesting();
+    root.addImageMessageForTesting("Review this image", "screenshot.png");
+    assert(driver.paint(), "Sent attachment pill did not repaint");
+    assert(root.lastUserAttachmentPillCountForTesting() == 1,
+        "Sent image did not retain an attachment pill");
+    auto sentStrip = requireWidget!Widget(root, "oc-sent-attachments");
+    auto sentChip = requireWidget!Button(root, "oc-sent-attachment");
+    assert(sentStrip.visible() && sentStrip.bounds().height > 0,
+        "Sent attachment strip is not visible in the user bubble");
+    assert(to!string(sentChip.text()).indexOf("screenshot.png") >= 0 &&
+        to!string(sentChip.text()).indexOf("×") < 0,
+        "Sent attachment pill should show the name without a remove action");
+    writeln("Sent image remains visible as a display-only attachment pill");
 
     // --- Message edit + regenerate keep their runs (branch history) -------
     // Regenerating keeps the replaced reply stored and flips between runs with
@@ -2895,6 +2914,54 @@ int main(string[] args)
     assert(root.pendingToolResultsForTesting() == 0,
         "the ordered tool batch did not settle after both unique results");
     writeln("Tool result ledger rejects unknown and duplicate events");
+
+    // A path-based image needs a model-visible tool, not `read` (text only) or
+    // `open` (which launches a viewer for the user). Its ordinary tool result
+    // must remain adjacent to the assistant tool call; only after the batch is
+    // complete may the pixels appear in a hidden user-role multimodal message.
+    {
+        bool builtinHasViewImage, nativeHasViewImage;
+        foreach (definition; builtinToolDefinitions())
+            if (definition.name == "view_image") builtinHasViewImage = true;
+        foreach (definition; nativeOnlyToolDefinitions())
+            if (definition.name == "view_image") nativeHasViewImage = true;
+        assert(builtinHasViewImage && nativeHasViewImage,
+            "view_image was not advertised in every tool mode");
+
+        const imagePath = buildPath(workspaceDir, "pixel.png");
+        ubyte[] pngHeader = [0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        write(imagePath, pngHeader);
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["What is in pixel.png?", ""]);
+        root.pauseToolContinuationForTesting();
+        OpenCodeToolCall imageCall;
+        imageCall.id = "call_view_image";
+        imageCall.name = "view_image";
+        imageCall.arguments = `{"filePath":"pixel.png"}`;
+        root.injectToolCallsForTesting([imageCall]);
+        const imageDeadline = Clock.currTime + 5.seconds;
+        while (root.toolMessageCountForTesting() < 1 &&
+            Clock.currTime < imageDeadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(20.msecs);
+        }
+        assert(root.toolMessageCountForTesting() == 1,
+            "view_image did not return a tool result");
+        auto imageRequest = root.requestMessagesForTesting();
+        assert(imageRequest.length >= 4 &&
+            imageRequest[$ - 2].role == "tool" &&
+            imageRequest[$ - 2].toolCallId == "call_view_image",
+            "view_image broke assistant tool_calls -> tool-result adjacency");
+        assert(imageRequest[$ - 1].role == "user" &&
+            imageRequest[$ - 1].images.length == 1 &&
+            imageRequest[$ - 1].images[0].mimeType == "image/png" &&
+            imageRequest[$ - 1].images[0].name == "pixel.png" &&
+            imageRequest[$ - 1].images[0].base64Data.length > 0,
+            "view_image pixels did not reach a user-role multimodal message");
+        writeln("view_image loads a path into the next multimodal model turn");
+    }
 
     // Turn timer: Codex renders "Worked for …" as a horizontal completion
     // boundary immediately ABOVE the final answer. It must not be embedded in
