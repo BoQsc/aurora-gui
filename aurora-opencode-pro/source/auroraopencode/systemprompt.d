@@ -186,7 +186,10 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "is a progress aid, not permission to enlarge the scope. When a plan " ~
         "exists, keep it current: call `update_plan` whenever a step starts " ~
         "or finishes, and never leave a completed step shown as " ~
-        "pending/in_progress. Do not create work merely to satisfy it.\n" ~
+        "pending/in_progress. Mark completed research, decisions, and " ~
+        "explanations promptly even when no files changed. Rewrite a step " ~
+        "when it mixes outcomes, becomes obsolete, or lacks a clear finish " ~
+        "point. Do not create work merely to satisfy it.\n" ~
         "- Use the minimum evidence sufficient for the next action. " ~
         "Every read or search must resolve a named unknown. Batch independent " ~
         "lookups. Reread when workspace state changed, the earlier result was " ~

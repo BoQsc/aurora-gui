@@ -241,65 +241,17 @@ public bool isDeepSeekV41Model(string model)
     return id == "deepseek-v4.1" || id.startsWith("deepseek-v4.1-");
 }
 
-/// Vision-capable ids known to the gateway, in both bare and `vendor/` forms.
-private immutable string[] visionModelIds = [
-    // The whole DeepSeek 4.x line accepts inline images, including the default
-    // 4.1-flash used by new chats.
-    "deepseek-v4.1-flash",
-    "deepseek/deepseek-v4.1-flash",
-    "deepseek-v4-flash",
-    "deepseek/deepseek-v4-flash",
-    "deepseek-v4-flash-fast",
-    "deepseek/deepseek-v4-flash-fast",
-    "deepseek-v4-pro",
-    "deepseek/deepseek-v4-pro",
-    "deepseek-v4-flash-vision-exp",
-    "deepseek/deepseek-v4-flash-vision-exp",
-];
-
-/// Model ids (or prefixes) added through AURORA_VISION_MODELS.
-private string[] visionModelOverrides()
-{
-    import std.algorithm : canFind;
-    import std.process : environment;
-    import std.string : split;
-    const raw = environment.get("AURORA_VISION_MODELS", "");
-    if (raw.length == 0) return null;
-    string[] result;
-    foreach (part; raw.split(','))
-    {
-        const trimmed = part.strip().toLower();
-        if (trimmed.length > 0 && !result.canFind(trimmed))
-            result ~= trimmed;
-    }
-    return result;
-}
-
 /**
- * Whether a model accepts inline images.
+ * Whether Aurora may send inline images to a model.
  *
- * The catalog has no per-model capability flag, so this recognizes the vision
- * families the gateway serves (the whole DeepSeek 4.x line, including the
- * default `deepseek-v4.1-flash`) plus any id named `*-vision*`. An unrecognized
- * model is treated as text-only, which is the safe default: an OpenAI
- * `image_url` part sent to a text-only route is a hard 400. Add a local or
- * newly published vision model with AURORA_VISION_MODELS (comma-separated ids
- * or id prefixes).
+ * An explicit image attachment is user intent, so Aurora forwards it for every
+ * model instead of maintaining a brittle model-name allowlist. A server that
+ * does not support multimodal content returns its normal API error rather than
+ * receiving a silently degraded text-only request.
  */
 public bool isVisionModel(string model)
 {
-    import std.algorithm : canFind, endsWith;
-    const id = normalizedModelId(model);
-    if (visionModelIds.canFind(id)) return true;
-    // Any DeepSeek 4.x id, so a new point release (4.2-flash, 4.1-pro, ...)
-    // does not silently fall back to text-only.
-    if (id.startsWith("deepseek-v4") ||
-        id.startsWith("deepseek/deepseek-v4"))
-        return true;
-    if (id.endsWith("-vision") || id.endsWith("-vision-exp")) return true;
-    foreach (extra; visionModelOverrides())
-        if (id == extra || id.startsWith(extra)) return true;
-    return false;
+    return true;
 }
 
 /**
@@ -458,9 +410,9 @@ unittest
 
 unittest
 {
-    // Vision capability decides whether an image part may be sent at all, in
-    // both the bare and `vendor/` id forms. The DeepSeek 4.x line is
-    // multimodal, so the default model and its point releases must match.
+    // Explicit image attachments are forwarded regardless of the provider's
+    // model naming convention. The endpoint is authoritative about whether it
+    // accepts multimodal content.
     assert(isVisionModel(defaultModel));
     assert(isVisionModel("deepseek-v4.1-flash"));
     assert(isVisionModel("deepseek/deepseek-v4.1-flash"));
@@ -469,12 +421,10 @@ unittest
     assert(isVisionModel("deepseek-v4-flash-vision-exp"));
     assert(isVisionModel("deepseek/deepseek-v4-flash-vision-exp"));
     assert(isVisionModel("somevendor/MyModel-Vision-Exp"));
-    // Text-only models must not match, or a dropped screenshot turns a working
-    // chat into a 400.
-    assert(!isVisionModel("glm-5.3"));
-    assert(!isVisionModel("kimi-k3"));
-    assert(!isVisionModel("Qwen/Qwen3.8-27B"));
-    assert(!isVisionModel(""));
+    assert(isVisionModel("glm-5.3"));
+    assert(isVisionModel("kimi-k3"));
+    assert(isVisionModel("Qwen/Qwen3.8-27B"));
+    assert(isVisionModel(""));
 }
 
 // ---------------------------------------------------------------------------

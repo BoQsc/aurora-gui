@@ -10032,6 +10032,27 @@ public final class OpenCodeRoot : VBox
             startChatRequest(sessionIndex, false);
             return;
         }
+        if (planNeedsCompletionReview(*session))
+        {
+            ChatMessage guidance;
+            guidance.role = "user";
+            guidance.internal = true;
+            guidance.content = "Plan reconciliation checkpoint: Compare each " ~
+                "checklist step with what was actually completed in this " ~
+                "turn. Call update_plan to mark finished steps completed and " ~
+                "rewrite transient, mixed, or obsolete steps into concrete " ~
+                "remaining outcomes. Do not mark unfinished work completed. " ~
+                "If the checklist is already accurate, briefly name the " ~
+                "remaining work or blocker. Avoid repeating the prior answer.";
+            appendMessage(*session, guidance);
+            publishThreadUpdated(*session);
+            markDirty();
+            setTurnActiveMarker(true, session.id);
+            setTurnInFlight(true);
+            updateStatus("Reconciling the plan…");
+            startChatRequest(sessionIndex, false);
+            return;
+        }
         if (hasIncompleteTaskSteps(*session))
         {
             session.turnStatus = "completed";
@@ -10063,7 +10084,28 @@ public final class OpenCodeRoot : VBox
         if (cancelled || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
-        return session.queuedGuidance.length > 0;
+        return session.queuedGuidance.length > 0 ||
+            planNeedsCompletionReview(session);
+    }
+
+    /// Give the model one chance per real user turn to reconcile an unfinished
+    /// checklist before the final answer settles. The internal marker survives
+    /// persistence and prevents a loop if work genuinely remains unfinished.
+    private static bool planNeedsCompletionReview(const ref ChatSession session)
+    {
+        if (!hasIncompleteTaskSteps(session) ||
+            session.queuedFollowUps.length > 0) return false;
+        bool reviewed;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+                reviewed = false;
+            if (message.role == "user" && message.internal &&
+                message.content.startsWith("Plan reconciliation checkpoint:"))
+                reviewed = true;
+        }
+        return !reviewed;
     }
 
     private void failAssistantMessage(string error)

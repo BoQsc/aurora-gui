@@ -51,11 +51,12 @@ void main()
         "text-only content must stay a plain string");
     assert(plainJson.indexOf("image_url") < 0, "text turn must not carry parts");
 
-    // Vision capability gating: the DeepSeek 4.x line may carry images, and a
-    // text-only route must never receive an image part.
+    // Explicit image attachments are forwarded for every model. The endpoint,
+    // not a model-name allowlist in Aurora, decides whether it accepts them.
     assert(isVisionModel(defaultModel));
     assert(isVisionModel("deepseek-v4-flash-vision-exp"));
-    assert(!isVisionModel("glm-5.3"));
+    assert(isVisionModel("glm-5.3"));
+    assert(isVisionModel("Qwen/Qwen3.8-27B"));
 
     // Mime fallback keeps a caller that only captured bytes valid.
     ChatImageAttachment bare;
