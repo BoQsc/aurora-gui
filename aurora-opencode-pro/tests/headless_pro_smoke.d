@@ -2592,6 +2592,36 @@ int main(string[] args)
     root.tickTree(0.02);
     writeln("Settings keeps a second API key per provider and toggles the active one");
 
+    // The toolbar key badge shows the same API usage breakdown on hover, plus
+    // the active provider's running monthly token total, which folds in the
+    // in-flight reply's live count and refreshes while the tooltip stays open.
+    {
+        auto badge = requireWidget!Widget(root, "oc-key");
+        driver.moveTo(globalCenter(badge));
+        root.tickTree(0.02);
+        assert(driver.paint(), "Key badge tooltip did not paint");
+        assert(root.keyBadgeTooltipOpenForTesting(),
+            "Hovering the toolbar key badge did not open the usage tooltip");
+        const badgeTooltip = root.keyUsageTooltipTextForTesting();
+        assert(badgeTooltip.indexOf("5 hours: 76% used") >= 0 &&
+            badgeTooltip.indexOf("Service account: Legacy: person@example.com") >= 0,
+            "Key badge hover did not show the API usage limits: " ~ badgeTooltip);
+        assert(badgeTooltip.indexOf("This month") >= 0 &&
+            badgeTooltip.indexOf("tokens") >= 0,
+            "Key badge tooltip lacks the monthly token total: " ~ badgeTooltip);
+        const monthlyBefore = badgeTooltip;
+        root.feedUsageForTesting(100, 123, 223);
+        root.refreshKeyBadgeTooltipForTesting();
+        const monthlyAfter = root.keyUsageTooltipTextForTesting();
+        assert(monthlyAfter != monthlyBefore,
+            "Key badge monthly total did not update with the live reply");
+        driver.moveTo(Point(4, 700));
+        root.tickTree(0.02);
+        assert(!root.keyBadgeTooltipOpenForTesting(),
+            "Key badge tooltip stayed open after pointer leave");
+        writeln("Toolbar key badge shows API usage and live monthly tokens");
+    }
+
     // Settings exposes the concise system prompt. Tool-specific syntax remains
 
     // in the API tool schemas instead of being duplicated here.

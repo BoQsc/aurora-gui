@@ -4062,6 +4062,10 @@ private final class HoverTooltip : Widget
     // shaped once per content change instead of on every frame.
     private TextLayout[] _rowLayouts;
     private UsageLimitWindow[] _usageBars;
+    // Rows drawn after the usage bars. Kept apart from `_rows`/`_usageBars` so a
+    // running counter (e.g. a live monthly token total) can refresh the footer
+    // without rebuilding the usage breakdown above it.
+    private dstring[] _extra;
 
     this(Widget hoverOwner)
     {
@@ -4084,6 +4088,7 @@ private final class HoverTooltip : Widget
     void setContent(string title, const(string)[] rows)
     {
         _usageBars.length = 0;
+        _extra.length = 0;
         _title = toUTF32(title);
         _rows.length = 0;
         foreach (row; rows)
@@ -4094,6 +4099,7 @@ private final class HoverTooltip : Widget
     void setText(string text)
     {
         _usageBars.length = 0;
+        _extra.length = 0;
         _title.length = 0;
         _rows.length = 0;
         foreach (line; text.splitLines)
@@ -4103,6 +4109,7 @@ private final class HoverTooltip : Widget
 
     void setUsageContent(UsageLimitsResult result)
     {
+        _extra.length = 0;
         _title = toUTF32(result.title);
         _usageBars = result.windows.dup;
         _wrap = result.serviceAccountName.length > 0 ||
@@ -4113,6 +4120,14 @@ private final class HoverTooltip : Widget
         if (result.commandCodeUser.length > 0)
             _rows ~= toUTF32("User: " ~ result.commandCodeUser);
         if (result.note.length > 0) _rows ~= toUTF32(result.note);
+        invalidate();
+    }
+
+    /// Replace the footer rows drawn under the usage bars.
+    void setExtraRows(const(string)[] rows)
+    {
+        _extra.length = 0;
+        foreach (row; rows) _extra ~= toUTF32(row);
         invalidate();
     }
 
@@ -4131,6 +4146,11 @@ private final class HoverTooltip : Widget
             if (builder.data.length > 0) builder.put("\n");
             builder.put(bar.label ~ ": " ~ bar.detail);
             if (bar.reset.length > 0) builder.put("; " ~ bar.reset);
+        }
+        foreach (row; _extra)
+        {
+            if (builder.data.length > 0) builder.put("\n");
+            builder.put(to!string(row));
         }
         return builder.data;
     }
@@ -4166,6 +4186,7 @@ private final class HoverTooltip : Widget
         else
             height += cast(int) _rows.length * lineH;
         height += cast(int) _usageBars.length * 57;
+        height += cast(int) _extra.length * lineH;
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
@@ -4234,6 +4255,12 @@ private final class HoverTooltip : Widget
                 canvas.drawText(Point(14, y), toUTF32(bar.reset), opencodeMuted,
                     1, FontRole.ui, cast(FontFace) palette.uiFont);
             y += 25;
+        }
+        foreach (row; _extra)
+        {
+            canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+                FontRole.ui, cast(FontFace) palette.uiFont);
+            y += 18;
         }
     }
 }
@@ -4457,6 +4484,28 @@ private final class HoverKeyField : TextField
     {
         super(value);
     }
+
+    protected override void onMouseEnter()
+    {
+        super.onMouseEnter();
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        super.onMouseLeave();
+        if (onHoverChanged !is null) onHoverChanged(false);
+    }
+}
+
+/// Toolbar key-status label ("Key set" / "No key"). Reports pointer hover so
+/// the active key's usage limits can appear on hover, exactly like the Settings
+/// key fields.
+private final class KeyStatusBadge : Label
+{
+    void delegate(bool hovered) onHoverChanged;
+
+    this(string text) { super(text); }
 
     protected override void onMouseEnter()
     {
@@ -6226,7 +6275,7 @@ public final class OpenCodeRoot : VBox
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
-    private Label _keyBadge;
+    private KeyStatusBadge _keyBadge;
     private Label _status;
     private TextField _filterField;
     private int[] _sessionIndices;
@@ -6287,7 +6336,7 @@ public final class OpenCodeRoot : VBox
     private TextField _settingsAdditionalKeyField;
     private CheckBox _settingsAdditionalKeyToggle;
     private HoverTooltip _keyUsageTooltip;
-    private HoverKeyField _keyUsageAnchor;
+    private Widget _keyUsageAnchor;
     private string _keyUsageRequestId;
     private UsageLimitsResult[string] _keyUsageCache;
     private long[string] _keyUsageCacheAt;
@@ -7248,9 +7297,13 @@ public final class OpenCodeRoot : VBox
         rebuildButton.setId("oc-rebuild");
         rebuildButton.onClick = delegate() { requestRebuild(); };
 
-        _keyBadge = toolbar.add(new Label(""));
+        _keyBadge = toolbar.add(new KeyStatusBadge(""));
         _keyBadge.setId("oc-key");
         _keyBadge.setScale(1);
+        _keyBadge.onHoverChanged = delegate(bool hovered)
+        {
+            setKeyUsageBadgeHover(hovered);
+        };
 
         _titleBar.setContent(toolbar);
 
@@ -9587,6 +9640,7 @@ public final class OpenCodeRoot : VBox
         updateLiveTokenRate();
         if (_streamBubble is null || _current != sessionIndex)
         {
+            refreshKeyUsageBadgeTooltip();
             markDirty();
             return;
         }
@@ -9599,6 +9653,8 @@ public final class OpenCodeRoot : VBox
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
         _messagesScroll.invalidate();
+        // Keep an open key-badge usage tooltip's monthly total live too.
+        refreshKeyUsageBadgeTooltip();
     }
 
     /// Decode throughput begins at the first observed token sample, excluding
@@ -14320,6 +14376,7 @@ public final class OpenCodeRoot : VBox
         }
         _usageBadge.setUsage(prompt, completion, total, estimated);
         refreshContextUsageTooltip();
+        refreshKeyUsageBadgeTooltip();
     }
 
     private string[] contextUsageTooltipRows()
@@ -14461,15 +14518,34 @@ public final class OpenCodeRoot : VBox
             if (_keyUsageAnchor is field) closeKeyUsageTooltip();
             return;
         }
-        closeKeyUsageTooltip();
         if (_settingsBaseField is null) return;
-        const provider = usageProviderForBaseUrl(_settingsBaseField.textUtf8());
-        const apiKey = field.textUtf8().strip();
+        openKeyUsageTooltip(field,
+            usageProviderForBaseUrl(_settingsBaseField.textUtf8()),
+            field.textUtf8().strip());
+    }
+
+    /// Hovering the toolbar key badge shows the active key's usage limits, the
+    /// same breakdown the Settings key fields show.
+    private void setKeyUsageBadgeHover(bool hovered)
+    {
+        if (!hovered)
+        {
+            if (_keyUsageAnchor is _keyBadge) closeKeyUsageTooltip();
+            return;
+        }
+        openKeyUsageTooltip(_keyBadge,
+            usageProviderForBaseUrl(_settings.baseUrl),
+            activeApiKey(_settings).strip());
+    }
+
+    private void openKeyUsageTooltip(Widget anchor, string provider, string apiKey)
+    {
+        closeKeyUsageTooltip();
         if (provider.length == 0 || apiKey.length == 0) return;
         const requestId = provider ~ ":" ~ apiKey;
-        _keyUsageAnchor = field;
+        _keyUsageAnchor = anchor;
         _keyUsageRequestId = requestId;
-        _keyUsageTooltip = new HoverTooltip(field);
+        _keyUsageTooltip = new HoverTooltip(anchor);
         auto cached = requestId in _keyUsageCache;
         const fresh = cached !is null &&
             Clock.currTime.toUnixTime() - _keyUsageCacheAt[requestId] < 60;
@@ -14478,8 +14554,9 @@ public final class OpenCodeRoot : VBox
         else
             _keyUsageTooltip.setContent(provider == "opencode" ?
                 "OpenCode Go usage" : "CommandCode usage", ["Loading usage limits..."]);
+        _keyUsageTooltip.setExtraRows(keyUsageMonthlyRows());
         popupRoot(this).add(_keyUsageTooltip);
-        positionTooltip(field, _keyUsageTooltip);
+        positionTooltip(anchor, _keyUsageTooltip);
         if (fresh || requestId in _keyUsageFetching) return;
         _keyUsageFetching[requestId] = true;
         const cachedName = cached is null ? "" : provider == "opencode" ?
@@ -14524,9 +14601,36 @@ public final class OpenCodeRoot : VBox
                 _keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
             {
                 _keyUsageTooltip.setUsageContent(result);
+                _keyUsageTooltip.setExtraRows(keyUsageMonthlyRows());
                 positionTooltip(_keyUsageAnchor, _keyUsageTooltip);
             }
         }
+    }
+
+    /// Footer rows under the key usage bars: the active provider's running
+    /// monthly token total. While a reply streams and the badge tooltip is open
+    /// it also adds the in-flight request's live count, so the number climbs in
+    /// real time instead of waiting for the turn to finish.
+    private string[] keyUsageMonthlyRows()
+    {
+        loadMonthlyUsage();
+        const provider = providerUsageLabel();
+        long total = _monthlyProviderTokens.get(
+            currentMonthKey() ~ "|" ~ provider, 0L);
+        if (_keyUsageAnchor is _keyBadge)
+            total += _liveTotalTokens > 0 ? _liveTotalTokens : _liveOutputTokens;
+        return ["This month (" ~ provider ~ "): " ~
+            formatThousands(cast(int) total) ~ " tokens"];
+    }
+
+    /// Refresh an open key-badge tooltip's monthly total so it tracks a live
+    /// reply. Cheap no-op when the badge tooltip is not open.
+    private void refreshKeyUsageBadgeTooltip()
+    {
+        if (_keyUsageAnchor !is _keyBadge) return;
+        if (_keyUsageTooltip is null || _keyUsageTooltip.parent() is null) return;
+        _keyUsageTooltip.setExtraRows(keyUsageMonthlyRows());
+        positionTooltip(_keyBadge, _keyUsageTooltip);
     }
 
     /// The one path a tool row's "Open containing folder" action should use: the
@@ -18680,6 +18784,29 @@ public final class OpenCodeRoot : VBox
         return _activePopup !is null && _keyUsageTooltip !is null &&
             children.length > 0 && children[$ - 1] is _keyUsageTooltip &&
             _keyUsageTooltip.compositorRoot() is _keyUsageTooltip;
+    }
+
+    /// Test-only: drive the toolbar key badge's hover exactly as the pointer
+    /// does, and return the resulting tooltip text ("" when none is shown).
+    public string hoverKeyBadgeForTesting(bool hovered)
+    {
+        setKeyUsageBadgeHover(hovered);
+        return keyUsageTooltipTextForTesting();
+    }
+
+    /// Test-only: whether the key-usage tooltip is anchored to the toolbar badge
+    /// and currently open.
+    public bool keyBadgeTooltipOpenForTesting()
+    {
+        return _keyUsageAnchor is _keyBadge && _keyUsageTooltip !is null &&
+            _keyUsageTooltip.parent() !is null;
+    }
+
+    /// Test-only: refresh an open key-badge tooltip's monthly row, exactly as a
+    /// streaming token update does.
+    public void refreshKeyBadgeTooltipForTesting()
+    {
+        refreshKeyUsageBadgeTooltip();
     }
 
     /// Test-only: open Settings, apply the provider preset at `index`, and
