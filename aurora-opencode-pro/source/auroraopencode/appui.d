@@ -47,7 +47,7 @@ import std.math : ceil, isFinite;
 import std.path : baseName, buildPath;
 import std.process : thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
-import std.utf : toUTF16z, toUTF32;
+import std.utf : toUTF16z, toUTF32, toUTF8;
 version (Windows)
 {
     pragma(lib, "user32");
@@ -5666,6 +5666,82 @@ private final class IntroOverlay : Widget
 }
 
 // ---------------------------------------------------------------------------
+// Cursor-following drag ghost
+// ---------------------------------------------------------------------------
+
+/**
+ * A translucent pill that rides just under the pointer while a conversation
+ * row is dragged toward the pinned section. Without it the only feedback was
+ * the tinted drop zone inside the list, which is easy to miss when the pointer
+ * is elsewhere - a drag should carry a visible handle that names what it is
+ * and what a drop would do.
+ *
+ * Paint-only overlay: it never takes layout space and never intercepts pointer
+ * input, so it cannot disturb the list's own captured drag.
+ */
+private final class SessionDragGhost : Widget
+{
+    private dstring _title;
+    private dstring _action;
+    private Point _position;
+    private bool _active;
+
+    this()
+    {
+        setEnabled(false);
+    }
+
+    bool active() const @safe pure nothrow @nogc { return _active; }
+    string titleForTesting() const { return toUTF8(_title.idup); }
+    string actionForTesting() const { return toUTF8(_action.idup); }
+
+    /// Pointer-following label. `position` is window-local, matching Aurora's
+    /// window-relative pointer coordinates and the overlay's paint space.
+    void showAt(string title, string action, Point position)
+    {
+        const dTitle = toUTF32(title);
+        const dAction = toUTF32(action);
+        if (_active && dTitle == _title && dAction == _action &&
+            position.x == _position.x && position.y == _position.y)
+            return;
+        _active = true;
+        _title = dTitle;
+        _action = dAction;
+        _position = position;
+        invalidate();
+    }
+
+    void hide()
+    {
+        if (!_active) return;
+        _active = false;
+        invalidate();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (!_active) return;
+        const scale = theme().fontScale;
+        immutable(dchar)[] label = _action.length > 0
+            ? _title ~ "  ·  "d ~ _action : _title;
+        const measured = canvas.measureText(label, scale);
+        const padX = 12;
+        const padY = 6;
+        // Sits below-right of the hotspot, like a native drag image, so it
+        // never hides the row the drop would land on.
+        const pill = Rect(_position.x + 14, _position.y + 12,
+            measured.width + padX * 2, measured.height + padY * 2);
+        canvas.fillRoundedRect(pill, 6, opencodePanel.withAlpha(240));
+        canvas.strokeRect(pill, opencodeAccent.withAlpha(200), 1);
+        canvas.drawTextInRect(
+            Rect(pill.x + padX, pill.y + padY, measured.width,
+                measured.height),
+            label, opencodeText, scale, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session sidebar list (Pro: context menu, Delete key)
 // ---------------------------------------------------------------------------
 
@@ -5676,6 +5752,10 @@ public final class SessionListView : ListView
     // Fired when a row is dropped onto the pinned group (pinned=true) or a
     // pinned row is dropped below it (pinned=false).
     void delegate(int row, bool pinned) onPinDropRequested;
+    // Fired while a row is dragged to the pinned section so the root can show a
+    // cursor-following ghost; `active` is false on release to hide it.
+    void delegate(bool active, string title, string action, Point globalPosition)
+        onDragGhost;
 
     private int _hoverRow = -1;
     // List indices whose conversation is actively working. A small pulsing
@@ -6080,9 +6160,24 @@ public final class SessionListView : ListView
                     _dragIntent = intent;
                     invalidate();
                 }
+                emitDragGhost(event.globalPosition);
             }
         }
         return true;
+    }
+
+    /// Tell the root where the drag ghost should sit and what it should say.
+    /// The row's title comes from `items()`, the action from the intent the
+    /// pointer currently implies.
+    private void emitDragGhost(Point globalPosition)
+    {
+        if (onDragGhost is null) return;
+        const title = _pressRow >= 0 &&
+            _pressRow < cast(int) items().length
+            ? items()[cast(size_t) _pressRow].text : cast(dstring) "";
+        immutable string action = _dragIntent == DragIntent.pin ? "Pin"
+            : (_dragIntent == DragIntent.unpin ? "Unpin" : "");
+        onDragGhost(true, toUTF8(title), action, globalPosition);
     }
 
     override void onMouseLeave()
@@ -6342,6 +6437,8 @@ public final class OpenCodeRoot : VBox
     private bool _modelsFetched;
     private int[string] _providerContextLimits;
     private string _contextLimitsBaseUrl;
+    private int[string] _learnedCompactionBudgets;
+    private string _compactionBudgetsBaseUrl;
     private bool _llamaCppEndpoint;
     private string _reasoningCapsBaseUrl;
 
@@ -11645,7 +11742,7 @@ public final class OpenCodeRoot : VBox
 
     /// Conservative local fallback for providers that omit streamed usage.
     /// Count the exact compacted messages plus advertised tool schemas, then
-    /// apply the same four-bytes-per-token approximation used by compaction.
+    /// use four bytes per token for the meter's approximate display.
     private static int estimateRequestTokens(
         const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools)
@@ -11885,7 +11982,10 @@ public final class OpenCodeRoot : VBox
             ? proportionalReserve : 20_000;
         const size_t maximumReserve = contextTokens * 4 / 10;
         if (reserveTokens > maximumReserve) reserveTokens = maximumReserve;
-        return (contextTokens - reserveTokens) * 4;
+        // Code and tool JSON often tokenize at fewer than four UTF-8 bytes per
+        // token. Leave room for that difference before the server rejects the
+        // request, while the separate output reserve remains in token units.
+        return (contextTokens - reserveTokens) * 3;
     }
 
     /// Deterministically shrink a request only when it approaches the model's
@@ -15621,12 +15721,16 @@ public final class OpenCodeRoot : VBox
         if (available <= 0 || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         auto session = &_sessions[sessionIndex];
-        if (available >= effectiveContextLimit(session.model) ||
-            session.messages.length == 0 ||
+        if (session.messages.length == 0 ||
             session.messages[$ - 1].role != "assistant" ||
             !session.messages[$ - 1].failed) return false;
-        _providerContextLimits[session.model] = available;
-        _contextLimitsBaseUrl = _settings.baseUrl;
+        // The server may report a larger window than the selected target. An
+        // overflow still means our local byte estimate was too optimistic.
+        if (available < effectiveContextLimit(session.model))
+        {
+            _providerContextLimits[session.model] = available;
+            _contextLimitsBaseUrl = _settings.baseUrl;
+        }
         if (!contextCompactionForModel(_settings, _settings.baseUrl,
             session.model))
         {
@@ -15635,6 +15739,20 @@ public final class OpenCodeRoot : VBox
                 "to continue this chat.");
             return false;
         }
+        const currentBudget = requestContextBudget(session.model);
+        if (currentBudget <= 0) return false;
+        if (_compactionBudgetsBaseUrl != _settings.baseUrl)
+        {
+            _learnedCompactionBudgets = null;
+            _compactionBudgetsBaseUrl = _settings.baseUrl;
+        }
+        // An actual tokenizer overflow is stronger evidence than the byte
+        // estimate. Keep the tighter target for subsequent turns as well.
+        const tighterBudget = cast(int)(
+            (cast(long)(currentBudget < available ? currentBudget : available)
+                * 3) / 4);
+        if (tighterBudget <= 0) return false;
+        _learnedCompactionBudgets[session.model] = tighterBudget;
         _contextOverflowRetryUsed = true;
         refreshUsageBadge();
         _autoResendPending = true;
@@ -16325,7 +16443,11 @@ public final class OpenCodeRoot : VBox
         const limit = effectiveContextLimit(model);
         const target = contextBudgetForModel(_settings, _settings.baseUrl,
             model);
-        return target > 0 && target < limit ? target : limit;
+        int budget = target > 0 && target < limit ? target : limit;
+        if (_compactionBudgetsBaseUrl == _settings.baseUrl)
+            if (auto learned = model in _learnedCompactionBudgets)
+                if (*learned < budget) budget = *learned;
+        return budget;
     }
 
     /// Merge a session parsed from a snapshot into the live list. When the same
