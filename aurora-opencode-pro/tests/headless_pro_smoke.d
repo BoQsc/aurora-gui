@@ -3832,6 +3832,37 @@ int main(string[] args)
             "hidden wrapper added phantom spacing");
     }
 
+    // Prose that introduces its own action group should not keep a second
+    // visual row-gap below the markdown line box. Keep the real VBox gap at
+    // 6 px, but remove the assistant bubble's redundant 6 px bottom inset.
+    {
+        immutable spacingText =
+            "Now let me verify it runs — I'll open it in the browser:";
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant", "user"],
+            ["go", spacingText, "later"]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "plain prose spacing repaint failed");
+        const plainHeight = root.bubbleHeightForTesting(1);
+
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["go"]);
+        root.appendToolRequestTurnForTesting("", "call-spacing", "update_plan",
+            `{"plan":[]}`, spacingText);
+        root.appendToolReplyForTesting("call-spacing", "plan updated");
+        root.tickTree(0.02);
+        assert(driver.paint(), "prose/action spacing repaint failed");
+        const compactHeight = root.bubbleHeightForTesting(1);
+        assert(compactHeight == plainHeight - 6,
+            "prose before an action group kept excess bottom inset");
+        const prose = root.bubbleBoundsForTesting(1);
+        const action = root.bubbleBoundsForTesting(2);
+        assert(action.y - prose.bottom() == 6,
+            "tightening prose changed the real column gap");
+        window.saveScreenshot("build\\compact-prose-action-gap.ppm");
+        writeln("Prose before an action group uses optical spacing");
+    }
+
     // A stack of collapsed one-line rows must share one pitch. A reasoning
     // "Thinking" header and a tool "Shell" row are both single-line headers; the
     // assistant rows used to reserve an extra timestamp footer (and a 2 px

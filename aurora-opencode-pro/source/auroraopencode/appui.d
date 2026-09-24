@@ -217,6 +217,10 @@ private final class MessageBubble : Widget
     private dstring _thinking;
     private dstring _content;
     private bool _streaming;
+    // Prose immediately followed by its own compact action group needs less
+    // bottom inset: the markdown line box already carries enough descent, and
+    // keeping the full inset made this transition look one row-gap too wide.
+    private bool _compactBottom;
     private bool _failed;
     private string _error;
     private string _time;
@@ -701,6 +705,13 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    void setCompactBottom(bool value)
+    {
+        if (_compactBottom == value) return;
+        _compactBottom = value;
+        invalidate();
+    }
+
     void setImages(const(ChatImageAttachment)[] images)
     {
         Attachment[] attachments;
@@ -1106,7 +1117,9 @@ private final class MessageBubble : Widget
             return Size(0, 0);
         }
         const innerWidth = maxInt(24, available.width - 2 * padH);
-        int height = 2 * padV;
+        const bottomPad = _compactBottom && _role == "assistant" &&
+            _content.length > 0 && !_failed && !footerVisible() ? 0 : padV;
+        int height = padV + bottomPad;
         if (_thinking.length > 0)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
@@ -8868,19 +8881,21 @@ public final class OpenCodeRoot : VBox
                         _messageColumn.add(
                             new TurnCompletionSeparator(*duration));
                 }
+                MessageBubble replyBubble;
                 if (_streamBubble !is null &&
                     _streamBubble.messageIndex() == cast(int) index)
                 {
                     // Re-add the live reply instead of a fresh bubble so a
                     // rebuild during streaming does not drop in-flight text.
-                    _messageColumn.add(_streamBubble);
+                    replyBubble = _streamBubble;
                 }
                 else
                 {
-                    _messageColumn.add(buildMessageBubble(index, message,
+                    replyBubble = buildMessageBubble(index, message,
                         latestAssistantIndex, versionPositions, versionTotals,
-                        thinkingText[slot]));
+                        thinkingText[slot]);
                 }
+                _messageColumn.add(replyBubble);
                 // This round's own tool results, in the order the model
                 // requested them: the round's prose is followed by its own
                 // collapsible action group, so a multi-round turn reads as
@@ -8901,7 +8916,10 @@ public final class OpenCodeRoot : VBox
                         }
                     }
                 }
-                if (childSlots.length > 0 || slot == liveHostSlot)
+                const followsCompactAction = childSlots.length > 0 ||
+                    slot == liveHostSlot;
+                replyBubble.setCompactBottom(followsCompactAction);
+                if (followsCompactAction)
                 {
                     Insets nestPad;
                     nestPad.left = toolNestIndent;
@@ -18854,16 +18872,17 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
     }
 
-    /// Test-only: append an assistant turn that only requested tools (reasoning
-    /// + `toolCalls`, no prose), exactly as a tool-loop round is persisted.
+    /// Test-only: append an assistant turn that requested tools, optionally with
+    /// prose before the action group, exactly as a tool-loop round is persisted.
     public void appendToolRequestTurnForTesting(string reasoning, string callId,
-        string name, string args)
+        string name, string args, string content = "")
     {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
         message.reasoning = reasoning;
+        message.content = content;
         message.toolCalls = [OpenCodeToolCall(callId, name, args)];
         message.time = currentTimestamp();
         appendMessage(*session, message);

@@ -208,9 +208,12 @@ private string executionLoopSection(in SystemPromptContext ctx)
     return "\n# Execution loop\n" ~
         "1. Define the result and success criteria. Use `update_plan` for " ~
         "substantial work with dependent phases. Skip a plan for direct " ~
-        "answers, quick exploration, and single edits. If used, list all " ~
-        "steps before acting, keep one `in_progress`, mark completed steps " ~
-        "promptly, and leave no stale items.\n" ~
+        "answers, quick exploration, and single edits. Decide before work " ~
+        "starts: when a plan is needed, make `update_plan` the first tool call " ~
+        "and list all steps before acting. If exploration reveals a larger " ~
+        "task, record the plan as soon as that becomes clear and mark any " ~
+        "already finished steps completed. Keep one `in_progress`, mark " ~
+        "completed steps promptly, and leave no stale items.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
         "working directory. Read named files directly; discover the workspace " ~
