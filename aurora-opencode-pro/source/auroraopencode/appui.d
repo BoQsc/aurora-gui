@@ -442,6 +442,15 @@ private final class MessageBubble : Widget
         invalidate();
     }
 
+    /// Whether this bubble is collapsed away: it keeps its column slot (so
+    /// child index ↔ message index mapping stays intact) but paints nothing. A
+    /// tool-call wrapper with no prose and no reasoning is hidden, so an action
+    /// pill placed on it would never be seen.
+    bool hidden() const
+    {
+        return _hidden;
+    }
+
     /// Test-only: whether this bubble is hidden.
     public bool hiddenForTesting()
     {
@@ -6285,6 +6294,15 @@ public final class OpenCodeRoot : VBox
     private long[string] _keyAccountCacheAt;
     private bool[string] _keyUsageFetching;
     private UsageLimitsResult[string] _keyUsageReady;
+    // Monthly token ledger per provider, keyed "<YYYY-MM>|<provider label>".
+    // Persisted to usage-monthly.json so a provider's monthly total survives
+    // restarts and provider switches. The transcript itself stores neither a
+    // provider nor a date, so it cannot supply this total.
+    private long[string] _monthlyProviderTokens;
+    private bool _monthlyUsageLoaded;
+    // Message ids already added to the ledger, so a reply that reports usage in
+    // a tool round and again at settle is counted exactly once.
+    private bool[string] _usageCounted;
     // Recycled by OpenCodeClient.drain. Keeping it on the root makes event
     // delivery allocation-free after the queue reaches its normal capacity.
     private OpenCodeEvent[] _eventScratch;
@@ -9236,7 +9254,9 @@ public final class OpenCodeRoot : VBox
     /// can leave the active leaf on a tool result or a tool-call wrapper, so
     /// the tip bubble is not a reply and would get no pill — after a restart
     /// the chat would then have no visible way to be resumed. In that case the
-    /// last real reply on the active path carries the pill instead.
+    /// last real reply on the active path carries the pill instead; and when a
+    /// single long agent turn left only tool-call wrappers (no prose reply at
+    /// all), the tip-most visible assistant turn carries it.
     private void refreshBubbleActions()
     {
         if (_current < 0) return;
@@ -9258,6 +9278,10 @@ public final class OpenCodeRoot : VBox
             // real last reply keeps its Regenerate/Continue pill while a
             // prompt sits in the queue.
             if (child.queued()) continue;
+            // A hidden tool-call wrapper (no prose, no reasoning) paints
+            // nothing, so a pill placed on it would be invisible; treat the
+            // last visible bubble as the tip instead.
+            if (child.hidden()) continue;
             target = child;
             break;
         }
@@ -9306,7 +9330,11 @@ public final class OpenCodeRoot : VBox
         // result or a tool-call wrapper), put the pill on the last real reply
         // on the active path. Continue appends at the current tip, so it keeps
         // every tool result below that reply; Regenerate reruns from the
-        // prompt as usual.
+        // prompt as usual. A long single agent turn can leave EVERY assistant
+        // message on the path as a tool-call wrapper (no prose reply at all),
+        // so when no real reply exists the tip-most visible assistant turn
+        // carries the pill instead — otherwise such a chat warned "needs
+        // continue" in the sidebar but offered no way to resume.
         if (!pillApplied && sessionTurnIncomplete(_current))
         {
             auto onPath = new bool[](session.messages.length);
@@ -9314,23 +9342,31 @@ public final class OpenCodeRoot : VBox
                 if (index < onPath.length) onPath[index] = true;
             MessageBubble resumable;
             int resumableIndex = -1;
-            foreach_reverse (child; children)
+            // Pass one prefers a real reply; pass two accepts a tool-call
+            // wrapper so a turn that never produced prose still gets a pill.
+            foreach (bool allowToolWrapper; [false, true])
             {
-                auto bubble = cast(MessageBubble) child;
-                if (bubble is null) continue;
-                if (bubble.queued()) continue;
-                if (_streamBubble !is null && bubble is _streamBubble) continue;
-                const messageIndex = bubble.messageIndex();
-                if (messageIndex < 0 ||
-                    messageIndex >= cast(int) session.messages.length)
-                    continue;
-                if (!onPath[cast(size_t) messageIndex]) continue;
-                const message = session.messages[cast(size_t) messageIndex];
-                if (message.role != "assistant" || message.internal ||
-                    message.toolCalls.length > 0) continue;
-                resumable = bubble;
-                resumableIndex = messageIndex;
-                break;
+                foreach_reverse (child; children)
+                {
+                    auto bubble = cast(MessageBubble) child;
+                    if (bubble is null) continue;
+                    if (bubble.queued()) continue;
+                    if (bubble.hidden()) continue;
+                    if (_streamBubble !is null && bubble is _streamBubble) continue;
+                    const messageIndex = bubble.messageIndex();
+                    if (messageIndex < 0 ||
+                        messageIndex >= cast(int) session.messages.length)
+                        continue;
+                    if (!onPath[cast(size_t) messageIndex]) continue;
+                    const message = session.messages[cast(size_t) messageIndex];
+                    if (message.role != "assistant" || message.internal) continue;
+                    if (!allowToolWrapper && message.toolCalls.length > 0)
+                        continue;
+                    resumable = bubble;
+                    resumableIndex = messageIndex;
+                    break;
+                }
+                if (resumable !is null) break;
             }
             if (resumable !is null)
             {
@@ -9642,6 +9678,10 @@ public final class OpenCodeRoot : VBox
                 message.completionTokens = completionTokens;
                 message.totalTokens = totalTokens;
             }
+            // Add this turn's usage to the current month's per-provider total.
+            if (!cancelled)
+                recordTurnUsage(*message, totalTokens, promptTokens,
+                    completionTokens);
             message.tokensPerSecondTenths = _liveTokenRateTenths;
             publishMessageEvent(AgentEventKind.itemUpdated,
                 _sessions[sessionIndex], *message);
@@ -10245,6 +10285,10 @@ public final class OpenCodeRoot : VBox
             message.completionTokens = event.completionTokens;
             message.totalTokens = event.totalTokens;
         }
+        // A tool round is real billed usage even though the user turn continues,
+        // so add it to the monthly per-provider total now.
+        recordTurnUsage(*message, event.totalTokens, event.promptTokens,
+            event.completionTokens);
         // Keep the output-token count and throughput on the message BEFORE the
         // stream bubble is torn down below; the
         // rebuild that follows otherwise renders the Thinking header from a
@@ -12743,8 +12787,14 @@ public final class OpenCodeRoot : VBox
         // continuation is still appended through `appendMessage` at the
         // current leaf, so the resumed request keeps every tool result below
         // the reply it continues.
-        if (message.role != "assistant" || message.failed ||
-            message.toolCalls.length > 0) return false;
+        if (message.role != "assistant" || message.failed) return false;
+        // A tool-call wrapper is normally not a Continue target (there is no
+        // prose to extend), but an interrupted turn whose tip is a tool result
+        // can leave only tool-call wrappers on the path; appending at the tip
+        // resumes that turn with its tool results intact, which is exactly the
+        // "needs continue" affordance the chat offers.
+        if (message.toolCalls.length > 0 && !sessionTurnIncomplete(sessionIndex))
+            return false;
         bool onActivePath;
         foreach (index; activeMessagePath(*session))
             if (cast(int) index == messageIndex)
@@ -13085,6 +13135,107 @@ public final class OpenCodeRoot : VBox
     /// record and exact after-byte checks prevent overwriting subsequent work.
     // -- profile / usage dialog -------------------------------------------
 
+    /// Calendar-month key ("YYYY-MM") for the monthly usage ledger.
+    private static string currentMonthKey()
+    {
+        const now = Clock.currTime;
+        const month = cast(int) now.month;
+        return to!string(now.year) ~ "-" ~ (month < 10 ? "0" : "") ~
+            to!string(month);
+    }
+
+    /// Display label of the provider the app is currently configured to use. A
+    /// hand-edited endpoint keeps its own label instead of merging into
+    /// "Custom", so two different hosts never share a monthly total.
+    private string providerUsageLabel()
+    {
+        const label = providerPresetLabel(_settings.baseUrl);
+        if (label != "Custom") return label;
+        const owner = apiKeyOwnerForBaseUrl(_settings.baseUrl);
+        return owner.length > 0 ? owner : "Custom";
+    }
+
+    private string monthlyUsagePath()
+    {
+        return buildPath(opencodeStateDirectory(), "usage-monthly.json");
+    }
+
+    /// Load the per-provider monthly ledger once per process. A missing or
+    /// malformed file just means no history yet.
+    private void loadMonthlyUsage()
+    {
+        if (_monthlyUsageLoaded) return;
+        _monthlyUsageLoaded = true;
+        const path = monthlyUsagePath();
+        if (!exists(path)) return;
+        try
+        {
+            auto root = parseJSON(readText(path));
+            if (root.type != JSONType.object) return;
+            foreach (month, providers; root.object)
+            {
+                if (providers.type != JSONType.object) continue;
+                foreach (provider, value; providers.object)
+                {
+                    if (value.type != JSONType.integer) continue;
+                    _monthlyProviderTokens[month ~ "|" ~ provider] =
+                        value.integer;
+                }
+            }
+        }
+        catch (Exception error)
+            logError("could not load monthly usage: " ~ error.msg);
+    }
+
+    private void saveMonthlyUsage()
+    {
+        JSONValue[string] months;
+        foreach (key, value; _monthlyProviderTokens)
+        {
+            const sep = key.indexOf('|');
+            if (sep < 0) continue;
+            const month = key[0 .. sep];
+            JSONValue[string] providers;
+            if (auto existing = month in months)
+                if (existing.type == JSONType.object) providers = existing.object;
+            providers[key[sep + 1 .. $]] = JSONValue(value);
+            months[month] = JSONValue(providers);
+        }
+        JSONValue[string] rootMap;
+        foreach (month, node; months) rootMap[month] = node;
+        try write(monthlyUsagePath(), JSONValue(rootMap).toString());
+        catch (Exception error)
+            logError("could not save monthly usage: " ~ error.msg);
+    }
+
+    /// Add `tokens` to the current month's running total for `provider`.
+    private void recordProviderUsage(string provider, long tokens)
+    {
+        if (provider.length == 0 || tokens <= 0) return;
+        loadMonthlyUsage();
+        const key = currentMonthKey() ~ "|" ~ provider;
+        _monthlyProviderTokens[key] = _monthlyProviderTokens.get(key, 0L) + tokens;
+        saveMonthlyUsage();
+    }
+
+    /// Record one reply's usage under the active provider for the current
+    /// month. `total` is the provider's own sum when present; otherwise it is
+    /// input + output. The message id guard keeps a single reply from being
+    /// counted twice across a tool round and the turn's settle.
+    private void recordTurnUsage(ref ChatMessage message, int total, int prompt,
+        int completion)
+    {
+        const counted = total > 0 ? cast(long) total
+            : cast(long) prompt + completion;
+        if (counted <= 0) return;
+        if (message.id.length > 0)
+        {
+            if (message.id in _usageCounted) return;
+            _usageCounted[message.id] = true;
+        }
+        recordProviderUsage(providerUsageLabel(), counted);
+    }
+
     private void showProfileDialog()
     {
         if (_activePopup !is null) _activePopup.dismiss();
@@ -13162,6 +13313,34 @@ public final class OpenCodeRoot : VBox
             to!string(sessionsWithUsage) ~ " conversation(s) with recorded usage"));
         detail.setScale(1);
         detail.setColor(opencodeMuted);
+
+        // Monthly usage per provider: a running ledger updated as each turn's
+        // usage is recorded, so switching providers still shows what each one
+        // has used this calendar month.
+        loadMonthlyUsage();
+        const monthKey = currentMonthKey();
+        auto monthLabel = content.add(new Label("This month by provider"));
+        monthLabel.setScale(1);
+        monthLabel.setColor(opencodeMuted);
+        auto monthBox = content.add(new VBox(2));
+        monthBox.setId("oc-profile-monthly");
+        bool anyMonth;
+        foreach (key, value; _monthlyProviderTokens)
+        {
+            const sep = key.indexOf('|');
+            if (sep < 0 || key[0 .. sep] != monthKey) continue;
+            anyMonth = true;
+            auto row = monthBox.add(new Label(key[sep + 1 .. $] ~ ": " ~
+                withThousands(value) ~ " tokens"));
+            row.setScale(1);
+        }
+        if (!anyMonth)
+        {
+            auto none = monthBox.add(new Label(
+                "No provider usage recorded this month yet."));
+            none.setScale(1);
+            none.setColor(opencodeMuted);
+        }
 
         // Contribution-style grid: one cell per assistant reply in the active
         // conversation, shaded by token count (darker for lighter turns).
@@ -14823,7 +15002,8 @@ public final class OpenCodeRoot : VBox
                 {
                     regenerateLastReply(_current, messageIndex);
                 });
-            if (!message.failed && message.toolCalls.length == 0)
+            if (!message.failed &&
+                (message.toolCalls.length == 0 || sessionTurnIncomplete(_current)))
                 items ~= ContextMenuItem.command("Continue",
                     IconKind.chevronRight,
                     delegate()
@@ -17417,6 +17597,45 @@ public final class OpenCodeRoot : VBox
         return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
     }
 
+    /// Test-only: the last VISIBLE assistant bubble in the transcript (the
+    /// resume pill may sit on it while the tip is a tool result). Null when no
+    /// visible assistant turn exists.
+    private MessageBubble lastVisibleAssistantBubbleForTesting()
+    {
+        const children = messageColumnVisuals();
+        for (size_t i = children.length; i > 0; --i)
+        {
+            auto bubble = cast(MessageBubble) children[i - 1];
+            if (bubble is null || bubble.hidden()) continue;
+            if (bubble.roleForTesting() != "assistant") continue;
+            return bubble;
+        }
+        return null;
+    }
+
+    /// Test-only: the action-pill label on the last visible assistant turn
+    /// ("" when none), for an interrupted turn whose tip is a tool result.
+    public string lastAssistantBubbleActionForTesting()
+    {
+        auto bubble = lastVisibleAssistantBubbleForTesting();
+        return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    public string lastAssistantBubbleSecondaryActionForTesting()
+    {
+        auto bubble = lastVisibleAssistantBubbleForTesting();
+        return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
+    }
+
+    /// Test-only: run the same Continue preparation the pill uses on the last
+    /// visible assistant turn, without opening a network request.
+    public bool prepareContinueOnLastAssistantForTesting()
+    {
+        auto bubble = lastVisibleAssistantBubbleForTesting();
+        if (bubble is null) return false;
+        return prepareContinue(_current, bubble.messageIndex());
+    }
+
     /// Test-only: action-pill label on the bubble at `index`.
     public string bubbleActionForTesting(int index)
     {
@@ -18403,6 +18622,39 @@ public final class OpenCodeRoot : VBox
     {
         showSettingsDialog();
         return findWidgetById(this, "oc-provider") !is null;
+    }
+
+    /// Test-only: the calendar-month key ("YYYY-MM") the ledger records under.
+    public string currentMonthKeyForTesting()
+    {
+        return currentMonthKey();
+    }
+
+    /// Test-only: the provider label a finished turn's usage is recorded under.
+    public string providerUsageLabelForTesting()
+    {
+        return providerUsageLabel();
+    }
+
+    /// Test-only: total tokens the ledger holds for `provider` in `monthKey`.
+    public long monthlyProviderTokensForTesting(string monthKey, string provider)
+    {
+        loadMonthlyUsage();
+        return _monthlyProviderTokens.get(monthKey ~ "|" ~ provider, 0L);
+    }
+
+    /// Test-only: open the Profile dialog and return the monthly per-provider
+    /// rows it lists (one label per provider), then close it.
+    public string[] profileMonthlyUsageRowsForTesting()
+    {
+        showProfileDialog();
+        string[] rows;
+        if (auto box = cast(VBox) findWidgetById(this, "oc-profile-monthly"))
+            foreach (child; box.children())
+                if (auto label = cast(Label) child)
+                    rows ~= to!string(label.text());
+        dismissPopup();
+        return rows;
     }
 
     /// Test-only: prefill a usage response so pointer tests stay offline.

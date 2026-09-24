@@ -3170,6 +3170,31 @@ int main(string[] args)
         writeln("Live token count grows on the Thinking header and stays");
     }
 
+    // Monthly per-provider usage ledger: a finished turn adds its usage to the
+    // current month's total for the active provider, and the Profile dialog
+    // lists that total.
+    {
+        const month = root.currentMonthKeyForTesting();
+        const provider = root.providerUsageLabelForTesting();
+        const long before = root.monthlyProviderTokensForTesting(month, provider);
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Count my tokens"]);
+        root.beginStreamForTesting();
+        root.feedUsageForTesting(120, 80, 200);
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        const long after = root.monthlyProviderTokensForTesting(month, provider);
+        assert(after - before == 80,
+            "Monthly provider total did not grow by the turn's usage: " ~
+            to!string(before) ~ " -> " ~ to!string(after));
+        bool listed;
+        foreach (row; root.profileMonthlyUsageRowsForTesting())
+            if (row.indexOf(provider) >= 0 && row.indexOf("tokens") >= 0)
+                listed = true;
+        assert(listed, "Profile dialog did not list the monthly provider total");
+        writeln("Monthly per-provider usage is recorded and shown in Profile");
+    }
+
     // Providers often stream prose one character at a time. The live bubble
     // and durable assistant message must stay byte-for-byte identical through
     // the transition to the settled Markdown renderer.
@@ -3746,6 +3771,50 @@ int main(string[] args)
             root.lastBubbleSecondaryActionForTesting() == "Continue",
             "the reply pill did not return once its turn settled");
         writeln("No reply pill mid-transcript while a turn is in flight");
+    }
+
+    // An interrupted turn whose tip is a tool result — the process died, or a
+    // rebuild relaunched it, mid tool round — must still offer Continue and
+    // Regenerate. The resume pill used to go only on a real prose reply, so a
+    // long single agent turn (every assistant round a tool-call wrapper) warned
+    // "needs continue" in the sidebar yet showed no pill at all, leaving the
+    // chat with no visible way to resume.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Do the long task"]);
+        root.appendToolRequestTurnForTesting("I should read the file first.",
+            "call_resume", "read", `{"filePath":"a.txt"}`);
+        root.appendToolReplyForTesting("call_resume", "file body\n");
+        // No prose reply ever streamed, so the active leaf is the tool result:
+        // exactly the state a crash/rebuild leaves behind.
+        const interrupted = root.currentSessionForTesting();
+        root.setSessionTurnStatusForTesting(interrupted, "running");
+        root.rebuildForTesting();
+        assert(root.sessionIncompleteForTesting(interrupted),
+            "the interrupted tool-round turn was not flagged as incomplete");
+        assert(root.lastAssistantBubbleActionForTesting() == "Regenerate",
+            "an interrupted tool-round turn got no Regenerate pill: " ~
+            root.lastAssistantBubbleActionForTesting());
+        assert(root.lastAssistantBubbleSecondaryActionForTesting() == "Continue",
+            "an interrupted tool-round turn got no Continue pill: " ~
+            root.lastAssistantBubbleSecondaryActionForTesting());
+        // Continue from that wrapper (its tip is a tool result) must be
+        // accepted and append the continuation, keeping the tool results.
+        const beforeResume = root.totalMessageCountForTesting();
+        assert(root.prepareContinueOnLastAssistantForTesting(),
+            "Continue rejected an interrupted tool-round turn");
+        assert(root.totalMessageCountForTesting() == beforeResume + 1,
+            "Continue did not append a continuation for the interrupted turn");
+        assert(root.messageRoleForTesting(
+            root.totalMessageCountForTesting() - 1) == "user",
+            "Continue did not append the continuation turn");
+        // Once the turn is no longer incomplete the resume pill is gone again.
+        root.setSessionTurnStatusForTesting(interrupted, "completed");
+        root.rebuildForTesting();
+        assert(root.lastAssistantBubbleActionForTesting() == "" &&
+            root.lastAssistantBubbleSecondaryActionForTesting() == "",
+            "a settled tool round kept the resume pill");
+        writeln("An interrupted tool-round turn offers Continue/Regenerate");
     }
 
     // Real transcript shape: collapsed tool rows interleaved with assistant
