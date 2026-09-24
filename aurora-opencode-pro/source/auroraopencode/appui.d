@@ -2338,6 +2338,8 @@ private string humanToolTitle(string toolName)
             return "Open";
         case "update_plan":
             return "Plan";
+        case "update_subplan":
+            return "Subplan";
         case "remove":
             return "Delete";
         case "glob":
@@ -2377,6 +2379,8 @@ private string humanToolProgressTitle(string toolName)
             return "Opening";
         case "update_plan":
             return "Planning";
+        case "update_subplan":
+            return "Planning substeps";
         case "remove":
             return "Deleting";
         case "glob":
@@ -2443,10 +2447,13 @@ private string humanToolSubtitle(string toolName, string toolArgs)
             return builder.data;
         }
         case "update_plan":
+        case "update_subplan":
         {
             const steps = planStepCount(toolArgs);
             if (steps == 0) return "";
-            return to!string(steps) ~ (steps == 1 ? " step" : " steps");
+            const suffix = toolName == "update_subplan" ? " substeps" :
+                (steps == 1 ? " step" : " steps");
+            return to!string(steps) ~ suffix;
         }
         case "glob":
         case "grep":
@@ -2789,6 +2796,7 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
             case "grep":
                 ++explores; break;
             case "update_plan":
+            case "update_subplan":
                 ++plans; break;
             default:
                 break;
@@ -3321,6 +3329,9 @@ private final class PlanCard : Widget
     private string _status;
     private string[] _texts;
     private string[] _statuses;
+    // experimental: optional one-level substeps, never part of the main count
+    private const(NestedPlan)[] _nestedPlans;
+    private bool _showNested;
     // The left border is a collapse handle while the card floats detached: the
     // panel parks the card against the right edge and this handle is what the
     // pointer clicks. `_railOnly` keeps just that handle on screen.
@@ -3337,6 +3348,7 @@ private final class PlanCard : Widget
     void delegate() onHoverChanged;
     /// Notified when the left-border handle is clicked.
     void delegate() onHandleActivated;
+    void delegate(size_t) onToggleNested;
 
     /// Whether hovering should expand the card; only meaningful while hovered.
     bool expandWanted() const { return _expandWanted; }
@@ -3348,7 +3360,8 @@ private final class PlanCard : Widget
 
     /// Replace the rendered plan. The card is rebuilt on every tool result, so
     /// it copies the steps into its own arrays and repaints only on a change.
-    void update(string objective, const(TaskStep)[] steps, string status)
+    void update(string objective, const(TaskStep)[] steps, string status,
+        const(NestedPlan)[] nestedPlans = null, bool showNested = false)
     {
         string[] texts;
         string[] statuses;
@@ -3357,13 +3370,41 @@ private final class PlanCard : Widget
             texts ~= step.text;
             statuses ~= step.status;
         }
-        if (objective == _objective && status == _status &&
+        if (!showNested && !_showNested && objective == _objective &&
+            status == _status &&
             texts == _texts && statuses == _statuses) return;
         _objective = objective;
         _status = status;
         _texts = texts;
         _statuses = statuses;
+        _nestedPlans = nestedPlans;
+        _showNested = showNested;
         invalidate();
+    }
+
+    private const(NestedPlan)* nestedFor(size_t index) const
+    {
+        if (!_showNested) return null;
+        foreach (ref plan; _nestedPlans)
+            if (plan.parentStep == index + 1) return &plan;
+        return null;
+    }
+
+    private size_t nestedParentAt(int pointerY) const
+    {
+        if (!_showNested) return size_t.max;
+        int y = padV + lineH * (1 + (hasObjective() ? 1 : 0)) +
+            progressBlock();
+        foreach (index; 0 .. _texts.length)
+        {
+            const plan = nestedFor(index);
+            if (plan !is null && pointerY >= y && pointerY < y + lineH)
+                return index;
+            y += lineH;
+            if (plan !is null && plan.expanded)
+                y += cast(int) plan.steps.length * lineH;
+        }
+        return size_t.max;
     }
 
     /// Collapse to the left-border handle alone (detached panel): the card
@@ -3421,8 +3462,14 @@ private final class PlanCard : Widget
 
     private int totalHeight() const
     {
-        return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) +
-            cast(int) _texts.length) + progressBlock();
+        int rows = cast(int) _texts.length;
+        if (_showNested)
+            foreach (plan; _nestedPlans)
+                if (plan.expanded && plan.parentStep >= 1 &&
+                    plan.parentStep <= _texts.length)
+                    rows += cast(int) plan.steps.length;
+        return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) + rows) +
+            progressBlock();
     }
 
     protected override Size onMeasure(Size available)
@@ -3487,11 +3534,36 @@ private final class PlanCard : Widget
                 ? _statuses[index] : "pending";
             drawStepGlyph(canvas, y, status);
             const textX = padH + glyphSize + glyphGap;
+            const plan = nestedFor(index);
+            const summaryWidth = plan is null ? 0 : 64;
             canvas.drawTextInRect(Rect(textX, y,
-                maxInt(0, textWidth - glyphSize - glyphGap), lineH),
+                maxInt(0, textWidth - glyphSize - glyphGap - summaryWidth), lineH),
                 toUTF32(text), statusColor(status), 1,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+            if (plan !is null)
+            {
+                int done;
+                foreach (child; plan.steps)
+                    if (child.status == "completed") ++done;
+                const summary = (plan.expanded ? "[- " : "[+ ") ~
+                    to!string(done) ~ "/" ~ to!string(plan.steps.length) ~ "]";
+                canvas.drawTextInRect(Rect(width - padH - summaryWidth, y,
+                    summaryWidth, lineH), toUTF32(summary), opencodeMuted, 1,
+                    HorizontalAlign.right, VerticalAlign.middle, true);
+            }
             y += lineH;
+            if (plan !is null && plan.expanded)
+                foreach (child; plan.steps)
+                {
+                    enum childIndent = 18;
+                    drawStepGlyph(canvas, y, child.status, childIndent);
+                    const childTextX = textX + childIndent;
+                    canvas.drawTextInRect(Rect(childTextX, y,
+                        maxInt(0, width - padH - childTextX), lineH),
+                        toUTF32(child.text), statusColor(child.status), 1,
+                        HorizontalAlign.left, VerticalAlign.middle, true);
+                    y += lineH;
+                }
         }
     }
 
@@ -3563,7 +3635,8 @@ private final class PlanCard : Widget
             _handleHot = hot;
             invalidate();
         }
-        setCursor(onHandle ? CursorKind.hand : CursorKind.arrow);
+        setCursor(onHandle || nestedParentAt(event.position.y) != size_t.max
+            ? CursorKind.hand : CursorKind.arrow);
         // On the border the layout is frozen (the flag keeps its value), so the
         // border stays under the pointer and can be clicked; anywhere else in
         // the card the pointer asks for the expansion.
@@ -3581,7 +3654,12 @@ private final class PlanCard : Widget
         // The whole collapsed tab is the handle; expanded, only the rail is.
         if (!_railOnly &&
             (event.position.x < 0 || event.position.x >= handleWidth))
-            return false;
+        {
+            const parent = nestedParentAt(event.position.y);
+            if (parent == size_t.max) return false;
+            if (onToggleNested !is null) onToggleNested(parent);
+            return true;
+        }
         if (onHandleActivated !is null) onHandleActivated();
         return true;
     }
@@ -3590,9 +3668,10 @@ private final class PlanCard : Widget
     /// indicator: an accent box with a white tick when completed, an accent ring
     /// with a centre dot while in progress, and an empty framed box when
     /// pending.
-    private void drawStepGlyph(ref Canvas canvas, int rowY, string status)
+    private void drawStepGlyph(ref Canvas canvas, int rowY, string status,
+        int indent = 0)
     {
-        const box = Rect(padH, rowY + (lineH - glyphSize) / 2,
+        const box = Rect(padH + indent, rowY + (lineH - glyphSize) / 2,
             glyphSize, glyphSize);
         if (status == "completed")
         {
@@ -3660,6 +3739,7 @@ private final class DetachedPlanPanel : Widget
     private Rect _cardRect;
     private bool _collapsed;
     private bool _hoverExpanded;
+    void delegate(size_t) onToggleNested;
 
     this()
     {
@@ -3677,13 +3757,18 @@ private final class DetachedPlanPanel : Widget
             layoutCard();
         };
         _card.onHandleActivated = delegate() { setCollapsed(!_collapsed); };
+        _card.onToggleNested = delegate(size_t parent)
+        {
+            if (onToggleNested !is null) onToggleNested(parent);
+        };
         add(_card);
     }
 
     /// Replace the rendered plan and show the panel only while steps exist.
-    void update(string objective, const(TaskStep)[] steps, string status)
+    void update(string objective, const(TaskStep)[] steps, string status,
+        const(NestedPlan)[] nestedPlans = null, bool showNested = false)
     {
-        _card.update(objective, steps, status);
+        _card.update(objective, steps, status, nestedPlans, showNested);
         setVisible(steps.length > 0);
         invalidate();
     }
@@ -7761,6 +7846,10 @@ public final class OpenCodeRoot : VBox
         _planPanel.layoutHints().excludeFromLayout = true;
         _planPanel.layoutHints().overlayFillParent = true;
         _planPanel.layoutHints().allowOverflow = true;
+        _planPanel.onToggleNested = delegate(size_t parent)
+        {
+            toggleNestedPlan(parent);
+        };
         _planPanel.setVisible(false);
 
         // Jump-to-latest pill: the centered way back to automatic scrolling
@@ -8410,6 +8499,7 @@ public final class OpenCodeRoot : VBox
             steps.array ~= value;
         }
         payload["taskSteps"] = steps;
+        payload["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
         JSONValue guidance = JSONValue(string[].init);
         foreach (item; session.queuedGuidance) guidance.array ~= JSONValue(item);
         payload["queuedGuidance"] = guidance;
@@ -8423,7 +8513,8 @@ public final class OpenCodeRoot : VBox
     /// Machine-readable task state supplied on every request.  This is the
     /// durable equivalent of Codex's thread goal: compaction and restarts cannot
     /// silently erase the objective or turn an unfinished checklist into "done".
-    private static string durableTaskPrompt(const ref ChatSession session)
+    private static string durableTaskPrompt(const ref ChatSession session,
+        bool nestedEnabled)
     {
         if (session.objective.length == 0 && session.taskSteps.length == 0 &&
             session.verificationStatus.length == 0) return "";
@@ -8451,6 +8542,16 @@ public final class OpenCodeRoot : VBox
             prompt.put("Checklist:\n");
             foreach (step; session.taskSteps)
                 prompt.put("- [" ~ step.status ~ "] " ~ step.text ~ "\n");
+        }
+        if (nestedEnabled && session.nestedPlans.length > 0)
+        {
+            prompt.put("Experimental substeps (under numbered main steps):\n");
+            foreach (nested; session.nestedPlans)
+            {
+                prompt.put("Step " ~ to!string(nested.parentStep) ~ ":\n");
+                foreach (step; nested.steps)
+                    prompt.put("  - [" ~ step.status ~ "] " ~ step.text ~ "\n");
+            }
         }
         prompt.put("Treat this state as authoritative. Update the plan as work " ~
             "changes. Do not claim completion while verification is required " ~
@@ -8747,7 +8848,12 @@ public final class OpenCodeRoot : VBox
             if (!inlinePlan || planAdded || candidateSlot != planHostSlot) return;
             auto planCard = new PlanCard();
             planCard.update(session.objective, session.taskSteps,
-                session.taskStatus);
+                session.taskStatus, session.nestedPlans,
+                _settings.experimentalNestedPlans);
+            planCard.onToggleNested = delegate(size_t parent)
+            {
+                toggleNestedPlan(parent);
+            };
             _messageColumn.add(planCard);
             planAdded = true;
         }
@@ -9061,7 +9167,23 @@ public final class OpenCodeRoot : VBox
         }
         const session = &_sessions[_current];
         _planPanel.update(session.objective, session.taskSteps,
-            session.taskStatus);
+            session.taskStatus, session.nestedPlans,
+            _settings.experimentalNestedPlans);
+    }
+
+    private void toggleNestedPlan(size_t parent)
+    {
+        if (!_settings.experimentalNestedPlans || _current < 0) return;
+        auto session = &_sessions[_current];
+        foreach (ref nested; session.nestedPlans)
+            if (nested.parentStep == parent + 1)
+            {
+                nested.expanded = !nested.expanded;
+                publishThreadUpdated(*session);
+                markDirty();
+                rebuildMessageColumn();
+                return;
+            }
     }
 
     /// Show the welcome overlay only while the active conversation has no
@@ -10581,7 +10703,8 @@ public final class OpenCodeRoot : VBox
                 continue;
             }
             if (message.role != "tool") continue;
-            if (message.toolName == "update_plan")
+            if (message.toolName == "update_plan" ||
+                message.toolName == "update_subplan")
             {
                 count = 0;
                 continue;
@@ -10998,32 +11121,43 @@ public final class OpenCodeRoot : VBox
                 break;
             }
 
+        const planError = !event.toolFailed && event.toolName == "update_plan"
+            ? planReplacementError(*session, toolArgs) : "";
+        const subplanError = !event.toolFailed &&
+            event.toolName == "update_subplan"
+            ? nestedPlanError(*session, toolArgs) : "";
+        const toolFailed = event.toolFailed || planError.length > 0 ||
+            subplanError.length > 0;
+        const toolText = planError.length > 0 ? planError :
+            subplanError.length > 0 ? subplanError : event.text;
         ChatMessage toolMessage;
         toolMessage.role = "tool";
-        toolMessage.content = event.text;
+        toolMessage.content = toolText;
         toolMessage.toolCallId = event.toolCallId;
         toolMessage.toolName = event.toolName;
         toolMessage.toolArgs = toolArgs;
-        toolMessage.failed = event.toolFailed;
+        toolMessage.failed = toolFailed;
         toolMessage.diffAdditions = event.diffAdditions;
         toolMessage.diffDeletions = event.diffDeletions;
         toolMessage.toolDiff = event.diffText;
         toolMessage.toolElapsedMs = event.elapsedMs;
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
-        if (!event.toolFailed && event.images.length > 0)
+        if (!toolFailed && event.images.length > 0)
             _pendingToolImages ~= event.images;
 
-        if (!event.toolFailed && event.toolName == "update_plan")
+        if (!toolFailed && event.toolName == "update_plan")
             applyDurablePlan(*session, toolArgs);
-        if (isSubstantiveMutation(event.toolName, event.toolFailed,
+        if (!toolFailed && event.toolName == "update_subplan")
+            applyNestedPlan(*session, toolArgs);
+        if (isSubstantiveMutation(event.toolName, toolFailed,
             event.diffAdditions, event.diffDeletions, event.diffText))
         {
             session.verificationStatus = "required";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
         }
-        else if (!event.toolFailed && isVerificationTool(event.toolName,
+        else if (!toolFailed && isVerificationTool(event.toolName,
             toolArgs) &&
             session.verificationStatus == "required")
         {
@@ -11036,10 +11170,10 @@ public final class OpenCodeRoot : VBox
         // Progress guidance: remember the last failure signature
         // (tool name + first output line) and how many times in a row it has
         // repeated. Any success is progress and clears it.
-        if (event.toolFailed)
+        if (toolFailed)
         {
             const failSignature =
-                event.toolName ~ "|" ~ firstLineOf(event.text);
+                event.toolName ~ "|" ~ firstLineOf(toolText);
             if (failSignature == _lastFailureSignature)
                 ++_lastFailureRepeatCount;
             else
@@ -11150,6 +11284,17 @@ public final class OpenCodeRoot : VBox
             if (step.text.length == 0 || step.status.length == 0) return;
             steps ~= step;
         }
+        // Keep experimental substeps only while their numbered parent still
+        // names the same top-level outcome after this full-plan replacement.
+        NestedPlan[] retained;
+        foreach (nested; session.nestedPlans)
+            if (nested.parentStep >= 1 &&
+                nested.parentStep <= steps.length &&
+                nested.parentStep <= session.taskSteps.length &&
+                steps[nested.parentStep - 1].text ==
+                    session.taskSteps[nested.parentStep - 1].text)
+                retained ~= nested;
+        session.nestedPlans = retained;
         session.taskSteps = steps;
         bool complete = steps.length > 0;
         foreach (step; steps)
@@ -11160,6 +11305,53 @@ public final class OpenCodeRoot : VBox
         else if (session.taskStatus != "reviewing")
             session.taskStatus = "active";
         publishThreadUpdated(session);
+    }
+
+    private string nestedPlanError(const ref ChatSession session,
+        string arguments)
+    {
+        if (!_settings.experimentalNestedPlans)
+            return "Error: experimental nested plans are disabled in Settings.";
+        JSONValue root;
+        try root = parseJSON(arguments);
+        catch (Exception) return "Error: invalid subplan arguments.";
+        if (root.type != JSONType.object)
+            return "Error: invalid subplan arguments.";
+        auto parent = "parent_step" in root.object;
+        if (parent is null || parent.type != JSONType.integer ||
+            parent.integer < 1 || parent.integer > session.taskSteps.length)
+            return "Error: parent_step must name an existing top-level " ~
+                "plan step (1 through " ~
+                to!string(session.taskSteps.length) ~ ").";
+        return "";
+    }
+
+    private void applyNestedPlan(ref ChatSession session, string arguments)
+    {
+        auto root = parseJSON(arguments);
+        const parent = cast(size_t) root["parent_step"].integer;
+        TaskStep[] steps;
+        foreach (item; root["plan"].array)
+        {
+            TaskStep step;
+            step.text = item["step"].str;
+            step.status = item["status"].str;
+            steps ~= step;
+        }
+        foreach (ref nested; session.nestedPlans)
+            if (nested.parentStep == parent)
+            {
+                nested.steps = steps;
+                publishThreadUpdated(session);
+                markDirty();
+                return;
+            }
+        NestedPlan nested;
+        nested.parentStep = parent;
+        nested.steps = steps;
+        session.nestedPlans ~= nested;
+        publishThreadUpdated(session);
+        markDirty();
     }
 
     private static bool hasIncompleteTaskSteps(const ref ChatSession session)
@@ -11451,6 +11643,7 @@ public final class OpenCodeRoot : VBox
         if (resetTaskState)
         {
             session.taskSteps.length = 0;
+            session.nestedPlans.length = 0;
             session.verificationStatus = "not_required";
         }
         session.taskStatus = "active";
@@ -12325,6 +12518,33 @@ public final class OpenCodeRoot : VBox
         return false;
     }
 
+    /// A short plan for one phase must not silently erase a large unfinished
+    /// parent plan. Explicit user-directed replacement remains available.
+    private static string planReplacementError(const ref ChatSession session,
+        string arguments)
+    {
+        if (session.taskSteps.length < 20 ||
+            !hasIncompleteTaskSteps(session)) return "";
+        JSONValue root;
+        try root = parseJSON(arguments);
+        catch (Exception) return "";
+        if (root.type != JSONType.object) return "";
+        if (auto replace = "replace_entire_plan" in root.object)
+            if (replace.type == JSONType.true_) return "";
+        auto plan = "plan" in root.object;
+        if (plan is null || plan.type != JSONType.array ||
+            plan.array.length * 2 >= session.taskSteps.length) return "";
+        return "Error: this update would replace the existing " ~
+            to!string(session.taskSteps.length) ~ "-step plan with " ~
+            to!string(plan.array.length) ~ " steps. update_plan replaces " ~
+            "the whole checklist; it does not create a subplan. Keep the " ~
+            "original steps and update their statuses while working through " ~
+            "temporary substeps in the conversation, or use " ~
+            "update_subplan when the experimental setting is enabled. Use " ~
+            "replace_entire_plan: true only if the user explicitly asked " ~
+            "to discard the original plan.";
+    }
+
     /// Install one reusable checkpoint, leaving a generous recent tail for
     /// subsequent tool rounds. The boundary is a complete message/group; a
     /// provider-native tool envelope never crosses it. Earlier messages stay
@@ -12895,7 +13115,8 @@ public final class OpenCodeRoot : VBox
                     // it must re-apply the selected response style; otherwise
                     // the answer the user reads would ignore verbosity.
                     promptVerbosityDirective(_settings.verbosity) ~
-                    durableTaskPrompt(*session);
+                    durableTaskPrompt(*session,
+                        _settings.experimentalNestedPlans);
             else
             {
                 // Native tools are the main tool set; the legacy shell tool is
@@ -12903,8 +13124,16 @@ public final class OpenCodeRoot : VBox
                 registerContextSystemPromptModules(workspace);
                 systemPrompt.content = buildSystemPrompt(
                     !_settings.legacyTools, workspace, platform,
-                    _settings.verbosity) ~
-                    durableTaskPrompt(*session);
+                    _settings.verbosity);
+                if (_settings.experimentalNestedPlans)
+                    systemPrompt.content ~= "\n# Experimental nested plans\n" ~
+                        "When one existing plan step needs a detailed " ~
+                        "checklist, use update_subplan with its 1-based " ~
+                        "parent_step. This adds one collapsible level without " ~
+                        "replacing the main plan. Keep the parent step " ~
+                        "in_progress until its outcome is complete.\n";
+                systemPrompt.content ~= durableTaskPrompt(*session,
+                    _settings.experimentalNestedPlans);
             }
             messages ~= systemPrompt;
         }
@@ -12912,7 +13141,8 @@ public final class OpenCodeRoot : VBox
         {
             // Tools are off, so this is the only system message; keep the
             // selected response style in it.
-            const taskPrompt = durableTaskPrompt(*session) ~
+            const taskPrompt = durableTaskPrompt(*session,
+                _settings.experimentalNestedPlans) ~
                 promptVerbosityDirective(_settings.verbosity);
             if (taskPrompt.length > 0)
             {
@@ -12927,6 +13157,13 @@ public final class OpenCodeRoot : VBox
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
+        if (!_settings.experimentalNestedPlans)
+        {
+            OpenCodeToolDef[] filtered;
+            foreach (tool; tools)
+                if (tool.name != "update_subplan") filtered ~= tool;
+            tools = filtered;
+        }
         const fixedRequestBytes = requestMessageBytes(messages) +
             requestToolDefinitionBytes(tools);
         const compactionEnabled = contextCompactionForModel(_settings,
@@ -14241,6 +14478,21 @@ public final class OpenCodeRoot : VBox
         planRow.add(planCheck);
         optionsBody.add(planRow);
 
+        // experimental: one level of optional substeps, off by default
+        auto nestedRow = new HBox(8);
+        nestedRow.layoutHints().preferredHeight = 32;
+        auto nestedCheck = new CheckBox("Experimental nested plan steps");
+        nestedCheck.setId("oc-nestedplans");
+        nestedCheck.setChecked(_settings.experimentalNestedPlans, false);
+        nestedCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalNestedPlans = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        nestedRow.add(nestedCheck);
+        optionsBody.add(nestedRow);
+
         // Verbosity: an optional response-style selector for the agent's prose.
         // "Default" keeps the stock prompt; the smaller levels append a short
         // directive that trims preamble, repetition, and explanation. Applied on
@@ -14519,7 +14771,15 @@ public final class OpenCodeRoot : VBox
         registerContextSystemPromptModules(activeWorkspace());
         string prompt = buildSystemPrompt(!_settings.legacyTools,
             activeWorkspace(), platform, _settings.verbosity);
-        if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current]);
+        if (_settings.experimentalNestedPlans)
+            prompt ~= "\n# Experimental nested plans\n" ~
+                "When one existing plan step needs a detailed checklist, " ~
+                "use update_subplan with its 1-based parent_step. This adds " ~
+                "one collapsible level without replacing the main plan. " ~
+                "Keep the parent step in_progress until its outcome is " ~
+                "complete.\n";
+        if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current],
+            _settings.experimentalNestedPlans);
 
         auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 640;
@@ -15379,6 +15639,7 @@ public final class OpenCodeRoot : VBox
         copy.turnStatus = source.turnStatus;
         copy.verificationStatus = source.verificationStatus;
         copy.taskSteps = source.taskSteps;
+        copy.nestedPlans = source.nestedPlans.dup;
         copy.queuedGuidance = source.queuedGuidance;
         copy.queuedFollowUps = source.queuedFollowUps;
         // A copy is new work the reader has not seen yet; it starts read.
@@ -16027,6 +16288,8 @@ public final class OpenCodeRoot : VBox
             }
             root["taskSteps"] = steps;
         }
+        if (session.nestedPlans.length > 0)
+            root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
         if (session.queuedGuidance.length > 0)
         {
             JSONValue guidance = JSONValue(string[].init);
@@ -16315,6 +16578,9 @@ public final class OpenCodeRoot : VBox
                                     if (step.text.length > 0)
                                         session.taskSteps ~= step;
                                 }
+                        if (auto field = "nestedPlans" in sessionValue.object)
+                            session.nestedPlans = nestedPlansFromJson(*field,
+                                session.taskSteps.length);
                         if (auto field = "queuedGuidance" in sessionValue.object)
                             if (field.type == JSONType.array)
                                 foreach (item; field.array)
@@ -16655,7 +16921,10 @@ public final class OpenCodeRoot : VBox
             if (recovered.verificationStatus.length > 0)
                 existing.verificationStatus = recovered.verificationStatus;
             if (recovered.taskSteps.length > 0)
+            {
                 existing.taskSteps = recovered.taskSteps.dup;
+                existing.nestedPlans = recovered.nestedPlans.dup;
+            }
             existing.queuedGuidance = recovered.queuedGuidance.dup;
             existing.queuedFollowUps = recovered.queuedFollowUps.dup;
             foreach (message; recovered.messages)
@@ -19077,6 +19346,26 @@ public final class OpenCodeRoot : VBox
     {
         _settings.detachedPlan = value;
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public void setExperimentalNestedPlansForTesting(bool value)
+    {
+        _settings.experimentalNestedPlans = value;
+        if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public int nestedPlanStepCountForTesting(size_t parentStep) const
+    {
+        if (_current < 0) return 0;
+        foreach (nested; _sessions[_current].nestedPlans)
+            if (nested.parentStep == parentStep)
+                return cast(int) nested.steps.length;
+        return 0;
+    }
+
+    public void toggleNestedPlanForTesting(size_t parentIndex)
+    {
+        toggleNestedPlan(parentIndex);
     }
 
     /// Test-only: whether the detached plan panel is currently shown.

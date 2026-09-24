@@ -162,8 +162,26 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "this again whenever a step's status changes, marking a finished step " ~
         "`completed` and the next one `in_progress`, so the checklist never " ~
         "shows finished work as pending. At most one step may be in_progress " ~
-        "at a time.",
-        `{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The list of steps"}},"required":["plan"]}`
+        "at a time. Each call replaces the entire checklist. Keep the " ~
+        "original checklist when working through one of its steps; put " ~
+        "temporary substeps in the conversation or use update_subplan when " ~
+        "available. Set replace_entire_plan " ~
+        "only when the user explicitly asks to discard the existing plan.",
+        `{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
+    );
+}
+
+/// Experimental: one level of optional detail under an existing plan step.
+private OpenCodeToolDef updateSubplanToolDefinition()
+{
+    return OpenCodeToolDef(
+        "update_subplan",
+        "Create or update temporary substeps under one existing top-level " ~
+        "plan step without replacing the main checklist. parent_step is the " ~
+        "1-based number of that step. The plan array replaces only that " ~
+        "step's substeps. Use this only when the user enabled experimental " ~
+        "nested plans and a real step needs more detail. One level only.",
+        `{"type":"object","properties":{"parent_step":{"type":"integer","minimum":1,"description":"1-based top-level step number"},"explanation":{"type":"string","description":"Optional explanation"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"]}}},"required":["parent_step","plan"]}`
     );
 }
 
@@ -271,6 +289,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        updateSubplanToolDefinition(),
         rebuildToolDefinition(),
         OpenCodeToolDef(
             "read",
@@ -328,6 +347,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        updateSubplanToolDefinition(),
         rebuildToolDefinition(),
         OpenCodeToolDef(
             "read",
@@ -3167,6 +3187,27 @@ private string comparableSearchPath(string path)
     return result;
 }
 
+private ToolExecution runUpdateSubplan(string args, string workspace)
+{
+    JSONValue root;
+    try root = parseJSON(args);
+    catch (Exception) root = JSONValue.init;
+    if (root.type != JSONType.object)
+        return ToolExecution("update_subplan",
+            "Error: update_subplan requires parent_step and plan.", true);
+    auto parent = "parent_step" in root.object;
+    if (parent is null || parent.type != JSONType.integer ||
+        parent.integer < 1)
+        return ToolExecution("update_subplan",
+            "Error: parent_step must be a 1-based step number.", true);
+    auto result = runUpdatePlan(args, workspace);
+    result.name = "update_subplan";
+    if (!result.failed)
+        result.output = "Subplan for step " ~ to!string(parent.integer) ~
+            ":\n" ~ result.output;
+    return result;
+}
+
 /// Reject the especially dangerous case where a tool expands a project search
 /// to one of its parent directories (for example, from one repository to the
 /// directory containing every repository). Explicit sibling repositories and
@@ -3680,6 +3721,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runApplyPatch(call.arguments, workspace);
         case "update_plan":
             return runUpdatePlan(call.arguments, workspace);
+        case "update_subplan":
+            return runUpdateSubplan(call.arguments, workspace);
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":

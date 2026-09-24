@@ -4941,6 +4941,86 @@ int main(string[] args)
         writeln("Detached plan panel shows by default and returns inline when off");
     }
 
+    // Experimental substeps keep the parent checklist intact and can be
+    // collapsed or hidden without losing their durable state.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["Build two outcomes", "I will work through the first."]);
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"First outcome","status":"in_progress"},` ~
+            `{"step":"Second outcome","status":"pending"}]}`);
+        root.setExperimentalNestedPlansForTesting(false);
+        root.rebuildForTesting();
+        assert(driver.paint(), "baseline plan did not paint");
+        const simpleHeight = root.detachedPlanRectForTesting().height;
+        root.setExperimentalNestedPlansForTesting(true);
+        root.injectToolResultForTesting("update_subplan", "Subplan updated",
+            false, `{"parent_step":1,"plan":[` ~
+            `{"step":"Inspect","status":"completed"},` ~
+            `{"step":"Implement","status":"in_progress"},` ~
+            `{"step":"Review","status":"pending"}]}`);
+        assert(root.taskStepCountForTesting() == 2 &&
+            root.nestedPlanStepCountForTesting(1) == 3,
+            "substeps replaced the main checklist");
+        assert(driver.paint(), "expanded substeps did not paint");
+        const expandedHeight = root.detachedPlanRectForTesting().height;
+        assert(expandedHeight > simpleHeight,
+            "substeps did not expand the plan panel");
+        root.toggleNestedPlanForTesting(0);
+        assert(driver.paint(), "collapsed substeps did not paint");
+        assert(root.detachedPlanRectForTesting().height == simpleHeight,
+            "collapsed substeps still occupied panel height");
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.nestedPlanStepCountForTesting(1) == 3,
+            "substeps did not survive a session reload");
+        assert(driver.paint() &&
+            root.detachedPlanRectForTesting().height == simpleHeight,
+            "collapsed substeps reopened after a session reload");
+        root.setExperimentalNestedPlansForTesting(false);
+        assert(driver.paint(), "opted-out plan did not paint");
+        assert(root.detachedPlanRectForTesting().height == simpleHeight &&
+            root.taskStepCountForTesting() == 2,
+            "turning off experimental substeps changed the main plan");
+        writeln("Experimental substeps preserve the collapsible main plan");
+    }
+
+    // A working subplan must not silently replace a long parent checklist.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["Carry out the long plan", "Starting the first part."]);
+        string longPlan = `{"plan":[`;
+        foreach (i; 0 .. 50)
+        {
+            if (i > 0) longPlan ~= ",";
+            longPlan ~= `{"step":"Phase ` ~ to!string(i + 1) ~
+                `","status":"pending"}`;
+        }
+        longPlan ~= "]}";
+        root.applyPlanForTesting(longPlan);
+        string shortPlan = `{"plan":[`;
+        foreach (i; 0 .. 9)
+        {
+            if (i > 0) shortPlan ~= ",";
+            shortPlan ~= `{"step":"Substep ` ~ to!string(i + 1) ~
+                `","status":"pending"}`;
+        }
+        shortPlan ~= "]}";
+        root.injectToolResultForTesting("update_plan", "Plan updated", false,
+            shortPlan);
+        assert(root.taskStepCountForTesting() == 50 &&
+            root.lastToolResultForTesting().indexOf(
+                "replace the existing 50-step plan") >= 0,
+            "a nine-step subplan erased the fifty-step plan");
+        root.injectToolResultForTesting("update_plan", "Plan updated", false,
+            `{"replace_entire_plan":true,` ~ shortPlan[1 .. $]);
+        assert(root.taskStepCountForTesting() == 9,
+            "explicit full-plan replacement was blocked");
+        writeln("Long plans resist accidental subplan replacement");
+    }
+
     // The UI now publishes backend-neutral thread/item lifecycle records to an
     // append-only journal. This is the compatibility seam for future Codex and
     // provider-neutral runtimes, and must survive independently of sessions.json.

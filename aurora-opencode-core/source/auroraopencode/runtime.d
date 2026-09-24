@@ -17,7 +17,7 @@ import std.path : dirName;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
-    ChatImageAttachment, TaskStep, ensureMessageGraph;
+    ChatImageAttachment, TaskStep, ensureMessageGraph, nestedPlansFromJson;
 
 public enum AgentEventKind
 {
@@ -563,6 +563,9 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
             }
             session.taskSteps = steps;
         }
+    if (auto f = "nestedPlans" in payload.object)
+        session.nestedPlans = nestedPlansFromJson(*f,
+            session.taskSteps.length);
     if (auto f = "queuedGuidance" in payload.object)
         if (f.type == JSONType.array)
         {

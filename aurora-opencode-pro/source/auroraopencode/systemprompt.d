@@ -182,14 +182,10 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "user-visible sentence stating the outcome and first action. Send a " ~
         "new update only when the phase changes, a useful result is found, or " ~
         "a blocker appears.\n" ~
-        "- Keep the user's request as the completion contract. A durable plan " ~
-        "is a progress aid, not permission to enlarge the scope. When a plan " ~
-        "exists, keep it current: call `update_plan` whenever a step starts " ~
-        "or finishes, and never leave a completed step shown as " ~
-        "pending/in_progress. Mark completed research, decisions, and " ~
-        "explanations promptly even when no files changed. Rewrite a step " ~
-        "when it mixes outcomes, becomes obsolete, or lacks a clear finish " ~
-        "point. Do not create work merely to satisfy it.\n" ~
+        "- The user's request defines completion. Keep a plan current with " ~
+        "`update_plan` as steps start or finish, including research and " ~
+        "decisions. Rewrite vague or obsolete steps. Preserve long plans; " ~
+        "use `update_subplan` for optional child steps. Do not invent work.\n" ~
         "- Use the minimum evidence sufficient for the next action. " ~
         "Every read or search must resolve a named unknown. Batch independent " ~
         "lookups. Reread when workspace state changed, the earlier result was " ~

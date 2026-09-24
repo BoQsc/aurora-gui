@@ -1008,6 +1008,19 @@ int main()
             dir);
         assert(bad.failed, "update_plan must reject two in_progress steps");
         writeln("update_plan renders steps and enforces one in-progress step");
+
+        auto subplan = executeTool(makeCall("update_subplan",
+            `{"parent_step":1,"plan":[{"step":"inspect","status":"completed"},` ~
+            `{"step":"change","status":"in_progress"}]}`), dir);
+        assert(!subplan.failed && subplan.output.indexOf(
+            "Subplan for step 1") >= 0,
+            "update_subplan did not validate and render child steps");
+        auto invalidParent = executeTool(makeCall("update_subplan",
+            `{"parent_step":0,"plan":[{"step":"inspect","status":"pending"}]}`),
+            dir);
+        assert(invalidParent.failed,
+            "update_subplan accepted a non-existent parent index");
+        writeln("update_subplan validates one-level child checklists");
     }
 
     // unknown tools report a clear error rather than crashing

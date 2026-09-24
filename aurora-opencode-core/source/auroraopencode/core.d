@@ -631,6 +631,70 @@ public struct TaskStep
     string status; // "pending" | "in_progress" | "completed"
 }
 
+/// Experimental one-level detail for a single top-level checklist step.
+public struct NestedPlan
+{
+    size_t parentStep; // 1-based index in taskSteps
+    TaskStep[] steps;
+    bool expanded = true;
+}
+
+/// Optional nested-plan data is kept separate from the stable top-level steps.
+public JSONValue nestedPlansToJson(const(NestedPlan)[] plans)
+{
+    JSONValue result = JSONValue(string[].init);
+    foreach (plan; plans)
+    {
+        JSONValue item;
+        item["parentStep"] = cast(long) plan.parentStep;
+        item["expanded"] = plan.expanded;
+        JSONValue steps = JSONValue(string[].init);
+        foreach (step; plan.steps)
+        {
+            JSONValue value;
+            value["text"] = step.text;
+            value["status"] = step.status;
+            steps.array ~= value;
+        }
+        item["steps"] = steps;
+        result.array ~= item;
+    }
+    return result;
+}
+
+public NestedPlan[] nestedPlansFromJson(JSONValue value, size_t parentCount)
+{
+    NestedPlan[] plans;
+    if (value.type != JSONType.array) return plans;
+    foreach (item; value.array)
+    {
+        if (item.type != JSONType.object) continue;
+        auto parent = "parentStep" in item.object;
+        auto children = "steps" in item.object;
+        if (parent is null || parent.type != JSONType.integer ||
+            parent.integer < 1 || parent.integer > parentCount ||
+            children is null || children.type != JSONType.array) continue;
+        NestedPlan plan;
+        plan.parentStep = cast(size_t) parent.integer;
+        if (auto expanded = "expanded" in item.object)
+            if (expanded.type == JSONType.false_) plan.expanded = false;
+        foreach (child; children.array)
+        {
+            if (child.type != JSONType.object) continue;
+            TaskStep step;
+            if (auto text = "text" in child.object)
+                if (text.type == JSONType.string) step.text = text.str;
+            if (auto status = "status" in child.object)
+                if (status.type == JSONType.string) step.status = status.str;
+            if (step.text.length > 0 && (step.status == "pending" ||
+                step.status == "in_progress" || step.status == "completed"))
+                plan.steps ~= step;
+        }
+        if (plan.steps.length > 0) plans ~= plan;
+    }
+    return plans;
+}
+
 public struct ChatSession
 {
     // Stable runtime identity. Messages have always had graph ids, but an
@@ -655,6 +719,7 @@ public struct ChatSession
     // silently missed.
     bool unread;
     TaskStep[] taskSteps;
+    NestedPlan[] nestedPlans;
     string verificationStatus; // "not_required" | "required" | "passed" | "failed"
     // Guidance entered with Enter while a turn is running steers it at the
     // next safe tool boundary. Keeping it here makes steering survive a crash.
@@ -901,6 +966,7 @@ public struct Settings
     // Show the durable plan as a floating panel in the transcript's top-right
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
+    bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
     // Optional request targets scoped to the exact endpoint and model.
     ModelContextBudget[] contextBudgets;
     // Automatic request compaction is opt-in for each endpoint and model.
@@ -1202,6 +1268,10 @@ public Settings loadSettings()
                 if (auto found = "detachedPlan" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.detachedPlan = found.type == JSONType.true_;
+                if (auto found = "experimentalNestedPlans" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalNestedPlans =
+                            found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1439,6 +1509,7 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["detachedPlan"] = settings.detachedPlan;
+    root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {
