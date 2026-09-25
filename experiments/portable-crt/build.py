@@ -19,18 +19,24 @@ def msvc_environment():
         "Microsoft Visual Studio/Installer/vswhere.exe"
     )
     installation = subprocess.check_output(
-        [str(vswhere), "-latest", "-products", "*", "-property", "installationPath"],
+        [str(vswhere), "-latest", "-products", "*", "-requires",
+         "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+         "-property", "installationPath"],
         text=True,
     ).strip()
     if not installation:
         raise RuntimeError("Visual Studio C++ compiler was not found")
     vcvars = Path(installation) / "VC/Auxiliary/Build/vcvars64.bat"
     result = subprocess.run(
-        ["cmd", "/d", "/s", "/c", f'call "{vcvars}" >nul && set'],
+        ["cmd", "/d", "/s", "/c", f'call "{vcvars}" && set'],
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode:
+        raise RuntimeError(
+            f"Could not initialize the Visual C++ environment ({result.returncode}):\n"
+            f"{result.stdout[-4000:]}\n{result.stderr[-4000:]}"
+        )
     environment = os.environ.copy()
     for line in result.stdout.splitlines():
         name, separator, value = line.partition("=")
