@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: BSL-1.0
-// Copyright (c) 2026 Aurora OpenCode contributors
+// SPDX-License-Identifier: 0BSD
 // Windows PE startup and TLS directory for DMD's Microsoft ABI objects.
 
 #include <windows.h>
