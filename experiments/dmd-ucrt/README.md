@@ -1,8 +1,8 @@
-# Portable DMD / Windows UCRT build probe
+# Experimental DMD / Windows UCRT build probe
 
-This is an isolated build path for Aurora's Windows EXE. It uses DMD's
+This is a research-only, isolated build path for Aurora's Windows EXE. It is
+not part of Aurora's normal build, updater, or release process. It uses DMD's
 dynamic UCRT fallback and leaves the live `aurora-opencode-pro` EXE alone.
-The old `experiments/portablecrt` implementation is not part of this build.
 
 ## Build
 
@@ -14,7 +14,7 @@ The old `experiments/portablecrt` implementation is not part of this build.
 2. From the repository root, run:
 
    ```text
-   python scripts/probe-dmd-ucrt.py --compiler C:/path/to/dmd2/windows/bin64/dmd.exe
+   python experiments/dmd-ucrt/probe-dmd-ucrt.py --compiler C:/path/to/dmd2/windows/bin64/dmd.exe
    ```
 
 The script uses `dub.exe` beside that compiler and builds from the current

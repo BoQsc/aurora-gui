@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", type=Path, required=True)
 args = parser.parse_args()
 
-repository = Path(__file__).resolve().parent.parent
+repository = Path(__file__).resolve().parent.parent.parent
 compiler = args.compiler.resolve()
 dub = compiler.with_name("dub.exe")
 if not compiler.is_file() or not dub.is_file():
@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix="aurora-ucrt-build-") as temporary:
     output = Path(temporary)
     memory_imports = output / "ucrt-memory-imports.lib"
     subprocess.run(
-        [sys.executable, str(repository / "scripts" /
+        [sys.executable, str(Path(__file__).resolve().parent /
                              "generate-ucrt-memory-imports.py"),
          "--out", str(memory_imports)],
         check=True,
