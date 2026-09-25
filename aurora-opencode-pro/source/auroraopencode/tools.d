@@ -7,11 +7,12 @@ import auroraopencode.attachments : attachmentImageForData,
 // experimental: websearch - delete with source/auroraopencode/websearch.d
 import auroraopencode.websearch : experimentalWebSearchExecute,
     experimentalWebSearchTools;
-import std.file : dirEntries, exists, isFile, isDir, SpanMode, read, readText,
-    write, mkdirRecurse, remove, rmdirRecurse, tempDir, getSize,
+import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
+    readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
+    rmdir, rmdirRecurse, tempDir, getSize,
     timeLastModified;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : baseName, buildNormalizedPath, buildPath, expandTilde,
+import std.path : baseName, buildNormalizedPath, buildPath, dirName, expandTilde,
     extension, isAbsolute;
 import std.process : Pid, Pipe, pipe, waitTimeout, kill, wait, spawnProcess,
     Config;
@@ -42,7 +43,8 @@ import core.thread : Thread;
 // mirror the opencode app's tool registry so models behave the same here.
 //
 // Cross-platform strategy (mirrors the original opencode app): file and
-// content tools (read/write/glob/grep) are implemented natively in D, so they
+// content tools (read/write/copy/move/rename/create_folder/glob/grep) are
+// implemented natively in D, so they
 // never touch a shell and behave identically everywhere. The single shell tool
 // ("bash") is shell-aware per platform: on Windows it runs through cmd.exe or
 // PowerShell and its description tells the model which shell syntax to use; on
@@ -171,6 +173,57 @@ private OpenCodeToolDef updatePlanToolDefinition()
     );
 }
 
+/// The D-native `move` tool, shared by both tool sets. One operation handles
+/// files, directory trees and batches without transferring bytes through the
+/// model or relying on shell-specific quoting.
+private OpenCodeToolDef moveToolDefinition()
+{
+    return OpenCodeToolDef(
+        "move",
+        "Move files and directories into an existing destination folder " ~
+        "without using a shell. Provide `source` for one item or `sources` " ~
+        "for a batch. Item names stay unchanged; use `rename` when a name " ~
+        "must change. Existing targets are never overwritten.",
+        `{"type":"object","properties":{"source":{"type":"string","description":"One file or directory to move, relative to the workspace or absolute"},"sources":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Files and/or directories to move as one batch"},"destinationFolder":{"type":"string","description":"Existing folder that will receive the items"}},"required":["destinationFolder"]}`
+    );
+}
+
+/// The D-native `copy` tool mirrors move's one-or-many shape while preserving
+/// every source. Directory copies recurse in-process instead of invoking a
+/// platform shell or sending file contents through the model.
+private OpenCodeToolDef copyToolDefinition()
+{
+    return OpenCodeToolDef(
+        "copy",
+        "Copy files and directories into an existing destination folder " ~
+        "without using a shell. Provide `source` for one item or `sources` " ~
+        "for a batch. Directory trees are copied recursively and item names " ~
+        "stay unchanged. Existing targets are never overwritten.",
+        `{"type":"object","properties":{"source":{"type":"string","description":"One file or directory to copy, relative to the workspace or absolute"},"sources":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Files and/or directories to copy as one batch"},"destinationFolder":{"type":"string","description":"Existing folder that will receive the copies"}},"required":["destinationFolder"]}`
+    );
+}
+
+private OpenCodeToolDef renameToolDefinition()
+{
+    return OpenCodeToolDef(
+        "rename",
+        "Rename one file or folder without moving it to another folder. " ~
+        "`newName` is a name only, not a path, and the destination must not " ~
+        "already exist.",
+        `{"type":"object","properties":{"path":{"type":"string","description":"File or folder to rename, relative to the workspace or absolute"},"newName":{"type":"string","description":"New name in the same parent folder; must not contain path separators"}},"required":["path","newName"]}`
+    );
+}
+
+private OpenCodeToolDef createFolderToolDefinition()
+{
+    return OpenCodeToolDef(
+        "create_folder",
+        "Create a new folder, including any missing parent folders. The final " ~
+        "folder must not already exist. Use `write` to create files.",
+        `{"type":"object","properties":{"path":{"type":"string","description":"Folder path to create, relative to the workspace or absolute"}},"required":["path"]}`
+    );
+}
+
 /// Experimental: one level of optional detail under an existing plan step.
 private OpenCodeToolDef updateSubplanToolDefinition()
 {
@@ -285,6 +338,10 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
+        copyToolDefinition(),
+        moveToolDefinition(),
+        renameToolDefinition(),
+        createFolderToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -343,6 +400,10 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
+        copyToolDefinition(),
+        moveToolDefinition(),
+        renameToolDefinition(),
+        createFolderToolDefinition(),
         removeToolDefinition(),
         editToolDefinition(),
         applyPatchToolDefinition(),
@@ -419,7 +480,7 @@ public struct ToolExecution
     string name;
     string output;
     bool failed;
-    // Diff metadata for file-mutating tools (edit/write/remove). The UI renders
+    // Change metadata for file-mutating tools. The UI renders
     // `additions`/`deletions` as the green/red `+N -M` counters and `diff` as
     // the expandable line-numbered diff body. Empty/zero for other tools.
     int additions;
@@ -662,9 +723,11 @@ private ulong stablePathHash(string value)
     return hash;
 }
 
-private string snapshotHash(bool existsValue, const(ubyte)[] bytes)
+private string snapshotHash(bool existsValue, bool directory,
+    const(ubyte)[] bytes)
 {
     if (!existsValue) return "missing";
+    if (directory) return "directory";
     return to!string(stablePathHash(cast(string) bytes)) ~ ":" ~
         to!string(bytes.length);
 }
@@ -694,8 +757,9 @@ private FileSnapshot snapshotFile(string path)
 {
     FileSnapshot result;
     result.path = buildNormalizedPath(path);
-    result.exists = exists(result.path) && isFile(result.path);
-    if (result.exists)
+    result.exists = exists(result.path);
+    result.directory = result.exists && isDir(result.path);
+    if (result.exists && !result.directory && isFile(result.path))
         result.bytes = cast(ubyte[]) read(result.path);
     return result;
 }
@@ -714,12 +778,277 @@ private FileSnapshot[] snapshotTargets(const string[] targets)
         const path = buildNormalizedPath(candidate);
         if (exists(path) && isDir(path))
         {
+            if (!seen(path)) result ~= snapshotFile(path);
             foreach (entry; dirEntries(path, SpanMode.depth))
-                if (entry.isFile && !seen(buildNormalizedPath(entry.name)))
+                if ((entry.isFile || entry.isDir) &&
+                    !seen(buildNormalizedPath(entry.name)))
                     result ~= snapshotFile(entry.name);
         }
         else if (!seen(path))
             result ~= snapshotFile(path);
+    }
+    return result;
+}
+
+private struct TransferPaths
+{
+    string[] sources;
+    string[] targets;
+    string error;
+}
+
+private string comparablePath(string path)
+{
+    auto result = buildNormalizedPath(path).replace("\\", "/");
+    version (Windows) result = result.toLower();
+    return result;
+}
+
+private bool pathIsInside(string child, string parent)
+{
+    const childKey = comparablePath(child);
+    const parentKey = comparablePath(parent);
+    return childKey.length > parentKey.length &&
+        childKey.startsWith(parentKey) && childKey[parentKey.length] == '/';
+}
+
+/// Parse and fully resolve a copy/move request. Keeping target calculation in one
+/// place makes execution and the before/after safety journal agree exactly.
+private TransferPaths resolveTransferPaths(string args, string workspace,
+    string operation)
+{
+    TransferPaths result;
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception)
+    {
+        result.error = operation ~ " requires a JSON object.";
+        return result;
+    }
+    if (value.type != JSONType.object)
+    {
+        result.error = operation ~ " requires a JSON object.";
+        return result;
+    }
+
+    void addSource(string raw)
+    {
+        const path = resolveToolPath(raw, workspace);
+        if (path.length == 0) return;
+        const key = comparablePath(path);
+        foreach (existing; result.sources)
+            if (comparablePath(existing) == key)
+            {
+                result.error = "the same source was provided more than once: " ~
+                    path;
+                return;
+            }
+        result.sources ~= path;
+    }
+
+    if (auto field = "source" in value.object)
+        if (field.type == JSONType.string) addSource(field.str);
+    if (auto field = "sources" in value.object)
+    {
+        if (field.type != JSONType.array)
+            result.error = "`sources` must be an array of paths.";
+        else foreach (entry; field.array)
+        {
+            if (entry.type != JSONType.string)
+            {
+                result.error = "every `sources` entry must be a path string.";
+                break;
+            }
+            addSource(entry.str);
+            if (result.error.length > 0) break;
+        }
+    }
+    if (result.error.length > 0) return result;
+    if (result.sources.length == 0)
+    {
+        result.error = operation ~
+            " requires `source` or a non-empty `sources` array.";
+        return result;
+    }
+
+    string destinationArg;
+    if (auto field = "destinationFolder" in value.object)
+        if (field.type == JSONType.string) destinationArg = field.str;
+    if (destinationArg.strip().length == 0)
+    {
+        result.error = operation ~ " requires a `destinationFolder` path.";
+        return result;
+    }
+    const destination = resolveToolPath(destinationArg, workspace);
+    if (!exists(destination) || !isDir(destination))
+    {
+        result.error = "destination folder does not exist: " ~ destination;
+        return result;
+    }
+
+    foreach (source; result.sources)
+    {
+        if (!exists(source))
+        {
+            result.error = "source not found: " ~ source;
+            return result;
+        }
+        if (!isFile(source) && !isDir(source))
+        {
+            result.error = "source is not a file or directory: " ~ source;
+            return result;
+        }
+        const target = buildNormalizedPath(buildPath(destination,
+            baseName(source)));
+        if (comparablePath(source) == comparablePath(target))
+        {
+            result.error = "source and destination are the same path: " ~ source;
+            return result;
+        }
+        if (isDir(source) && pathIsInside(target, source))
+        {
+            result.error = "cannot " ~ operation ~
+                " a directory inside itself: " ~ source ~
+                " -> " ~ target;
+            return result;
+        }
+        if (exists(target))
+        {
+            result.error = "destination already exists; nothing was " ~
+                "overwritten: " ~ target;
+            return result;
+        }
+        foreach (otherTarget; result.targets)
+            if (comparablePath(otherTarget) == comparablePath(target))
+            {
+                result.error = "multiple sources resolve to the same " ~
+                    "destination: " ~ target;
+                return result;
+            }
+        result.targets ~= target;
+    }
+
+    foreach (index, source; result.sources)
+        foreach (otherIndex, other; result.sources)
+            if (index != otherIndex && pathIsInside(source, other))
+            {
+                result.error = "a " ~ operation ~
+                    " batch cannot contain both a directory " ~
+                    "and an item inside it: " ~ other ~ " and " ~ source;
+                return result;
+            }
+    return result;
+}
+
+private struct RenamePaths
+{
+    string source;
+    string target;
+    string error;
+}
+
+private RenamePaths resolveRenamePaths(string args, string workspace)
+{
+    RenamePaths result;
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception)
+    {
+        result.error = "rename requires a JSON object.";
+        return result;
+    }
+    if (value.type != JSONType.object)
+    {
+        result.error = "rename requires a JSON object.";
+        return result;
+    }
+    string pathArg;
+    string newName;
+    if (auto field = "path" in value.object)
+        if (field.type == JSONType.string) pathArg = field.str;
+    if (auto field = "newName" in value.object)
+        if (field.type == JSONType.string) newName = field.str.strip();
+    if (pathArg.strip().length == 0 || newName.length == 0)
+    {
+        result.error = "rename requires `path` and `newName`.";
+        return result;
+    }
+    if (newName == "." || newName == ".." || newName.indexOf('/') >= 0 ||
+        newName.indexOf('\\') >= 0)
+    {
+        result.error = "`newName` must be a name only, without path separators.";
+        return result;
+    }
+    result.source = resolveToolPath(pathArg, workspace);
+    if (!exists(result.source) || (!isFile(result.source) && !isDir(result.source)))
+    {
+        result.error = "source not found: " ~ result.source;
+        return result;
+    }
+    result.target = buildNormalizedPath(buildPath(dirName(result.source),
+        newName));
+    if (comparablePath(result.source) == comparablePath(result.target))
+    {
+        result.error = "the new name is unchanged: " ~ newName;
+        return result;
+    }
+    if (exists(result.target))
+    {
+        result.error = "destination already exists; nothing was overwritten: " ~
+            result.target;
+        return result;
+    }
+    return result;
+}
+
+private string[] resolveCreateFolderPaths(string args, string workspace,
+    out string error)
+{
+    string[] result;
+    JSONValue value;
+    try value = parseJSON(args);
+    catch (Exception)
+    {
+        error = "create_folder requires a JSON object.";
+        return result;
+    }
+    string pathArg;
+    if (value.type == JSONType.object)
+        if (auto field = "path" in value.object)
+            if (field.type == JSONType.string) pathArg = field.str;
+    if (pathArg.strip().length == 0)
+    {
+        error = "create_folder requires a `path`.";
+        return result;
+    }
+    auto cursor = resolveToolPath(pathArg, workspace);
+    if (exists(cursor))
+    {
+        error = "folder already exists: " ~ cursor;
+        return result;
+    }
+    while (!exists(cursor))
+    {
+        result ~= cursor;
+        const parent = dirName(cursor);
+        if (parent.length == 0 || comparablePath(parent) == comparablePath(cursor))
+        {
+            error = "could not find an existing parent folder for: " ~ cursor;
+            return null;
+        }
+        cursor = parent;
+    }
+    if (!isDir(cursor))
+    {
+        error = "a parent path is not a folder: " ~ cursor;
+        return null;
+    }
+    for (size_t left = 0, right = result.length; left < right / 2; ++left)
+    {
+        const other = result.length - 1 - left;
+        auto swap = result[left];
+        result[left] = result[other];
+        result[other] = swap;
     }
     return result;
 }
@@ -743,6 +1072,32 @@ private string[] mutationTargetPaths(const OpenCodeToolCall call,
     {
         if (auto field = "filePath" in value.object)
             if (field.type == JSONType.string) add(field.str);
+    }
+    else if (call.name == "move" || call.name == "copy")
+    {
+        const transfer = resolveTransferPaths(call.arguments, workspace,
+            call.name);
+        if (transfer.error.length == 0)
+        {
+            if (call.name == "move")
+                foreach (path; transfer.sources) add(path);
+            foreach (path; transfer.targets) add(path);
+        }
+    }
+    else if (call.name == "rename")
+    {
+        const paths = resolveRenamePaths(call.arguments, workspace);
+        if (paths.error.length == 0)
+        {
+            add(paths.source);
+            add(paths.target);
+        }
+    }
+    else if (call.name == "create_folder")
+    {
+        string error;
+        foreach (path; resolveCreateFolderPaths(call.arguments, workspace,
+            error)) add(path);
     }
     else if (call.name == "remove")
     {
@@ -792,6 +1147,8 @@ private JSONValue changeRecordToJson(const ref ChangeRecord record)
     root["timestamp"] = record.timestamp;
     root["beforeExists"] = record.beforeExists;
     root["afterExists"] = record.afterExists;
+    root["beforeDirectory"] = record.beforeDirectory;
+    root["afterDirectory"] = record.afterDirectory;
     root["beforeHash"] = record.beforeHash;
     root["afterHash"] = record.afterHash;
     root["beforeBlob"] = record.beforeBlob;
@@ -841,6 +1198,8 @@ private ChangeRecord changeRecordFromJson(ref const JSONValue root)
     record.timestamp = jsonString(root, "timestamp");
     record.beforeExists = jsonBool(root, "beforeExists");
     record.afterExists = jsonBool(root, "afterExists");
+    record.beforeDirectory = jsonBool(root, "beforeDirectory");
+    record.afterDirectory = jsonBool(root, "afterDirectory");
     record.beforeHash = jsonString(root, "beforeHash");
     record.afterHash = jsonString(root, "afterHash");
     record.beforeBlob = jsonString(root, "beforeBlob");
@@ -900,13 +1259,13 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
     foreach (item; before)
     {
         oldByPath[item.path] = FileSnapshot(item.path, item.exists,
-            item.bytes.dup);
+            item.directory, item.bytes.dup);
         if (!paths.canFind(item.path)) paths ~= item.path;
     }
     foreach (item; after)
     {
         newByPath[item.path] = FileSnapshot(item.path, item.exists,
-            item.bytes.dup);
+            item.directory, item.bytes.dup);
         if (!paths.canFind(item.path)) paths ~= item.path;
     }
     synchronized (_changeJournalMutex)
@@ -914,10 +1273,11 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
         foreach (index, path; paths)
         {
             auto oldState = path in oldByPath ? oldByPath[path] :
-                FileSnapshot(path, false, null);
+                FileSnapshot(path, false, false, null);
             auto newState = path in newByPath ? newByPath[path] :
-                FileSnapshot(path, false, null);
+                FileSnapshot(path, false, false, null);
             if (oldState.exists == newState.exists &&
+                oldState.directory == newState.directory &&
                 oldState.bytes == newState.bytes) continue;
             const id = to!string(Clock.currTime.stdTime) ~ "-" ~
                 to!string(++_changeSequence);
@@ -936,19 +1296,24 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
             record.timestamp = Clock.currTime.toLocalTime.toISOExtString();
             record.beforeExists = oldState.exists;
             record.afterExists = newState.exists;
-            record.beforeHash = snapshotHash(oldState.exists, oldState.bytes);
-            record.afterHash = snapshotHash(newState.exists, newState.bytes);
-            if (oldState.exists)
+            record.beforeDirectory = oldState.directory;
+            record.afterDirectory = newState.directory;
+            record.beforeHash = snapshotHash(oldState.exists,
+                oldState.directory, oldState.bytes);
+            record.afterHash = snapshotHash(newState.exists,
+                newState.directory, newState.bytes);
+            if (oldState.exists && !oldState.directory)
             {
                 record.beforeBlob = buildPath(root, "blobs", id ~ ".before");
                 writeSnapshotBlob(record.beforeBlob, oldState.bytes);
             }
-            if (newState.exists)
+            if (newState.exists && !newState.directory)
             {
                 record.afterBlob = buildPath(root, "blobs", id ~ ".after");
                 writeSnapshotBlob(record.afterBlob, newState.bytes);
             }
-            if (snapshotIsText(oldState.bytes) &&
+            if (!oldState.directory && !newState.directory &&
+                snapshotIsText(oldState.bytes) &&
                 snapshotIsText(newState.bytes))
             {
                 auto diff = computeTextDiff(cast(string) oldState.bytes,
@@ -1457,9 +1822,9 @@ public struct ChangeContext
     string turnId;
 }
 
-/// One file in Aurora's append-only mutation journal. Before/after contents are
-/// stored as private blobs outside the workspace; hashes make the table useful
-/// without loading those blobs and exact after bytes guard every revert.
+/// One filesystem path in Aurora's append-only mutation journal. File contents
+/// are stored as private blobs; directory presence is recorded explicitly so
+/// empty-folder changes can also be reverted safely.
 public struct ChangeRecord
 {
     string id;
@@ -1474,6 +1839,8 @@ public struct ChangeRecord
     string timestamp;
     bool beforeExists;
     bool afterExists;
+    bool beforeDirectory;
+    bool afterDirectory;
     string beforeHash;
     string afterHash;
     string beforeBlob;
@@ -1495,6 +1862,7 @@ private struct FileSnapshot
 {
     string path;
     bool exists;
+    bool directory;
     ubyte[] bytes;
 }
 
@@ -2642,6 +3010,16 @@ private ToolExecution runApplyPatch(string args, string workspace)
     if (lines.length > 0 && lines[$ - 1].length == 0)
         lines = lines[0 .. $ - 1];
 
+    // `*** Move to:` is part of another patch dialect. This parser used to
+    // treat it only as a section boundary, then report success after rewriting
+    // the original file unchanged. Never fake that move: the dedicated tool
+    // handles files, trees and batches with collision checks and journaling.
+    foreach (line; lines)
+        if (strip(line).startsWith("*** Move to:"))
+            return ToolExecution("apply_patch",
+                "Error: apply_patch does not move paths. Use the `move` tool " ~
+                "with `source` and `destinationFolder` instead.", true);
+
     // Locate the envelope; be lenient if the model omitted the markers.
     size_t bodyStart = 0;
     size_t bodyEnd = lines.length;
@@ -2957,6 +3335,182 @@ private ToolExecution runUpdatePlan(string args, string workspace)
     result.name = "update_plan";
     result.output = builder.data;
     return result;
+}
+
+/// The D-native `move` tool: rename one file/directory or move a batch into an
+/// existing directory. All collisions are rejected before the first rename.
+private ToolExecution runMove(string args, string workspace)
+{
+    const paths = resolveTransferPaths(args, workspace, "move");
+    if (paths.error.length > 0)
+        return ToolExecution("move", "Error: " ~ paths.error, true);
+
+    string[] movedSources;
+    string[] movedTargets;
+    try
+    {
+        foreach (index, source; paths.sources)
+        {
+            rename(source, paths.targets[index]);
+            movedSources ~= source;
+            movedTargets ~= paths.targets[index];
+        }
+    }
+    catch (Exception error)
+    {
+        string[] rollbackFailures;
+        for (size_t index = movedSources.length; index > 0; --index)
+        {
+            const source = movedSources[index - 1];
+            const target = movedTargets[index - 1];
+            try
+            {
+                if (exists(target) && !exists(source)) rename(target, source);
+            }
+            catch (Exception rollbackError)
+                rollbackFailures ~= target ~ ": " ~ rollbackError.msg;
+        }
+        auto message = "Error: move failed: " ~ error.msg;
+        if (rollbackFailures.length == 0 && movedSources.length > 0)
+            message ~= " Earlier items in the batch were restored.";
+        else if (rollbackFailures.length > 0)
+        {
+            message ~= " Rollback also failed:";
+            foreach (failure; rollbackFailures) message ~= "\n- " ~ failure;
+        }
+        return ToolExecution("move", message, true);
+    }
+
+    auto builder = appender!string();
+    builder.put("Moved " ~ to!string(paths.sources.length) ~
+        (paths.sources.length == 1 ? " item:" : " items:"));
+    foreach (index, source; paths.sources)
+        builder.put("\n- " ~ source ~ " -> " ~ paths.targets[index]);
+    return ToolExecution("move", builder.data, false);
+}
+
+private ToolExecution runRename(string args, string workspace)
+{
+    const paths = resolveRenamePaths(args, workspace);
+    if (paths.error.length > 0)
+        return ToolExecution("rename", "Error: " ~ paths.error, true);
+    try rename(paths.source, paths.target);
+    catch (Exception error)
+        return ToolExecution("rename", "Error: rename failed: " ~ error.msg,
+            true);
+    return ToolExecution("rename", "Renamed:\n- " ~ paths.source ~ " -> " ~
+        paths.target, false);
+}
+
+private ToolExecution runCreateFolder(string args, string workspace)
+{
+    string validationError;
+    const paths = resolveCreateFolderPaths(args, workspace, validationError);
+    if (validationError.length > 0)
+        return ToolExecution("create_folder", "Error: " ~ validationError,
+            true);
+    try mkdirRecurse(paths[$ - 1]);
+    catch (Exception error)
+    {
+        string[] cleanupFailures;
+        for (size_t index = paths.length; index > 0; --index)
+        {
+            const path = paths[index - 1];
+            try
+            {
+                if (exists(path) && isDir(path)) rmdir(path);
+            }
+            catch (Exception cleanupError)
+                cleanupFailures ~= path ~ ": " ~ cleanupError.msg;
+        }
+        auto message = "Error: could not create folder: " ~ error.msg;
+        if (cleanupFailures.length > 0)
+        {
+            message ~= " Cleanup also failed:";
+            foreach (failure; cleanupFailures) message ~= "\n- " ~ failure;
+        }
+        return ToolExecution("create_folder", message, true);
+    }
+    return ToolExecution("create_folder", "Created folder " ~ paths[$ - 1],
+        false);
+}
+
+private void copyPathRecursive(string source, string target)
+{
+    // Following a directory symlink can recurse back into an ancestor, while
+    // dereferencing a file symlink silently changes its semantics. Keep copy's
+    // behavior explicit until the tool has a preserve-links contract.
+    if (isSymlink(source))
+        throw new Exception("symbolic links are not supported: " ~ source);
+    if (isFile(source))
+    {
+        fileCopy(source, target);
+        return;
+    }
+    if (!isDir(source))
+        throw new Exception("source is not a file or directory: " ~ source);
+
+    mkdirRecurse(target);
+    foreach (entry; dirEntries(source, SpanMode.shallow))
+    {
+        const childTarget = buildPath(target, baseName(entry.name));
+        if (entry.isDir)
+            copyPathRecursive(entry.name, childTarget);
+        else if (entry.isFile)
+            fileCopy(entry.name, childTarget);
+        else
+            throw new Exception("unsupported filesystem entry: " ~ entry.name);
+    }
+}
+
+/// The D-native `copy` tool. A partially copied item or batch is removed on
+/// failure; source paths are never modified.
+private ToolExecution runCopy(string args, string workspace)
+{
+    const paths = resolveTransferPaths(args, workspace, "copy");
+    if (paths.error.length > 0)
+        return ToolExecution("copy", "Error: " ~ paths.error, true);
+
+    size_t attempted;
+    try
+    {
+        foreach (index, source; paths.sources)
+        {
+            attempted = index + 1;
+            copyPathRecursive(source, paths.targets[index]);
+        }
+    }
+    catch (Exception error)
+    {
+        string[] cleanupFailures;
+        for (size_t index = attempted; index > 0; --index)
+        {
+            const target = paths.targets[index - 1];
+            try
+            {
+                if (exists(target) && isDir(target)) rmdirRecurse(target);
+                else if (exists(target)) remove(target);
+            }
+            catch (Exception cleanupError)
+                cleanupFailures ~= target ~ ": " ~ cleanupError.msg;
+        }
+        auto message = "Error: copy failed: " ~ error.msg;
+        if (cleanupFailures.length == 0 && attempted > 0)
+            message ~= " Partial copies were removed; sources are unchanged.";
+        else if (cleanupFailures.length > 0)
+        {
+            message ~= " Cleanup also failed:";
+            foreach (failure; cleanupFailures) message ~= "\n- " ~ failure;
+        }
+        return ToolExecution("copy", message, true);
+    }
+
+    auto builder = appender!string();
+    builder.put("Copied " ~ to!string(paths.sources.length) ~
+        (paths.sources.length == 1 ? " item:" : " items:"));
+    foreach (index, source; paths.sources)
+        builder.put("\n- " ~ source ~ " -> " ~ paths.targets[index]);
+    return ToolExecution("copy", builder.data, false);
 }
 
 /// The D-native `remove` tool: deletes a file, or a directory tree. Accepts
@@ -3459,7 +4013,9 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     const started = MonoTime.currTime;
     ToolExecution result;
     if (call.name == "write" || call.name == "edit" ||
-        call.name == "apply_patch" || call.name == "remove")
+        call.name == "apply_patch" || call.name == "copy" ||
+        call.name == "move" || call.name == "rename" ||
+        call.name == "create_folder" || call.name == "remove")
     {
         // Multiple conversations may work in one project. Serialize workspace
         // mutations so two tool workers can never write/delete concurrently;
@@ -3509,9 +4065,12 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
 
 private bool currentMatchesAfter(const ref ChangeRecord record)
 {
-    const present = exists(record.path) && isFile(record.path);
+    const present = exists(record.path);
     if (present != record.afterExists) return false;
     if (!present) return true;
+    if (isDir(record.path) != record.afterDirectory) return false;
+    if (record.afterDirectory) return true;
+    if (!isFile(record.path)) return false;
     if (record.afterBlob.length == 0 || !exists(record.afterBlob)) return false;
     return cast(ubyte[]) read(record.path) ==
         cast(ubyte[]) read(record.afterBlob);
@@ -3561,6 +4120,7 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
                     {
                         auto aggregate = &combined[record.path];
                         aggregate.afterExists = record.afterExists;
+                        aggregate.afterDirectory = record.afterDirectory;
                         aggregate.afterHash = record.afterHash;
                         aggregate.afterBlob = record.afterBlob;
                         aggregate.revertOf ~= "|" ~ record.id;
@@ -3580,7 +4140,7 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
             if (!currentMatchesAfter(record))
             {
                 result.conflict = true;
-                result.message = "Cannot revert because the file changed " ~
+                result.message = "Cannot revert because the path changed " ~
                     "after Aurora recorded it: " ~ record.path;
                 return result;
             }
@@ -3588,6 +4148,10 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
         FileSnapshot[] before;
         string[] paths;
         string[] revertIds;
+        ChangeRecord[] directoriesToCreate;
+        ChangeRecord[] filesToRestore;
+        ChangeRecord[] filesToRemove;
+        ChangeRecord[] directoriesToRemove;
         foreach (record; targets)
         {
             before ~= snapshotFile(record.path);
@@ -3596,18 +4160,32 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
                 record.id;
             if (record.beforeExists)
             {
-                if (record.beforeBlob.length == 0 ||
-                    !exists(record.beforeBlob))
-                    throw new Exception("missing before snapshot for " ~
-                        record.path);
-                import std.path : dirName;
-                const parent = dirName(record.path);
-                if (parent.length > 0) mkdirRecurse(parent);
-                write(record.path, read(record.beforeBlob));
+                if (record.beforeDirectory)
+                    directoriesToCreate ~= record;
+                else
+                    filesToRestore ~= record;
             }
-            else if (exists(record.path) && isFile(record.path))
-                remove(record.path);
+            else if (record.afterDirectory)
+                directoriesToRemove ~= record;
+            else
+                filesToRemove ~= record;
         }
+        sort!((a, b) => a.path.length < b.path.length)(directoriesToCreate);
+        foreach (record; directoriesToCreate)
+            if (!exists(record.path)) mkdirRecurse(record.path);
+        foreach (record; filesToRestore)
+        {
+            if (record.beforeBlob.length == 0 || !exists(record.beforeBlob))
+                throw new Exception("missing before snapshot for " ~ record.path);
+            const parent = dirName(record.path);
+            if (parent.length > 0) mkdirRecurse(parent);
+            write(record.path, read(record.beforeBlob));
+        }
+        foreach (record; filesToRemove)
+            if (exists(record.path) && isFile(record.path)) remove(record.path);
+        sort!((a, b) => a.path.length > b.path.length)(directoriesToRemove);
+        foreach (record; directoriesToRemove)
+            if (exists(record.path) && isDir(record.path)) rmdir(record.path);
         const after = snapshotTargets(paths);
         OpenCodeToolCall revertCall;
         revertCall.id = "revert-" ~ recordId ~ "-" ~
@@ -3619,7 +4197,7 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
         result.succeeded = true;
         result.files = cast(int) targets.length;
         result.message = "Reverted " ~ to!string(targets.length) ~
-            (targets.length == 1 ? " file." : " files.");
+            (targets.length == 1 ? " path." : " paths.");
     }
     catch (Exception error)
         result.message = "Revert failed: " ~ error.msg;
@@ -3630,6 +4208,14 @@ public string changeRecordDiff(const ref ChangeRecord record)
 {
     try
     {
+        if (record.beforeDirectory || record.afterDirectory)
+        {
+            if (!record.beforeExists && record.afterDirectory)
+                return "Folder created: " ~ record.path;
+            if (record.beforeDirectory && !record.afterExists)
+                return "Folder deleted: " ~ record.path;
+            return "Folder changed: " ~ record.path;
+        }
         ubyte[] before;
         ubyte[] after;
         if (record.beforeExists && exists(record.beforeBlob))
@@ -3723,6 +4309,14 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runUpdatePlan(call.arguments, workspace);
         case "update_subplan":
             return runUpdateSubplan(call.arguments, workspace);
+        case "copy":
+            return runCopy(call.arguments, workspace);
+        case "move":
+            return runMove(call.arguments, workspace);
+        case "rename":
+            return runRename(call.arguments, workspace);
+        case "create_folder":
+            return runCreateFolder(call.arguments, workspace);
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":

@@ -11,8 +11,8 @@ import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityDirective,
     promptVerbosityFromName, promptVerbosityLabel, promptVerbosityName,
     promptVerbosityNames, rebuildModule, setSystemPromptModules;
 import std.array : replicate;
-import std.file : copy, exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
-    write;
+import std.file : copy, exists, isDir, mkdirRecurse, read, readText,
+    rmdirRecurse, tempDir, write;
 import std.path : buildPath;
 import std.process : environment;
 import std.json : parseJSON;
@@ -168,6 +168,136 @@ int main()
         `{"path":"does-not-exist.txt"}`), dir);
     assert(removeMissing.failed, "remove of a missing path should fail");
     writeln("D-native remove tool deletes files and directories");
+
+    // move relocates files, directory trees and batches into existing folders.
+    write(buildPath(dir, "move-me.txt"), "moved file\n");
+    mkdirRecurse(buildPath(dir, "move-file-target"));
+    auto moveFile = executeTool(makeCall("move",
+        `{"source":"move-me.txt",` ~
+        `"destinationFolder":"move-file-target"}`), dir);
+    assert(!moveFile.failed && !exists(buildPath(dir, "move-me.txt")) &&
+        readText(buildPath(dir, "move-file-target", "move-me.txt")) ==
+            "moved file\n",
+        "move did not relocate a file: " ~ moveFile.output);
+
+    auto renamedFile = executeTool(makeCall("rename",
+        `{"path":"move-file-target/move-me.txt",` ~
+        `"newName":"renamed.txt"}`), dir);
+    assert(!renamedFile.failed &&
+        !exists(buildPath(dir, "move-file-target", "move-me.txt")) &&
+        readText(buildPath(dir, "move-file-target", "renamed.txt")) ==
+            "moved file\n",
+        "rename did not change the file name: " ~ renamedFile.output);
+    auto renameWithPath = executeTool(makeCall("rename",
+        `{"path":"move-file-target/renamed.txt",` ~
+        `"newName":"other/invalid.txt"}`), dir);
+    assert(renameWithPath.failed,
+        "rename must reject a newName containing a path");
+    write(buildPath(dir, "legacy-move.txt"), "stay");
+    auto ambiguousMove = executeTool(makeCall("move",
+        `{"source":"legacy-move.txt","destination":"move-file-target"}`),
+        dir);
+    assert(ambiguousMove.failed && exists(buildPath(dir, "legacy-move.txt")),
+        "move must require the explicit destinationFolder field");
+
+    mkdirRecurse(buildPath(dir, "move-tree", "nested"));
+    write(buildPath(dir, "move-tree", "nested", "inside.txt"), "tree\n");
+    mkdirRecurse(buildPath(dir, "move-target"));
+    auto moveDirectory = executeTool(makeCall("move",
+        `{"source":"move-tree","destinationFolder":"move-target"}`), dir);
+    assert(!moveDirectory.failed && !exists(buildPath(dir, "move-tree")) &&
+        readText(buildPath(dir, "move-target", "move-tree", "nested",
+            "inside.txt")) == "tree\n",
+        "move did not relocate a directory tree: " ~ moveDirectory.output);
+
+    write(buildPath(dir, "batch-a.txt"), "a");
+    write(buildPath(dir, "batch-b.txt"), "b");
+    mkdirRecurse(buildPath(dir, "batch-target"));
+    auto moveBatch = executeTool(makeCall("move",
+        `{"sources":["batch-a.txt","batch-b.txt"],` ~
+        `"destinationFolder":"batch-target"}`), dir);
+    assert(!moveBatch.failed &&
+        readText(buildPath(dir, "batch-target", "batch-a.txt")) == "a" &&
+        readText(buildPath(dir, "batch-target", "batch-b.txt")) == "b",
+        "move did not relocate a batch: " ~ moveBatch.output);
+
+    write(buildPath(dir, "collision-source.txt"), "source");
+    mkdirRecurse(buildPath(dir, "collision-target"));
+    write(buildPath(dir, "collision-target", "collision-source.txt"),
+        "target");
+    auto moveCollision = executeTool(makeCall("move",
+        `{"source":"collision-source.txt",` ~
+        `"destinationFolder":"collision-target"}`), dir);
+    assert(moveCollision.failed &&
+        readText(buildPath(dir, "collision-source.txt")) == "source" &&
+        readText(buildPath(dir, "collision-target", "collision-source.txt")) ==
+            "target",
+        "move must reject collisions without changing either file");
+    writeln("D-native move relocates items; rename changes names separately");
+
+    // copy shares move's one-or-many API, preserves sources and recursively
+    // duplicates directories without routing bytes through the model.
+    auto copyBytes = cast(ubyte[]) replicate("copy-bytes\0", 16_000).dup;
+    write(buildPath(dir, "copy-source.bin"), copyBytes);
+    mkdirRecurse(buildPath(dir, "copy-file-target"));
+    auto copyFile = executeTool(makeCall("copy",
+        `{"source":"copy-source.bin",` ~
+        `"destinationFolder":"copy-file-target"}`), dir);
+    assert(!copyFile.failed && exists(buildPath(dir, "copy-source.bin")) &&
+        cast(ubyte[]) read(buildPath(dir, "copy-file-target",
+            "copy-source.bin")) == copyBytes,
+        "copy did not preserve a binary file byte-for-byte: " ~ copyFile.output);
+
+    mkdirRecurse(buildPath(dir, "copy-tree", "nested", "empty"));
+    write(buildPath(dir, "copy-tree", "nested", "inside.txt"), "tree copy\n");
+    mkdirRecurse(buildPath(dir, "copy-target"));
+    auto copyDirectory = executeTool(makeCall("copy",
+        `{"source":"copy-tree","destinationFolder":"copy-target"}`), dir);
+    assert(!copyDirectory.failed && exists(buildPath(dir, "copy-tree")) &&
+        readText(buildPath(dir, "copy-target", "copy-tree", "nested",
+            "inside.txt")) == "tree copy\n" &&
+        exists(buildPath(dir, "copy-target", "copy-tree", "nested", "empty")),
+        "copy did not recursively duplicate a directory: " ~
+            copyDirectory.output);
+
+    write(buildPath(dir, "copy-a.txt"), "a");
+    write(buildPath(dir, "copy-b.txt"), "b");
+    mkdirRecurse(buildPath(dir, "copy-batch-target"));
+    auto copyBatch = executeTool(makeCall("copy",
+        `{"sources":["copy-a.txt","copy-b.txt"],` ~
+        `"destinationFolder":"copy-batch-target"}`), dir);
+    assert(!copyBatch.failed && exists(buildPath(dir, "copy-a.txt")) &&
+        exists(buildPath(dir, "copy-b.txt")) &&
+        readText(buildPath(dir, "copy-batch-target", "copy-a.txt")) == "a" &&
+        readText(buildPath(dir, "copy-batch-target", "copy-b.txt")) == "b",
+        "copy did not duplicate a batch: " ~ copyBatch.output);
+
+    mkdirRecurse(buildPath(dir, "copy-collision"));
+    write(buildPath(dir, "copy-collision", "copy-a.txt"), "untouched");
+    auto copyCollision = executeTool(makeCall("copy",
+        `{"source":"copy-a.txt",` ~
+        `"destinationFolder":"copy-collision"}`), dir);
+    assert(copyCollision.failed &&
+        readText(buildPath(dir, "copy-collision", "copy-a.txt")) == "untouched",
+        "copy must reject collisions without changing the target");
+    auto copyIntoSelf = executeTool(makeCall("copy",
+        `{"source":"copy-tree",` ~
+        `"destinationFolder":"copy-tree/nested"}`), dir);
+    assert(copyIntoSelf.failed,
+        "copy must reject recursively copying a directory inside itself");
+    writeln("D-native copy preserves files, trees and batches safely");
+
+    auto createFolder = executeTool(makeCall("create_folder",
+        `{"path":"created/empty/nested"}`), dir);
+    assert(!createFolder.failed &&
+        isDir(buildPath(dir, "created", "empty", "nested")),
+        "create_folder did not create the complete folder path: " ~
+            createFolder.output);
+    auto createExisting = executeTool(makeCall("create_folder",
+        `{"path":"created/empty/nested"}`), dir);
+    assert(createExisting.failed,
+        "create_folder must not claim an existing folder was created");
+    writeln("create_folder creates new empty folder trees explicitly");
 
     // glob with ** recursion
     auto globResult = executeTool(makeCall("glob", `{"pattern":"**/*.d"}`),
@@ -617,6 +747,10 @@ int main()
     bool hasShell;
     bool defaultHasDshell;
     bool defaultHasRemove;
+    bool defaultHasMove;
+    bool defaultHasCopy;
+    bool defaultHasRename;
+    bool defaultHasCreateFolder;
     bool defaultHasOpen;
     bool defaultHasWebfetch;
     foreach (tool; defaults)
@@ -624,6 +758,10 @@ int main()
         if (tool.name == "bash") hasShell = true;
         if (tool.name == "dshell") defaultHasDshell = true;
         if (tool.name == "remove") defaultHasRemove = true;
+        if (tool.name == "move") defaultHasMove = true;
+        if (tool.name == "copy") defaultHasCopy = true;
+        if (tool.name == "rename") defaultHasRename = true;
+        if (tool.name == "create_folder") defaultHasCreateFolder = true;
         if (tool.name == "open") defaultHasOpen = true;
         if (tool.name == "webfetch") defaultHasWebfetch = true;
         assert(tool.name != "glob",
@@ -632,6 +770,11 @@ int main()
     assert(hasShell, "Default toolset must include the shell tool");
     assert(defaultHasDshell, "Default toolset must include dshell");
     assert(defaultHasRemove, "Default toolset must include remove");
+    assert(defaultHasMove, "Default toolset must include move");
+    assert(defaultHasCopy, "Default toolset must include copy");
+    assert(defaultHasRename, "Default toolset must include rename");
+    assert(defaultHasCreateFolder,
+        "Default toolset must include create_folder");
     assert(defaultHasOpen, "Default toolset must include open");
     assert(defaultHasWebfetch, "Default toolset must include webfetch");
 
@@ -640,6 +783,10 @@ int main()
     bool hasRun;
     bool nativeHasDshell;
     bool nativeHasRemove;
+    bool nativeHasMove;
+    bool nativeHasCopy;
+    bool nativeHasRename;
+    bool nativeHasCreateFolder;
     bool nativeHasProcess;
     bool nativeHasOpen;
     bool nativeHasWebfetch;
@@ -649,6 +796,10 @@ int main()
         if (tool.name == "run") hasRun = true;
         if (tool.name == "dshell") nativeHasDshell = true;
         if (tool.name == "remove") nativeHasRemove = true;
+        if (tool.name == "move") nativeHasMove = true;
+        if (tool.name == "copy") nativeHasCopy = true;
+        if (tool.name == "rename") nativeHasRename = true;
+        if (tool.name == "create_folder") nativeHasCreateFolder = true;
         if (tool.name == "process") nativeHasProcess = true;
         if (tool.name == "open") nativeHasOpen = true;
         if (tool.name == "webfetch") nativeHasWebfetch = true;
@@ -659,6 +810,11 @@ int main()
     assert(hasRun, "Native toolset must include the run tool");
     assert(nativeHasDshell, "Native toolset must include dshell");
     assert(nativeHasRemove, "Native toolset must include remove");
+    assert(nativeHasMove, "Native toolset must include move");
+    assert(nativeHasCopy, "Native toolset must include copy");
+    assert(nativeHasRename, "Native toolset must include rename");
+    assert(nativeHasCreateFolder,
+        "Native toolset must include create_folder");
     assert(nativeHasProcess, "Native toolset must include process management");
     assert(nativeHasOpen, "Native toolset must include open");
     assert(nativeHasWebfetch, "Native toolset must include webfetch");
@@ -707,6 +863,14 @@ int main()
         "Steering prompts must document dshell");
     assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
         "Native steering prompt must mention the remove tool");
+    assert(toolSteeringPrompt(true).indexOf("move") >= 0,
+        "Native steering prompt must mention the move tool");
+    assert(toolSteeringPrompt(true).indexOf("copy") >= 0,
+        "Native steering prompt must mention the copy tool");
+    assert(toolSteeringPrompt(true).indexOf("rename") >= 0,
+        "Native steering prompt must mention the rename tool");
+    assert(toolSteeringPrompt(true).indexOf("create_folder") >= 0,
+        "Native steering prompt must mention create_folder");
     assert(toolSteeringPrompt(true).indexOf("native `open` tool") >= 0,
         "Steering prompt must require the native open tool");
     // The prompt carries a concise execution contract while tool schemas carry
@@ -968,6 +1132,21 @@ int main()
         writeln("apply_patch matches CRLF and mixed-line-ending context");
     }
 
+    // A Codex-style Move-to directive used to be consumed as a boundary and
+    // silently ignored while apply_patch reported success. The move tool is
+    // the supported path, so fail explicitly without touching either path.
+    {
+        write(buildPath(dir, "patch-move-source.txt"), "keep me\n");
+        auto result = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: patch-move-source.txt\n*** Move to: patch-move-target.txt\n*** End Patch"}`),
+            dir);
+        assert(result.failed && result.output.indexOf("`move` tool") >= 0 &&
+            exists(buildPath(dir, "patch-move-source.txt")) &&
+            !exists(buildPath(dir, "patch-move-target.txt")),
+            "apply_patch must reject rather than fake a move: " ~ result.output);
+        writeln("apply_patch rejects Move-to directives in favor of move");
+    }
+
     // Regression: a hunk whose context is absent must fail cleanly. The old
     // code resolved the match position with
     //     const at = oldBlock.length == 0 ? searchPos
@@ -1084,6 +1263,108 @@ int main()
             readText(buildPath(dir, "one.txt")) == "one-old\n" &&
             readText(buildPath(dir, "two.txt")) == "two-old\n",
             "whole-action revert failed: " ~ actionRevert.message);
+
+        const moveBefore = buildPath(dir, "journal-move-before.txt");
+        const moveFolder = buildPath(dir, "journal-move-target");
+        const moveAfter = buildPath(moveFolder, "journal-move-before.txt");
+        write(moveBefore, "move journal\n");
+        mkdirRecurse(moveFolder);
+        context.turnId = "turn-move";
+        call = makeCall("move",
+            `{"source":"journal-move-before.txt",` ~
+            `"destinationFolder":"journal-move-target"}`);
+        call.id = "journal-move";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && !exists(moveBefore) && exists(moveAfter),
+            "journaled move failed: " ~ changed.output);
+        records = listChangeRecords(dir);
+        actionRevert = revertChangeRecord(dir, records[$ - 1].id, true,
+            context);
+        assert(actionRevert.succeeded && actionRevert.files == 2 &&
+            exists(moveBefore) && !exists(moveAfter) &&
+            readText(moveBefore) == "move journal\n",
+            "whole-action move revert failed: " ~ actionRevert.message);
+
+        const moveTreeBefore = buildPath(dir, "journal-move-tree");
+        const moveTreeFolder = buildPath(dir, "journal-move-tree-target");
+        const moveTreeAfter = buildPath(moveTreeFolder, "journal-move-tree");
+        mkdirRecurse(buildPath(moveTreeBefore, "nested", "empty"));
+        write(buildPath(moveTreeBefore, "nested", "file.txt"), "tree\n");
+        mkdirRecurse(moveTreeFolder);
+        context.turnId = "turn-move-tree";
+        call = makeCall("move",
+            `{"source":"journal-move-tree",` ~
+            `"destinationFolder":"journal-move-tree-target"}`);
+        call.id = "journal-move-tree";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && !exists(moveTreeBefore) &&
+            isDir(buildPath(moveTreeAfter, "nested", "empty")),
+            "journaled directory move failed: " ~ changed.output);
+        records = listChangeRecords(dir);
+        actionRevert = revertChangeRecord(dir, records[$ - 1].id, true,
+            context);
+        assert(actionRevert.succeeded && isDir(buildPath(moveTreeBefore,
+            "nested", "empty")) && !exists(moveTreeAfter) &&
+            readText(buildPath(moveTreeBefore, "nested", "file.txt")) ==
+                "tree\n",
+            "directory move revert failed: " ~ actionRevert.message);
+
+        const copyBefore = buildPath(dir, "journal-copy-before.txt");
+        const copyFolder = buildPath(dir, "journal-copy-target");
+        const copyAfter = buildPath(copyFolder, "journal-copy-before.txt");
+        write(copyBefore, "copy journal\n");
+        mkdirRecurse(copyFolder);
+        context.turnId = "turn-copy";
+        call = makeCall("copy",
+            `{"source":"journal-copy-before.txt",` ~
+            `"destinationFolder":"journal-copy-target"}`);
+        call.id = "journal-copy";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && exists(copyBefore) && exists(copyAfter),
+            "journaled copy failed: " ~ changed.output);
+        records = listChangeRecords(dir);
+        actionRevert = revertChangeRecord(dir, records[$ - 1].id, true,
+            context);
+        assert(actionRevert.succeeded && actionRevert.files == 1 &&
+            exists(copyBefore) && !exists(copyAfter) &&
+            readText(copyBefore) == "copy journal\n",
+            "whole-action copy revert failed: " ~ actionRevert.message);
+
+        const renameBefore = buildPath(dir, "journal-rename-before.txt");
+        const renameAfter = buildPath(dir, "journal-rename-after.txt");
+        write(renameBefore, "rename journal\n");
+        context.turnId = "turn-rename";
+        call = makeCall("rename",
+            `{"path":"journal-rename-before.txt",` ~
+            `"newName":"journal-rename-after.txt"}`);
+        call.id = "journal-rename";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && !exists(renameBefore) && exists(renameAfter),
+            "journaled rename failed: " ~ changed.output);
+        records = listChangeRecords(dir);
+        actionRevert = revertChangeRecord(dir, records[$ - 1].id, true,
+            context);
+        assert(actionRevert.succeeded && actionRevert.files == 2 &&
+            exists(renameBefore) && !exists(renameAfter),
+            "whole-action rename revert failed: " ~ actionRevert.message);
+
+        const createdFolder = buildPath(dir, "journal-created", "empty",
+            "nested");
+        context.turnId = "turn-create-folder";
+        call = makeCall("create_folder",
+            `{"path":"journal-created/empty/nested"}`);
+        call.id = "journal-create-folder";
+        changed = executeTool(call, dir, null, context);
+        assert(!changed.failed && isDir(createdFolder),
+            "journaled folder creation failed: " ~ changed.output);
+        records = listChangeRecords(dir);
+        assert(records[$ - 1].afterDirectory,
+            "folder journal record did not preserve the path type");
+        actionRevert = revertChangeRecord(dir, records[$ - 1].id, true,
+            context);
+        assert(actionRevert.succeeded && actionRevert.files == 3 &&
+            !exists(buildPath(dir, "journal-created")),
+            "folder-tree revert failed: " ~ actionRevert.message);
 
         const repeatedPath = buildPath(dir, "repeated.txt");
         write(repeatedPath, "A\n");

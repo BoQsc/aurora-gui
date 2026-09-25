@@ -242,7 +242,8 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
         "edits, `edit` for one surgical replacement, and `write` for new files " ~
         "or complete rewrites. Add comments only when code is not self-explanatory.\n" ~
         "- Make every workspace file change through `apply_patch`, " ~
-        "`edit`, `write`, or `remove` so Aurora can snapshot and safely revert " ~
+        "`edit`, `write`, `copy`, `move`, `rename`, `create_folder`, or " ~
+        "`remove` so Aurora can snapshot and safely revert " ~
         "it. Do not use `run`, `bash`, or an external script to mutate files; " ~
         "those programs operate outside the change journal.\n" ~
         "- A mutation must advance the requested artifact. Never add a " ~
@@ -269,13 +270,15 @@ private string toolPolicySection(in SystemPromptContext ctx)
     string text = "\n# Tool policy\n";
     if (ctx.nativeOnly)
         text ~= "There is no shell and no bash/cmd/powershell. Use native " ~
-            "`read`, `write`, `edit`, `apply_patch`, `remove`, `open`, `glob`, `grep`, " ~
+            "`read`, `write`, `edit`, `apply_patch`, `copy`, `move`, `rename`, " ~
+            "`create_folder`, `remove`, `open`, `glob`, `grep`, " ~
             "and `dshell` file tools, plus `run` with an explicit program and " ~
             "argument list, and `webfetch` to read a web page or API. Do not " ~
             "reconstruct shell commands.\n";
     else
         text ~= "Use native tools for file discovery, reads, searches, " ~
-            "edits, writes, and removals. Use `bash` only for git, builds, " ~
+            "edits, writes, copies, moves, renames, folder creation, and " ~
+            "removals. Use `bash` only for git, builds, " ~
             "tests, package managers, or executables the native tools cannot " ~
             "perform; do not use shell listing or content commands.\n";
     text ~= "Read exact file paths from the request directly. Use `dshell " ~

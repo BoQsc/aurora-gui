@@ -202,7 +202,10 @@ int main(string[] args)
         foreach (call; calls)
         {
             if (call.name == "edit" || call.name == "write" ||
-                call.name == "apply_patch" || call.name == "remove")
+                call.name == "apply_patch" || call.name == "copy" ||
+                call.name == "move" || call.name == "rename" ||
+                call.name == "create_folder" ||
+                call.name == "remove")
             {
                 ++mutationCalls;
                 batchMutates = true;

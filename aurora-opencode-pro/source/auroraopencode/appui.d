@@ -372,7 +372,7 @@ private final class MessageBubble : Widget
     // highlighted, so a match is visible wherever the reader looks.
     private string _searchQuery;
 
-    // File-mutating tool results (edit/write/remove) carry a computed diff: the
+    // File-mutating tool results carry change metadata:
     // `+N -M` counters and the unified diff rendered as a line-numbered body
     // with green additions and red deletions. Non-diff tool output is rendered
     // as line-numbered plain monospace text instead.
@@ -2343,6 +2343,14 @@ private string humanToolTitle(string toolName)
             return "Subplan";
         case "remove":
             return "Delete";
+        case "move":
+            return "Move";
+        case "copy":
+            return "Copy";
+        case "rename":
+            return "Rename";
+        case "create_folder":
+            return "Create folder";
         case "glob":
             return "Glob";
         case "grep":
@@ -2384,6 +2392,14 @@ private string humanToolProgressTitle(string toolName)
             return "Planning substeps";
         case "remove":
             return "Deleting";
+        case "move":
+            return "Moving";
+        case "copy":
+            return "Copying";
+        case "rename":
+            return "Renaming";
+        case "create_folder":
+            return "Creating folder";
         case "glob":
             return "Listing";
         case "grep":
@@ -2464,6 +2480,28 @@ private string humanToolSubtitle(string toolName, string toolArgs)
             if (path.length == 0)
                 path = partialStringArg(toolArgs, "filePath");
             return basenameOf(path);
+        case "copy":
+        case "move":
+        {
+            const destination = basenameOf(partialStringArg(toolArgs,
+                "destinationFolder"));
+            const source = basenameOf(partialStringArg(toolArgs, "source"));
+            if (source.length > 0)
+                return source ~ (destination.length > 0 ? " -> " ~ destination : "");
+            const sources = toolStringArgs(toolArgs, "sources");
+            if (sources.length == 0) return destination;
+            return to!string(sources.length) ~
+                (sources.length == 1 ? " item" : " items") ~
+                (destination.length > 0 ? " -> " ~ destination : "");
+        }
+        case "rename":
+        {
+            const source = basenameOf(partialStringArg(toolArgs, "path"));
+            const target = partialStringArg(toolArgs, "newName");
+            return source ~ (target.length > 0 ? " -> " ~ target : "");
+        }
+        case "create_folder":
+            return basenameOf(partialStringArg(toolArgs, "path"));
         case "open":
             return partialStringArg(toolArgs, "target");
         // experimental: websearch - delete with source/auroraopencode/websearch.d
@@ -2485,6 +2523,21 @@ private string toolArgFromArgs(string toolArgs, string key)
         if (field.type == JSONType.string)
             return field.str;
     return "";
+}
+
+private string[] toolStringArgs(string toolArgs, string key)
+{
+    string[] result;
+    if (toolArgs.length == 0) return result;
+    JSONValue value;
+    try value = parseJSON(toolArgs);
+    catch (Exception) value = JSONValue.init;
+    if (value.type != JSONType.object) return result;
+    if (auto field = key in value.object)
+        if (field.type == JSONType.array)
+            foreach (entry; field.array)
+                if (entry.type == JSONType.string) result ~= entry.str;
+    return result;
 }
 
 private static string basenameOf(string path)
@@ -2521,6 +2574,18 @@ private string[] toolArgumentPaths(string toolName, string toolArgs)
                 toolArgFromArgs(toolArgs, "filePath"));
             break;
         }
+        case "copy":
+        case "move":
+            appendUniquePath(paths, toolArgFromArgs(toolArgs, "source"));
+            foreach (path; toolStringArgs(toolArgs, "sources"))
+                appendUniquePath(paths, path);
+            appendUniquePath(paths, toolArgFromArgs(toolArgs,
+                "destinationFolder"));
+            break;
+        case "rename":
+        case "create_folder":
+            appendUniquePath(paths, toolArgFromArgs(toolArgs, "path"));
+            break;
         case "open":
         {
             auto path = toolArgFromArgs(toolArgs, "target");
@@ -2774,7 +2839,7 @@ private string humanToolDetail(string toolName, string toolArgs)
 /// actions as present participles for the in-flight header ("Editing a file,
 /// running commands"), so the same row reads as work-in-progress while a tool
 /// runs and as a record once it is done. Action categories mirror Codex: a
-/// file mutation (write/edit/remove), a command (bash/run/dshell), and
+/// file mutation, a command (bash/run/dshell), and
 /// exploration (read/glob/grep).
 private string actionGroupSummary(const(string)[] toolNames, bool live)
 {
@@ -2786,6 +2851,10 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
             case "write":
             case "edit":
             case "apply_patch":
+            case "copy":
+            case "move":
+            case "rename":
+            case "create_folder":
             case "remove":
                 ++edits; break;
             case "bash":
@@ -7706,7 +7775,8 @@ public final class OpenCodeRoot : VBox
             saveSettingsNow();
             updateStatus(value
                 ? "Tools enabled — the model uses the D-native " ~
-                  "run/read/write/remove/glob/grep/dshell tools."
+                  "run/read/write/copy/move/rename/create_folder/remove/" ~
+                  "glob/grep/dshell tools."
                 : "Tools disabled.");
         };
 
@@ -10606,7 +10676,9 @@ public final class OpenCodeRoot : VBox
     {
         if (failed || !isMutatingTool(name)) return false;
         if (diff.length == 0)
-            return name == "remove" || additions > 0 || deletions > 0;
+            return name == "copy" || name == "move" || name == "rename" ||
+                name == "create_folder" || name == "remove" ||
+                additions > 0 || deletions > 0;
         foreach (line; diff.splitLines())
         {
             if (line.length < 2 || (line[0] != '+' && line[0] != '-'))
@@ -11317,7 +11389,8 @@ public final class OpenCodeRoot : VBox
     private static bool isMutatingTool(string name)
     {
         return name == "write" || name == "edit" || name == "apply_patch" ||
-            name == "remove";
+            name == "copy" || name == "move" || name == "rename" ||
+            name == "create_folder" || name == "remove";
     }
 
     private static bool isVerificationTool(string name, string arguments)
@@ -14485,8 +14558,8 @@ public final class OpenCodeRoot : VBox
         workspaceField.setId("oc-workspace");
         workspaceField.layoutHints().flex = 1.0;
         auto workspaceHint = new Label(
-            "Folder where the active project's tools (bash/read/write/glob/" ~
-            "grep) operate. Switch projects in the rail on the left.");
+            "Folder where the active project's tools operate. Switch projects " ~
+            "in the rail on the left.");
         workspaceHint.setScale(1);
         workspaceHint.setColor(opencodeMuted);
 
@@ -14507,7 +14580,7 @@ public final class OpenCodeRoot : VBox
         legacyTip.setText(
             "Also lets the model use the legacy bash/cmd/powershell shell " ~
             "tool in addition to the native " ~
-            "run/read/write/remove/glob/grep/dshell tools. Off by default.");
+            "native file and discovery tools. Off by default.");
         _legacyTooltipAnchor = legacyTip;
         legacyTip.onHoverChanged = delegate(bool open)
         {
