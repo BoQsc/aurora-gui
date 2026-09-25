@@ -6778,10 +6778,13 @@ public final class OpenCodeRoot : VBox
     // Settings-dialog verbosity picker; kept so a chosen level updates its
     // label and the smoke test can read it back. Null when the dialog is closed.
     private Button _settingsVerbosityButton;
-    // Second-credential controls: the spare key field and the toggle that
-    // picks which of the two API keys requests are sent with.
+    // Dynamic per-provider key rows in the Settings dialog.
     private TextField _settingsAdditionalKeyField;
-    private CheckBox _settingsAdditionalKeyToggle;
+    private VBox _settingsKeyRows;
+    private VBox _settingsPopupContent;
+    private HoverKeyField[] _settingsKeyFields;
+    private Button[] _settingsKeyUseButtons;
+    private size_t _settingsActiveKeyIndex;
     private HoverTooltip _keyUsageTooltip;
     private Widget _keyUsageAnchor;
     private string _keyUsageRequestId;
@@ -14449,6 +14452,7 @@ public final class OpenCodeRoot : VBox
 
         auto content = new VBox(8, Insets(16));
         content.layoutHints().preferredWidth = 520;
+        _settingsPopupContent = content;
 
         auto title = content.add(new Label("Settings"));
         title.setPixelSize(opencodeFontTitle);
@@ -14519,50 +14523,26 @@ public final class OpenCodeRoot : VBox
         baseField.layoutHints().flex = 1.0;
         _settingsBaseField = baseField;
 
-        auto keyRow = new HBox(8);
-        keyRow.layoutHints().preferredHeight = 32;
-        auto keyLabel = keyRow.add(new Label("API key"));
-        keyLabel.layoutHints().preferredWidth = 110;
-        keyLabel.setScale(1);
         const activePair = findProviderApiKeys(_settings, _settings.baseUrl);
-        auto keyField = keyRow.add(new HoverKeyField(activePair !is null
-            ? activePair.apiKey : _settings.apiKey));
-        keyField.setId("oc-settings-key");
-        keyField.layoutHints().flex = 1.0;
-        _settingsKeyField = keyField;
-        keyField.onHoverChanged = (bool hovered) =>
-            setKeyUsageHover(keyField, hovered);
+        auto keyRows = new VBox(8);
+        _settingsKeyRows = keyRows;
+        renderSettingsKeyRows(activePair !is null
+            ? providerApiKeyValues(*activePair) : [_settings.apiKey, ""],
+            activePair !is null ? activePair.activeKeyIndex : 0);
 
-        // Additional key: every provider keeps a spare credential in its own
-        // field next to the main key. The checkbox below picks which of the two
-        // is the live key for the provider the dialog is pointed at.
-        auto additionalKeyRow = new HBox(8);
-        additionalKeyRow.layoutHints().preferredHeight = 32;
-        auto additionalKeyLabel = additionalKeyRow.add(
-            new Label("Additional key"));
-        additionalKeyLabel.layoutHints().preferredWidth = 110;
-        additionalKeyLabel.setScale(1);
-        auto additionalKeyField = additionalKeyRow.add(new HoverKeyField(
-            activePair !is null ? activePair.additionalApiKey : ""));
-        additionalKeyField.setId("oc-settings-extrakey");
-        additionalKeyField.layoutHints().flex = 1.0;
-        _settingsAdditionalKeyField = additionalKeyField;
-        additionalKeyField.onHoverChanged = (bool hovered) =>
-            setKeyUsageHover(additionalKeyField, hovered);
-
-        auto activeKeyRow = new HBox(8);
-        activeKeyRow.layoutHints().preferredHeight = 32;
-        auto activeKeyCheck = new CheckBox(
-            "Use the additional key as the active API key");
-        activeKeyCheck.setId("oc-settings-useextrakey");
-        activeKeyCheck.setChecked(
-            activePair !is null && activePair.additionalKeyActive, false);
-        _settingsAdditionalKeyToggle = activeKeyCheck;
-        activeKeyRow.add(activeKeyCheck);
+        auto addKeyButton = new Button("+ Add API key");
+        addKeyButton.setId("oc-settings-add-key");
+        addKeyButton.onClick = delegate()
+        {
+            auto keys = settingsKeyFieldValues();
+            keys ~= "";
+            renderSettingsKeyRows(keys, _settingsActiveKeyIndex);
+            resizeSettingsPopup(popup, content);
+        };
 
         auto keysHint = new Label(
-            "Each provider keeps its own two keys; the checkbox picks which " ~
-            "one that provider's requests use. \"Save\" applies the choice.");
+            "Each provider keeps its own keys. Choose Active for the key its " ~
+            "requests use; Save applies the choice.");
         keysHint.setScale(1);
         keysHint.setColor(opencodeMuted);
 
@@ -14761,9 +14741,8 @@ public final class OpenCodeRoot : VBox
 
         connectionBody.add(providerRow);
         connectionBody.add(baseRow);
-        connectionBody.add(keyRow);
-        connectionBody.add(additionalKeyRow);
-        connectionBody.add(activeKeyRow);
+        connectionBody.add(keyRows);
+        connectionBody.add(addKeyButton);
         connectionBody.add(keysHint);
         connectionBody.add(modelRow);
         connectionBody.add(hint);
@@ -14788,7 +14767,10 @@ public final class OpenCodeRoot : VBox
             _settingsProviderButton = null;
             _settingsVerbosityButton = null;
             _settingsAdditionalKeyField = null;
-            _settingsAdditionalKeyToggle = null;
+            _settingsKeyRows = null;
+            _settingsPopupContent = null;
+            _settingsKeyFields.length = 0;
+            _settingsKeyUseButtons.length = 0;
         };
         openPopup(popup);
         resizeSettingsPopup(popup, content);
@@ -14873,50 +14855,120 @@ public final class OpenCodeRoot : VBox
             _settingsVerbosityButton.setText(promptVerbosityLabel(name));
     }
 
+    private string[] settingsKeyFieldValues()
+    {
+        string[] values;
+        foreach (field; _settingsKeyFields)
+            values ~= field.textUtf8();
+        return values;
+    }
+
+    private void delegate(bool) settingsKeyHoverAction(HoverKeyField field)
+    {
+        return delegate(bool hovered) { setKeyUsageHover(field, hovered); };
+    }
+
+    private void delegate() settingsSelectKeyAction(size_t index)
+    {
+        return delegate() { selectSettingsKey(index); };
+    }
+
+    private void delegate() settingsRemoveKeyAction(size_t index)
+    {
+        return delegate() { removeSettingsKey(index); };
+    }
+
+    private void selectSettingsKey(size_t index)
+    {
+        if (index >= _settingsKeyUseButtons.length) return;
+        _settingsActiveKeyIndex = index;
+        foreach (i, button; _settingsKeyUseButtons)
+            button.setText(i == index ? "Active" : "Use");
+    }
+
+    private void removeSettingsKey(size_t index)
+    {
+        if (index < 2 || index >= _settingsKeyFields.length) return;
+        auto keys = settingsKeyFieldValues();
+        keys = keys[0 .. index] ~ keys[index + 1 .. $];
+        const active = _settingsActiveKeyIndex == index ? 0 :
+            _settingsActiveKeyIndex > index ? _settingsActiveKeyIndex - 1 :
+            _settingsActiveKeyIndex;
+        renderSettingsKeyRows(keys, active);
+        if (_activePopup !is null && _settingsPopupContent !is null)
+            resizeSettingsPopup(_activePopup, _settingsPopupContent);
+    }
+
+    private void renderSettingsKeyRows(const(string)[] keys, size_t activeIndex)
+    {
+        if (_settingsKeyRows is null) return;
+        closeKeyUsageTooltip();
+        _settingsKeyRows.clearChildren();
+        _settingsKeyFields.length = 0;
+        _settingsKeyUseButtons.length = 0;
+        const count = max(cast(size_t) 2, keys.length);
+        _settingsActiveKeyIndex = activeIndex < count ? activeIndex : 0;
+        foreach (i; 0 .. count)
+        {
+            auto row = new HBox(8);
+            row.layoutHints().preferredHeight = 32;
+            auto label = row.add(new Label("API Key #" ~ to!string(i + 1)));
+            label.layoutHints().preferredWidth = 110;
+            label.setScale(1);
+            auto field = row.add(new HoverKeyField(
+                i < keys.length ? keys[i] : ""));
+            field.setId(i == 0 ? "oc-settings-key" :
+                i == 1 ? "oc-settings-extrakey" :
+                "oc-settings-key-" ~ to!string(i + 1));
+            field.layoutHints().flex = 1.0;
+            field.onHoverChanged = settingsKeyHoverAction(field);
+            _settingsKeyFields ~= field;
+            auto useButton = row.add(new Button(
+                i == _settingsActiveKeyIndex ? "Active" : "Use"));
+            useButton.setId("oc-settings-use-key-" ~ to!string(i + 1));
+            useButton.onClick = settingsSelectKeyAction(i);
+            _settingsKeyUseButtons ~= useButton;
+            if (i >= 2)
+            {
+                auto removeButton = row.add(new Button("Remove"));
+                removeButton.onClick = settingsRemoveKeyAction(i);
+            }
+            _settingsKeyRows.add(row);
+        }
+        _settingsKeyField = _settingsKeyFields[0];
+        _settingsAdditionalKeyField = _settingsKeyFields[1];
+    }
+
     /// Fill the Settings base URL/key/model fields for a provider preset.
     /// Staged: nothing is written to disk until the dialog's Save is pressed.
-    /// Each provider shows its OWN key pair, so switching provider never mixes
-    /// one provider's spare key into another provider's form.
+    /// Each provider shows its own keys, so switching provider never mixes them.
     private void applyProviderPreset(int index)
     {
         if (index < 0 || index >= cast(int) providerPresets.length) return;
         const preset = providerPresets[cast(size_t) index];
         const keys = findProviderApiKeys(_settings, preset.baseUrl);
         if (_settingsBaseField !is null) _settingsBaseField.setText(preset.baseUrl);
-        if (_settingsKeyField !is null)
-            _settingsKeyField.setText(keys !is null
-                ? keys.apiKey : readProviderKey(preset.id));
-        if (_settingsAdditionalKeyField !is null)
-            _settingsAdditionalKeyField.setText(
-                keys !is null ? keys.additionalApiKey : "");
-        if (_settingsAdditionalKeyToggle !is null)
-            _settingsAdditionalKeyToggle.setChecked(
-                keys !is null && keys.additionalKeyActive, false);
+        renderSettingsKeyRows(keys !is null
+            ? providerApiKeyValues(*keys) : [readProviderKey(preset.id), ""],
+            keys !is null ? keys.activeKeyIndex : 0);
         if (_settingsModelField !is null)
             _settingsModelField.setText(preset.model);
         if (_settingsProviderButton !is null)
             _settingsProviderButton.setText(preset.name);
+        if (_activePopup !is null && _settingsPopupContent !is null)
+            resizeSettingsPopup(_activePopup, _settingsPopupContent);
     }
 
-    /// Read the two API key fields plus the active-key toggle out of the
-    /// Settings dialog, store them as the pair of the provider the dialog is
-    /// pointed at, and make that provider's active key live. Shared by the
-    /// dialog's Save and the smoke harness so both exercise the same path.
+    /// Store the Settings dialog's key list and selected active field.
     private void commitApiKeysFromFields()
     {
         const baseUrl = _settingsBaseField !is null
             ? _settingsBaseField.textUtf8().strip() : _settings.baseUrl;
-        string mainKey;
-        string spareKey;
-        bool spareActive;
-        if (_settingsKeyField !is null)
-            mainKey = _settingsKeyField.textUtf8().strip();
-        if (_settingsAdditionalKeyField !is null)
-            spareKey = _settingsAdditionalKeyField.textUtf8().strip();
-        if (_settingsAdditionalKeyToggle !is null)
-            spareActive = _settingsAdditionalKeyToggle.checked();
-        storeProviderApiKeys(_settings, baseUrl, mainKey, spareKey, spareActive);
-        // The live credential is whichever key this provider has toggled.
+        auto keys = settingsKeyFieldValues();
+        foreach (ref key; keys) key = key.strip();
+        storeProviderApiKeys(_settings, baseUrl, keys,
+            _settingsActiveKeyIndex);
+        // The live credential is whichever field this provider selected.
         if (auto entry = findProviderApiKeys(_settings, baseUrl))
             _settings.apiKey = activeKeyOf(*entry);
         applyApiKeyToClient();
@@ -19836,8 +19888,7 @@ public final class OpenCodeRoot : VBox
         if (_settingsKeyField !is null) _settingsKeyField.setText(primary);
         if (_settingsAdditionalKeyField !is null)
             _settingsAdditionalKeyField.setText(additional);
-        if (_settingsAdditionalKeyToggle !is null)
-            _settingsAdditionalKeyToggle.setChecked(additionalActive, false);
+        selectSettingsKey(additionalActive ? 1 : 0);
         commitApiKeysFromFields();
         return _settings.apiKey ~ "\n" ~ activeApiKey(_settings);
     }
@@ -19853,8 +19904,7 @@ public final class OpenCodeRoot : VBox
             ? _settingsKeyField.textUtf8() : "";
         const additional = _settingsAdditionalKeyField !is null
             ? _settingsAdditionalKeyField.textUtf8() : "";
-        const active = _settingsAdditionalKeyToggle !is null &&
-            _settingsAdditionalKeyToggle.checked();
+        const active = _settingsActiveKeyIndex == 1;
         return key ~ "\n" ~ additional ~ "\nactive=" ~ (active ? "1" : "0");
     }
 

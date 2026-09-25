@@ -936,18 +936,19 @@ public struct ProjectState
 }
 
 /**
- * The two credentials kept for one provider: the main key from Settings, a
- * spare key, and which of the two is currently live. Identified by the preset
- * id when the endpoint is one of `providerPresets`, otherwise by the endpoint
- * itself, so every provider keeps its own pair.
+ * Credentials kept for one provider. The first two fields retain their old
+ * storage names so existing settings files can be read without losing keys.
+ * The active index is zero-based across those two fields and `extraApiKeys`.
  */
 public struct ProviderApiKeys
 {
     string providerId;        // preset id, or "" for a hand-edited endpoint
-    string baseUrl;           // the endpoint this pair belongs to
-    string apiKey;            // main key field
-    string additionalApiKey;  // spare key field
-    bool additionalKeyActive; // true => the spare key is the live one
+    string baseUrl;
+    string apiKey;            // API Key #1
+    string additionalApiKey;  // API Key #2 (legacy storage name)
+    bool additionalKeyActive; // legacy active-key flag
+    string[] extraApiKeys;    // API Key #3 and later
+    size_t activeKeyIndex;    // zero-based selected field
 }
 
 public struct Settings
@@ -955,8 +956,7 @@ public struct Settings
     string baseUrl = defaultBaseUrl;
     // The LIVE credential for `baseUrl`; see `activeApiKey`.
     string apiKey = "";
-    // Per-provider key pairs: each provider keeps its own main and spare key
-    // and remembers which of the two is active.
+    // Per-provider key lists and their selected active key.
     ProviderApiKeys[] providerKeys;
     string model = defaultModel;
     bool thinking;
@@ -1370,9 +1370,28 @@ public Settings loadSettings()
                                     f.type == JSONType.false_)
                                     keys.additionalKeyActive =
                                         f.type == JSONType.true_;
+                            if (auto f = "extraApiKeys" in entry.object)
+                                if (f.type == JSONType.array)
+                                    foreach (value_; f.array)
+                                        if (value_.type == JSONType.string)
+                                            keys.extraApiKeys ~= value_.str;
+                            bool activeIndexLoaded;
+                            if (auto f = "activeKeyIndex" in entry.object)
+                                if (f.type == JSONType.integer &&
+                                    f.integer >= 0 && f.integer < 64)
+                                {
+                                    keys.activeKeyIndex = cast(size_t) f.integer;
+                                    activeIndexLoaded = true;
+                                }
+                            if (!activeIndexLoaded && keys.additionalKeyActive)
+                                keys.activeKeyIndex = 1;
+                            if (keys.activeKeyIndex >= 2 +
+                                keys.extraApiKeys.length)
+                                keys.activeKeyIndex = 0;
                             if (keys.providerId.length == 0 ||
                                 (keys.apiKey.length == 0 &&
-                                 keys.additionalApiKey.length == 0))
+                                 keys.additionalApiKey.length == 0 &&
+                                 keys.extraApiKeys.length == 0))
                                 continue;
                             settings.providerKeys ~= keys;
                         }
@@ -1500,6 +1519,10 @@ public void saveSettings(const ref Settings settings)
         item["apiKey"] = keys.apiKey;
         item["additionalApiKey"] = keys.additionalApiKey;
         item["additionalKeyActive"] = keys.additionalKeyActive;
+        JSONValue extraKeys = JSONValue(string[].init);
+        foreach (key; keys.extraApiKeys) extraKeys.array ~= JSONValue(key);
+        item["extraApiKeys"] = extraKeys;
+        item["activeKeyIndex"] = cast(long) keys.activeKeyIndex;
         providerKeys.array ~= item;
     }
     root["providerKeys"] = providerKeys;
@@ -1564,7 +1587,7 @@ public string apiKeyOwnerForBaseUrl(string baseUrl)
     return normalizedBaseUrl(baseUrl);
 }
 
-/// The stored key pair for `baseUrl`, or null when that provider has none yet.
+/// The stored keys for `baseUrl`, or null when that provider has none yet.
 public const(ProviderApiKeys)* findProviderApiKeys(const ref Settings settings,
     string baseUrl)
 {
@@ -1575,38 +1598,65 @@ public const(ProviderApiKeys)* findProviderApiKeys(const ref Settings settings,
     return null;
 }
 
-/// Store the two keys and the active-key toggle for the provider serving
-/// `baseUrl`, replacing any previous pair for it. A blank endpoint is ignored
-/// (there is nothing to key the pair on).
+/// The ordered fields displayed for one provider, including blank added slots.
+public string[] providerApiKeyValues(const ref ProviderApiKeys keys)
+{
+    string[] values = [keys.apiKey, keys.additionalApiKey];
+    foreach (key; keys.extraApiKeys) values ~= key;
+    return values;
+}
+
+/// Store all fields and the selected field for one provider.
 public void storeProviderApiKeys(ref Settings settings, string baseUrl,
-    string apiKey, string additionalApiKey, bool additionalKeyActive)
+    const(string)[] keys, size_t activeIndex)
 {
     const owner = apiKeyOwnerForBaseUrl(baseUrl);
     if (owner.length == 0) return;
+    const first = keys.length > 0 ? keys[0] : "";
+    const second = keys.length > 1 ? keys[1] : "";
+    string[] extras;
+    if (keys.length > 2)
+        foreach (key; keys[2 .. $]) extras ~= key;
+    if (activeIndex >= 2 + extras.length) activeIndex = 0;
     foreach (ref entry; settings.providerKeys)
     {
         if (entry.providerId != owner) continue;
         entry.baseUrl = baseUrl;
-        entry.apiKey = apiKey;
-        entry.additionalApiKey = additionalApiKey;
-        entry.additionalKeyActive = additionalKeyActive;
+        entry.apiKey = first;
+        entry.additionalApiKey = second;
+        entry.additionalKeyActive = activeIndex == 1;
+        entry.extraApiKeys = extras;
+        entry.activeKeyIndex = activeIndex;
         return;
     }
-    settings.providerKeys ~= ProviderApiKeys(owner, baseUrl, apiKey,
-        additionalApiKey, additionalKeyActive);
+    settings.providerKeys ~= ProviderApiKeys(owner, baseUrl, first, second,
+        activeIndex == 1, extras, activeIndex);
 }
 
-/// The live key of one stored pair: the spare when it is toggled active and
-/// holds a value, otherwise the main key. An empty spare never shadows a
-/// filled main key, so switching to it cannot silently drop the credential.
+/// Compatibility for callers migrating the former two-key settings shape.
+public void storeProviderApiKeys(ref Settings settings, string baseUrl,
+    string apiKey, string additionalApiKey, bool additionalKeyActive)
+{
+    storeProviderApiKeys(settings, baseUrl, [apiKey, additionalApiKey],
+        additionalKeyActive ? 1 : 0);
+}
+
+/// The live key of one provider. Empty selected fields fall back to #1.
 public string activeKeyOf(const ref ProviderApiKeys keys)
 {
-    return keys.additionalKeyActive && keys.additionalApiKey.length > 0
-        ? keys.additionalApiKey : keys.apiKey;
+    if (keys.activeKeyIndex == 1 && keys.additionalApiKey.length > 0)
+        return keys.additionalApiKey;
+    if (keys.activeKeyIndex >= 2 &&
+        keys.activeKeyIndex - 2 < keys.extraApiKeys.length)
+    {
+        const selected = keys.extraApiKeys[keys.activeKeyIndex - 2];
+        if (selected.length > 0) return selected;
+    }
+    return keys.apiKey;
 }
 
 /// The key actually sent with requests for the configured `baseUrl`: the
-/// provider's own active key when it has a stored pair, else `apiKey`.
+/// provider's own active key when it has stored fields, else `apiKey`.
 public string activeApiKey(const ref Settings settings)
 {
     if (auto entry = findProviderApiKeys(settings, settings.baseUrl))
