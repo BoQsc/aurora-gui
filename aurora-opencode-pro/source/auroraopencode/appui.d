@@ -15,7 +15,7 @@ import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
-    fetchCommandCodeUser, fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
+    fetchCommandCodeUser, fetchOpenCodeGoUsageIdentity, fetchUsageLimits,
     usageProviderForBaseUrl;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
@@ -4337,10 +4337,13 @@ private final class HoverTooltip : Widget
         _title = toUTF32(result.title);
         _usageBars = result.windows.dup;
         _wrap = result.serviceAccountName.length > 0 ||
+            result.usageMemberEmail.length > 0 ||
             result.commandCodeUser.length > 0;
         _rows.length = 0;
         if (result.serviceAccountName.length > 0)
             _rows ~= toUTF32("Service account: " ~ result.serviceAccountName);
+        if (result.usageMemberEmail.length > 0)
+            _rows ~= toUTF32("Usage member: " ~ result.usageMemberEmail);
         if (result.commandCodeUser.length > 0)
             _rows ~= toUTF32("User: " ~ result.commandCodeUser);
         if (result.note.length > 0) _rows ~= toUTF32(result.note);
@@ -15421,7 +15424,8 @@ public final class OpenCodeRoot : VBox
         if (fresh || requestId in _keyUsageFetching) return;
         _keyUsageFetching[requestId] = true;
         const cachedName = cached is null ? "" : provider == "opencode" ?
-            cached.serviceAccountName : cached.commandCodeUser;
+            (cached.serviceAccountName.length > 0 ? cached.serviceAccountName :
+                cached.usageMemberEmail) : cached.commandCodeUser;
         const accountCachedAt = requestId in _keyAccountCacheAt;
         const accountFresh = accountCachedAt !is null &&
             Clock.currTime.toUnixTime() - *accountCachedAt <
@@ -15430,8 +15434,17 @@ public final class OpenCodeRoot : VBox
             auto result = fetchUsageLimits(provider, apiKey);
             if (provider == "opencode")
             {
-                result.serviceAccountName = accountFresh ? cachedName :
-                    fetchOpenCodeGoServiceAccountName(apiKey);
+                if (accountFresh)
+                {
+                    result.serviceAccountName = cached.serviceAccountName;
+                    result.usageMemberEmail = cached.usageMemberEmail;
+                }
+                else
+                {
+                    const identity = fetchOpenCodeGoUsageIdentity(apiKey);
+                    result.serviceAccountName = identity.serviceAccountName;
+                    result.usageMemberEmail = identity.usageMemberEmail;
+                }
             }
             else if (provider == "commandcode")
                 result.commandCodeUser = accountFresh ? cachedName :
