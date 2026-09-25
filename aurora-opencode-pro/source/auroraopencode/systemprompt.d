@@ -252,8 +252,10 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
         "- Make every workspace file change through `apply_patch`, " ~
         "`edit`, `write`, `copy`, `move`, `rename`, `create_folder`, or " ~
         "`remove` so Aurora can snapshot and safely revert " ~
-        "it. Do not use `run`, `bash`, or an external script to mutate files; " ~
-        "those programs operate outside the change journal.\n" ~
+        "it. Do not use `run`, `bash`, or an external script to mutate " ~
+        "workspace files; those programs operate outside the change journal. " ~
+        "Temporary verification output outside the workspace, such as a " ~
+        "browser screenshot, is allowed.\n" ~
         "- A mutation must advance the requested artifact. Never add a " ~
         "comment, whitespace, or other unrelated change merely to unlock more " ~
         "exploration.\n" ~
@@ -299,6 +301,26 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "`start` or PowerShell `Start-Process`.\n";
     text ~= "Use `webfetch` to read the body of a web page or API endpoint " ~
         "instead of a shell download command; it needs no shell.\n";
+    if (ctx.platformName == "win32")
+    {
+        text ~= "For a local HTML page, check these common browser paths: " ~
+            "`C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe` " ~
+            "and `C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\" ~
+            "msedge.exe`. Use whichever exists. Example Chrome command: " ~
+            "`\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" " ~
+            "--headless --dump-dom file:///C:/test/index.html`; replace the " ~
+            "file URL with the actual page. For a visual check, use the same " ~
+            "executable with `--headless --screenshot " ~
+            "--window-size=1280,800` and the file URL, set its working " ~
+            "directory to an existing temporary folder, then inspect " ~
+            "`screenshot.png` with `view_image`. Omit `--disable-gpu` unless " ~
+            "needed because it can alter rendering.\n";
+        if (ctx.nativeOnly)
+            text ~= "For these browser commands, pass the executable path " ~
+                "as `run.program` and each flag and URL as a separate " ~
+                "`run.args` entry. Do not pass shell quotes or cmd.exe `^` " ~
+                "line continuations.\n";
+    }
     // experimental: websearch - delete with source/auroraopencode/websearch.d
     if (experimentalWebSearchEnabled())
         text ~= "Use `websearch` to discover pages from a search query, " ~
