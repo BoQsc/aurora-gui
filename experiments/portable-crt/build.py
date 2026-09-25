@@ -27,11 +27,17 @@ def msvc_environment():
     if not installation:
         raise RuntimeError("Visual Studio C++ compiler was not found")
     vcvars = Path(installation) / "VC/Auxiliary/Build/vcvars64.bat"
-    result = subprocess.run(
-        ["cmd", "/d", "/s", "/c", f'call "{vcvars}" && set'],
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="aurora-vcvars-") as temporary:
+        wrapper = Path(temporary) / "environment.cmd"
+        wrapper.write_text(
+            f'@echo off\ncall "{vcvars}"\nif errorlevel 1 exit /b %errorlevel%\nset\n',
+            encoding="ascii",
+        )
+        result = subprocess.run(
+            ["cmd", "/d", "/c", str(wrapper)],
+            capture_output=True,
+            text=True,
+        )
     if result.returncode:
         raise RuntimeError(
             f"Could not initialize the Visual C++ environment ({result.returncode}):\n"
