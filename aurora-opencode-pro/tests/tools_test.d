@@ -17,7 +17,7 @@ import std.path : buildPath;
 import std.process : environment;
 import std.json : parseJSON;
 import std.stdio : writeln;
-import std.string : indexOf, replace;
+import std.string : indexOf, replace, strip;
 import std.utf : validate;
 import core.thread : Thread;
 import core.time : msecs;
@@ -49,6 +49,7 @@ int main()
     const dir = buildPath(tempDir(), "aurora-opencode-tools-test");
     if (exists(dir)) rmdirRecurse(dir);
     mkdirRecurse(dir);
+    setOpencodeStateDirectoryForTesting(buildPath(dir, "state"));
     mkdirRecurse(buildPath(dir, "src"));
     write(buildPath(dir, "src", "main.d"), "import std.stdio;\nvoid main() {}\n");
     write(buildPath(dir, "README.md"), "aurora tools test\n");
@@ -701,6 +702,34 @@ int main()
         writeln("D-native run tool executes a program directly");
     }
 
+    // Oversized output remains available after the transcript preview is
+    // capped. The returned absolute path can be paged with the existing read
+    // tool instead of forcing the model to rerun an expensive command.
+    auto largeOutput = executeTool(makeCall("run",
+        `{"program":"python","args":["-c","print('full-output-marker-' + 'x' * 45000)"]}`),
+        dir);
+    const savedMarker = "Full output saved to: ";
+    const savedAt = largeOutput.output.indexOf(savedMarker);
+    assert(!largeOutput.failed && savedAt >= 0,
+        "large output did not return a durable reference: " ~
+        largeOutput.output);
+    auto savedBody = largeOutput.output[
+        cast(size_t) savedAt + savedMarker.length .. $];
+    const savedEnd = savedBody.indexOf('\n');
+    const savedPath = savedEnd >= 0
+        ? savedBody[0 .. cast(size_t) savedEnd] : savedBody;
+    assert(exists(savedPath) && readText(savedPath).length > 40_000 &&
+        readText(savedPath).indexOf("full-output-marker-") == 0,
+        "durable tool output file is missing or incomplete: " ~ savedPath);
+    auto savedPage = executeTool(makeCall("read",
+        `{"filePath":"` ~ savedPath.replace("\\", "/") ~
+        `","offset":1,"limit":1}`), dir);
+    assert(!savedPage.failed && savedPage.output.indexOf(
+        "full-output-marker-") >= 0,
+        "saved output reference is not readable through the tool: " ~
+        savedPage.output);
+    writeln("large tool output is retained behind a pageable file reference");
+
     // The D-native `dshell` tool uses short natural words: where / list /
     // info (the legacy pwd/ls/dir/stat words still work as aliases).
     auto whereResult = executeTool(makeCall("dshell",
@@ -1178,19 +1207,33 @@ int main()
         writeln("apply_patch matches CRLF and mixed-line-ending context");
     }
 
-    // A Codex-style Move-to directive used to be consumed as a boundary and
-    // silently ignored while apply_patch reported success. The move tool is
-    // the supported path, so fail explicitly without touching either path.
+    // A Move-to update relocates and edits one file inside the same atomic
+    // patch. Its diff counts only content changes, not every renamed line.
     {
-        write(buildPath(dir, "patch-move-source.txt"), "keep me\n");
+        const source = buildPath(dir, "patch-move-source.txt");
+        const target = buildPath(dir, "patch-moved", "target.txt");
+        write(source, "keep me\nold\n");
         auto result = executeTool(makeCall("apply_patch",
-            `{"patch":"*** Begin Patch\n*** Update File: patch-move-source.txt\n*** Move to: patch-move-target.txt\n*** End Patch"}`),
+            `{"patch":"*** Begin Patch\n*** Update File: patch-move-source.txt\n*** Move to: patch-moved/target.txt\n@@\n keep me\n-old\n+new\n*** End Patch"}`),
             dir);
-        assert(result.failed && result.output.indexOf("`move` tool") >= 0 &&
-            exists(buildPath(dir, "patch-move-source.txt")) &&
-            !exists(buildPath(dir, "patch-move-target.txt")),
-            "apply_patch must reject rather than fake a move: " ~ result.output);
-        writeln("apply_patch rejects Move-to directives in favor of move");
+        assert(!result.failed && !exists(source) && exists(target) &&
+            readText(target) == "keep me\nnew\n",
+            "apply_patch did not move and edit atomically: " ~ result.output);
+        assert(result.additions == 1 && result.deletions == 1,
+            "move diff counted renamed lines as content changes: " ~
+            result.output);
+
+        const collisionSource = buildPath(dir, "patch-collision-source.txt");
+        const collisionTarget = buildPath(dir, "patch-collision-target.txt");
+        write(collisionSource, "source\n");
+        write(collisionTarget, "target\n");
+        auto collision = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: patch-collision-source.txt\n*** Move to: patch-collision-target.txt\n*** End Patch"}`), dir);
+        assert(collision.failed && readText(collisionSource) == "source\n" &&
+            readText(collisionTarget) == "target\n",
+            "conflicting patch move modified one of its paths: " ~
+            collision.output);
+        writeln("apply_patch supports transactional Move-to updates");
     }
 
     // Regression: a hunk whose context is absent must fail cleanly. The old
@@ -1238,6 +1281,52 @@ int main()
         writeln("apply_patch validates every section before changing files");
     }
 
+    // Projects can opt into formatter/test automation without a global
+    // permission subsystem. Hooks run directly from argv after a successful
+    // mutation and a failure is reported without pretending the edit vanished.
+    {
+        const hookWorkspace = buildPath(dir, "hook-workspace");
+        const hookConfigDir = buildPath(hookWorkspace, ".aurora");
+        mkdirRecurse(hookConfigDir);
+        write(buildPath(hookWorkspace, "hook-target.txt"), "before\n");
+        version (Windows)
+            const successCommand =
+                `["cmd.exe","/d","/s","/c","echo hook-ran>hook-ran.txt"]`;
+        else
+            const successCommand =
+                `["/bin/sh","-c","printf hook-ran > hook-ran.txt"]`;
+        write(buildPath(hookConfigDir, "hooks.json"),
+            `{"postEdit":[{"name":"smoke","command":` ~
+            successCommand ~ `,"timeout":10000}]}`);
+        auto hooked = executeTool(makeCall("edit",
+            `{"filePath":"hook-target.txt","oldString":"before",` ~
+            `"newString":"after"}`), hookWorkspace);
+        assert(!hooked.failed && hooked.output.indexOf(
+            "Post-edit hooks: 1 passed") >= 0 &&
+            readText(buildPath(hookWorkspace, "hook-ran.txt")).strip() ==
+                "hook-ran",
+            "configured post-edit hook did not run: " ~ hooked.output);
+
+        version (Windows)
+            const failureCommand =
+                `["cmd.exe","/d","/s","/c","exit /b 9"]`;
+        else
+            const failureCommand = `["/bin/sh","-c","exit 9"]`;
+        write(buildPath(hookConfigDir, "hooks.json"),
+            `{"postEdit":[{"name":"verify","command":` ~
+            failureCommand ~ `,"timeout":10000}]}`);
+        auto hookFailure = executeTool(makeCall("edit",
+            `{"filePath":"hook-target.txt","oldString":"after",` ~
+            `"newString":"changed"}`), hookWorkspace);
+        assert(hookFailure.failed && hookFailure.output.indexOf(
+            "failed after the file change succeeded") >= 0 &&
+            readText(buildPath(hookWorkspace, "hook-target.txt")) ==
+                "changed\n",
+            "post-edit failure hid or reverted the successful edit: " ~
+            hookFailure.output);
+        writeln("project post-edit hooks run and report verification failures");
+    }
+
     // update_plan renders a checked list and enforces a single in-progress
     // step, so the transcript can show the plan.
     {
@@ -1276,7 +1365,6 @@ int main()
     // Git-independent mutation journal: capture exact bytes, refuse to clobber
     // a later external edit, and make the successful revert another snapshot.
     {
-        setOpencodeStateDirectoryForTesting(buildPath(dir, "state"));
         const journalPath = buildPath(dir, "journal.txt");
         write(journalPath, "before\n");
         ChangeContext context;

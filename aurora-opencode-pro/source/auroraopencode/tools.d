@@ -142,7 +142,9 @@ private OpenCodeToolDef applyPatchToolDefinition()
         "Apply a patch in the Codex format to one or more files in a single " ~
         "call. The patch is wrapped in `*** Begin Patch` / `*** End Patch` " ~
         "and may contain `*** Add File:`, `*** Update File:` and `*** Delete " ~
-        "File:` sections. Inside an update, unchanged context lines start " ~
+        "File:` sections. An update may be followed by `*** Move to:` to " ~
+        "rename or relocate that file in the same transaction. Inside an " ~
+        "update, unchanged context lines start " ~
         "with a space, removed lines with `-` and added lines with `+`. " ~
         "Prefer this over several `edit` calls when a change touches " ~
         "multiple files or places.",
@@ -1122,7 +1124,7 @@ private string[] mutationTargetPaths(const OpenCodeToolCall call,
         {
             const text = line.strip();
             foreach (prefix; ["*** Add File:", "*** Update File:",
-                "*** Delete File:"])
+                "*** Delete File:", "*** Move to:"])
                 if (text.length >= prefix.length &&
                     text[0 .. prefix.length] == prefix)
                     add(text[prefix.length .. $].strip());
@@ -1328,6 +1330,8 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
 
 private int maxOutputLines = 400;
 private int maxOutputBytes = 40_000;
+private __gshared Mutex _toolOutputMutex;
+private __gshared ulong _toolOutputSequence;
 
 /// Decode raw bytes as UTF-8 when they are valid UTF-8, otherwise map each
 /// byte to its own code point and UTF-8 encode it. Console tools on Windows
@@ -1369,11 +1373,55 @@ private size_t utf8SafeCut(const(ubyte)[] bytes)
     return index - 1;
 }
 
-private string truncateOutput(string text)
+private string truncateOutputPreview(string text)
 {
     if (text.length <= maxOutputBytes) return text;
     const safe = utf8SafeCut(cast(const(ubyte)[]) text[0 .. maxOutputBytes]);
     return text[0 .. safe] ~ "\n…(output truncated)";
+}
+
+private string truncateOutput(string text)
+{
+    if (text.length <= maxOutputBytes) return text;
+    string savedPath;
+    try
+    {
+        synchronized (_toolOutputMutex)
+        {
+            ensureStateDirectory();
+            const outputDir = buildPath(opencodeStateDirectory(),
+                "tool-output");
+            mkdirRecurse(outputDir);
+            savedPath = buildPath(outputDir,
+                to!string(Clock.currTime.stdTime) ~ "-" ~
+                to!string(++_toolOutputSequence) ~ ".txt");
+            write(savedPath, text);
+
+            // Keep references useful without allowing unattended agent runs to
+            // grow this cache forever. Lexicographic order matches creation
+            // order because every name begins with the fixed-width stdTime.
+            string[] stored;
+            foreach (entry; dirEntries(outputDir, SpanMode.shallow))
+                if (entry.isFile && extension(entry.name) == ".txt")
+                    stored ~= entry.name;
+            stored.sort();
+            while (stored.length > 100)
+            {
+                collectException(remove(stored[0]));
+                stored = stored[1 .. $];
+            }
+        }
+    }
+    catch (Exception) savedPath = "";
+
+    auto result = truncateOutputPreview(text);
+    if (savedPath.length > 0)
+    {
+        const displayPath = savedPath.replace("\\", "/");
+        result ~= "\nFull output saved to: " ~ displayPath ~
+            "\nUse `read` with this path and `offset`/`limit` to page it.";
+    }
+    return result;
 }
 
 /// Read at most `cap` bytes from a file and decode them leniently. Avoids
@@ -1955,6 +2003,7 @@ shared static this()
     _processMutex = new Mutex();
     _workspaceLocksMutex = new Mutex();
     _changeJournalMutex = new Mutex();
+    _toolOutputMutex = new Mutex();
 }
 
 private Mutex workspaceMutationLock(string workspace)
@@ -2990,6 +3039,9 @@ private ToolExecution runApplyPatch(string args, string workspace)
         string before;
         bool afterExists;
         string after;
+        bool includeInDiff;
+        string diffBefore;
+        string diffAfter;
     }
 
     JSONValue value;
@@ -3019,16 +3071,6 @@ private ToolExecution runApplyPatch(string args, string workspace)
     if (lines.length > 0 && lines[$ - 1].length == 0)
         lines = lines[0 .. $ - 1];
 
-    // `*** Move to:` is part of another patch dialect. This parser used to
-    // treat it only as a section boundary, then report success after rewriting
-    // the original file unchanged. Never fake that move: the dedicated tool
-    // handles files, trees and batches with collision checks and journaling.
-    foreach (line; lines)
-        if (strip(line).startsWith("*** Move to:"))
-            return ToolExecution("apply_patch",
-                "Error: apply_patch does not move paths. Use the `move` tool " ~
-                "with `source` and `destinationFolder` instead.", true);
-
     // Locate the envelope; be lenient if the model omitted the markers.
     size_t bodyStart = 0;
     size_t bodyEnd = lines.length;
@@ -3055,6 +3097,24 @@ private ToolExecution runApplyPatch(string args, string workspace)
         foreach (change; changes)
             if (comparableSearchPath(change.path) == comparable) return true;
         return false;
+    }
+
+    void stageChange(string relativePath, string path, bool beforeExists,
+        string before, bool afterExists, string after,
+        bool includeInDiff = true, string diffBefore = null,
+        string diffAfter = null)
+    {
+        PatchChange change;
+        change.relativePath = relativePath;
+        change.path = path;
+        change.beforeExists = beforeExists;
+        change.before = before;
+        change.afterExists = afterExists;
+        change.after = after;
+        change.includeInDiff = includeInDiff;
+        change.diffBefore = diffBefore is null ? before : diffBefore;
+        change.diffAfter = diffAfter is null ? after : diffAfter;
+        changes ~= change;
     }
 
     size_t cursor = bodyStart;
@@ -3094,8 +3154,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 else if (exists(path))
                     failures ~= rel ~ ": path already exists";
                 else
-                    changes ~= PatchChange(rel, path, false, "", true,
-                        builder.data);
+                    stageChange(rel, path, false, "", true, builder.data);
             }
             catch (Exception error)
                 failures ~= rel ~ ": " ~ error.msg;
@@ -3119,8 +3178,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 else if (!exists(path) || !isFile(path))
                     failures ~= rel ~ ": file not found";
                 else
-                    changes ~= PatchChange(rel, path, true, readText(path),
-                        false, "");
+                    stageChange(rel, path, true, readText(path), false, "");
             }
             catch (Exception error)
                 failures ~= rel ~ ": " ~ error.msg;
@@ -3131,6 +3189,17 @@ private ToolExecution runApplyPatch(string args, string workspace)
         {
             const rel = strip(directive["*** Update File:".length .. $]);
             ++cursor;
+            string moveRel;
+            if (cursor < bodyEnd)
+            {
+                const next = strip(lines[cursor]);
+                if (next.length >= "*** Move to:".length &&
+                    next[0 .. "*** Move to:".length] == "*** Move to:")
+                {
+                    moveRel = strip(next["*** Move to:".length .. $]);
+                    ++cursor;
+                }
+            }
             if (rel.length == 0)
             {
                 failures ~= "Update File: path is empty";
@@ -3139,9 +3208,29 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 continue;
             }
             const path = resolveToolPath(rel, workspace);
+            string movePath;
+            if (moveRel.length > 0)
+                movePath = resolveToolPath(moveRel, workspace);
             if (alreadyStaged(path))
             {
                 failures ~= rel ~ ": duplicate patch section";
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
+            if (moveRel.length > 0 &&
+                comparableSearchPath(movePath) == comparableSearchPath(path))
+            {
+                failures ~= rel ~ ": move destination is the same path";
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
+            if (moveRel.length > 0 &&
+                (alreadyStaged(movePath) || exists(movePath)))
+            {
+                failures ~= moveRel ~ ": move destination already exists or " ~
+                    "is used by another patch section";
                 while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
                     ++cursor;
                 continue;
@@ -3266,7 +3355,19 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 failures ~= rel ~ ": " ~ failReason;
                 continue;
             }
-            changes ~= PatchChange(rel, path, true, original, true, content);
+            if (moveRel.length == 0)
+                stageChange(rel, path, true, original, true, content);
+            else
+            {
+                // Model a move as a source removal plus destination creation so
+                // the existing transactional commit/rollback machinery covers
+                // both paths. Only the destination contributes a content diff;
+                // otherwise a pure rename would appear as deleting and adding
+                // every line.
+                stageChange(rel, path, true, original, false, "", false);
+                stageChange(moveRel, movePath, false, "", true, content, true,
+                    original, content);
+            }
             continue;
         }
         failures ~= "unexpected patch line: " ~ lines[cursor];
@@ -3294,7 +3395,8 @@ private ToolExecution runApplyPatch(string args, string workspace)
     int totalDeletions;
     foreach (change; changes)
     {
-        auto diff = computeTextDiff(change.before, change.after);
+        if (!change.includeInDiff) continue;
+        auto diff = computeTextDiff(change.diffBefore, change.diffAfter);
         totalAdditions += diff.additions;
         totalDeletions += diff.deletions;
         combinedDiff ~= diff.unified ~ "\n";
@@ -3406,7 +3508,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
 
     auto builder = appender!string();
     builder.put("Applied patch to " ~ to!string(changes.length) ~
-        (changes.length == 1 ? " file" : " files") ~ " (+" ~
+        (changes.length == 1 ? " path" : " paths") ~ " (+" ~
         to!string(totalAdditions) ~ " -" ~ to!string(totalDeletions) ~ ").");
     ToolExecution result;
     result.name = "apply_patch";
@@ -4278,6 +4380,147 @@ private bool fileMatchesInclude(string fileName, string include)
     return endsWith(fileName, include);
 }
 
+// Optional project-local post-edit automation. A workspace opts in by adding
+// `.aurora/hooks.json` with a `postEdit` array. Commands are argv arrays and are
+// launched directly; `{workspace}`, `{file}`, and `{files}` are expanded only
+// when they occupy a complete argument, avoiding another quoting language.
+private struct PostEditHook
+{
+    string name;
+    string[] command;
+    int timeoutMs = 120_000;
+}
+
+private struct PostEditHookConfig
+{
+    PostEditHook[] hooks;
+    string error;
+}
+
+private PostEditHookConfig loadPostEditHooks(string workspace)
+{
+    PostEditHookConfig config;
+    const path = buildPath(workspace, ".aurora", "hooks.json");
+    if (!exists(path)) return config;
+    JSONValue root;
+    try root = parseJSON(readText(path));
+    catch (Exception error)
+    {
+        config.error = path ~ ": " ~ error.msg;
+        return config;
+    }
+    if (root.type != JSONType.object)
+    {
+        config.error = path ~ ": root must be an object";
+        return config;
+    }
+    auto field = "postEdit" in root.object;
+    if (field is null) return config;
+    if (field.type != JSONType.array)
+    {
+        config.error = path ~ ": `postEdit` must be an array";
+        return config;
+    }
+    foreach (index, item; field.array)
+    {
+        if (item.type != JSONType.object)
+        {
+            config.error = path ~ ": postEdit[" ~ to!string(index) ~
+                "] must be an object";
+            return config;
+        }
+        PostEditHook hook;
+        if (auto name = "name" in item.object)
+            if (name.type == JSONType.string) hook.name = name.str.strip();
+        auto command = "command" in item.object;
+        if (command is null || command.type != JSONType.array)
+        {
+            config.error = path ~ ": postEdit[" ~ to!string(index) ~
+                "].command must be a non-empty string array";
+            return config;
+        }
+        foreach (argument; command.array)
+        {
+            if (argument.type != JSONType.string)
+            {
+                config.error = path ~ ": postEdit[" ~ to!string(index) ~
+                    "].command must contain only strings";
+                return config;
+            }
+            hook.command ~= argument.str;
+        }
+        if (hook.command.length == 0 || hook.command[0].length == 0)
+        {
+            config.error = path ~ ": postEdit[" ~ to!string(index) ~
+                "].command must not be empty";
+            return config;
+        }
+        if (auto timeout = "timeout" in item.object)
+            if (timeout.type == JSONType.integer)
+            {
+                auto requested = timeout.integer;
+                if (requested < 1) requested = 1;
+                if (requested > 600_000) requested = 600_000;
+                hook.timeoutMs = cast(int) requested;
+            }
+        if (hook.name.length == 0) hook.name = hook.command[0];
+        config.hooks ~= hook;
+    }
+    return config;
+}
+
+private string[] expandPostEditCommand(const ref PostEditHook hook,
+    string workspace, const(string)[] targets)
+{
+    string[] files;
+    foreach (target; targets)
+        if (exists(target) && isFile(target)) files ~= target;
+    string[] argv;
+    foreach (argument; hook.command)
+    {
+        if (argument == "{workspace}") argv ~= workspace;
+        else if (argument == "{file}")
+        {
+            if (files.length > 0) argv ~= files[0];
+        }
+        else if (argument == "{files}") argv ~= files;
+        else argv ~= argument;
+    }
+    return argv;
+}
+
+private void runPostEditHooks(const(PostEditHook)[] hooks, string workspace,
+    const(string)[] targets, ToolCancellation cancellation,
+    ref ToolExecution result)
+{
+    size_t passed;
+    foreach (hook; hooks)
+    {
+        auto argv = expandPostEditCommand(hook, workspace, targets);
+        if (argv.length == 0)
+        {
+            result.failed = true;
+            result.output ~= "\nPost-edit hook '" ~ hook.name ~
+                "' had no command after placeholder expansion.";
+            break;
+        }
+        auto outcome = runProcess(argv, workspace, hook.timeoutMs,
+            "post-edit hook", cancellation);
+        if (outcome[1])
+        {
+            result.failed = true;
+            result.output ~= "\nPost-edit hook '" ~ hook.name ~
+                "' failed after the file change succeeded:\n" ~ outcome[0];
+            break;
+        }
+        ++passed;
+    }
+    if (passed > 0 && passed == hooks.length)
+        result.output ~= "\nPost-edit hooks: " ~ to!string(passed) ~
+            " passed.";
+    result.output = truncateOutput(result.output);
+}
+
 /// Execute a single tool call against the workspace directory and record how
 /// long it took. The result is a plain-text string ready to be fed back to the
 /// model as a `tool` message. A view_image result additionally carries pixels
@@ -4299,9 +4542,15 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         auto mutationLock = workspaceMutationLock(workspace);
         mutationLock.lock();
         scope (exit) mutationLock.unlock();
+        const hookConfig = loadPostEditHooks(workspace);
+        if (hookConfig.error.length > 0)
+            return ToolExecution(call.name,
+                "Error: invalid post-edit hook configuration: " ~
+                hookConfig.error, true);
         string[] journalTargets;
         FileSnapshot[] before;
-        if (changeContext.conversationId.length > 0)
+        if (changeContext.conversationId.length > 0 ||
+            hookConfig.hooks.length > 0)
         {
             try
             {
@@ -4314,6 +4563,9 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
                     error.msg, true);
         }
         result = dispatchTool(call, workspace, cancellation);
+        if (!result.failed && hookConfig.hooks.length > 0)
+            runPostEditHooks(hookConfig.hooks, workspace, journalTargets,
+                cancellation, result);
         if (changeContext.conversationId.length > 0)
         {
             try
