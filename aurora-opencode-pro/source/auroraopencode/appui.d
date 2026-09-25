@@ -14524,7 +14524,9 @@ public final class OpenCodeRoot : VBox
         _settingsBaseField = baseField;
 
         const activePair = findProviderApiKeys(_settings, _settings.baseUrl);
-        auto keyRows = new VBox(8);
+        // Nested VBox children need to publish their measured height to the
+        // parent layout, or the credential rows receive a zero-height slot.
+        auto keyRows = new SettingsSectionBody();
         _settingsKeyRows = keyRows;
         renderSettingsKeyRows(activePair !is null
             ? providerApiKeyValues(*activePair) : [_settings.apiKey, ""],
