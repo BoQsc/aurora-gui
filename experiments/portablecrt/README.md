@@ -19,6 +19,13 @@ The C sources are built on GitHub's Windows runner with `cl /Zl /GS-`. The
 downloadable artifact contains `portablecrt.lib`, this README, and `LICENSE`.
 Place `portablecrt.lib` in a DMD linker search directory or pass its absolute
 path to the link command. Keep `LICENSE` alongside any redistributed library.
+With Git Credential Manager signed in to GitHub, run
+`python experiments/portablecrt/fetch.py` to download the latest successful
+artifact into this folder. For a link-only check:
+
+```text
+python experiments/portablecrt/probe_link.py <dub-build-log> experiments/portablecrt/portablecrt.lib ucrtbase.lib kernel32.lib
+```
 
 This is still a feasibility experiment. The library has to pass a full Aurora
 link and runtime checks before it can replace the current build dependency.
