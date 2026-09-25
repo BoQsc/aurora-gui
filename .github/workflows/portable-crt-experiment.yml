@@ -1,0 +1,33 @@
+name: Build experimental portable CRT library
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/portable-crt-experiment
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-2.112.0
+      - name: Build source-only experimental library
+        run: python experiments/portable-crt/build.py --with-c
+      - name: Save experimental library and its license
+        uses: actions/upload-artifact@v7
+        with:
+          name: aurora-portable-crt-experiment
+          path: |
+            experiments/portable-crt/aurora_crt.lib
+            experiments/portable-crt/README.md
+            experiments/portable-crt/LICENSE
+            experiments/portable-crt/third_party/README.md
+            experiments/portable-crt/third_party/ffc-LICENSE-BOOST
+          if-no-files-found: error
+          retention-days: 14
