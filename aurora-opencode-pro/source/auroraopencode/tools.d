@@ -318,6 +318,19 @@ private OpenCodeToolDef rebuildToolDefinition()
     );
 }
 
+/// Keep the grep contract identical in shell-enabled and native-only modes.
+private OpenCodeToolDef grepToolDefinition()
+{
+    return OpenCodeToolDef(
+        "grep",
+        "Search file contents under a directory. Uses regular expressions by " ~
+        "default, or exact text when `literal` is true. Defaults to the " ~
+        "workspace; set `path` for another directory or a specific file. " ~
+        "`mode` selects matching lines, matching files, or per-file counts.",
+        `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
+    );
+}
+
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
 public OpenCodeToolDef[] builtinToolDefinitions()
@@ -361,14 +374,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "directories as needed.",
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
         ),
-        OpenCodeToolDef(
-            "grep",
-            "Search file contents under a directory with a regular expression. " ~
-            "Defaults to the workspace; set `path` when the user's target is " ~
-            "another directory. " ~
-            "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
-        ),
+        grepToolDefinition(),
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     return defs;
@@ -423,14 +429,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "directories as needed.",
             `{"type":"object","properties":{"filePath":{"type":"string","description":"Path to the file, relative to the workspace or absolute"},"content":{"type":"string","description":"The full text to write"}},"required":["filePath","content"]}`
         ),
-        OpenCodeToolDef(
-            "grep",
-            "Search file contents under a directory with a regular expression. " ~
-            "Defaults to the workspace; set `path` when the user's target is " ~
-            "another directory. " ~
-            "Returns matching lines as `path:line: text` (first 200 matches).",
-            `{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression to search for"},"include":{"type":"string","description":"Optional file extension filter, e.g. *.d"},"path":{"type":"string","description":"Directory to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
-        ),
+        grepToolDefinition(),
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     return defs;
@@ -2983,6 +2982,16 @@ private ToolExecution runApplyPatch(string args, string workspace)
 {
     import std.string : splitLines;
 
+    struct PatchChange
+    {
+        string relativePath;
+        string path;
+        bool beforeExists;
+        string before;
+        bool afterExists;
+        string after;
+    }
+
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
@@ -3037,11 +3046,16 @@ private ToolExecution runApplyPatch(string args, string workspace)
         }
     if (bodyStart > bodyEnd) bodyStart = bodyEnd;
 
-    string[] touched;
-    string combinedDiff;
-    int totalAdditions;
-    int totalDeletions;
+    PatchChange[] changes;
     string[] failures;
+
+    bool alreadyStaged(string path)
+    {
+        const comparable = comparableSearchPath(path);
+        foreach (change; changes)
+            if (comparableSearchPath(change.path) == comparable) return true;
+        return false;
+    }
 
     size_t cursor = bodyStart;
     while (cursor < bodyEnd)
@@ -3067,17 +3081,21 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 builder.put(raw.length > 0 && raw[0] == '+' ? raw[1 .. $] : raw);
                 ++cursor;
             }
+            if (rel.length == 0)
+            {
+                failures ~= "Add File: path is empty";
+                continue;
+            }
             const path = resolveToolPath(rel, workspace);
             try
             {
-                import std.path : dirName;
-                if (dirName(path).length > 0) mkdirRecurse(dirName(path));
-                write(path, builder.data);
-                auto diff = computeTextDiff("", builder.data);
-                totalAdditions += diff.additions;
-                totalDeletions += diff.deletions;
-                combinedDiff ~= diff.unified ~ "\n";
-                touched ~= rel;
+                if (alreadyStaged(path))
+                    failures ~= rel ~ ": duplicate patch section";
+                else if (exists(path))
+                    failures ~= rel ~ ": path already exists";
+                else
+                    changes ~= PatchChange(rel, path, false, "", true,
+                        builder.data);
             }
             catch (Exception error)
                 failures ~= rel ~ ": " ~ error.msg;
@@ -3088,15 +3106,21 @@ private ToolExecution runApplyPatch(string args, string workspace)
         {
             const rel = strip(directive["*** Delete File:".length .. $]);
             ++cursor;
+            if (rel.length == 0)
+            {
+                failures ~= "Delete File: path is empty";
+                continue;
+            }
             const path = resolveToolPath(rel, workspace);
             try
             {
-                string previous = exists(path) ? readText(path) : "";
-                if (exists(path)) remove(path);
-                auto diff = computeTextDiff(previous, "");
-                totalDeletions += diff.deletions;
-                combinedDiff ~= diff.unified ~ "\n";
-                touched ~= rel;
+                if (alreadyStaged(path))
+                    failures ~= rel ~ ": duplicate patch section";
+                else if (!exists(path) || !isFile(path))
+                    failures ~= rel ~ ": file not found";
+                else
+                    changes ~= PatchChange(rel, path, true, readText(path),
+                        false, "");
             }
             catch (Exception error)
                 failures ~= rel ~ ": " ~ error.msg;
@@ -3107,7 +3131,21 @@ private ToolExecution runApplyPatch(string args, string workspace)
         {
             const rel = strip(directive["*** Update File:".length .. $]);
             ++cursor;
+            if (rel.length == 0)
+            {
+                failures ~= "Update File: path is empty";
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
             const path = resolveToolPath(rel, workspace);
+            if (alreadyStaged(path))
+            {
+                failures ~= rel ~ ": duplicate patch section";
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
+                    ++cursor;
+                continue;
+            }
             if (!exists(path) || !isFile(path))
             {
                 failures ~= rel ~ ": file not found";
@@ -3228,43 +3266,155 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 failures ~= rel ~ ": " ~ failReason;
                 continue;
             }
-            try
-            {
-                write(path, content);
-                auto diff = computeTextDiff(original, content);
-                totalAdditions += diff.additions;
-                totalDeletions += diff.deletions;
-                combinedDiff ~= diff.unified ~ "\n";
-                touched ~= rel;
-            }
-            catch (Exception error)
-                failures ~= rel ~ ": " ~ error.msg;
+            changes ~= PatchChange(rel, path, true, original, true, content);
             continue;
         }
+        failures ~= "unexpected patch line: " ~ lines[cursor];
         ++cursor;
     }
 
-    if (touched.length == 0 && failures.length == 0)
+    if (changes.length == 0 && failures.length == 0)
         return ToolExecution("apply_patch",
             "Error: no files were changed; the patch had no sections.", true);
 
-    auto builder = appender!string();
-    builder.put("Applied patch to " ~ to!string(touched.length) ~
-        (touched.length == 1 ? " file" : " files") ~ " (+" ~
-        to!string(totalAdditions) ~ " -" ~ to!string(totalDeletions) ~ ").");
+    // A patch is one transaction: every section must validate before the first
+    // file is touched. This prevents an early successful section from leaking
+    // through when a later hunk has stale context or names a missing file.
     if (failures.length > 0)
     {
-        builder.put("\nFailed:");
+        auto rejected = appender!string();
+        rejected.put("Patch not applied; validation failed and no files were changed:");
         foreach (failure; failures)
-            builder.put("\n- " ~ failure);
+            rejected.put("\n- " ~ failure);
+        return ToolExecution("apply_patch", rejected.data, true);
     }
+
+    string combinedDiff;
+    int totalAdditions;
+    int totalDeletions;
+    foreach (change; changes)
+    {
+        auto diff = computeTextDiff(change.before, change.after);
+        totalAdditions += diff.additions;
+        totalDeletions += diff.deletions;
+        combinedDiff ~= diff.unified ~ "\n";
+    }
+
+    bool stateMatches(ref PatchChange change)
+    {
+        if (exists(change.path) != change.beforeExists) return false;
+        if (!change.beforeExists) return true;
+        return isFile(change.path) && readText(change.path) == change.before;
+    }
+
+    string[] createdDirectories;
+    void ensureParent(string path)
+    {
+        string parent = dirName(path);
+        string[] missing;
+        while (parent.length > 0 && !exists(parent))
+        {
+            missing ~= parent;
+            const next = dirName(parent);
+            if (next == parent) break;
+            parent = next;
+        }
+        if (missing.length > 0)
+        {
+            mkdirRecurse(dirName(path));
+            foreach (directory; missing)
+                if (!createdDirectories.canFind(directory))
+                    createdDirectories ~= directory;
+        }
+    }
+
+    size_t attempted;
+    string commitFailure;
+    foreach (index, ref change; changes)
+    {
+        try
+        {
+            if (!stateMatches(change))
+            {
+                commitFailure = change.relativePath ~
+                    ": file changed while the patch was being prepared";
+                break;
+            }
+        }
+        catch (Exception error)
+        {
+            commitFailure = change.relativePath ~ ": " ~ error.msg;
+            break;
+        }
+
+        attempted = index + 1;
+        try
+        {
+            if (change.afterExists)
+            {
+                ensureParent(change.path);
+                write(change.path, change.after);
+            }
+            else
+                remove(change.path);
+        }
+        catch (Exception error)
+        {
+            commitFailure = change.relativePath ~ ": " ~ error.msg;
+            break;
+        }
+    }
+
+    if (commitFailure.length > 0)
+    {
+        string[] rollbackFailures;
+        for (size_t index = attempted; index > 0; --index)
+        {
+            auto change = changes[index - 1];
+            try
+            {
+                if (change.beforeExists)
+                {
+                    if (dirName(change.path).length > 0)
+                        mkdirRecurse(dirName(change.path));
+                    write(change.path, change.before);
+                }
+                else if (exists(change.path))
+                    remove(change.path);
+            }
+            catch (Exception error)
+                rollbackFailures ~= change.relativePath ~ ": " ~ error.msg;
+        }
+        // Remove newly-created empty directories. Repeated passes also remove
+        // parents shared by multiple added files once their children are gone.
+        foreach (_; 0 .. createdDirectories.length)
+            foreach (directory; createdDirectories)
+                if (isDir(directory)) collectException(rmdir(directory));
+
+        auto rejected = appender!string();
+        rejected.put("Patch commit failed: " ~ commitFailure ~ ".");
+        if (rollbackFailures.length == 0)
+            rejected.put(" All attempted file changes were rolled back.");
+        else
+        {
+            rejected.put(" Rollback also failed:");
+            foreach (failure; rollbackFailures)
+                rejected.put("\n- " ~ failure);
+        }
+        return ToolExecution("apply_patch", rejected.data, true);
+    }
+
+    auto builder = appender!string();
+    builder.put("Applied patch to " ~ to!string(changes.length) ~
+        (changes.length == 1 ? " file" : " files") ~ " (+" ~
+        to!string(totalAdditions) ~ " -" ~ to!string(totalDeletions) ~ ").");
     ToolExecution result;
     result.name = "apply_patch";
     result.output = builder.data;
     result.additions = totalAdditions;
     result.deletions = totalDeletions;
     result.diff = combinedDiff;
-    result.failed = failures.length > 0;
+    result.failed = false;
     return result;
 }
 
@@ -3783,6 +3933,11 @@ private ToolExecution runGrep(string args, string workspace,
     string pattern;
     string include;
     string pathArg;
+    string mode = "content";
+    bool literal;
+    bool caseSensitive = true;
+    size_t contextLines;
+    size_t maxResults = 200;
     int timeoutMs = 10_000;
     if (value.type == JSONType.object)
     {
@@ -3795,6 +3950,32 @@ private ToolExecution runGrep(string args, string workspace,
         if (auto field = "path" in value.object)
             if (field.type == JSONType.string)
                 pathArg = field.str;
+        if (auto field = "mode" in value.object)
+            if (field.type == JSONType.string)
+                mode = toLower(field.str);
+        if (auto field = "literal" in value.object)
+            literal = field.type == JSONType.true_;
+        if (auto field = "caseSensitive" in value.object)
+        {
+            if (field.type == JSONType.true_) caseSensitive = true;
+            else if (field.type == JSONType.false_) caseSensitive = false;
+        }
+        if (auto field = "context" in value.object)
+            if (field.type == JSONType.integer)
+            {
+                auto requested = field.integer;
+                if (requested < 0) requested = 0;
+                if (requested > 20) requested = 20;
+                contextLines = cast(size_t) requested;
+            }
+        if (auto field = "limit" in value.object)
+            if (field.type == JSONType.integer)
+            {
+                auto requested = field.integer;
+                if (requested < 1) requested = 1;
+                if (requested > 1_000) requested = 1_000;
+                maxResults = cast(size_t) requested;
+            }
         if (auto field = "timeout" in value.object)
             if (field.type == JSONType.integer)
             {
@@ -3806,6 +3987,9 @@ private ToolExecution runGrep(string args, string workspace,
     if (pattern.length == 0)
         return ToolExecution("grep",
             "Error: grep requires a `pattern` argument.", true);
+    if (mode != "content" && mode != "files" && mode != "count")
+        return ToolExecution("grep",
+            "Error: grep `mode` must be content, files, or count.", true);
 
     const root = pathArg.length > 0
         ? resolveToolPath(pathArg, workspace) : workspace;
@@ -3819,20 +4003,32 @@ private ToolExecution runGrep(string args, string workspace,
             true);
 
     Regex!(char) re;
-    try re = regex(pattern);
-    catch (Exception error)
-        return ToolExecution("grep", "Error: invalid pattern: " ~ error.msg,
-            true);
+    if (!literal)
+    {
+        try re = regex(pattern, caseSensitive ? "" : "i");
+        catch (Exception error)
+            return ToolExecution("grep", "Error: invalid pattern: " ~ error.msg,
+                true);
+    }
+    const comparablePattern = caseSensitive ? pattern : toLower(pattern);
+
+    bool lineMatches(string line)
+    {
+        if (!literal) return !matchFirst(line, re).empty;
+        const candidate = caseSensitive ? line : toLower(line);
+        return candidate.indexOf(comparablePattern) >= 0;
+    }
 
     // Return matching lines (`path:line: text`) rather than just file paths, so
     // the model does not have to re-read every hit to see the surrounding code.
     // Files are streamed line-by-line, so a huge file never has to be loaded
     // whole just to find the first match. A match that spans multiple lines is
     // not reported (grep is line-based, matching ripgrep's default behaviour).
-    enum size_t maxHits = 200;
     enum size_t maxLineChars = 300;
     enum ulong maxRecursiveFileBytes = 8UL * 1024 * 1024;
     string[] hits;
+    size_t totalMatches;
+    size_t matchedFiles;
     bool capped;
     bool stopped;
     bool timedOut;
@@ -3869,6 +4065,24 @@ private ToolExecution runGrep(string args, string workspace,
         ++scannedFiles;
         scope (exit) collectException(file.close());
         size_t lineNo;
+        size_t fileMatches;
+        struct ContextLine
+        {
+            size_t number;
+            string text;
+        }
+        ContextLine[] before;
+        size_t afterRemaining;
+        size_t lastEmittedLine;
+
+        void emitLine(size_t number, string display, bool matched)
+        {
+            if (lastEmittedLine > 0 && number > lastEmittedLine + 1)
+                hits ~= "--";
+            hits ~= filePath ~ (matched ? ":" : "-") ~ to!string(number) ~
+                (matched ? ": " : "- ") ~ display;
+            lastEmittedLine = number;
+        }
         try
         {
             foreach (line; file.byLine())
@@ -3886,21 +4100,77 @@ private ToolExecution runGrep(string args, string workspace,
                     stopped = true;
                     return true;
                 }
-                if (matchFirst(line, re).empty) continue;
+                const matched = lineMatches(
+                    decodeBytesLenient(cast(const(ubyte)[]) line));
                 string display =
                     decodeBytesLenient(cast(const(ubyte)[]) line);
                 if (display.length > maxLineChars)
                     display = display[0 .. utf8SafeCut(
                         cast(const(ubyte)[]) display[0 .. maxLineChars])] ~ "…";
-                hits ~= filePath ~ ":" ~ to!string(lineNo) ~ ": " ~ display;
-                if (hits.length >= maxHits)
+                while (display.length > 0 &&
+                    (display[$ - 1] == '\n' || display[$ - 1] == '\r'))
+                    display = display[0 .. $ - 1];
+                if (!matched)
                 {
-                    capped = true;
-                    return true;
+                    if (mode == "content")
+                    {
+                        if (afterRemaining > 0)
+                        {
+                            emitLine(lineNo, display, false);
+                            --afterRemaining;
+                        }
+                        else if (contextLines > 0)
+                        {
+                            before ~= ContextLine(lineNo, display);
+                            if (before.length > contextLines)
+                                before = before[$ - contextLines .. $];
+                        }
+                    }
+                    continue;
+                }
+
+                ++fileMatches;
+                ++totalMatches;
+                if (mode == "files")
+                {
+                    ++matchedFiles;
+                    hits ~= filePath;
+                    if (matchedFiles >= maxResults)
+                    {
+                        capped = true;
+                        return true;
+                    }
+                    return false;
+                }
+                if (mode == "content")
+                {
+                    if (fileMatches == 1) ++matchedFiles;
+                    foreach (context; before)
+                        if (context.number > lastEmittedLine)
+                            emitLine(context.number, context.text, false);
+                    before.length = 0;
+                    emitLine(lineNo, display, true);
+                    afterRemaining = contextLines;
+                    if (totalMatches >= maxResults)
+                    {
+                        capped = true;
+                        return true;
+                    }
                 }
             }
         }
         catch (Exception) {}
+        if (mode == "count" && fileMatches > 0)
+        {
+            ++matchedFiles;
+            hits ~= filePath ~ ": " ~ to!string(fileMatches) ~
+                (fileMatches == 1 ? " matching line" : " matching lines");
+            if (matchedFiles >= maxResults)
+            {
+                capped = true;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -3960,7 +4230,7 @@ private ToolExecution runGrep(string args, string workspace,
             to!string(scannedDirectories) ~ " directories, " ~
             to!string(scannedFiles) ~ " files, and " ~
             to!string(scannedLines) ~ " lines; found " ~
-            to!string(hits.length) ~ " matches so far. Review this progress " ~
+            to!string(totalMatches) ~ " matches so far. Review this progress " ~
             "and decide whether waiting longer is reasonable. Rerun the same " ~
             "focused search with a larger `timeout` (up to 600000 ms), or " ~
             "narrow `path`, `pattern`, or `include`.\n");
@@ -3969,14 +4239,20 @@ private ToolExecution runGrep(string args, string workspace,
     }
     if (stopped)
         return ToolExecution("grep", "Stopped: grep cancelled.", true);
-    if (hits.length == 0)
+    if (totalMatches == 0)
         return ToolExecution("grep", "No matches for: " ~ pattern, false);
     auto builder = appender!string();
     foreach (hit; hits)
         builder.put(hit ~ "\n");
+    if (mode == "count")
+        builder.put("Total: " ~ to!string(totalMatches) ~ " matching " ~
+            (totalMatches == 1 ? "line" : "lines") ~ " in " ~
+            to!string(matchedFiles) ~
+            (matchedFiles == 1 ? " file.\n" : " files.\n"));
     if (capped)
-        builder.put("(Results capped at " ~ to!string(maxHits) ~
-            " matches — narrow the pattern or include filter.)\n");
+        builder.put("(Results capped at " ~ to!string(maxResults) ~
+            (mode == "content" ? " matching lines" : " matching files") ~
+            " — raise `limit` or narrow the search.)\n");
     return ToolExecution("grep", truncateOutput(builder.data), false);
 }
 

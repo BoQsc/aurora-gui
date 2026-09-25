@@ -355,6 +355,52 @@ int main()
         "grep include .txt did not match: " ~ grepExt.output);
     writeln("grep include is a glob (and accepts a bare extension)");
 
+    // Rich search options avoid shell fallbacks for exact text, casing,
+    // surrounding context, file discovery and per-file counts.
+    write(buildPath(dir, "grep-options.txt"),
+        "before\nNeedle.Value\nbetween\nneedle.value\n[literal]\n");
+    auto literalGrep = executeTool(makeCall("grep",
+        `{"pattern":"[literal]","literal":true,"path":"grep-options.txt"}`),
+        dir);
+    assert(!literalGrep.failed && literalGrep.output.indexOf(
+        "grep-options.txt:5: [literal]") >= 0,
+        "grep literal mode treated punctuation as regex syntax: " ~
+        literalGrep.output);
+    auto contextualGrep = executeTool(makeCall("grep",
+        `{"pattern":"needle.value","literal":true,"caseSensitive":false,` ~
+        `"context":1,"path":"grep-options.txt"}`), dir);
+    assert(!contextualGrep.failed &&
+        contextualGrep.output.indexOf("grep-options.txt-1- before") >= 0 &&
+        contextualGrep.output.indexOf("grep-options.txt:2: Needle.Value") >= 0 &&
+        contextualGrep.output.indexOf("grep-options.txt:4: needle.value") >= 0 &&
+        contextualGrep.output.indexOf("grep-options.txt-5- [literal]") >= 0,
+        "grep casing/context options returned the wrong window: " ~
+        contextualGrep.output);
+    auto fileModeGrep = executeTool(makeCall("grep",
+        `{"pattern":"needle.value","literal":true,"caseSensitive":false,` ~
+        `"mode":"files","path":"grep-options.txt"}`), dir);
+    assert(!fileModeGrep.failed &&
+        fileModeGrep.output.indexOf("grep-options.txt") >= 0 &&
+        fileModeGrep.output.indexOf(":2:") < 0,
+        "grep files mode returned content instead of paths: " ~
+        fileModeGrep.output);
+    auto countModeGrep = executeTool(makeCall("grep",
+        `{"pattern":"needle.value","literal":true,"caseSensitive":false,` ~
+        `"mode":"count","path":"grep-options.txt"}`), dir);
+    assert(!countModeGrep.failed && countModeGrep.output.indexOf(
+        "grep-options.txt: 2 matching lines") >= 0 &&
+        countModeGrep.output.indexOf("Total: 2 matching lines in 1 file.") >= 0,
+        "grep count mode returned the wrong totals: " ~ countModeGrep.output);
+    auto limitedGrep = executeTool(makeCall("grep",
+        `{"pattern":"needle.value","literal":true,"caseSensitive":false,` ~
+        `"limit":1,"path":"grep-options.txt"}`), dir);
+    assert(!limitedGrep.failed &&
+        limitedGrep.output.indexOf("grep-options.txt:2: Needle.Value") >= 0 &&
+        limitedGrep.output.indexOf("grep-options.txt:4:") < 0 &&
+        limitedGrep.output.indexOf("capped at 1 matching lines") >= 0,
+        "grep limit did not cap matching lines: " ~ limitedGrep.output);
+    writeln("grep supports literal/case/context/mode/limit controls");
+
     // A repository-wide search must not crawl generated/VCS trees or binary
     // artifacts. Those can dwarf the source tree and previously made several
     // parallel greps appear to hang for minutes.
@@ -1169,6 +1215,27 @@ int main()
         assert(readText(buildPath(dir, "keep.txt")) == "keep\nold\n",
             "a failed hunk must not modify the file");
         writeln("apply_patch reports a missing context instead of crashing");
+    }
+
+    // A later invalid section must reject the whole patch. Previously the
+    // first update and add were already on disk when the final hunk failed.
+    {
+        const firstPath = buildPath(dir, "atomic-first.txt");
+        const secondPath = buildPath(dir, "atomic-second.txt");
+        const addedPath = buildPath(dir, "atomic-added.txt");
+        write(firstPath, "old one\n");
+        write(secondPath, "old two\n");
+        auto rejected = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: atomic-first.txt\n@@\n-old one\n+new one\n*** Add File: atomic-added.txt\n+should not exist\n*** Update File: atomic-second.txt\n@@\n-not present\n+new two\n*** End Patch"}`),
+            dir);
+        assert(rejected.failed && rejected.output.indexOf(
+            "no files were changed") >= 0,
+            "invalid multi-file patch was not rejected transactionally: " ~
+            rejected.output);
+        assert(readText(firstPath) == "old one\n" &&
+            readText(secondPath) == "old two\n" && !exists(addedPath),
+            "failed multi-file patch leaked partial filesystem changes");
+        writeln("apply_patch validates every section before changing files");
     }
 
     // update_plan renders a checked list and enforces a single in-progress
