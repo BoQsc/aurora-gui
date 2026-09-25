@@ -28,7 +28,8 @@
       "targetName": "aurora-opencode-pro",
       "mainSourceFile": "source/app.d",
       "postBuildCommands-windows": [
-        "cmd /c tools\\embed-icon.bat"
+        "cmd /c tools\\embed-icon.bat",
+        "python tools/publish-forge.py"
       ]
     },
     {

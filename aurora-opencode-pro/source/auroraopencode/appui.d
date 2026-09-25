@@ -12,6 +12,7 @@ import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
 import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
+import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
     fetchCommandCodeUser, fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
@@ -6933,6 +6934,12 @@ public final class OpenCodeRoot : VBox
     // helper does the work after this window closes (see auroraopencode.rebuild);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
+    private Button _updateButton;
+    private bool _updateChecking;
+    private bool _updateResultPending;
+    private UpdateCheck _updateReady;
+    private string _updateStagedPath;
+    private string _updateHash;
     // An agent-triggered rebuild arrives on the tool worker thread. Record it
     // there and perform it a few ticks later on the UI thread, by which point
     // the tool result has been drained and persisted into the transcript.
@@ -7439,6 +7446,65 @@ public final class OpenCodeRoot : VBox
         return true;
     }
 
+    private void requestUpdate()
+    {
+        if (_updateChecking || _rebuildPending) return;
+        if (_updateStagedPath.length > 0)
+        {
+            writeResumeNoteIfTurnActive();
+            persistState();
+            saveProjects(_projectState);
+            if (!launchUpdateHelper(thisExePath(), _updateStagedPath,
+                    opencodeStateDirectory(), _updateHash))
+            {
+                updateStatus("Update failed: could not start the replacement helper.");
+                return;
+            }
+            _rebuildPending = true;
+            closeRuntimeClients();
+            updateStatus("Installing update and relaunching...");
+            _window.close();
+            return;
+        }
+
+        _updateChecking = true;
+        updateStatus("Checking for an Aurora update...");
+        const exe = thisExePath();
+        const stateDir = opencodeStateDirectory();
+        auto worker = new Thread({
+            auto result = checkForUpdate(exe, stateDir);
+            synchronized (this)
+            {
+                _updateReady = result;
+                _updateResultPending = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    private void drainUpdateResult()
+    {
+        UpdateCheck result;
+        synchronized (this)
+        {
+            if (!_updateResultPending) return;
+            result = _updateReady;
+            _updateResultPending = false;
+        }
+        _updateChecking = false;
+        if (result.error.length > 0)
+            updateStatus("Update check failed: " ~ result.error);
+        else if (result.available)
+        {
+            _updateStagedPath = result.stagedPath;
+            _updateHash = result.hash;
+            if (_updateButton !is null) _updateButton.setText("Update");
+            updateStatus("An Aurora update is ready. Click Update to install it.");
+        }
+        else updateStatus("Aurora OpenCode is up to date.");
+    }
+
     /// Whether this build can rebuild itself: the executable lives under a
     /// package that is Aurora OpenCode's own source.
     private bool canSelfRebuild() const
@@ -7669,9 +7735,18 @@ public final class OpenCodeRoot : VBox
 
         // Rebuild the package with DUB and relaunch. The window closes first so
         // DUB can overwrite the running .exe.
-        auto rebuildButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
-        rebuildButton.setId("oc-rebuild");
-        rebuildButton.onClick = delegate() { requestRebuild(); };
+        if (canSelfRebuild())
+        {
+            auto rebuildButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
+            rebuildButton.setId("oc-rebuild");
+            rebuildButton.onClick = delegate() { requestRebuild(); };
+        }
+        else
+        {
+            _updateButton = toolbar.add(new Button("Check update", IconKind.refresh));
+            _updateButton.setId("oc-update");
+            _updateButton.onClick = delegate() { requestUpdate(); };
+        }
 
         _keyBadge = toolbar.add(new KeyStatusBadge(""));
         _keyBadge.setId("oc-key");
@@ -16985,6 +17060,7 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        drainUpdateResult();
         drainKeyUsageResults();
         // Resume after an unexpected shutdown, once the restored transcript has
         // been laid out. Sending earlier would extend a conversation whose

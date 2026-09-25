@@ -7,6 +7,7 @@ import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
     runResolveCrashMode;
 import auroraopencode.logging : logInfo, logLaunch;
+import auroraopencode.updater : runUpdateHelperMode;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
 import std.conv : to;
@@ -102,6 +103,8 @@ private Widget findById(Widget widget, string requestedId)
 
 int main(string[] args)
 {
+    const updateCode = runUpdateHelperMode(args);
+    if (updateCode >= 0) return updateCode;
     enableNativeTextRendering();
     // Install before anything else so a crash during window/UI construction is
     // still recorded in <stateDir>/logs/errors.log.
