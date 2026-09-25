@@ -3214,8 +3214,7 @@ private final class LiveToolRow : Widget
 
 /// A small always-visible "what is going on" row that sits at the end of the
 /// conversation while the assistant is busy. It shows a pulsing dot, the
-/// current phase ("Model working…", "Continuing after tool results…",
-/// "Running 2 tools…")
+/// current phase ("Waiting for the model…", "Thinking…", "Running 2 tools…")
 /// and the elapsed seconds. It fills the gaps where the transcript would
 /// otherwise look frozen: after a prompt is sent (before the first token) and
 /// between tool rounds. Once text streams, the reply's own Thinking header
@@ -9062,7 +9061,7 @@ public final class OpenCodeRoot : VBox
         // when that turn is an assistant reply. If the newest turn is the user
         // prompt (the request was just sent, before the reply turn exists) there
         // is no host: the rows go to the bottom, after the prompt. Nesting them
-        // under the previous answer put the activity row ABOVE the prompt
+        // under the previous answer put "Waiting for the model…" ABOVE the prompt
         // that triggered it.
         const bool isLive = viewingTurnOwner() &&
             ((_activityRow !is null && _activityRow.hasLabel()) ||
@@ -10152,14 +10151,14 @@ public final class OpenCodeRoot : VBox
         // tool-call progress event arrives) can re-add the same live bubble
         // instead of orphaning it.
         _streamBubble.setMessageIndex(cast(int) session.messages.length - 1);
-        // Preserve the request's activity label until reasoning or answer text
-        // actually arrives. A chatBegin event alone does not prove that the
-        // provider will send visible thinking, or that it has finished using
-        // the latest tool results.
-        if (_activityRow is null || !_activityRow.hasLabel())
-            setActivity("Model working…");
+        // The request headers are in; the model is now thinking or about to
+        // emit its first token. Keep the in-flow row honest about the phase
+        // without the "Writing…" wording, which read like a file write and
+        // vanished at completion (the Thinking header's token count now carries
+        // that progress signal).
+        setActivity(session.thinking ? "Thinking…" : "Waiting for the model…");
         // Rebuild rather than appending the bubble directly: a row already
-        // pinned for a previous phase would
+        // pinned for a previous phase (e.g. "Waiting for the model…") would
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
         // nests the live reply before its phase row.
         rebuildMessageColumn();
@@ -10196,7 +10195,7 @@ public final class OpenCodeRoot : VBox
                 _streamBubble.appendThinking(text);
                 _streamBubble.setThinkingLive(true);
             }
-            // The header now speaks for this phase; drop the activity row.
+            // The header now speaks for this phase; drop "Waiting for the model…".
             clearActivity();
         }
         else
@@ -10209,7 +10208,7 @@ public final class OpenCodeRoot : VBox
             message.content ~= text;
             if (_streamBubble !is null && _current == sessionIndex)
                 _streamBubble.appendContent(text);
-            // Drop the activity row now that the answer itself
+            // Drop the "Waiting for the model…" row now that the answer itself
             // is visibly streaming (no "Writing…" replacement any more).
             clearActivity();
         }
@@ -11382,7 +11381,7 @@ public final class OpenCodeRoot : VBox
                     explorationCheckpointCalls &&
                     !hasExplorationCheckpoint(*session))
                     appendExplorationCheckpoint(*session);
-                startChatRequest(sessionIndex, false, true);
+                startChatRequest(sessionIndex, false);
             }
         }
     }
@@ -13229,8 +13228,7 @@ public final class OpenCodeRoot : VBox
         _timerBadge.setSeconds(total, running);
     }
 
-    private void startChatRequest(int sessionIndex, bool userTurn = true,
-        bool afterTools = false)
+    private void startChatRequest(int sessionIndex, bool userTurn = true)
     {
         // Any new request supersedes a scheduled re-send. A request the user
         // started (or a manual Retry) also starts the attempt budget over; an
@@ -13412,11 +13410,9 @@ public final class OpenCodeRoot : VBox
         _lastRetryStatusSeconds = -1;
         updateStatus(_contextWasCompacted[session.id]
             ? "Context compacted · generating…" : "Generating…");
-        // A request is in flight, but no reasoning or answer text is visible
-        // yet. Name the tool continuation explicitly so an empty assistant
-        // bubble does not make the interval look like an idle file read.
-        setActivity(afterTools ? "Continuing after tool results…" :
-            "Model working…");
+        // Fill the request round-trip immediately: the transcript shows a live
+        // "waiting" row from the moment Send is pressed until the first event.
+        setActivity("Waiting for the model…");
         if (newCompactionNotice && _current == sessionIndex)
             rebuildMessageColumn();
         updateSendButton();
