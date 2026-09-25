@@ -1,12 +1,12 @@
-# Portable platform runtime abstraction
+# Experimental DMD-to-UCRT compatibility shim
 
-This experimental library supplies the small set of runtime entry points that
-Aurora's current DMD build cannot find without a Visual Studio CRT library.
-The first backend is `windows-ucrt`: it forwards C runtime operations to the
-UCRT installed with Windows 10 or later, and supplies Windows PE startup and
-TLS descriptors. Its source and distributed `portablecrt.lib` are 0BSD-only.
-No Microsoft CRT library, DLL, compiler binary, or third-party source is
-packaged with this artifact.
+This Windows x64 experiment supplies runtime entry points that Aurora's
+current DMD build cannot find without a Visual Studio CRT library. The
+`windows-ucrt` code forwards C runtime operations to the UCRT installed with
+Windows 10 or later. It also supplies its own Windows PE startup and TLS
+descriptors. The authored source is licensed under 0BSD. The library archive
+contains two objects compiled from that source; it packages no Microsoft CRT
+library, DLL, compiler binary, or third-party source.
 
 `portablecrt.lib` is an ordinary static archive of two Aurora-owned object
 files. It contains compatibility code, not a complete C runtime. The linker
@@ -27,14 +27,16 @@ artifact into this folder. For a link-only check:
 python experiments/portablecrt/probe_link.py <dub-build-log> experiments/portablecrt/portablecrt.lib ucrtbase.lib kernel32.lib
 ```
 
-This is still a feasibility experiment. The library linked one cached Aurora
-DUB object with zero unresolved symbols; a fresh portable-release build and
-runtime checks remain before it can replace the current build dependency.
-The startup/TLS path and the UCRT formatted I/O glue are especially sensitive
-to ABI changes. The UCRT's `__stdio_common_*` functions are exported but
-documented by Microsoft as implementation details; this backend therefore
-targets the Windows 10 and later UCRT ABI currently used by DMD.
+This is a link feasibility experiment, not a production runtime. The library
+linked one cached Aurora DUB object with zero unresolved symbols. That proves
+symbol coverage for that object, not startup correctness or C runtime behavior.
+A fresh portable-release build and runtime validation remain. The custom
+startup path may omit setup normally performed by an official CRT startup
+library. The UCRT's `__stdio_common_*` functions are exported but documented
+by Microsoft as implementation details that may change. A legal review should
+also confirm the intended distribution terms for compiler-produced objects;
+the 0BSD license on our source does not license the Windows UCRT.
 
-The platform boundary is the archive's exported runtime symbols. New backend
-implementations can supply the same names where the target ABI permits; the
-startup and TLS implementation will necessarily be platform-specific.
+The Windows-specific source names leave room for another backend later. This
+repository currently contains one compatibility shim, not a general platform
+runtime abstraction.
