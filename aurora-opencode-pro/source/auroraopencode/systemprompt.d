@@ -185,7 +185,11 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "- The user's request defines completion. Keep a plan current with " ~
         "`update_plan` as steps start or finish, including research and " ~
         "decisions. Rewrite vague or obsolete steps. Preserve long plans; " ~
-        "use `update_subplan` for optional child steps. Do not invent work.\n" ~
+        "use `update_subplan` for optional child steps. When the user asks " ~
+        "for an exact N-step plan, put exactly N meaningful top-level " ~
+        "steps in `update_plan`; do not compress them into a shorter " ~
+        "implementation checklist or treat N only as a feature count. " ~
+        "Do not invent work.\n" ~
         "- Use the minimum evidence sufficient for the next action. " ~
         "Every read or search must resolve a named unknown. Batch independent " ~
         "lookups. Reread when workspace state changed, the earlier result was " ~
