@@ -27,8 +27,9 @@ artifact into this folder. For a link-only check:
 python experiments/portablecrt/probe_link.py <dub-build-log> experiments/portablecrt/portablecrt.lib ucrtbase.lib kernel32.lib
 ```
 
-This is still a feasibility experiment. The library has to pass a full Aurora
-link and runtime checks before it can replace the current build dependency.
+This is still a feasibility experiment. The library linked one cached Aurora
+DUB object with zero unresolved symbols; a fresh portable-release build and
+runtime checks remain before it can replace the current build dependency.
 The startup/TLS path and the UCRT formatted I/O glue are especially sensitive
 to ABI changes. The UCRT's `__stdio_common_*` functions are exported but
 documented by Microsoft as implementation details; this backend therefore

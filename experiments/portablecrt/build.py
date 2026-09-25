@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="portablecrt-build-") as temporary:
     librarian = str(Path(compiler).with_name("lib.exe"))
 
     objects = []
-    for source_name in ("windows_ucrt_startup.c", "shims.c"):
+    for source_name in ("windows_ucrt_startup.c", "windows_ucrt_shims.c"):
         source = ROOT / source_name
         output = temporary / f"{source.stem}.obj"
         subprocess.run(
