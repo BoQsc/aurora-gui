@@ -29,9 +29,11 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
-    attachmentForText, attachmentImages, attachmentInsertedText,
-    attachmentIsLargePaste, attachmentStripHeight, attachmentVisibleSummary,
+    attachmentForText, attachmentImageForData, attachmentImageMaxBytes,
+    attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
+    attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
+import auroraopencode.clipboardimage : clipboardImagePng;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -4966,6 +4968,7 @@ private final class ChatInput : TextArea
     // Ctrl+V paste. Return true when the paste was diverted into an attachment
     // (and the box was already reverted by the handler).
     bool delegate(string before, string after) onLargePaste;
+    bool delegate() onImagePaste;
 
     this()
     {
@@ -4995,6 +4998,10 @@ private final class ChatInput : TextArea
     // clipboard block can be diverted into a text attachment.
     public bool handlePaste()
     {
+        // Image data takes priority when applications publish both an image
+        // and a text representation of the same clipboard item.
+        if (!_clipboardIsolated && onImagePaste !is null && onImagePaste())
+            return true;
         const before = textUtf8();
         if (_clipboardIsolated)
         {
@@ -8034,6 +8041,7 @@ public final class OpenCodeRoot : VBox
         {
             return handleLargePaste(before, after);
         };
+        _input.onImagePaste = delegate() { return handleClipboardImagePaste(); };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate()
@@ -12122,6 +12130,31 @@ public final class OpenCodeRoot : VBox
         _input.setText(before);
         addTextAttachment(inserted);
         return true;
+    }
+
+    private bool handleClipboardImagePaste()
+    {
+        if (!experimentalAttachmentsEnabled()) return false;
+        try
+        {
+            auto png = clipboardImagePng(attachmentImageMaxBytes);
+            if (png.length == 0) return false;
+            Attachment attachment;
+            attachment.name = "Pasted image.png";
+            attachment.bytes = cast(long) png.length;
+            attachment.isImage = true;
+            attachment.image = attachmentImageForData("image/png",
+                attachment.name, png);
+            _pendingAttachments ~= attachment;
+            syncAttachments();
+            updateStatus("Clipboard image attached to the next message.");
+            return true;
+        }
+        catch (Exception error)
+        {
+            updateStatus("Could not paste clipboard image: " ~ error.msg);
+            return true;
+        }
     }
 
     /// Experimental attachments: files dropped anywhere in the window become
