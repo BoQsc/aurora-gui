@@ -30,16 +30,9 @@ public struct UsageLimitsResult
     UsageLimitWindow[] windows;
     string note;
     string serviceAccountName;
-    string usageMemberEmail;
     string commandCodeUser;
     bool accountChecked;
     bool available;
-}
-
-public struct OpenCodeGoUsageIdentity
-{
-    string serviceAccountName;
-    string usageMemberEmail;
 }
 
 public string usageProviderForBaseUrl(string baseUrl)
@@ -243,45 +236,6 @@ public string parseOpenCodeGoServiceAccountName(string body)
     catch (Exception) return "";
 }
 
-/// Return the member email attributed to the export when every attributed row
-/// identifies the same member. An organization export can contain several
-/// people, so a mixed result is deliberately left unidentified.
-public string parseOpenCodeGoUsageMemberEmail(string body)
-{
-    try
-    {
-        auto records = csvReader(body, null);
-        size_t index = size_t.max;
-        foreach (i, name; records.header)
-            if (name == "user_email")
-            {
-                index = i;
-                break;
-            }
-        if (index == size_t.max) return "";
-        string found;
-        foreach (record; records)
-        {
-            const cells = record.array;
-            if (index >= cells.length) return "";
-            const email = cells[index].strip();
-            if (email.length == 0) continue;
-            if (found.length > 0 && email != found) return "";
-            found = email;
-        }
-        return found;
-    }
-    catch (Exception) return "";
-}
-
-public OpenCodeGoUsageIdentity parseOpenCodeGoUsageIdentity(string body)
-{
-    OpenCodeGoUsageIdentity identity;
-    identity.serviceAccountName = parseOpenCodeGoServiceAccountName(body);
-    identity.usageMemberEmail = parseOpenCodeGoUsageMemberEmail(body);
-    return identity;
-}
-
 public string parseCommandCodeUser(string body)
 {
     try
@@ -345,15 +299,6 @@ public string fetchOpenCodeGoServiceAccountName(string apiKey)
         "https://opencode.ai/console/api/v1/usage/export" ~
         "?scope=organization&range=24h", apiKey, "text/csv", 2_000_000);
     return parseOpenCodeGoServiceAccountName(body);
-}
-
-/// Fetch both provider-reported identifiers from one bounded recent export.
-public OpenCodeGoUsageIdentity fetchOpenCodeGoUsageIdentity(string apiKey)
-{
-    const body = fetchAccountBody(
-        "https://opencode.ai/console/api/v1/usage/export" ~
-        "?scope=organization&range=7d", apiKey, "text/csv", 2_000_000);
-    return parseOpenCodeGoUsageIdentity(body);
 }
 
 /// CommandCode identifies the bearer key directly through /alpha/whoami.
