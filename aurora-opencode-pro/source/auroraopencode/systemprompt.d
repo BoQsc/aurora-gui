@@ -233,6 +233,10 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "For GUI, layout, or interaction changes, compilation alone is " ~
         "not verification: add or run a focused UI assertion, inspect rendered " ~
         "output, or clearly state that visual behavior remains unverified.\n" ~
+        "For local HTML deliverables, when a browser is available, load " ~
+        "the page and inspect a screenshot or rendered DOM; exercise key " ~
+        "interactions when feasible. Discover the browser executable at " ~
+        "runtime instead of assuming a fixed installation path.\n" ~
         "5. Stop and report the outcome, changed locations, verification " ~
         "performed, and any real remaining blocker. A final prose answer ends " ~
         "the turn: do not leave stale plan items for the application to reconcile, " ~
