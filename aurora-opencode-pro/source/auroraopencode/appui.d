@@ -40,6 +40,8 @@ import std.algorithm : canFind, max;
 import std.array : appender;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
+import std.digest : toHexString;
+import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
 import std.file : exists, getSize, isDir, isFile, fileRemove = remove,
@@ -175,6 +177,15 @@ private string formatThousands(int value)
         ++count;
     }
     return result;
+}
+
+private struct ApiTokenUsageSample
+{
+    long timestamp;
+    string keyId;
+    long inputTokens;
+    long outputTokens;
+    long totalTokens;
 }
 
 private string formatTokenRate(int tenths)
@@ -6788,6 +6799,7 @@ public final class OpenCodeRoot : VBox
     private HoverTooltip _keyUsageTooltip;
     private Widget _keyUsageAnchor;
     private string _keyUsageRequestId;
+    private string _keyUsageTokenId;
     private UsageLimitsResult[string] _keyUsageCache;
     private long[string] _keyUsageCacheAt;
     private long[string] _keyAccountCacheAt;
@@ -6799,6 +6811,13 @@ public final class OpenCodeRoot : VBox
     // provider nor a date, so it cannot supply this total.
     private long[string] _monthlyProviderTokens;
     private bool _monthlyUsageLoaded;
+    // Successful provider-reported usage, keyed by a SHA-256 fingerprint of
+    // the exact API key. Raw credentials are never written into this ledger.
+    private ApiTokenUsageSample[] _apiTokenUsage;
+    private bool _apiTokenUsageLoaded;
+    // Snapshot the key fingerprint against each outbound request, since the
+    // user can change providers or keys before its final usage event arrives.
+    private string[ulong] _requestTokenKeyIds;
     // Message ids already added to the ledger, so a reply that reports usage in
     // a tool round and again at settle is counted exactly once.
     private bool[string] _usageCounted;
@@ -10282,8 +10301,12 @@ public final class OpenCodeRoot : VBox
 
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
         int completionTokens = 0, int totalTokens = 0, bool terminal = true,
-        string finishReason = "")
+        string finishReason = "", ulong requestId = 0)
     {
+        // Capture provider-reported values before the transcript's display
+        // fallback substitutes a local output-token estimate.
+        recordRequestTokenUsage(requestId, totalTokens, promptTokens,
+            completionTokens);
         const sessionIndex = turnOwnerSessionIndex();
         if (terminal || cancelled) setTurnActiveMarker(false);
         setTurnInFlight(false);
@@ -10328,7 +10351,7 @@ public final class OpenCodeRoot : VBox
             // Add this turn's usage to the current month's per-provider total.
             if (!cancelled)
                 recordTurnUsage(*message, totalTokens, promptTokens,
-                    completionTokens);
+                    completionTokens, requestId);
             message.tokensPerSecondTenths = _liveTokenRateTenths;
             publishMessageEvent(AgentEventKind.itemUpdated,
                 _sessions[sessionIndex], *message);
@@ -10948,6 +10971,8 @@ public final class OpenCodeRoot : VBox
     private void handleToolCalls(const OpenCodeEvent event)
     {
         _preparingToolCalls.length = 0;
+        recordRequestTokenUsage(event.requestId, event.totalTokens,
+            event.promptTokens, event.completionTokens);
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
@@ -10981,7 +11006,7 @@ public final class OpenCodeRoot : VBox
         // A tool round is real billed usage even though the user turn continues,
         // so add it to the monthly per-provider total now.
         recordTurnUsage(*message, event.totalTokens, event.promptTokens,
-            event.completionTokens);
+            event.completionTokens, event.requestId);
         // Keep the output-token count and throughput on the message BEFORE the
         // stream bubble is torn down below; the
         // rebuild that follows otherwise renders the Thinking header from a
@@ -12977,8 +13002,11 @@ public final class OpenCodeRoot : VBox
         ChatRequestMessage sourceMessage;
         sourceMessage.role = "user";
         sourceMessage.content = source;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
+            activeApiKey(_settings));
         runtime.compactionClient.startChatMessages(
-            [instruction, sourceMessage], null, session.model, false, 1);
+            [instruction, sourceMessage], null, session.model, false, requestId);
         return true;
     }
 
@@ -12998,9 +13026,14 @@ public final class OpenCodeRoot : VBox
             {
                 finished = true;
                 succeeded = !event.cancelled;
+                recordRequestTokenUsage(event.requestId, event.totalTokens,
+                    event.promptTokens, event.completionTokens);
             }
             else if (event.kind == OpenCodeEventKind.error)
+            {
                 finished = true;
+                _requestTokenKeyIds.remove(event.requestId);
+            }
         }
         runtime.compactionEvents.length = 0;
         if (!finished) return;
@@ -13435,8 +13468,11 @@ public final class OpenCodeRoot : VBox
             _settings.baseUrl, session.model);
         const llamaCpp = _reasoningCapsBaseUrl == _settings.baseUrl &&
             _llamaCppEndpoint;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
+            activeApiKey(_settings));
         _client.startChatMessages(messages, tools, session.model,
-            session.thinking, ++_nextRequestId, reasoningControl.effort,
+            session.thinking, requestId, reasoningControl.effort,
             llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp);
         _activeRequestId = _nextRequestId;
         _activeRequestSession = sessionIndex;
@@ -13998,6 +14034,151 @@ public final class OpenCodeRoot : VBox
         return owner.length > 0 ? owner : "Custom";
     }
 
+    /// Stable identifier for one credential without persisting or displaying
+    /// the credential itself. Keep the full digest for collision resistance;
+    /// only a short prefix is shown in the hover panel.
+    private static string apiTokenUsageKeyId(string apiKey)
+    {
+        apiKey = apiKey.strip();
+        if (apiKey.length == 0) return "";
+        const digest = toLower(toHexString(
+            sha256Of(cast(const(ubyte)[]) apiKey)).idup);
+        return digest;
+    }
+
+    private string apiTokenUsagePath()
+    {
+        return buildPath(opencodeStateDirectory(), "usage-api-tokens.json");
+    }
+
+    /// Keep only the rolling 30-day history needed by the visible counters.
+    private void pruneApiTokenUsage(long now)
+    {
+        size_t kept;
+        foreach (sample; _apiTokenUsage)
+            if (sample.timestamp >= now - 30 * 24 * 60 * 60 &&
+                sample.timestamp <= now + 60)
+                _apiTokenUsage[kept++] = sample;
+        _apiTokenUsage.length = kept;
+    }
+
+    private void loadApiTokenUsage()
+    {
+        if (_apiTokenUsageLoaded) return;
+        _apiTokenUsageLoaded = true;
+        const path = apiTokenUsagePath();
+        if (!exists(path)) return;
+        try
+        {
+            const root = parseJSON(readText(path));
+            if (root.type != JSONType.array) return;
+            foreach (value; root.array)
+            {
+                if (value.type != JSONType.object) continue;
+                auto timestamp = "timestamp" in value.object;
+                auto keyId = "keyId" in value.object;
+                auto input = "inputTokens" in value.object;
+                auto output = "outputTokens" in value.object;
+                auto total = "totalTokens" in value.object;
+                if (timestamp is null || keyId is null ||
+                    timestamp.type != JSONType.integer ||
+                    keyId.type != JSONType.string || keyId.str.length == 0)
+                    continue;
+                ApiTokenUsageSample sample;
+                sample.timestamp = timestamp.integer;
+                sample.keyId = keyId.str;
+                if (input !is null && input.type == JSONType.integer)
+                    sample.inputTokens = input.integer;
+                if (output !is null && output.type == JSONType.integer)
+                    sample.outputTokens = output.integer;
+                if (total !is null && total.type == JSONType.integer)
+                    sample.totalTokens = total.integer;
+                _apiTokenUsage ~= sample;
+            }
+            pruneApiTokenUsage(Clock.currTime.toUnixTime());
+        }
+        catch (Exception error)
+            logError("could not load per-key token usage: " ~ error.msg);
+    }
+
+    private void saveApiTokenUsage()
+    {
+        JSONValue root = JSONValue(string[].init);
+        foreach (sample; _apiTokenUsage)
+        {
+            JSONValue value;
+            value["timestamp"] = sample.timestamp;
+            value["keyId"] = sample.keyId;
+            value["inputTokens"] = sample.inputTokens;
+            value["outputTokens"] = sample.outputTokens;
+            value["totalTokens"] = sample.totalTokens;
+            root.array ~= value;
+        }
+        try writeFileAtomically(apiTokenUsagePath(), root.toString());
+        catch (Exception error)
+            logError("could not save per-key token usage: " ~ error.msg);
+    }
+
+    private void recordApiTokenUsage(string keyId, int total, int prompt,
+        int completion)
+    {
+        if (keyId.length == 0) return;
+        const counted = total > 0 ? cast(long) total
+            : cast(long) prompt + completion;
+        if (counted <= 0) return;
+        loadApiTokenUsage();
+        const now = Clock.currTime.toUnixTime();
+        _apiTokenUsage ~= ApiTokenUsageSample(now, keyId,
+            max(0L, cast(long) prompt), max(0L, cast(long) completion), counted);
+        pruneApiTokenUsage(now);
+        saveApiTokenUsage();
+    }
+
+    /// Aurora-local actual token counts for the selected credential. The
+    /// provider quota bars above these rows are still the provider's own data.
+    private string[] apiTokenUsageRows(string keyId)
+    {
+        if (keyId.length == 0) return ["No API key selected for local tracking."];
+        loadApiTokenUsage();
+        const now = Clock.currTime.toUnixTime();
+        long[3] totals, inputs, outputs;
+        long[3] windows = [5 * 60 * 60L, 7 * 24 * 60 * 60L,
+            30 * 24 * 60 * 60L];
+        foreach (sample; _apiTokenUsage)
+        {
+            if (sample.keyId != keyId) continue;
+            foreach (i, window; windows)
+            {
+                if (sample.timestamp < now - window) continue;
+                totals[i] += sample.totalTokens;
+                inputs[i] += sample.inputTokens;
+                outputs[i] += sample.outputTokens;
+            }
+        }
+        string tokenCount(long value)
+        {
+            if (value < 0) value = 0;
+            auto raw = to!string(value);
+            string formatted;
+            int digits;
+            for (int i = cast(int) raw.length; i > 0; --i)
+            {
+                formatted = raw[i - 1] ~ formatted;
+                if (++digits % 3 == 0 && i > 1) formatted = "," ~ formatted;
+            }
+            return formatted;
+        }
+        string periodRow(string period, size_t index)
+        {
+            return period ~ ": " ~ tokenCount(totals[index]) ~
+                " total (in " ~ tokenCount(inputs[index]) ~ " · out " ~
+                tokenCount(outputs[index]) ~ ")";
+        }
+        return ["Aurora usage · key …" ~ keyId[0 .. 8],
+            periodRow("Last 5 hours", 0), periodRow("Last 7 days", 1),
+            periodRow("Last 30 days", 2)];
+    }
+
     private string monthlyUsagePath()
     {
         return buildPath(opencodeStateDirectory(), "usage-monthly.json");
@@ -14066,8 +14247,10 @@ public final class OpenCodeRoot : VBox
     /// input + output. The message id guard keeps a single reply from being
     /// counted twice across a tool round and the turn's settle.
     private void recordTurnUsage(ref ChatMessage message, int total, int prompt,
-        int completion)
+        int completion, ulong requestId = 0)
     {
+        if (requestId != 0)
+            _requestTokenKeyIds.remove(requestId);
         const counted = total > 0 ? cast(long) total
             : cast(long) prompt + completion;
         if (counted <= 0) return;
@@ -14077,6 +14260,15 @@ public final class OpenCodeRoot : VBox
             _usageCounted[message.id] = true;
         }
         recordProviderUsage(providerUsageLabel(), counted);
+    }
+
+    private void recordRequestTokenUsage(ulong requestId, int total,
+        int prompt, int completion)
+    {
+        if (requestId == 0) return;
+        const keyId = _requestTokenKeyIds.get(requestId, "");
+        _requestTokenKeyIds.remove(requestId);
+        recordApiTokenUsage(keyId, total, prompt, completion);
     }
 
     private void showProfileDialog()
@@ -15368,6 +15560,7 @@ public final class OpenCodeRoot : VBox
     {
         _keyUsageAnchor = null;
         _keyUsageRequestId = "";
+        _keyUsageTokenId = "";
         if (_keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
             _keyUsageTooltip.parent().remove(_keyUsageTooltip);
     }
@@ -15403,9 +15596,11 @@ public final class OpenCodeRoot : VBox
     {
         closeKeyUsageTooltip();
         if (provider.length == 0 || apiKey.length == 0) return;
-        const requestId = provider ~ ":" ~ apiKey;
+        const tokenId = apiTokenUsageKeyId(apiKey);
+        const requestId = provider ~ ":" ~ tokenId;
         _keyUsageAnchor = anchor;
         _keyUsageRequestId = requestId;
+        _keyUsageTokenId = tokenId;
         _keyUsageTooltip = new HoverTooltip(anchor);
         auto cached = requestId in _keyUsageCache;
         const fresh = cached !is null &&
@@ -15415,7 +15610,7 @@ public final class OpenCodeRoot : VBox
         else
             _keyUsageTooltip.setContent(provider == "opencode" ?
                 "OpenCode Go usage" : "CommandCode usage", ["Loading usage limits..."]);
-        _keyUsageTooltip.setExtraRows(keyUsageMonthlyRows());
+        _keyUsageTooltip.setExtraRows(apiTokenUsageRows(tokenId));
         popupRoot(this).add(_keyUsageTooltip);
         positionTooltip(anchor, _keyUsageTooltip);
         if (fresh || requestId in _keyUsageFetching) return;
@@ -15462,26 +15657,17 @@ public final class OpenCodeRoot : VBox
                 _keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
             {
                 _keyUsageTooltip.setUsageContent(result);
-                _keyUsageTooltip.setExtraRows(keyUsageMonthlyRows());
+                _keyUsageTooltip.setExtraRows(
+                    apiTokenUsageRows(_keyUsageTokenId));
                 positionTooltip(_keyUsageAnchor, _keyUsageTooltip);
             }
         }
     }
 
-    /// Footer rows under the key usage bars: the active provider's running
-    /// monthly token total. While a reply streams and the badge tooltip is open
-    /// it also adds the in-flight request's live count, so the number climbs in
-    /// real time instead of waiting for the turn to finish.
+    /// Rolling locally captured token counts for this exact credential.
     private string[] keyUsageMonthlyRows()
     {
-        loadMonthlyUsage();
-        const provider = providerUsageLabel();
-        long total = _monthlyProviderTokens.get(
-            currentMonthKey() ~ "|" ~ provider, 0L);
-        if (_keyUsageAnchor is _keyBadge)
-            total += _liveTotalTokens > 0 ? _liveTotalTokens : _liveOutputTokens;
-        return ["This month (" ~ provider ~ "): " ~
-            formatThousands(cast(int) total) ~ " tokens"];
+        return apiTokenUsageRows(_keyUsageTokenId);
     }
 
     /// Refresh an open key-badge tooltip's monthly total so it tracks a live
@@ -17285,6 +17471,16 @@ public final class OpenCodeRoot : VBox
             // or tool results to a different conversation/branch.
             if (event.requestId != 0 && event.requestId != _activeRequestId)
             {
+                // The transcript rejects late events from canceled or
+                // abandoned requests, but their provider-reported usage was
+                // still consumed and belongs in this counter.
+                if (event.kind == OpenCodeEventKind.done ||
+                    event.kind == OpenCodeEventKind.toolCalls)
+                    recordRequestTokenUsage(event.requestId,
+                        event.totalTokens, event.promptTokens,
+                        event.completionTokens);
+                else if (event.kind == OpenCodeEventKind.error)
+                    _requestTokenKeyIds.remove(event.requestId);
                 ++eventIndex;
                 continue;
             }
@@ -17371,7 +17567,7 @@ public final class OpenCodeRoot : VBox
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
-                        !taskContinues, event.finishReason);
+                        !taskContinues, event.finishReason, event.requestId);
                     continueOrCompleteTask(event.cancelled);
                     // A continuation started above owns a new id. Only clear the
                     // completed request when no replacement was launched.
@@ -17382,6 +17578,7 @@ public final class OpenCodeRoot : VBox
                     }
                     break;
                 case OpenCodeEventKind.error:
+                    _requestTokenKeyIds.remove(event.requestId);
                     failAssistantMessage(event.text);
                     if (!scheduleContextOverflowRetry(event.text))
                         scheduleAutoResend(event.text);

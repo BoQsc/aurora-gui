@@ -1880,16 +1880,29 @@ final class OpenCodeClient
     {
         if (value.type != JSONType.object) return;
         auto usage = "usage" in value.object;
+        // Responses-style streams nest the final usage object under response;
+        // Anthropic-compatible gateways use input_tokens/output_tokens.
+        if ((usage is null || usage.type != JSONType.object))
+        {
+            if (auto response = "response" in value.object)
+                if (response.type == JSONType.object)
+                    usage = "usage" in response.object;
+        }
         if (usage is null || usage.type != JSONType.object) return;
-        if (auto field = "prompt_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-                _lastPromptTokens = cast(int) field.integer;
-        if (auto field = "completion_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-                _lastCompletionTokens = cast(int) field.integer;
+        auto prompt = "prompt_tokens" in usage.object;
+        if (prompt is null) prompt = "input_tokens" in usage.object;
+        if (prompt !is null && prompt.type == JSONType.integer)
+            _lastPromptTokens = cast(int) prompt.integer;
+        auto completion = "completion_tokens" in usage.object;
+        if (completion is null) completion = "output_tokens" in usage.object;
+        if (completion !is null && completion.type == JSONType.integer)
+            _lastCompletionTokens = cast(int) completion.integer;
         if (auto field = "total_tokens" in usage.object)
             if (field.type == JSONType.integer)
                 _lastTotalTokens = cast(int) field.integer;
+        if (_lastTotalTokens <= 0 &&
+            (_lastPromptTokens > 0 || _lastCompletionTokens > 0))
+            _lastTotalTokens = _lastPromptTokens + _lastCompletionTokens;
         // Mirror the real opencode: surface exact provider usage live so the
         // UI can meter context before the stream ends when the provider sends
         // usage in intermediate chunks (many only send it in the final one).
