@@ -184,9 +184,12 @@ AURORA_FONT_RENDER_MODE=sharp|smooth override.
   and larger sizes retain unmodified outlines. Optional bytecode-hinted outlines
   are not aligned a second time.
 
-Neither mode applies an alpha contrast curve or RGB LCD filtering. The default
-path does not depend on a native font rasterizer. The experimental bytecode
-interpreter is still opt-in via AURORA_HINTING=1.
+Both modes use the glyph atlas's shared grayscale contrast curve. Its default
+value is `0.5`, measured against DirectWrite grayscale output so small text does
+not look thin when composited. Set `AURORA_TEXT_CONTRAST=0` for linear coverage,
+or a value from `0` through `0.95` to tune it. Aurora does not use RGB LCD
+filtering or a native font rasterizer. The experimental bytecode interpreter is
+still opt-in via `AURORA_HINTING=1`.
 
 ## Glyph atlas
 

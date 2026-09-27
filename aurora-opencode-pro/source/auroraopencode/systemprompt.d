@@ -426,7 +426,7 @@ private string environmentSection(in SystemPromptContext ctx)
     builder.put("  Is directory a git repo: " ~
         (ctx.isGitRepo ? "yes" : "no") ~ "\n");
     builder.put("  Platform: " ~ ctx.platformName ~ "\n");
-    builder.put("  Local date and time: " ~ ctx.today ~ "\n</env>\n");
+    builder.put("  Local date: " ~ ctx.today ~ "\n</env>\n");
     return builder.data;
 }
 

@@ -144,18 +144,6 @@ final class DesignerRoot : VBox
     private void buildTitleBar()
     {
         _titleBar = add(new DesignerTitleBar(_window));
-        _titleBar.onSnapPreview = delegate(TitleBarSnapTarget target, Rect bounds)
-        {
-            if (target == TitleBarSnapTarget.none)
-            {
-                _snapPreview.hide();
-                return;
-            }
-            Rect origin;
-            _window.windowBounds(origin);
-            _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
-                bounds.width, bounds.height));
-        };
         updateTitle();
     }
 
@@ -322,6 +310,7 @@ final class DesignerRoot : VBox
     private void buildWindowChrome()
     {
         _snapPreview = add(new TitleBarSnapPreview());
+        _titleBar.setSnapPreview(_snapPreview);
         _windowBorder = add(new WindowBorder());
     }
 

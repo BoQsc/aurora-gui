@@ -438,3 +438,33 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
 - `tasks.d` (app-level, no vendor): background thumbnail worker keeps every
   task preview warm off the UI thread; the UI only reads `cachedThumbnail`.
   Vendor manifest re-digested for the five changed vendor files.
+
+## Font rendering ownership promoted to Aurora core (2026-09-27)
+
+- The project owner approved candidate B after reviewing matched OpenCode and
+  OpenCode Pro captures: remove the application bootstrap and inherit Aurora's
+  identical `GlyphAtlas` default coverage contrast of `0.5`.
+- OpenCode's A/B captures were pixel-identical. OpenCode Pro's application
+  content was pixel-identical; its only full-frame difference was the expected
+  compile-time titlebar timestamp.
+- The duplicate `enableNativeTextRendering` helper and all application/test
+  call sites were removed. The standards audit now rejects every downstream
+  font-rendering policy copy rather than carrying an allowlist.
+- Approval evidence is stored in `artifacts/font-rendering-comparison`.
+
+## Frameless window-shell ownership promoted to Aurora core (2026-09-27)
+
+- The project owner approved candidate B after inspecting matched Designer,
+  Notepad, and OpenCode Pro captures. Designer and Notepad were pixel-identical;
+  OpenCode Pro had zero application-content differences and only its expected
+  compile-time titlebar timestamp changed.
+- `FramelessWindowTitleBar` now owns owner-driven movement, work-area
+  maximize/restore, fractional restore-on-drag anchoring, snap preview mapping,
+  snap application, system-menu state, and injectable minimize/close actions.
+- Designer, Notepad, OpenCode Pro, and Stream now supply only product identity,
+  palette, content, and explicit product actions. This removes 758 net lines of
+  application-local shell code. Stream now follows the shared work-area
+  maximize behavior, keeping the taskbar visible.
+- The headless platform models `setWindowPosition`, and the dedicated shell
+  regression verifies the complete shared state transition. Approval evidence
+  is stored in `artifacts/frameless-shell-comparison`.

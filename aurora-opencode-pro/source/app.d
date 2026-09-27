@@ -3,7 +3,7 @@ module app;
 import aurora;
 import auroraopencode.appicon : applicationIconPath;
 import auroraopencode.appui : OpenCodeRoot;
-import auroraopencode.core : enableNativeTextRendering, opencodeTheme;
+import auroraopencode.core : opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
     runResolveCrashMode;
 import auroraopencode.logging : logInfo, logLaunch;
@@ -16,7 +16,6 @@ import std.utf : toUTF32;
 
 private int runScreenshot(string path, bool withChat, string message)
 {
-    enableNativeTextRendering();
     WindowOptions options;
     options.title = "Aurora OpenCode";
     options.width = 1200;
@@ -105,7 +104,6 @@ int main(string[] args)
 {
     const updateCode = runUpdateHelperMode(args);
     if (updateCode >= 0) return updateCode;
-    enableNativeTextRendering();
     // Install before anything else so a crash during window/UI construction is
     // still recorded in <stateDir>/logs/errors.log.
     installCrashHandler();

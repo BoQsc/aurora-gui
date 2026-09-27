@@ -449,7 +449,12 @@ public string buildSystemPrompt(bool nativeOnly, string workspace,
 
     import auroraopencode.systemprompt : SystemPromptContext, renderSystemPrompt;
 
-    const today = Clock.currTime.toLocalTime.toISOExtString();
+    // Prefix caches compare the complete token sequence. A wall-clock timestamp
+    // here changed on every tool round and invalidated every conversation token
+    // that followed it. The local date supplies the useful temporal context but
+    // stays byte-identical throughout a normal agent session.
+    const localNow = Clock.currTime.toLocalTime.toISOExtString();
+    const today = localNow[0 .. 10];
     const isGitRepo = exists(buildPath(workspace, ".git"));
 
     // The prompt is assembled from modules (see auroraopencode.systemprompt).

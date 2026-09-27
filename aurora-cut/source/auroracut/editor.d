@@ -7,8 +7,11 @@ import auroracut.clipboardimage : clipboardImageAvailable, clipboardSequenceNumb
 import auroracut.exporter : ExportClip, ExportJob, ExportKind, ExportPreset,
     ExportRequest, compositeAudioArguments, compositeStreamArguments;
 import auroracut.filedialog : FileDialogController;
+import auroracut.libavdecode : decodeLibavRgbPlaybackFrame,
+    libavDecodeAvailable;
 import auroracut.media : MediaImportResult, MediaImportService,
-    MediaProxyResult, MediaProxyService, ToolStatus, inspectToolStatus,
+    MediaProxyResult, MediaProxyService, ToolStatus, adoptCachedPlaybackProxy,
+    inspectToolStatus,
     mediaSecondaryText, playbackProxyReady, probeMedia;
 import auroracut.model : AudioStreamInfo, ClipKind, EditorModel, EffectProperty,
     KeyframeInterpolation, MediaAsset, SelectedClipMove, TextAlignment,
@@ -35,6 +38,7 @@ import auroracut.ytdlp : YtDlpDownloadKind, YtDlpDownloadProgress,
     YtDlpDownloadResult, YtDlpDownloadService, YtDlpInstallResult,
     YtDlpInstallService, normalizeYtDlpMaxHeight, ytDlpImportDirectory,
     ytDlpMaxWidthForHeight;
+import core.thread : Thread;
 import core.time : MonoTime;
 import std.algorithm : endsWith, max, min;
 import std.algorithm.sorting : sort;
@@ -74,6 +78,23 @@ private enum PendingPreviewKind : ubyte
     none,
     asset,
     sequence
+}
+
+private final class PlaybackLayerDecodeJob
+{
+    string streamKey;
+    string path;
+    double sourceTime;
+    int width;
+    int height;
+    ubyte[] rgb;
+    bool success;
+
+    void run()
+    {
+        success = decodeLibavRgbPlaybackFrame(streamKey, path, sourceTime,
+            width, height, rgb, true);
+    }
 }
 
 private enum CutoutAdjustEdge : int
@@ -970,6 +991,24 @@ final class EditorRoot : VBox
     private bool _sequencePlaybackDirect;
     private bool _sequencePlaybackLive;
     private bool _sequencePlaybackStaticVisual;
+    // A live sequence does not necessarily need the compositor for its current
+    // visual segment. When exactly one plain clip is visible, decode that source
+    // directly until the next visual edit boundary, while the timeline audio
+    // continues to use the composition mixer.
+    private bool _playbackVideoDirectSegment;
+    private double _playbackVideoMediaOffset;
+    private double _playbackVideoSegmentEnd = -1.0;
+    private MediaAsset _playbackVideoAsset;
+    private bool _playbackLibavActive;
+    private ubyte[] _playbackLibavRgb;
+    private int _playbackLibavWidth;
+    private int _playbackLibavHeight;
+    private double _playbackLibavLastSequenceTime = -1.0;
+    private bool _playbackLibavComposite;
+    private TimelineClip[] _playbackLibavClips;
+    private MediaAsset[] _playbackLibavAssets;
+    private ubyte[][] _playbackLibavLayerRgb;
+    private string _playbackLibavDirectKey;
     private double _liveAudioEnd = -1.0;
     private ulong _liveAudioClipId;
     private bool _playbackAudioStarted;
@@ -1001,6 +1040,11 @@ final class EditorRoot : VBox
     // Allows tests/diagnostics to disable the background prewarm so the classic
     // still-frame path can be exercised deterministically.
     private bool _playbackPrewarmEnabled = true;
+    // Project loading may build deterministic seek caches in the background,
+    // but it must not start a live playback decoder or consume playback frames
+    // before the user touches the transport. A playhead/transport interaction
+    // arms the paused prewarm for the rest of the editing session.
+    private bool _playbackPrewarmUserArmed;
     // Direct-mode prewarm launch geometry (media source time and remaining
     // duration), kept separately from the identity key so a playhead moved
     // inside the buffered window still adopts the warm streams.
@@ -1041,6 +1085,11 @@ final class EditorRoot : VBox
     // pending seek instead of synchronously restarting FFmpeg for every pixel.
     private enum double playbackVideoLeadSeconds = 0.018;
     private enum double playbackVideoLagToleranceSeconds = 0.075;
+    // A decoder that remains farther behind than this is not allowed to replay
+    // its backlog forever. Playback drops to a cheaper preview tier and rebases
+    // the complete stream generation at the authoritative transport position.
+    private enum double playbackVideoHardLagSeconds = 0.16;
+    private enum double playbackVideoHardLagHoldSeconds = 0.12;
     private enum double directPlaybackPrerollSeconds = 0.055;
     private enum double livePlaybackPrerollSeconds = 0.090;
     // Debounce before a background playback prewarm is started after the
@@ -1064,6 +1113,8 @@ final class EditorRoot : VBox
     private bool _playbackClockValid;
     private bool _playbackAwaitingFirstFrame;
     private double _playbackFirstFrameWait;
+    private double _playbackVideoHardLagWait;
+    private int _playbackAdaptiveLevel;
     private double _playbackPrewarmForwardWindow = 0.5;
     // Set when a paused seek commits, so the background prewarm starts on the
     // next tick instead of waiting out the settle debounce again.
@@ -1210,6 +1261,18 @@ final class EditorRoot : VBox
     {
         return _playbackKind == PlaybackKind.sequence &&
             _playbackRunning && _sequencePlaybackDirect;
+    }
+    bool directVideoSegmentForTesting() const
+    {
+        return _playbackRunning && _playbackVideoDirectSegment;
+    }
+    bool inProcessVideoSegmentForTesting() const
+    {
+        return _playbackRunning && _playbackLibavActive;
+    }
+    double playbackVideoSegmentEndForTesting() const
+    {
+        return _playbackVideoSegmentEnd;
     }
     bool staticSequencePlaybackForTesting() const
     {
@@ -2655,6 +2718,7 @@ final class EditorRoot : VBox
             const normalizedPath = absoluteNormalized(path);
             endInlineTextEditing();
             stopPlayback(false);
+            _playbackPrewarmUserArmed = false;
             _pendingProxyAssetIndices.length = 0;
             _proxyIdleDelay = 0.0;
             if (_proxyService !is null) _proxyService.cancel();
@@ -2755,6 +2819,7 @@ final class EditorRoot : VBox
                 error.toString()));
         }
         stopPlayback(false);
+        _playbackPrewarmUserArmed = false;
         _pendingProxyAssetIndices.length = 0;
         _proxyIdleDelay = 0.0;
         if (_proxyService !is null) _proxyService.cancel();
@@ -3385,6 +3450,7 @@ final class EditorRoot : VBox
         {
             markProjectDirty();
             syncMediaList();
+            syncTimelinePlaybackCacheStatus();
         }
         if (lastIndex >= 0) _mediaList.setSelectedIndex(lastIndex);
         finishImportBatchIfIdle();
@@ -3395,6 +3461,7 @@ final class EditorRoot : VBox
         if (!_tools.ffmpeg || assetIndex >= _model.assets.length ||
             _proxyService is null)
             return;
+        if (adoptCachedPlaybackProxy(_model.assets[assetIndex])) return;
         foreach (pending; _pendingProxyAssetIndices)
             if (pending == assetIndex) return;
         _pendingProxyAssetIndices ~= assetIndex;
@@ -3403,33 +3470,71 @@ final class EditorRoot : VBox
 
     private void queueMissingPlaybackProxies()
     {
+        // Cache what the user is looking at first. On project reopen this makes
+        // Play and arbitrary nearby clicks instant without waiting for unrelated
+        // media-bin assets to transcode ahead of the active timeline layers.
+        const position = _timeline is null ? 0.0 : _timeline.playhead();
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const address = TrackAddress(TrackKind.video, lane);
+            const clipIndex = _model.clipAtTime(address, position);
+            if (clipIndex < 0) continue;
+            const track = _model.trackValue(address);
+            if (track.disabled || clipIndex >= cast(int) track.clips.length)
+                continue;
+            auto asset = _model.assetForClip(track.clips[cast(size_t) clipIndex]);
+            if (asset is null) continue;
+            const assetIndex = _model.assetIndexForPath(asset.path);
+            if (assetIndex >= 0) queuePlaybackProxy(cast(size_t) assetIndex);
+        }
         foreach (index, asset; _model.assets)
             queuePlaybackProxy(index);
+        syncTimelinePlaybackCacheStatus();
+    }
+
+    private void syncTimelinePlaybackCacheStatus()
+    {
+        if (_timeline is null) return;
+        bool[] ready = new bool[_model.assets.length];
+        foreach (index, asset; _model.assets)
+            ready[index] = playbackProxyReady(asset);
+        _timeline.setPlaybackCacheReady(ready);
     }
 
     private void cancelPlaybackProxyWork()
     {
         _proxyIdleDelay = 0.0;
-        if (_proxyService !is null) _proxyService.cancel();
+        if (_proxyService !is null)
+        {
+            const wasBusy = _proxyService.busy();
+            _proxyService.cancel();
+            // Cancellation invalidates the service's in-flight queue. Keep the
+            // editor queue authoritative so entering playback does not lose the
+            // asset forever (the old behavior visible in repeated project opens).
+            if (wasBusy) queueMissingPlaybackProxies();
+        }
     }
 
     private void startIdlePlaybackProxy(double deltaSeconds)
     {
         if (_proxyService is null) return;
-        if (_playbackKind != PlaybackKind.none || _seekPending ||
+        if (_playbackRunning || _seekPending ||
             _exportJob.state().running || _downloadService.busy() ||
             _importService.busy())
         {
             _proxyIdleDelay = 0.0;
-            if (_playbackKind != PlaybackKind.none && _proxyService.busy())
+            if (_playbackRunning && _proxyService.busy())
+            {
                 _proxyService.cancel();
+                queueMissingPlaybackProxies();
+            }
             return;
         }
         if (_pendingProxyAssetIndices.length == 0 || _proxyService.busy())
             return;
 
         _proxyIdleDelay += deltaSeconds;
-        if (_proxyIdleDelay < 1.5) return;
+        if (_proxyIdleDelay < 0.25) return;
         _proxyIdleDelay = 0.0;
 
         while (_pendingProxyAssetIndices.length > 0)
@@ -3483,6 +3588,10 @@ final class EditorRoot : VBox
         }
 
         if (!changed) return;
+        // Proxy metadata is part of the project cache map. Persist it so the
+        // next project open can use the proxy immediately instead of rebuilding.
+        markProjectDirty();
+        syncTimelinePlaybackCacheStatus();
         syncMediaList();
         const selected = _mediaList.selectedIndex();
         if (selected >= 0 && selected < cast(int) _model.assets.length)
@@ -4284,6 +4393,7 @@ final class EditorRoot : VBox
             _playbackStart, _playbackEnd);
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackVideoHardLagWait = 0.0;
         _playbackAudioClockWait = 0.0;
         _playbackAudioClockLostWait = 0.0;
         _liveAudioEnd = -1.0;
@@ -6803,6 +6913,7 @@ final class EditorRoot : VBox
         bool liveSequence = false, bool staticSequenceVisual = false,
         int audioStreamIndex = 0)
     {
+        _playbackPrewarmUserArmed = true;
         // Composition Preview is a sequence monitor, never a source monitor.
         // Keep this guard even though current UI paths no longer request source
         // playback, so future context-menu changes cannot reintroduce the bug.
@@ -6866,6 +6977,8 @@ final class EditorRoot : VBox
         _playbackSourceMuted = muted;
         _playbackAudioStreamIndex = audioStreamIndex;
         _playbackRunning = true;
+        _playbackAdaptiveLevel = 0;
+        _playbackVideoHardLagWait = 0.0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
         _seekResumePlayback = false;
@@ -6910,23 +7023,25 @@ final class EditorRoot : VBox
 
     private double playbackTimeForFrame(const PreviewFrame frame)
     {
-        const value = _sequencePlaybackDirect ?
-            frame.sourceTime - _playbackMediaOffset : frame.sourceTime;
+        const value = (_sequencePlaybackDirect || _playbackVideoDirectSegment) ?
+            frame.sourceTime - (_playbackVideoDirectSegment ?
+                _playbackVideoMediaOffset : _playbackMediaOffset) : frame.sourceTime;
         return clampValue(value, _playbackStart, _playbackEnd);
     }
 
     private double playbackSourceClockTime(double sequenceTime) const
     {
-        return _sequencePlaybackDirect ? sequenceTime + _playbackMediaOffset :
-            sequenceTime;
+        if (_playbackVideoDirectSegment)
+            return sequenceTime + _playbackVideoMediaOffset;
+        return _sequencePlaybackDirect ? sequenceTime + _playbackMediaOffset : sequenceTime;
     }
 
     private double displayedPlaybackFrameTime() const
     {
         if (_preview is null || !_preview.hasFrame()) return _playbackPosition;
-        double frameTime = _sequencePlaybackDirect ?
-            _preview.frameTime() - _playbackMediaOffset :
-            _preview.frameTime();
+        double frameTime = (_sequencePlaybackDirect || _playbackVideoDirectSegment) ?
+            _preview.frameTime() - (_playbackVideoDirectSegment ?
+                _playbackVideoMediaOffset : _playbackMediaOffset) : _preview.frameTime();
         return clampValue(frameTime, _playbackStart, _playbackEnd);
     }
 
@@ -6985,14 +7100,28 @@ final class EditorRoot : VBox
         const fps = livePlaybackFps(decode);
         if (_sequencePlaybackLive)
         {
+            TimelineClip directClip;
+            MediaAsset directAsset;
+            double segmentEnd;
+            if (resolveDirectSequenceSegment(_playbackPosition, directClip,
+                directAsset, segmentEnd))
+            {
+                auto playbackAsset = playbackAssetForPreview(directAsset);
+                const mediaOffset = directClip.inPoint - directClip.start;
+                return directVideoSignature(playbackAsset.path, decode.width,
+                    decode.height, fps, playbackDecodeInputOptions(playbackAsset),
+                    mediaOffset);
+            }
             const renderHeight = liveDecodeHeight();
             auto preset = previewPlaybackPreset(decode);
             auto request = buildExportRequest(ExportKind.mp4, "", preset,
                 false, true);
             request.renderTitles = false;
             scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+            const streamEnd = min(nextVisualBoundary(_playbackPosition,
+                _playbackEnd), _playbackEnd);
             auto arguments = compositeStreamArguments(request, _playbackPosition,
-                _playbackEnd, decode.width, decode.height, fps);
+                streamEnd, decode.width, decode.height, fps);
             return "live\x1f" ~ join(arguments, "\x1f");
         }
         if (_playbackAsset is null || !_playbackAsset.hasVideo) return "";
@@ -7003,6 +7132,7 @@ final class EditorRoot : VBox
 
     private void notePlaybackPrewarmDirty(double position)
     {
+        _playbackPrewarmUserArmed = true;
         if (_playbackPrewarmActive)
         {
             // A playhead move inside the prewarm's buffered window must not
@@ -7111,6 +7241,35 @@ final class EditorRoot : VBox
                 }
                 else if (_sequencePlaybackLive)
                 {
+                    TimelineClip directClip;
+                    MediaAsset directAsset;
+                    double directSegmentEnd;
+                    if (resolveDirectSequenceSegment(_playbackPosition,
+                        directClip, directAsset, directSegmentEnd))
+                    {
+                        auto playbackAsset = playbackAssetForPreview(directAsset);
+                        const mediaOffset = directClip.inPoint - directClip.start;
+                        const mediaPosition = clampValue(_playbackPosition +
+                            mediaOffset, 0.0, playbackAsset.duration);
+                        const streamEnd = min(directSegmentEnd, _playbackEnd);
+                        auto opts = playbackDecodeInputOptions(playbackAsset);
+                        const started = _videoStream.start(playbackAsset.path,
+                            mediaPosition, streamEnd - _playbackPosition,
+                            decode.width, decode.height, fps, playbackAsset.name,
+                            opts);
+                        _playbackPrewarmVideoSignature = started ?
+                            directVideoSignature(playbackAsset.path, decode.width,
+                                decode.height, fps, opts, mediaOffset) : "";
+                        _playbackPrewarmHasVideoStream = started;
+                        _playbackPrewarmVideoPosition = mediaPosition;
+                        _playbackPrewarmVideoRemaining = streamEnd - _playbackPosition;
+                        _playbackPrewarmDirectOffset = mediaOffset;
+                        _playbackPrewarmMode = "direct segment";
+                    }
+                    else
+                    {
+                    const streamEnd = min(nextVisualBoundary(
+                        _playbackPosition, _playbackEnd), _playbackEnd);
                     const renderHeight = liveDecodeHeight();
                     auto preset = previewPlaybackPreset(decode);
                     auto request = buildExportRequest(ExportKind.mp4, "", preset,
@@ -7119,18 +7278,19 @@ final class EditorRoot : VBox
                     scalePreviewPixelEffects(request, _previewQualityHeight,
                         renderHeight);
                     auto arguments = compositeStreamArguments(request,
-                        _playbackPosition, _playbackEnd, decode.width,
+                        _playbackPosition, streamEnd, decode.width,
                         decode.height, fps);
                     const started = _videoStream.startCommand(arguments,
-                        _playbackPosition, _playbackEnd - _playbackPosition,
+                        _playbackPosition, streamEnd - _playbackPosition,
                         decode.width, decode.height, fps,
                         "Sequence 01 • live composition");
                     _playbackPrewarmVideoSignature = started ?
                         "live\x1f" ~ join(arguments, "\x1f") : "";
                     _playbackPrewarmHasVideoStream = started;
+                    _playbackPrewarmMode = "live";
+                    }
                     _playbackPrewarmAudioSignature = prewarmLiveAudio(
                         _playbackPosition, _playbackEnd);
-                    _playbackPrewarmMode = "live";
                 }
                 else
                 {
@@ -7189,19 +7349,19 @@ final class EditorRoot : VBox
                 const position = _timeline.playhead();
                 const duration = _model.sequenceDuration();
                 if (duration <= 0.0) return;
-                TrackAddress directTrack;
                 TimelineClip directClip;
                 MediaAsset directAsset;
-                if (resolveDirectSequence(directTrack, directClip, directAsset))
+                double directSegmentEnd;
+                if (resolveDirectSequenceSegment(position, directClip, directAsset,
+                    directSegmentEnd))
                 {
-                    const track = _model.trackValue(directTrack);
                     auto playbackAsset = playbackAssetForPreview(directAsset);
                     const start = clampValue(position, directClip.start,
                         directClip.end());
                     const mediaOffset = directClip.inPoint - directClip.start;
                     const mediaPosition = clampValue(start + mediaOffset, 0.0,
                         playbackAsset.duration);
-                    const remaining = max(0.0, directClip.end() - start);
+                    const remaining = max(0.0, directSegmentEnd - start);
                     if (remaining <= 0.001) return;
                     auto opts = playbackDecodeInputOptions(playbackAsset);
                     if (playbackAsset.hasVideo)
@@ -7224,27 +7384,9 @@ final class EditorRoot : VBox
                         _playbackPrewarmVideoSignature = "";
                         _playbackPrewarmHasVideoStream = false;
                     }
-                    const muted = directClip.muted || track.muted;
-                    if (playbackAsset.hasAudio && !muted &&
-                        directClip.volume > 0.000_001)
-                    {
-                        const audioStarted = _audioPlayer.start(
-                            playbackAsset.path, mediaPosition, remaining,
-                            directClip.volume, start, true,
-                            directClip.audioStreamIndex);
-                        _playbackPrewarmAudioSignature = audioStarted ?
-                            directAudioSignature(playbackAsset.path,
-                                directClip.volume, muted,
-                                directClip.audioStreamIndex) : "";
-                        if (audioStarted)
-                        {
-                            _playbackPrewarmAudioPosition = mediaPosition;
-                            _playbackPrewarmAudioRemaining = remaining;
-                        }
-                    }
-                    else
-                        _playbackPrewarmAudioSignature = "";
-                    _playbackPrewarmMode = "direct";
+                    _playbackPrewarmAudioSignature = prewarmLiveAudio(
+                        position, duration);
+                    _playbackPrewarmMode = "direct segment";
                     _playbackPrewarmDirectOffset = mediaOffset;
                 }
                 else if (resolveStaticSequenceVisual())
@@ -7257,6 +7399,8 @@ final class EditorRoot : VBox
                 }
                 else
                 {
+                    const streamEnd = min(nextVisualBoundary(position, duration),
+                        duration);
                     const renderHeight = liveDecodeHeight();
                     auto preset = previewPlaybackPreset(decode);
                     auto request = buildExportRequest(ExportKind.mp4, "", preset,
@@ -7265,9 +7409,9 @@ final class EditorRoot : VBox
                     scalePreviewPixelEffects(request, _previewQualityHeight,
                         renderHeight);
                     auto arguments = compositeStreamArguments(request, position,
-                        duration, decode.width, decode.height, fps);
+                        streamEnd, decode.width, decode.height, fps);
                     const started = _videoStream.startCommand(arguments, position,
-                        duration - position, decode.width, decode.height, fps,
+                        streamEnd - position, decode.width, decode.height, fps,
                         "Sequence 01 • live composition");
                     _playbackPrewarmVideoSignature = started ?
                         "live\x1f" ~ join(arguments, "\x1f") : "";
@@ -7309,6 +7453,15 @@ final class EditorRoot : VBox
             (_playbackKind != PlaybackKind.none &&
              _playbackKind != PlaybackKind.sequence))
             return;
+        // Opening/restoring a project renders its one saved paused frame, then
+        // stays visually and acoustically idle. Proxy generation is a separate
+        // background cache service and does not arm this live decoder.
+        if (!_playbackPrewarmUserArmed)
+        {
+            if (_playbackPrewarmActive) cancelPlaybackPrewarm();
+            _playbackPrewarmDelay = 0.0;
+            return;
+        }
         if (!_playbackPrewarmEnabled)
         {
             if (_playbackPrewarmActive) cancelPlaybackPrewarm();
@@ -7417,15 +7570,30 @@ final class EditorRoot : VBox
             target = "static";
         else if (liveSequence)
         {
-            const renderHeight = liveDecodeHeight();
-            auto preset = previewPlaybackPreset(decode);
-            auto request = buildExportRequest(ExportKind.mp4, "", preset,
-                false, true);
-            request.renderTitles = false;
-            scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
-            auto arguments = compositeStreamArguments(request, start, end,
-                decode.width, decode.height, fps);
-            target = "live\x1f" ~ join(arguments, "\x1f");
+            TimelineClip directClip;
+            MediaAsset directAsset;
+            double segmentEnd;
+            if (resolveDirectSequenceSegment(start, directClip, directAsset,
+                segmentEnd))
+            {
+                auto playbackAsset = playbackAssetForPreview(directAsset);
+                target = directVideoSignature(playbackAsset.path, decode.width,
+                    decode.height, fps, playbackDecodeInputOptions(playbackAsset),
+                    directClip.inPoint - directClip.start);
+            }
+            else
+            {
+                const renderHeight = liveDecodeHeight();
+                auto preset = previewPlaybackPreset(decode);
+                auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                    false, true);
+                request.renderTitles = false;
+                scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+                const streamEnd = min(nextVisualBoundary(start, end), end);
+                auto arguments = compositeStreamArguments(request, start, streamEnd,
+                    decode.width, decode.height, fps);
+                target = "live\x1f" ~ join(arguments, "\x1f");
+            }
         }
         else if (asset !is null && asset.hasVideo)
         {
@@ -7503,14 +7671,267 @@ final class EditorRoot : VBox
         setStatus(statusText);
     }
 
-    /** The transport is genuinely ready to present: a prerolled frame is
-     * buffered, any required audio clock has been acquired (or explicitly
-     * waived), and no catch-up wait is active. This is the single readiness
-     * gate Play uses before the preview starts presenting frames. */
+    /** The active generation has presented its target frame and owns a valid
+     * transport clock. Retained pixels from an older generation do not count. */
     private bool playbackReady() const
     {
         return !_playbackAwaitingFirstFrame && !_playbackAwaitingAudioClock &&
             _playbackClockValid;
+    }
+
+    /** Start a transport that has no moving-video frame dependency. */
+    private void beginImmediateTransport()
+    {
+        _playbackAwaitingFirstFrame = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackFirstFrameWait = 0.0;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+
+        if (_playbackAudioRequired && !_playbackAudioStarted)
+        {
+            if (!startPlaybackAudio())
+                _playbackAudioRequired = false;
+        }
+        // A matching prewarm owns a paused WaveOut stream. resume() is harmless
+        // for a newly-started unpaused stream and is required for the adopted
+        // stream to become audible immediately.
+        if (_playbackAudioStarted) _audioPlayer.resume();
+
+        resetPlaybackClock();
+        _preview.setPlaying(true);
+        setStatus(playbackRunningStatus());
+        updatePlaybackButtons();
+    }
+
+    private bool presentSimpleLibavCompositionFrame(bool reset, int steps = 1)
+    {
+        if (!_playbackLibavComposite) return false;
+        const frameBytes = cast(size_t) _playbackLibavWidth *
+            _playbackLibavHeight * 3;
+        if (_playbackLibavRgb.length != frameBytes)
+            _playbackLibavRgb = new ubyte[frameBytes];
+        _playbackLibavRgb[] = 0;
+        _playbackLibavLayerRgb.length = _playbackLibavClips.length;
+        double[] sourceTimes = new double[_playbackLibavClips.length];
+        string[] streamKeys = new string[_playbackLibavClips.length];
+
+        foreach (index, clip; _playbackLibavClips)
+        {
+            if (_playbackLibavLayerRgb[index].length != frameBytes)
+                _playbackLibavLayerRgb[index] = new ubyte[frameBytes];
+            sourceTimes[index] = clampValue(clip.inPoint +
+                (_playbackPosition - clip.start), 0.0,
+                _playbackLibavAssets[index].duration);
+            streamKeys[index] = "layer-" ~ format("%d-%d", index, clip.id);
+        }
+
+        if (reset && _playbackLibavClips.length > 1)
+        {
+            // Independent full-frame layers have independent decoder sessions.
+            // Open/seek them concurrently so a cold crossfade costs one decoder
+            // latency instead of the sum of every visible layer's latency.
+            PlaybackLayerDecodeJob[] jobs;
+            Thread[] workers;
+            foreach (index; 0 .. _playbackLibavClips.length)
+            {
+                auto job = new PlaybackLayerDecodeJob();
+                job.streamKey = streamKeys[index];
+                job.path = _playbackLibavAssets[index].path;
+                job.sourceTime = sourceTimes[index];
+                job.width = _playbackLibavWidth;
+                job.height = _playbackLibavHeight;
+                job.rgb = _playbackLibavLayerRgb[index];
+                jobs ~= job;
+                workers ~= new Thread(&job.run);
+            }
+            foreach (worker; workers) worker.start();
+            foreach (worker; workers) worker.join();
+            foreach (job; jobs) if (!job.success) return false;
+        }
+        else foreach (index; 0 .. _playbackLibavClips.length)
+        {
+            if (reset)
+            {
+                if (!decodeLibavRgbPlaybackFrame(streamKeys[index],
+                    _playbackLibavAssets[index].path, sourceTimes[index],
+                    _playbackLibavWidth, _playbackLibavHeight,
+                    _playbackLibavLayerRgb[index], true))
+                    return false;
+            }
+            else foreach (_; 0 .. max(1, steps))
+                if (!decodeLibavRgbPlaybackFrame(streamKeys[index],
+                    _playbackLibavAssets[index].path, sourceTimes[index],
+                    _playbackLibavWidth, _playbackLibavHeight,
+                    _playbackLibavLayerRgb[index], false))
+                    return false;
+        }
+
+        foreach (index, clip; _playbackLibavClips)
+        {
+            double alpha = clampValue(clip.opacity, 0.0, 1.0);
+            if (clip.fadeIn > 0.000_001)
+                alpha *= clampValue((_playbackPosition - clip.start) /
+                    clip.fadeIn, 0.0, 1.0);
+            if (clip.fadeOut > 0.000_001)
+                alpha *= clampValue((clip.end() - _playbackPosition) /
+                    clip.fadeOut, 0.0, 1.0);
+            if (alpha >= 0.999_999)
+                _playbackLibavRgb[] = _playbackLibavLayerRgb[index][];
+            else if (alpha > 0.000_001)
+            {
+                const inverse = 1.0 - alpha;
+                foreach (pixel; 0 .. frameBytes)
+                    _playbackLibavRgb[pixel] = cast(ubyte) clampValue(
+                        cast(int) (_playbackLibavLayerRgb[index][pixel] * alpha +
+                            _playbackLibavRgb[pixel] * inverse + 0.5), 0, 255);
+            }
+        }
+
+        PreviewFrame frame;
+        frame.width = _playbackLibavWidth;
+        frame.height = _playbackLibavHeight;
+        frame.sourceTime = _playbackPosition;
+        frame.title = "Sequence 01";
+        frame.rgb = _playbackLibavRgb;
+        _playbackLibavLastSequenceTime = _playbackPosition;
+        _preview.setFrame(frame);
+        return true;
+    }
+
+    /** Present the exact first frame of a plain direct segment without waiting
+     * for a child-process startup. The persistent in-process decoder normally
+     * resolves this in a few milliseconds; the streaming worker then takes over
+     * and drains to the already-running transport clock. */
+    private bool presentDirectSegmentStartFrame()
+    {
+        if (_playbackLibavComposite)
+        {
+            if (!presentSimpleLibavCompositionFrame(true)) return false;
+            _playbackLibavActive = true;
+            return true;
+        }
+        if (!_playbackVideoDirectSegment || _playbackVideoAsset is null ||
+            !libavDecodeAvailable()) return false;
+        const decode = _preview.recommendedDecodeSize(liveDecodeHeight(),
+            _compositionWidth, _compositionHeight);
+        if (decode.width <= 0 || decode.height <= 0) return false;
+        PreviewFrame frame;
+        frame.width = decode.width;
+        frame.height = decode.height;
+        frame.sourceTime = clampValue(_playbackPosition +
+            _playbackVideoMediaOffset, 0.0, _playbackVideoAsset.duration);
+        frame.title = _playbackVideoAsset.name;
+        const frameBytes = cast(size_t) frame.width * frame.height * 3;
+        if (_playbackLibavRgb.length != frameBytes)
+            _playbackLibavRgb = new ubyte[frameBytes];
+        frame.rgb = _playbackLibavRgb;
+        if (!decodeLibavRgbPlaybackFrame(_playbackLibavDirectKey,
+            _playbackVideoAsset.path, frame.sourceTime, frame.width,
+            frame.height, frame.rgb, true))
+            return false;
+        _playbackLibavActive = true;
+        _playbackLibavWidth = frame.width;
+        _playbackLibavHeight = frame.height;
+        _playbackLibavLastSequenceTime = _playbackPosition;
+        _preview.setFrame(frame);
+        return true;
+    }
+
+    /** Decode the current direct-segment frame at the authoritative transport
+     * time. This is a persistent in-process decoder, so random timeline seeks
+     * and continuous playback share the same sub-frame-latency path. */
+    private bool presentCurrentLibavPlaybackFrame()
+    {
+        if (!_playbackLibavActive ||
+            (!_playbackLibavComposite && (!_playbackVideoDirectSegment ||
+             _playbackVideoAsset is null))) return false;
+        const fps = max(1, livePlaybackFps(Size(_playbackLibavWidth,
+            _playbackLibavHeight)));
+        if (_playbackLibavLastSequenceTime >= 0.0 &&
+            _playbackPosition - _playbackLibavLastSequenceTime <
+                0.75 / cast(double) fps)
+            return false;
+        const steps = clampValue(cast(int) ((_playbackPosition -
+            _playbackLibavLastSequenceTime) * fps + 0.5), 1, 8);
+        if (_playbackLibavComposite)
+        {
+            if (!presentSimpleLibavCompositionFrame(false, steps))
+            {
+                _playbackLibavActive = false;
+                return false;
+            }
+            _preview.setPlaying(true);
+            return true;
+        }
+        PreviewFrame frame;
+        frame.width = _playbackLibavWidth;
+        frame.height = _playbackLibavHeight;
+        frame.sourceTime = clampValue(_playbackPosition +
+            _playbackVideoMediaOffset, 0.0, _playbackVideoAsset.duration);
+        frame.title = _playbackVideoAsset.name;
+        frame.rgb = _playbackLibavRgb;
+        foreach (_; 0 .. steps)
+            if (!decodeLibavRgbPlaybackFrame(_playbackLibavDirectKey,
+                _playbackVideoAsset.path, frame.sourceTime, frame.width,
+                frame.height, frame.rgb, false))
+            {
+                _playbackLibavActive = false;
+                return false;
+            }
+        _playbackLibavLastSequenceTime = _playbackPosition;
+        _preview.setFrame(frame);
+        _preview.setPlaying(true);
+        return true;
+    }
+
+    /** Adopt the first frame belonging to the current decoder generation and
+     * anchor the transport to it. A seek must cross this barrier before its
+     * clock can advance; otherwise a cold decoder is guaranteed to chase a
+     * moving target and may never catch up after repeated timeline clicks. */
+    private bool beginTransportFromFirstVideoFrame()
+    {
+        if (!_playbackRunning || !_playbackAwaitingFirstFrame) return false;
+        const target = playbackSourceClockTime(_playbackPosition);
+        PreviewFrame frame;
+        if (!_videoStream.takeReadyAtOrAfter(target, frame) || !frame.valid())
+            return false;
+
+        _playbackPosition = playbackTimeForFrame(frame);
+        _preview.setFrame(frame);
+        _playbackAwaitingFirstFrame = false;
+        _playbackAwaitingAudioClock = false;
+        _playbackFirstFrameWait = 0.0;
+        _playbackAudioClockWait = 0.0;
+        _playbackAudioClockLostWait = 0.0;
+        _playbackVideoHardLagWait = 0.0;
+
+        if (_playbackAudioRequired)
+        {
+            if (!_playbackAudioStarted && !startPlaybackAudio(true))
+                _playbackAudioRequired = false;
+            if (_playbackAudioStarted) _audioPlayer.resume();
+        }
+        resetPlaybackClock();
+        _preview.setPlaying(true);
+        setStatus(playbackRunningStatus());
+        updatePlaybackButtons();
+        return true;
+    }
+
+    /** Rebase a decoder that cannot maintain the transport rate. The first
+     * recovery lowers preview cost; subsequent recoveries retain that cheaper
+     * tier and jump directly to the current clock instead of displaying stale
+     * frames. Export/composition quality is unaffected. */
+    private void rebaseLaggingPlayback()
+    {
+        if (!_playbackRunning || _playbackAsset is null || _seekPending) return;
+        _playbackPosition = clampValue(clockPlaybackPosition(),
+            _playbackStart, _playbackEnd);
+        _playbackVideoHardLagWait = 0.0;
+        _preview.setPlaying(false);
+        startPlaybackStreams();
+        setStatus("Playback caught up at the selected preview quality.");
     }
 
     /** Bound a stuck playback start: stop the streams and report the failure
@@ -7576,6 +7997,12 @@ final class EditorRoot : VBox
     private MediaAsset playbackAssetForPreview(MediaAsset asset)
     {
         if (!playbackProxyReady(asset)) return asset;
+        // A cache may accelerate its own native tier only. If the user selects
+        // a higher-fidelity playback mode, decode the original source instead
+        // of silently enlarging a lower-resolution proxy.
+        if (asset.playbackProxyHeight > 0 &&
+            liveDecodeHeight() > asset.playbackProxyHeight)
+            return asset;
 
         auto proxy = new MediaAsset(asset.playbackProxyPath);
         proxy.name = asset.name ~ " (playback proxy)";
@@ -7612,15 +8039,20 @@ final class EditorRoot : VBox
 
     private int liveDecodeHeight() const
     {
+        int result;
         final switch (_playbackPerformance)
         {
             case PlaybackPerformance.responsive:
-                return _previewQualityHeight < 720 ? _previewQualityHeight : 720;
+                result = _previewQualityHeight < 720 ? _previewQualityHeight : 720;
+                break;
             case PlaybackPerformance.balanced:
-                return _previewQualityHeight < 1080 ? _previewQualityHeight : 1080;
+                result = _previewQualityHeight < 1080 ? _previewQualityHeight : 1080;
+                break;
             case PlaybackPerformance.fidelity:
-                return _previewQualityHeight;
+                result = _previewQualityHeight;
+                break;
         }
+        return result;
     }
 
     private int livePlaybackFps(Size decode) const
@@ -7903,6 +8335,16 @@ final class EditorRoot : VBox
             _compositionWidth, _compositionHeight);
         const fps = livePlaybackFps(decode);
         bool videoStarted;
+        _playbackVideoDirectSegment = false;
+        _playbackVideoMediaOffset = 0.0;
+        _playbackVideoSegmentEnd = _playbackEnd;
+        _playbackVideoAsset = null;
+        _playbackLibavActive = false;
+        _playbackLibavLastSequenceTime = -1.0;
+        _playbackLibavComposite = false;
+        _playbackLibavClips.length = 0;
+        _playbackLibavAssets.length = 0;
+        _playbackLibavDirectKey = "";
         if (_sequencePlaybackLive && _sequencePlaybackStaticVisual)
         {
             // A long still-image composition with live audio was previously
@@ -7913,53 +8355,102 @@ final class EditorRoot : VBox
                 _preview.setPlaybackTime(_playbackPosition);
             else
                 requestPlaybackStill();
-            if (_playbackAudioRequired)
-            {
-                if (!startPlaybackAudio())
-                {
-                    haltPlaybackForSync(
-                        "Timeline audio could not start; playback stopped to prevent desync.");
-                    return;
-                }
-                _playbackAwaitingAudioClock = true;
-                _playbackAwaitingFirstFrame = false;
-                _playbackAudioClockWait = 0.0;
-                _playbackAudioClockLostWait = 0.0;
-                _preview.setPlaying(false);
-                setStatus(playbackPreparingStatus());
-            }
-            else
-            {
-                _playbackAwaitingFirstFrame = false;
-                resetPlaybackClock();
-                _preview.setPlaying(true);
-                setStatus(playbackRunningStatus());
-            }
+            beginImmediateTransport();
             return;
         }
         else if (_sequencePlaybackLive)
         {
-            const renderHeight = liveDecodeHeight();
-            auto preset = previewPlaybackPreset(decode);
-            auto request = buildExportRequest(ExportKind.mp4, "", preset,
-                false, true);
-            request.renderTitles = false;
-            scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
-            auto arguments = compositeStreamArguments(request, _playbackPosition,
-                _playbackEnd, decode.width, decode.height, fps);
-            if (adoptedPrewarm)
+            TimelineClip directClip;
+            MediaAsset directAsset;
+            double segmentEnd;
+            if (resolveDirectSequenceSegment(_playbackPosition, directClip,
+                directAsset, segmentEnd))
             {
-                // The background compositor is already decoding this exact
-                // request with buffered frames; adopt it instead of restarting.
-                videoStarted = _playbackPrewarmHasVideoStream;
+                auto playbackAsset = playbackAssetForPreview(directAsset);
+                _playbackVideoDirectSegment = true;
+                _playbackVideoMediaOffset = directClip.inPoint - directClip.start;
+                _playbackVideoSegmentEnd = min(segmentEnd, _playbackEnd);
+                _playbackVideoAsset = playbackAsset;
+                // Share the paused-preview decoder. If the playhead still points
+                // at the frame it just displayed, playback adopts that native
+                // frame and continues sequentially without another seek.
+                _playbackLibavDirectKey = "@shared";
+                const mediaPosition = clampValue(_playbackPosition +
+                    _playbackVideoMediaOffset, 0.0, playbackAsset.duration);
+                // libav supplies the exact target frame immediately, but it
+                // must not remain on the UI thread for continuous playback.
+                // Warm the asynchronous raw-video stream in parallel and hand
+                // off as soon as its first clock-eligible frame is available.
+                const streamStarted = adoptedPrewarm ?
+                    _playbackPrewarmHasVideoStream :
+                    _videoStream.start(playbackAsset.path, mediaPosition,
+                        _playbackVideoSegmentEnd - _playbackPosition,
+                        decode.width, decode.height, fps, playbackAsset.name,
+                        playbackDecodeInputOptions(playbackAsset));
+                videoStarted = libavDecodeAvailable() || streamStarted;
             }
             else
             {
-                videoStarted = _videoStream.startCommand(arguments, _playbackPosition,
-                    remaining, decode.width, decode.height, fps,
+                TimelineClip[] simpleClips;
+                MediaAsset[] simpleAssets;
+                double simpleEnd;
+                if (resolveSimpleLibavSegment(_playbackPosition, simpleClips,
+                    simpleAssets, simpleEnd))
+                {
+                    _playbackLibavComposite = true;
+                    _playbackLibavClips = simpleClips;
+                    _playbackLibavAssets = simpleAssets;
+                    // Multiple full-frame layers multiply decode and blend cost.
+                    // Use a native-aspect 640x360 tier only for that short overlap;
+                    // single-layer playback remains at the normal preview size.
+                    const compositeDecode = decode;
+                    _playbackLibavWidth = compositeDecode.width;
+                    _playbackLibavHeight = compositeDecode.height;
+                    _playbackVideoSegmentEnd = simpleEnd;
+                    bool streamStarted;
+                    if (adoptedPrewarm)
+                        streamStarted = _playbackPrewarmHasVideoStream;
+                    else
+                    {
+                        const renderHeight = liveDecodeHeight();
+                        auto preset = previewPlaybackPreset(compositeDecode);
+                        auto request = buildExportRequest(ExportKind.mp4, "",
+                            preset, false, true);
+                        request.renderTitles = false;
+                        scalePreviewPixelEffects(request, _previewQualityHeight,
+                            renderHeight);
+                        auto arguments = compositeStreamArguments(request,
+                            _playbackPosition, _playbackVideoSegmentEnd,
+                            compositeDecode.width, compositeDecode.height, fps);
+                        streamStarted = _videoStream.startCommand(arguments,
+                            _playbackPosition,
+                            _playbackVideoSegmentEnd - _playbackPosition,
+                            compositeDecode.width, compositeDecode.height, fps,
+                            "Sequence 01 • live composition");
+                    }
+                    videoStarted = libavDecodeAvailable() || streamStarted;
+                }
+                else
+                {
+                _playbackVideoSegmentEnd = min(nextVisualBoundary(
+                    _playbackPosition, _playbackEnd), _playbackEnd);
+                const renderHeight = liveDecodeHeight();
+                auto preset = previewPlaybackPreset(decode);
+                auto request = buildExportRequest(ExportKind.mp4, "", preset,
+                    false, true);
+                request.renderTitles = false;
+                scalePreviewPixelEffects(request, _previewQualityHeight, renderHeight);
+                auto arguments = compositeStreamArguments(request,
+                    _playbackPosition, _playbackVideoSegmentEnd,
+                    decode.width, decode.height, fps);
+                videoStarted = adoptedPrewarm ? _playbackPrewarmHasVideoStream :
+                    _videoStream.startCommand(arguments, _playbackPosition,
+                    _playbackVideoSegmentEnd - _playbackPosition,
+                    decode.width, decode.height, fps,
                     "Sequence 01 • live composition");
                 if (!videoStarted)
                     setStatus("The live timeline compositor could not be started.");
+                }
             }
         }
         else
@@ -7968,6 +8459,7 @@ final class EditorRoot : VBox
                 0.0, _playbackAsset.duration);
             if (_playbackAsset.hasVideo)
             {
+                _playbackVideoAsset = _playbackAsset;
                 if (adoptedPrewarm)
                 {
                     // The background source decoder is already running this
@@ -7989,13 +8481,6 @@ final class EditorRoot : VBox
                     playbackDecodeInputOptions(_playbackAsset));
         }
 
-        // Start the audio transport paused while the video decoder buffers its
-        // preroll, so press-Play-to-sound overlaps the video spawn instead of
-        // serializing behind it. The first-frame handler resumes it once the
-        // prerolled frame is presented.
-        if (videoStarted && _playbackAudioRequired && !_playbackAudioStarted)
-            startPlaybackAudio(true);
-
         if ((_sequencePlaybackLive || _playbackAsset.hasVideo) && !videoStarted)
         {
             _playbackRunning = false;
@@ -8008,18 +8493,33 @@ final class EditorRoot : VBox
 
         if (videoStarted)
         {
+            // Start audio decoding in parallel, but keep its device paused until
+            // a frame from this exact seek generation is ready. The retained
+            // frame remains visible; it is never mistaken for seek completion.
+            if (_playbackAudioRequired && !_playbackAudioStarted)
+                startPlaybackAudio(true);
+            if (presentDirectSegmentStartFrame())
+            {
+                // The exact target pixels are already on screen. Let transport
+                // advance now; direct FFmpeg decode runs faster than real time
+                // and the normal newest-eligible-frame drain catches it up.
+                beginImmediateTransport();
+                return;
+            }
             _playbackAwaitingFirstFrame = true;
+            _playbackAwaitingAudioClock = false;
+            _playbackFirstFrameWait = 0.0;
             _playbackClockValid = false;
             _preview.setPlaying(false);
-            setStatus(playbackPreparingStatus());
+            setStatus("Seeking to " ~ formatTimecode(_playbackPosition) ~ "…");
+            updatePlaybackButtons();
+            // A prewarmed generation may already own the target frame. Adopt it
+            // in this click handler rather than waiting for the next UI tick.
+            beginTransportFromFirstVideoFrame();
         }
         else
         {
-            _playbackAwaitingFirstFrame = false;
-            resetPlaybackClock();
-            _preview.setPlaying(true);
-            setStatus(playbackRunningStatus());
-            startPlaybackAudio();
+            beginImmediateTransport();
         }
     }
 
@@ -8128,6 +8628,7 @@ final class EditorRoot : VBox
         if (!_seekPending)
         {
             _seekResumePlayback = _playbackRunning;
+            _playbackVideoHardLagWait = 0.0;
             cancelPlaybackPrewarm();
             _videoStream.stop();
             _audioPlayer.stop();
@@ -8373,6 +8874,16 @@ final class EditorRoot : VBox
         _sequencePlaybackDirect = false;
         _sequencePlaybackLive = false;
         _sequencePlaybackStaticVisual = false;
+        _playbackVideoDirectSegment = false;
+        _playbackVideoMediaOffset = 0.0;
+        _playbackVideoSegmentEnd = -1.0;
+        _playbackVideoAsset = null;
+        _playbackLibavActive = false;
+        _playbackLibavLastSequenceTime = -1.0;
+        _playbackLibavComposite = false;
+        _playbackLibavClips.length = 0;
+        _playbackLibavAssets.length = 0;
+        _playbackLibavDirectKey = "";
         _liveAudioEnd = -1.0;
         _liveAudioClipId = 0;
         _playbackAudioStarted = false;
@@ -8383,6 +8894,8 @@ final class EditorRoot : VBox
         _playbackModelRevision = 0;
         _playbackClockValid = false;
         _playbackAwaitingFirstFrame = false;
+        _playbackVideoHardLagWait = 0.0;
+        _playbackAdaptiveLevel = 0;
         _seekResumePlayback = false;
         clearPendingSeekState();
         _sourceAudioRefreshPending = false;
@@ -8507,6 +9020,127 @@ final class EditorRoot : VBox
         foreach (keyframe; clip.keyframes)
             if (keyframe.property != EffectProperty.volume) return true;
         return false;
+    }
+
+    /** End of the current visual topology. Limiting a live compositor to this
+     * interval keeps a seek from opening every later source in a long project. */
+    private double nextVisualBoundary(double sequenceTime, double fallbackEnd)
+    {
+        double result = fallbackEnd;
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const track = _model.trackValue(TrackAddress(TrackKind.video, lane));
+            if (track.disabled) continue;
+            foreach (clip; track.clips)
+            {
+                if (clip.start > sequenceTime + 0.000_5 && clip.start < result)
+                    result = clip.start;
+                const clipEnd = clip.end();
+                if (clipEnd > sequenceTime + 0.000_5 && clipEnd < result)
+                    result = clipEnd;
+                const fadeInEnd = clip.start + clip.fadeIn;
+                if (clip.fadeIn > 0.000_001 &&
+                    fadeInEnd > sequenceTime + 0.000_5 && fadeInEnd < result)
+                    result = fadeInEnd;
+                const fadeOutStart = clipEnd - clip.fadeOut;
+                if (clip.fadeOut > 0.000_001 &&
+                    fadeOutStart > sequenceTime + 0.000_5 && fadeOutStart < result)
+                    result = fadeOutStart;
+            }
+        }
+        // Degenerate/sub-frame edits must still leave FFmpeg a useful range.
+        if (result <= sequenceTime + 0.001)
+            result = min(fallbackEnd, sequenceTime + 0.05);
+        return result;
+    }
+
+    /** Resolve the current visual segment to one plain source clip. Unlike the
+     * whole-sequence passthrough test below, later cuts and separately mixed
+     * audio do not disqualify this fast path. */
+    private bool resolveDirectSequenceSegment(double sequenceTime,
+        out TimelineClip clip, out MediaAsset asset, out double segmentEnd)
+    {
+        size_t activeVideoLayers;
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const address = TrackAddress(TrackKind.video, lane);
+            const track = _model.trackValue(address);
+            if (track.disabled) continue;
+            const index = _model.clipAtTime(address, sequenceTime);
+            if (index < 0) continue;
+            TimelineClip candidate;
+            if (!_model.copyClip(address, index, candidate)) return false;
+            if (candidate.isText()) continue;
+            auto candidateAsset = _model.assetForClip(candidate);
+            if (candidateAsset is null || !candidateAsset.hasVideo) continue;
+            ++activeVideoLayers;
+            // Tracks are exported bottom-to-top. Keep the highest active media
+            // layer; an opaque full-canvas layer makes everything below it
+            // irrelevant to the resulting picture.
+            clip = candidate;
+            asset = candidateAsset;
+        }
+        if (activeVideoLayers == 0) return false;
+        // A clip with fades is still a plain opaque source between the two fade
+        // intervals. Strip only the inactive fades for this point-in-time test;
+        // nextVisualBoundary() will return to composition mode at fade-out.
+        TimelineClip visualCheck = clip;
+        if (sequenceTime >= clip.start + clip.fadeIn - 0.000_5)
+            visualCheck.fadeIn = 0.0;
+        if (sequenceTime <= clip.end() - clip.fadeOut + 0.000_5)
+            visualCheck.fadeOut = 0.0;
+        if (clipNeedsVisualComposition(visualCheck)) return false;
+        if (activeVideoLayers > 1)
+        {
+            if (asset.width <= 0 || asset.height <= 0 ||
+                _compositionWidth <= 0 || _compositionHeight <= 0)
+                return false;
+            const sourceAspect = cast(double) asset.width / asset.height;
+            const canvasAspect = cast(double) _compositionWidth / _compositionHeight;
+            if (fabs(sourceAspect - canvasAspect) > 0.002) return false;
+        }
+        segmentEnd = nextVisualBoundary(sequenceTime, _model.sequenceDuration());
+        if (segmentEnd > clip.end()) segmentEnd = clip.end();
+        return segmentEnd > sequenceTime + 0.001;
+    }
+
+    /** Resolve a segment that the in-process decoder can composite without an
+     * FFmpeg child: full-canvas media layers with static transforms and optional
+     * opacity/fade envelopes. This covers cuts, crossfades and black gaps while
+     * titles remain Aurora-native retained layers. */
+    private bool resolveSimpleLibavSegment(double sequenceTime,
+        out TimelineClip[] clips, out MediaAsset[] assets, out double segmentEnd)
+    {
+        if (!libavDecodeAvailable()) return false;
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const address = TrackAddress(TrackKind.video, lane);
+            const track = _model.trackValue(address);
+            if (track.disabled) continue;
+            const index = _model.clipAtTime(address, sequenceTime);
+            if (index < 0) continue;
+            TimelineClip clip;
+            if (!_model.copyClip(address, index, clip)) return false;
+            if (clip.isText()) continue;
+            auto asset = _model.assetForClip(clip);
+            if (asset is null || !asset.hasVideo || asset.width <= 0 ||
+                asset.height <= 0) return false;
+            const sourceAspect = cast(double) asset.width / asset.height;
+            const canvasAspect = cast(double) _compositionWidth /
+                max(1, _compositionHeight);
+            if (fabs(sourceAspect - canvasAspect) > 0.002) return false;
+
+            TimelineClip visualCheck = clip;
+            visualCheck.fadeIn = 0.0;
+            visualCheck.fadeOut = 0.0;
+            visualCheck.opacity = 1.0;
+            if (clipNeedsVisualComposition(visualCheck)) return false;
+            clips ~= clip;
+            assets ~= playbackAssetForPreview(asset);
+        }
+        segmentEnd = min(nextVisualBoundary(sequenceTime, _playbackEnd),
+            _playbackEnd);
+        return segmentEnd > sequenceTime + 0.001;
     }
 
     /** Resolve a sequence that can be decoded directly from its original MP4.
@@ -10357,100 +10991,99 @@ final class EditorRoot : VBox
                         startLiveTimelineAudio();
                 }
             }
+            // Live video is intentionally decoded only to the next edit
+            // boundary. Re-plan there so a long sequence never becomes one
+            // enormous FFmpeg graph, and plain stretches return to direct
+            // source decoding immediately after an overlay ends.
+            if (_playbackRunning && _sequencePlaybackLive &&
+                !_sequencePlaybackStaticVisual && !_playbackAwaitingAudioClock &&
+                !_playbackAwaitingFirstFrame && _playbackVideoSegmentEnd >= 0.0 &&
+                _playbackVideoSegmentEnd < _playbackEnd - 0.000_5 &&
+                _playbackPosition >= _playbackVideoSegmentEnd - 0.000_5)
+            {
+                _playbackPosition = min(_playbackEnd,
+                    _playbackVideoSegmentEnd + 0.000_01);
+                if (_playbackKind == PlaybackKind.sequence)
+                    syncPreviewTitleLayers(_playbackPosition);
+                startPlaybackStreams();
+            }
             bool receivedFrame;
             PreviewFrame frame;
-            const firstFrameTarget = playbackSourceClockTime(_playbackPosition);
             if (_playbackRunning && !_playbackAwaitingAudioClock &&
-                _playbackAwaitingFirstFrame &&
-                // Start from a small real buffer instead of a single frame.
-                // This prevents the transport from immediately pausing again
-                // on machines where FFmpeg needs a few frames to settle.
-                _videoStream.hasBufferedDuration(playbackPrerollSeconds()) &&
-                (_videoStream.canTakeReadyAtOrAfter(firstFrameTarget) ?
-                 _videoStream.takeReadyAtOrAfter(firstFrameTarget, frame) :
-                 _videoStream.takeReady(frame)))
+                _playbackAwaitingFirstFrame)
             {
-                receivedFrame = true;
-                bool handledFrame;
-                if (frame.valid())
-                {
-                    const framePlaybackTime = playbackTimeForFrame(frame);
-                    _playbackPosition = framePlaybackTime;
-                    double audioPosition = _playbackPosition;
-                    const audioRequired = _playbackAudioRequired;
-                    const audioStarted = startPlaybackAudio(audioRequired);
-                    const audioClockReady = audioStarted &&
-                        _audioPlayer.clockPosition(audioPosition);
-                    if (audioRequired && !audioStarted)
-                    {
-                        // Audio genuinely cannot start (no device, no ffmpeg,
-                        // or a decode error). Play the buffered video muted on
-                        // the monotonic clock instead of retrying forever in a
-                        // "preparing" state.
-                        _playbackAudioRequired = false;
-                        _playbackAudioStarted = false;
-                        _preview.setFrame(frame);
-                        _playbackAwaitingFirstFrame = false;
-                        _playbackFirstFrameWait = 0.0;
-                        resetPlaybackClock();
-                        _preview.setPlaying(true);
-                        setStatus("Playing video without audio: " ~
-                            (_audioPlayer.error().length > 0 ?
-                             _audioPlayer.error() : "audio output could not start."));
-                        handledFrame = true;
-                    }
-                    else if (audioStarted && !audioClockReady)
-                    {
-                        _playbackAwaitingAudioClock = true;
-                        _playbackAwaitingFirstFrame = false;
-                        _playbackAudioClockWait = 0.0;
-                        _playbackAudioClockLostWait = 0.0;
-                        _preview.setFrame(frame);
-                        _preview.setPlaying(false);
-                        handledFrame = true;
-                    }
-                    else
-                    {
-                        if (audioClockReady)
-                        {
-                            _playbackPosition = clampValue(audioPosition,
-                                _playbackStart, _playbackEnd);
-                            _playbackAudioClockLostWait = 0.0;
-                        }
-                        if (audioClockReady &&
-                            _playbackPosition - framePlaybackTime >
-                            playbackVideoLagToleranceSeconds)
-                        {
-                            _preview.setFrame(frame);
-                            waitForPlaybackPreroll(
-                                "Waiting for video/audio preroll before playback starts.");
-                            handledFrame = true;
-                        }
-                        else
-                        {
-                            if (audioClockReady) _audioPlayer.resume();
-                            _playbackAwaitingFirstFrame = false;
-                            resetPlaybackClock();
-                            setStatus(playbackRunningStatus());
-                        }
-                    }
-                }
-                if (!handledFrame)
-                {
-                    _preview.setFrame(frame);
-                    _preview.setPlaying(!_playbackAwaitingFirstFrame);
-                }
+                receivedFrame = beginTransportFromFirstVideoFrame();
             }
             else if (_playbackRunning && !_playbackAwaitingAudioClock &&
                 !_playbackAwaitingFirstFrame)
             {
                 const maximumFrameTime = playbackSourceClockTime(_playbackPosition) +
                     playbackVideoLeadSeconds;
-                if (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame))
+                // The synchronous decoder may already have advanced beyond
+                // the asynchronous stream's newest eligible frame. Remember
+                // what is actually on screen before draining that stream so
+                // its handoff can never send the image backward.
+                const previouslyDisplayedTime = displayedPlaybackFrameTime();
+                PreviewFrame newestFrame;
+                bool caughtUp;
+                // A cold decoder can publish several frames after the transport
+                // clock has already advanced. Present only the newest eligible
+                // one; walking the backlog one frame per UI tick would recreate
+                // the very startup delay that immediate transport avoids.
+                while (_videoStream.takeReadyAtOrBefore(maximumFrameTime, frame))
                 {
-                    receivedFrame = true;
-                    _preview.setFrame(frame);
-                    _preview.setPlaying(true);
+                    newestFrame = frame;
+                    caughtUp = true;
+                }
+                if (caughtUp)
+                {
+                    const displayedTime = playbackTimeForFrame(newestFrame);
+                    if (_playbackLibavActive &&
+                        displayedTime < previouslyDisplayedTime - 0.000_5)
+                    {
+                        // Discard the stale handoff frame. Presenting it would
+                        // flash backward once, then forward again on the next
+                        // worker frame—the visible double glitch after every
+                        // playhead seek. Keep the instant decoder authoritative
+                        // until the worker reaches the displayed timestamp.
+                        receivedFrame = presentCurrentLibavPlaybackFrame();
+                        _playbackVideoHardLagWait = 0.0;
+                    }
+                    else
+                    {
+                        receivedFrame = true;
+                        _preview.setFrame(newestFrame);
+                        _preview.setPlaying(true);
+                        // The background worker has caught the pixels already
+                        // on screen. It can now take over without a backward
+                        // presentation or a second visible restart.
+                        _playbackLibavActive = false;
+                        const lag = _playbackPosition - displayedTime;
+                        if (lag > playbackVideoHardLagSeconds)
+                            _playbackVideoHardLagWait += deltaSeconds;
+                        else
+                            _playbackVideoHardLagWait = 0.0;
+
+                        if (_playbackVideoHardLagWait >=
+                            playbackVideoHardLagHoldSeconds)
+                            rebaseLaggingPlayback();
+                    }
+                }
+                else if (_playbackLibavActive)
+                {
+                    receivedFrame = presentCurrentLibavPlaybackFrame();
+                    _playbackVideoHardLagWait = 0.0;
+                }
+                else if (_preview.hasFrame())
+                {
+                    const lag = _playbackPosition - displayedPlaybackFrameTime();
+                    if (lag > playbackVideoHardLagSeconds)
+                        _playbackVideoHardLagWait += deltaSeconds;
+                    else
+                        _playbackVideoHardLagWait = 0.0;
+                    if (_playbackVideoHardLagWait >=
+                        playbackVideoHardLagHoldSeconds)
+                        rebaseLaggingPlayback();
                 }
             }
             if (_playbackRunning && _videoStream.finished() &&

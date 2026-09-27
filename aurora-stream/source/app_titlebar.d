@@ -24,21 +24,14 @@ import std.stdio : writeln;
 final class TitleBarStreamRoot : Widget
 {
     private GuiWindow _window;
-    private TitleBar _titleBar;
+    private FramelessWindowTitleBar _titleBar;
     private StreamRoot _stream;
     private TitleBarSnapPreview _snapPreview;
-    private bool _maximized;
-    private Rect _restoredBounds;
-    private PointF _dragStartWindowOrigin;
-    private PointF _dragStartScreenPointer;
-    private bool _anchorReady;
-    private PointF _pendingOrigin;
-    private PointF _pendingPointer;
 
     this(GuiWindow window, string executablePath)
     {
         _window = window;
-        _titleBar = add(new TitleBar());
+        _titleBar = add(new FramelessWindowTitleBar(window));
         _titleBar.setTitle(appDisplayName);
         // Show the application's own icon (from assets or beside the exe).
         const iconPath = applicationIconPath();
@@ -64,54 +57,19 @@ final class TitleBarStreamRoot : Widget
         _titleBar.setButtonPressedColor(Color.fromHex(0x20262d));
         _titleBar.setCloseHoverColor(Color.fromHex(0xe5484d));
         _titleBar.setClosePressedColor(Color.fromHex(0xbf3438));
-        _titleBar.onMinimize = delegate() {
+        _titleBar.setMinimizeAction(delegate() {
             // Minimize hides to the tray only when the user enabled
             // "Minimize button hides to tray" (off by default); otherwise it is
             // a plain taskbar minimize.
             if (!_stream.requestMinimize()) _window.minimize();
-        };
-        _titleBar.onMaximizeToggle = &toggleMaximize;
-        _titleBar.onClose = delegate() { _window.close(); };
-        _titleBar.onSystemMenu = &showSystemMenu;
-        _titleBar.onRestoreRequested = &restoreFromDrag;
-        _titleBar.onDragStarted = &beginDrag;
-        _titleBar.onDragMoved = &moveDrag;
-        _titleBar.onSnapChanged = &updateSnapPreview;
-        _titleBar.onSnapApplied = &applySnap;
+        });
 
         _stream = add(new StreamRoot(window, executablePath));
 
         // Snap-preview overlay: added last so it paints above all content. The
         // overlay is created disabled, so it never intercepts pointer input.
         _snapPreview = add(new TitleBarSnapPreview());
-    }
-
-    /// Show/hide the translucent preview while a drag crosses a snap zone.
-    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
-    {
-        if (target == TitleBarSnapTarget.none)
-        {
-            _snapPreview.hide();
-            return;
-        }
-        Rect origin;
-        _window.windowBounds(origin);
-        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
-            bounds.width, bounds.height));
-    }
-
-    /// Apply a drag-snap target to the real window on release.
-    private void applySnap(TitleBarSnapTarget target, Rect bounds)
-    {
-        _snapPreview.hide();
-        _maximized = target == TitleBarSnapTarget.top;
-        _titleBar.setMaximized(_maximized);
-        if (_maximized && !_window.fullscreen())
-        {
-            Rect current;
-            if (_window.windowBounds(current)) _restoredBounds = current;
-        }
-        _window.setWindowBounds(bounds);
+        _titleBar.setSnapPreview(_snapPreview);
     }
 
     void shutdown()
@@ -124,127 +82,6 @@ final class TitleBarStreamRoot : Widget
     bool closeRequested()
     {
         return _stream.closeRequested();
-    }
-
-    private void toggleMaximize()
-    {
-        if (_maximized || _window.fullscreen())
-        {
-            // Leaving maximize: force the tracked pre-maximize size so the
-            // window never stays at the maximized extent.
-            _maximized = false;
-            _titleBar.setMaximized(false);
-            if (_window.fullscreen()) _window.toggleFullscreen();
-            if (!_restoredBounds.empty) _window.setWindowBounds(_restoredBounds);
-        }
-        else
-        {
-            Rect bounds;
-            if (_window.windowBounds(bounds)) _restoredBounds = bounds;
-            _maximized = true;
-            _titleBar.setMaximized(true);
-            _window.toggleFullscreen();
-        }
-    }
-
-    private void restoreFromDrag(PointF pointer, PointF pressPointer)
-    {
-        if (!_maximized) return;
-        Rect maximized;
-        _window.windowBounds(maximized);
-        const wasFullscreen = _window.fullscreen();
-        PointF screen;
-        const hasScreen = _window.queryPointerScreenPosition(screen);
-        _maximized = false;
-        _titleBar.setMaximized(false);
-        // Leave fullscreen when the window was maximized to fullscreen, then
-        // always force the tracked pre-maximize size so the window reliably
-        // returns to its initial size instead of keeping the maximized extent.
-        if (wasFullscreen)
-            _window.toggleFullscreen();
-        if (!_restoredBounds.empty)
-            _window.setWindowBounds(_restoredBounds);
-        Rect restored;
-        _window.windowBounds(restored);
-        // Map the grab point from the maximized titlebar into the restored
-        // titlebar by preserving its fractional position (the maximized window
-        // is wider than the restored one). The titlebar height is unchanged, so
-        // only X is scaled; both are clamped to the restored size.
-        double grabX = pressPointer.x;
-        double grabY = pressPointer.y;
-        if (maximized.width > 0 && restored.width > 0)
-            grabX = pressPointer.x * restored.width / maximized.width;
-        grabX = clampDouble(grabX, 0.0, cast(double) maxInt(0, restored.width - 1));
-        grabY = clampDouble(grabY, 0.0, cast(double) maxInt(0, restored.height - 1));
-        // Capture the cursor ONCE and reuse it as the drag anchor so the
-        // restore position and the continuing drag agree exactly.
-        const origin = (hasScreen ? screen : pointer) -
-            PointF(cast(double) grabX, cast(double) grabY);
-        _window.setWindowPosition(origin.rounded());
-        _pendingOrigin = origin;
-        _pendingPointer = hasScreen ? screen : pointer;
-        _anchorReady = true;
-    }
-
-    private void beginDrag(PointF startPointer, PointF startPosition)
-    {
-        if (_anchorReady)
-        {
-            _dragStartWindowOrigin = _pendingOrigin;
-            _dragStartScreenPointer = _pendingPointer;
-            _anchorReady = false;
-            return;
-        }
-        PointF screen;
-        if (_window.queryPointerScreenPosition(screen))
-        {
-            Rect bounds;
-            if (_window.windowBounds(bounds))
-                _dragStartWindowOrigin = PointF(bounds.x, bounds.y);
-            else
-                _dragStartWindowOrigin = startPosition;
-            _dragStartScreenPointer = screen;
-        }
-        else
-        {
-            _dragStartWindowOrigin = startPosition;
-            _dragStartScreenPointer = startPointer;
-        }
-    }
-
-    private bool moveDrag(PointF pointer, bool requestFrame)
-    {
-        PointF screen;
-        if (!_window.queryPointerScreenPosition(screen)) return false;
-        const target = _dragStartWindowOrigin + (screen - _dragStartScreenPointer);
-        const rounded = target.rounded();
-        Rect bounds;
-        if (_window.windowBounds(bounds) &&
-            rounded.x == bounds.x && rounded.y == bounds.y)
-            return true;
-        _window.setWindowPosition(rounded);
-        _window.redrawWindow();
-        return true;
-    }
-
-    private void showSystemMenu(Point globalPosition)
-    {
-        ContextMenuItem[] items;
-        items ~= ContextMenuItem.command("Restore", IconKind.open,
-            delegate()
-            {
-                if (_maximized) toggleMaximize();
-            }, "", _maximized);
-        items ~= ContextMenuItem.command(_maximized ? "Restore down" : "Maximize",
-            IconKind.maximize, delegate() { toggleMaximize(); });
-        items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
-            delegate() {
-                if (!_stream.requestMinimize()) _window.minimize();
-            }, "", !_window.isMinimized());
-        items ~= ContextMenuItem.separatorItem();
-        items ~= ContextMenuItem.command("Close", IconKind.close,
-            delegate() { _window.close(); }, "Alt+F4");
-        showContextMenu(this, globalPosition, items);
     }
 
     protected override void onLayout()

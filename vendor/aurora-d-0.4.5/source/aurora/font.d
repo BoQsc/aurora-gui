@@ -69,7 +69,8 @@ enum FontRole : ubyte
  *
  * `sharp` aligns font-authored lowercase/capital heights at small sizes.
  * `smooth` preserves the unmodified outline. Both use grayscale area
- * coverage without an additional contrast curve or LCD subpixel filtering.
+ * coverage; the glyph atlas applies Aurora's shared coverage-contrast policy.
+ * Neither mode uses LCD subpixel filtering.
  */
 enum FontRenderMode : ubyte
 {

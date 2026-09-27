@@ -1,0 +1,21 @@
+{
+  "name": "aurora-remote",
+  "description": "Encrypted low-latency Windows remote control, transfer, and relay",
+  "authors": ["OpenAI"],
+  "copyright": "Copyright © 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-remote",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": ["source", "../vendor/aurora-d-0.4.5/source"],
+  "libs-windows": ["user32", "gdi32", "shell32", "ole32", "advapi32", "crypt32", "bcrypt", "ws2_32"],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": ["releaseMode", "optimize", "inline"],
+      "dflags-windows-dmd": ["-mscrtlib=libcmt"],
+      "dflags-windows-ldc": ["-mscrtlib=libcmt"]
+    }
+  },
+  "lflags-windows": ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"],
+  "version": "1.0.0"
+}

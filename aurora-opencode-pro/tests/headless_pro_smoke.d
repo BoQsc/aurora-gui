@@ -43,8 +43,6 @@ import std.utf : toUTF32;
 /// at 17px). The app must render with hinting off plus the contrast curve.
 private void verifyNativeTextGlyphs()
 {
-    import auroraopencode.core : enableNativeTextRendering;
-    enableNativeTextRendering();
     const mode = environment.get("AURORA_HINTING", "");
     assert(mode != "natural" && mode != "1",
         "Native text rendering must not enable the experimental hinter");
@@ -1057,6 +1055,36 @@ int main(string[] args)
         "A valid tool exchange was dropped by the sanitizer");
     writeln("Outgoing request keeps tool exchange + reasoning state");
 
+    // Changing durable state is recorded where it occurred instead of rewriting
+    // the leading system message. A following tool round must therefore retain
+    // the complete earlier request as an exact logical-message prefix.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Implement cache-safe requests"]);
+    root.setTaskStateForTesting("Implement cache-safe requests", "active",
+        "not_required");
+    assert(root.ensureDurableTaskCheckpointForTesting(),
+        "the first durable task checkpoint was not appended");
+    const cachedPrefix = root.requestMessagesForTesting();
+    assert(!root.ensureDurableTaskCheckpointForTesting(),
+        "unchanged task state appended a duplicate checkpoint");
+    root.appendToolRequestTurnForTesting("Inspect the request.",
+        "call_cache", "read", `{}`);
+    root.appendToolReplyForTesting("call_cache", "request body");
+    root.applyPlanForTesting(
+        `{"plan":[{"step":"Verify prefix stability","status":"in_progress"}]}`);
+    assert(root.ensureDurableTaskCheckpointForTesting(),
+        "changed durable task state did not append a new checkpoint");
+    const extendedRequest = root.requestMessagesForTesting();
+    assert(extendedRequest.length > cachedPrefix.length,
+        "the next agent round did not extend the cached request");
+    foreach (i, message; cachedPrefix)
+        assert(extendedRequest[i].role == message.role &&
+            extendedRequest[i].content == message.content &&
+            extendedRequest[i].reasoningContent == message.reasoningContent &&
+            extendedRequest[i].toolCallId == message.toolCallId,
+            "the next agent round rewrote its cached message prefix");
+    writeln("Agent request history remains append-only across task-state updates");
+
     // Navigation during a turn is a view change, not ownership transfer. The
     // original conversation must keep receiving streamed bytes while a newly
     // created chat stays untouched, and its sidebar activity marker must remain.
@@ -1790,7 +1818,7 @@ int main(string[] args)
     assert(!OpenCodeClient.isLlamaCppModelEntryForTesting(
         `{"id":"hosted","owned_by":"remote-provider"}`));
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
-    root.recordContextUsageForTesting(240000, 10000, 250000);
+    root.recordContextUsageForTesting(240000, 10000, 250000, 230000, 10000);
     assert(driver.paint(), "Context badge did not paint after usage");
     assert(root.contextUsageTextForTesting() == "24%",
         "Badge should show 240000/1000000 = 24% input context");
@@ -1824,6 +1852,9 @@ int main(string[] args)
     assert(tooltip.indexOf("240,000") >= 0, "Tooltip lacks active input");
     assert(tooltip.indexOf("24%") >= 0, "Tooltip lacks the usage percent");
     assert(tooltip.indexOf("10,000") >= 0, "Tooltip lacks last output tokens");
+    assert(tooltip.indexOf("Prompt cache: 95.8% hit") >= 0 &&
+        tooltip.indexOf("230,000 cached, 10,000 uncached") >= 0,
+        "Tooltip lacks the provider prompt-cache breakdown: " ~ tooltip);
     writeln("Context tooltip shows the usage breakdown on hover");
 
     // Moving away from the badge dismisses the tooltip.

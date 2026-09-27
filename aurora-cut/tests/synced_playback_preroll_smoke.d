@@ -104,6 +104,16 @@ int main(string[] arguments)
     timeline.modelChanged();
     timeline.setPlayhead(0.15, false);
     assert(driver.paint(), "Synced playback setup paint failed");
+    // Restoring a project uses the non-notifying playhead path. It may queue
+    // deterministic seek-cache work, but it must not start a live decoder or
+    // consume playback frames before the user touches the transport.
+    foreach (_; 0 .. 25)
+    {
+        editor.tickTree(0.02);
+        Thread.sleep(2.msecs);
+    }
+    assert(!editor.playbackPrewarmActiveForTesting(),
+        "An untouched loaded timeline started consuming playback frames");
     assert(fabs(timeline.frameStepSecondsForTesting(0.15) - 1.0 / 30.0) <
         0.000_001, "Timeline keyboard frame step is not one source frame");
     const steppedTime = 0.15 + timeline.frameStepSecondsForTesting(0.15);
@@ -152,18 +162,15 @@ int main(string[] arguments)
     driver.click(globalCenter(playButton));
     assert(editor.directSequencePlaybackForTesting(),
         "Plain video/audio timeline did not use direct playback");
-    assert(editor.playbackAwaitingFirstFrameForTesting(),
-        "Video/audio playback skipped first-frame preroll");
-    // Audio is started PAUSED concurrently with the video decoder so the
-    // press-Play-to-sound latency overlaps the video spawn. The transport must
-    // still gate presentation on the first prerolled frame.
+    // A cold decoder may need a first-frame barrier, but it must never advance
+    // the transport behind a retained frame from the previous position.
+    assert(!editor.playbackReadyForTesting() || preview.playing(),
+        "Playback reported ready without presenting its current generation");
     assert(editor.audioStatsForTesting().requests >= audioRequestsBefore,
         "Direct Composition Preview audio request counters regressed");
-    assert(editor.playbackAwaitingFirstFrameForTesting() && !preview.playing(),
-        "Video/audio playback presented before the first prerolled frame");
 
     assert(waitForPlaybackReady(editor, preview),
-        "Video/audio playback did not leave preroll once synchronized");
+        "Video/audio playback did not present its current generation");
     assert(editor.audioStatsForTesting().requests > audioRequestsBefore,
         "Synchronized video/audio playback never requested audio");
 

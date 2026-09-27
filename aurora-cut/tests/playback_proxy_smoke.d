@@ -1,7 +1,8 @@
 module tests.playback_proxy_smoke;
 
 import auroracut.media : MediaProxyResult, MediaProxyService,
-    assetNeedsPlaybackProxy, playbackProxyDimensions, playbackProxyFrameRate;
+    adoptCachedPlaybackProxy, assetNeedsPlaybackProxy, playbackProxyDimensions,
+    playbackProxyFrameRate;
 import auroracut.model : EditorModel, MediaAsset;
 import auroracut.project : loadProjectFile, saveProjectFile;
 import core.thread : Thread;
@@ -39,7 +40,8 @@ private bool waitForProxy(MediaProxyService service, out MediaProxyResult result
 int main(string[] arguments)
 {
     auto ready = videoAsset("ready.mp4", 1280, 720, 30.0, "h264");
-    assert(!assetNeedsPlaybackProxy(ready));
+    assert(assetNeedsPlaybackProxy(ready),
+        "Long-GOP 720p sources still require an instant-seek cache");
 
     auto large = videoAsset("large.mp4", 1920, 1080, 60.0, "av1");
     assert(assetNeedsPlaybackProxy(large));
@@ -84,6 +86,21 @@ int main(string[] arguments)
         if (!proxy.success()) writeln(proxy.error);
         assert(proxy.success(), proxy.error);
         assert(exists(proxy.proxyPath));
+
+        auto reopenedAsset = videoAsset(arguments[1], 320, 180, 30.0, "vp9");
+        assert(adoptCachedPlaybackProxy(reopenedAsset));
+        assert(reopenedAsset.playbackProxyPath == proxy.proxyPath);
+
+        // A fresh service represents a project reopen with no saved proxy
+        // metadata. The source fingerprint must rediscover the existing cache
+        // instead of launching another transcode.
+        auto reopened = new MediaProxyService();
+        scope (exit) reopened.shutdown();
+        assert(reopened.enqueue(0, source));
+        MediaProxyResult cached;
+        assert(reopened.takeReady(cached));
+        assert(cached.proxyPath == proxy.proxyPath);
+        assert(reopened.stats().processesStarted == 0);
         remove(proxy.proxyPath);
     }
     return 0;

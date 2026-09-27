@@ -25,6 +25,7 @@ import core.time : MonoTime;
 import std.file : exists, thisExePath;
 import std.path : buildPath, dirName;
 import std.process : environment;
+import std.math : fabs;
 import std.utf : toUTF16z;
 
 version (Windows) { import core.sys.windows.windows : HMODULE, LoadLibraryExW, GetProcAddress; }
@@ -318,6 +319,9 @@ private LibavRuntime runtime()
 private final class LibavDecoder
 {
     LibavRuntime rt;
+    Mutex operationMutex;
+    int activeUsers;
+    string cacheKey;
     string path;
     void* format;
     void* codecCtx;
@@ -339,6 +343,7 @@ private final class LibavDecoder
     {
         this.rt = rt;
         this.path = path;
+        operationMutex = new Mutex();
     }
 
     ~this() { close(); }
@@ -450,11 +455,53 @@ private final class LibavDecoder
         return best;
     }
 
+    /** Continue from the decoder's current packet position and return the next
+     * displayable frame. Playback uses this after one exact random-access seek;
+     * unlike decodeAt(), it never seeks back to a keyframe. */
+    private void* decodeNext()
+    {
+        if (codecCtx is null && !open()) return null;
+        foreach (_; 0 .. 2000)
+        {
+            // A packet can yield more than one frame. Always drain the codec
+            // before asking the demuxer for another packet.
+            if (rt.receiveFrame(codecCtx, frame) >= 0)
+            {
+                lastDecodeSeconds = -1.0;
+                return frame;
+            }
+            if (rt.readFrame(format, packet) < 0) return null;
+            if (packetStreamIndex(packet) != streamIndex)
+            {
+                rt.packetUnref(packet);
+                continue;
+            }
+            const sendResult = rt.sendPacket(codecCtx, packet);
+            rt.packetUnref(packet);
+            if (sendResult < 0 && sendResult != AVERROR_EAGAIN) continue;
+        }
+        return null;
+    }
+
     /** Decode at `seconds` and letterbox into an RGB24 `dstW x dstH` buffer
      * using the same fit-then-pad semantics as the ffmpeg preview filter. */
     bool decodeRgb(double seconds, int dstW, int dstH, ubyte[] rgb)
     {
+        if (frame !is null && lastDecodeSeconds >= 0.0 &&
+            fabs(seconds - lastDecodeSeconds) <= 0.000_5)
+            return convertRgb(frame, dstW, dstH, rgb);
         auto decoded = decodeAt(seconds);
+        return convertRgb(decoded, dstW, dstH, rgb);
+    }
+
+    bool decodeNextRgb(int dstW, int dstH, ubyte[] rgb)
+    {
+        auto decoded = decodeNext();
+        return convertRgb(decoded, dstW, dstH, rgb);
+    }
+
+    private bool convertRgb(void* decoded, int dstW, int dstH, ubyte[] rgb)
+    {
         if (decoded is null) return false;
         auto fp = cast(AVFramePrefix*) frame;
         if (fp.width <= 0 || fp.height <= 0) return false;
@@ -530,8 +577,65 @@ private final class LibavDecoder
 // ---------------------------------------------------------------------------
 private LibavDecoder[] _decoders;
 private __gshared Mutex _decoderMutex;
-private enum size_t maxDecoders = 4;
+private enum size_t maxDecoders = 12;
 private __gshared bool _disabled;
+
+private LibavDecoder acquireDecoder(LibavRuntime rt, string key, string path)
+{
+    if (_decoderMutex is null)
+    {
+        synchronized (LibavDecoder.classinfo)
+        {
+            if (_decoderMutex is null) _decoderMutex = new Mutex();
+        }
+    }
+    _decoderMutex.lock();
+    LibavDecoder decoder;
+    foreach (candidate; _decoders)
+    {
+        if (candidate.cacheKey == key)
+        {
+            decoder = candidate;
+            break;
+        }
+    }
+    if (decoder is null)
+    {
+        decoder = new LibavDecoder(rt, path);
+        decoder.cacheKey = key;
+        if (_decoders.length >= maxDecoders)
+        {
+            int oldest = -1;
+            foreach (index, candidate; _decoders)
+            {
+                if (candidate.activeUsers != 0) continue;
+                if (oldest < 0 || candidate.lastUse <
+                    _decoders[cast(size_t) oldest].lastUse)
+                    oldest = cast(int) index;
+            }
+            if (oldest >= 0)
+            {
+                _decoders[cast(size_t) oldest].close();
+                _decoders = _decoders[0 .. cast(size_t) oldest] ~
+                    _decoders[cast(size_t) oldest + 1 .. $];
+            }
+        }
+        _decoders ~= decoder;
+    }
+    ++decoder.activeUsers;
+    decoder.lastUse = ++_decoderClock;
+    _decoderMutex.unlock();
+    decoder.operationMutex.lock();
+    return decoder;
+}
+
+private void releaseDecoder(LibavDecoder decoder)
+{
+    decoder.operationMutex.unlock();
+    _decoderMutex.lock();
+    if (decoder.activeUsers > 0) --decoder.activeUsers;
+    _decoderMutex.unlock();
+}
 
 /** Testing hook: force the accelerator off so the classic ffmpeg path runs. */
 void setLibavDecodeEnabledForTesting(bool enabled)
@@ -564,41 +668,28 @@ bool decodeLibavRgbFrame(string path, double seconds, int dstW, int dstH,
     auto rt = runtime();
     if (!rt.ready() || path.length == 0 || dstW <= 0 || dstH <= 0) return false;
 
-    if (_decoderMutex is null)
-    {
-        synchronized (LibavDecoder.classinfo)
-        {
-            if (_decoderMutex is null) _decoderMutex = new Mutex();
-        }
-    }
-    _decoderMutex.lock();
-    scope (exit) _decoderMutex.unlock();
-
-    LibavDecoder decoder;
-    int found = -1;
-    foreach (index, candidate; _decoders)
-    {
-        if (candidate.path == path) { found = cast(int) index; break; }
-    }
-    if (found >= 0)
-        decoder = _decoders[cast(size_t) found];
-    else
-    {
-        decoder = new LibavDecoder(rt, path);
-        if (!decoder.open()) return false;
-        if (_decoders.length >= maxDecoders)
-        {
-            // Evict the least recently used decoder that is not this one.
-            size_t oldest;
-            foreach (index; 1 .. _decoders.length)
-                if (_decoders[index].lastUse < _decoders[oldest].lastUse)
-                    oldest = index;
-            _decoders = _decoders[0 .. oldest] ~ _decoders[oldest + 1 .. $];
-        }
-        _decoders ~= decoder;
-    }
-    decoder.lastUse = ++_decoderClock;
+    auto decoder = acquireDecoder(rt, path, path);
+    scope (exit) releaseDecoder(decoder);
+    if (!decoder.open()) return false;
     return decoder.decodeRgb(seconds, dstW, dstH, rgb);
+}
+
+/** Decode a playback stream. `reset` performs one exact seek; subsequent calls
+ * continue sequentially from that decoder session and avoid keyframe seeks. */
+bool decodeLibavRgbPlaybackFrame(string streamKey, string path, double seconds,
+    int dstW, int dstH, ubyte[] rgb, bool reset)
+{
+    if (_disabled) return false;
+    auto rt = runtime();
+    if (!rt.ready() || streamKey.length == 0 || path.length == 0 ||
+        dstW <= 0 || dstH <= 0) return false;
+    const key = streamKey == "@shared" ? path :
+        "playback\x1f" ~ streamKey ~ "\x1f" ~ path;
+    auto decoder = acquireDecoder(rt, key, path);
+    scope (exit) releaseDecoder(decoder);
+    if (!decoder.open()) return false;
+    return reset ? decoder.decodeRgb(seconds, dstW, dstH, rgb) :
+        decoder.decodeNextRgb(dstW, dstH, rgb);
 }
 
 private __gshared ulong _decoderClock;
@@ -609,7 +700,12 @@ void shutdownLibavDecoders()
     if (_decoderMutex is null) return;
     _decoderMutex.lock();
     scope (exit) _decoderMutex.unlock();
-    foreach (decoder; _decoders) decoder.close();
+    foreach (decoder; _decoders)
+    {
+        decoder.operationMutex.lock();
+        decoder.close();
+        decoder.operationMutex.unlock();
+    }
     _decoders = null;
 }
 
@@ -621,5 +717,9 @@ else
     bool libavDecodeAvailable() { return false; }
     string libavDecodeUnavailableReason() { return "not supported on this platform"; }
     bool decodeLibavRgbFrame(string, double, int, int, ubyte[]) { return false; }
+    bool decodeLibavRgbPlaybackFrame(string, string, double, int, int, ubyte[], bool)
+    {
+        return false;
+    }
     void shutdownLibavDecoders() {}
 }

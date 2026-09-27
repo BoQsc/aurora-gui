@@ -31,19 +31,6 @@ private OpenCodeToolCall makeCall(string name, string args)
     return call;
 }
 
-/// Strip the Environment section's "Local date and time" line, which embeds
-/// the wall clock. Two prompts built at different instants otherwise differ by
-/// that timestamp alone, so verbosity comparisons must ignore it.
-private string withoutTimestamp(string prompt)
-{
-    const marker = "  Local date and time: ";
-    const start = prompt.indexOf(marker);
-    if (start < 0) return prompt;
-    const end = prompt.indexOf("\n", start);
-    if (end < 0) return prompt;
-    return prompt[0 .. start] ~ prompt[end .. $];
-}
-
 int main()
 {
     const dir = buildPath(tempDir(), "aurora-opencode-tools-test");
@@ -977,19 +964,27 @@ int main()
         toolSteeringPrompt(false).indexOf("# Communication"),
         "Dynamic environment should follow stable instructions for caching");
 
+    // A request assembled a few milliseconds later must retain an identical
+    // system prefix. A full wall-clock timestamp here used to make every agent
+    // tool round a prompt-cache miss.
+    const stablePrompt = buildSystemPrompt(false, ".", "auto");
+    Thread.sleep(5.msecs);
+    assert(buildSystemPrompt(false, ".", "auto") == stablePrompt,
+        "The system prompt changed between adjacent agent rounds");
+    assert(stablePrompt.indexOf("  Local date: ") >= 0 &&
+        stablePrompt.indexOf("Local date and time") < 0,
+        "The cache-stable environment should contain a date, not a timestamp");
+
     // Optional verbosity selector. "default" (and any unknown value) must
     // leave the prompt byte-identical, while Concise/Compact append exactly
     // one style section between the stable instructions and the dynamic tail.
     {
         const stock = buildSystemPrompt(false, ".", "auto");
-        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", "default"))
-                == withoutTimestamp(stock),
+        assert(buildSystemPrompt(false, ".", "auto", "default") == stock,
             "The default verbosity must not change the prompt");
-        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", ""))
-                == withoutTimestamp(stock),
+        assert(buildSystemPrompt(false, ".", "auto", "") == stock,
             "A blank verbosity must fall back to the stock prompt");
-        assert(withoutTimestamp(buildSystemPrompt(false, ".", "auto", "bogus"))
-                == withoutTimestamp(stock),
+        assert(buildSystemPrompt(false, ".", "auto", "bogus") == stock,
             "An unknown verbosity must fall back to the stock prompt");
         assert(stock.indexOf("# Response style") < 0,
             "The stock prompt must not carry a response-style section");
@@ -998,7 +993,7 @@ int main()
         assert(concise.indexOf("# Response style") > 0 &&
             compact.indexOf("# Response style") > 0,
             "Concise/Compact must add the response-style section");
-        assert(withoutTimestamp(concise) != withoutTimestamp(compact),
+        assert(concise != compact,
             "Concise and Compact must be distinct levels");
         // The prompt can ask for shorter reasoning, but its effect depends on
         // the provider and cannot guarantee a token reduction.
@@ -1035,8 +1030,7 @@ int main()
             "Caveman must request telegraphic style");
         assert(caveman.indexOf("final answer as well") > 0,
             "Caveman must request a telegraphic visible answer");
-        assert(withoutTimestamp(caveman) != withoutTimestamp(compact) &&
-            withoutTimestamp(caveman) != withoutTimestamp(concise),
+        assert(caveman != compact && caveman != concise,
             "Caveman must be its own level, distinct from Concise/Compact");
         // The standalone directive is what the app's final-answer round
         // appends (that round builds its own minimal prompt), so it must be

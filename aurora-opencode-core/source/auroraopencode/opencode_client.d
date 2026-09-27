@@ -66,6 +66,11 @@ struct OpenCodeEvent
     string finishReason;
     int[string] modelContextLimits;
     bool llamaCppServer;
+    // Provider-reported prompt-cache accounting. DeepSeek reports explicit
+    // hit/miss tokens, OpenAI reports cached prompt details, and Anthropic-style
+    // gateways report cache reads/creation. Zero means unavailable or none.
+    int cachedPromptTokens;
+    int uncachedPromptTokens;
 }
 
 private struct HttpTarget
@@ -495,10 +500,18 @@ final class OpenCodeClient
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
     private int _lastTotalTokens;
+    private int _lastCachedPromptTokens;
+    private int _lastUncachedPromptTokens;
+    // Exact count returned by llama.cpp's tokenizer-only endpoint before the
+    // matching completion is sent. The final streamed usage is still parsed
+    // independently and can expose a server regression if the two diverge.
+    private int _preflightPromptTokens;
     private bool _streamActive;
     private int _lastPushedPrompt;
     private int _lastPushedCompletion;
     private int _lastPushedTotal;
+    private int _lastPushedCachedPrompt;
+    private int _lastPushedUncachedPrompt;
 
     this(string baseUrl, string apiKey)
     {
@@ -851,6 +864,14 @@ final class OpenCodeClient
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
             _lastTotalTokens = 0;
+            _lastCachedPromptTokens = 0;
+            _lastUncachedPromptTokens = 0;
+            _preflightPromptTokens = 0;
+            _lastPushedPrompt = -1;
+            _lastPushedCompletion = -1;
+            _lastPushedTotal = -1;
+            _lastPushedCachedPrompt = -1;
+            _lastPushedUncachedPrompt = -1;
 
             string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
             if (_apiKey.length > 0)
@@ -863,8 +884,37 @@ final class OpenCodeClient
             // carries inline images is indistinguishable from a text-only one
             // in the log, and "the model did not answer about the image" cannot
             // be separated from "the image never left the app".
-            logRequestShape(messages, model, _baseUrl);
+            logRequestShape(messages, model, _baseUrl, llamaCppServer);
             auto session = openSession();
+            // Ask the same local server that will run inference to apply the
+            // loaded model's tokenizer and chat template to the exact request
+            // body. This is model-aware for Qwen, DeepSeek, or any other GGUF;
+            // counting raw message strings locally would miss tool/template
+            // tokens. Failure is non-fatal so older llama.cpp builds keep
+            // working and their final streamed usage can still provide the
+            // authoritative count.
+            if (llamaCppServer)
+            {
+                _preflightPromptTokens = countChatInputTokens(session, body);
+                if (_preflightPromptTokens > 0)
+                {
+                    _lastPromptTokens = _preflightPromptTokens;
+                    _lastTotalTokens = _preflightPromptTokens;
+                    OpenCodeEvent usage;
+                    usage.kind = OpenCodeEventKind.usage;
+                    usage.promptTokens = _preflightPromptTokens;
+                    usage.totalTokens = _preflightPromptTokens;
+                    pushStreamEvent(usage);
+                }
+                if (shuttingDown())
+                {
+                    cancelled = true;
+                    pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
+                        "", false, null, true, _lastPromptTokens, 0,
+                        _lastTotalTokens));
+                    return;
+                }
+            }
             uint attempt;
             // Deliberately no attempt ceiling: a 429 is replayed until the
             // provider answers (see mayRetryTransientStatus). The only way out
@@ -1125,6 +1175,7 @@ final class OpenCodeClient
     /// Test-only: reset the per-stream accumulation state between fixtures.
     public void resetStreamStateForTesting()
     {
+        _streamActive = true;
         _streamReasoning = "";
         _streamContent = "";
         _streamToolCalls.length = 0;
@@ -1136,6 +1187,13 @@ final class OpenCodeClient
         _lastPromptTokens = 0;
         _lastCompletionTokens = 0;
         _lastTotalTokens = 0;
+        _lastCachedPromptTokens = 0;
+        _lastUncachedPromptTokens = 0;
+        _lastPushedPrompt = -1;
+        _lastPushedCompletion = -1;
+        _lastPushedTotal = -1;
+        _lastPushedCachedPrompt = -1;
+        _lastPushedUncachedPrompt = -1;
     }
 
     /// Test-only: how many ms must pass between throttled tool-progress
@@ -1472,8 +1530,29 @@ final class OpenCodeClient
     /// their old positions also preserves assistant tool_calls -> tool result
     /// adjacency for strict OpenAI-compatible validators.
     private static ChatRequestMessage[] normalizeSystemMessages(
-        const(ChatRequestMessage)[] messages)
+        const(ChatRequestMessage)[] messages, bool strictSingleSystem)
     {
+        // Hosted OpenAI-compatible providers accept instruction checkpoints in
+        // chronological order. Preserve them there: moving a newly appended
+        // checkpoint into message zero rewrites the prefix and defeats provider
+        // KV caches. Only the detected llama.cpp compatibility path needs the
+        // destructive single-leading-system fold below.
+        if (!strictSingleSystem)
+        {
+            ChatRequestMessage[] preserved;
+            foreach (message; messages)
+            {
+                ChatRequestMessage copy;
+                copy.role = message.role;
+                copy.content = message.content;
+                copy.reasoningContent = message.reasoningContent;
+                copy.toolCallId = message.toolCallId;
+                copy.toolCalls = message.toolCalls.dup;
+                copy.images = message.images.dup;
+                preserved ~= copy;
+            }
+            return preserved;
+        }
         ChatRequestMessage combined;
         combined.role = "system";
         ChatRequestMessage[] ordinary;
@@ -1513,7 +1592,7 @@ final class OpenCodeClient
         JSONValue root;
         root["model"] = model;
         JSONValue messageList = JSONValue(string[].init);
-        foreach (message; normalizeSystemMessages(messages))
+        foreach (message; normalizeSystemMessages(messages, llamaCppServer))
             messageList.array ~= chatMessageToJson(message, forceReasoningReplay);
         root["messages"] = messageList;
         if (tools.length > 0)
@@ -1565,6 +1644,93 @@ final class OpenCodeClient
         return root.toString();
     }
 
+    /**
+     * Count a complete OpenAI chat request with llama.cpp's loaded tokenizer.
+     *
+     * `/v1/chat/completions/input_tokens` accepts the same body as the real
+     * completion endpoint, so tool schemas, special tokens, reasoning history,
+     * multimodal placeholders, and the model's current Jinja template are all
+     * included. The endpoint performs no generation and does not consume the
+     * model's KV prefix cache.
+     */
+    private int countChatInputTokens(HINTERNET session, string body)
+    {
+        HINTERNET connection;
+        HINTERNET request;
+        try
+        {
+            const target = parseHttpTarget(_baseUrl,
+                "/chat/completions/input_tokens");
+            connection = InternetConnectW(session, toUTF16z(target.host),
+                target.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
+            if (connection is null) return 0;
+            request = HttpOpenRequestW(connection, "POST"w.ptr,
+                toUTF16z(target.path), null, null, null,
+                requestFlags(target), 0);
+            if (request is null || registerRequest(request, true) is null)
+                return 0;
+
+            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
+            if (_apiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            headers ~= "Content-Type: application/json\r\n" ~
+                "Accept: application/json\r\n";
+            auto bytes = cast(ubyte[]) body.dup;
+            if (!HttpSendRequestW(request, toUTF16z(headers), -1,
+                    bytes.ptr, cast(DWORD) bytes.length))
+                return 0;
+
+            DWORD statusCode;
+            DWORD statusLength = cast(DWORD) statusCode.sizeof;
+            if (!HttpQueryInfoW(request,
+                    HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                    &statusCode, &statusLength, null) || statusCode != 200)
+            {
+                // Drain the response so the shared WinINet session remains
+                // reusable, but do not fail a valid chat on an older server.
+                readAllAsUtf8(request);
+                logInfo("local input-token endpoint unavailable; final usage " ~
+                    "will be used [" ~ _baseUrl ~ "]");
+                return 0;
+            }
+            return parseInputTokenCount(readAllAsUtf8(request));
+        }
+        catch (Exception error)
+        {
+            if (!shuttingDown())
+                logInfo("local input-token count unavailable: " ~ error.msg ~
+                    " [" ~ _baseUrl ~ "]");
+            return 0;
+        }
+        finally
+        {
+            if (request !is null)
+            {
+                unregisterRequest(request, true);
+                InternetCloseHandle(request);
+            }
+            if (connection !is null) InternetCloseHandle(connection);
+        }
+    }
+
+    private static int parseInputTokenCount(string body)
+    {
+        try
+        {
+            const value = parseJSON(body);
+            if (value.type != JSONType.object) return 0;
+            auto count = "input_tokens" in value.object;
+            if (count is null || count.type != JSONType.integer ||
+                count.integer <= 0 || count.integer > int.max)
+                return 0;
+            return cast(int) count.integer;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
     private static string readAllAsUtf8(HINTERNET request)
     {
         string result;
@@ -1586,9 +1752,9 @@ final class OpenCodeClient
     /// bytes. This is the evidence that separates "the image reached the
     /// provider" from "the image was dropped before the request was built".
     private static void logRequestShape(const(ChatRequestMessage)[] messages,
-        string model, string baseUrl)
+        string model, string baseUrl, bool llamaCppServer)
     {
-        auto normalized = normalizeSystemMessages(messages);
+        auto normalized = normalizeSystemMessages(messages, llamaCppServer);
         size_t images;
         size_t imageBytes;
         size_t requestBytes;
@@ -1890,9 +2056,19 @@ final class OpenCodeClient
         }
         if (usage is null || usage.type != JSONType.object) return;
         auto prompt = "prompt_tokens" in usage.object;
+        const promptIsAnthropicInput = prompt is null;
         if (prompt is null) prompt = "input_tokens" in usage.object;
         if (prompt !is null && prompt.type == JSONType.integer)
             _lastPromptTokens = cast(int) prompt.integer;
+        if (_preflightPromptTokens > 0 && _lastPromptTokens > 0 &&
+            _preflightPromptTokens != _lastPromptTokens)
+        {
+            logError("local tokenizer count mismatch: preflight=" ~
+                to!string(_preflightPromptTokens) ~ ", streamed=" ~
+                to!string(_lastPromptTokens) ~ " [" ~ _baseUrl ~ "]");
+            // Log once even when a provider repeats usage in several chunks.
+            _preflightPromptTokens = 0;
+        }
         auto completion = "completion_tokens" in usage.object;
         if (completion is null) completion = "output_tokens" in usage.object;
         if (completion !is null && completion.type == JSONType.integer)
@@ -1900,6 +2076,57 @@ final class OpenCodeClient
         if (auto field = "total_tokens" in usage.object)
             if (field.type == JSONType.integer)
                 _lastTotalTokens = cast(int) field.integer;
+
+        // DeepSeek's disk cache exposes direct hit/miss counters.
+        if (auto field = "prompt_cache_hit_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+            {
+                _lastCachedPromptTokens = cast(int) field.integer;
+            }
+        if (auto field = "prompt_cache_miss_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+            {
+                _lastUncachedPromptTokens = cast(int) field.integer;
+            }
+
+        // OpenAI nests cached input under prompt_tokens_details. Derive the
+        // uncached portion from the authoritative prompt total.
+        if (auto details = "prompt_tokens_details" in usage.object)
+            if (details.type == JSONType.object)
+                if (auto field = "cached_tokens" in details.object)
+                    if (field.type == JSONType.integer)
+                    {
+                        _lastCachedPromptTokens = cast(int) field.integer;
+                        _lastUncachedPromptTokens = _lastPromptTokens >
+                            _lastCachedPromptTokens
+                            ? _lastPromptTokens - _lastCachedPromptTokens : 0;
+                    }
+
+        // Anthropic usage separates ordinary input, cache reads, and cache
+        // creation. Count cache creation as uncached work and include all three
+        // in prompt occupancy; `input_tokens` alone otherwise under-reports it.
+        int cacheRead;
+        int cacheCreation;
+        bool sawAnthropicCache;
+        if (auto field = "cache_read_input_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+            {
+                cacheRead = cast(int) field.integer;
+                sawAnthropicCache = true;
+            }
+        if (auto field = "cache_creation_input_tokens" in usage.object)
+            if (field.type == JSONType.integer)
+            {
+                cacheCreation = cast(int) field.integer;
+                sawAnthropicCache = true;
+            }
+        if (sawAnthropicCache)
+        {
+            _lastCachedPromptTokens = cacheRead;
+            _lastUncachedPromptTokens = _lastPromptTokens + cacheCreation;
+            if (promptIsAnthropicInput)
+                _lastPromptTokens += cacheRead + cacheCreation;
+        }
         if (_lastTotalTokens <= 0 &&
             (_lastPromptTokens > 0 || _lastCompletionTokens > 0))
             _lastTotalTokens = _lastPromptTokens + _lastCompletionTokens;
@@ -1909,14 +2136,27 @@ final class OpenCodeClient
         if (_streamActive &&
             (_lastPromptTokens != _lastPushedPrompt ||
                 _lastCompletionTokens != _lastPushedCompletion ||
-                _lastTotalTokens != _lastPushedTotal))
+                _lastTotalTokens != _lastPushedTotal ||
+                _lastCachedPromptTokens != _lastPushedCachedPrompt ||
+                _lastUncachedPromptTokens != _lastPushedUncachedPrompt))
         {
             _lastPushedPrompt = _lastPromptTokens;
             _lastPushedCompletion = _lastCompletionTokens;
             _lastPushedTotal = _lastTotalTokens;
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
+            _lastPushedCachedPrompt = _lastCachedPromptTokens;
+            _lastPushedUncachedPrompt = _lastUncachedPromptTokens;
+            auto event = OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
                 false, _lastPromptTokens, _lastCompletionTokens,
-                _lastTotalTokens));
+                _lastTotalTokens);
+            event.cachedPromptTokens = _lastCachedPromptTokens;
+            event.uncachedPromptTokens = _lastUncachedPromptTokens;
+            pushStreamEvent(event);
         }
+    }
+
+    /// Test-only parser for llama.cpp's token-count response.
+    public static int inputTokenCountForTesting(string body)
+    {
+        return parseInputTokenCount(body);
     }
 }

@@ -1,0 +1,28 @@
+{
+  "decision_id": "frameless-window-shell-ownership",
+  "decision": "B-aurora-owned",
+  "status": "approved",
+  "approved_by": "project-owner",
+  "approved_on": "2026-09-27",
+  "baseline": "Designer, Notepad, OpenCode Pro, and Stream own duplicate shell orchestration",
+  "candidate": "FramelessWindowTitleBar owns shared behavior; applications retain styling and product actions",
+  "intentional_behavior_change": "Stream maximize uses the monitor work area instead of fullscreen, keeping the taskbar visible",
+  "evidence": {
+    "release_builds_passed": "4/4",
+    "framework_suites_passed": "4/4",
+    "designer_different_pixels": 0,
+    "notepad_different_pixels": 0,
+    "opencode_pro_application_content_different_pixels": 0,
+    "opencode_pro_full_frame_different_pixels": 54,
+    "opencode_pro_full_frame_difference": "compile-time titlebar timestamp only",
+    "net_application_shell_lines_removed": 758
+  },
+  "files": {
+    "designer-A-current.png": "867208f76dc98e669e37a54c45e1fe9d054f664b682abaab1de571fb3e5db9fb",
+    "designer-B-aurora-owned.png": "867208f76dc98e669e37a54c45e1fe9d054f664b682abaab1de571fb3e5db9fb",
+    "notepad-A-current.png": "7aa10fca4e7fbabe78f4d7f44338e629c2df2cd31d7a04b5ab1391073a2c5449",
+    "notepad-B-aurora-owned.png": "7aa10fca4e7fbabe78f4d7f44338e629c2df2cd31d7a04b5ab1391073a2c5449",
+    "opencode-pro-A-current.png": "c16e98d9b932ba09e1839aa54509b7c328cc7a4c54023c7f677267cc5ab5e413",
+    "opencode-pro-B-aurora-owned.png": "eb068d923cb7a05741d432f95aa29b749df9537476e73fa222e1b92c02ca8759"
+  }
+}

@@ -10,6 +10,7 @@ module tests.dpi_rendering;
 
 import aurora;
 import aurora.text.atlas : glyphOriginX;
+import std.process : environment;
 import std.stdio : writefln, writeln;
 
 private bool hasIntermediateCoverage(const(ubyte)[] pixels, int atlasWidth, Rect region)
@@ -98,6 +99,28 @@ private void verifyScale(FontSystem fonts, uint dpi)
 
 int main()
 {
+    // Typography policy belongs to Aurora, not to individual application
+    // startup code. Verify both the shared default and the deployment escape
+    // hatch before any of the rendering fixtures create an atlas.
+    {
+        const previousContrast = environment.get("AURORA_TEXT_CONTRAST", null);
+        scope (exit)
+        {
+            if (previousContrast is null)
+                environment.remove("AURORA_TEXT_CONTRAST");
+            else
+                environment["AURORA_TEXT_CONTRAST"] = previousContrast;
+        }
+        environment.remove("AURORA_TEXT_CONTRAST");
+        auto defaultAtlas = new GlyphAtlas(64, 64);
+        assert(defaultAtlas.coverageContrast() == 0.5f,
+            "Aurora must own the native-weight text contrast default");
+        environment["AURORA_TEXT_CONTRAST"] = "0";
+        auto linearAtlas = new GlyphAtlas(64, 64);
+        assert(linearAtlas.coverageContrast() == 0.0f,
+            "AURORA_TEXT_CONTRAST=0 must keep linear coverage available");
+    }
+
     const scale150 = DisplayScale.fromDpi(144);
     assert(DisplayScale.fromDpi(120).logicalToPhysical(Size(800, 600)) ==
         Size(1000, 750));

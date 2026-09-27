@@ -115,6 +115,14 @@ final class PlatformWindow : NativeWindow
         return true;
     }
 
+    override bool setWindowPosition(Point logicalPosition)
+    {
+        _lastWindowBounds.x = logicalPosition.x;
+        _lastWindowBounds.y = logicalPosition.y;
+        _boundsSet = true;
+        return true;
+    }
+
     override bool windowBounds(out Rect bounds)
     {
         bounds = _lastWindowBounds;

@@ -491,22 +491,6 @@ public enum int opencodeContentMaxWidth = 1024;
 /// leaving room for a multi-line prompt with the send button pinned below.
 public enum int opencodeComposerHeight = 116;
 
-/// Opt this process into Aurora's crisper text rendering. The bundled TrueType
-/// bytecode interpreter is experimental and not conformance-tested: its
-/// `natural` grid mode rewrites real glyph outlines incorrectly (observed on
-/// Consolas at 17px: `X`/`x` lose a whole stroke, `1`/`I` lose their serifs),
-/// and its default interpreter is order-dependent, so hinting is deliberately
-/// left OFF. What we do pin is the atlas coverage contrast curve DirectWrite
-/// applies to antialiased coverage before compositing, which keeps small text
-/// from reading thin and washed out without touching glyph geometry. Must be
-/// called before the first window or font is created. An explicit
-/// `AURORA_HINTING`/`AURORA_TEXT_CONTRAST` value in the environment wins.
-public void enableNativeTextRendering()
-{
-    if (environment.get("AURORA_TEXT_CONTRAST", "") == "")
-        environment["AURORA_TEXT_CONTRAST"] = "0.5";
-}
-
 public Theme opencodeTheme()
 {
     auto theme = Theme.dark();

@@ -158,6 +158,8 @@ int main(string[] arguments)
         "Playback end was not extended after moving the last clip during playback");
     assert(editor.sequencePlaybackForTesting(),
         "Playback stopped after an edit that extended the sequence");
+    assert(waitForSequencePlayback(editor, preview),
+        "Playback refresh after an edit never presented its new generation");
 
     writeln("Aurora Cut playback edit crash repro passed (no crash on empty render range).");
     return 0;

@@ -8,8 +8,10 @@ import aurora.icons : IconKind, drawIcon;
 import aurora.image : RgbaImage;
 import aurora.text.layout : TextLayoutOptions;
 import aurora.types : CursorKind, HorizontalAlign, Point, PointF, Rect, Size,
-    VerticalAlign, maxInt, minInt;
+    VerticalAlign, clampDouble, maxInt, minInt;
 import aurora.widget : Widget;
+import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
+import aurora.window : GuiWindow;
 import std.utf : toUTF32;
 
 /** Identifies a TitleBar region hit by a local point. */
@@ -1062,6 +1064,229 @@ class TitleBar : Widget
 }
 
 /**
+ * Standard frameless-window orchestration around a customizable `TitleBar`.
+ *
+ * Applications supply identity, palette, and optional middle content. Aurora
+ * owns native-window movement, work-area maximize/restore, restore-on-drag,
+ * snap application/preview mapping, and the owner-drawn system menu.
+ */
+class FramelessWindowTitleBar : TitleBar
+{
+    private GuiWindow _window;
+    private TitleBarSnapPreview _snapPreview;
+    private bool _maximized;
+    private Rect _restoredBounds;
+    private PointF _dragStartWindowOrigin;
+    private PointF _dragStartScreenPointer;
+    private bool _anchorReady;
+    private PointF _pendingOrigin;
+    private PointF _pendingPointer;
+    private void delegate() _minimizeAction;
+    private void delegate() _closeAction;
+
+    this(GuiWindow window)
+    {
+        assert(window !is null);
+        _window = window;
+        onMinimize = &minimizeWindow;
+        onMaximizeToggle = &toggleMaximize;
+        onClose = &closeWindow;
+        onSystemMenu = &showWindowSystemMenu;
+        onRestoreRequested = &restoreFromDrag;
+        onDragStarted = &beginDrag;
+        onDragMoved = &moveDrag;
+        onSnapChanged = &updateSnapPreview;
+        onSnapApplied = &applySnap;
+    }
+
+    GuiWindow windowHost() @safe pure nothrow @nogc { return _window; }
+    bool maximizedState() const @safe pure nothrow @nogc { return _maximized; }
+    Rect restoredBounds() const @safe pure nothrow @nogc { return _restoredBounds; }
+
+    /** Bind the paint-only preview overlay that the root added above content. */
+    void setSnapPreview(TitleBarSnapPreview preview)
+    {
+        if (_snapPreview is preview) return;
+        if (_snapPreview !is null) _snapPreview.hide();
+        _snapPreview = preview;
+    }
+
+    /** Override the ordinary taskbar minimize action (for example hide-to-tray). */
+    void setMinimizeAction(void delegate() action)
+    {
+        _minimizeAction = action;
+    }
+
+    /** Override the ordinary close action while retaining standard menu wiring. */
+    void setCloseAction(void delegate() action)
+    {
+        _closeAction = action;
+    }
+
+    /** Maximize to the current monitor work area, or restore saved bounds. */
+    void toggleMaximize()
+    {
+        if (_maximized || _window.fullscreen())
+        {
+            _maximized = false;
+            setMaximized(false);
+            if (_window.fullscreen()) _window.toggleFullscreen();
+            if (!_restoredBounds.empty) _window.setWindowBounds(_restoredBounds);
+            return;
+        }
+
+        Rect current;
+        if (_window.windowBounds(current)) _restoredBounds = current;
+        _maximized = true;
+        setMaximized(true);
+        Rect workArea;
+        if (_window.queryWorkArea(Point(current.x, current.y), workArea) &&
+            !workArea.empty)
+            _window.setWindowBounds(workArea);
+        else
+            _window.toggleFullscreen();
+    }
+
+    /** Standard Restore / Maximize / Minimize / Close menu model. */
+    ContextMenuItem[] systemMenuItems()
+    {
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Restore", IconKind.open,
+            delegate() { if (_maximized) toggleMaximize(); }, "", _maximized);
+        items ~= ContextMenuItem.command(_maximized ? "Restore down" : "Maximize",
+            IconKind.maximize, delegate() { toggleMaximize(); });
+        items ~= ContextMenuItem.command("Minimize", IconKind.minimize,
+            &minimizeWindow, "", !_window.isMinimized());
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Close", IconKind.close,
+            &closeWindow, "Alt+F4");
+        return items;
+    }
+
+    private void minimizeWindow()
+    {
+        if (_minimizeAction !is null)
+            _minimizeAction();
+        else
+            _window.minimize();
+    }
+
+    private void closeWindow()
+    {
+        if (_closeAction !is null)
+            _closeAction();
+        else
+            _window.close();
+    }
+
+    private void restoreFromDrag(PointF pointer, PointF pressPointer)
+    {
+        if (!_maximized) return;
+        Rect maximizedBounds;
+        _window.windowBounds(maximizedBounds);
+        const wasFullscreen = _window.fullscreen();
+        PointF screen;
+        const hasScreen = _window.queryPointerScreenPosition(screen);
+        _maximized = false;
+        setMaximized(false);
+        if (wasFullscreen) _window.toggleFullscreen();
+        if (!_restoredBounds.empty) _window.setWindowBounds(_restoredBounds);
+
+        Rect restored;
+        _window.windowBounds(restored);
+        double grabX = pressPointer.x;
+        double grabY = pressPointer.y;
+        if (maximizedBounds.width > 0 && restored.width > 0)
+            grabX = pressPointer.x * restored.width / maximizedBounds.width;
+        grabX = clampDouble(grabX, 0.0,
+            cast(double) maxInt(0, restored.width - 1));
+        grabY = clampDouble(grabY, 0.0,
+            cast(double) maxInt(0, restored.height - 1));
+        const anchorPointer = hasScreen ? screen : pointer;
+        const origin = anchorPointer - PointF(grabX, grabY);
+        _window.setWindowPosition(origin.rounded());
+        _pendingOrigin = origin;
+        _pendingPointer = anchorPointer;
+        _anchorReady = true;
+    }
+
+    private void beginDrag(PointF startPointer, PointF startPosition)
+    {
+        if (_anchorReady)
+        {
+            _dragStartWindowOrigin = _pendingOrigin;
+            _dragStartScreenPointer = _pendingPointer;
+            _anchorReady = false;
+            return;
+        }
+        PointF screen;
+        if (_window.queryPointerScreenPosition(screen))
+        {
+            Rect bounds;
+            _dragStartWindowOrigin = _window.windowBounds(bounds) ?
+                PointF(bounds.x, bounds.y) : startPosition;
+            _dragStartScreenPointer = screen;
+        }
+        else
+        {
+            _dragStartWindowOrigin = startPosition;
+            _dragStartScreenPointer = startPointer;
+        }
+    }
+
+    private bool moveDrag(PointF pointer, bool requestFrame)
+    {
+        PointF screen;
+        if (!_window.queryPointerScreenPosition(screen)) return false;
+        const target = _dragStartWindowOrigin + (screen - _dragStartScreenPointer);
+        const rounded = target.rounded();
+        Rect bounds;
+        if (_window.windowBounds(bounds) &&
+            rounded.x == bounds.x && rounded.y == bounds.y)
+            return true;
+        _window.setWindowPosition(rounded);
+        _window.redrawWindow();
+        return true;
+    }
+
+    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
+    {
+        if (_snapPreview is null) return;
+        if (target == TitleBarSnapTarget.none)
+        {
+            _snapPreview.hide();
+            return;
+        }
+        Rect origin;
+        if (!_window.windowBounds(origin))
+        {
+            _snapPreview.hide();
+            return;
+        }
+        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
+            bounds.width, bounds.height));
+    }
+
+    private void applySnap(TitleBarSnapTarget target, Rect bounds)
+    {
+        if (_snapPreview !is null) _snapPreview.hide();
+        _maximized = target == TitleBarSnapTarget.top;
+        setMaximized(_maximized);
+        if (_maximized && !_window.fullscreen())
+        {
+            Rect current;
+            if (_window.windowBounds(current)) _restoredBounds = current;
+        }
+        _window.setWindowBounds(bounds);
+    }
+
+    private void showWindowSystemMenu(Point globalPosition)
+    {
+        showContextMenu(this, globalPosition, systemMenuItems());
+    }
+}
+
+/**
  * Reusable translucent drag-snap preview overlay.
  *
  * Add it as the last child of a frameless window root so it paints above all
@@ -1087,6 +1312,7 @@ class TitleBarSnapPreview : Widget
     }
 
     bool active() const @safe pure nothrow @nogc { return !_preview.empty; }
+    Rect previewBounds() const @safe pure nothrow @nogc { return _preview; }
 
     void setFillColor(Color value)
     {

@@ -9,13 +9,15 @@ import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.conv : to;
-import std.file : exists, isDir, mkdirRecurse, remove, rename;
+import std.digest : toHexString;
+import std.digest.md : md5Of;
+import std.file : exists, getSize, isDir, mkdirRecurse, remove, rename,
+    timeLastModified;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : Config, Pid, Redirect, execute, kill, pipeProcess, wait;
 import std.string : indexOf, strip, toLower;
-import std.uuid : randomUUID;
 
 struct ToolStatus
 {
@@ -567,6 +569,22 @@ string playbackProxyDirectory()
     return absoluteNormalized(root);
 }
 
+private string playbackProxyCachePath(const MediaAsset asset)
+{
+    // Version the fingerprint whenever codec/GOP/size policy changes so an old
+    // long-GOP cache can never masquerade as the instant-seek cache.
+    string identity = "aurora-intra-proxy-hq-v2\n" ~
+        (asset is null ? "" : absoluteNormalized(asset.path));
+    if (asset !is null && exists(asset.path))
+    {
+        try identity ~= format("\n%d\n%d", getSize(asset.path),
+            timeLastModified(asset.path).stdTime);
+        catch (Exception) {}
+    }
+    const digest = toHexString(md5Of(identity));
+    return buildPath(playbackProxyDirectory(), "proxy-" ~ digest ~ ".mp4");
+}
+
 private int evenProxyDimension(int value)
 {
     if (value < 2) return 2;
@@ -575,6 +593,8 @@ private int evenProxyDimension(int value)
 
 void playbackProxyDimensions(const MediaAsset asset, out int width, out int height)
 {
+    // The normal preview tier is 1280x720. Never create a hidden lower-quality
+    // cache; higher user-selected tiers bypass this cache rather than upscale it.
     width = 1280;
     height = 720;
     if (asset is null || asset.width <= 0 || asset.height <= 0) return;
@@ -603,7 +623,27 @@ int playbackProxyFrameRate(const MediaAsset asset)
 bool playbackProxyReady(const MediaAsset asset)
 {
     return asset !is null && asset.playbackProxyPath.length > 0 &&
+        asset.playbackProxyPath == playbackProxyCachePath(asset) &&
         exists(asset.playbackProxyPath);
+}
+
+/** Attach a completed source-versioned cache without starting background work.
+ * Project open calls this before its first preview request, so a cache that was
+ * built in an earlier session is available even if the project metadata still
+ * points at a legacy proxy or contains no proxy path at all. */
+bool adoptCachedPlaybackProxy(MediaAsset asset)
+{
+    if (asset is null || !asset.hasVideo || asset.isStillImage()) return false;
+    const path = playbackProxyCachePath(asset);
+    if (!exists(path)) return false;
+    int width;
+    int height;
+    playbackProxyDimensions(asset, width, height);
+    asset.playbackProxyPath = path;
+    asset.playbackProxyWidth = width;
+    asset.playbackProxyHeight = height;
+    asset.playbackProxyFrameRate = playbackProxyFrameRate(asset);
+    return true;
 }
 
 private bool h264LikeCodec(string codec)
@@ -617,13 +657,9 @@ bool assetNeedsPlaybackProxy(const MediaAsset asset)
     if (asset is null || !asset.hasVideo || asset.isStillImage())
         return false;
     if (playbackProxyReady(asset)) return false;
-    if (!h264LikeCodec(asset.videoCodec)) return true;
-    if (asset.width > 1280 || asset.height > 720) return true;
-    if (asset.frameRate > 30.5) return true;
-    if (asset.hasAudio &&
-        (asset.sampleRate != 48_000 || asset.audioChannels != 2))
-        return true;
-    return false;
+    // Instant seeking requires the all-intra cache even when the original is
+    // already H.264/720p; ordinary delivery files are usually long-GOP.
+    return true;
 }
 
 struct MediaProxyRequest
@@ -631,6 +667,7 @@ struct MediaProxyRequest
     ulong generation;
     size_t assetIndex;
     string sourcePath;
+    string targetPath;
     bool hasAudio;
     int targetWidth;
     int targetHeight;
@@ -699,6 +736,7 @@ final class MediaProxyService
         MediaProxyRequest request;
         request.assetIndex = assetIndex;
         request.sourcePath = asset.path.idup;
+        request.targetPath = playbackProxyCachePath(asset);
         request.hasAudio = asset.hasAudio;
         playbackProxyDimensions(asset, request.targetWidth,
             request.targetHeight);
@@ -707,6 +745,22 @@ final class MediaProxyService
         _mutex.lock();
         scope (exit) _mutex.unlock();
         if (_shutdown) return false;
+        // Cache identity is derived from the source path, size, and modified
+        // time. A completed proxy can therefore be rediscovered after reopen
+        // even if the project was closed before its cache metadata was saved.
+        if (exists(request.targetPath))
+        {
+            MediaProxyResult cached;
+            cached.assetIndex = assetIndex;
+            cached.sourcePath = request.sourcePath;
+            cached.proxyPath = request.targetPath;
+            cached.width = request.targetWidth;
+            cached.height = request.targetHeight;
+            cached.frameRate = request.targetFrameRate;
+            _ready ~= cached;
+            ++_stats.completed;
+            return true;
+        }
         foreach (queued; _queue[_head .. $])
             if (queued.sourcePath == request.sourcePath) return false;
         request.generation = ++_generation;
@@ -852,11 +906,17 @@ final class MediaProxyService
                 request.targetWidth, request.targetHeight,
                 request.targetFrameRate),
             "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-threads", "1",
-            "-g", "15",
-            "-keyint_min", "15",
+            // This is a disposable playback cache, not an export master. Build
+            // it quickly while the editor is idle so it is useful during the
+            // same session, then persist its path for instant project reopens.
+            "-preset", "ultrafast",
+            "-crf", "20",
+            "-threads", "2",
+            // Every preview frame is independently seekable. Long-GOP proxies
+            // still make an arbitrary timeline click decode intervening frames;
+            // GOP 1 bounds a warm random-access decode to roughly one refresh.
+            "-g", "1",
+            "-keyint_min", "1",
             "-sc_threshold", "0"
         ];
         if (request.hasAudio)
@@ -879,9 +939,7 @@ final class MediaProxyService
         string temporary;
         try
         {
-            const directory = playbackProxyDirectory();
-            const target = buildPath(directory,
-                "proxy-" ~ randomUUID().toString() ~ ".mp4");
+            const target = request.targetPath;
             temporary = target ~ ".partial.mp4";
             if (exists(temporary)) remove(temporary);
 

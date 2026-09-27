@@ -222,6 +222,12 @@ final class PcmAudioPlayer
     private PlaybackWorkerStats _stats;
     private string _error;
     private double _clockStartTime;
+    // A WaveOut handle is only authoritative for the request generation that
+    // published it. Seeking bumps `_generation` before the old worker has
+    // necessarily unwound, so retaining an unqualified handle here can make
+    // the editor follow the previous seek's clock for a short time and then
+    // jump back to the new target when the replacement stream becomes ready.
+    private ulong _clockGeneration;
     private MonoTime _fallbackClockStarted;
     private bool _fallbackClockValid;
     version (Windows) private HWAVEOUT _clockHandle;
@@ -252,6 +258,11 @@ final class PcmAudioPlayer
             bool valid;
             bool paused;
             _mutex.lock();
+            if (_clockGeneration != _generation)
+            {
+                _mutex.unlock();
+                return false;
+            }
             startTime = _clockStartTime;
             started = _fallbackClockStarted;
             valid = _fallbackClockValid;
@@ -278,6 +289,11 @@ final class PcmAudioPlayer
             HWAVEOUT handle;
             double startTime;
             _mutex.lock();
+            if (_clockGeneration != _generation)
+            {
+                _mutex.unlock();
+                return false;
+            }
             handle = _clockHandle;
             startTime = _clockStartTime;
             _mutex.unlock();
@@ -303,6 +319,7 @@ final class PcmAudioPlayer
     {
         _mutex.lock();
         _clockStartTime = displayStartTime;
+        _clockGeneration = _generation;
         _fallbackClockStarted = MonoTime.currTime;
         _fallbackClockValid = true;
         _prerollPaused = false;
@@ -364,6 +381,7 @@ final class PcmAudioPlayer
     private bool enqueue(ref AudioRequest request)
     {
         Pid process;
+        version (Windows) HWAVEOUT staleHandle;
         _mutex.lock();
         if (_shutdown)
         {
@@ -371,6 +389,11 @@ final class PcmAudioPlayer
             return false;
         }
         request.generation = ++_generation;
+        version (Windows)
+        {
+            staleHandle = _clockHandle;
+            _clockHandle = null;
+        }
         _pending = request;
         _hasPending = true;
         _requestedRunning = true;
@@ -378,14 +401,20 @@ final class PcmAudioPlayer
         _transportPaused = false;
         _prerollPaused = false;
         _error = "";
-        // The running worker still owns the previous generation's sink. It
-        // resets and closes it on the worker thread once it observes the
-        // generation bump below, so no device call happens on this thread.
+        // The running worker still owns the previous generation's sink and
+        // remains responsible for unpreparing and closing it after observing
+        // the generation bump below.
         _fallbackClockValid = false;
         ++_stats.requests;
         process = _process;
         _condition.notify();
         _mutex.unlock();
+
+        // Do not let already-queued samples from the previous playhead drain
+        // after a seek. waveOutReset is intentionally outside the state lock;
+        // the worker remains the owner responsible for unpreparing and closing
+        // the device after its generation check observes the cancellation.
+        version (Windows) flushStaleAudio(staleHandle);
 
         // The worker owns wait()/reaping. Termination itself is non-blocking.
         if (process !is null)
@@ -452,8 +481,14 @@ final class PcmAudioPlayer
     void stop()
     {
         Pid process;
+        version (Windows) HWAVEOUT staleHandle;
         _mutex.lock();
         ++_generation;
+        version (Windows)
+        {
+            staleHandle = _clockHandle;
+            _clockHandle = null;
+        }
         _hasPending = false;
         _requestedRunning = false;
         _resumeRequested = false;
@@ -465,8 +500,10 @@ final class PcmAudioPlayer
         _condition.notify();
         _mutex.unlock();
 
-        // The worker resets/closes the previous generation's sink when it sees
-        // the generation bump; no device call is made from this thread.
+        version (Windows) flushStaleAudio(staleHandle);
+
+        // The worker closes the previous generation's sink when it sees the
+        // generation bump; the reset above only discards queued stale samples.
         if (process !is null)
         {
             try kill(process);
@@ -478,11 +515,17 @@ final class PcmAudioPlayer
     void shutdown()
     {
         Pid process;
+        version (Windows) HWAVEOUT staleHandle;
         _mutex.lock();
         if (!_shutdown)
         {
             _shutdown = true;
             ++_generation;
+            version (Windows)
+            {
+                staleHandle = _clockHandle;
+                _clockHandle = null;
+            }
             _hasPending = false;
             _requestedRunning = false;
             _resumeRequested = false;
@@ -494,8 +537,10 @@ final class PcmAudioPlayer
         }
         _mutex.unlock();
 
-        // The worker resets/closes the previous generation's sink when it sees
-        // the generation bump; no device call is made from this thread.
+        version (Windows) flushStaleAudio(staleHandle);
+
+        // The worker closes the previous generation's sink when it sees the
+        // generation bump; the reset above only discards queued stale samples.
         if (process !is null)
         {
             try kill(process);
@@ -556,6 +601,7 @@ final class PcmAudioPlayer
         if (generation == _generation && !_shutdown)
         {
             _clockStartTime = startTime;
+            _clockGeneration = generation;
             _fallbackClockStarted = MonoTime.currTime;
             _fallbackClockValid = true;
             _prerollPaused = false;
@@ -582,10 +628,22 @@ final class PcmAudioPlayer
         {
             _clockHandle = handle;
             _clockStartTime = startTime;
+            _clockGeneration = generation;
             _fallbackClockStarted = MonoTime.currTime;
             _fallbackClockValid = true;
         }
         _mutex.unlock();
+    }
+
+    version (Windows)
+    private static void flushStaleAudio(HWAVEOUT handle)
+    {
+        if (handle is null) return;
+        // WinMM accepts reset from a thread other than the writer. A concurrent
+        // close simply yields an invalid-handle result, which is harmless: the
+        // stale device can no longer play queued samples in either case.
+        try waveOutReset(handle);
+        catch (Throwable) {}
     }
 
     private void workerLoop()

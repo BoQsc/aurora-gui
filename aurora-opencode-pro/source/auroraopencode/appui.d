@@ -6951,6 +6951,8 @@ public final class OpenCodeRoot : VBox
     private int[string] _estimatedContextTokens;
     private int[string] _reportedContextTokens;
     private int[string] _reportedCompletionTokens;
+    private int[string] _reportedCachedPromptTokens;
+    private int[string] _reportedUncachedPromptTokens;
     private bool[string] _contextWasCompacted;
     private HoverTooltip _usageTooltip;
     private bool _usageTooltipOpen;
@@ -7757,7 +7759,6 @@ public final class OpenCodeRoot : VBox
         // old toolbar row lives inside it as the bar's content widget.
         _titleBar = add(new OpenCodeTitleBar(_window));
         _titleBar.setId("oc-titlebar");
-        _titleBar.onSnapPreview = &updateSnapPreview;
 
         auto toolbar = new HBox(8, Insets(10, 4));
 
@@ -8147,6 +8148,7 @@ public final class OpenCodeRoot : VBox
         _snapPreview.layoutHints().excludeFromLayout = true;
         _snapPreview.layoutHints().overlayFillParent = true;
         _snapPreview.layoutHints().allowOverflow = true;
+        _titleBar.setSnapPreview(_snapPreview);
 
         applyProjectsRailState();
     }
@@ -8172,25 +8174,6 @@ public final class OpenCodeRoot : VBox
         _projectState.projectsCollapsed = !_projectState.projectsCollapsed;
         applyProjectsRailState();
         saveProjects(_projectState);
-    }
-
-    /// Map a drag-snap preview from screen to window-local coordinates.
-    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
-    {
-        if (_snapPreview is null) return;
-        if (target == TitleBarSnapTarget.none)
-        {
-            _snapPreview.hide();
-            return;
-        }
-        Rect origin;
-        if (!_window.windowBounds(origin))
-        {
-            _snapPreview.hide();
-            return;
-        }
-        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
-            bounds.width, bounds.height));
     }
 
     private int activeProjectIndex()
@@ -8754,6 +8737,40 @@ public final class OpenCodeRoot : VBox
             "changes. Do not claim completion while verification is required " ~
             "or a checklist item remains pending/in_progress.\n");
         return prompt.data;
+    }
+
+    private enum durableTaskCheckpointPrefix =
+        "Durable task-state checkpoint. This supersedes earlier task-state " ~
+        "checkpoints; keep the transcript and tool results in their original " ~
+        "order.";
+
+    /// Persist changing task state at the point where it becomes visible to the
+    /// model. Rebuilding it inside message zero on every request invalidates the
+    /// provider's entire cached prefix. Appending only changed checkpoints keeps
+    /// subsequent tool rounds prefix-identical while retaining authoritative
+    /// plan and verification state across compaction and restarts.
+    private bool ensureDurableTaskCheckpoint(ref ChatSession session,
+        bool nestedEnabled)
+    {
+        const state = durableTaskPrompt(session, nestedEnabled);
+        if (state.length == 0) return false;
+        const content = durableTaskCheckpointPrefix ~ state;
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (!message.internal ||
+                !message.content.startsWith(durableTaskCheckpointPrefix))
+                continue;
+            if (message.content == content) return false;
+            break;
+        }
+        ChatMessage checkpoint;
+        checkpoint.role = "user";
+        checkpoint.internal = true;
+        checkpoint.content = content;
+        appendMessage(session, checkpoint);
+        markDirty();
+        return true;
     }
 
     private void publishThreadUpdated(const ref ChatSession session)
@@ -12318,6 +12335,18 @@ public final class OpenCodeRoot : VBox
         return tokens > cast(size_t) int.max ? int.max : cast(int) tokens;
     }
 
+    /// Qwen and DeepSeek have authoritative accounting paths in this client:
+    /// local llama.cpp applies the loaded model's tokenizer before inference,
+    /// while hosted DeepSeek returns exact prompt usage in its stream. Do not
+    /// briefly present the generic byte estimate as if it described either
+    /// model's actual context.
+    private static bool usesExactModelTokenAccounting(string model)
+    {
+        const normalized = normalizedModelId(model);
+        return normalized.startsWith("qwen") ||
+            normalized.startsWith("deepseek");
+    }
+
     private static size_t requestToolDefinitionBytes(
         const(OpenCodeToolDef)[] tools)
     {
@@ -13346,6 +13375,9 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         auto session = &_sessions[sessionIndex];
+        if (_settings.toolsEnabled)
+            ensureDurableTaskCheckpoint(*session,
+                _settings.experimentalNestedPlans);
         ChatRequestMessage[] messages;
         if (_settings.toolsEnabled)
         {
@@ -13366,9 +13398,7 @@ public final class OpenCodeRoot : VBox
                     // The final-answer round builds its own minimal prompt, so
                     // it must re-apply the selected response style; otherwise
                     // the answer the user reads would ignore verbosity.
-                    promptVerbosityDirective(_settings.verbosity) ~
-                    durableTaskPrompt(*session,
-                        _settings.experimentalNestedPlans);
+                    promptVerbosityDirective(_settings.verbosity);
             else
             {
                 // Native tools are the main tool set; the legacy shell tool is
@@ -13384,8 +13414,6 @@ public final class OpenCodeRoot : VBox
                         "parent_step. This adds one collapsible level without " ~
                         "replacing the main plan. Keep the parent step " ~
                         "in_progress until its outcome is complete.\n";
-                systemPrompt.content ~= durableTaskPrompt(*session,
-                    _settings.experimentalNestedPlans);
             }
             messages ~= systemPrompt;
         }
@@ -13445,10 +13473,22 @@ public final class OpenCodeRoot : VBox
         // buildRequestMessages), so a screenshot stays part of the conversation
         // rather than expiring as soon as another message follows it.
         messages ~= compactedRequestMessages;
-        // Cache this request's local estimate so the meter still shows a value
-        // when the provider omits usage. Provider-reported usage, when present,
-        // always takes precedence over this rougher estimate.
-        _estimatedContextTokens[session.id] = estimateRequestTokens(messages, tools);
+        // Qwen/DeepSeek use only authoritative counts. Clear the preceding
+        // request's measurement while the new request is being counted so the
+        // badge never presents stale input as current. Unknown custom models
+        // retain the explicit estimate because they may expose no tokenizer or
+        // streamed usage at all.
+        if (usesExactModelTokenAccounting(session.model))
+        {
+            _estimatedContextTokens.remove(session.id);
+            _reportedContextTokens.remove(session.id);
+            _reportedCompletionTokens.remove(session.id);
+            _reportedCachedPromptTokens.remove(session.id);
+            _reportedUncachedPromptTokens.remove(session.id);
+        }
+        else
+            _estimatedContextTokens[session.id] =
+                estimateRequestTokens(messages, tools);
         if (_current == sessionIndex)
         {
             if (_usageBadge !is null)
@@ -15616,6 +15656,22 @@ public final class OpenCodeRoot : VBox
             {
                 rows ~= "Last output: " ~
                     formatThousands(_usageBadge.completionTokens()) ~ " tokens";
+                if (_current >= 0)
+                {
+                    const sessionId = _sessions[_current].id;
+                    auto cached = sessionId in _reportedCachedPromptTokens;
+                    auto uncached = sessionId in _reportedUncachedPromptTokens;
+                    if (cached !is null && uncached !is null &&
+                        *cached + *uncached > 0)
+                    {
+                        const long tenths = cast(long) *cached * 1_000 /
+                            (*cached + *uncached);
+                        rows ~= "Prompt cache: " ~ to!string(tenths / 10) ~ "." ~
+                            to!string(tenths % 10) ~ "% hit (" ~
+                            formatThousands(*cached) ~ " cached, " ~
+                            formatThousands(*uncached) ~ " uncached)";
+                    }
+                }
             }
             if (_current >= 0)
             {
@@ -17708,6 +17764,20 @@ public final class OpenCodeRoot : VBox
                                 event.promptTokens;
                             _reportedCompletionTokens[_sessions[owner].id] =
                                 event.completionTokens;
+                            const sessionId = _sessions[owner].id;
+                            if (event.cachedPromptTokens > 0 ||
+                                event.uncachedPromptTokens > 0)
+                            {
+                                _reportedCachedPromptTokens[sessionId] =
+                                    event.cachedPromptTokens;
+                                _reportedUncachedPromptTokens[sessionId] =
+                                    event.uncachedPromptTokens;
+                            }
+                            else
+                            {
+                                _reportedCachedPromptTokens.remove(sessionId);
+                                _reportedUncachedPromptTokens.remove(sessionId);
+                            }
                         }
                     }
                     if (event.completionTokens > 0)
@@ -19117,7 +19187,8 @@ public final class OpenCodeRoot : VBox
     /// Test-only: record API-reported usage on the current session's last
     /// message and refresh the toolbar context meter (mirrors the done/usage
     /// events without any network activity).
-    public void recordContextUsageForTesting(int prompt, int completion, int total)
+    public void recordContextUsageForTesting(int prompt, int completion, int total,
+        int cachedPrompt = 0, int uncachedPrompt = 0)
     {
         if (_current >= 0)
         {
@@ -19126,6 +19197,11 @@ public final class OpenCodeRoot : VBox
             {
                 _reportedContextTokens[session.id] = prompt;
                 _reportedCompletionTokens[session.id] = completion;
+                if (cachedPrompt > 0 || uncachedPrompt > 0)
+                {
+                    _reportedCachedPromptTokens[session.id] = cachedPrompt;
+                    _reportedUncachedPromptTokens[session.id] = uncachedPrompt;
+                }
             }
             const path = activeMessagePath(*session);
             if (path.length > 0)
@@ -19817,6 +19893,15 @@ public final class OpenCodeRoot : VBox
     {
         if (_current < 0) return null;
         return buildRequestMessages(_sessions[_current]);
+    }
+
+    /// Test-only: materialize the same append-only task-state checkpoint that a
+    /// real tool-enabled request creates, without contacting a provider.
+    public bool ensureDurableTaskCheckpointForTesting()
+    {
+        if (_current < 0) return false;
+        return ensureDurableTaskCheckpoint(_sessions[_current],
+            _settings.experimentalNestedPlans);
     }
 
     /// Test-only: the compacted outgoing list for the current session at the

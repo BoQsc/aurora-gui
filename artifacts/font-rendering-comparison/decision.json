@@ -1,0 +1,28 @@
+{
+  "decision_id": "font-rendering-ownership",
+  "decision": "B-core-default",
+  "status": "approved",
+  "approved_by": "project-owner",
+  "approved_on": "2026-09-27",
+  "baseline": "OpenCode startup helper sets AURORA_TEXT_CONTRAST=0.5",
+  "candidate": "Remove the startup helper and inherit GlyphAtlas default 0.5",
+  "evidence": {
+    "capture_size": "1200x800",
+    "opencode_different_pixels": 0,
+    "opencode_pro_application_content_different_pixels": 0,
+    "opencode_pro_full_frame_different_pixels": 122,
+    "opencode_pro_full_frame_difference": "compile-time titlebar timestamp only",
+    "release_builds_passed": "4/4",
+    "dpi_regression": "passed at 120, 144, and 192 DPI",
+    "font_smoke": "passed with hinting off; monospace X retained four strokes",
+    "full_pro_headless_suite": "both variants reached the same unrelated API-key tooltip assertion"
+  },
+  "files": {
+    "opencode-A-current.png": "b6377dd039ecfe99685c3898ae19b50b77c53c544c684acc0000a1c83f1fc403",
+    "opencode-B-core-default.png": "b6377dd039ecfe99685c3898ae19b50b77c53c544c684acc0000a1c83f1fc403",
+    "opencode-difference-amplified.png": "15a694a7e86d93b1390b6d1be62d56d52db1b8181884c6300e09b6263c9d7891",
+    "opencode-pro-A-current.png": "c78905224e2e48f83199ed60b6ee10b86ccc71c4f8b48d6b5e09af4294c15617",
+    "opencode-pro-B-core-default.png": "187fcbb72de42e0e23a051f2f8c11adbe35c3cbc3215ea867e11e716f1cb5df2",
+    "opencode-pro-difference-amplified.png": "b132f959f4f80b2f910dde4f2e14cb153d4ea507c3d757668c3e0fd56659238e"
+  }
+}

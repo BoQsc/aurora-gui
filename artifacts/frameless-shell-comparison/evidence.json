@@ -1,0 +1,40 @@
+{
+  "designer": {
+    "size": [
+      1280,
+      800
+    ],
+    "different_pixels": 0,
+    "difference_bbox": null,
+    "different_pixels_below_titlebar": 0,
+    "baseline_sha256": "ea6fc5d1f65e6778ac6ef9642355ab2921bc07a67bbbc203ad06ad2bd22bf2df",
+    "candidate_sha256": "ea6fc5d1f65e6778ac6ef9642355ab2921bc07a67bbbc203ad06ad2bd22bf2df"
+  },
+  "notepad": {
+    "size": [
+      1080,
+      680
+    ],
+    "different_pixels": 0,
+    "difference_bbox": null,
+    "different_pixels_below_titlebar": 0,
+    "baseline_sha256": "d5ce1f75ce65f4bfa3d1e19eba24278cf9be22d5c9a9aa7fb01340aeedd50629",
+    "candidate_sha256": "d5ce1f75ce65f4bfa3d1e19eba24278cf9be22d5c9a9aa7fb01340aeedd50629"
+  },
+  "opencode-pro": {
+    "size": [
+      1200,
+      800
+    ],
+    "different_pixels": 54,
+    "difference_bbox": [
+      230,
+      16,
+      237,
+      26
+    ],
+    "different_pixels_below_titlebar": 0,
+    "baseline_sha256": "55beb092c07edd8824ffbd62019567cbdc0e6d9a399aef63e1744a957b98b890",
+    "candidate_sha256": "d0d3e5c791b7b2b8ed387af1399678c867344abdd3aba07407eaf488d02d5571"
+  }
+}

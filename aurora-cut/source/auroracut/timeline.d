@@ -193,6 +193,7 @@ final class TimelineWidget : Widget
     // clip name and ruler label would create continuous GC pressure.
     private string[] _cachedAssetNames;
     private dstring[] _cachedAssetTitles;
+    private bool[] _playbackCacheReady;
     private dstring[] _videoTrackLabels;
     private dstring[] _audioTrackLabels;
     private dstring[ulong] _textClipTitles;
@@ -466,6 +467,18 @@ final class TimelineWidget : Widget
         _workIn = inPoint;
         _workOut = outPoint;
         invalidate();
+    }
+
+    void setPlaybackCacheReady(const bool[] ready)
+    {
+        if (_playbackCacheReady == ready) return;
+        _playbackCacheReady = ready.dup;
+        invalidate();
+    }
+
+    int playbackCacheStateForTesting(double time) const
+    {
+        return playbackCacheStateAt(time);
     }
 
     private void refreshTextCaches()
@@ -1813,6 +1826,7 @@ final class TimelineWidget : Widget
             palette.border);
 
         drawRuler(canvas);
+        drawPlaybackCacheRail(canvas);
         // Clip rows to the track viewport below the ruler. Without the clip a
         // partially scrolled top row painted over the ruler's lower half, so
         // timeline content appeared on top of the ruler while scrolling.
@@ -1852,6 +1866,66 @@ final class TimelineWidget : Widget
                         (_verticalScrollbarHovered ? 190 : 150)));
         }
         canvas.strokeRect(full, palette.border.withAlpha(190), 1);
+    }
+
+    /** A thin rail under the ruler: green means every visible video source at
+     * that time has an instant-seek cache, red means at least one is pending,
+     * and empty timeline gaps remain neutral. */
+    private void drawPlaybackCacheRail(ref Canvas canvas)
+    {
+        const start = _scrollSeconds;
+        const end = start + visibleDuration();
+        double[] boundaries = [start, end];
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const track = _model.trackValue(TrackAddress(TrackKind.video, lane));
+            if (track.disabled) continue;
+            foreach (clip; track.clips)
+            {
+                if (clip.isText() || clip.end() <= start || clip.start >= end)
+                    continue;
+                boundaries ~= clip.start < start ? start : clip.start;
+                boundaries ~= clip.end() > end ? end : clip.end();
+            }
+        }
+        sort(boundaries);
+        const y = maxInt(0, rulerHeight() - 3);
+        foreach (index; 0 .. boundaries.length - 1)
+        {
+            const leftTime = boundaries[index];
+            const rightTime = boundaries[index + 1];
+            if (rightTime <= leftTime + 0.000_001) continue;
+            const state = playbackCacheStateAt((leftTime + rightTime) * 0.5);
+            if (state < 0) continue;
+            const left = maxInt(labelWidth(), xForTime(leftTime));
+            const right = minInt(bounds().width, xForTime(rightTime));
+            if (right <= left) continue;
+            canvas.fillRect(Rect(left, y, right - left, 3),
+                state > 0 ? Color.fromHex(0x34c759) : Color.fromHex(0xff453a));
+        }
+    }
+
+    private int playbackCacheStateAt(double time) const
+    {
+        bool hasVideo;
+        bool allReady = true;
+        foreach (lane; 0 .. _model.trackCount(TrackKind.video))
+        {
+            const address = TrackAddress(TrackKind.video, lane);
+            const track = _model.trackValue(address);
+            if (track.disabled) continue;
+            const index = _model.clipAtTime(address, time);
+            if (index < 0) continue;
+            const clip = track.clips[cast(size_t) index];
+            if (clip.isText() || clip.assetIndex >= _model.assets.length ||
+                !_model.assets[clip.assetIndex].hasVideo)
+                continue;
+            hasVideo = true;
+            if (clip.assetIndex >= _playbackCacheReady.length ||
+                !_playbackCacheReady[clip.assetIndex])
+                allReady = false;
+        }
+        return !hasVideo ? -1 : (allReady ? 1 : 0);
     }
 
     private void drawToolColumn(ref Canvas canvas)

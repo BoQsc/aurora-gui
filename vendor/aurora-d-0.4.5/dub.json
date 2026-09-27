@@ -348,6 +348,15 @@
       ]
     },
     {
+      "name": "titlebar-shell-test",
+      "targetType": "executable",
+      "targetName": "aurora-titlebar-shell-test",
+      "mainSourceFile": "tests/titlebar_shell.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
       "name": "font-quality-test",
       "targetType": "executable",
       "targetName": "aurora-font-quality-test",

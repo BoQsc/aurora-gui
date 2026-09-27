@@ -1,0 +1,30 @@
+name: Aurora standards
+
+on:
+  pull_request:
+  push:
+    paths:
+      - .github/workflows/aurora-standards.yml
+      - AURORA-QUALITY-RATCHET.md
+      - AURORA-USAGE-STANDARDS.md
+      - scripts/audit-aurora-standards.py
+      - scripts/make-aurora-visual-review.py
+      - scripts/tests/test_aurora_standards_audit.py
+      - scripts/tests/test_aurora_visual_review.py
+      - aurora-*/dub.json
+      - aurora-*/source/**
+      - vendor/aurora-d-0.4.5/source/**
+      - vendor/aurora-d-0.4.5/docs/**
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Audit shared Aurora behavior
+        run: python -X utf8 scripts/audit-aurora-standards.py
+
+      - name: Test the standards audit
+        run: python -X utf8 -m unittest scripts.tests.test_aurora_standards_audit scripts.tests.test_aurora_visual_review

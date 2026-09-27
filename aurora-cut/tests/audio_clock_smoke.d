@@ -51,12 +51,16 @@ int main(string[] arguments)
     }
     assert(resumedAdvanced, "Paused PCM preview audio did not advance after resume");
     player.stop();
+    double stoppedPosition;
+    assert(!player.clockPosition(stoppedPosition),
+        "Stopped PCM preview exposed the previous generation's audio clock");
 
     enum double displayStartTime = 5.0;
     assert(player.start(arguments[1], 0.0, 1.0, 0.05, displayStartTime),
         "PCM preview audio request was not accepted");
 
     double firstPosition = -1.0;
+    bool normalAdvanced;
     foreach (_; 0 .. 250)
     {
         double position;
@@ -67,18 +71,36 @@ int main(string[] arguments)
             if (firstPosition < 0.0) firstPosition = position;
             if (position > firstPosition + 0.005)
             {
-                player.stop();
-                writeln("Aurora Cut PCM audio clock smoke test passed.");
-                return 0;
+                normalAdvanced = true;
+                break;
             }
         }
         Thread.sleep(10.msecs);
     }
 
-    const error = player.error();
-    const stats = player.stats();
-    assert(false, error.length > 0 ? error :
-        "PCM preview audio clock did not become active; requests=" ~
-        stats.requests.to!string ~ " processes=" ~
-        stats.processesStarted.to!string);
+    if (!normalAdvanced)
+    {
+        const error = player.error();
+        const stats = player.stats();
+        assert(false, error.length > 0 ? error :
+            "PCM preview audio clock did not become active; requests=" ~
+            stats.requests.to!string ~ " processes=" ~
+            stats.processesStarted.to!string);
+    }
+
+    // Replacing an active generation must never temporarily expose the old
+    // display clock. That made a timeline seek advance from the old playhead,
+    // then jump back and visibly replay the first part of the new position.
+    enum double replacementDisplayStartTime = 11.0;
+    assert(player.start(arguments[1], 0.0, 1.0, 0.05,
+        replacementDisplayStartTime, true),
+        "Replacement PCM preview audio request was not accepted");
+    double replacementPosition;
+    assert(!player.clockPosition(replacementPosition) ||
+        replacementPosition >= replacementDisplayStartTime,
+        "Replacement PCM preview exposed the previous generation's clock");
+
+    player.stop();
+    writeln("Aurora Cut PCM audio clock smoke test passed.");
+    return 0;
 }

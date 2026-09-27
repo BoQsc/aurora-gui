@@ -37,6 +37,7 @@ PROGRAMS = {
         "Aurora Stream",
     ),
     "aurora-opencode": ("aurora-opencode/dub.json", None, None, "Aurora OpenCode"),
+    "aurora-remote": ("aurora-remote/dub.json", None, None, "Aurora Remote"),
     "aurora-opencode-pro": (
         "aurora-opencode-pro/dub.json",
         None,

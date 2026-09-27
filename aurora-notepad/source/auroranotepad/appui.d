@@ -124,7 +124,6 @@ final class NotepadRoot : Widget
         _window = window;
 
         _titleBar = add(new NotepadTitleBar(window));
-        _titleBar.onSnapPreview = &updateSnapPreview;
         // Show the application's own PNG icon in the custom titlebar.
         try
         {
@@ -171,6 +170,7 @@ final class NotepadRoot : Widget
         // Snap-preview overlay: added last so it paints above all content. The
         // overlay is created disabled, so it never intercepts pointer input.
         _snapPreview = add(new TitleBarSnapPreview());
+        _titleBar.setSnapPreview(_snapPreview);
         // The 1 px window border paints on top of everything (last child).
         _windowBorder = add(new WindowBorder());
 
@@ -256,20 +256,6 @@ final class NotepadRoot : Widget
     }
 
     // --- Actions. ---
-
-    /** Show/hide the translucent preview while a drag crosses a snap zone. */
-    private void updateSnapPreview(TitleBarSnapTarget target, Rect bounds)
-    {
-        if (target == TitleBarSnapTarget.none)
-        {
-            _snapPreview.hide();
-            return;
-        }
-        Rect origin;
-        _window.windowBounds(origin);
-        _snapPreview.show(Rect(bounds.x - origin.x, bounds.y - origin.y,
-            bounds.width, bounds.height));
-    }
 
     private void newDocument()
     {

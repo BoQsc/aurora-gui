@@ -38,6 +38,10 @@ APPLICATIONS = {
         Path("aurora-opencode-pro"),
         Path("aurora-opencode-pro/aurora-opencode-pro.exe"),
     ),
+    "aurora-remote": (
+        Path("aurora-remote"),
+        Path("aurora-remote/aurora-remote.exe"),
+    ),
     "aurora-stream": (
         Path("aurora-stream"),
         Path("aurora-stream/aurora-stream.exe"),

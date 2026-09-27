@@ -170,6 +170,74 @@ private void assertRequestBody()
     client.closeSession();
 }
 
+private void assertPromptCacheUsage()
+{
+    auto client = new OpenCodeClient("https://example.com/v1", "test-key");
+
+    auto readUsage = delegate(string usageJson)
+    {
+        client.resetStreamStateForTesting();
+        client.feedSseForTesting("data: " ~ usageJson ~ "\n\n");
+        auto events = client.finishStreamForTesting();
+        OpenCodeEvent found;
+        foreach (event; events)
+            if (event.kind == OpenCodeEventKind.usage) found = event;
+        return found;
+    };
+
+    const deepSeek = readUsage(
+        `{"usage":{"prompt_tokens":1000,"completion_tokens":20,` ~
+        `"total_tokens":1020,"prompt_cache_hit_tokens":990,` ~
+        `"prompt_cache_miss_tokens":10}}`);
+    assert(deepSeek.promptTokens == 1000 &&
+        deepSeek.cachedPromptTokens == 990 &&
+        deepSeek.uncachedPromptTokens == 10,
+        "DeepSeek prompt-cache usage was not captured");
+
+    const openAi = readUsage(
+        `{"usage":{"prompt_tokens":800,"completion_tokens":12,` ~
+        `"total_tokens":812,"prompt_tokens_details":{"cached_tokens":768}}}`);
+    assert(openAi.cachedPromptTokens == 768 &&
+        openAi.uncachedPromptTokens == 32,
+        "OpenAI cached_tokens usage was not captured");
+
+    // Anthropic-style streams can report input/cache accounting at message
+    // start and output usage in a later event. The later partial object must not
+    // erase the cache figures captured from the first one.
+    client.resetStreamStateForTesting();
+    client.feedSseForTesting(
+        "data: " ~ `{"usage":{"input_tokens":25,` ~
+        `"cache_read_input_tokens":900,"cache_creation_input_tokens":75}}` ~
+        "\n\n" ~ "data: " ~ `{"usage":{"output_tokens":7}}` ~ "\n\n");
+    auto anthropicEvents = client.finishStreamForTesting();
+    OpenCodeEvent anthropic;
+    foreach (event; anthropicEvents)
+        if (event.kind == OpenCodeEventKind.usage) anthropic = event;
+    assert(anthropic.promptTokens == 1000 &&
+        anthropic.completionTokens == 7 &&
+        anthropic.cachedPromptTokens == 900 &&
+        anthropic.uncachedPromptTokens == 100,
+        "Anthropic cache read/creation usage was not normalized");
+    writeln("Provider prompt-cache usage formats normalize correctly");
+    client.closeSession();
+}
+
+private void assertExactInputTokenCountResponse()
+{
+    assert(OpenCodeClient.inputTokenCountForTesting(
+        `{"object":"response.input_tokens","input_tokens":4312}`) == 4312,
+        "llama.cpp input-token count was not parsed exactly");
+    assert(OpenCodeClient.inputTokenCountForTesting(
+        `{"input_tokens":0}`) == 0,
+        "a non-positive count was accepted");
+    assert(OpenCodeClient.inputTokenCountForTesting(
+        `{"input_tokens":"4312"}`) == 0,
+        "a string count was accepted");
+    assert(OpenCodeClient.inputTokenCountForTesting(`not json`) == 0,
+        "malformed count response did not fall back safely");
+    writeln("Exact local input-token responses parse safely");
+}
+
 /// Plain chat (no tools) must serialize exactly like before: messages only.
 private void assertPlainBody()
 {
@@ -312,10 +380,9 @@ private void assertLlamaServerCompatibility()
     assert(on.object["reasoning_effort"].str == "high",
         "local Thinking=on did not request reasoning");
 
-    // Aurora's long-history compactor can contribute later instruction
-    // checkpoints. Qwen's llama.cpp Jinja template rejects a second/midstream
-    // system or developer message, so the wire payload must contain one merged
-    // system block at index zero.
+    // Hosted providers keep checkpoints in chronological order. Pulling a newly
+    // appended instruction to message zero would rewrite the entire token prefix
+    // and turn the next agent round into a cache miss.
     ChatRequestMessage initial, checkpoint, developer, assistant;
     initial.role = "system";
     initial.content = "Primary instructions";
@@ -325,9 +392,24 @@ private void assertLlamaServerCompatibility()
     checkpoint.content = "Compaction checkpoint";
     developer.role = "developer";
     developer.content = "Durable task state";
-    auto strict = parseJSON(client.buildBodyForTesting(
+    auto hosted = parseJSON(client.buildBodyForTesting(
         [user, initial, assistant, checkpoint, developer], null,
         "qwen-local", false));
+    const hostedMessages = hosted.object["messages"].array;
+    assert(hostedMessages.length == 5 &&
+        hostedMessages[0].object["content"].str == "Hi" &&
+        hostedMessages[1].object["content"].str == "Primary instructions" &&
+        hostedMessages[2].object["content"].str == "Earlier answer" &&
+        hostedMessages[3].object["content"].str == "Compaction checkpoint" &&
+        hostedMessages[4].object["content"].str == "Durable task state",
+        "hosted request reordered an append-only instruction checkpoint");
+
+    // Qwen's llama.cpp Jinja template rejects a second/midstream system or
+    // developer message, so only that detected compatibility path folds them
+    // into one leading system block.
+    auto strict = parseJSON(client.buildBodyForTesting(
+        [user, initial, assistant, checkpoint, developer], null,
+        "qwen-local", false, false, "", 0, true));
     const wireMessages = strict.object["messages"].array;
     assert(wireMessages.length == 3,
         "system/developer blocks were not folded into one message");
@@ -348,6 +430,8 @@ private void assertLlamaServerCompatibility()
 int main()
 {
     assertReasoningReplayRecovery();
+    assertPromptCacheUsage();
+    assertExactInputTokenCountResponse();
     assert(transientChatStatusForTesting(500));
     assert(transientChatStatusForTesting(502));
     assert(transientChatStatusForTesting(503));

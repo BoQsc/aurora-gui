@@ -7,6 +7,10 @@ regression test next to it.
 
 Keep it factual and short. Do not guess: measure with a probe first.
 
+Framework-wide promotion and drift detection are described in
+`AURORA-QUALITY-RATCHET.md`. Run `python scripts/audit-aurora-standards.py`
+whenever an application introduces a rendering or interaction workaround.
+
 ---
 
 ## 1. Time, timers, and animation (the NaN trap)
@@ -109,7 +113,30 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
   Never delete handles owned by the target process.
 - Use `PROCESS_QUERY_LIMITED_INFORMATION` for owner paths.
 
-## 7. Verification discipline
+## 7. Font rendering ownership
+
+- Aurora's `GlyphAtlas` owns the default grayscale coverage contrast (`0.5`).
+  Applications must not copy that policy into startup helpers or set
+  `AURORA_TEXT_CONTRAST` merely to reproduce the framework default.
+- Keep hinting off by default. `AURORA_HINTING` and `AURORA_TEXT_CONTRAST` are
+  explicit compatibility and diagnostic overrides; `AURORA_TEXT_CONTRAST=0`
+  restores linear coverage.
+- Change the framework default only with framework regression tests, matched
+  application A/B captures, and explicit owner approval.
+
+## 8. Frameless window-shell ownership
+
+- Use `FramelessWindowTitleBar` for native frameless application windows.
+  Aurora owns movement, monitor work-area maximize/restore, restore-on-drag,
+  snap target application, preview mapping, and the owner-drawn system menu.
+- Applications own only title, icon, palette, sizing, and middle content. Add a
+  `TitleBarSnapPreview` above the content and bind it with `setSnapPreview`.
+- Product-specific minimize-to-tray or close policy belongs in
+  `setMinimizeAction` / `setCloseAction`; do not copy the window-shell state
+  machine to customize those actions.
+- Standard maximize preserves the taskbar by using the monitor work area.
+
+## 9. Verification discipline
 
 - **Measure, do not guess.** Write a small probe that prints numbers (alpha
   stats, pixel hashes, counters, icon sizes) before and after a change. Keep the
@@ -121,7 +148,7 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
 - Baseline check before/after: `build\headless-smoke.exe` must stay
   `ALL PASSED`.
 
-## 8. Build and run discipline (aurora-desktop / aurora-opencode-pro)
+## 10. Build and run discipline (aurora-desktop / aurora-opencode-pro)
 
 - `dub build` writes the exe to the **package root**, not `build/`. Launch the
   root exe and verify the titlebar build stamp matches the build you just ran.
@@ -131,7 +158,7 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
 - A stale `build\<app>.exe` is a different (test) binary; never use it for the
   smoke/repro of the real app.
 
-## 9. New feature checklist
+## 11. New feature checklist
 
 Before considering a taskbar/tray/icon feature done:
 
@@ -145,7 +172,7 @@ Before considering a taskbar/tray/icon feature done:
 8. Regression test + `headless-smoke` green.
 9. Rebuilt, old instance killed, exactly one relaunched, build stamp verified.
 
-## 10. Signed/unsigned index traps (`indexOf` / `lastIndexOf` / ternary)
+## 12. Signed/unsigned index traps (`indexOf` / `lastIndexOf` / ternary)
 
 `std.string.indexOf`/`lastIndexOf` return **`ptrdiff_t`**, and `-1` means "not
 found". The trap is the ternary: **D's common type of `size_t` and `ptrdiff_t` is
@@ -177,7 +204,7 @@ stray bracket, or a patch hunk with no matching context). Existing guards:
 `markdown.d` `verifyStrayBracketParsing`, `tools_test.d` "apply_patch reports a
 missing context instead of crashing".
 
-## 11. Crash triage without a debugger
+## 13. Crash triage without a debugger
 
 - The app's own `logs/dumps/*.dmp` may be 0 bytes (the in-process
   `MiniDumpWriteDump` can fail on the dying thread). Do not stop there: Windows
@@ -196,7 +223,7 @@ missing context instead of crashing".
   input is deterministic; "it crashed at the same address again" means the fix
   did not touch that path - keep the evidence, do not add another guess.
 
-## 12. Self-modifying apps: never rebuild or kill from inside
+## 14. Self-modifying apps: never rebuild or kill from inside
 
 Aurora OpenCode is an agent that edits its own source. The agent process and the
 app being rebuilt are the same process:
@@ -217,7 +244,7 @@ app being rebuilt are the same process:
   guards to a crash without the fault stack wastes rebuild cycles (and each
   rebuild kills the session). Get the stack first.
 
-## 13. Restored-session identity and reload safety
+## 15. Restored-session identity and reload safety
 
 - The state directory holds several snapshots of the same conversations
   (`sessions.json`, `sessions.recovery.json`, `sessions.json.bak`). Merge them

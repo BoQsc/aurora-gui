@@ -104,6 +104,10 @@ final class GlyphAtlas
     int width() const @safe pure nothrow @nogc { return _width; }
     int height() const @safe pure nothrow @nogc { return _height; }
     ulong revision() const @safe pure nothrow @nogc { return _revision; }
+    float coverageContrast() const @safe pure nothrow @nogc
+    {
+        return _coverageContrast;
+    }
     const(ubyte)[] pixels() const @safe pure nothrow @nogc { return _pixels; }
 
     AtlasGlyph glyph(const(FontFace) face, dchar codepoint, int pixelSize,
