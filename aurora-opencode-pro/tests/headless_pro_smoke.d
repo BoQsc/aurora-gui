@@ -383,6 +383,11 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(findById(root, "oc-changes-list") !is null,
         "Changes button did not open the snapshot table");
+    assert(requireWidget!Button(root, "oc-changes-group-10m").enabled(),
+        "Ten-minute timeline control is unavailable");
+    requireWidget!Button(root, "oc-changes-group-all").onClick();
+    assert(findById(root, "oc-changes-list") !is null,
+        "All changes control did not preserve the snapshot table");
     assert(!requireWidget!Button(root, "oc-changes-revert-file").enabled(),
         "Revert must be disabled when there is no selected change");
     requireWidget!Button(root, "oc-changes-close").onClick();

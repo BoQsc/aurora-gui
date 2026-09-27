@@ -6655,6 +6655,14 @@ private final class ConversationRuntime
     }
 }
 
+private enum ChangeGrouping
+{
+    tenMinutes,
+    hour,
+    day,
+    all
+}
+
 public final class OpenCodeRoot : VBox
 {
     private GuiWindow _window;
@@ -6776,6 +6784,10 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private PopupOverlay _activePopup;
+    // The Changes dialog remembers its timeline scale when a diff is opened
+    // and the user returns. Ten-minute buckets keep one focused burst of agent
+    // work together while still making pauses between bursts visible.
+    private ChangeGrouping _changeGrouping = ChangeGrouping.tenMinutes;
     // The model picker popup is open. Its button toggles instead of
     // reopening: activation while this is set closes the picker.
     private bool _modelPickerOpen;
@@ -13973,6 +13985,47 @@ public final class OpenCodeRoot : VBox
         return path;
     }
 
+    private static string changeGroupKey(string timestamp,
+        ChangeGrouping grouping)
+    {
+        if (grouping == ChangeGrouping.all) return "";
+        if (timestamp.length < 10) return "Unknown time";
+        if (grouping == ChangeGrouping.day) return timestamp[0 .. 10];
+        if (timestamp.length < 13) return timestamp;
+        if (grouping == ChangeGrouping.hour) return timestamp[0 .. 13];
+        if (timestamp.length < 16) return timestamp;
+        // Keep the tens digit and floor the minute to a ten-minute boundary.
+        return timestamp[0 .. 15] ~ "0";
+    }
+
+    private static string changeGroupLabel(string key,
+        ChangeGrouping grouping)
+    {
+        if (key == "Unknown time" || key.length < 10) return key;
+        if (grouping == ChangeGrouping.day || key.length < 13)
+            return key[0 .. 10];
+        const date = key[0 .. 10];
+        const hour = key[11 .. 13];
+        if (grouping == ChangeGrouping.hour || key.length < 16)
+            return date ~ " · " ~ hour ~ ":00–" ~ hour ~ ":59";
+        const minute = key[14 .. 16];
+        return date ~ " · " ~ hour ~ ":" ~ minute ~ "–" ~ hour ~ ":" ~
+            minute[0 .. 1] ~ "9";
+    }
+
+    unittest
+    {
+        const stamp = "2026-09-27T14:37:12.5000000";
+        assert(changeGroupKey(stamp, ChangeGrouping.tenMinutes) ==
+            "2026-09-27T14:30");
+        assert(changeGroupLabel("2026-09-27T14:30",
+            ChangeGrouping.tenMinutes) == "2026-09-27 · 14:30–14:39");
+        assert(changeGroupLabel(changeGroupKey(stamp, ChangeGrouping.hour),
+            ChangeGrouping.hour) == "2026-09-27 · 14:00–14:59");
+        assert(changeGroupLabel(changeGroupKey(stamp, ChangeGrouping.day),
+            ChangeGrouping.day) == "2026-09-27");
+    }
+
     private void showChangeDiffDialog(ChangeRecord record)
     {
         if (_activePopup !is null) _activePopup.dismiss();
@@ -14483,13 +14536,27 @@ public final class OpenCodeRoot : VBox
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
+        auto controls = content.add(new HBox(8));
+        controls.layoutHints().preferredHeight = 36;
+        auto groupLabel = controls.add(new Label("Group by"));
+        groupLabel.setScale(1);
+        groupLabel.setColor(opencodeMuted);
+        auto tenMinuteButton = controls.add(new Button("10 minutes"));
+        tenMinuteButton.setId("oc-changes-group-10m");
+        auto hourButton = controls.add(new Button("Hour"));
+        hourButton.setId("oc-changes-group-hour");
+        auto dayButton = controls.add(new Button("Day"));
+        dayButton.setId("oc-changes-group-day");
+        auto allButton = controls.add(new Button("All changes"));
+        allButton.setId("oc-changes-group-all");
+        controls.add(new Spacer());
         auto filter = new CheckBox("Current conversation only");
         filter.setId("oc-changes-filter");
         // Default to the active conversation's changes: the common case is
         // reverting work this chat just did, and the box can still be cleared
         // to see the whole workspace.
         filter.setChecked(true, false);
-        content.add(filter);
+        controls.add(filter);
         auto header = content.add(new Label(
             "File                                      Change · Diff · Time · Conversation"));
         header.setScale(1);
@@ -14527,13 +14594,22 @@ public final class OpenCodeRoot : VBox
         void updateButtons()
         {
             const index = list.selectedIndex();
-            const valid = index >= 0 && index < cast(int) visible.length;
+            const valid = index >= 0 && index < cast(int) visible.length &&
+                visible[index].id.length > 0;
             const reversible = valid && !isReverted(visible[index]);
             diffButton.setEnabled(valid);
             folderButton.setEnabled(valid);
             fileButton.setEnabled(reversible);
             actionButton.setEnabled(reversible);
             turnButton.setEnabled(reversible);
+        }
+        void updateGroupingButtons()
+        {
+            tenMinuteButton.setAccent(
+                _changeGrouping == ChangeGrouping.tenMinutes);
+            hourButton.setAccent(_changeGrouping == ChangeGrouping.hour);
+            dayButton.setAccent(_changeGrouping == ChangeGrouping.day);
+            allButton.setAccent(_changeGrouping == ChangeGrouping.all);
         }
         void refresh()
         {
@@ -14558,12 +14634,44 @@ public final class OpenCodeRoot : VBox
             visible.length = 0;
             ListItem[] rows;
             const currentId = _current >= 0 ? _sessions[_current].id : "";
+            int[string] groupSizes;
+            if (_changeGrouping != ChangeGrouping.all)
+                foreach (record; all)
+                {
+                    if (filter.checked() && record.conversationId != currentId)
+                        continue;
+                    ++groupSizes[changeGroupKey(record.timestamp,
+                        _changeGrouping)];
+                }
+            string previousGroup;
+            int firstRecordIndex = -1;
+            int recordCount;
             for (size_t offset; offset < all.length; ++offset)
             {
                 const record = all[$ - 1 - offset];
                 if (filter.checked() && record.conversationId != currentId)
                     continue;
+                if (_changeGrouping != ChangeGrouping.all)
+                {
+                    const key = changeGroupKey(record.timestamp,
+                        _changeGrouping);
+                    if (key != previousGroup)
+                    {
+                        auto separator = ListItem("── " ~
+                            changeGroupLabel(key, _changeGrouping) ~ " · " ~
+                            to!string(groupSizes[key]) ~
+                            (groupSizes[key] == 1 ? " change ──" :
+                                " changes ──"));
+                        separator.disabled = true;
+                        rows ~= separator;
+                        visible ~= ChangeRecord.init;
+                        previousGroup = key;
+                    }
+                }
+                if (firstRecordIndex < 0)
+                    firstRecordIndex = cast(int) rows.length;
                 visible ~= record;
+                ++recordCount;
                 const marker = isReverted(record) ? "↶ " : "";
                 const relative = displayChangePath(record.path, workspace);
                 const secondary = record.changeKind ~ " · +" ~
@@ -14578,10 +14686,10 @@ public final class OpenCodeRoot : VBox
                 rows ~= row;
             }
             list.setItems(rows);
-            if (rows.length > 0) list.setSelectedIndex(0, false);
-            status.setText(rows.length == 0 ?
+            list.setSelectedIndex(firstRecordIndex, false);
+            status.setText(recordCount == 0 ?
                 "No Aurora-managed file changes in this workspace." :
-                to!string(rows.length) ~ " recorded file change(s). " ~
+                to!string(recordCount) ~ " recorded file change(s). " ~
                 "↶ means already reverted.");
             updateButtons();
         }
@@ -14605,6 +14713,30 @@ public final class OpenCodeRoot : VBox
             status.setText(outcome.message);
             if (outcome.succeeded) refresh();
         }
+        tenMinuteButton.onClick = delegate()
+        {
+            _changeGrouping = ChangeGrouping.tenMinutes;
+            updateGroupingButtons();
+            refresh();
+        };
+        hourButton.onClick = delegate()
+        {
+            _changeGrouping = ChangeGrouping.hour;
+            updateGroupingButtons();
+            refresh();
+        };
+        dayButton.onClick = delegate()
+        {
+            _changeGrouping = ChangeGrouping.day;
+            updateGroupingButtons();
+            refresh();
+        };
+        allButton.onClick = delegate()
+        {
+            _changeGrouping = ChangeGrouping.all;
+            updateGroupingButtons();
+            refresh();
+        };
         filter.onChanged = delegate(bool value) { refresh(); };
         list.onSelectionChanged = delegate(int index) { updateButtons(); };
         list.onActivated = delegate(int index)
@@ -14626,11 +14758,12 @@ public final class OpenCodeRoot : VBox
         actionButton.onClick = delegate() { runRevert(true, false); };
         turnButton.onClick = delegate() { runRevert(false, true); };
         close.onClick = delegate() { dismissPopup(); };
+        updateGroupingButtons();
         refresh();
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(860, 590));
+        popup.setRequestedSize(Size(860, 630));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
