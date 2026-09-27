@@ -21,7 +21,7 @@ import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
     previewToolDiff, rebuildRequestHandler;
-import auroraopencode.usage_limits : parseCommandCodeUser,
+import auroraopencode.usage_limits : parseCommandCodePlan, parseCommandCodeUser,
     parseOpenCodeGoServiceAccountName, parseUsageLimits,
     usageProviderForBaseUrl;
 import core.time : msecs, seconds;
@@ -2618,10 +2618,13 @@ int main(string[] args)
     auto commandUsage = parseUsageLimits("commandcode",
         `{"windowLimits":{"fiveHour":{"used":7,"cap":14},` ~
         `"weekly":{"used":34.5,"cap":35}},` ~
-        `"credits":{"monthlyCredits":0.08}}`);
+        `"credits":{"monthlyCredits":0.08,"purchasedCredits":0,` ~
+        `"freeCredits":0,"belowThreshold":true,"creditThreshold":1}}`);
     assert(openUsage.available && openUsage.windows.length == 3 &&
         openUsage.windows[0].label == "5 hours" &&
-        openUsage.windows[0].percent == 76);
+        openUsage.windows[0].percent == 76 &&
+        openUsage.planName == "OpenCode Go" &&
+        openUsage.planStatus == "Active");
     assert(parseOpenCodeGoServiceAccountName(
         "id,service_account_name,user_email\n" ~
         "1,\"Legacy: person@example.com\",\n" ~
@@ -2630,9 +2633,26 @@ int main(string[] args)
     assert(parseOpenCodeGoServiceAccountName(
         "id,service_account_name\n1,First\n2,Second\n").length == 0,
         "Workspace usage must not be mistaken for a per-key identity");
-    assert(commandUsage.available && commandUsage.windows.length == 2 &&
+    assert(commandUsage.available && commandUsage.windows.length == 3 &&
         commandUsage.windows[0].percent == 50 &&
-        commandUsage.note.indexOf("$0.08") >= 0);
+        commandUsage.windows[2].label == "Month" &&
+        commandUsage.windows[2].detail == "$69.92 / $70.00" &&
+        commandUsage.planName == "GOAT" &&
+        commandUsage.creditStatus == "Low — $0.08 remaining" &&
+        commandUsage.note.indexOf("$0.08") >= 0,
+        "CommandCode usage summary mismatch: plan=" ~
+            commandUsage.planName ~ ", credits=" ~
+            commandUsage.creditStatus ~ ", note=" ~ commandUsage.note);
+    const commandPlan = parseCommandCodePlan(
+        `{"success":true,"data":{"planId":"individual-goat",` ~
+        `"status":"active","currentPeriodEnd":` ~
+        `"2026-10-24T06:41:08.000Z","cancelAtPeriodEnd":false}}`);
+    assert(commandPlan.available && commandPlan.name == "GOAT" &&
+        commandPlan.status == "Active" &&
+        commandPlan.period == "Renews 2026-10-24");
+    const freePlan = parseCommandCodePlan(`{"success":true,"data":null}`);
+    assert(freePlan.available && freePlan.name == "Free / balance only" &&
+        freePlan.status == "No active subscription");
     assert(parseCommandCodeUser(
         `{"success":true,"user":{"name":"Display","userName":"handle",` ~
         `"email":"person@example.com"}}`) ==
@@ -2656,6 +2676,8 @@ int main(string[] args)
     assert(usageTooltip.indexOf("5 hours: 76% used") >= 0 &&
         usageTooltip.indexOf("Week: 70% used") >= 0 &&
         usageTooltip.indexOf("Month: 35% used") >= 0 &&
+        usageTooltip.indexOf("Plan: OpenCode Go") >= 0 &&
+        usageTooltip.indexOf("Subscription: Active") >= 0 &&
         usageTooltip.indexOf("Service account: Legacy: person@example.com") >= 0,
         "API key hover did not show usage limits: " ~ usageTooltip);
     driver.moveTo(Point(4, 700));
@@ -2664,6 +2686,9 @@ int main(string[] args)
         "API key usage tooltip stayed open after pointer leave");
     root.selectProviderForTesting(1);
     commandUsage.commandCodeUser = "handle (person@example.com)";
+    commandUsage.planStatus = commandPlan.status;
+    commandUsage.planPeriod = commandPlan.period;
+    commandUsage.windows[2].reset = commandPlan.period;
     root.seedKeyUsageForTesting("commandcode", "sk-cc-spare", commandUsage);
     root.tickTree(0.02);
     assert(driver.paint(), "CommandCode settings did not lay out");
@@ -2672,6 +2697,11 @@ int main(string[] args)
     root.tickTree(0.02);
     const spareTooltip = root.keyUsageTooltipTextForTesting();
     assert(spareTooltip.indexOf("5 hours: $7.00 / $14.00") >= 0 &&
+        spareTooltip.indexOf("Plan: GOAT") >= 0 &&
+        spareTooltip.indexOf("Subscription: Active") >= 0 &&
+        spareTooltip.indexOf("Credits: Low — $0.08 remaining") >= 0 &&
+        spareTooltip.indexOf("Renews 2026-10-24") >= 0 &&
+        spareTooltip.indexOf("Month: $69.92 / $70.00") >= 0 &&
         spareTooltip.indexOf("User: handle (person@example.com)") >= 0 &&
         spareTooltip.indexOf("Monthly credits left: $0.08") >= 0,
         "Spare key hover did not show CommandCode usage: " ~ spareTooltip);

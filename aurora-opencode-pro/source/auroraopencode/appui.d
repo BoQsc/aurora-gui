@@ -15,7 +15,8 @@ import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
-    fetchCommandCodeUser, fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
+    fetchCommandCodePlan, fetchCommandCodeUser,
+    fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
     usageProviderForBaseUrl;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
@@ -4347,9 +4348,18 @@ private final class HoverTooltip : Widget
         _extra.length = 0;
         _title = toUTF32(result.title);
         _usageBars = result.windows.dup;
-        _wrap = result.serviceAccountName.length > 0 ||
+        _wrap = result.planName.length > 0 || result.creditStatus.length > 0 ||
+            result.serviceAccountName.length > 0 ||
             result.commandCodeUser.length > 0;
         _rows.length = 0;
+        if (result.planName.length > 0)
+            _rows ~= toUTF32("Plan: " ~ result.planName);
+        if (result.planStatus.length > 0)
+            _rows ~= toUTF32("Subscription: " ~ result.planStatus);
+        if (result.planPeriod.length > 0)
+            _rows ~= toUTF32(result.planPeriod);
+        if (result.creditStatus.length > 0)
+            _rows ~= toUTF32("Credits: " ~ result.creditStatus);
         if (result.serviceAccountName.length > 0)
             _rows ~= toUTF32("Service account: " ~ result.serviceAccountName);
         if (result.commandCodeUser.length > 0)
@@ -10505,8 +10515,21 @@ public final class OpenCodeRoot : VBox
         return !reviewed;
     }
 
+    private string clarifyProviderRequestError(string error) const
+    {
+        if (usageProviderForBaseUrl(_settings.baseUrl) == "commandcode" &&
+            error.toLower().canFind("insufficient credits"))
+            return error ~
+                "\n\nYour CommandCode subscription can still be active " ~
+                "while this API key has too little spendable credit for the " ~
+                "request. Top up CommandCode or select another CommandCode " ~
+                "API key in Settings, then retry.";
+        return error;
+    }
+
     private void failAssistantMessage(string error)
     {
+        error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
         setTurnActiveMarker(false);
         setTurnInFlight(false);
@@ -15750,6 +15773,9 @@ public final class OpenCodeRoot : VBox
         _keyUsageFetching[requestId] = true;
         const cachedName = cached is null ? "" : provider == "opencode" ?
             cached.serviceAccountName : cached.commandCodeUser;
+        const cachedPlanName = cached is null ? "" : cached.planName;
+        const cachedPlanStatus = cached is null ? "" : cached.planStatus;
+        const cachedPlanPeriod = cached is null ? "" : cached.planPeriod;
         const accountCachedAt = requestId in _keyAccountCacheAt;
         const accountFresh = accountCachedAt !is null &&
             Clock.currTime.toUnixTime() - *accountCachedAt <
@@ -15762,8 +15788,30 @@ public final class OpenCodeRoot : VBox
                     fetchOpenCodeGoServiceAccountName(apiKey);
             }
             else if (provider == "commandcode")
+            {
                 result.commandCodeUser = accountFresh ? cachedName :
                     fetchCommandCodeUser(apiKey);
+                if (accountFresh)
+                {
+                    result.planName = cachedPlanName;
+                    result.planStatus = cachedPlanStatus;
+                    result.planPeriod = cachedPlanPeriod;
+                }
+                else
+                {
+                    const plan = fetchCommandCodePlan(apiKey);
+                    if (plan.available)
+                    {
+                        result.planName = plan.name;
+                        result.planStatus = plan.status;
+                        result.planPeriod = plan.period;
+                        foreach (ref window; result.windows)
+                            if (window.label == "Month" &&
+                                plan.period.length > 0)
+                                window.reset = plan.period;
+                    }
+                }
+            }
             result.accountChecked = !accountFresh;
             synchronized (this) _keyUsageReady[requestId] = result;
         });
