@@ -468,3 +468,25 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
 - The headless platform models `setWindowPosition`, and the dedicated shell
   regression verifies the complete shared state transition. Approval evidence
   is stored in `artifacts/frameless-shell-comparison`.
+
+## Folder selection in the file dialog (aurora-opencode-pro, 2026-09-28)
+
+- `widgets/filedialog.d`: `FileDialogOptions` gained `bool selectFolders`. When
+  set, the dialog picks a folder instead of a file: the file-name field is
+  hidden, the title/accept button default to "Select Folder" with a folder icon,
+  focus starts on the list, and `accept()` returns the highlighted folder (or,
+  when nothing is highlighted, the folder currently open). Default `false`
+  leaves the file open/save behavior untouched.
+- `aurora-opencode-pro` uses it for "New project": the button now opens this
+  folder dialog and creates the project from the chosen folder, naming it from
+  the folder's own name, so neither a name nor a typed path is required. Picking
+  a folder that is already a project just re-selects that project.
+- `widgets/filedialog.d` places/default: the Places list is now Desktop,
+  Documents, Downloads, and This PC (filesystem root). Desktop resolves through
+  `SHGetFolderPathW(CSIDL_DESKTOPDIRECTORY)` / `CSIDL_PERSONAL` on Windows (so a
+  OneDrive-redirected folder still resolves), falling back to
+  `%USERPROFILE%\Desktop` / `Documents` / `Downloads` on other platforms. An
+  empty `initialPath` now opens at Desktop (was the process working directory),
+  and Desktop is preselected in Places.
+- `widgets/filedialog.d` places open on a single click (`setActivateOnSingleClick`)
+  instead of a double click; the file list keeps select-then-open.

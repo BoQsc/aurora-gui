@@ -21,10 +21,19 @@ import aurora.window : GuiWindow;
 import std.algorithm.sorting : sort;
 import std.file : DirEntry, SpanMode, dirEntries, exists, getcwd, isDir;
 import std.format : format;
-import std.path : baseName, buildNormalizedPath, dirName, extension,
+import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension,
     isAbsolute, rootName;
 import std.process : environment;
 import std.string : icmp;
+import std.utf : toUTF8;
+
+version (Windows)
+{
+    pragma(lib, "shell32");
+    import core.sys.windows.shlobj : CSIDL_DESKTOPDIRECTORY, CSIDL_PERSONAL,
+        SHGetFolderPathW;
+    import core.sys.windows.windef : MAX_PATH;
+}
 
 enum FileDialogMode : ubyte
 {
@@ -39,6 +48,10 @@ struct FileDialogOptions
     string initialPath;
     string defaultFileName;
     string acceptLabel;
+    // When set, the dialog picks a folder instead of a file: the file-name
+    // field is hidden and accepting returns the highlighted folder (or the
+    // folder currently open) rather than a file path.
+    bool selectFolders = false;
     Size preferredSize = Size(760, 540);
 }
 
@@ -120,6 +133,9 @@ class FileDialogPanel : VBox
         placesLabel.layoutHints().preferredHeight = 26;
         _shortcuts = shortcutsPanel.add(new ListView());
         _shortcuts.setShowBorder(false);
+        // A place is opened by a single click, not a double click: picking a
+        // location should feel like a button, not a file act.
+        _shortcuts.setActivateOnSingleClick(true);
         _shortcuts.onActivated = delegate(int index)
         {
             if (index >= 0 && index < cast(int) _shortcutPaths.length)
@@ -152,11 +168,21 @@ class FileDialogPanel : VBox
         acceptButton.setAccent(true);
         acceptButton.onClick = delegate() { accept(); };
 
+        if (_options.selectFolders)
+        {
+            // Folder mode has nothing to type: the highlighted row is the
+            // choice, so the file-name field would only mislead.
+            nameLabel.setVisible(false);
+            _nameField.setVisible(false);
+        }
+
         _status = add(new Label("Ready"));
         _status.setScale(1);
         _status.layoutHints().preferredHeight = 24;
 
         rebuildShortcuts();
+        // The default place is Desktop, so highlight it as the current place.
+        if (_shortcutPaths.length > 0) _shortcuts.setSelectedIndex(0, false);
         initializeLocation();
     }
 
@@ -168,6 +194,11 @@ class FileDialogPanel : VBox
 
     void focusDefault()
     {
+        if (_options.selectFolders)
+        {
+            _files.requestFocus();
+            return;
+        }
         if (_options.mode == FileDialogMode.save)
         {
             _nameField.requestFocus();
@@ -268,17 +299,20 @@ class FileDialogPanel : VBox
     private string dialogTitle() const
     {
         if (_options.title.length > 0) return _options.title;
+        if (_options.selectFolders) return "Select Folder";
         return _options.mode == FileDialogMode.open ? "Open File" : "Save File";
     }
 
     private string acceptLabel() const
     {
         if (_options.acceptLabel.length > 0) return _options.acceptLabel;
+        if (_options.selectFolders) return "Select Folder";
         return _options.mode == FileDialogMode.open ? "Open" : "Save";
     }
 
     private IconKind acceptIcon() const
     {
+        if (_options.selectFolders) return IconKind.folder;
         return _options.mode == FileDialogMode.open ? IconKind.open :
             IconKind.save;
     }
@@ -295,7 +329,7 @@ class FileDialogPanel : VBox
         string initial = _options.initialPath;
         if (initial.length == 0)
             initial = _options.defaultFileName.length > 0 ?
-                _options.defaultFileName : getcwd();
+                _options.defaultFileName : desktopDirectory();
 
         const resolved = resolveAgainst(getcwd(), initial);
         string directory = getcwd();
@@ -320,16 +354,17 @@ class FileDialogPanel : VBox
 
     private void rebuildShortcuts()
     {
-        const current = getcwd();
-        const home = environment.get("HOME", environment.get("USERPROFILE", current));
-        auto root = rootName(current);
-        if (root.length == 0) root = "/";
-        _shortcutPaths = [home, current, root];
+        const desktop = desktopDirectory();
+        const documents = documentsDirectory();
+        const downloads = downloadsDirectory();
+        const thisPc = thisPcPath();
+        _shortcutPaths = [desktop, documents, downloads, thisPc];
 
         ListItem[] items;
-        items ~= ListItem("Home", IconKind.home, home);
-        items ~= ListItem("Working directory", IconKind.folder, current);
-        items ~= ListItem("Filesystem", IconKind.drive, root);
+        items ~= ListItem("Desktop", IconKind.folder, desktop);
+        items ~= ListItem("Documents", IconKind.notepad, documents);
+        items ~= ListItem("Downloads", IconKind.folder, downloads);
+        items ~= ListItem("This PC", IconKind.computer, thisPc);
         _shortcuts.setItems(items);
     }
 
@@ -451,6 +486,21 @@ class FileDialogPanel : VBox
 
     private void accept()
     {
+        if (_options.selectFolders)
+        {
+            // A highlighted folder wins; otherwise the folder we are inside is
+            // the choice, which makes "navigate then confirm" work naturally.
+            string folder = _selectedPath;
+            if (folder.length == 0 || !directoryExists(folder))
+                folder = _currentDirectory;
+            if (folder.length == 0 || !directoryExists(folder))
+            {
+                _status.setText("Choose a folder.");
+                return;
+            }
+            if (onAccepted !is null) onAccepted(folder);
+            return;
+        }
         string candidate = _nameField.textUtf8();
         string path = candidate.length > 0 ? resolvePath(candidate) : _selectedPath;
         if (path.length == 0)
@@ -527,6 +577,65 @@ class FileDialogPanel : VBox
     {
         try return exists(path) && !isDir(path);
         catch (Exception) return false;
+    }
+
+    private static string userHome()
+    {
+        return environment.get("USERPROFILE", environment.get("HOME", getcwd()));
+    }
+
+    // A child of `parent` that exists, or "" when it does not. Used so a
+    // missing Downloads/Desktop folder degrades to the user profile rather than
+    // navigating somewhere invalid.
+    private static string existingChild(string parent, string name)
+    {
+        if (parent.length == 0) return "";
+        const candidate = buildPath(parent, name);
+        return directoryExists(candidate) ? candidate : "";
+    }
+
+    private static string desktopDirectory()
+    {
+        version (Windows)
+        {
+            const resolved = knownFolderPath(CSIDL_DESKTOPDIRECTORY);
+            if (resolved.length > 0) return resolved;
+        }
+        const fallback = existingChild(userHome(), "Desktop");
+        return fallback.length > 0 ? fallback : userHome();
+    }
+
+    private static string documentsDirectory()
+    {
+        version (Windows)
+        {
+            const resolved = knownFolderPath(CSIDL_PERSONAL);
+            if (resolved.length > 0) return resolved;
+        }
+        const fallback = existingChild(userHome(), "Documents");
+        return fallback.length > 0 ? fallback : userHome();
+    }
+
+    private static string downloadsDirectory()
+    {
+        const resolved = existingChild(userHome(), "Downloads");
+        return resolved.length > 0 ? resolved : userHome();
+    }
+
+    private static string thisPcPath()
+    {
+        const root = rootName(getcwd());
+        return root.length > 0 ? root : "/";
+    }
+
+    version (Windows)
+    private static string knownFolderPath(int csidl)
+    {
+        wchar[MAX_PATH] buffer;
+        if (SHGetFolderPathW(null, csidl, null, 0, buffer.ptr) != 0) return "";
+        size_t length = 0;
+        while (length < MAX_PATH && buffer[length] != 0) ++length;
+        return toUTF8(buffer[0 .. length]);
     }
 
     private static bool entryLess(FileDialogEntry a, FileDialogEntry b)

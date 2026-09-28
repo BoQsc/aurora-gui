@@ -5107,6 +5107,30 @@ private final class ModelContextButton : Button
     }
 }
 
+/// Toolbar button that also reports right-clicks, so a primary action can
+/// expose secondary actions (for example an update check) from a context menu
+/// instead of a second toolbar button.
+private final class ContextMenuButton : Button
+{
+    void delegate(Point) onContextMenuRequested;
+
+    this(string text = "", IconKind icon = IconKind.none)
+    {
+        super(text, icon);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (enabled() && event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
 private final class ContextUsageBadge : Widget
 {
     void delegate(bool open) onHoverChanged;
@@ -8213,15 +8237,28 @@ public final class OpenCodeRoot : VBox
         settingsButton.onClick = delegate() { showSettingsDialog(); };
 
         // Rebuild the package with DUB and relaunch. The window closes first so
-        // DUB can overwrite the running .exe.
+        // DUB can overwrite the running .exe. Only offered when this build sits
+        // inside Aurora's own source package, since only then is there a recipe
+        // to build. A build that can rebuild does not need its own update
+        // button, so the update check moves onto this button's context menu.
         if (canSelfRebuild())
         {
-            auto rebuildButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
+            auto rebuildButton = toolbar.add(new ContextMenuButton("Rebuild",
+                IconKind.refresh));
             rebuildButton.setId("oc-rebuild");
             rebuildButton.onClick = delegate() { requestRebuild(); };
+            rebuildButton.onContextMenuRequested = delegate(Point position)
+            {
+                ContextMenuItem[] items;
+                items ~= ContextMenuItem.command("Check update", IconKind.refresh,
+                    delegate() { requestUpdate(); });
+                showContextMenu(rebuildButton, position, items);
+            };
         }
         else
         {
+            // Install a published release on demand: check the update channel
+            // and, when a newer EXE is available, install it on a second click.
             _updateButton = toolbar.add(new Button("Check update", IconKind.refresh));
             _updateButton.setId("oc-update");
             _updateButton.onClick = delegate() { requestUpdate(); };
@@ -8729,82 +8766,54 @@ public final class OpenCodeRoot : VBox
         _input.requestFocus();
     }
 
+    // "New project" is a one-step flow: click the button, pick an existing
+    // folder in the system folder dialog, and the project is created from it.
+    // The project name is the folder's own name, so there is nothing to type.
     private void showNewProjectDialog()
     {
         if (_activePopup !is null) _activePopup.dismiss();
 
-        auto content = new VBox(8, Insets(16));
-        content.layoutHints().preferredWidth = 400;
+        FileDialogOptions options;
+        options.mode = FileDialogMode.open;
+        options.selectFolders = true;
+        options.title = "Select a project folder";
+        options.acceptLabel = "Select Folder";
 
-        auto title = content.add(new Label("New project"));
-        title.setPixelSize(opencodeFontTitle);
-
-        auto nameLabel = content.add(new Label("Name"));
-        nameLabel.setScale(1);
-        nameLabel.setColor(opencodeMuted);
-        auto nameField = content.add(new TextField(""));
-        nameField.setId("oc-project-name");
-        nameField.setPlaceholder("My project");
-
-        auto pathLabel = content.add(new Label("Folder"));
-        pathLabel.setScale(1);
-        pathLabel.setColor(opencodeMuted);
-        auto pathField = content.add(new TextField(""));
-        pathField.setId("oc-project-path-input");
-        pathField.setPlaceholder("C:\\path\\to\\folder");
-
-        auto errorLabel = content.add(new Label(""));
-        errorLabel.setScale(1);
-        errorLabel.setColor(opencodeErrorRed);
-
-        auto footer = new HBox(8);
-        footer.layoutHints().preferredHeight = 36;
-        footer.add(new Spacer());
-        auto cancel = footer.add(new Button("Cancel"));
-        cancel.setId("oc-project-cancel");
-        cancel.onClick = delegate() { dismissPopup(); };
-        auto create = footer.add(new Button("Create"));
-        create.setId("oc-project-create");
-        create.setAccent(true);
-        create.onClick = delegate()
+        showFileDialog(this, options, delegate(string folder)
         {
-            const name = nameField.textUtf8().strip();
-            const path = pathField.textUtf8().strip();
-            if (name.length == 0)
+            createProjectFromFolder(folder);
+        });
+    }
+
+    // Create (or re-focus) a project for an existing folder. A folder that is
+    // already a project is simply selected, so re-picking it never duplicates
+    // an entry or discards its conversations.
+    private void createProjectFromFolder(string folder)
+    {
+        const path = folder.strip();
+        if (path.length == 0) return;
+        foreach (index, ref project; _projectState.projects)
+        {
+            if (project.path == path)
             {
-                errorLabel.setText("Give the project a name.");
+                selectProject(cast(int) index);
+                updateStatus("Switched to project " ~ project.name ~ ".");
                 return;
             }
-            if (path.length == 0)
-            {
-                errorLabel.setText("Pick a folder.");
-                return;
-            }
-            Project project;
-            project.id = newProjectId();
-            project.name = name;
-            project.path = path;
-            ensureProjectDirectory(project);
-            _projectState.projects ~= project;
-            _projectState.activeId = project.id;
-            saveProjects(_projectState);
-            dismissPopup();
-            updateProjectRail();
-            updateSessionsHeader();
-            syncCurrentToActiveProject();
-            updateSessionList(false);
-            updateStatus("Created project " ~ name ~ ".");
-        };
-
-        content.add(footer);
-
-        auto popup = new PopupOverlay(content, this);
-        popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(420, 300));
-        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
-        popup.onDismissed = delegate() { _activePopup = null; };
-        openPopup(popup);
-        nameField.requestFocus();
+        }
+        Project project;
+        project.id = newProjectId();
+        project.name = projectNameFromPath(path);
+        project.path = path;
+        ensureProjectDirectory(project);
+        _projectState.projects ~= project;
+        _projectState.activeId = project.id;
+        saveProjects(_projectState);
+        updateProjectRail();
+        updateSessionsHeader();
+        syncCurrentToActiveProject();
+        updateSessionList(false);
+        updateStatus("Created project " ~ project.name ~ ".");
     }
 
     private void showProjectContextMenu(int index, Point globalPosition)
@@ -19271,6 +19280,13 @@ public final class OpenCodeRoot : VBox
     public void openNewProjectDialogForTesting()
     {
         showNewProjectDialog();
+    }
+
+    /// Test-only: run the folder -> project step the folder dialog drives,
+    /// without opening the modal dialog itself.
+    public void createProjectFromFolderForTesting(string folder)
+    {
+        createProjectFromFolder(folder);
     }
 
     /// Test-only: create a project directly (bypassing the dialog).

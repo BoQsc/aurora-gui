@@ -2212,21 +2212,15 @@ int main(string[] args)
     assert(driver.paint(), "Rail toggle did not repaint");
     writeln("Project rail collapses to icon width and persists its state");
 
-    // Create a project through the real dialog.
-    root.openNewProjectDialogForTesting();
-    root.tickTree(0.02);
-    assert(driver.paint(), "New project dialog did not paint");
-    auto projectName = requireWidget!TextField(root, "oc-project-name");
-    auto projectPath = requireWidget!TextField(root, "oc-project-path-input");
+    // Create a project by picking a folder: "New project" opens a folder
+    // dialog and the project is named from the chosen folder, so nothing is
+    // typed. The dialog's folder -> project step is exercised here directly.
     const projectDir = buildPath(stateDir, "proj-one");
-    projectName.setText("proj-one");
-    projectPath.setText(projectDir);
+    root.createProjectFromFolderForTesting(projectDir);
     root.tickTree(0.02);
-    driver.click(globalCenter(requireWidget!Button(root, "oc-project-create")));
-    root.tickTree(0.02);
-    assert(driver.paint(), "New project dialog did not paint after create");
+    assert(driver.paint(), "New project did not paint after create");
     assert(root.projectCountForTesting() == 2,
-        "The dialog did not create the project");
+        "The folder pick did not create the project");
     assert(projects.items().length == 2, "Rail did not gain a tile");
     assert(root.activeProjectNameForTesting() == "proj-one",
         "The new project should become active");
