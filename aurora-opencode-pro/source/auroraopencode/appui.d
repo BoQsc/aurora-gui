@@ -4174,6 +4174,19 @@ private final class ToolGroupBubble : Widget
     // and flips to the past tense once every tool has reported back.
     private bool _live;
 
+    // Optional trailing action pill (Regenerate / Continue). An interrupted
+    // turn whose tip is a tool result has its resume affordance hosted here
+    // instead of on the earlier assistant reply, so the pill is the last row
+    // of the transcript rather than sitting above this group.
+    private string _actionLabel;
+    private void delegate() _actionCallback;
+    private bool _actionHover;
+    private Rect _actionRect;
+    private string _secondaryActionLabel;
+    private void delegate() _secondaryActionCallback;
+    private bool _secondaryActionHover;
+    private Rect _secondaryActionRect;
+
     // Optional persistence key so an expanded group stays expanded across the
     // many column rebuilds that happen while a reply streams.
     string collapseKey;
@@ -4243,6 +4256,100 @@ private final class ToolGroupBubble : Widget
         if (_live == value) return;
         _live = value;
         invalidate();
+    }
+
+    /// Host the resume affordance on this group (see `_actionLabel`).
+    void setAction(string label, void delegate() callback)
+    {
+        _actionLabel = label;
+        _actionCallback = callback;
+        invalidate();
+    }
+
+    void setSecondaryAction(string label, void delegate() callback)
+    {
+        _secondaryActionLabel = label;
+        _secondaryActionCallback = callback;
+        invalidate();
+    }
+
+    void clearAction()
+    {
+        if (_actionLabel.length == 0 && _actionCallback is null &&
+            _secondaryActionLabel.length == 0 &&
+            _secondaryActionCallback is null) return;
+        _actionLabel = "";
+        _actionCallback = null;
+        _actionHover = false;
+        _secondaryActionLabel = "";
+        _secondaryActionCallback = null;
+        _secondaryActionHover = false;
+        invalidate();
+    }
+
+    private bool hasAction() const
+    {
+        return _actionLabel.length > 0 && _actionCallback !is null;
+    }
+
+    /// Test-only: the resume-pill label hosted on this group ("" when none).
+    public string actionLabelForTesting() const
+    {
+        return hasAction() ? _actionLabel : "";
+    }
+
+    public string secondaryActionLabelForTesting() const
+    {
+        return _secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null ? _secondaryActionLabel : "";
+    }
+
+    public Rect actionBoundsForTesting() const { return _actionRect; }
+
+    /// The group's own header row bounds, so a test can assert the resume pill
+    /// sits below the tool row rather than above it.
+    public Rect headerBoundsForTesting() const { return _headerRect; }
+
+    /// Height below the header that the action pill reserves (0 when none).
+    private int actionReserve() const
+    {
+        return hasAction() ? 19 + 6 : 0;
+    }
+
+    /// Draw the trailing resume pill, mirroring `MessageBubble.drawActionPill`'s
+    /// geometry so the two read as the same control.
+    private void drawActionPill(ref Canvas canvas, int width, int height)
+    {
+        _actionRect = Rect.init;
+        _secondaryActionRect = Rect.init;
+        if (!hasAction()) return;
+        auto labelLayout = canvas.layoutText(toUTF32(_actionLabel), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont, 200, false);
+        const aw = maxInt(52, cast(int) labelLayout.width + 18);
+        _actionRect = Rect(padH, height - padV - 19, aw, 18);
+        canvas.fillRoundedRect(_actionRect, 9,
+            _actionHover ? opencodeAccent.withAlpha(150) : opencodeBorder);
+        canvas.drawTextInRect(_actionRect, toUTF32(_actionLabel),
+            _actionHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+        if (_secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null)
+        {
+            auto secondaryLayout = canvas.layoutText(
+                toUTF32(_secondaryActionLabel), 1, FontRole.ui,
+                cast(FontFace) theme().uiFont, 200, false);
+            const secondaryWidth = maxInt(46,
+                cast(int) secondaryLayout.width + 18);
+            _secondaryActionRect = Rect(_actionRect.right() + 6,
+                height - padV - 19, secondaryWidth, 18);
+            canvas.fillRoundedRect(_secondaryActionRect, 9,
+                _secondaryActionHover ? opencodeAccent.withAlpha(150) :
+                    opencodeBorder);
+            canvas.drawTextInRect(_secondaryActionRect,
+                toUTF32(_secondaryActionLabel),
+                _secondaryActionHover ? Color.rgb(255, 255, 255) : opencodeMuted,
+                1, HorizontalAlign.center, VerticalAlign.middle, true);
+        }
     }
 
     private int headerHeight()
@@ -4342,6 +4449,7 @@ private final class ToolGroupBubble : Widget
                 height += hint >= 0 ? hint : cast(double) part.bounds().height;
             }
         }
+        height += actionReserve();
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = cast(int) height;
         return Size(width, cast(int) height);
@@ -4424,10 +4532,24 @@ private final class ToolGroupBubble : Widget
                 canvas.drawLayout(Point(x, sy), elapsedLayout, opencodeMuted);
             }
         }
+        drawActionPill(canvas, innerWidth, cast(int) bounds().height);
     }
 
     override bool onMouseDown(ref Event event)
     {
+        if (_actionLabel.length > 0 && _actionCallback !is null &&
+            _actionRect.contains(event.position))
+        {
+            _actionCallback();
+            return true;
+        }
+        if (_secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null &&
+            _secondaryActionRect.contains(event.position))
+        {
+            _secondaryActionCallback();
+            return true;
+        }
         if (event.button == MouseButton.left &&
             _headerRect.contains(event.position))
         {
@@ -4436,6 +4558,22 @@ private final class ToolGroupBubble : Widget
             return true;
         }
         return false;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const overAction = hasAction() && _actionRect.contains(event.position);
+        const overSecondary = _secondaryActionLabel.length > 0 &&
+            _secondaryActionCallback !is null &&
+            _secondaryActionRect.contains(event.position);
+        if (overAction != _actionHover ||
+            overSecondary != _secondaryActionHover)
+        {
+            _actionHover = overAction;
+            _secondaryActionHover = overSecondary;
+            invalidate();
+        }
+        return overAction || overSecondary;
     }
 
     protected override void onMouseEnter()
@@ -5411,6 +5549,19 @@ private final class ChatScrollView : ScrollView
     private int _holdScrollY = -1;
     private int _lastMaxScroll = -1;
 
+    // Freshly inserted older history sits above the reader's position: the next
+    // layout shifts the viewport down by this many pixels so the row they were
+    // reading stays put instead of being shoved off-screen.
+    private int _anchorGrow;
+    // Near-top auto-load: reach the top of the transcript (where the collapsed
+    // older-message page begins) and the next page loads by itself. Fire once
+    // per arrival and re-arm only after the reader leaves the top zone, so a
+    // loaded page that still has room above can pull the following page too.
+    private bool _topNotified;
+    private static immutable int topLoadThreshold = 24;
+    // Invoked when the reader reaches the top of the transcript.
+    void delegate() onReachedTop;
+
     this(Widget content)
     {
         super(content);
@@ -5455,6 +5606,12 @@ private final class ChatScrollView : ScrollView
             return;
         }
         super.onLayout();
+        if (_anchorGrow != 0)
+        {
+            const delta = _anchorGrow;
+            _anchorGrow = 0;
+            setScrollY(scrollY() + delta);
+        }
         if (follow) setScrollY(maxScroll());
     }
 
@@ -5465,6 +5622,15 @@ private final class ChatScrollView : ScrollView
         // is back at the bottom; otherwise onLayout keeps snapping the
         // scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
+        // Reaching the top uncollapses the older messages: load the next page
+        // automatically instead of waiting for the loader button to be clicked.
+        if (scrollY() > topLoadThreshold)
+            _topNotified = false;
+        else if (!_topNotified)
+        {
+            _topNotified = true;
+            if (onReachedTop !is null) onReachedTop();
+        }
     }
 
     /// True when the reader has scrolled away from the auto-follow position and
@@ -5489,6 +5655,15 @@ private final class ChatScrollView : ScrollView
     void scrollUpForTesting(int pixels)
     {
         setScrollY(maxInt(0, scrollY() - maxInt(1, pixels)));
+    }
+
+    /// After the next content layout, shift the viewport down by `delta` pixels
+    /// so older messages inserted above the reader's position stay anchored
+    /// (used when the next history page loads as the reader reaches the top).
+    void anchorAfterTopInsert(int delta)
+    {
+        if (delta <= 0) return;
+        _anchorGrow += delta;
     }
 }
 
@@ -6785,6 +6960,12 @@ private final class ConversationRuntime
     string compactionOutput;
     string compactionAnchor;
     string compactionLeaf;
+    OpenCodeClient titleClient;
+    OpenCodeEvent[] titleEvents;
+    string titleOutput;
+    string titleSessionId;
+    bool titlePending;
+    int titleAttempts;
     ToolCancellation cancellation;
     OpenCodeEvent[] eventScratch;
     ulong activeRequestId;
@@ -8192,6 +8373,11 @@ public final class OpenCodeRoot : VBox
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
+        // Auto-load: scrolling up to the top of the transcript (where the
+        // collapsed older-message page begins) pulls in the next page instead
+        // of forcing a click on the "Load older messages" button.
+        _messagesScroll.onReachedTop = delegate() { loadOlderHistory(); };
+
         // Welcome overlay lives inside the transcript viewport (so it scrolls
         // with nothing and never competes with the message column's layout) and
         // is painted above it. It is hidden as soon as the conversation has a
@@ -9120,6 +9306,36 @@ public final class OpenCodeRoot : VBox
     /// publish its measured size (see `TurnNest`).
     private static immutable int toolNestIndent = 0;
 
+    /// Load one more page of older history into the transcript. Drives both the
+    /// "Load N older messages" button and the auto-loader that fires when the
+    /// reader scrolls up to the collapsed older-message region. The newly
+    /// inserted messages are anchored so the row being read stays put.
+    private void loadOlderHistory()
+    {
+        if (_current < 0) return;
+        const count = activeMessagePath(_sessions[_current]).length;
+        if (count <= _visibleMessageLimit) return;
+        const before = transcriptContentHeight();
+        _visibleMessageLimit += messageHistoryPageSize;
+        rebuildMessageColumn();
+        const after = transcriptContentHeight();
+        if (after > before && _messagesScroll !is null)
+            _messagesScroll.anchorAfterTopInsert(after - before);
+        if (_messagesScroll !is null) _messagesScroll.invalidate();
+    }
+
+    /// Measured height of the transcript's content at the viewport width,
+    /// mirroring ScrollView's own measure so the delta from adding older
+    /// messages above the reader is exact.
+    private int transcriptContentHeight()
+    {
+        if (_messagesScroll is null) return 0;
+        auto content = _messagesScroll.content();
+        if (content is null) return 0;
+        return content.measure(Size(maxInt(0, _messagesScroll.bounds().width),
+            int.max)).height;
+    }
+
     private void rebuildMessageColumn()
     {
         // A full message-column rebuild is the heaviest thing the UI does and
@@ -9158,9 +9374,7 @@ public final class OpenCodeRoot : VBox
                 " older messages");
             older.onClick = delegate()
             {
-                _visibleMessageLimit += messageHistoryPageSize;
-                rebuildMessageColumn();
-                _messagesScroll.invalidate();
+                loadOlderHistory();
             };
             _messageColumn.add(older);
         }
@@ -10176,6 +10390,13 @@ public final class OpenCodeRoot : VBox
         bool pillApplied;
         foreach (child; children)
         {
+            // A tool group can host the resume pill (see the fallback below), so
+            // clear it on every refresh before it is re-derived.
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                group.clearAction();
+                continue;
+            }
             auto bubble = cast(MessageBubble) child;
             if (bubble is null) continue;
             // A pending prompt's own "Send now" pill is bound when the bubble is
@@ -10214,14 +10435,14 @@ public final class OpenCodeRoot : VBox
         }
         // Resume affordance for an interrupted turn: when the tip is not a
         // reply (the turn died during a tool round, so the leaf is a tool
-        // result or a tool-call wrapper), put the pill on the last real reply
-        // on the active path. Continue appends at the current tip, so it keeps
-        // every tool result below that reply; Regenerate reruns from the
-        // prompt as usual. A long single agent turn can leave EVERY assistant
-        // message on the path as a tool-call wrapper (no prose reply at all),
-        // so when no real reply exists the tip-most visible assistant turn
-        // carries the pill instead — otherwise such a chat warned "needs
-        // continue" in the sidebar but offered no way to resume.
+        // result or a tool-call wrapper), the tip tool group hosts the pill so
+        // Continue/Regenerate are the last row of the transcript. The last real
+        // reply on the active path supplies the target message for Regenerate;
+        // Continue appends at the current tip. A long single agent turn can
+        // leave EVERY assistant message on the path as a tool-call wrapper (no
+        // prose reply at all), so the tip-most visible assistant turn supplies
+        // the target instead — otherwise such a chat warned "needs continue" in
+        // the sidebar but offered no way to resume.
         if (!pillApplied && !turnBusy && sessionTurnIncomplete(_current))
         {
             auto onPath = new bool[](session.messages.length);
@@ -10257,10 +10478,29 @@ public final class OpenCodeRoot : VBox
             }
             if (resumable !is null)
             {
-                resumable.setAction("Regenerate",
-                    regenerateAction(_current, resumableIndex));
-                resumable.setSecondaryAction("Continue",
-                    continueAction(_current, resumableIndex));
+                // The resume affordance belongs at the tip of the transcript.
+                // An interrupted tool round leaves that tip a tool group (the
+                // collapsed "Explored ..." row) below the assistant turn that
+                // requested it, so hosting the pill on that earlier reply put a
+                // tool row BELOW Regenerate/Continue. Host it on the tip group
+                // instead so the pill is the last row.
+                ToolGroupBubble tipGroup;
+                if (children.length > 0)
+                    tipGroup = cast(ToolGroupBubble) children[$ - 1];
+                if (tipGroup !is null)
+                {
+                    tipGroup.setAction("Regenerate",
+                        regenerateAction(_current, resumableIndex));
+                    tipGroup.setSecondaryAction("Continue",
+                        continueAction(_current, resumableIndex));
+                }
+                else
+                {
+                    resumable.setAction("Regenerate",
+                        regenerateAction(_current, resumableIndex));
+                    resumable.setSecondaryAction("Continue",
+                        continueAction(_current, resumableIndex));
+                }
             }
         }
     }
@@ -13323,6 +13563,187 @@ public final class OpenCodeRoot : VBox
             startChatRequest(sessionIndex, false);
     }
 
+    // Quick chat-name rewrite: one tiny, no-thinking request built from the
+    // opening user message. The seed is truncated and the reply is expected to
+    // be a few words, so the whole call costs a handful of tokens.
+    private static immutable int quickTitleSeedChars = 400;
+    private static immutable int quickTitleMaxChars = 60;
+    private static immutable int quickTitleMaxAttempts = 2;
+
+    /// Whether this is a conversation's opening turn (its first user message,
+    /// before any assistant reply). Internal task-state checkpoints are ignored.
+    private static bool openingTurn(const ref ChatSession session)
+    {
+        int users;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.internal) continue;
+            if (message.role == "assistant") return false;
+            if (message.role == "user") ++users;
+        }
+        return users == 1;
+    }
+
+    /// Ask for one optional name rewrite: mark it pending and try immediately,
+    /// so the name appears fast without waiting for the first reply.
+    private void scheduleQuickTitle(int sessionIndex)
+    {
+        if (!_settings.quickTitle) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null) return;
+        runtime.titlePending = true;
+        runtime.titleAttempts = 0;
+        tryQuickTitle(sessionIndex);
+    }
+
+    /// One attempt, only while pending and nothing is in flight. Each attempt
+    /// is a stateless request on its own client and routing key, so it never
+    /// interleaves with the live turn: no tools, no reasoning, one short prompt.
+    private void tryQuickTitle(int sessionIndex)
+    {
+        if (!_settings.quickTitle) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto session = &_sessions[sessionIndex];
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || !runtime.titlePending ||
+            runtime.titleClient !is null) return;
+        if (runtime.titleAttempts >= quickTitleMaxAttempts)
+        {
+            runtime.titlePending = false;
+            return;
+        }
+        string seed;
+        foreach (index; activeMessagePath(*session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                seed = message.content;
+                break;
+            }
+        }
+        seed = seed.strip();
+        if (seed.length == 0)
+        {
+            runtime.titlePending = false;
+            return;
+        }
+        if (seed.length > quickTitleSeedChars)
+            seed = seed[0 .. quickTitleSeedChars];
+        runtime.titleClient = new OpenCodeClient(_settings.baseUrl,
+            activeApiKey(_settings));
+        runtime.titleClient.setOpenCodeSession(
+            sessionRoutingKey(*session) ~ "-title");
+        runtime.titleSessionId = session.id;
+        runtime.titleOutput = "";
+        ++runtime.titleAttempts;
+        ChatRequestMessage instruction;
+        instruction.role = "system";
+        instruction.content = "Reply with only a short title for this chat: " ~
+            "at most six words, no quotes, no trailing punctuation, no " ~
+            "explanation.";
+        ChatRequestMessage request;
+        request.role = "user";
+        request.content = seed;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
+            activeApiKey(_settings));
+        runtime.titleClient.startChatMessages([instruction, request],
+            null, session.model, false, requestId);
+    }
+
+    /// Apply a finished name rewrite: first line only, quotes and any leading
+    /// "title:" label stripped, length capped. Empty or errored output leaves
+    /// the rewrite pending for one more attempt once the turn is idle.
+    private void pollQuickTitle(int sessionIndex)
+    {
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || runtime.titleClient is null) return;
+        runtime.titleClient.drain(runtime.titleEvents);
+        bool finished;
+        bool succeeded;
+        foreach (event; runtime.titleEvents)
+        {
+            if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
+                runtime.titleOutput ~= event.text;
+            else if (event.kind == OpenCodeEventKind.done)
+            {
+                finished = true;
+                succeeded = !event.cancelled;
+                recordRequestTokenUsage(event.requestId, event.totalTokens,
+                    event.promptTokens, event.completionTokens);
+            }
+            else if (event.kind == OpenCodeEventKind.error)
+            {
+                finished = true;
+                _requestTokenKeyIds.remove(event.requestId);
+            }
+        }
+        runtime.titleEvents.length = 0;
+        if (!finished) return;
+        runtime.titleClient.closeSession();
+        runtime.titleClient = null;
+        const candidate = succeeded
+            ? cleanGeneratedTitle(runtime.titleOutput) : "";
+        runtime.titleOutput = "";
+        const sessionId = runtime.titleSessionId;
+        runtime.titleSessionId = "";
+        if (candidate.length == 0) return;
+        runtime.titlePending = false;
+        if (!_settings.quickTitle) return;
+        foreach (ref session; _sessions)
+            if (session.id == sessionId)
+            {
+                if (session.title != candidate)
+                {
+                    session.title = candidate;
+                    updateSessionList();
+                    markDirty();
+                }
+                break;
+            }
+    }
+
+    /// Retry a pending rewrite once the conversation is idle: a fast first
+    /// attempt can be rejected while the live turn holds the endpoint.
+    private void retryQuickTitle(int sessionIndex)
+    {
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || !runtime.titlePending ||
+            runtime.titleClient !is null) return;
+        if (runtime.busy()) return;
+        tryQuickTitle(sessionIndex);
+    }
+
+    private static string cleanGeneratedTitle(string raw)
+    {
+        import std.string : splitLines;
+        string value;
+        foreach (line; splitLines(raw))
+        {
+            const trimmed = line.strip();
+            if (trimmed.length > 0)
+            {
+                value = trimmed;
+                break;
+            }
+        }
+        if (value.length == 0) return "";
+        if (value.length > 6 && value[0 .. 6].toLower() == "title:")
+            value = value[6 .. $].strip();
+        while (value.length >= 2 &&
+            (value[0] == '"' || value[0] == '`' || value[0] == '\'') &&
+            value[$ - 1] == value[0])
+            value = value[1 .. $ - 1].strip();
+        if (value.length > quickTitleMaxChars)
+            value = value[0 .. quickTitleMaxChars].strip();
+        return value;
+    }
+
     private static bool applyModelCompactionSummary(ref ChatSession session,
         string anchor, string leaf, string output, int contextLimit)
     {
@@ -13770,6 +14191,10 @@ public final class OpenCodeRoot : VBox
         if (newCompactionNotice && _current == sessionIndex)
             rebuildMessageColumn();
         updateSendButton();
+        // Optional: give a brand-new conversation a rewritten name with one
+        // tiny, no-thinking request instead of echoing the first message.
+        if (userTurn && openingTurn(*session))
+            scheduleQuickTitle(sessionIndex);
     }
 
     /// Regenerate an assistant reply (or retry it when it failed): everything
@@ -15250,6 +15675,29 @@ public final class OpenCodeRoot : VBox
         };
         nestedRow.add(nestedCheck);
         optionsBody.add(nestedRow);
+
+        // Optional: rewrite a brand-new chat's name once with a tiny,
+        // no-thinking request instead of the raw first message. Off by default.
+        auto titleRow = new HBox(8);
+        titleRow.layoutHints().preferredHeight = 32;
+        auto titleCheck = new CheckBox("Quick chat-name rewrite");
+        titleCheck.setId("oc-quicktitle");
+        titleCheck.setChecked(_settings.quickTitle, false);
+        titleCheck.onChanged = delegate(bool value)
+        {
+            _settings.quickTitle = value;
+            saveSettingsNow();
+            // Apply immediately to the open chat so enabling is visible.
+            if (_current < 0) return;
+            if (value) scheduleQuickTitle(_current);
+            else
+            {
+                auto runtime = runtimeForSession(_current);
+                if (runtime !is null) runtime.titlePending = false;
+            }
+        };
+        titleRow.add(titleCheck);
+        optionsBody.add(titleRow);
 
         // Verbosity: an optional response-style selector for the agent's prose.
         // "Default" keeps the stock prompt; the smaller levels append a short
@@ -17904,6 +18352,8 @@ public final class OpenCodeRoot : VBox
             _processingRuntimeSession = cast(int) runtimeIndex;
             loadRuntime(cast(int) runtimeIndex);
         pollModelCompaction(cast(int) runtimeIndex);
+        pollQuickTitle(cast(int) runtimeIndex);
+        retryQuickTitle(cast(int) runtimeIndex);
         _client.drain(_eventScratch);
         _batchingToolResults = true;
         size_t eventIndex;
@@ -19343,6 +19793,57 @@ public final class OpenCodeRoot : VBox
         return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
     }
 
+    /// Test-only: the resume-pill label hosted on the transcript's tip widget.
+    /// An interrupted tool round hosts it on the tip tool group rather than on
+    /// the earlier assistant reply, so the pill is the last row ("" when none).
+    public string tipActionForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return "";
+        if (auto group = cast(ToolGroupBubble) children[$ - 1])
+            return group.actionLabelForTesting();
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? "" : bubble.actionLabelForTesting();
+    }
+
+    public string tipSecondaryActionForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return "";
+        if (auto group = cast(ToolGroupBubble) children[$ - 1])
+            return group.secondaryActionLabelForTesting();
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
+    }
+
+    /// Test-only: whether the transcript's tip widget is a tool group.
+    public bool tipIsToolGroupForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return false;
+        return cast(ToolGroupBubble) children[$ - 1] !is null;
+    }
+
+    /// Test-only: the tip tool group's resume-pill bounds (empty when none).
+    public Rect tipActionBoundsForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return Rect.init;
+        if (auto group = cast(ToolGroupBubble) children[$ - 1])
+            return group.actionBoundsForTesting();
+        return Rect.init;
+    }
+
+    /// Test-only: bounds of the tip tool group's own header row.
+    public Rect tipGroupHeaderBoundsForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return Rect.init;
+        if (auto group = cast(ToolGroupBubble) children[$ - 1])
+            return group.headerBoundsForTesting();
+        return Rect.init;
+    }
+
     /// Test-only: the last VISIBLE assistant bubble in the transcript (the
     /// resume pill may sit on it while the tip is a tool result). Null when no
     /// visible assistant turn exists.
@@ -19947,8 +20448,7 @@ public final class OpenCodeRoot : VBox
 
     public void loadOlderHistoryForTesting()
     {
-        _visibleMessageLimit += messageHistoryPageSize;
-        rebuildMessageColumn();
+        loadOlderHistory();
     }
 
     /// Test-only: settled turn-boundary labels in transcript order.

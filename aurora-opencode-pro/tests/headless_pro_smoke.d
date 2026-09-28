@@ -1647,9 +1647,22 @@ int main(string[] args)
         "initial history page did not cap materialized messages");
     assert(root.messageColumnVisualCountForTesting() == 121,
         "history page should contain one loader plus 120 messages");
-    root.loadOlderHistoryForTesting();
+    // Scrolling up to the top uncollapses the older messages on its own: the
+    // next page loads automatically instead of waiting for the loader click.
+    root.tickTree(0.02);
+    assert(driver.paint(), "Paging transcript paint failed");
+    root.scrollToForTesting(int.max);
+    root.tickTree(0.02);
+    assert(root.scrollYForTesting() > 0,
+        "paging transcript should be scrollable");
+    root.scrollTranscriptUpForTesting(1_000_000);
     assert(root.hiddenHistoryCountForTesting() == 10,
+        "scrolling up to the top did not auto-load older history");
+    // The explicit loader still advances the following page.
+    root.loadOlderHistoryForTesting();
+    assert(root.hiddenHistoryCountForTesting() == 0,
         "loading older history did not advance by one page");
+    root.tickTree(0.02);
     assert(root.requestMessagesForTesting().length == 250,
         "UI paging incorrectly removed stored/request history");
     writeln("Long transcripts render lazily without dropping history");
@@ -4052,12 +4065,23 @@ int main(string[] args)
         root.rebuildForTesting();
         assert(root.sessionIncompleteForTesting(interrupted),
             "the interrupted tool-round turn was not flagged as incomplete");
-        assert(root.lastAssistantBubbleActionForTesting() == "Regenerate",
+        // The resume pill is hosted on the transcript tip (the tool group),
+        // NOT on the earlier assistant reply, so it is the last row and no tool
+        // row renders below Regenerate/Continue.
+        assert(root.tipIsToolGroupForTesting(),
+            "the resume pill should be hosted on the tip tool group");
+        assert(root.tipActionForTesting() == "Regenerate",
             "an interrupted tool-round turn got no Regenerate pill: " ~
-            root.lastAssistantBubbleActionForTesting());
-        assert(root.lastAssistantBubbleSecondaryActionForTesting() == "Continue",
+            root.tipActionForTesting());
+        assert(root.tipSecondaryActionForTesting() == "Continue",
             "an interrupted tool-round turn got no Continue pill: " ~
-            root.lastAssistantBubbleSecondaryActionForTesting());
+            root.tipSecondaryActionForTesting());
+        assert(driver.paint(), "interrupted-turn repaint failed");
+        const resumePill = root.tipActionBoundsForTesting();
+        const resumeHeader = root.tipGroupHeaderBoundsForTesting();
+        assert(resumePill.height > 0 && resumeHeader.height > 0 &&
+            resumePill.y >= resumeHeader.y + resumeHeader.height,
+            "the resume pill must sit below the tip tool row, not above it");
         // Continue from that wrapper (its tip is a tool result) must be
         // accepted and append the continuation, keeping the tool results.
         const beforeResume = root.totalMessageCountForTesting();
@@ -4071,8 +4095,8 @@ int main(string[] args)
         // Once the turn is no longer incomplete the resume pill is gone again.
         root.setSessionTurnStatusForTesting(interrupted, "completed");
         root.rebuildForTesting();
-        assert(root.lastAssistantBubbleActionForTesting() == "" &&
-            root.lastAssistantBubbleSecondaryActionForTesting() == "",
+        assert(root.tipActionForTesting() == "" &&
+            root.tipSecondaryActionForTesting() == "",
             "a settled tool round kept the resume pill");
         writeln("An interrupted tool-round turn offers Continue/Regenerate");
     }

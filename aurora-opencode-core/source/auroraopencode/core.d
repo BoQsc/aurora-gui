@@ -951,6 +951,10 @@ public struct Settings
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
+    // On a brand-new chat, rewrite the name once with a tiny no-thinking
+    // request (a few tokens) instead of the raw first message. On by default;
+    // an existing OpenCode settings file can turn it off.
+    bool quickTitle = true;
     // Optional request targets scoped to the exact endpoint and model.
     ModelContextBudget[] contextBudgets;
     // Automatic request compaction is opt-in for each endpoint and model.
@@ -1249,6 +1253,9 @@ public Settings loadSettings()
                 if (auto found = "showWorkedFor" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.showWorkedFor = found.type == JSONType.true_;
+                if (auto found = "quickTitle" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.quickTitle = found.type == JSONType.true_;
                 if (auto found = "detachedPlan" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.detachedPlan = found.type == JSONType.true_;
@@ -1515,6 +1522,7 @@ public void saveSettings(const ref Settings settings)
     root["toolsEnabled"] = settings.toolsEnabled;
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
+    root["quickTitle"] = settings.quickTitle;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     JSONValue contextBudgets = JSONValue(string[].init);
