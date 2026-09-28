@@ -11467,6 +11467,21 @@ public final class OpenCodeRoot : VBox
     private void handleToolCalls(const OpenCodeEvent event)
     {
         _preparingToolCalls.length = 0;
+        // Some providers stream a tool call without an id, and a few reuse one
+        // id across calls in the same turn. The result ledger pairs each worker
+        // result back to its call by id, so an id-less or duplicated call would
+        // have its result silently dropped: the turn would never continue and
+        // its live rows would spin forever with no way to tell what is
+        // happening. Give every call a stable, unique id so each result always
+        // pairs back to the call that produced it.
+        OpenCodeToolCall[] calls = event.toolCalls.dup;
+        bool[string] seenCallIds;
+        foreach (index, ref call; calls)
+        {
+            if (call.id.length == 0 || call.id in seenCallIds)
+                call.id = "call_auto_" ~ to!string(index);
+            seenCallIds[call.id] = true;
+        }
         recordRequestTokenUsage(event.requestId, event.totalTokens,
             event.promptTokens, event.completionTokens);
         const sessionIndex = turnOwnerSessionIndex();
@@ -11477,7 +11492,7 @@ public final class OpenCodeRoot : VBox
         auto message = &session.messages[$ - 1];
         if (message.role != "assistant") return;
 
-        if (!_settings.toolsEnabled || event.toolCalls.length == 0)
+        if (!_settings.toolsEnabled || calls.length == 0)
         {
             message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
                 "⚠ The model requested tools, but tools are disabled.";
@@ -11486,7 +11501,7 @@ public final class OpenCodeRoot : VBox
             return;
         }
 
-        message.toolCalls = event.toolCalls.dup;
+        message.toolCalls = calls.dup;
         // The tool request ends this assistant reply (reasoning phase included)
         // but the user turn continues, so `finishAssistantMessage` never runs
         // between rounds. Save the provider's usage on this assistant message
@@ -11528,7 +11543,7 @@ public final class OpenCodeRoot : VBox
         // internal protocol recovery, never a reason to stop the user's task.
         if (_finalAnswerRequested)
         {
-            appendSkippedToolResults(*session, event.toolCalls,
+            appendSkippedToolResults(*session, calls,
                 "Tool call deferred while the provider was in a tool-free " ~
                 "recovery request; tool access is being restored automatically.");
             ChatMessage recovery;
@@ -11554,9 +11569,9 @@ public final class OpenCodeRoot : VBox
         // Suppress only a currently requested exact call that has already run
         // excessively. This prevents a hot loop without limiting the number of
         // distinct, productive calls a difficult task may need.
-        if (hasExhaustedRepeatedCall(*session, event.toolCalls))
+        if (hasExhaustedRepeatedCall(*session, calls))
         {
-            appendSkippedToolResults(*session, event.toolCalls,
+            appendSkippedToolResults(*session, calls,
                 "Tool call skipped: this exact call has already run " ~
                 to!string(cumulativeRepeatLimit) ~ " times in this " ~
                 "conversation. Tool access remains available for a different " ~
@@ -11585,7 +11600,7 @@ public final class OpenCodeRoot : VBox
         // Repeated calls still execute. On the third consecutive identical
         // batch, schedule a hidden note for the next model round so it can use
         // the fresh result while reconsidering its approach.
-        const signature = toolCallSignature(event.toolCalls);
+        const signature = toolCallSignature(calls);
         if (signature.length > 0 && signature == _lastToolSignature)
         {
             ++_lastToolRepeatCount;
@@ -11604,14 +11619,14 @@ public final class OpenCodeRoot : VBox
                 "next different action that advances the task.";
         }
 
-        const toolCount = event.toolCalls.length;
+        const toolCount = calls.length;
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
-        _pendingToolCalls = event.toolCalls.dup;
+        _pendingToolCalls = calls.dup;
         _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
-        _liveToolCalls = event.toolCalls.dup;
-        _pendingToolResults = cast(int) event.toolCalls.length;
+        _liveToolCalls = calls.dup;
+        _pendingToolResults = cast(int) calls.length;
         updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
         // Each running call already gets its own live row (or the aggregated
         // "Exploring" row for context tools), so the generic phase row is
