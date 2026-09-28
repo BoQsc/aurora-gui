@@ -45,8 +45,9 @@ import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
-import std.file : exists, getSize, isDir, isFile, fileRemove = remove,
-    mkdirRecurse, readText, rename, thisExePath, timeLastModified, write;
+import std.file : dirEntries, exists, getSize, isDir, isFile,
+    fileRemove = remove, mkdirRecurse, readText, rename, SpanMode, thisExePath,
+    timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
 import std.path : baseName, buildPath;
@@ -7603,6 +7604,7 @@ public final class OpenCodeRoot : VBox
         _settings = loadSettings();
         _projectState = loadProjects();
         migrateWorkspaceIntoProjects();
+        migrateLegacySandboxIntoNumberedFolder();
         foreach (project; _projectState.projects)
             ensureProjectDirectory(project);
         phase("settings/projects");
@@ -8308,7 +8310,7 @@ public final class OpenCodeRoot : VBox
         _newProjectButton = projectsColumn.add(
             new Button("New project", IconKind.newDocument));
         _newProjectButton.setId("oc-new-project");
-        _newProjectButton.onClick = delegate() { showNewProjectDialog(); };
+        _newProjectButton.onClick = delegate() { createSandboxProject(); };
 
         Insets sidebarPadding = Insets(8);
         // No right padding: the conversation list (and its scrollbar) must run
@@ -8350,6 +8352,13 @@ public final class OpenCodeRoot : VBox
         {
             const workspace = activeWorkspace();
             openFolderInExplorer(workspace.length > 0 ? workspace : ".");
+        };
+        auto changeFolderButton = titleRow.add(new IconButton(IconKind.open));
+        changeFolderButton.setId("oc-change-folder");
+        changeFolderButton.setFlat(true);
+        changeFolderButton.onClick = delegate()
+        {
+            showChangeProjectFolderDialog(activeProjectIndex());
         };
         titleRow.add(new Spacer());
         _sessionsPath = headerColumn.add(new Label(""));
@@ -8766,45 +8775,16 @@ public final class OpenCodeRoot : VBox
         _input.requestFocus();
     }
 
-    // "New project" is a one-step flow: click the button, pick an existing
-    // folder in the system folder dialog, and the project is created from it.
-    // The project name is the folder's own name, so there is nothing to type.
-    private void showNewProjectDialog()
+    // "New project" simply adds another numbered sandbox: the next free
+    // "sandbox N" folder under the sandbox root, with a matching name. There is
+    // nothing to pick here; to point a project at a real folder use the
+    // "Change folder" action instead.
+    private void createSandboxProject()
     {
         if (_activePopup !is null) _activePopup.dismiss();
-
-        FileDialogOptions options;
-        options.mode = FileDialogMode.open;
-        options.selectFolders = true;
-        options.title = "Select a project folder";
-        options.acceptLabel = "Select Folder";
-
-        showFileDialog(this, options, delegate(string folder)
-        {
-            createProjectFromFolder(folder);
-        });
-    }
-
-    // Create (or re-focus) a project for an existing folder. A folder that is
-    // already a project is simply selected, so re-picking it never duplicates
-    // an entry or discards its conversations.
-    private void createProjectFromFolder(string folder)
-    {
-        const path = folder.strip();
-        if (path.length == 0) return;
-        foreach (index, ref project; _projectState.projects)
-        {
-            if (project.path == path)
-            {
-                selectProject(cast(int) index);
-                updateStatus("Switched to project " ~ project.name ~ ".");
-                return;
-            }
-        }
-        Project project;
-        project.id = newProjectId();
-        project.name = projectNameFromPath(path);
-        project.path = path;
+        int number = 1;
+        while (sandboxFolderTaken(number)) ++number;
+        auto project = makeSandboxProject(number);
         ensureProjectDirectory(project);
         _projectState.projects ~= project;
         _projectState.activeId = project.id;
@@ -8813,7 +8793,102 @@ public final class OpenCodeRoot : VBox
         updateSessionsHeader();
         syncCurrentToActiveProject();
         updateSessionList(false);
+        if (_input !is null) _input.requestFocus();
         updateStatus("Created project " ~ project.name ~ ".");
+    }
+
+    /// True when "sandbox N" is already a project's folder or already exists on
+    /// disk, so "New project" never reuses a number.
+    private bool sandboxFolderTaken(int number)
+    {
+        const path = sandboxFolderPath(number);
+        foreach (project; _projectState.projects)
+            if (project.path == path) return true;
+        return exists(path);
+    }
+
+    // Repoint a project at a folder the user picks and rename it from that
+    // folder's own name, so the rail reflects the real project folder.
+    private void showChangeProjectFolderDialog(int index)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        if (_activePopup !is null) _activePopup.dismiss();
+
+        FileDialogOptions options;
+        options.mode = FileDialogMode.open;
+        options.selectFolders = true;
+        options.title = "Select the project folder";
+        options.acceptLabel = "Select Folder";
+
+        showFileDialog(this, options, delegate(string folder)
+        {
+            changeProjectFolder(index, folder);
+        });
+    }
+
+    // Point project `index` at `folder` and rename it from the folder name. A
+    // folder that already belongs to another project is simply selected, so
+    // re-picking it never duplicates an entry or discards its conversations.
+    private void changeProjectFolder(int index, string folder)
+    {
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return;
+        const path = folder.strip();
+        if (path.length == 0) return;
+        foreach (other, ref project; _projectState.projects)
+        {
+            if (cast(int) other == index || project.path != path) continue;
+            selectProject(cast(int) other);
+            updateStatus("Switched to project " ~ project.name ~ ".");
+            return;
+        }
+        auto project = &_projectState.projects[cast(size_t) index];
+        project.path = path;
+        project.name = projectNameFromPath(path);
+        ensureProjectDirectory(*project);
+        saveProjects(_projectState);
+        updateProjectRail();
+        updateSessionsHeader();
+        updateSessionList(false);
+        updateStatus("Project folder set to " ~ path ~ ".");
+    }
+
+    /// Older builds kept every sandbox file loose in the sandbox root. Move
+    /// those files into "sandbox 1" and point the default project at it, so
+    /// every project now lives in its own numbered folder.
+    private void migrateLegacySandboxIntoNumberedFolder()
+    {
+        size_t index = size_t.max;
+        foreach (i, project; _projectState.projects)
+        {
+            if (project.id == sandboxProjectId) { index = i; break; }
+        }
+        if (index == size_t.max) return;
+        auto project = &_projectState.projects[index];
+        const root = sandboxProjectPath();
+        if (project.path != root) return;
+        const target = sandboxFolderPath(1);
+        try
+        {
+            if (!exists(target)) mkdirRecurse(target);
+            if (exists(root) && isDir(root))
+            {
+                foreach (entry; dirEntries(root, SpanMode.shallow))
+                {
+                    if (entry.name == target) continue;
+                    const dest = buildPath(target, baseName(entry.name));
+                    if (exists(dest)) continue;
+                    rename(entry.name, dest);
+                }
+            }
+        }
+        catch (Exception error)
+            logError("failed to move legacy sandbox files: " ~ error.msg);
+        project.path = target;
+        project.name = sandboxFolderName(1);
+        ensureProjectDirectory(*project);
+        saveProjects(_projectState);
     }
 
     private void showProjectContextMenu(int index, Point globalPosition)
@@ -8826,6 +8901,8 @@ public final class OpenCodeRoot : VBox
         if (!isSandbox)
             items ~= ContextMenuItem.command("Rename", IconKind.settings,
                 delegate() { showRenameProjectDialog(index); });
+        items ~= ContextMenuItem.command("Change folder", IconKind.open,
+            delegate() { showChangeProjectFolderDialog(index); });
         items ~= ContextMenuItem.command("New chat here", IconKind.terminal,
             delegate()
             {
@@ -19292,16 +19369,17 @@ public final class OpenCodeRoot : VBox
         return _titleBar is null ? 0 : _titleBar.titleRect().width;
     }
 
-    public void openNewProjectDialogForTesting()
+    /// Test-only: run the "New project" action without pressing the button.
+    public void createSandboxProjectForTesting()
     {
-        showNewProjectDialog();
+        createSandboxProject();
     }
 
-    /// Test-only: run the folder -> project step the folder dialog drives,
-    /// without opening the modal dialog itself.
-    public void createProjectFromFolderForTesting(string folder)
+    /// Test-only: run the folder -> project step the "Change folder" dialog
+    /// drives, without opening the modal dialog itself.
+    public void changeProjectFolderForTesting(int index, string folder)
     {
-        createProjectFromFolder(folder);
+        changeProjectFolder(index, folder);
     }
 
     /// Test-only: create a project directly (bypassing the dialog).

@@ -1725,22 +1725,46 @@ unittest
 // ---------------------------------------------------------------------------
 
 public immutable string sandboxProjectId = "sandbox";
-public immutable string sandboxProjectName = "Sandbox";
 
-/// The standard sandbox folder: a dedicated directory under the app's state
-/// directory so a brand-new install always has a safe place to chat and run
-/// tools without touching any real project.
+/// The sandbox root: a directory under the app's state directory that holds one
+/// numbered folder per quick project ("sandbox 1", "sandbox 2", ...). Giving
+/// every quick project its own subfolder keeps a brand-new install's scratch
+/// space safe to run tools in and stops separate projects from mixing files.
 public string sandboxProjectPath()
 {
     return buildPath(opencodeStateDirectory(), "sandbox");
 }
 
+/// Folder name for sandbox number `n` (1-based): "sandbox 1", "sandbox 2", ...
+public string sandboxFolderName(int n)
+{
+    return "sandbox " ~ to!string(n);
+}
+
+/// Absolute path of the numbered sandbox folder `n`.
+public string sandboxFolderPath(int n)
+{
+    return buildPath(sandboxProjectPath(), sandboxFolderName(n));
+}
+
+/// The default project, which lives in sandbox folder 1.
 public Project makeSandboxProject()
 {
     Project project;
     project.id = sandboxProjectId;
-    project.name = sandboxProjectName;
-    project.path = sandboxProjectPath();
+    project.name = sandboxFolderName(1);
+    project.path = sandboxFolderPath(1);
+    return project;
+}
+
+/// A fresh numbered sandbox project ("sandbox N") with a generated id. The
+/// "New project" button uses this so a new project is simply a new sandbox.
+public Project makeSandboxProject(int number)
+{
+    Project project;
+    project.id = newProjectId();
+    project.name = sandboxFolderName(number);
+    project.path = sandboxFolderPath(number);
     return project;
 }
 
@@ -1789,9 +1813,10 @@ public ProjectState loadProjects()
                             if (project.id == sandboxProjectId)
                             {
                                 sandboxSeen = true;
-                                project.name = sandboxProjectName;
                                 if (project.path.length == 0)
-                                    project.path = sandboxProjectPath();
+                                    project.path = sandboxFolderPath(1);
+                                if (project.name.length == 0)
+                                    project.name = sandboxFolderName(1);
                             }
                             else if (project.name.length == 0)
                                 project.name = project.id;

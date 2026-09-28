@@ -2099,10 +2099,10 @@ int main(string[] args)
     const sandboxVisible = root.visibleSessionCountForTesting();
     assert(root.projectCountForTesting() == 1,
         "Expected only the sandbox project");
-    assert(root.projectNamesForTesting()[0] == "Sandbox",
-        "Sandbox must be the first project");
-    assert(root.activeProjectNameForTesting() == "Sandbox",
-        "Sandbox must be active by default");
+    assert(root.projectNamesForTesting()[0] == "sandbox 1",
+        "The default sandbox must be the first project");
+    assert(root.activeProjectNameForTesting() == "sandbox 1",
+        "The default sandbox must be active by default");
     assert(root.activeProjectPathForTesting().indexOf("sandbox") >= 0,
         "Sandbox folder should live under the state directory: " ~
         root.activeProjectPathForTesting());
@@ -2212,28 +2212,45 @@ int main(string[] args)
     assert(driver.paint(), "Rail toggle did not repaint");
     writeln("Project rail collapses to icon width and persists its state");
 
-    // Create a project by picking a folder: "New project" opens a folder
-    // dialog and the project is named from the chosen folder, so nothing is
-    // typed. The dialog's folder -> project step is exercised here directly.
-    const projectDir = buildPath(stateDir, "proj-one");
-    root.createProjectFromFolderForTesting(projectDir);
+    // "New project" adds a fresh numbered sandbox with no folder dialog:
+    // sandbox 1 is the default, so the first created project is sandbox 2 in
+    // its own folder under the sandbox root.
+    root.createSandboxProjectForTesting();
     root.tickTree(0.02);
     assert(driver.paint(), "New project did not paint after create");
     assert(root.projectCountForTesting() == 2,
-        "The folder pick did not create the project");
+        "The New project button did not create the project");
     assert(projects.items().length == 2, "Rail did not gain a tile");
-    assert(root.activeProjectNameForTesting() == "proj-one",
+    assert(root.activeProjectNameForTesting() == "sandbox 2",
         "The new project should become active");
     assert(root.visibleSessionCountForTesting() == 0,
         "A new project starts with no conversations");
-    assert(exists(projectDir), "Project folder was not created");
+    const sandboxFolder = root.activeProjectPathForTesting();
+    assert(sandboxFolder.indexOf("sandbox 2") >= 0 && exists(sandboxFolder),
+        "New project folder was not created under the sandbox root: " ~
+        sandboxFolder);
     auto projectTitleRow = requireWidget!Widget(root, "oc-project-title-row");
     auto projectTitle = requireWidget!Widget(root, "oc-project-title");
     auto openFolder = requireWidget!Widget(root, "oc-open-folder");
+    auto changeFolder = requireWidget!Widget(root, "oc-change-folder");
     assert(projectTitleRow.bounds().height > 0 &&
-        projectTitle.bounds().height > 0 && openFolder.bounds().height > 0,
-        "Project title row collapsed and hid its title/folder button");
+        projectTitle.bounds().height > 0 && openFolder.bounds().height > 0 &&
+        changeFolder.bounds().height > 0,
+        "Project title row collapsed and hid its title/folder buttons");
     writeln("Created project: ", root.activeProjectNameForTesting());
+
+    // The "Change folder" action repoints the project at a real folder and
+    // renames it from that folder's own name.
+    const projectDir = buildPath(stateDir, "proj-one");
+    root.changeProjectFolderForTesting(root.activeProjectIndexForTesting(),
+        projectDir);
+    root.tickTree(0.02);
+    assert(root.activeProjectNameForTesting() == "proj-one",
+        "Changing the folder should rename the project to the folder name");
+    assert(root.activeProjectPathForTesting() == projectDir,
+        "Changing the folder should repoint the project");
+    assert(exists(projectDir), "Project folder was not created");
+    writeln("Changed project folder: ", root.activeProjectNameForTesting());
 
     // New chats belong to the active project.
     root.newChatForTesting();
@@ -2248,8 +2265,8 @@ int main(string[] args)
     // Switching tiles swaps in that project's own conversation list.
     projects.onSelectionChanged(0);
     root.tickTree(0.02);
-    assert(root.activeProjectNameForTesting() == "Sandbox",
-        "Tile 0 must select the sandbox");
+    assert(root.activeProjectNameForTesting() == "sandbox 1",
+        "Tile 0 must select the default sandbox");
     assert(root.visibleSessionCountForTesting() == sandboxVisible,
         "Sandbox did not restore its own conversations");
     projects.onSelectionChanged(1);
@@ -2522,7 +2539,7 @@ int main(string[] args)
     root.removeProjectForTesting(1);
     root.tickTree(0.02);
     assert(root.projectCountForTesting() == 1, "Project was not removed");
-    assert(root.activeProjectNameForTesting() == "Sandbox",
+    assert(root.activeProjectNameForTesting() == "sandbox 1",
         "Removing the active project should fall back to the sandbox");
     projects.onSelectionChanged(0);
     root.tickTree(0.02);
