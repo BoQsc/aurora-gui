@@ -2170,6 +2170,38 @@ int main(string[] args)
         writeln("Dragging a pinned conversation below the divider unpins it");
     }
 
+    // While a conversation is dragged, a cursor-following ghost names the row
+    // under the pointer, sits at the pointer, and disappears on release.
+    {
+        const rowH = sessions.rowHeight();
+        const rowCount = cast(int) sessions.items().length;
+        int visibleRows = cast(int) sessions.bounds().height / rowH;
+        if (visibleRows < 2) visibleRows = 2;
+        int srcRow = visibleRows - 2;
+        if (srcRow > rowCount - 1) srcRow = rowCount - 1;
+        assert(srcRow >= 0, "Need a visible conversation row to drag");
+        const title = sessions.items()[cast(size_t) srcRow].text;
+        const from = sessions.localToGlobal(
+            Point(20, srcRow * rowH + rowH / 2));
+        dismissTransientPopups(root);
+        root.tickTree(0.02);
+        // Press and move past the drag threshold so the drag is in flight.
+        driver.moveTo(from);
+        driver.mouseDown();
+        const cursor = Point(from.x + 10, from.y - 6);
+        driver.moveTo(cursor);
+        assert(root.sessionDragGhostForTesting().length > 0,
+            "Dragging a conversation should show a cursor-following ghost");
+        assert(toUTF32(root.sessionDragGhostForTesting()) == title,
+            "The drag ghost should name the dragged conversation");
+        assert(root.sessionDragGhostPositionForTesting() == cursor,
+            "The drag ghost should sit at the pointer");
+        driver.mouseUp();
+        assert(root.sessionDragGhostForTesting().length == 0,
+            "The drag ghost should vanish when the drag ends");
+        writeln("Dragging a conversation shows a cursor-following ghost");
+    }
+
     // The merged custom titlebar owns the top band and the project rail starts
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),

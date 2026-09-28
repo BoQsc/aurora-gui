@@ -6389,6 +6389,10 @@ private final class SessionDragGhost : Widget
     bool active() const @safe pure nothrow @nogc { return _active; }
     string titleForTesting() const { return toUTF8(_title.idup); }
     string actionForTesting() const { return toUTF8(_action.idup); }
+    Point positionForTesting() const @safe pure nothrow @nogc
+    {
+        return _position;
+    }
 
     /// Pointer-following label. `position` is window-local, matching Aurora's
     /// window-relative pointer coordinates and the overlay's paint space.
@@ -6875,6 +6879,12 @@ public final class SessionListView : ListView
         onDragGhost(true, toUTF8(title), action, globalPosition);
     }
 
+    /// Hide the root's cursor-following ghost once the drag is over.
+    private void hideDragGhost()
+    {
+        if (onDragGhost !is null) onDragGhost(false, "", "", _pressPosition);
+    }
+
     override void onMouseLeave()
     {
         _hoverRow = -1;
@@ -6925,6 +6935,7 @@ public final class SessionListView : ListView
         _dragIntent = DragIntent.none;
         _pressRow = -1;
         releaseMouse();
+        if (wasDragging) hideDragGhost();
         if (wasDragging && intent != DragIntent.none && row >= 0 &&
             onPinDropRequested !is null)
             onPinDropRequested(row, intent == DragIntent.pin);
@@ -7160,6 +7171,7 @@ public final class OpenCodeRoot : VBox
     private IconButton _railToggle;
     private OpenCodeTitleBar _titleBar;
     private TitleBarSnapPreview _snapPreview;
+    private SessionDragGhost _dragGhost;
     private SplitPane _sessionsSplit;
     private Label _sessionsHeader;
     private IconButton _openFolderButton;
@@ -8711,6 +8723,23 @@ public final class OpenCodeRoot : VBox
         _snapPreview.layoutHints().overlayFillParent = true;
         _snapPreview.layoutHints().allowOverflow = true;
         _titleBar.setSnapPreview(_snapPreview);
+
+        // Cursor-following drag ghost: a window-local overlay added last, so it
+        // paints above every pane. Dragging a conversation toward the pinned
+        // section hands it the row title and the pending action; it rides under
+        // the pointer even after the drag leaves the sidebar, and hides on
+        // release. Paint-only, so it cannot disturb the list's captured drag.
+        _dragGhost = add(new SessionDragGhost());
+        _dragGhost.setId("oc-drag-ghost");
+        _dragGhost.layoutHints().excludeFromLayout = true;
+        _dragGhost.layoutHints().overlayFillParent = true;
+        _dragGhost.layoutHints().allowOverflow = true;
+        _sessionList.onDragGhost = delegate(bool active, string title,
+            string action, Point position)
+        {
+            if (active) _dragGhost.showAt(title, action, position);
+            else _dragGhost.hide();
+        };
 
         applyProjectsRailState();
     }
@@ -19350,6 +19379,27 @@ public final class OpenCodeRoot : VBox
     public string sessionRowStatusForTesting() const
     {
         return _sessionList is null ? "" : _sessionList.rowStatusForTesting();
+    }
+
+    /// Test-only: the cursor-following drag ghost's title while a conversation
+    /// drag is in flight, or "" when no ghost is showing.
+    public string sessionDragGhostForTesting() const
+    {
+        if (_dragGhost is null || !_dragGhost.active()) return "";
+        return _dragGhost.titleForTesting();
+    }
+
+    /// Test-only: the drag ghost's action suffix ("Pin"/"Unpin"/"").
+    public string sessionDragGhostActionForTesting() const
+    {
+        return _dragGhost is null ? "" : _dragGhost.actionForTesting();
+    }
+
+    /// Test-only: the window-local point the drag ghost is following.
+    public Point sessionDragGhostPositionForTesting() const
+    {
+        return _dragGhost is null ? Point.init
+            : _dragGhost.positionForTesting();
     }
 
     /// Test-only: the row index the pinned/unpinned divider sits above, or -1
