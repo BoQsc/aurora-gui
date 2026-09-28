@@ -64,6 +64,16 @@ version (Windows)
 }
 
 // ---------------------------------------------------------------------------
+// Diff presentation palette (pro-only): a file edit renders as a recessed
+// rounded card so a changed file reads as one object instead of a run of loose
+// lines. A receded line-number gutter, a hairline divider, a coloured sign and
+// left accent bar per change kind, a tinted band for changed lines, and an
+// accent band for `@@` hunks.
+private immutable Color diffPanelBg = Color.fromHex(0x0e1014);
+private immutable Color diffPanelEdge = Color.fromHex(0x272730);
+private immutable Color diffGutterText = Color.fromHex(0x70707f);
+private immutable Color diffHunkBand = Color.fromHex(0x1b1a2b);
+
 // Pro-only platform helpers: clipboard, external links, timestamps
 // ---------------------------------------------------------------------------
 
@@ -406,11 +416,15 @@ private final class MessageBubble : Widget
         ToolLineKind kind;
         int oldNo;
         int newNo;
-        // The fully composed row text (line numbers + sign + body). Shaped
-        // lazily and cached in `layout`; only rows that are actually visible
-        // are ever shaped, so expanding a huge output stays instant.
-        string visible;
-        TextLayout layout;
+        // The line-number gutter (`"  12   13"`) and the row body are kept
+        // apart so each can be tinted independently: the numbers recede, the
+        // sign takes the change colour and the code stays readable. Both are
+        // shaped lazily and cached; only rows actually on screen are shaped,
+        // so expanding a huge output stays instant.
+        string gutter;
+        string body;
+        TextLayout gutterLayout;
+        TextLayout bodyLayout;
     }
     private ToolLine[] _toolLines;
     private size_t _toolLinesGen;
@@ -419,6 +433,12 @@ private final class MessageBubble : Widget
     private int _toolLinesHeight;
     private double _toolLineHeight;
     private static immutable int maxRenderedToolLines = 600;
+    // Cached single-glyph layouts and the monospace advance, so painting a body
+    // row does not re-shape the sign (`+`/`-`) or re-measure a character on
+    // every frame.
+    private TextLayout _signAddLayout;
+    private TextLayout _signDelLayout;
+    private int _monoAdvance;
 
     // Thinking/reasoning block: collapsed into a slim header by default (like
     // the original opencode app), with a pulsing "Thinking…" indicator while
@@ -1473,7 +1493,8 @@ private final class MessageBubble : Widget
                 1, FontRole.monospace, null, 200, false);
             delLayout = canvas.layoutText(toUTF32("-" ~ to!string(_diffDeletions)),
                 1, FontRole.monospace, null, 200, false);
-            statsWidth = cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+            statsWidth = cast(int) addLayout.width + 12 + 4 +
+                cast(int) delLayout.width + 12;
         }
         const elapsedText = _toolElapsedMs > 0
             ? formatElapsedMs(_toolElapsedMs) : "";
@@ -1481,7 +1502,7 @@ private final class MessageBubble : Widget
         {
             elapsedLayout = canvas.layoutText(toUTF32(elapsedText), 1,
                 FontRole.monospace, null, 200, false);
-            if (statsWidth > 0) statsWidth += 8;
+            if (statsWidth > 0) statsWidth += 6;
             statsWidth += cast(int) elapsedLayout.width;
         }
 
@@ -1500,25 +1521,34 @@ private final class MessageBubble : Widget
         if (statsWidth > 0)
         {
             // Place the stats directly after the tool text so they sit next to
-            // the message instead of the far right edge: the green/red `+N -M`
-            // counters and the wall-clock duration. `TextLayout` is a class, so
-            // an unassigned one is null - test for presence, never `.width > 0`.
+            // the message instead of the far right edge. The green/red `+N -M`
+            // counters render as small tinted pills; the wall-clock duration
+            // trails them in muted text. `TextLayout` is a class, so an
+            // unassigned one is null - test for presence, never `.width > 0`.
             int x = padH + cast(int) layout.width + 8;
             // Align the counters/timer on the header label's baseline: the
             // monospace line box is taller than the UI label's, so centring
             // each by its own box height left the stats slightly high.
             const sy = cast(int)(top + layout.lines[0].baseline -
                 firstBaseline(addLayout !is null ? addLayout : elapsedLayout));
+            const chipH = maxInt(12, h - 4);
+            const chipY = top + (h - chipH) / 2;
             if (addLayout !is null)
             {
-                canvas.drawLayout(Point(x, sy), addLayout, opencodeDiffAdd);
-                canvas.drawLayout(Point(x + cast(int) addLayout.width + 8, sy),
-                    delLayout, opencodeDiffDelete);
-                x += cast(int) addLayout.width + 8 + cast(int) delLayout.width;
+                const addW = cast(int) addLayout.width + 12;
+                canvas.fillRoundedRect(Rect(x, chipY, addW, chipH), chipH / 2,
+                    opencodeDiffAdd.withAlpha(34));
+                canvas.drawLayout(Point(x + 6, sy), addLayout, opencodeDiffAdd);
+                x += addW + 4;
+                const delW = cast(int) delLayout.width + 12;
+                canvas.fillRoundedRect(Rect(x, chipY, delW, chipH), chipH / 2,
+                    opencodeDiffDelete.withAlpha(34));
+                canvas.drawLayout(Point(x + 6, sy), delLayout, opencodeDiffDelete);
+                x += delW;
             }
             if (elapsedLayout !is null)
             {
-                if (addLayout !is null) x += 8;
+                if (addLayout !is null) x += 6;
                 canvas.drawLayout(Point(x, sy), elapsedLayout, opencodeMuted);
             }
         }
@@ -1597,7 +1627,6 @@ private final class MessageBubble : Widget
         {
             if (emitted >= maxRenderedToolLines) break;
             ToolLine line;
-            string text = raw;
             if (_hasDiff)
             {
                 if (raw.length > 0 && raw[0] == '@')
@@ -1605,42 +1634,37 @@ private final class MessageBubble : Widget
                     line.kind = ToolLineKind.hunk;
                     oldNo = hunkStart(raw, '-') - 1;
                     newNo = hunkStart(raw, '+') - 1;
-                    text = raw;
+                    line.body = raw;
                 }
                 else if (raw.length > 0 && raw[0] == '+')
                 {
                     line.kind = ToolLineKind.add;
                     line.newNo = ++newNo;
-                    text = raw[1 .. $];
+                    line.body = raw[1 .. $];
                 }
                 else if (raw.length > 0 && raw[0] == '-')
                 {
                     line.kind = ToolLineKind.del;
                     line.oldNo = ++oldNo;
-                    text = raw[1 .. $];
+                    line.body = raw[1 .. $];
                 }
                 else
                 {
                     line.kind = ToolLineKind.context;
                     line.oldNo = ++oldNo;
                     line.newNo = ++newNo;
-                    text = raw.length > 0 && raw[0] == ' ' ? raw[1 .. $] : raw;
+                    line.body = raw.length > 0 && raw[0] == ' ' ? raw[1 .. $] : raw;
                 }
             }
             else
             {
                 line.kind = ToolLineKind.plain;
                 line.newNo = ++plainNo;
+                line.body = raw;
             }
 
-            const oldStr = line.oldNo > 0 ? padLeft(line.oldNo, 4) : "    ";
-            const newStr = line.newNo > 0 ? padLeft(line.newNo, 4) : "    ";
-            const sign = line.kind == ToolLineKind.add ? '+' :
-                (line.kind == ToolLineKind.del ? '-' : ' ');
-            const visibleText = line.kind == ToolLineKind.hunk
-                ? text
-                : oldStr ~ " " ~ newStr ~ " " ~ sign ~ " " ~ text;
-            line.visible = visibleText;
+            line.gutter = line.kind == ToolLineKind.hunk ? ""
+                : diffGutter(line.oldNo, line.newNo);
             _toolLines ~= line;
             ++emitted;
         }
@@ -1659,6 +1683,16 @@ private final class MessageBubble : Widget
         return _toolLinesHeight;
     }
 
+    /// Compose one row's line-number gutter: two right-aligned 4-wide columns
+    /// (old, new) separated by a space. A blank column means the number does not
+    /// apply to that side (a plain output row, or a hunk edge).
+    private static string diffGutter(int oldNo, int newNo)
+    {
+        const oldStr = oldNo > 0 ? padLeft(oldNo, 4) : "    ";
+        const newStr = newNo > 0 ? padLeft(newNo, 4) : "    ";
+        return oldStr ~ " " ~ newStr;
+    }
+
     /// Paint the expanded tool body (diff or numbered plain text) and register
     /// each row as a selectable segment. Returns the height consumed.
     private int drawToolBody(ref Canvas canvas, int innerWidth, int top)
@@ -1668,6 +1702,24 @@ private final class MessageBubble : Widget
         if (count == 0) return 0;
         const rowH = maxInt(1, cast(int) _toolLineHeight);
         const fullW = maxInt(1, innerWidth);
+        const bodyH = count * rowH;
+
+        // Monospace advance and the sign glyphs shape once and are reused for
+        // every row; the gutter and sign columns are laid out from the advance.
+        if (_monoAdvance <= 0)
+        {
+            auto probe = shapeMonoLine(toUTF32("0"));
+            _monoAdvance = maxInt(1, cast(int) ceil(probe.width));
+        }
+        if (_signAddLayout is null)
+            _signAddLayout = shapeMonoLine(toUTF32("+"));
+        if (_signDelLayout is null)
+            _signDelLayout = shapeMonoLine(toUTF32("-"));
+
+        // Recessed rounded card so the changed file reads as one object rather
+        // than a run of loose lines.
+        canvas.drawRoundedRect(Rect(padH, top, fullW, bodyH), 6,
+            diffPanelBg, diffPanelEdge, 1);
 
         // Shape and draw only the rows that intersect the visible clip. A
         // collapsed->expanded toggle over a large output used to shape every
@@ -1689,29 +1741,83 @@ private final class MessageBubble : Widget
                 cast(int) ((clip.bottom() - originY - top) / rowH) + 2);
         }
 
+        const padX = 8;
+        const accentW = 3;
+        const gutterX = padH + padX + accentW + 6;
+        // Two 4-wide number columns plus the single space between them.
+        const gutterW = 9 * _monoAdvance;
+        const dividerX = gutterX + gutterW + 6;
+        const signX = dividerX + 7;
+        const diffBodyX = signX + _monoAdvance + 6;
+        const plainBodyX = dividerX + 6;
+
         foreach (i; firstRow .. lastRow)
         {
             auto line = &_toolLines[cast(size_t) i];
-            if (line.layout is null)
-            {
-                line.layout = shapeMonoLine(toUTF32(
-                    line.visible.length > 0 ? line.visible : " "));
-            }
             const y = top + i * rowH;
+
+            // Band for the change kind, inset from the card edge so the rounded
+            // corners stay clean.
             if (line.kind == ToolLineKind.add)
-                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffAddBg);
+                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH),
+                    opencodeDiffAddBg);
             else if (line.kind == ToolLineKind.del)
-                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffDeleteBg);
-            const color = line.kind == ToolLineKind.add ? opencodeDiffAdd :
-                line.kind == ToolLineKind.del ? opencodeDiffDelete :
-                line.kind == ToolLineKind.hunk ? opencodeMuted : opencodeText;
-            auto clipped = canvas.clipped(Rect(padH - 2, y,
-                fullW + 4, rowH));
-            clipped.drawLayout(Point(padH, y), line.layout, color);
-            if (line.layout.lines.length > 0)
-                _selSegments ~= SelectSegment(line.layout, padH, y, fullW, rowH);
+                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH),
+                    opencodeDiffDeleteBg);
+            else if (line.kind == ToolLineKind.hunk)
+                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH), diffHunkBand);
+            // A left accent bar reinforces the kind at a glance.
+            if (line.kind == ToolLineKind.add)
+                canvas.fillRect(Rect(padH + 1, y, accentW, rowH), opencodeDiffAdd);
+            else if (line.kind == ToolLineKind.del)
+                canvas.fillRect(Rect(padH + 1, y, accentW, rowH),
+                    opencodeDiffDelete);
+
+            if (line.bodyLayout is null)
+                line.bodyLayout = shapeMonoLine(toUTF32(
+                    line.body.length > 0 ? line.body : " "));
+
+            if (line.kind == ToolLineKind.hunk)
+            {
+                const hunkX = padH + padX + accentW + 4;
+                const hunkW = maxInt(1, padH + fullW - padX - hunkX);
+                auto clipped = canvas.clipped(Rect(hunkX, y, hunkW, rowH));
+                clipped.drawLayout(Point(hunkX, y), line.bodyLayout,
+                    opencodeAccent);
+                if (line.bodyLayout.lines.length > 0)
+                    _selSegments ~= SelectSegment(line.bodyLayout, hunkX, y,
+                        hunkW, rowH);
+                continue;
+            }
+
+            // Receded line-number gutter.
+            if (line.gutterLayout is null)
+                line.gutterLayout = shapeMonoLine(toUTF32(
+                    line.gutter.length > 0 ? line.gutter : " "));
+            canvas.drawLayout(Point(gutterX, y), line.gutterLayout,
+                diffGutterText);
+
+            // Hairline divider between the gutter and the code.
+            canvas.fillRect(Rect(dividerX, y + 2, 1, maxInt(1, rowH - 4)),
+                diffPanelEdge);
+
+            if (line.kind == ToolLineKind.add || line.kind == ToolLineKind.del)
+            {
+                const isAdd = line.kind == ToolLineKind.add;
+                canvas.drawLayout(Point(signX, y),
+                    isAdd ? _signAddLayout : _signDelLayout,
+                    isAdd ? opencodeDiffAdd : opencodeDiffDelete);
+            }
+
+            const bodyX = line.kind == ToolLineKind.plain ? plainBodyX : diffBodyX;
+            const bodyW = maxInt(1, padH + fullW - padX - bodyX);
+            auto clipped = canvas.clipped(Rect(bodyX, y, bodyW, rowH));
+            clipped.drawLayout(Point(bodyX, y), line.bodyLayout, opencodeText);
+            if (line.bodyLayout.lines.length > 0)
+                _selSegments ~= SelectSegment(line.bodyLayout, bodyX, y, bodyW,
+                    rowH);
         }
-        return count * rowH;
+        return bodyH;
     }
 
     /// Compose the Thinking header line: `▸ Thinking`, the live/final token
