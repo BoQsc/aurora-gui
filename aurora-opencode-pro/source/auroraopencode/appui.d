@@ -64,15 +64,16 @@ version (Windows)
 }
 
 // ---------------------------------------------------------------------------
-// Diff presentation palette (pro-only): a file edit renders as a recessed
-// rounded card so a changed file reads as one object instead of a run of loose
-// lines. A receded line-number gutter, a hairline divider, a coloured sign and
-// left accent bar per change kind, a tinted band for changed lines, and an
-// accent band for `@@` hunks.
-private immutable Color diffPanelBg = Color.fromHex(0x0e1014);
-private immutable Color diffPanelEdge = Color.fromHex(0x272730);
+// Diff presentation palette (pro-only): a file edit renders as full-bleed rows
+// with a receded line-number gutter, a coloured sign and left accent bar per
+// change kind, a tinted band for changed lines and an accent band for `@@`
+// hunks.
 private immutable Color diffGutterText = Color.fromHex(0x70707f);
 private immutable Color diffHunkBand = Color.fromHex(0x1b1a2b);
+// The card that wraps a tool header and its diff body: one slightly raised
+// tone with a hairline border, so header + rows read as a single object.
+private immutable Color diffCardBg = Color.fromHex(0x121319);
+private immutable Color diffCardBorder = Color.fromHex(0x2b2b35);
 
 // Pro-only platform helpers: clipboard, external links, timestamps
 // ---------------------------------------------------------------------------
@@ -380,6 +381,13 @@ private final class MessageBubble : Widget
     private Rect _collapseRect;
     private bool _collapseHover;
 
+    // Copy affordance at the right edge of a tool row's header: one click puts
+    // the whole diff/output text on the clipboard (mirrors the copy button on a
+    // diff card).
+    private Rect _toolCopyRect;
+    private bool _toolCopyHover;
+    private string _toolCopyText;
+
     // Absolute path(s) of the file or folder this tool row names, already
     // resolved against the workspace by the app and shown as a hover tooltip
     // over the row's header. Empty when the tool names no file or folder (or it
@@ -433,6 +441,9 @@ private final class MessageBubble : Widget
     private int _toolLinesHeight;
     private double _toolLineHeight;
     private static immutable int maxRenderedToolLines = 600;
+    // Vertical breathing room above and below a collapsible tool header, so the
+    // label never hugs the card's top/bottom edge.
+    private static immutable int headerPadV = 6;
     // Cached single-glyph layouts and the monospace advance, so painting a body
     // row does not re-shape the sign (`+`/`-`) or re-measure a character on
     // every frame.
@@ -1306,10 +1317,17 @@ private final class MessageBubble : Widget
 
         if (_role == "tool")
         {
-            // Always show the tool header (▸/▾ title subtitle  +N -M); the
-            // rendered body below it is shown only when expanded.
+            // Header and body share one rounded card, so a file edit reads as a
+            // single object (a title bar over its diff rows) instead of a loose
+            // header line above a run of rows.
+            const headerH = toolHeaderHeight();
+            const bodyH = _collapsed ? 0 : ensureToolLines(innerWidth);
+            canvas.drawRoundedRect(Rect(padH, y, innerWidth, headerH + bodyH),
+                8, diffCardBg, diffCardBorder, 1);
             drawToolHeader(canvas, innerWidth, y);
-            y += toolHeaderHeight();
+            canvas.fillRect(Rect(padH + 1, y + headerH - 1, innerWidth - 2, 1),
+                diffCardBorder);
+            y += headerH;
             if (!_collapsed)
                 y += drawToolBody(canvas, innerWidth, y) + gap;
         }
@@ -1480,6 +1498,10 @@ private final class MessageBubble : Widget
     {
         const h = toolHeaderHeight();
         _collapseRect = Rect(padH, top, maxInt(1, innerWidth), h);
+        // Inset so the header text never touches the card's rounded border.
+        const padX = 8;
+        const textX = padH + padX;
+        const rightX = padH + innerWidth - padX;
         const toggle = _collapsed ? "▸" : "▾";
         string left = toggle ~ " " ~ humanToolTitle(_toolName);
         const subtitle = humanToolSubtitle(_toolName, _toolArgs);
@@ -1508,15 +1530,32 @@ private final class MessageBubble : Widget
 
         const available = maxInt(1, innerWidth - statsWidth -
             (statsWidth > 0 ? 8 : 0));
+        // Keep clear of the copy icon at the right edge.
+        const copyReserve = _role == "tool" ? 24 : 0;
         auto layout = canvas.layoutText(toUTF32(left), 1, FontRole.ui,
-            cast(FontFace) theme().uiFont, available, false);
+            cast(FontFace) theme().uiFont, maxInt(1, available - copyReserve),
+            false);
         // Leave two pixels for negative glyph bearings (italic/antialiased
         // first letters). Clipping exactly at the text origin shaved their
         // left edge even though the row itself had ample padding.
-        auto labelCanvas = canvas.clipped(Rect(padH - 2, top,
+        auto labelCanvas = canvas.clipped(Rect(textX - 2, top,
             available + 4, h));
-        labelCanvas.drawLayout(Point(padH, top), layout,
-            _collapseHover ? opencodeText : opencodeMuted);
+        const labelY = top + maxInt(0, (h - cast(int) layout.height) / 2);
+        labelCanvas.drawLayout(Point(textX, labelY), layout, opencodeText);
+
+        // Copy affordance at the header's right edge: one click puts the whole
+        // diff or output on the clipboard, mirroring the copy button on a diff
+        // card.
+        _toolCopyRect = Rect.init;
+        _toolCopyText = "";
+        if (_role == "tool" && (_hasDiff || _content.length > 0))
+        {
+            const iconSize = 16;
+            _toolCopyRect = Rect(rightX - iconSize,
+                top + maxInt(0, (h - iconSize) / 2), iconSize, iconSize);
+            _toolCopyText = _hasDiff ? _diffText : to!string(_content);
+            drawCopyIcon(canvas, _toolCopyRect, _toolCopyHover);
+        }
 
         if (statsWidth > 0)
         {
@@ -1525,11 +1564,11 @@ private final class MessageBubble : Widget
             // counters render as small tinted pills; the wall-clock duration
             // trails them in muted text. `TextLayout` is a class, so an
             // unassigned one is null - test for presence, never `.width > 0`.
-            int x = padH + cast(int) layout.width + 8;
+            int x = textX + cast(int) layout.width + 8;
             // Align the counters/timer on the header label's baseline: the
             // monospace line box is taller than the UI label's, so centring
             // each by its own box height left the stats slightly high.
-            const sy = cast(int)(top + layout.lines[0].baseline -
+            const sy = cast(int)(labelY + layout.lines[0].baseline -
                 firstBaseline(addLayout !is null ? addLayout : elapsedLayout));
             const chipH = maxInt(12, h - 4);
             const chipY = top + (h - chipH) / 2;
@@ -1556,7 +1595,20 @@ private final class MessageBubble : Widget
 
     private static int toolHeaderHeight()
     {
-        return opencodeFontBase + 2;
+        return opencodeFontBase + 2 + 2 * headerPadV;
+    }
+
+    /// A small copy icon: two overlapping sheets drawn with rounded rectangles
+    /// so it never depends on font coverage.
+    private void drawCopyIcon(ref Canvas canvas, Rect rect, bool hovered)
+    {
+        const edge = hovered ? opencodeAccent : opencodeBorder;
+        const backX = rect.x + 3;
+        const backY = rect.y + 2;
+        canvas.drawRoundedRect(Rect(backX, backY, 8, 10), 2, opencodePanel,
+            edge, 1);
+        canvas.drawRoundedRect(Rect(backX + 4, backY + 4, 8, 10), 2,
+            hovered ? opencodeAccent.withAlpha(40) : opencodePanel, edge, 1);
     }
 
     private static string padLeft(int value, int width)
@@ -1688,9 +1740,10 @@ private final class MessageBubble : Widget
     /// apply to that side (a plain output row, or a hunk edge).
     private static string diffGutter(int oldNo, int newNo)
     {
-        const oldStr = oldNo > 0 ? padLeft(oldNo, 4) : "    ";
-        const newStr = newNo > 0 ? padLeft(newNo, 4) : "    ";
-        return oldStr ~ " " ~ newStr;
+        // A single column, like the file being edited: the new line number when
+        // the row exists in the new file, otherwise the deleted line's number.
+        const value = newNo > 0 ? newNo : oldNo;
+        return value > 0 ? padLeft(value, 4) : "    ";
     }
 
     /// Paint the expanded tool body (diff or numbered plain text) and register
@@ -1716,11 +1769,6 @@ private final class MessageBubble : Widget
         if (_signDelLayout is null)
             _signDelLayout = shapeMonoLine(toUTF32("-"));
 
-        // Recessed rounded card so the changed file reads as one object rather
-        // than a run of loose lines.
-        canvas.drawRoundedRect(Rect(padH, top, fullW, bodyH), 6,
-            diffPanelBg, diffPanelEdge, 1);
-
         // Shape and draw only the rows that intersect the visible clip. A
         // collapsed->expanded toggle over a large output used to shape every
         // row (hundreds of TextLayouts, ~2 s); now it shapes just the ~30 on
@@ -1744,34 +1792,29 @@ private final class MessageBubble : Widget
         const padX = 8;
         const accentW = 3;
         const gutterX = padH + padX + accentW + 6;
-        // Two 4-wide number columns plus the single space between them.
-        const gutterW = 9 * _monoAdvance;
-        const dividerX = gutterX + gutterW + 6;
-        const signX = dividerX + 7;
+        // A single 4-wide line-number column.
+        const gutterW = 4 * _monoAdvance;
+        const signX = gutterX + gutterW + 8;
         const diffBodyX = signX + _monoAdvance + 6;
-        const plainBodyX = dividerX + 6;
+        const plainBodyX = gutterX + gutterW + 10;
 
         foreach (i; firstRow .. lastRow)
         {
             auto line = &_toolLines[cast(size_t) i];
             const y = top + i * rowH;
 
-            // Band for the change kind, inset from the card edge so the rounded
-            // corners stay clean.
+            // Full-bleed band for the change kind, edge to edge of the column.
             if (line.kind == ToolLineKind.add)
-                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH),
-                    opencodeDiffAddBg);
+                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffAddBg);
             else if (line.kind == ToolLineKind.del)
-                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH),
-                    opencodeDiffDeleteBg);
+                canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffDeleteBg);
             else if (line.kind == ToolLineKind.hunk)
-                canvas.fillRect(Rect(padH + 1, y, fullW - 2, rowH), diffHunkBand);
+                canvas.fillRect(Rect(padH, y, fullW, rowH), diffHunkBand);
             // A left accent bar reinforces the kind at a glance.
             if (line.kind == ToolLineKind.add)
-                canvas.fillRect(Rect(padH + 1, y, accentW, rowH), opencodeDiffAdd);
+                canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffAdd);
             else if (line.kind == ToolLineKind.del)
-                canvas.fillRect(Rect(padH + 1, y, accentW, rowH),
-                    opencodeDiffDelete);
+                canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffDelete);
 
             if (line.bodyLayout is null)
                 line.bodyLayout = shapeMonoLine(toUTF32(
@@ -1796,10 +1839,6 @@ private final class MessageBubble : Widget
                     line.gutter.length > 0 ? line.gutter : " "));
             canvas.drawLayout(Point(gutterX, y), line.gutterLayout,
                 diffGutterText);
-
-            // Hairline divider between the gutter and the code.
-            canvas.fillRect(Rect(dividerX, y + 2, 1, maxInt(1, rowH - 4)),
-                diffPanelEdge);
 
             if (line.kind == ToolLineKind.add || line.kind == ToolLineKind.del)
             {
@@ -2221,6 +2260,8 @@ private final class MessageBubble : Widget
             _tertiaryActionRect.contains(event.position);
         const overCollapse = _role == "tool" &&
             _collapseRect.contains(event.position);
+        const overToolCopy = _role == "tool" &&
+            _toolCopyRect.contains(event.position);
         // The row's header carries the file/folder name, so pointing at the
         // header is pointing at the file: the app shows the resolved absolute
         // path.
@@ -2241,7 +2282,8 @@ private final class MessageBubble : Widget
             overAction != _actionHover ||
             overSecondaryAction != _secondaryActionHover ||
             overTertiaryAction != _tertiaryActionHover ||
-            overCollapse != _collapseHover || overPath != _pathHover ||
+            overCollapse != _collapseHover || overToolCopy != _toolCopyHover ||
+            overPath != _pathHover ||
             overThinking != _thinkingHover || overVersion != _versionHover ||
             overText != _textHover)
         {
@@ -2251,6 +2293,7 @@ private final class MessageBubble : Widget
             _secondaryActionHover = overSecondaryAction;
             _tertiaryActionHover = overTertiaryAction;
             _collapseHover = overCollapse;
+            _toolCopyHover = overToolCopy;
             _pathHover = overPath;
             _thinkingHover = overThinking;
             _versionHover = overVersion;
@@ -2258,7 +2301,7 @@ private final class MessageBubble : Widget
             if (onPathHoverChanged !is null) onPathHoverChanged(_pathHover);
             setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
                 overSecondaryAction || overTertiaryAction ||
-                overCollapse || overThinking || overVersion != 0
+                overCollapse || overToolCopy || overThinking || overVersion != 0
                 ? CursorKind.hand :
                 (overText ? CursorKind.text : CursorKind.arrow));
             invalidate();
@@ -2291,6 +2334,12 @@ private final class MessageBubble : Widget
         {
             ChatScrollView.holdPositionForNextLayout();
             setThinkingCollapsed(!_thinkingCollapsed);
+            return true;
+        }
+        if (_role == "tool" && _toolCopyRect.contains(event.position) &&
+            _toolCopyText.length > 0)
+        {
+            copyTextToClipboard(_toolCopyText);
             return true;
         }
         if (_role == "tool" && _collapseRect.contains(event.position))
@@ -2412,13 +2461,14 @@ private final class MessageBubble : Widget
     protected override void onMouseLeave()
     {
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
-            _collapseHover || _pathHover || _thinkingHover ||
+            _collapseHover || _toolCopyHover || _pathHover || _thinkingHover ||
             _versionHover != 0 || _textHover)
         {
             _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
             _collapseHover = false;
+            _toolCopyHover = false;
             _thinkingHover = false;
             _versionHover = 0;
             _textHover = false;
@@ -3241,8 +3291,15 @@ private final class LiveToolRow : Widget
     protected override void onPaint(ref Canvas canvas)
     {
         const h = headerHeight();
-        const textX = padH;
-        const innerWidth = maxInt(1, bounds().width - textX - padH);
+        // Same rounded card as a settled tool row so an in-flight edit reads
+        // consistently, with the header inset from its border.
+        canvas.drawRoundedRect(Rect(padH, 0,
+            maxInt(1, bounds().width - 2 * padH), maxInt(1, bounds().height)),
+            8, diffCardBg, diffCardBorder, 1);
+        canvas.fillRect(Rect(padH + 1, h - 1,
+            maxInt(1, bounds().width - 2 * padH) - 2, 1), diffCardBorder);
+        const textX = padH + 8;
+        const innerWidth = maxInt(1, bounds().width - textX - padH - 8);
         int statsWidth;
         TextLayout addLayout, delLayout, elapsedLayout;
         if (_hasDiff)
@@ -3295,8 +3352,8 @@ private final class LiveToolRow : Widget
         // header. Long lines are clipped to the row width (no wrap).
         int y = h;
         const lineH = detailLineHeight();
-        const bodyX = padH;
-        const bodyWidth = maxInt(1, bounds().width - bodyX - padH);
+        const bodyX = padH + 8;
+        const bodyWidth = maxInt(1, bounds().width - bodyX - padH - 8);
         // An editing tool previews a diff, so tint its rows the way the settled
         // tool body does; other previews (a shell command) stay muted.
         const diffPreview = _toolName == "edit" || _toolName == "write";
