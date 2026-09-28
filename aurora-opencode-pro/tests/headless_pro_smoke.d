@@ -4542,6 +4542,81 @@ int main(string[] args)
     }
     writeln("Rebuild keeps scroll position and expanded tool outputs");
 
+    // Regression: while the agent is still working, a reader who scrolls up must
+    // keep a stable offset. New content arrives from two sources during a live
+    // turn — the streamed reply deltas and the start of each assistant round (a
+    // tool loop begins one per round). Neither may re-engage auto-follow and drag
+    // the reader to the bottom. Build a tall transcript, scroll to the top, then
+    // start a round and stream into it.
+    {
+        root.newChatForTesting();
+        import std.array : appender;
+        auto body = appender!string();
+        foreach (i; 0 .. 14)
+            body.put("Filler line " ~ to!string(i) ~
+                " padding the transcript so it overflows the viewport.\n");
+        foreach (i; 0 .. 8)
+        {
+            root.addConversationForTesting(["user"],
+                ["Question " ~ to!string(i)]);
+            root.addConversationForTesting(["assistant"], [body.data]);
+        }
+        root.tickTree(0.02);
+        assert(driver.paint(), "Tall streaming-test transcript did not paint");
+        root.scrollToForTesting(int.max);
+        root.tickTree(0.02);
+        assert(root.scrollYForTesting() > 0,
+            "tall streaming-test transcript should be scrollable");
+        root.scrollToForTesting(0);
+        root.tickTree(0.02);
+        assert(!root.followForTesting(),
+            "scrolling up should have disengaged auto-follow");
+        // A new assistant round begins, exactly as a tool-loop continuation does.
+        root.beginStreamForTesting();
+        root.tickTree(0.02);
+        assert(!root.followForTesting(),
+            "starting an assistant round re-engaged auto-follow while scrolled up");
+        assert(root.scrollYForTesting() <= 4,
+            "starting an assistant round dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
+        // Stream a growing reply into that round.
+        foreach (i; 0 .. 6)
+        {
+            root.streamContentForTesting(
+                "streamed answer fragment " ~ to!string(i) ~ "\n");
+            root.tickTree(0.02);
+        }
+        assert(driver.paint(), "Streamed transcript did not paint");
+        assert(!root.followForTesting(),
+            "streaming re-engaged auto-follow after the user scrolled up");
+        assert(root.scrollYForTesting() <= 4,
+            "streaming dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        assert(root.scrollYForTesting() <= 4,
+            "finishing the stream dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
+
+        // Conversely, a reader at the bottom keeps following new content.
+        root.scrollToForTesting(int.max);
+        root.tickTree(0.02);
+        assert(root.followForTesting(),
+            "scrolling to the bottom should re-engage auto-follow");
+        const bottom = root.scrollYForTesting();
+        root.beginStreamForTesting();
+        root.tickTree(0.02);
+        root.streamContentForTesting("another growing reply\n");
+        root.tickTree(0.02);
+        assert(root.followForTesting(),
+            "a live round at the bottom should keep auto-follow engaged");
+        assert(root.scrollYForTesting() >= bottom,
+            "a live round at the bottom should stay pinned to the newest content");
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+    }
+    writeln("Streaming keeps a scrolled-up reader in place");
+
     // Read bodies survive a restart: their text is persisted and the restored
     // Explored group still expands to render the read output (the reported
     // regression was that read/edit bodies went blank after a restart).

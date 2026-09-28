@@ -1169,11 +1169,12 @@ private final class MessageBubble : Widget
         if (_thinking.length > 0)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
-            // Use the tool header's height so a collapsed "Thinking" row and a
-            // collapsed "Shell"/"Read" row are exactly the same height; a
-            // header sized from a different text tier opened uneven gaps in a
-            // mixed stack.
-            height += toolHeaderHeight();
+            // A collapsed "Thinking" row is a plain one-line transcript row, so
+            // size it like the sibling group / live / activity rows (see
+            // `thinkingHeaderHeight`); using the tool card's padded header
+            // height here made it 2*headerPadV taller and opened an uneven gap
+            // next to a collapsed group row.
+            height += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
                 height += shapedThinking(innerWidth).measuredSize().height + gap;
         }
@@ -1289,7 +1290,7 @@ private final class MessageBubble : Widget
         if (_thinking.length > 0)
         {
             drawThinkingHeader(canvas, innerWidth, y);
-            y += toolHeaderHeight();
+            y += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
             {
                 auto layout = shapedThinking(innerWidth);
@@ -1596,6 +1597,18 @@ private final class MessageBubble : Widget
     private static int toolHeaderHeight()
     {
         return opencodeFontBase + 2 + 2 * headerPadV;
+    }
+
+    /// Height of a collapsed one-line reasoning header. A collapsed transcript
+    /// row (Thinking / action group / live / activity) is a single text line
+    /// padded by `padV` on each side, matching `2 * padV + opencodeFontBase + 2`
+    /// in ToolGroupBubble / LiveToolRow / ActivityRow. It deliberately does NOT
+    /// use `toolHeaderHeight()`: that adds the tool card's own `headerPadV`
+    /// inset, which is only needed when the header sits inside the rounded diff
+    /// card, and otherwise made the Thinking row taller than its neighbours.
+    private static int thinkingHeaderHeight()
+    {
+        return opencodeFontBase + 2;
     }
 
     /// A small copy icon: two overlapping sheets drawn with rounded rectangles
@@ -10394,7 +10407,15 @@ public final class OpenCodeRoot : VBox
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
         // nests the live reply before its phase row.
         rebuildMessageColumn();
-        _messagesScroll.follow = true;
+        // Respect the reader's scroll position. A turn can contain several
+        // assistant rounds (the tool loop begins one per round, and retries and
+        // continuations begin more), and every round reaches here. Forcing
+        // auto-follow on each round yanked a reader who had scrolled up back to
+        // the bottom as new content arrived, so a live chat could never be read
+        // from a stable offset. The reader's intent already lives in `follow`:
+        // sending a message engages it via addUserBubble, and a reader who stays
+        // at the bottom keeps it engaged (see onScrollChanged). The jump-to-
+        // latest pill is the explicit way back to automatic scrolling.
         _messagesScroll.invalidate();
         refreshBubbleActions();
     }
