@@ -15336,6 +15336,76 @@ public final class OpenCodeRoot : VBox
         recordApiTokenUsage(keyId, total, prompt, completion);
     }
 
+    /// Aggregate model usage across every conversation: fresh input, produced
+    /// output, and the input spent re-sending conversation history that earlier
+    /// rounds in the same chat already sent. Output is the useful production;
+    /// the re-sent history is the part prompt caching and compaction exist to
+    /// shrink, so it is the honest measure of spent-but-repeated tokens.
+    private struct TokenEfficiency
+    {
+        long inputTokens;
+        long outputTokens;
+        long resentTokens;
+    }
+
+    private TokenEfficiency tokenEfficiencyTotals()
+    {
+        TokenEfficiency totals;
+        foreach (ref session; _sessions)
+        {
+            long sessionInput;
+            long finalContext;
+            foreach (ref message; session.messages)
+            {
+                if (message.role != "assistant") continue;
+                totals.outputTokens += message.completionTokens;
+                if (message.promptTokens > 0)
+                {
+                    sessionInput += message.promptTokens;
+                    finalContext = message.promptTokens;
+                }
+            }
+            totals.inputTokens += sessionInput;
+            if (finalContext > 0 && sessionInput > finalContext)
+                totals.resentTokens += sessionInput - finalContext;
+        }
+        return totals;
+    }
+
+    /// One-line token-efficiency summary for the Profile dialog: the output
+    /// share of all spent tokens, the share of input spent re-sending history,
+    /// and that re-sent total in tokens.
+    private string tokenEfficiencySummaryText()
+    {
+        const totals = tokenEfficiencyTotals();
+        if (totals.inputTokens <= 0 && totals.outputTokens <= 0)
+            return "No token usage recorded yet.";
+        string thousands(long value)
+        {
+            auto text = to!string(value);
+            string outText;
+            int count;
+            for (int i = cast(int) text.length; i > 0; --i)
+            {
+                outText = text[i - 1] ~ outText;
+                if (++count % 3 == 0 && i > 1) outText = "," ~ outText;
+            }
+            return outText;
+        }
+        string percent(long part, long whole)
+        {
+            if (whole <= 0) return "0.0";
+            const tenths = part * 1000 / whole;
+            return to!string(tenths / 10) ~ "." ~ to!string(tenths % 10);
+        }
+        const spent = totals.inputTokens + totals.outputTokens;
+        return "Token efficiency: " ~
+            percent(totals.outputTokens, spent) ~ "% output · " ~
+            percent(totals.resentTokens, totals.inputTokens) ~
+            "% of input re-sent history (" ~
+            thousands(totals.resentTokens) ~ " tokens)";
+    }
+
     private void showProfileDialog()
     {
         if (_activePopup !is null) _activePopup.dismiss();
@@ -15413,6 +15483,11 @@ public final class OpenCodeRoot : VBox
             to!string(sessionsWithUsage) ~ " conversation(s) with recorded usage"));
         detail.setScale(1);
         detail.setColor(opencodeMuted);
+
+        auto efficiency = content.add(new Label(tokenEfficiencySummaryText()));
+        efficiency.setId("oc-profile-efficiency");
+        efficiency.setScale(1);
+        efficiency.setColor(opencodeMuted);
 
         // Monthly usage per provider: a running ledger updated as each turn's
         // usage is recorded, so switching providers still shows what each one
@@ -21391,6 +21466,30 @@ public final class OpenCodeRoot : VBox
     {
         loadMonthlyUsage();
         return _monthlyProviderTokens.get(monthKey ~ "|" ~ provider, 0L);
+    }
+
+    /// Test-only: total input tokens summed across every conversation.
+    public long tokenEfficiencyInputForTesting()
+    {
+        return tokenEfficiencyTotals().inputTokens;
+    }
+
+    /// Test-only: total output tokens summed across every conversation.
+    public long tokenEfficiencyOutputForTesting()
+    {
+        return tokenEfficiencyTotals().outputTokens;
+    }
+
+    /// Test-only: input tokens spent re-sending conversation history.
+    public long tokenEfficiencyResentForTesting()
+    {
+        return tokenEfficiencyTotals().resentTokens;
+    }
+
+    /// Test-only: the Profile dialog's token-efficiency summary line.
+    public string profileEfficiencyTextForTesting()
+    {
+        return tokenEfficiencySummaryText();
     }
 
     /// Test-only: open the Profile dialog and return the monthly per-provider

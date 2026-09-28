@@ -3519,6 +3519,31 @@ int main(string[] args)
         writeln("Monthly per-provider usage is recorded and shown in Profile");
     }
 
+    // Token efficiency: a two-round conversation is reported as one round of
+    // fresh input plus one larger round that re-sent the first round's history,
+    // so the Profile summary can quantify wasted (re-sent) input tokens.
+    {
+        const long inputBefore = root.tokenEfficiencyInputForTesting();
+        const long resentBefore = root.tokenEfficiencyResentForTesting();
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"], ["One", "First"]);
+        root.recordContextUsageForTesting(100, 10, 110);
+        root.addConversationForTesting(["user", "assistant"], ["Two", "Second"]);
+        root.recordContextUsageForTesting(300, 20, 320);
+        assert(root.tokenEfficiencyInputForTesting() - inputBefore == 400,
+            "Efficiency input total missed a round: " ~
+            to!string(root.tokenEfficiencyInputForTesting() - inputBefore));
+        assert(root.tokenEfficiencyResentForTesting() - resentBefore == 100,
+            "Efficiency re-sent total missed the earlier round: " ~
+            to!string(root.tokenEfficiencyResentForTesting() - resentBefore));
+        const summary = root.profileEfficiencyTextForTesting();
+        assert(summary.indexOf("Token efficiency") >= 0 &&
+            summary.indexOf("% output") >= 0 &&
+            summary.indexOf("re-sent history") >= 0,
+            "Profile efficiency summary is not descriptive: " ~ summary);
+        writeln("Profile reports token efficiency and re-sent history");
+    }
+
     // Providers often stream prose one character at a time. The live bubble
     // and durable assistant message must stay byte-for-byte identical through
     // the transition to the settled Markdown renderer.
