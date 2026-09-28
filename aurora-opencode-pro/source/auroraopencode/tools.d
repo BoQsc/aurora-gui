@@ -170,8 +170,11 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "original checklist when working through one of its steps; put " ~
         "temporary substeps in the conversation or use update_subplan when " ~
         "available. Set replace_entire_plan " ~
-        "only when the user explicitly asks to discard the existing plan.",
-        `{"type":"object","properties":{"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
+        "only when the user explicitly asks to discard the existing plan. " ~
+        "Also set `objective` to a concise, rewritten one-line goal for the " ~
+        "task in your own words, not a copy of the user's message or the " ~
+        "chat title.",
+        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
     );
 }
 

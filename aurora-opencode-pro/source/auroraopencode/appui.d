@@ -10140,6 +10140,17 @@ public final class OpenCodeRoot : VBox
         if (children.length == 0) return;
         const session = &_sessions[_current];
 
+        // While a turn is in flight the conversation has no settled tip to act
+        // on, so the reply under the live turn must not offer Regenerate /
+        // Continue even during the brief windows where the active leaf
+        // temporarily points back at a settled reply: a continuing turn clears
+        // the in-flight flag between rounds, and plan reconciliation / queued
+        // guidance settle one reply (terminal = false) before the next request
+        // begins, leaving the just-settled leaf in place for a refresh. Gating
+        // on the live-request state suppresses the pill there instead of
+        // relying on the leaf id alone.
+        const turnBusy = sessionIsBusy(_current);
+
         // The pill belongs to the last MessageBubble that is not the live reply.
         // Groups (which are not MessageBubbles) are skipped, and the message is
         // resolved by the bubble's own stored index rather than its child slot,
@@ -10190,7 +10201,7 @@ public final class OpenCodeRoot : VBox
             // turn is the exception: however it died, the user must always be
             // able to send it again, so it keeps its Retry pill even when it had
             // requested tools.
-            if (message.role == "assistant" &&
+            if (!turnBusy && message.role == "assistant" &&
                 (message.toolCalls.length == 0 || message.failed))
             {
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
@@ -10211,7 +10222,7 @@ public final class OpenCodeRoot : VBox
         // so when no real reply exists the tip-most visible assistant turn
         // carries the pill instead — otherwise such a chat warned "needs
         // continue" in the sidebar but offered no way to resume.
-        if (!pillApplied && sessionTurnIncomplete(_current))
+        if (!pillApplied && !turnBusy && sessionTurnIncomplete(_current))
         {
             auto onPath = new bool[](session.messages.length);
             foreach (index; activeMessagePath(*session))
@@ -11692,6 +11703,15 @@ public final class OpenCodeRoot : VBox
         if (root.type != JSONType.object) return;
         auto plan = "plan" in root.object;
         if (plan is null || plan.type != JSONType.array) return;
+        // The model rewrites the durable objective here so the plan card shows
+        // the task's actual goal instead of a copy of the user's message, which
+        // is also the chat title. An omitted field keeps the current objective.
+        if (auto field = "objective" in root.object)
+            if (field.type == JSONType.string)
+            {
+                const value = field.str.strip();
+                if (value.length > 0) session.objective = value;
+            }
         TaskStep[] steps;
         foreach (item; plan.array)
         {
@@ -12056,6 +12076,9 @@ public final class OpenCodeRoot : VBox
         // replacing the objective with them made compaction erase why the work
         // existed. A completed/blocked turn still gets a fresh checklist and
         // verification state, while the original objective remains stable.
+        // Seeding here is only a provisional fallback: the model rewrites the
+        // objective into a concise goal through `update_plan`, so the plan card
+        // does not just echo the raw message that became the chat title.
         const resetTaskState = session.objective.length == 0 ||
             session.taskStatus == "completed" || session.taskStatus == "blocked";
         if (session.objective.length == 0)

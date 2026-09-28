@@ -184,7 +184,9 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "a blocker appears.\n" ~
         "- The user's request defines completion. Keep a plan current with " ~
         "`update_plan` as steps start or finish, including research and " ~
-        "decisions. Rewrite vague or obsolete steps. Preserve long plans; " ~
+        "decisions. Rewrite vague or obsolete steps, and set the plan's " ~
+        "`objective` to a concise summary of the goal in your own words " ~
+        "rather than the user's wording or the chat title. Preserve long plans; " ~
         "use `update_subplan` for optional child steps. When the user asks " ~
         "for an exact N-step plan, put exactly N meaningful top-level " ~
         "steps in `update_plan`; do not compress them into a shorter " ~
@@ -213,7 +215,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "and list all steps before acting. If exploration reveals a larger " ~
         "task, record the plan as soon as that becomes clear and mark any " ~
         "already finished steps completed. Keep one `in_progress`, mark " ~
-        "completed steps promptly, and leave no stale items.\n" ~
+        "completed steps promptly, and leave no stale items. Set the plan's " ~
+        "`objective` to a concise rewrite of the goal, not a copy of the " ~
+        "user's message or the chat title.\n" ~
         "2. Gather only the context needed for the first safe edit. " ~
         "Treat an explicit user path as the target even when it is outside the " ~
         "working directory. Read named files directly; discover the workspace " ~

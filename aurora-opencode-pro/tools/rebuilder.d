@@ -7,7 +7,7 @@
 //   1. wait until the app's .exe can be opened for writing, which is what "the
 //      app has exited" means in practice - the file lock is the real
 //      constraint, so that is what is polled;
-//   2. run `dub build --force` in the package directory, appending output to
+//   2. run `dub build` in the package directory, appending output to
 //      the log. Note this is `dub build`, not `dub run`: with `dub run` a
 //      crashed app and a failed compile both surface as a non-zero result, and
 //      the old helper reacted to a crash by relaunching the stale binary -
@@ -20,11 +20,17 @@
 // Usage:
 //   aurora-rebuilder --exe <app.exe> [--dir <packageDir>] [--log <logPath>]
 //                    [--pid <pid>] [--build <type>] [--timeout <seconds>]
-//                    [--no-rebuild]
+//                    [--no-rebuild] [--force]
+//
+// `--force` is off by default. Forcing DUB to rebuild even the packages that
+// are already up to date recompiles the vendored GUI library (the bulk of the
+// compile) on every edit, roughly doubling the build; the ordinary up-to-date
+// build is what keeps an interactive rebuild quick.
 module rebuilder;
 
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
+import std.array : join;
 import std.conv : to;
 import std.datetime : Clock;
 import std.file : append, copy, exists, getSize, mkdirRecurse, readText, remove,
@@ -55,6 +61,8 @@ private struct Options
     /// Only used to name the process in the log.
     int waitPid;
     int timeoutSeconds = 600;
+    /// Pass `--force` to DUB: rebuild every package even when up to date.
+    bool force;
     bool rebuild = true;
     /// Launch the app as a child and wait for it, recording how it ended
     /// instead of detaching. See `runAndReport`.
@@ -349,6 +357,7 @@ private Options parseArgs(string[] args)
         else if (arg == "--dir") options.packageDir = take();
         else if (arg == "--log") options.logPath = take();
         else if (arg == "--build") options.buildType = take();
+        else if (arg == "--force") options.force = true;
         else if (arg == "--no-rebuild") options.rebuild = false;
         else if (arg == "--run") options.run = true;
         else if (arg == "--supervise") options.supervise = true;
@@ -500,7 +509,7 @@ private void writeBuildReport(in Options options, int code, string output,
     string text;
     text ~= "Aurora OpenCode rebuild report\n";
     text ~= "time:    " ~ to!string(Clock.currTime) ~ "\n";
-    text ~= "command: dub build --force --build=" ~ options.buildType ~ "\n";
+    text ~= "command: " ~ join(dubBuildArgv(options), " ") ~ "\n";
     text ~= "dir:     " ~ options.packageDir ~ "\n";
     text ~= "exit:    " ~ to!string(code) ~ "\n";
     text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
@@ -517,6 +526,16 @@ private void writeBuildReport(in Options options, int code, string output,
         write(path, text);
     }
     catch (Exception) {}
+}
+
+/// The DUB command line for a rebuild. `--force` is opt-in: when it is present
+/// DUB rebuilds every package including the ones already up to date, which is
+/// the difference between recompiling one edited package and the whole tree.
+private string[] dubBuildArgv(in Options options)
+{
+    string[] argv = ["dub", "build", "--build=" ~ options.buildType];
+    if (options.force) argv ~= "--force";
+    return argv;
 }
 
 private bool runBuild(in Options options)
@@ -554,8 +573,7 @@ private bool runBuild(in Options options)
     int code;
     try
     {
-        auto pid = spawnProcess(["dub", "build", "--force",
-            "--build=" ~ options.buildType],
+        auto pid = spawnProcess(dubBuildArgv(options),
             stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
             Config.none, options.packageDir);
         code = wait(pid);
@@ -650,7 +668,7 @@ int main(string[] args)
         stderr.writeln("usage: aurora-rebuilder --exe <app.exe> " ~
             "[--dir <packageDir>] [--log <logPath>] [--pid <pid>] " ~
             "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--run] " ~
-            "[--supervise] [--max-restarts <n>]");
+            "[--supervise] [--max-restarts <n>] [--force]");
         stderr.writeln("  --run      launch the app as a child and record its " ~
             "exit code (names fail-fast deaths the app cannot report)");
         stderr.writeln("  --supervise  run the app and reopen it after an " ~
@@ -712,8 +730,8 @@ int main(string[] args)
 
     if (options.rebuild && options.packageDir.length > 0)
     {
-        appendLine(options.logPath, "rebuilding: dub build --force --build=" ~
-            options.buildType);
+        appendLine(options.logPath, "rebuilding: " ~
+            join(dubBuildArgv(options), " "));
         setProgress("Rebuilding...", "dub build --build=" ~ options.buildType,
             -1.0);
         const rebuilt = runBuild(options);

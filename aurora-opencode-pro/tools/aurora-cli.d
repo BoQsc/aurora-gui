@@ -10,7 +10,7 @@
 // the app unless told not to:
 //
 //   stop              terminate the running app and wait for its .exe to unlock
-//   build [config]    dub build --force (default config: application)
+//   build [config]    dub build (default config: application)
 //   symbols           resolve the last crash address from the error log
 //   logs [n]          print the last n lines of the error log (default 40)
 //   sleep <seconds>   pause
@@ -372,7 +372,7 @@ private bool instructionBuild(in Options options, string argument)
             try
             {
                 auto pid = spawnProcess(["dub", "build", "--config=" ~ config,
-                    "--build=release", "--force"],
+                    "--build=release"],
                     stdin, stdout, stderr, null, Config.none, options.packageDir);
                 code = wait(pid);
                 return true;
