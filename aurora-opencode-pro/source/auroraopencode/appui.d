@@ -46,11 +46,11 @@ import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
 import std.file : dirEntries, exists, getSize, isDir, isFile,
-    fileRemove = remove, mkdirRecurse, readText, rename, SpanMode, thisExePath,
-    timeLastModified, write;
+    fileRemove = remove, mkdirRecurse, readText, rename, rmdir, SpanMode,
+    thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
-import std.path : baseName, buildPath;
+import std.path : baseName, buildNormalizedPath, buildPath;
 import std.process : thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
@@ -7466,11 +7466,20 @@ public final class OpenCodeRoot : VBox
     /// not mistaken for a fresh user intent (which would reset the budget).
     private bool _autoResending;
     private bool _contextOverflowRetryUsed;
+    /// Set when the provider refuses a request as too large: the next request
+    /// is trimmed to the learned budget even though auto-compaction is off, so
+    /// a chat a gateway will not accept can still be sent again.
+    private bool _forceCompactNextRequest;
 
     /// How many times one failed turn may be sent again on its own. Bounded
     /// because each attempt keeps the previous reply as a branch version,
     /// exactly as pressing Retry does.
     private enum int maxAutoResends = 6;
+
+    /// An opaque HTTP 400 is treated as an overflow only when the request we
+    /// sent was at least this large; a small one is some other client error
+    /// (a bad key, an unknown model) and is left to the auto-resend path.
+    private enum int opaqueOverflowTokenFloor = 40_000;
 
     // Per-user-turn clock for the action-group header ("Worked for 0m 3s"). The
     // clock spans the whole turn — every tool-continuation round re-enters the
@@ -7799,6 +7808,30 @@ public final class OpenCodeRoot : VBox
                     }
         }
         catch (Exception) {}
+        // A resume may only continue a conversation that actually holds a
+        // transcript. When the recorded thread is not found, `_current` is
+        // whatever the saved selection was - often a brand-new empty chat the
+        // user opened while the last turn ran. Injecting the note there
+        // manufactured a nameless "New chat" holding agent work and no user
+        // prompt, while the conversation that requested the restart was never
+        // resumed. Prefer the newest conversation that was interrupted
+        // mid-turn, which is the one a restart exists to continue.
+        if (_sessions[_current].messages.length == 0)
+        {
+            int interrupted = -1;
+            foreach (i, session; _sessions)
+                if (session.messages.length > 0 &&
+                    session.turnStatus == "running")
+                    interrupted = cast(int) i;
+            if (interrupted < 0)
+            {
+                logInfo("resume skipped: no interrupted conversation to " ~
+                    "continue");
+                return;
+            }
+            _current = interrupted;
+            loadRuntime(_current);
+        }
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
         // helper removes `rebuild-report.txt` after a good build and writes it
         // only on failure, so its presence is the reliable "your changes are
@@ -8134,11 +8167,48 @@ public final class OpenCodeRoot : VBox
         }
         // Keep the requesting conversation's active-turn marker set so the
         // relaunched app resumes the right chat even if the sidebar selection
-        // was saved differently.
-        const sessionId = _current >= 0 ? _sessions[_current].id : "";
+        // was saved differently. That conversation is the one whose turn is
+        // running - never merely the selected chat, which may be an unrelated
+        // new chat the user opened while the turn worked.
+        const sessionId = resumeOwnerSessionId();
         writeResumeNoteForRebuild(reason);
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         if (!requestRebuild()) removeResumeNoteForRebuild();
+    }
+
+    /// The conversation a post-restart resume must return to: the one whose
+    /// turn is running, not the one merely selected.
+    ///
+    /// The selection is only a view. While a conversation works in the
+    /// background the user can open another chat - commonly a brand-new empty
+    /// one whose prompt has not been sent yet - and recording that selection as
+    /// the rebuild's resume target made the relaunched instance inject its
+    /// "rebuilt, continue" note into the empty chat. The conversation that
+    /// actually requested the rebuild was then never resumed, and the new chat
+    /// showed agent work under the name "New chat" with no user prompt: exactly
+    /// the corruption this resolves. A conversation is only a fallback when
+    /// nothing at all is running.
+    private string resumeOwnerSessionId()
+    {
+        int owner = -1;
+        foreach (index, session; _sessions)
+        {
+            if (session.id.length == 0) continue;
+            bool active;
+            if (session.id == _loadedRuntimeId)
+                active = _turnInFlight;
+            else if (auto found = session.id in _conversationRuntimes)
+                active = (*found).turnInFlight;
+            if (!active) continue;
+            // The selection wins when several conversations are working, so a
+            // rebuild requested while the working chat is the visible one keeps
+            // resuming exactly as before.
+            if (cast(int) index == _current) return session.id;
+            if (owner < 0) owner = cast(int) index;
+        }
+        if (owner >= 0) return _sessions[cast(size_t) owner].id;
+        return _current >= 0 && _current < cast(int) _sessions.length
+            ? _sessions[_current].id : "";
     }
 
     /// Leave a resume request the next launch consumes, so a deliberate rebuild
@@ -8881,14 +8951,61 @@ public final class OpenCodeRoot : VBox
         updateStatus("Created project " ~ project.name ~ ".");
     }
 
-    /// True when "sandbox N" is already a project's folder or already exists on
-    /// disk, so "New project" never reuses a number.
+    /// True when "sandbox N" cannot be reused for a new project: a project
+    /// already owns the folder, or the folder still holds files. A leftover
+    /// empty sandbox folder is reused instead of skipped, so removing a sandbox
+    /// and adding another keeps the same number rather than climbing forever.
     private bool sandboxFolderTaken(int number)
     {
         const path = sandboxFolderPath(number);
         foreach (project; _projectState.projects)
             if (project.path == path) return true;
-        return exists(path);
+        try
+        {
+            if (!exists(path)) return false;
+            if (isDir(path))
+            {
+                foreach (_; dirEntries(path, SpanMode.shallow)) return true;
+                return false;
+            }
+        }
+        catch (Exception error)
+            logError("failed to inspect sandbox folder: " ~ error.msg);
+        return true;
+    }
+
+    /// True when `path` is one of Aurora's own numbered sandbox folders
+    /// ("sandbox N" directly under the sandbox root). A real project folder the
+    /// user picked - even one inside the sandbox root - never matches, so the
+    /// removal path reclaims managed folders only.
+    private bool isManagedSandboxFolderPath(string path)
+    {
+        if (path.length == 0) return false;
+        const name = baseName(path);
+        if (!name.startsWith("sandbox ")) return false;
+        const digits = name["sandbox ".length .. $];
+        if (digits.length == 0) return false;
+        foreach (character; digits)
+            if (character < '0' || character > '9') return false;
+        const root = buildNormalizedPath(sandboxProjectPath());
+        return buildNormalizedPath(path) == buildPath(root, name);
+    }
+
+    /// Reclaim the folder behind a removed project. Only Aurora's own sandbox
+    /// folders are considered, and only while they are empty, so a user's real
+    /// project folder and any files a user left in a sandbox are never deleted.
+    /// Deleting the empty folder frees its number for the next "New project".
+    private void removeEmptySandboxFolder(const ref Project project)
+    {
+        if (!isManagedSandboxFolderPath(project.path)) return;
+        try
+        {
+            if (!exists(project.path) || !isDir(project.path)) return;
+            foreach (_; dirEntries(project.path, SpanMode.shallow)) return;
+            rmdir(project.path);
+        }
+        catch (Exception error)
+            logError("failed to remove sandbox folder: " ~ error.msg);
     }
 
     // Repoint a project at a folder the user picks and rename it from that
@@ -9063,6 +9180,7 @@ public final class OpenCodeRoot : VBox
             ~ _projectState.projects[cast(size_t) index + 1 .. $];
         if (_projectState.activeId == project.id)
             _projectState.activeId = sandboxProjectId;
+        removeEmptySandboxFolder(project);
         saveProjects(_projectState);
         persistState();
         updateProjectRail();
@@ -14268,6 +14386,11 @@ public final class OpenCodeRoot : VBox
         ChatRequestMessage[] compactedRequestMessages;
         bool checkpointCreated;
         bool fallbackCompacted;
+        // A provider-sized rejection sets `_forceCompactNextRequest` so this
+        // retry is trimmed to the learned budget even though auto-compaction is
+        // off; the identical untrimmed bytes would just be refused again.
+        const forceCompact = _forceCompactNextRequest;
+        _forceCompactNextRequest = false;
         if (compactionEnabled)
         {
             const contextLimit = requestContextBudget(session.model);
@@ -14275,6 +14398,15 @@ public final class OpenCodeRoot : VBox
                 contextLimit, fixedRequestBytes, checkpointCreated,
                 fallbackCompacted);
             if (checkpointCreated) markDirty();
+        }
+        else if (forceCompact)
+        {
+            // Trim locally instead of running a model summarization round: the
+            // summary request could itself be refused as too large, and the
+            // trim is what actually shrinks the bytes the gateway sees.
+            compactedRequestMessages = compactRequestMessages(
+                buildRequestMessages(*session),
+                requestContextBudget(session.model), fixedRequestBytes);
         }
         else
             compactedRequestMessages = buildRequestMessages(*session);
@@ -17728,14 +17860,28 @@ public final class OpenCodeRoot : VBox
     private bool scheduleContextOverflowRetry(string failureText)
     {
         if (_contextOverflowRetryUsed || _receivedFirstDelta) return false;
-        const available = availableContextFromError(failureText);
+        int available = availableContextFromError(failureText);
         const sessionIndex = turnOwnerSessionIndex();
-        if (available <= 0 || sessionIndex < 0 ||
-            sessionIndex >= cast(int) _sessions.length) return false;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0 ||
             session.messages[$ - 1].role != "assistant" ||
             !session.messages[$ - 1].failed) return false;
+        // The OpenCode Go gateway refuses an oversized request with a bare HTTP
+        // 400 whose body names only the model, so no token count can be parsed.
+        // Fall back to our own estimate of what we just sent: a large opaque 400
+        // is an overflow, a small one is some other client error. Without this
+        // the chat can never be sent again - the identical bytes are refused
+        // every time, so neither an automatic replay nor the Retry button helps.
+        if (available <= 0)
+        {
+            if (!failureText.canFind("HTTP 400")) return false;
+            const sentTokens = cast(int)(
+                requestMessageBytes(buildRequestMessages(*session)) / 4);
+            if (sentTokens < opaqueOverflowTokenFloor) return false;
+            available = sentTokens;
+        }
         // The server may report a larger window than the selected target. An
         // overflow still means our local byte estimate was too optimistic.
         if (available < effectiveContextLimit(session.model))
@@ -17743,14 +17889,10 @@ public final class OpenCodeRoot : VBox
             _providerContextLimits[session.model] = available;
             _contextLimitsBaseUrl = _settings.baseUrl;
         }
-        if (!contextCompactionForModel(_settings, _settings.baseUrl,
-            session.model))
-        {
-            refreshUsageBadge();
-            updateStatus("Context full. Enable compaction in the model menu " ~
-                "to continue this chat.");
-            return false;
-        }
+        // A provider-sized rejection cannot be replayed as-is, so the retry is
+        // forced to compact even when the user has auto-compaction off (the
+        // flag is set just before this returns true, so no early-return path
+        // leaves a stale force).
         const currentBudget = requestContextBudget(session.model);
         if (currentBudget <= 0) return false;
         if (_compactionBudgetsBaseUrl != _settings.baseUrl)
@@ -17765,6 +17907,7 @@ public final class OpenCodeRoot : VBox
                 * 3) / 4);
         if (tighterBudget <= 0) return false;
         _learnedCompactionBudgets[session.model] = tighterBudget;
+        _forceCompactNextRequest = true;
         _contextOverflowRetryUsed = true;
         refreshUsageBadge();
         _autoResendPending = true;
@@ -17773,7 +17916,10 @@ public final class OpenCodeRoot : VBox
         _autoResendMessage = cast(int) session.messages.length - 1;
         _autoResendResetMs = 0;
         _lastAutoResendSeconds = -1;
-        updateStatus("Server context limit learned; compacting and retrying...");
+        updateStatus(availableContextFromError(failureText) > 0
+            ? "Server context limit learned; compacting and retrying..."
+            : "Provider refused the request as too large; compacting the " ~
+                "history and retrying...");
         return true;
     }
 
@@ -18802,6 +18948,13 @@ public final class OpenCodeRoot : VBox
                         _activeRequestId = 0;
                         _activeRequestSession = -1;
                     }
+                    // The Retry/Regenerate pill is derived from the settled
+                    // request state, so re-derive it now that the failed
+                    // request's id is cleared. `failAssistantMessage` above ran
+                    // while the id was still set, which made the turn look busy
+                    // and left a failed reply with no pill and thus no way to
+                    // retry it (the HTTP 400 case, among others).
+                    refreshBubbleActions();
                     break;
                 case OpenCodeEventKind.models:
                     if (event.text.length > 0 &&

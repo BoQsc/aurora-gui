@@ -2594,6 +2594,30 @@ int main(string[] args)
         "The removed project's chats were not reassigned to the sandbox");
     writeln("Removing a project reassigns its chats to the sandbox");
 
+    // Removing an empty sandbox reclaims its folder and number: the next
+    // "New project" reuses the same number instead of climbing forever, and the
+    // folder disappears from disk with the project.
+    root.createSandboxProjectForTesting();
+    root.tickTree(0.02);
+    assert(root.activeProjectNameForTesting() == "sandbox 2",
+        "A new project after a removal should reuse sandbox 2");
+    const reusedFolder = root.activeProjectPathForTesting();
+    assert(exists(reusedFolder),
+        "A new project folder should exist on disk: " ~ reusedFolder);
+    root.removeProjectForTesting(root.activeProjectIndexForTesting());
+    root.tickTree(0.02);
+    assert(!exists(reusedFolder),
+        "Removing an empty sandbox must delete its folder: " ~ reusedFolder);
+    root.createSandboxProjectForTesting();
+    root.tickTree(0.02);
+    assert(root.activeProjectNameForTesting() == "sandbox 2",
+        "The removed sandbox's number should be reused");
+    root.removeProjectForTesting(root.activeProjectIndexForTesting());
+    root.tickTree(0.02);
+    assert(root.projectCountForTesting() == 1,
+        "Cleanup should leave only the default sandbox");
+    writeln("Removing an empty sandbox reclaims its folder and number");
+
     // Native tools are the main mode; Legacy tools live in Settings with a
     // hover tooltip, not in the toolbar.
     auto legacyCheck = root.legacyToolsCheckboxForTesting();

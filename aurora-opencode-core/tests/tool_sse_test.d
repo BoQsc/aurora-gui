@@ -507,6 +507,14 @@ int main()
     assert(autoResendDelayMs("Stream read failed (WinINet error 12002).", 9) ==
         30_000);
     assert(autoResendDelayMs("Upstream returned HTTP 401: bad key", 0) < 0);
+    // A gateway 400 ("model not ready") is transient in practice: it is
+    // replayed on the short bounded schedule instead of failing the turn.
+    assert(autoResendDelayMs(
+        "Upstream returned HTTP 400: {\"model\":\"deepseek-v4.1-flash\"}", 0) ==
+        3_000);
+    assert(autoResendDelayMs(
+        "Upstream returned HTTP 400: {\"model\":\"deepseek-v4.1-flash\"}", 9) ==
+        30_000);
     assert(autoResendDelayMs("Upstream returned HTTP 429: usage limit " ~
         "reached", 0) < 0);
     writeln("A failed turn is sent again automatically when waiting will help");

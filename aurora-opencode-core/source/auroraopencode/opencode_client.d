@@ -188,10 +188,15 @@ public long autoResendDelayMs(string failureText, uint attempt)
     if (resetMs > 0)
         return resetMs > maxAutoResendDelayMs ? maxAutoResendDelayMs : resetMs;
     // A quota wall with no time, or a request the server rejected on its own
-    // terms (a bad key, a malformed body), fails identically when replayed.
+    // terms (a bad key, an unknown route), fails identically when replayed.
+    // A 400 is deliberately NOT in this set: gateways route those to model
+    // provisioning/model-not-ready conditions that answer a bare body such as
+    // {"model":"..."} and clear on their own, so a random 400 used to kill the
+    // turn outright. It is replayed on the same bounded schedule as any other
+    // blip, and the provider's own sentence stays in the failed reply either
+    // way, so nothing is hidden.
     if (isPersistentRateLimit(failureText)) return -1;
-    if (containsAsciiIgnoreCase(failureText, "HTTP 400") ||
-        containsAsciiIgnoreCase(failureText, "HTTP 401") ||
+    if (containsAsciiIgnoreCase(failureText, "HTTP 401") ||
         containsAsciiIgnoreCase(failureText, "HTTP 403") ||
         containsAsciiIgnoreCase(failureText, "HTTP 404") ||
         containsAsciiIgnoreCase(failureText, "HTTP 422"))
