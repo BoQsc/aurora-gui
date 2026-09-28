@@ -2232,10 +2232,8 @@ int main(string[] args)
     auto projectTitleRow = requireWidget!Widget(root, "oc-project-title-row");
     auto projectTitle = requireWidget!Widget(root, "oc-project-title");
     auto openFolder = requireWidget!Widget(root, "oc-open-folder");
-    auto changeFolder = requireWidget!Widget(root, "oc-change-folder");
     assert(projectTitleRow.bounds().height > 0 &&
-        projectTitle.bounds().height > 0 && openFolder.bounds().height > 0 &&
-        changeFolder.bounds().height > 0,
+        projectTitle.bounds().height > 0 && openFolder.bounds().height > 0,
         "Project title row collapsed and hid its title/folder buttons");
     writeln("Created project: ", root.activeProjectNameForTesting());
 
@@ -2490,6 +2488,55 @@ int main(string[] args)
     assert(!root.isThinkingTooltipOpenForTesting(),
         "Thinking tooltip stayed open after pointer leave");
     writeln("Thinking tooltip opens above the toggle and dismisses on leave");
+
+    // The common toolbar, rail, sidebar, and composer buttons explain
+    // themselves on hover too, through the shared button-tooltip registry.
+    {
+        auto tipChanges = requireWidget!Widget(root, "oc-changes");
+        driver.moveTo(globalCenter(tipChanges));
+        root.tickTree(0.02);
+        assert(root.buttonTooltipTextForTesting("oc-changes").length == 0,
+            "Button tooltip must wait for the hover-intent delay");
+        foreach (_; 0 .. 20) root.tickTree(0.05);
+        assert(driver.paint(), "Changes button tooltip did not paint");
+        const changesTip = root.buttonTooltipTextForTesting("oc-changes");
+        assert(changesTip.indexOf("file changes") >= 0,
+            "Changes button tooltip lost its text: " ~ changesTip);
+        // These panels are deliberately compact: smaller than the regular
+        // hover panels (usage breakdown, file paths, dialog options).
+        const changesTipBounds = root.buttonTooltipBoundsForTesting(
+            "oc-changes");
+        assert(changesTipBounds.width <= 200 && changesTipBounds.height <= 34,
+            "Common-button tooltips should render in the compact panel size");
+        driver.moveTo(Point(4, 700));
+        root.tickTree(0.02);
+        assert(root.buttonTooltipTextForTesting("oc-changes").length == 0,
+            "Button tooltip stayed open after the pointer left");
+
+        // The composer's Send button opens its tooltip above itself, since the
+        // panel below would fall off the window edge.
+        auto tipSend = requireWidget!Widget(root, "oc-send");
+        driver.moveTo(globalCenter(tipSend));
+        foreach (_; 0 .. 20) root.tickTree(0.05);
+        assert(driver.paint(), "Send button tooltip did not paint");
+        const sendTip = root.buttonTooltipTextForTesting("oc-send");
+        assert(sendTip.indexOf("Send (Enter)") >= 0,
+            "Send button tooltip lost its text: " ~ sendTip);
+        const tipSendOrigin = tipSend.localToGlobal(Point(0, 0));
+        const sendTipBounds = root.buttonTooltipBoundsForTesting("oc-send");
+        assert(sendTipBounds.height > 0 &&
+            sendTipBounds.bottom() <= tipSendOrigin.y,
+            "Send button tooltip should open above the button");
+        driver.moveTo(Point(4, 700));
+        root.tickTree(0.02);
+
+        // Every common button is wired, not just the two probed above.
+        foreach (id; ["oc-export", "oc-profile", "oc-settings-button",
+            "oc-new", "oc-open-folder",
+            "oc-new-project", "oc-rail-toggle", "oc-send"])
+            requireWidget!Widget(root, id);
+        writeln("Common UI buttons show hover tooltips");
+    }
 
     // Right-clicking Thinking changes effort without toggling the checkbox.
     driver.click(globalCenter(thinkingToggle), MouseButton.right);

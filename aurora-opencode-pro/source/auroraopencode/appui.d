@@ -4609,6 +4609,15 @@ private final class HoverTooltip : Widget
     private bool _wrap;
     private static immutable int wrapWidth = 460;
     private static immutable int wrappedRowGap = 2;
+    // Compact mode for the small button tooltips: a narrower panel with
+    // tighter padding and a smaller font than the regular hover panels (usage
+    // breakdown, file paths, dialog options).
+    private bool _compact;
+    private static immutable int compactWidth = 190;
+    private static immutable int compactFontSize = 12;
+    private static immutable int compactPadH = 9;
+    private static immutable int compactPadV = 6;
+    private static immutable int compactLineH = 14;
     // Wrapped row layouts, built by onMeasure and reused by onPaint so a row is
     // shaped once per content change instead of on every frame.
     private TextLayout[] _rowLayouts;
@@ -4632,6 +4641,16 @@ private final class HoverTooltip : Widget
     {
         if (_wrap == value) return;
         _wrap = value;
+        _rowLayouts.length = 0;
+        invalidate();
+    }
+
+    /// Shrink the panel for the common-button tooltips: less padding, a
+    /// smaller font, and a narrower body than the regular hover panels.
+    void setCompact(bool value)
+    {
+        if (_compact == value) return;
+        _compact = value;
         _rowLayouts.length = 0;
         invalidate();
     }
@@ -4725,12 +4744,13 @@ private final class HoverTooltip : Widget
 
     protected override Size onMeasure(Size available)
     {
-        const padH = 14;
-        const padV = 12;
-        const lineH = 18;
-        const width = _wrap ? wrapWidth : (_usageBars.length > 0 ? 320 : 272);
+        const padH = _compact ? compactPadH : 14;
+        const padV = _compact ? compactPadV : 12;
+        const lineH = _compact ? compactLineH : 18;
+        const width = _wrap ? (_compact ? compactWidth : wrapWidth)
+            : (_usageBars.length > 0 ? 320 : 272);
         int height = padV * 2;
-        if (_title.length > 0) height += lineH + 6;
+        if (_title.length > 0) height += lineH + (_compact ? 4 : 6);
         _rowLayouts.length = 0;
         if (_wrap)
         {
@@ -4757,7 +4777,7 @@ private final class HoverTooltip : Widget
     {
         TextLayoutOptions options;
         options.role = FontRole.ui;
-        options.pixelSize = opencodeFontBase;
+        options.pixelSize = _compact ? compactFontSize : opencodeFontBase;
         options.maxWidth = maxWidth;
         options.wrap = true;
         return fontSystem().textEngine.layout(text, options);
@@ -4768,14 +4788,15 @@ private final class HoverTooltip : Widget
         const palette = theme();
         const width = bounds().width;
         const height = bounds().height;
-        canvas.drawRoundedRect(Rect(0, 0, width, height), 8,
+        const padX = _compact ? compactPadH : 14;
+        canvas.drawRoundedRect(Rect(0, 0, width, height), _compact ? 6 : 8,
             opencodeElevated, opencodeBorder, 1);
-        int y = 12;
+        int y = _compact ? compactPadV : 12;
         if (_title.length > 0)
         {
-            canvas.drawText(Point(14, y), _title, palette.text, 1,
+            canvas.drawText(Point(padX, y), _title, palette.text, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
-            y += 24;
+            y += _compact ? 18 : 24;
         }
         if (_wrap)
         {
@@ -4785,40 +4806,40 @@ private final class HoverTooltip : Widget
                 // runs without a preceding measure at the current width.
                 TextLayout layout = index < _rowLayouts.length
                     ? _rowLayouts[index]
-                    : wrapRow(row, maxInt(40, width - 28));
-                canvas.drawLayout(Point(14, y), layout, opencodeMuted);
+                    : wrapRow(row, maxInt(40, width - 2 * padX));
+                canvas.drawLayout(Point(padX, y), layout, opencodeMuted);
                 y += cast(int) layout.measuredSize().height + wrappedRowGap;
             }
         }
         else
             foreach (row; _rows)
             {
-                canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+                canvas.drawText(Point(padX, y), row, opencodeMuted, 1,
                     FontRole.ui, cast(FontFace) palette.uiFont);
                 y += 18;
             }
         foreach (bar; _usageBars)
         {
-            canvas.drawText(Point(14, y), toUTF32(bar.label), palette.text, 1,
+            canvas.drawText(Point(padX, y), toUTF32(bar.label), palette.text, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
             canvas.drawText(Point(112, y), toUTF32(bar.detail), opencodeMuted,
                 1, FontRole.ui, cast(FontFace) palette.uiFont);
             y += 20;
-            const railWidth = cast(int) width - 28;
-            canvas.fillRoundedRect(Rect(14, y, railWidth, 7), 3, opencodeField);
+            const railWidth = cast(int) width - 2 * padX;
+            canvas.fillRoundedRect(Rect(padX, y, railWidth, 7), 3, opencodeField);
             const fillWidth = cast(int) (railWidth * bar.percent / 100);
             if (fillWidth > 0)
-                canvas.fillRoundedRect(Rect(14, y, fillWidth, 7), 3,
+                canvas.fillRoundedRect(Rect(padX, y, fillWidth, 7), 3,
                     bar.percent >= 90 ? opencodeWarning : opencodeAccent);
             y += 12;
             if (bar.reset.length > 0)
-                canvas.drawText(Point(14, y), toUTF32(bar.reset), opencodeMuted,
+                canvas.drawText(Point(padX, y), toUTF32(bar.reset), opencodeMuted,
                     1, FontRole.ui, cast(FontFace) palette.uiFont);
             y += 25;
         }
         foreach (row; _extra)
         {
-            canvas.drawText(Point(14, y), row, opencodeMuted, 1,
+            canvas.drawText(Point(padX, y), row, opencodeMuted, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
             y += 18;
         }
@@ -5086,6 +5107,54 @@ private immutable string thinkingToggleTooltipText =
     "this endpoint and model. Detected llama.cpp servers also offer a " ~
     "thinking token budget. A server CLI budget can override it; providers " ~
     "may ignore unsupported controls.";
+
+/// Tooltip text for the common toolbar, rail, sidebar, and Send buttons.
+/// Deliberately terse: these panels render in HoverTooltip's compact mode, so
+/// a phrase or two is the whole budget.
+private immutable string exportButtonTooltipText = "Save chat to a file";
+private immutable string changesButtonTooltipText = "Review file changes";
+private immutable string profileButtonTooltipText = "Usage and account";
+private immutable string settingsButtonTooltipText = "Settings and providers";
+private immutable string rebuildButtonTooltipText =
+    "Rebuild and relaunch (right-click: update)";
+private immutable string updateButtonTooltipText = "Install a newer release";
+private immutable string railToggleTooltipText = "Show or hide projects";
+private immutable string newProjectTooltipText = "New sandbox project";
+private immutable string openFolderTooltipText = "Open this folder";
+private immutable string newChatTooltipText = "Start a new chat";
+private immutable string sendButtonTooltipText = "Send (Enter)";
+private immutable string stopButtonTooltipText = "Stop";
+
+/// A common button wired to a hover tooltip. The framework's Button reports no
+/// hover event, so onTick watches the anchor's hovered() state and applies the
+/// same hover-intent delay the context meter uses.
+private struct ButtonTooltipBinding
+{
+    Widget anchor;
+    // Fixed text, or (when set) a provider that keeps the tooltip in step with
+    // a button whose label changes, such as Send/Stop.
+    string text;
+    string delegate() textProvider;
+    HoverTooltip tip;
+    bool open;
+    // Place the panel over the anchor instead of under it (the composer's
+    // Send button sits at the bottom edge, where "under" is off-screen).
+    bool above;
+    double hoverSeconds;
+    // Last text handed to the panel, so a live provider only re-lays it out
+    // when the wording actually changed.
+    string shownText;
+
+    string tooltipText()
+    {
+        if (textProvider !is null)
+        {
+            const live = textProvider();
+            if (live.length > 0) return live;
+        }
+        return text;
+    }
+}
 
 /// Small rectangular context meter in the toolbar. Shows the exact token
 /// usage the API reported as a percentage of the model's context window, and
@@ -7347,6 +7416,13 @@ public final class OpenCodeRoot : VBox
     private double _usageTooltipHoverSeconds;
     private static immutable double usageTooltipDelaySeconds = 0.45;
 
+    // Hover tooltips for the common toolbar, rail, sidebar, and Send buttons.
+    // Buttons in the framework expose no hover callback, so onTick polls each
+    // anchor's hovered() state with the same hover-intent delay as the context
+    // meter (see addButtonTooltip).
+    private static immutable double buttonTooltipDelaySeconds = 0.45;
+    private ButtonTooltipBinding[] _buttonTooltips;
+
     // Generic hover tooltip (used for dialog options such as Legacy tools).
     private TooltipAnchor _legacyTooltipAnchor;
     private HoverTooltip _legacyTooltip;
@@ -8225,18 +8301,24 @@ public final class OpenCodeRoot : VBox
         toolbar.add(new Spacer());
 
         auto exportButton = toolbar.add(new Button("Export", IconKind.save));
+        exportButton.setId("oc-export");
         exportButton.onClick = delegate() { exportCurrentConversation(); };
+        addButtonTooltip(exportButton, exportButtonTooltipText);
 
         auto changesButton = toolbar.add(new Button("Changes", IconKind.folder));
         changesButton.setId("oc-changes");
         changesButton.onClick = delegate() { showChangesDialog(); };
+        addButtonTooltip(changesButton, changesButtonTooltipText);
 
         auto profileButton = toolbar.add(new Button("Profile", IconKind.user));
         profileButton.setId("oc-profile");
         profileButton.onClick = delegate() { showProfileDialog(); };
+        addButtonTooltip(profileButton, profileButtonTooltipText);
 
         auto settingsButton = toolbar.add(new Button("Settings", IconKind.settings));
+        settingsButton.setId("oc-settings-button");
         settingsButton.onClick = delegate() { showSettingsDialog(); };
+        addButtonTooltip(settingsButton, settingsButtonTooltipText);
 
         // Rebuild the package with DUB and relaunch. The window closes first so
         // DUB can overwrite the running .exe. Only offered when this build sits
@@ -8249,6 +8331,7 @@ public final class OpenCodeRoot : VBox
                 IconKind.refresh));
             rebuildButton.setId("oc-rebuild");
             rebuildButton.onClick = delegate() { requestRebuild(); };
+            addButtonTooltip(rebuildButton, rebuildButtonTooltipText);
             rebuildButton.onContextMenuRequested = delegate(Point position)
             {
                 ContextMenuItem[] items;
@@ -8264,6 +8347,7 @@ public final class OpenCodeRoot : VBox
             _updateButton = toolbar.add(new Button("Check update", IconKind.refresh));
             _updateButton.setId("oc-update");
             _updateButton.onClick = delegate() { requestUpdate(); };
+            addButtonTooltip(_updateButton, updateButtonTooltipText);
         }
 
         _keyBadge = toolbar.add(new KeyStatusBadge(""));
@@ -8294,6 +8378,7 @@ public final class OpenCodeRoot : VBox
         _railToggle.setId("oc-rail-toggle");
         _railToggle.setFlat(true);
         _railToggle.onClick = delegate() { toggleProjectsRail(); };
+        addButtonTooltip(_railToggle, railToggleTooltipText);
 
         _projectRail = projectsColumn.add(new ProjectListView());
         _projectRail.setId("oc-projects");
@@ -8311,6 +8396,7 @@ public final class OpenCodeRoot : VBox
             new Button("New project", IconKind.newDocument));
         _newProjectButton.setId("oc-new-project");
         _newProjectButton.onClick = delegate() { createSandboxProject(); };
+        addButtonTooltip(_newProjectButton, newProjectTooltipText);
 
         Insets sidebarPadding = Insets(8);
         // No right padding: the conversation list (and its scrollbar) must run
@@ -8353,13 +8439,7 @@ public final class OpenCodeRoot : VBox
             const workspace = activeWorkspace();
             openFolderInExplorer(workspace.length > 0 ? workspace : ".");
         };
-        auto changeFolderButton = titleRow.add(new IconButton(IconKind.open));
-        changeFolderButton.setId("oc-change-folder");
-        changeFolderButton.setFlat(true);
-        changeFolderButton.onClick = delegate()
-        {
-            showChangeProjectFolderDialog(activeProjectIndex());
-        };
+        addButtonTooltip(_openFolderButton, openFolderTooltipText);
         titleRow.add(new Spacer());
         _sessionsPath = headerColumn.add(new Label(""));
         _sessionsPath.setId("oc-project-path");
@@ -8374,6 +8454,7 @@ public final class OpenCodeRoot : VBox
         _newChatButton.layoutHints().preferredHeight = opencodeControlHeight;
         _newChatButton.layoutHints().minHeight = opencodeControlHeight;
         _newChatButton.onClick = delegate() { newChat(); };
+        addButtonTooltip(_newChatButton, newChatTooltipText);
         _filterField = headerColumn.add(new TextField(""));
         _filterField.setId("oc-filter");
         _filterField.setPlaceholder("Search chats");
@@ -8505,6 +8586,9 @@ public final class OpenCodeRoot : VBox
             if (turnIsBusy()) stopActiveTurn();
             else sendMessage();
         };
+        // The tooltip follows the label (Send / Stop) and opens above the
+        // button, which sits on the window's bottom edge.
+        addButtonTooltip(_sendButton, &sendButtonTooltip, true);
 
         // experimental: attachments - chip row sits inside the composer panel,
         // above the prompt, and only reserves height while it has chips.
@@ -16504,6 +16588,125 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    /// Register a hover tooltip for a common button. Text is fixed unless a
+    /// provider is supplied, which keeps the wording in step with a button
+    /// whose label changes (Send/Stop).
+    private void addButtonTooltip(Widget anchor, string text, bool above = false)
+    {
+        if (anchor is null || text.length == 0) return;
+        ButtonTooltipBinding binding;
+        binding.anchor = anchor;
+        binding.text = text;
+        binding.above = above;
+        _buttonTooltips ~= binding;
+    }
+
+    private void addButtonTooltip(Widget anchor, string delegate() provider,
+        bool above = false)
+    {
+        if (anchor is null || provider is null) return;
+        ButtonTooltipBinding binding;
+        binding.anchor = anchor;
+        binding.textProvider = provider;
+        binding.above = above;
+        _buttonTooltips ~= binding;
+    }
+
+    /// Tooltip wording for the Send/Stop button, whose label flips with the
+    /// turn state.
+    private string sendButtonTooltip()
+    {
+        if (_sendButton is null) return sendButtonTooltipText;
+        return _sendButton.text() == "Stop"d ? stopButtonTooltipText
+            : sendButtonTooltipText;
+    }
+
+    /// Open/close one registered button tooltip. The panel never takes the
+    /// pointer (it reports the anchor as its hit target), so the anchor stays
+    /// hovered while the tooltip is shown.
+    private void setButtonTooltipOpen(ref ButtonTooltipBinding binding,
+        bool open)
+    {
+        if (open)
+        {
+            if (binding.tip is null)
+            {
+                binding.tip = new HoverTooltip(binding.anchor);
+                binding.tip.setWrap(true);
+                binding.tip.setCompact(true);
+            }
+            binding.shownText = binding.tooltipText();
+            binding.tip.setText(binding.shownText);
+            if (binding.tip.parent() is null) popupRoot(this).add(binding.tip);
+            positionTooltip(binding.anchor, binding.tip, binding.above);
+            binding.open = true;
+        }
+        else
+        {
+            binding.open = false;
+            if (binding.tip !is null && binding.tip.parent() !is null)
+                binding.tip.parent().remove(binding.tip);
+        }
+    }
+
+    /// Tick-driven hover-intent for every registered button tooltip. A hidden
+    /// or discarded anchor dismisses its tooltip instead of leaving it
+    /// floating over a control that is no longer there.
+    private void updateButtonTooltips(double deltaSeconds)
+    {
+        foreach (ref binding; _buttonTooltips)
+        {
+            const live = binding.anchor !is null &&
+                binding.anchor.parent() !is null && binding.anchor.hovered();
+            if (!live)
+            {
+                binding.hoverSeconds = 0.0;
+                if (binding.open) setButtonTooltipOpen(binding, false);
+                continue;
+            }
+            if (binding.open)
+            {
+                const want = binding.tooltipText();
+                if (want.length > 0 && want != binding.shownText)
+                {
+                    binding.shownText = want;
+                    binding.tip.setText(want);
+                    positionTooltip(binding.anchor, binding.tip, binding.above);
+                }
+                continue;
+            }
+            binding.hoverSeconds += deltaSeconds;
+            if (binding.hoverSeconds >= buttonTooltipDelaySeconds)
+                setButtonTooltipOpen(binding, true);
+        }
+    }
+
+    /// Test-only: the open common-button tooltip's text for `widgetId`, or ""
+    /// when that button's tooltip is closed.
+    public string buttonTooltipTextForTesting(string widgetId)
+    {
+        foreach (ref binding; _buttonTooltips)
+            if (binding.open && binding.anchor !is null &&
+                binding.anchor.id() == widgetId)
+                return binding.tip.textForTesting();
+        return "";
+    }
+
+    /// Test-only: the open common-button tooltip's global bounds for
+    /// `widgetId` (Rect.init when that button's tooltip is closed).
+    public Rect buttonTooltipBoundsForTesting(string widgetId)
+    {
+        foreach (ref binding; _buttonTooltips)
+            if (binding.open && binding.anchor !is null &&
+                binding.anchor.id() == widgetId && binding.tip !is null)
+            {
+                const origin = binding.tip.localToGlobal(Point(0, 0));
+                return Rect(origin.x, origin.y, binding.tip.bounds().width,
+                    binding.tip.bounds().height);
+            }
+        return Rect.init;
+    }
+
     /// Position a generic tooltip near its anchor, clamped to the window.
     /// When `above` is set the tooltip is placed over the anchor, otherwise
     /// under it.
@@ -18435,6 +18638,9 @@ public final class OpenCodeRoot : VBox
                 setContextUsageTooltipOpen(true);
             }
         }
+
+        // Common-button hover tooltips (toolbar, rail, sidebar, Send).
+        updateButtonTooltips(deltaSeconds);
 
         // A quick-search match whose row had to expand is scrolled to once that
         // expansion has been laid out.
