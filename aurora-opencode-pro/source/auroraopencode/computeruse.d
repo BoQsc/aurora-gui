@@ -97,18 +97,21 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
         OpenCodeToolDef(
             "computer",
             "Drive the local desktop like a person at the keyboard: `screen` " ~
-            "returns a screenshot, and `click`, `double_click`, `type`, " ~
-            "`key`, `scroll` and `wait_for_change` act on it. Coordinates are " ~
-            "in the screenshot's own pixel space (x right, y down): pass the " ~
-            "x,y you read off the latest `screen` image and they are scaled to " ~
-            "the real desktop automatically. Every call costs a full model turn, so prefer " ~
-            "one `steps` batch (click a field, type a line, press enter) over " ~
-            "a see -> act -> see round trip per action; `screenshot` decides " ~
-            "whether a fresh capture comes back (default: yes for `steps`, no " ~
-            "for one action, always for `screen`). Keep reasoning minimal; " ~
-            "only stop to plan when genuinely stuck (an unexpected dialog, a " ~
-            "choice that needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","type","key","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click)"},"y":{"type":"integer","description":"Screenshot y (click/double_click)"},"text":{"type":"string","description":"Text to type (type)"},"name":{"type":"string","description":"Key for the key action, e.g. \"enter\", \"tab\", \"esc\", \"ctrl+s\", \"alt+f4\""},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","type","key","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            "returns a screenshot, and `click`, `double_click`, `right_click`, " ~
+            "`type`, `key`, `scroll` and `wait_for_change` act on it. " ~
+            "Coordinates are in the screenshot's own pixel space (x right, y " ~
+            "down): pass the x,y you read off the latest `screen` image and " ~
+            "they are scaled to the real desktop automatically. `type` text " ~
+            "may contain a literal newline for Enter and a tab character. " ~
+            "Every call costs a full model turn, so prefer one `steps` batch " ~
+            "(click a field, type a line, press enter) over a see -> act -> " ~
+            "see round trip per action; `screenshot` decides whether a fresh " ~
+            "capture comes back (default: yes for `steps`, no for one action, " ~
+            "always for `screen`). Keep focus: the action goes to whatever " ~
+            "window is focused, so click the target first. Keep reasoning " ~
+            "minimal; only stop to plan when genuinely stuck (an unexpected " ~
+            "dialog, a choice that needs judgement). Windows only.",
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","type","key","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for the key action, e.g. \"enter\", \"tab\", \"esc\", \"ctrl+s\", \"alt+f4\""},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","type","key","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -832,9 +835,13 @@ version (Windows)
         auto png = computerUseEncodePng(capture.width, capture.height,
             capture.rgb);
         ComputerUseResult result;
+        const step = screenDownscale();
         result.output = prefix ~ " (" ~ to!string(capture.width) ~ "x" ~
             to!string(capture.height) ~ ", " ~ to!string(png.length) ~
-            " bytes).";
+            " bytes" ~ (step > 1 ? ", 1/" ~ to!string(step) ~ " of the " ~
+            to!string(capture.width * step) ~ "x" ~
+            to!string(capture.height * step) ~ " screen" : "") ~
+            "; click in these image pixels).";
         result.images = [attachmentImageForData("image/png", "screen.png",
             png)];
         return result;
@@ -849,17 +856,33 @@ version (Windows)
         SendInput(1, inputs.ptr, INPUT.sizeof);
     }
 
-    private void clickAt(int x, int y, int count)
+    /// Move the pointer to a screenshot-space coordinate, clamped to the real
+    /// screen so an out-of-range model guess cannot move it off the desktop.
+    private void moveCursor(int x, int y)
+    {
+        const step = screenDownscale();
+        const width = GetSystemMetrics(SM_CXSCREEN);
+        const height = GetSystemMetrics(SM_CYSCREEN);
+        long realX = cast(long) x * step;
+        long realY = cast(long) y * step;
+        if (realX < 0) realX = 0;
+        else if (realX > width - 1) realX = width - 1;
+        if (realY < 0) realY = 0;
+        else if (realY > height - 1) realY = height - 1;
+        SetCursorPos(cast(int) realX, cast(int) realY);
+    }
+
+    private void clickAt(int x, int y, int count,
+        DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
     {
         // Coordinates arrive in the (possibly downscaled) screenshot's pixel
-        // space; map them onto real screen pixels before moving the pointer.
-        const step = screenDownscale();
-        SetCursorPos(x * step, y * step);
+        // space; mapToReal maps them onto real screen pixels before the press.
+        moveCursor(x, y);
         Thread.sleep(msecs(30)); // let the pointer settle before the press
         foreach (i; 0 .. count)
         {
-            sendMouse(MOUSEEVENTF_LEFTDOWN);
-            sendMouse(MOUSEEVENTF_LEFTUP);
+            sendMouse(down);
+            sendMouse(up);
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
     }
@@ -875,6 +898,12 @@ version (Windows)
     private void typeText(string text)
     {
         foreach (dchar c; text)
+        {
+            // Control characters go through virtual keys: a lone Unicode
+            // newline/tab is ignored by many controls, so press Enter/Tab.
+            if (c == '\n') { pressChord(null, 0x0D); continue; }
+            if (c == '\r') continue; // already handled by the \n of a CRLF pair
+            if (c == '\t') { pressChord(null, 0x09); continue; }
             foreach (unit; utf16Units(c))
             {
                 INPUT[2] inputs;
@@ -886,6 +915,7 @@ version (Windows)
                 inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
                 SendInput(2, inputs.ptr, INPUT.sizeof);
             }
+        }
     }
 
     private void pressChord(ushort[] modifiers, ushort vk)
@@ -997,6 +1027,10 @@ version (Windows)
                 clickAt(x, y, 2);
                 return withOptionalScreenshot("Double-clicked at " ~
                     to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
+            case "right_click":
+                clickAt(x, y, 1, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
+                return withOptionalScreenshot("Right-clicked at " ~
+                    to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
             case "type":
                 if (text.length == 0)
                     return failedResult("Error: type requires `text`.");
@@ -1010,6 +1044,9 @@ version (Windows)
                 return withOptionalScreenshot(result.output, true);
             }
             case "scroll":
+                // Optional x,y put the wheel over the pane to scroll instead
+                // of wherever the pointer happened to be left.
+                if (x != 0 || y != 0) moveCursor(x, y);
                 sendMouse(MOUSEEVENTF_WHEEL, amount);
                 return withOptionalScreenshot("Scrolled by " ~
                     to!string(amount) ~ ".", screenshot);
