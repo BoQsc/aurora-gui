@@ -29,7 +29,8 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
     setSystemPromptModules;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse :
-    experimentalImageHistoryLimit, setComputerUseSetting;
+    experimentalImageHistoryLimit, setComputerUseSetting,
+    startComputerUseKillSwitch, stopComputerUseKillSwitch;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -8167,6 +8168,8 @@ public final class OpenCodeRoot : VBox
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
+        if (_settings.experimentalComputerUse) startComputerUseKillSwitch();
+        else stopComputerUseKillSwitch();
         _projectState = loadProjects();
         migrateWorkspaceIntoProjects();
         migrateLegacySandboxIntoNumberedFolder();
@@ -16847,6 +16850,8 @@ public final class OpenCodeRoot : VBox
         {
             _settings.experimentalComputerUse = value;
             setComputerUseSetting(value);
+            if (value) startComputerUseKillSwitch();
+            else stopComputerUseKillSwitch();
             saveSettingsNow();
         };
         computerRow.add(computerCheck);

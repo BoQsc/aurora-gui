@@ -65,6 +65,49 @@ public void setComputerUseSetting(bool value)
     computerUseEnabledBySetting = value;
 }
 
+// ---------------------------------------------------------------------------
+// Kill switch. A global hotkey the human can press to stop the agent at once,
+// even while a fullscreen game owns the keyboard. The hotkey thread sets a flag
+// the tool worker polls between every step; nothing the agent does can ignore
+// it. `__gshared` because the two run on different threads.
+// ---------------------------------------------------------------------------
+
+/// Human-facing chord that stops the agent. The label is what the model and the
+/// UI show; the actual VK/modifiers live in the Windows section below.
+public enum string computerUseKillSwitchChord = "Ctrl+Alt+Shift+K";
+
+/// Set by the hotkey thread, read by the tool worker. Cleared at the start of
+/// every computer call so a stray press while idle cannot stop a later run.
+private __gshared bool computerUseAbortFlag = false;
+
+/// True once the human has pressed the kill switch during the current call.
+public bool computerUseAbortActive()
+{
+    return computerUseAbortFlag;
+}
+
+/// Called from the hotkey thread when the chord is pressed. Only sets the flag:
+/// the tool worker notices it between steps and returns, and its own
+/// `scope (exit) releaseHeldInputs()` releases anything held - so no input is
+/// injected from inside a keyboard-hook callback.
+public void requestComputerUseAbort()
+{
+    computerUseAbortFlag = true;
+}
+
+/// Start the background thread that owns the global kill-switch hotkey. No-op
+/// when computer use is not compiled for this platform.
+public void startComputerUseKillSwitch()
+{
+    version (Windows) startKillSwitchThread();
+}
+
+/// Unregister the chord and stop the hotkey thread (called on app shutdown).
+public void stopComputerUseKillSwitch()
+{
+    version (Windows) stopKillSwitchThread();
+}
+
 /// How many of the newest image-carrying messages keep their pixels in a model
 /// request. A computer-use loop adds a screenshot per step, and every request
 /// resends the whole conversation, so an unbounded history paid for every
@@ -98,20 +141,26 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "computer",
             "Drive the local desktop like a person at the keyboard: `screen` " ~
             "returns a screenshot, and `click`, `double_click`, `right_click`, " ~
-            "`type`, `key`, `scroll` and `wait_for_change` act on it. " ~
-            "Coordinates are in the screenshot's own pixel space (x right, y " ~
-            "down): pass the x,y you read off the latest `screen` image and " ~
-            "they are scaled to the real desktop automatically. `type` text " ~
-            "may contain a literal newline for Enter and a tab character. " ~
-            "Every call costs a full model turn, so prefer one `steps` batch " ~
-            "(click a field, type a line, press enter) over a see -> act -> " ~
-            "see round trip per action; `screenshot` decides whether a fresh " ~
-            "capture comes back (default: yes for `steps`, no for one action, " ~
-            "always for `screen`). Keep focus: the action goes to whatever " ~
-            "window is focused, so click the target first. Keep reasoning " ~
-            "minimal; only stop to plan when genuinely stuck (an unexpected " ~
-            "dialog, a choice that needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","type","key","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for the key action, e.g. \"enter\", \"tab\", \"esc\", \"ctrl+s\", \"alt+f4\""},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","type","key","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            "`mouse_move`, `drag`, `type`, `key`, `key_down`, `key_up`, " ~
+            "`scroll` and `wait_for_change` act on it. Coordinates are in the " ~
+            "screenshot's own pixel space (x right, y down): pass the x,y you " ~
+            "read off the latest `screen` image and they are scaled to the " ~
+            "real desktop automatically. Use `mouse_move` to hover without " ~
+            "clicking (e.g. edge-pan), `drag` for box-select, order and camera " ~
+            "drags, and `key_down`/`key_up` to hold a key down (camera pan, " ~
+            "shift-queue). `type` text may contain a literal newline for Enter " ~
+            "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
+            "zoomed-in crop of one area. Every call costs a full model turn, so " ~
+            "prefer one `steps` batch (click a field, type a line, press enter) " ~
+            "over a see -> act -> see round trip per action; `screenshot` " ~
+            "decides whether a fresh capture comes back (default: yes for " ~
+            "`steps`, no for one action, always for `screen`). Keep focus: the " ~
+            "action goes to whatever window is focused, so click the target " ~
+            "first. The human can stop everything at any time with " ~
+            computerUseKillSwitchChord ~ ". Keep reasoning minimal; only stop " ~
+            "to plan when genuinely stuck (an unexpected dialog, a choice that " ~
+            "needs judgement). Windows only.",
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up, e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\" (key_down/key_up hold it until the matching key_up)"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -126,26 +175,16 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
 
+    // A new call always starts un-aborted; a press meant for a previous call
+    // must not silently kill this one.
+    computerUseAbortFlag = false;
+
     string action;
-    long x;
-    long y;
-    string text;
-    string keyName;
-    long amount = -120;
-    long timeoutMs = 5000;
-    long intervalMs = 250;
     int screenshotFlag = -1; // -1 absent, 0 false, 1 true
     JSONValue[] steps;
     if (value.type == JSONType.object)
     {
         action = jsonString(value, "action");
-        x = jsonInt(value, "x", 0);
-        y = jsonInt(value, "y", 0);
-        text = jsonString(value, "text");
-        keyName = jsonString(value, "name");
-        amount = jsonInt(value, "amount", -120);
-        timeoutMs = jsonInt(value, "timeout_ms", 5000);
-        intervalMs = jsonInt(value, "interval_ms", 250);
         screenshotFlag = jsonBoolFlag(value, "screenshot");
         if (auto field = "steps" in value.object)
             if (field.type == JSONType.array) steps = field.array;
@@ -153,19 +192,21 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
     action = strip(toLower(action));
     if (action.length == 0 && steps.length == 0)
         return failedResult("Error: computer requires an `action` " ~
-            "(screen, click, double_click, type, key, scroll, " ~
-            "wait_for_change) or a `steps` batch.");
+            "(screen, click, double_click, right_click, mouse_move, drag, " ~
+            "key, key_down, key_up, type, scroll, wait_for_change) or a " ~
+            "`steps` batch.");
 
     version (Windows)
     {
+        // Any key/button still held when the call ends is released here, so a
+        // model that forgets `key_up` cannot leave an input stuck down.
+        scope (exit) releaseHeldInputs();
         // A batch screenshots by default: the caller's next move depends on the
         // result, and asking for it in the same call saves a whole model turn.
         if (steps.length > 0)
             return runWindowsSteps(steps,
                 screenshotFlag < 0 ? true : screenshotFlag == 1);
-        return runWindowsAction(action, cast(int) x, cast(int) y, text,
-            keyName, cast(int) amount, timeoutMs, intervalMs,
-            screenshotFlag == 1);
+        return runWindowsAction(value, screenshotFlag == 1);
     }
     else
         return failedResult("Error: computer use is only implemented on " ~
@@ -605,11 +646,60 @@ version (Windows)
     private alias WORD = ushort;
     private alias LONG = int;
     private alias BOOL = int;
+    private alias WPARAM = size_t;
+    private alias LPARAM = size_t;
 
     private enum SRCCOPY = 0x00CC0020;
     private enum DIB_RGB_COLORS = 0;
     private enum SM_CXSCREEN = 0;
     private enum SM_CYSCREEN = 1;
+
+    // Kill-switch hotkey: Ctrl+Alt+Shift+K. Detected with a low-level keyboard
+    // hook (WH_KEYBOARD_LL) rather than RegisterHotKey: the hook fires even while
+    // a fullscreen game owns focus, sees the chord regardless of who else may
+    // have registered it, and (unlike RegisterHotKey) also sees injected input.
+    private enum int WH_KEYBOARD_LL = 13;
+    private enum uint WM_KEYDOWN = 0x0100;
+    private enum uint WM_KEYUP = 0x0101;
+    private enum uint WM_SYSKEYDOWN = 0x0104;
+    private enum uint WM_SYSKEYUP = 0x0105;
+    private enum DWORD VK_SHIFT = 0x10;
+    private enum DWORD VK_CONTROL = 0x11;
+    private enum DWORD VK_MENU = 0x12; // Alt
+    private enum DWORD VK_K = 0x4B;
+    private enum DWORD VK_LSHIFT = 0xA0;
+    private enum DWORD VK_RSHIFT = 0xA1;
+    private enum DWORD VK_LCONTROL = 0xA2;
+    private enum DWORD VK_RCONTROL = 0xA3;
+    private enum DWORD VK_LMENU = 0xA4;
+    private enum DWORD VK_RMENU = 0xA5;
+    private enum uint WM_QUIT = 0x0012;
+    private enum uint PM_NOREMOVE = 0x0000;
+
+    private struct KBDLLHOOKSTRUCT
+    {
+        DWORD vkCode;
+        DWORD scanCode;
+        DWORD flags;
+        DWORD time;
+        size_t dwExtraInfo;
+    }
+
+    private struct POINT
+    {
+        LONG x;
+        LONG y;
+    }
+
+    private struct MSG
+    {
+        void* hwnd;
+        UINT message;
+        WPARAM wParam;
+        LPARAM lParam;
+        DWORD time;
+        POINT pt;
+    }
 
     private enum INPUT_MOUSE = 0;
     private enum INPUT_KEYBOARD = 1;
@@ -617,6 +707,8 @@ version (Windows)
     private enum MOUSEEVENTF_LEFTUP = 0x0004;
     private enum MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private enum MOUSEEVENTF_RIGHTUP = 0x0010;
+    private enum MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    private enum MOUSEEVENTF_MIDDLEUP = 0x0040;
     private enum MOUSEEVENTF_WHEEL = 0x0800;
     private enum KEYEVENTF_KEYUP = 0x0002;
     private enum KEYEVENTF_UNICODE = 0x0004;
@@ -703,6 +795,172 @@ version (Windows)
             void* bits, BITMAPINFO* info, UINT usage);
         int DeleteObject(void* object);
         int DeleteDC(void* hdc);
+        int RegisterHotKey(void* hwnd, int id, uint modifiers, uint vk);
+        int UnregisterHotKey(void* hwnd, int id);
+        void* SetWindowsHookExW(int hookId, void* hookProc, void* hModule,
+            uint threadId);
+        int UnhookWindowsHookEx(void* hook);
+        size_t CallNextHookEx(void* hook, int code, WPARAM wParam,
+            LPARAM lParam);
+        void* GetModuleHandleW(const wchar* name);
+        int GetMessageW(MSG* message, void* hwnd, uint filterMin,
+            uint filterMax);
+        int PeekMessageW(MSG* message, void* hwnd, uint filterMin,
+            uint filterMax, uint remove);
+        int TranslateMessage(const MSG* message);
+        int DispatchMessageW(const MSG* message);
+        int PostThreadMessageW(uint threadId, uint message, WPARAM wParam,
+            LPARAM lParam);
+        uint GetCurrentThreadId();
+        uint GetLastError();
+    }
+
+    // -----------------------------------------------------------------------
+    // Kill-switch hotkey. A dedicated message-only thread registers
+    // Ctrl+Alt+Shift+K and waits for WM_HOTKEY. It has to own its own thread and
+    // queue because WM_HOTKEY is posted to the thread that registered the chord;
+    // this way it fires regardless of which window (the game included) has
+    // focus, and nothing in the UI toolkit has to change.
+    // -----------------------------------------------------------------------
+
+    private __gshared Thread killSwitchThread;
+    private __gshared uint killSwitchThreadId;
+    private __gshared bool killSwitchStop;
+    private __gshared void* killSwitchHook;
+    private __gshared bool llCtrlDown;
+    private __gshared bool llAltDown;
+    private __gshared bool llShiftDown;
+
+    /// Best-effort trace of the kill-switch thread: hook install result and the
+    /// moment the chord is seen. Lives in %TEMP% so it never touches the user's
+    /// project, and is the only way to tell a failed install from a chord the OS
+    /// never routed to us.
+    private void killSwitchLog(string message)
+    {
+        try
+        {
+            import std.file : append;
+            const dir = environment.get("TEMP", ".");
+            append(dir ~ "/aurora-computeruse-killswitch.log", message ~ "\n");
+        }
+        catch (Exception) {}
+    }
+
+    private bool indicatesControl(DWORD vk)
+    {
+        return vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL;
+    }
+
+    private bool indicatesAlt(DWORD vk)
+    {
+        return vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU;
+    }
+
+    private bool indicatesShift(DWORD vk)
+    {
+        return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+    }
+
+    /// Low-level keyboard hook: tracks Ctrl/Alt/Shift and fires the kill switch
+    /// when K goes down with all three held. Everything is passed through to the
+    /// next hook, so the chord still reaches the focused app.
+    private extern (Windows) size_t killSwitchKeyboardProc(int code,
+        WPARAM wParam, LPARAM lParam)
+    {
+        if (code == 0)
+        {
+            try
+            {
+                auto info = cast(KBDLLHOOKSTRUCT*) cast(void*) lParam;
+                if (info !is null)
+                {
+                    const vk = info.vkCode;
+                    const down = wParam == WM_KEYDOWN ||
+                        wParam == WM_SYSKEYDOWN;
+                    const up = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+                    if (indicatesControl(vk))
+                    {
+                        if (down) llCtrlDown = true;
+                        else if (up) llCtrlDown = false;
+                    }
+                    else if (indicatesAlt(vk))
+                    {
+                        if (down) llAltDown = true;
+                        else if (up) llAltDown = false;
+                    }
+                    else if (indicatesShift(vk))
+                    {
+                        if (down) llShiftDown = true;
+                        else if (up) llShiftDown = false;
+                    }
+                    else if (vk == VK_K && down && llCtrlDown && llAltDown &&
+                        llShiftDown)
+                    {
+                        killSwitchLog("chord detected");
+                        requestComputerUseAbort();
+                    }
+                }
+            }
+            catch (Throwable) {}
+        }
+        return CallNextHookEx(null, code, wParam, lParam);
+    }
+
+    private void runKillSwitchThread()
+    {
+        // Force this thread's message queue to exist; a low-level hook needs its
+        // installing thread to pump messages.
+        MSG message;
+        PeekMessageW(&message, null, 0, 0, PM_NOREMOVE);
+        killSwitchThreadId = GetCurrentThreadId();
+        llCtrlDown = false;
+        llAltDown = false;
+        llShiftDown = false;
+        killSwitchHook = SetWindowsHookExW(WH_KEYBOARD_LL,
+            cast(void*) &killSwitchKeyboardProc, GetModuleHandleW(null), 0);
+        if (killSwitchHook is null)
+        {
+            killSwitchLog("hook install failed, GetLastError=" ~
+                to!string(GetLastError()));
+            return;
+        }
+        killSwitchLog("hook installed; " ~ computerUseKillSwitchChord);
+        scope (exit) UnhookWindowsHookEx(killSwitchHook);
+        while (!killSwitchStop)
+        {
+            const got = GetMessageW(&message, null, 0, 0);
+            if (got <= 0) break; // WM_QUIT (0) or error (-1)
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        killSwitchLog("thread stopped");
+    }
+
+    private void startKillSwitchThread()
+    {
+        if (killSwitchThread !is null) return;
+        killSwitchStop = false;
+        killSwitchThreadId = 0;
+        killSwitchThread = new Thread(&runKillSwitchThread);
+        killSwitchThread.isDaemon = true;
+        killSwitchThread.start();
+    }
+
+    private void stopKillSwitchThread()
+    {
+        if (killSwitchThread is null) return;
+        killSwitchStop = true;
+        // The thread may not have published its id yet; give it a moment so the
+        // WM_QUIT lands and GetMessage unblocks.
+        foreach (_; 0 .. 100)
+        {
+            if (killSwitchThreadId != 0) break;
+            Thread.sleep(msecs(10));
+        }
+        if (killSwitchThreadId != 0)
+            PostThreadMessageW(killSwitchThreadId, WM_QUIT, 0, 0);
+        killSwitchThread.join();
+        killSwitchThread = null;
     }
 
     /// One downscaled, top-down RGB frame plus its pixel dimensions. `ok` is
@@ -734,7 +992,12 @@ version (Windows)
         return (maxEdge + captureMaxEdge - 1) / captureMaxEdge;
     }
 
-    private Capture captureScreen()
+    /// Capture the screen. With a positive region (screenshot-space x,y,w,h)
+    /// only that sub-rectangle is returned, sampled from the *native* pixels, so
+    /// the result is a magnified crop - the way to read small UI text a
+    /// half-scale full screenshot would blur away.
+    private Capture captureScreen(int rx = -1, int ry = -1, int rw = 0,
+        int rh = 0)
     {
         Capture capture;
         const width = GetSystemMetrics(SM_CXSCREEN);
@@ -791,16 +1054,41 @@ version (Windows)
             return capture;
         }
 
+        // Resolve the source rectangle in native pixels. A region is given in
+        // screenshot pixels and stays in that space: the crop is sampled with
+        // the screen's own downscale, so one region image pixel equals one click
+        // coordinate - the model can read a coordinate off a crop and use it
+        // directly.
         const step = screenDownscale();
-        const outWidth = (width + step - 1) / step;
-        const outHeight = (height + step - 1) / step;
+        int srcX = 0;
+        int srcY = 0;
+        int srcW = width;
+        int srcH = height;
+        if (rw > 0 && rh > 0)
+        {
+            srcX = rx * step;
+            srcY = ry * step;
+            srcW = rw * step;
+            srcH = rh * step;
+            if (srcX < 0) srcX = 0;
+            if (srcY < 0) srcY = 0;
+            if (srcX > width - 1) srcX = width - 1;
+            if (srcY > height - 1) srcY = height - 1;
+            if (srcX + srcW > width) srcW = width - srcX;
+            if (srcY + srcH > height) srcH = height - srcY;
+            if (srcW < step) srcW = step;
+            if (srcH < step) srcH = step;
+        }
+
+        const outWidth = (srcW + step - 1) / step;
+        const outHeight = (srcH + step - 1) / step;
         auto rgb = new ubyte[cast(size_t) outWidth * outHeight * 3];
         foreach (oy; 0 .. outHeight)
         {
-            const sy = min(oy * step, height - 1);
+            const sy = min(srcY + oy * step, height - 1);
             foreach (ox; 0 .. outWidth)
             {
-                const sx = min(ox * step, width - 1);
+                const sx = min(srcX + ox * step, width - 1);
                 const src = (cast(size_t) sy * width + sx) * 4;
                 const dst = (cast(size_t) oy * outWidth + ox) * 3;
                 rgb[dst] = pixels[src + 2];     // R
@@ -830,17 +1118,32 @@ version (Windows)
 
     private ComputerUseResult screenshotResult(string prefix)
     {
-        auto capture = captureScreen();
+        return screenshotResult(prefix, -1, -1, 0, 0);
+    }
+
+    private ComputerUseResult screenshotResult(string prefix, int rx, int ry,
+        int rw, int rh)
+    {
+        auto capture = captureScreen(rx, ry, rw, rh);
         if (!capture.ok) return failedResult(capture.error);
         auto png = computerUseEncodePng(capture.width, capture.height,
             capture.rgb);
-        ComputerUseResult result;
         const step = screenDownscale();
+        const screenW = GetSystemMetrics(SM_CXSCREEN);
+        const screenH = GetSystemMetrics(SM_CYSCREEN);
+        string note;
+        if (rw > 0 && rh > 0)
+            note = "a " ~ to!string(rw) ~ "x" ~ to!string(rh) ~
+                " region at " ~ to!string(rx) ~ "," ~ to!string(ry) ~
+                " of the " ~ to!string(screenW) ~ "x" ~ to!string(screenH) ~
+                " screen, so add the region origin to these pixels";
+        else if (step > 1)
+            note = "1/" ~ to!string(step) ~ " of the " ~ to!string(screenW) ~
+                "x" ~ to!string(screenH) ~ " screen";
+        ComputerUseResult result;
         result.output = prefix ~ " (" ~ to!string(capture.width) ~ "x" ~
             to!string(capture.height) ~ ", " ~ to!string(png.length) ~
-            " bytes" ~ (step > 1 ? ", 1/" ~ to!string(step) ~ " of the " ~
-            to!string(capture.width * step) ~ "x" ~
-            to!string(capture.height * step) ~ " screen" : "") ~
+            " bytes" ~ (note.length ? ", " ~ note : "") ~
             "; click in these image pixels).";
         result.images = [attachmentImageForData("image/png", "screen.png",
             png)];
@@ -885,6 +1188,121 @@ version (Windows)
             sendMouse(up);
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Held inputs. `key_down`/`key_up` and `drag` leave inputs pressed across
+    // steps, so we remember what is down (plain flags - cheap, and the kill
+    // switch thread reads them) and can always release everything again.
+    // -----------------------------------------------------------------------
+
+    private __gshared bool[256] heldKeys;
+    private __gshared bool heldLeftButton;
+    private __gshared bool heldRightButton;
+    private __gshared bool heldMiddleButton;
+
+    private void sendKeyEvent(ushort vk, bool up)
+    {
+        INPUT[1] inputs;
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].ki.wVk = vk;
+        inputs[0].ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+        SendInput(1, inputs.ptr, INPUT.sizeof);
+    }
+
+    /// Release every key and mouse button the agent is holding. Called by the
+    /// kill switch immediately, and when a computer call ends, so nothing is
+    /// ever left stuck down.
+    private void releaseHeldInputs()
+    {
+        foreach (vk; 0 .. 256)
+            if (heldKeys[vk])
+            {
+                sendKeyEvent(cast(ushort) vk, true);
+                heldKeys[vk] = false;
+            }
+        if (heldLeftButton) { sendMouse(MOUSEEVENTF_LEFTUP); heldLeftButton = false; }
+        if (heldRightButton) { sendMouse(MOUSEEVENTF_RIGHTUP); heldRightButton = false; }
+        if (heldMiddleButton) { sendMouse(MOUSEEVENTF_MIDDLEUP); heldMiddleButton = false; }
+    }
+
+    /// Virtual key for a one-character token. A letter's virtual key is its
+    /// *uppercase* code (VK 'A' = 0x41, not the ASCII 'a' = 0x61, which is the
+    /// numeric keypad); digits and punctuation already match. Without this,
+    /// `key: "k"` presses keypad '+', not the K key.
+    private ushort vkForToken(string token)
+    {
+        if (token.length != 1) return 0;
+        const ch = token[0];
+        if (ch >= 'a' && ch <= 'z') return cast(ushort) (ch - 'a' + 'A');
+        return cast(ushort) ch;
+    }
+
+    /// Resolve a name for `key_down`/`key_up`: a normal virtual key, a modifier
+    /// (shift/ctrl/alt/win), or a single character.
+    private ushort resolveHoldKey(string token)
+    {
+        const t = strip(toLower(token));
+        if (t.length == 0) return 0;
+        ushort vk = virtualKeyFor(t);
+        if (vk == 0) vk = modifierKeyFor(t);
+        if (vk == 0) vk = vkForToken(t);
+        return vk;
+    }
+
+    private ComputerUseResult runHoldKey(string keyName, bool up)
+    {
+        const vk = resolveHoldKey(keyName);
+        if (vk == 0)
+            return failedResult("Error: unknown key '" ~ keyName ~ "'.");
+        sendKeyEvent(vk, up);
+        heldKeys[vk & 0xFF] = !up;
+        return succeededResult((up ? "Released key \"" : "Held key \"") ~
+            keyName ~ "\".");
+    }
+
+    /// Press a mouse button, move through interpolated points, release. Used
+    /// for box-select (left), order drags (right) and camera drags (middle).
+    /// `durationMs` controls how long the move takes.
+    private void dragMouse(int x1, int y1, int x2, int y2, int durationMs,
+        string button)
+    {
+        DWORD down = MOUSEEVENTF_LEFTDOWN;
+        DWORD up = MOUSEEVENTF_LEFTUP;
+        if (button == "right")
+        {
+            down = MOUSEEVENTF_RIGHTDOWN;
+            up = MOUSEEVENTF_RIGHTUP;
+        }
+        else if (button == "middle" || button == "wheel")
+        {
+            down = MOUSEEVENTF_MIDDLEDOWN;
+            up = MOUSEEVENTF_MIDDLEUP;
+        }
+
+        moveCursor(x1, y1);
+        Thread.sleep(msecs(40));
+        sendMouse(down);
+        if (down == MOUSEEVENTF_LEFTDOWN) heldLeftButton = true;
+        else if (down == MOUSEEVENTF_RIGHTDOWN) heldRightButton = true;
+        else heldMiddleButton = true;
+        Thread.sleep(msecs(40));
+
+        int steps = durationMs / 16;
+        if (steps < 2) steps = 2;
+        if (steps > 150) steps = 150;
+        foreach (i; 1 .. steps + 1)
+        {
+            if (computerUseAbortActive()) break;
+            const t = cast(double) i / steps;
+            moveCursor(cast(int) (x1 + (x2 - x1) * t),
+                cast(int) (y1 + (y2 - y1) * t));
+            Thread.sleep(msecs(16));
+        }
+        sendMouse(up);
+        if (down == MOUSEEVENTF_LEFTDOWN) heldLeftButton = false;
+        else if (down == MOUSEEVENTF_RIGHTDOWN) heldRightButton = false;
+        else heldMiddleButton = false;
     }
 
     private ushort[] utf16Units(dchar c)
@@ -1003,21 +1421,41 @@ version (Windows)
         }
         const last = strip(parts[$ - 1]);
         ushort vk = virtualKeyFor(last);
-        if (vk == 0 && last.length == 1)
-            vk = cast(ushort) last[0];
+        if (vk == 0) vk = vkForToken(last);
         if (vk == 0)
             return failedResult("Error: unknown key '" ~ last ~ "'.");
         pressChord(modifiers, vk);
         return succeededResult("Pressed key \"" ~ keyName ~ "\".");
     }
 
-    private ComputerUseResult runWindowsAction(string action, int x, int y,
-        string text, string keyName, int amount, long timeoutMs,
-        long intervalMs, bool screenshot = false)
+    /// One computer action, driven by the JSON object (top-level call or one
+    /// entry of a `steps` batch). Reads every field it needs from `value` so
+    /// the two call paths share one implementation.
+    private ComputerUseResult runWindowsAction(JSONValue value, bool screenshot)
     {
+        const action = strip(toLower(jsonString(value, "action")));
+        const x = cast(int) jsonInt(value, "x", 0);
+        const y = cast(int) jsonInt(value, "y", 0);
+        const x2 = cast(int) jsonInt(value, "x2", 0);
+        const y2 = cast(int) jsonInt(value, "y2", 0);
+        const text = jsonString(value, "text");
+        const keyName = jsonString(value, "name");
+        const amount = cast(int) jsonInt(value, "amount", -120);
+        const timeoutMs = jsonInt(value, "timeout_ms", 5000);
+        const intervalMs = jsonInt(value, "interval_ms", 250);
+        const durationMs = cast(int) jsonInt(value, "duration_ms", 400);
+        const button = strip(toLower(jsonString(value, "button")));
+
         switch (action)
         {
             case "screen":
+                if (auto region = "region" in value.object)
+                    if (region.type == JSONType.object)
+                        return screenshotResult("Captured screen region",
+                            cast(int) jsonInt(*region, "x", 0),
+                            cast(int) jsonInt(*region, "y", 0),
+                            cast(int) jsonInt(*region, "w", 0),
+                            cast(int) jsonInt(*region, "h", 0));
                 return screenshotResult("Captured the screen");
             case "click":
                 clickAt(x, y, 1);
@@ -1031,6 +1469,16 @@ version (Windows)
                 clickAt(x, y, 1, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
                 return withOptionalScreenshot("Right-clicked at " ~
                     to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
+            case "mouse_move":
+                moveCursor(x, y);
+                return withOptionalScreenshot("Moved the pointer to " ~
+                    to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
+            case "drag":
+                dragMouse(x, y, x2, y2, durationMs, button);
+                return withOptionalScreenshot("Dragged " ~
+                    (button.length > 0 ? button : "left") ~ " from " ~
+                    to!string(x) ~ "," ~ to!string(y) ~ " to " ~
+                    to!string(x2) ~ "," ~ to!string(y2) ~ ".", screenshot);
             case "type":
                 if (text.length == 0)
                     return failedResult("Error: type requires `text`.");
@@ -1040,6 +1488,18 @@ version (Windows)
             case "key":
             {
                 auto result = runKey(keyName);
+                if (!screenshot || result.failed) return result;
+                return withOptionalScreenshot(result.output, true);
+            }
+            case "key_down":
+            {
+                auto result = runHoldKey(keyName, false);
+                if (!screenshot || result.failed) return result;
+                return withOptionalScreenshot(result.output, true);
+            }
+            case "key_up":
+            {
+                auto result = runHoldKey(keyName, true);
                 if (!screenshot || result.failed) return result;
                 return withOptionalScreenshot(result.output, true);
             }
@@ -1092,11 +1552,14 @@ version (Windows)
                 break;
             }
             const action = strip(toLower(jsonString(step, "action")));
-            auto one = runWindowsAction(action, cast(int) jsonInt(step, "x", 0),
-                cast(int) jsonInt(step, "y", 0), jsonString(step, "text"),
-                jsonString(step, "name"), cast(int) jsonInt(step, "amount",
-                -120), jsonInt(step, "timeout_ms", 5000),
-                jsonInt(step, "interval_ms", 250), false);
+            if (computerUseAbortActive())
+            {
+                builder.put(label ~ ": stopped by the kill switch (" ~
+                    computerUseKillSwitchChord ~ ").\n");
+                failed = true;
+                break;
+            }
+            auto one = runWindowsAction(step, false);
             builder.put(label ~ " (" ~ (action.length > 0 ? action : "?") ~
                 "): " ~ one.output);
             if (builder.data.length > 0 && builder.data[$ - 1] != '\n')
@@ -1113,7 +1576,7 @@ version (Windows)
         ComputerUseResult result;
         result.output = builder.data;
         result.failed = failed;
-        if (screenshot)
+        if (screenshot && !computerUseAbortActive())
         {
             auto shot = screenshotResult("Screen after the batch");
             if (shot.failed)
@@ -1141,6 +1604,9 @@ version (Windows)
             msecs(timeoutMs > 60000 ? 60000 : timeoutMs);
         while (MonoTime.currTime < deadline)
         {
+            if (computerUseAbortActive())
+                return failedResult("Stopped by the kill switch (" ~
+                    computerUseKillSwitchChord ~ ").");
             Thread.sleep(msecs(intervalMs));
             auto now = captureScreen();
             if (!now.ok) return failedResult(now.error);
