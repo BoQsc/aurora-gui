@@ -5047,6 +5047,27 @@ int main(string[] args)
         assert(root.inputTextForTesting() == suggestions[0],
             "A real click on an intro suggestion did not prefill the prompt");
         root.setInputForTesting("");
+
+        // A pill behaves as a toggle: it highlights, prepends its text ahead of
+        // whatever the user already typed, and pressing it again removes exactly
+        // that text while clearing the highlight.
+        const userPrompt = "existing user prompt";
+        root.setInputForTesting(userPrompt);
+        assert(root.clickIntroSuggestionForTesting(0),
+            "Selecting an intro suggestion should prefill the composer");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == suggestions[0] ~ "\n" ~ userPrompt,
+            "Suggested text should be inserted before the user's own input");
+        assert(root.introSelectedSuggestionForTesting() == 0,
+            "The selected pill should stay highlighted after the click");
+        assert(root.clickIntroSuggestionForTesting(0),
+            "Pressing the selected pill again should toggle it off");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == userPrompt,
+            "Toggling a pill off should remove exactly what it inserted");
+        assert(root.introSelectedSuggestionForTesting() == -1,
+            "Toggling a pill off should clear the highlight");
+        root.setInputForTesting("");
         writeln("Empty-state intro shows and prefills the composer");
 
         // The first message replaces the welcome with the transcript.

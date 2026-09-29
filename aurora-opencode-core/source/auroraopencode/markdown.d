@@ -1576,7 +1576,13 @@ struct MarkdownComposer
     }
 }
 
-void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
+/// Paint every markdown background - code-block panels, inline-code pills,
+/// quote bars, rules and table cells - without drawing any glyph. Split from
+/// `paintMarkdownGlyphs` so a caller can draw a text-selection highlight in
+/// between: an opaque code-block panel would otherwise hide a highlight that
+/// was painted before the whole composition.
+void paintMarkdownBackgrounds(ref Canvas canvas, ref MdComposition c, int dx,
+    int dy)
 {
     // Paint every background before any glyph. An inline-code run is composed
     // of several MdItem text segments, and each segment paints a padded pill
@@ -1622,7 +1628,14 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
                 break;
         }
     }
+}
 
+/// Paint every markdown glyph (and its underline / strikethrough). Separate
+/// from `paintMarkdownBackgrounds` so a selection highlight can be layered
+/// over the backgrounds but under the text.
+void paintMarkdownGlyphs(ref Canvas canvas, ref MdComposition c, int dx,
+    int dy)
+{
     foreach (item; c.items)
     {
         if (item.kind != MdItemKind.text || item.layout is null) continue;
@@ -1662,6 +1675,14 @@ void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
                 item.color, 1);
         }
     }
+}
+
+/// Convenience: paint a composition's backgrounds then its glyphs. Callers
+/// that interleave a selection highlight use the two halves directly.
+void paintMarkdown(ref Canvas canvas, ref MdComposition c, int dx, int dy)
+{
+    paintMarkdownBackgrounds(canvas, c, dx, dy);
+    paintMarkdownGlyphs(canvas, c, dx, dy);
 }
 
 unittest

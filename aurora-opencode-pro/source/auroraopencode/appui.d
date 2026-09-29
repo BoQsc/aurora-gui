@@ -5,7 +5,7 @@ import auroraopencode.core;
 import auroraopencode.logging : logError, logInfo, setLogDirectory;
 import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
-    paintMarkdown, parseMarkdown;
+    paintMarkdownBackgrounds, paintMarkdownGlyphs, parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind, autoResendDelayMs, quotaResetDelayMs;
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
@@ -1302,15 +1302,17 @@ private final class MessageBubble : Widget
             }
         }
 
-        // Highlight the active selection using the previous paint's segment
-        // geometry (drawn before the glyphs so the text stays readable).
-        drawSelection(canvas);
+        // Detach last frame's selectable geometry. The selection highlight is
+        // painted under this frame's glyphs but over the content's own opaque
+        // backgrounds (code-block panels, tool-card bands), so each content
+        // path below draws it between its background and glyph passes.
+        auto prevSegments = _selSegments;
+        _selSegments = null;
 
         _copyRects.length = 0;
         _copyLabels.length = 0;
         _linkRects.length = 0;
         _linkUrls.length = 0;
-        _selSegments.length = 0;
 
         if (_thinking.length > 0 && _content.length > 0)
             y += thinkingContentGap;
@@ -1331,7 +1333,7 @@ private final class MessageBubble : Widget
                 diffCardBorder);
             y += headerH;
             if (!_collapsed)
-                y += drawToolBody(canvas, innerWidth, y) + gap;
+                y += drawToolBody(canvas, innerWidth, y, prevSegments) + gap;
         }
         else if (_content.length > 0 || _streaming)
         {
@@ -1343,7 +1345,11 @@ private final class MessageBubble : Widget
                     noteActivity("paintMarkdown index=" ~ to!string(_messageIndex) ~
                         " items=" ~ to!string(composition.items.length) ~
                         " width=" ~ to!string(innerWidth));
-                    paintMarkdown(canvas, composition, padH, contentY);
+                    // Backgrounds, selection, then glyphs: the highlight sits
+                    // over the opaque code-block panel but under the code.
+                    paintMarkdownBackgrounds(canvas, composition, padH, contentY);
+                    drawSelection(canvas, prevSegments);
+                    paintMarkdownGlyphs(canvas, composition, padH, contentY);
                     collectMarkdownTargets(composition, contentY);
                 }
             }
@@ -1352,6 +1358,7 @@ private final class MessageBubble : Widget
                 const textX = _role == "user" ? userX + padH : padH;
                 const textWidth = _role == "user" ? userInnerWidth : innerWidth;
                 auto layout = shapedContent(textWidth);
+                drawSelection(canvas, prevSegments);
                 canvas.drawLayout(Point(textX, contentY), layout,
                     _queued ? opencodeMuted : opencodeText);
                 if (layout.lines.length > 0)
@@ -1762,7 +1769,8 @@ private final class MessageBubble : Widget
 
     /// Paint the expanded tool body (diff or numbered plain text) and register
     /// each row as a selectable segment. Returns the height consumed.
-    private int drawToolBody(ref Canvas canvas, int innerWidth, int top)
+    private int drawToolBody(ref Canvas canvas, int innerWidth, int top,
+        const SelectSegment[] prevSegments)
     {
         ensureToolLines(innerWidth);
         const count = cast(int) _toolLines.length;
@@ -1812,6 +1820,8 @@ private final class MessageBubble : Widget
         const diffBodyX = signX + _monoAdvance + 6;
         const plainBodyX = gutterX + gutterW + 10;
 
+        // Change-kind bands are painted first so the selection highlight can
+        // sit over them (and under the code) instead of being covered.
         foreach (i; firstRow .. lastRow)
         {
             auto line = &_toolLines[cast(size_t) i];
@@ -1829,6 +1839,15 @@ private final class MessageBubble : Widget
                 canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffAdd);
             else if (line.kind == ToolLineKind.del)
                 canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffDelete);
+        }
+
+        drawSelection(canvas, prevSegments);
+
+        // Glyphs on top of the bands and the selection wash.
+        foreach (i; firstRow .. lastRow)
+        {
+            auto line = &_toolLines[cast(size_t) i];
+            const y = top + i * rowH;
 
             if (line.bodyLayout is null)
                 line.bodyLayout = shapeMonoLine(toUTF32(
@@ -1988,10 +2007,10 @@ private final class MessageBubble : Widget
     {
         foreach (item; composition.items)
         {
-            // Selectable runs are the plain prose/heading/list text. Clipped
-            // code lines keep their dedicated Copy pill instead.
-            if (item.kind == MdItemKind.text && item.layout !is null &&
-                !item.clipText)
+            // Every text run is selectable, including the clipped lines of a
+            // code-block panel: the panel's Copy pill still copies the whole
+            // block, but a drag can also select an individual line.
+            if (item.kind == MdItemKind.text && item.layout !is null)
                 _selSegments ~= SelectSegment(item.layout,
                     cast(int)(padH + item.x), cast(int)(contentY + item.y),
                     maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
@@ -2100,13 +2119,13 @@ private final class MessageBubble : Widget
         lastChar = backwards ? _selAnchorChar : _selFocusChar;
     }
 
-    private void drawSelection(ref Canvas canvas)
+    private void drawSelection(ref Canvas canvas, const SelectSegment[] segments)
     {
         if (!hasSelection()) return;
         int firstSeg, lastSeg;
         size_t firstChar, lastChar;
         orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
-        foreach (segIndex, segment; _selSegments)
+        foreach (segIndex, segment; segments)
         {
             const index = cast(int) segIndex;
             if (index < firstSeg || index > lastSeg) continue;
@@ -2116,8 +2135,12 @@ private final class MessageBubble : Widget
                 ? (firstChar < len ? firstChar : len) : 0;
             const endIndex = index == lastSeg
                 ? (lastChar < len ? lastChar : len) : len;
+            // Clip to the run's visible slice so a highlight on a clipped code
+            // line cannot bleed past the panel edge.
+            auto clipped = canvas.clipped(Rect(segment.x, segment.y,
+                maxInt(1, segment.w), maxInt(1, segment.h)));
             foreach (rect; layout.selectionRects(from, endIndex))
-                canvas.fillRect(Rect(segment.x + cast(int) rect.x,
+                clipped.fillRect(Rect(segment.x + cast(int) rect.x,
                     segment.y + cast(int) rect.y,
                     maxInt(1, cast(int) rect.width),
                     maxInt(1, cast(int) rect.height)), opencodeSelection);
@@ -6158,8 +6181,10 @@ private immutable string selfFixSuggestion = "Fix Aurora OpenCode";
 /// adding per-frame work to a live transcript.
 private final class IntroOverlay : Widget
 {
-    /// Fired with the suggestion's prompt text when a pill is clicked.
-    void delegate(string prompt) onSuggestion;
+    /// Fired when the pill's highlight toggles: `prompt` is the text the pill
+    /// contributes to the composer and `selected` is true when it just became
+    /// highlighted, false when pressing it again cleared it.
+    void delegate(string prompt, bool selected) onSuggestion;
 
     private static immutable int margin = 24;
     private static immutable int iconSize = 44;
@@ -6185,6 +6210,10 @@ private final class IntroOverlay : Widget
     private Rect[] _pillRects;
     private string[] _pillLabels;
     private string[] _pillPrompts;
+    // Index of the currently highlighted pill, or -1 when none is selected.
+    // The highlight persists between clicks (it is not hover); pressing the
+    // same pill again toggles it off.
+    private int _selected = -1;
 
     void setSubtitle(string value)
     {
@@ -6203,6 +6232,7 @@ private final class IntroOverlay : Widget
         _suggestions = values.dup;
         _prompts = prompts.length == values.length ? prompts.dup : null;
         _hover = -1;
+        _selected = -1;
         invalidate();
     }
 
@@ -6220,6 +6250,16 @@ private final class IntroOverlay : Widget
     {
         _fade = 0.0;
         _hover = -1;
+        _selected = -1;
+        invalidate();
+    }
+
+    /// Drop the highlight without reporting a toggle, used when the composer
+    /// text no longer carries the pill's insertion.
+    void clearSelection()
+    {
+        if (_selected < 0) return;
+        _selected = -1;
         invalidate();
     }
 
@@ -6246,13 +6286,31 @@ private final class IntroOverlay : Widget
             ? _pillRects[index] : Rect.init;
     }
 
+    /// Test-only: index of the highlighted pill, or -1 when none is selected.
+    public int selectedSuggestionForTesting() const
+    {
+        return _selected;
+    }
+
     /// Test-only: click the pill at `index` exactly as a left click would.
     public bool clickSuggestionForTesting(int index)
     {
         if (index < 0 || index >= cast(int) _pillPrompts.length) return false;
         if (onSuggestion is null) return false;
-        onSuggestion(_pillPrompts[index]);
+        activate(index);
         return true;
+    }
+
+    /// Toggle the pill at `index` and report the new selection to the owner so
+    /// it can add or remove the pill's text in the composer.
+    private void activate(int index)
+    {
+        if (index < 0 || index >= cast(int) _pillPrompts.length) return;
+        if (onSuggestion is null) return;
+        const selected = _selected != index;
+        _selected = selected ? index : -1;
+        invalidate();
+        onSuggestion(_pillPrompts[index], selected);
     }
 
     private static bool sameStrings(const(string)[] a, const(string)[] b)
@@ -6398,16 +6456,19 @@ private final class IntroOverlay : Widget
                 const index = row.first + offset;
                 const rect = Rect(x, y, pillWidths[index], pillHeight);
                 const hovered = cast(int) index == _hover;
+                const selected = cast(int) index == _selected;
+                const active = hovered || selected;
                 canvas.drawRoundedRect(rect, pillHeight / 2,
-                    faded(hovered ? opencodeSelection : opencodeField),
-                    faded(hovered ? opencodeAccent : opencodeBorder), 1);
+                    faded(active ? opencodeSelection : opencodeField),
+                    faded(active ? opencodeAccent : opencodeBorder),
+                    selected ? 2 : 1);
                 // Draw through the pill's inner rect so a capped (too-wide)
                 // label elides instead of spilling past the rounded edge.
                 canvas.drawTextInRect(
                     Rect(x + pillPadH, y, maxInt(1, pillWidths[index] - 2 * pillPadH),
                         pillHeight),
                     toUTF32(_suggestions[index]),
-                    faded(hovered ? opencodeText : opencodeMuted), 1,
+                    faded(active ? opencodeText : opencodeMuted), 1,
                     HorizontalAlign.center, VerticalAlign.middle, true,
                     FontRole.ui, cast(FontFace) theme().uiFont);
                 _pillRects ~= rect;
@@ -6443,7 +6504,7 @@ private final class IntroOverlay : Widget
         if (event.button != MouseButton.left) return false;
         const index = pillAt(event.position);
         if (index < 0 || onSuggestion is null) return false;
-        onSuggestion(_pillPrompts[index]);
+        activate(index);
         return true;
     }
 }
@@ -7272,6 +7333,10 @@ public final class OpenCodeRoot : VBox
     private ChatScrollView _messagesScroll;
     private VBox _messageColumn;
     private IntroOverlay _introOverlay;
+    // Exact text the currently highlighted intro pill inserted at the front of
+    // the composer, kept so pressing the pill again removes precisely that and
+    // leaves the user's own prompt untouched.
+    private string _introInserted;
     private DetachedPlanPanel _planPanel;
     private FollowPill _followPill;
     // Quick search over the open conversation (Ctrl+F).
@@ -8685,11 +8750,9 @@ public final class OpenCodeRoot : VBox
         _introOverlay.layoutHints().overlayFillParent = true;
         _introOverlay.layoutHints().allowOverflow = true;
         configureIntroSuggestions();
-        _introOverlay.onSuggestion = delegate(string prompt)
+        _introOverlay.onSuggestion = delegate(string prompt, bool selected)
         {
-            _input.setText(prompt);
-            _input.requestFocus();
-            updateStatus("");
+            applyIntroSuggestion(prompt, selected);
         };
         _introOverlay.setVisible(false);
 
@@ -8746,6 +8809,10 @@ public final class OpenCodeRoot : VBox
             return handleLargePaste(before, after);
         };
         _input.onImagePaste = delegate() { return handleClipboardImagePaste(); };
+        // Keep the intro highlight honest: if the composer text stops carrying
+        // the pill's insertion (the user edited or cleared it), drop the
+        // highlight so a later press starts a fresh selection.
+        _input.onChanged = delegate() { syncIntroSelection(); };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate()
@@ -10208,7 +10275,12 @@ public final class OpenCodeRoot : VBox
         if (empty) updateIntroSubtitle();
         if (_introOverlay.visible() == empty) return;
         _introOverlay.setVisible(empty);
-        if (empty) _introOverlay.replay();
+        if (empty)
+        {
+            // A fresh empty conversation starts with no pill highlighted.
+            _introInserted = "";
+            _introOverlay.replay();
+        }
     }
 
     /// Point the overlay's subtitle at the workspace the tools will run in, so
@@ -10242,6 +10314,60 @@ public final class OpenCodeRoot : VBox
                 ~ "program source is at " ~ source ~ "\n\nWhat's wrong: ");
         }
         _introOverlay.setSuggestions(labels.data, prompts.data);
+    }
+
+    /// Apply a pill toggle to the composer: a newly selected pill prepends its
+    /// prompt to whatever the user already typed, and pressing the same pill
+    /// again removes exactly that inserted text. Any previous insertion is
+    /// dropped first, so switching pills never stacks text.
+    private void applyIntroSuggestion(string prompt, bool selected)
+    {
+        if (_input is null) return;
+        string current = _input.textUtf8();
+        if (_introInserted.length > 0 && hasPrefix(current, _introInserted))
+            current = current[_introInserted.length .. $];
+        _introInserted = "";
+        if (selected)
+        {
+            string block = prompt;
+            // Separate the inserted prompt from the user's own text unless the
+            // prompt already ends in whitespace (e.g. "...What's wrong: ").
+            if (block.length > 0 && current.length > 0 &&
+                !endsWithWhitespace(block))
+                block ~= "\n";
+            _introInserted = block;
+            current = block ~ current;
+        }
+        _input.setText(current);
+        _input.requestFocus();
+        updateStatus("");
+    }
+
+    /// Drop the intro highlight when the composer no longer begins with the
+    /// highlighted pill's inserted text, so an edit or clear cannot leave a pill
+    /// looking selected while its text is gone.
+    private void syncIntroSelection()
+    {
+        if (_introOverlay is null || _introInserted.length == 0) return;
+        if (_input !is null && hasPrefix(_input.textUtf8(), _introInserted))
+            return;
+        _introInserted = "";
+        _introOverlay.clearSelection();
+    }
+
+    private static bool hasPrefix(string text, string prefix)
+    {
+        if (text.length < prefix.length) return false;
+        foreach (i; 0 .. prefix.length)
+            if (text[i] != prefix[i]) return false;
+        return true;
+    }
+
+    private static bool endsWithWhitespace(string text)
+    {
+        if (text.length == 0) return false;
+        const last = text[$ - 1];
+        return last == ' ' || last == '\n' || last == '\t' || last == '\r';
     }
 
     /// The running Aurora OpenCode program's source directory: the nearest
@@ -20104,6 +20230,13 @@ public final class OpenCodeRoot : VBox
     {
         return _introOverlay !is null &&
             _introOverlay.clickSuggestionForTesting(index);
+    }
+
+    /// Test-only: index of the highlighted intro suggestion, or -1 when none.
+    public int introSelectedSuggestionForTesting() const
+    {
+        return _introOverlay is null ? -1
+            : _introOverlay.selectedSuggestionForTesting();
     }
 
 
