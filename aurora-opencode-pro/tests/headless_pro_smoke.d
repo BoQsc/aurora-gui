@@ -3444,6 +3444,15 @@ int main(string[] args)
             "collapsed action-group header did not aggregate the live duration");
         assert(driver.paint(), "Live elapsed label did not paint");
         root.setLiveToolElapsedForTesting(0);
+        // A long command must show unmistakable motion, not just a number that
+        // changes once a second: the live action group animates a "working"
+        // dot between stream events.
+        const pulseBefore = root.firstToolGroupPulseStepForTesting();
+        assert(pulseBefore >= 0,
+            "live action group is missing its working-dot animation");
+        root.tickTree(0.3);
+        assert(root.firstToolGroupPulseStepForTesting() != pulseBefore,
+            "live action group did not animate its working dot");
         writeln("Live tool rows show a running elapsed time");
     }
 

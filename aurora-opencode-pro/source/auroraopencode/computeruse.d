@@ -33,9 +33,12 @@ import auroraopencode.attachments : attachmentImageForData;
 import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
-import std.json : JSONType, JSONValue, parseJSON;
+import std.json : JSONType, JSONValue, parseJSON, toJSON;
+import std.file : readText;
 import std.process : environment;
-import std.string : indexOf, split, strip, toLower;
+import std.string : indexOf, split, startsWith, strip, toLower;
+import std.base64 : Base64;
+import std.utf : toUTF16z;
 import core.thread : Thread;
 import core.time : msecs, MonoTime;
 
@@ -80,6 +83,10 @@ public enum string computerUseKillSwitchChord = "Ctrl+Alt+Shift+K";
 /// every computer call so a stray press while idle cannot stop a later run.
 private __gshared bool computerUseAbortFlag = false;
 
+/// Workspace directory of the current call, so a `macro` can be loaded from
+/// `<workspace>/computer-macros.json`. Set at the start of every call.
+private __gshared string computerUseWorkspace;
+
 /// True once the human has pressed the kill switch during the current call.
 public bool computerUseAbortActive()
 {
@@ -106,6 +113,25 @@ public void startComputerUseKillSwitch()
 public void stopComputerUseKillSwitch()
 {
     version (Windows) stopKillSwitchThread();
+}
+
+// ---------------------------------------------------------------------------
+// Provider config for the `subagent` action. The nested model loop needs a
+// base URL, an API key and a model; the app already has these in Settings, so it
+// pushes them here (like the enabled flag) instead of computer use reading the
+// settings file itself.
+// ---------------------------------------------------------------------------
+
+public __gshared string computerUseProviderBaseUrl;
+public __gshared string computerUseProviderApiKey;
+public __gshared string computerUseProviderModel;
+
+/// Called by the app on load and whenever Settings change.
+public void setComputerUseProvider(string baseUrl, string apiKey, string model)
+{
+    computerUseProviderBaseUrl = baseUrl;
+    computerUseProviderApiKey = apiKey;
+    computerUseProviderModel = model;
 }
 
 /// How many of the newest image-carrying messages keep their pixels in a model
@@ -150,8 +176,12 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "drags, and `key_down`/`key_up` to hold a key down (camera pan, " ~
             "shift-queue). `focus` brings a window to the front by title " ~
             "substring, and every action reports the active window so you can " ~
-            "tell where input actually went. `type` text may contain a literal " ~
-            "newline for Enter " ~
+            "tell where input actually went. `macro` runs a named sequence of " ~
+            "steps from computer-macros.json in the workspace - one call, no " ~
+            "per-action reasoning, for learned routines; `loop` repeats a " ~
+            "macro for `seconds` at `interval_ms` with no model turns at all. " ~
+            "`type` text may " ~
+            "contain a literal newline for Enter " ~
             "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
             "zoomed-in crop of one area. Every call costs a full model turn, so " ~
             "prefer one `steps` batch (click a field, type a line, press enter) " ~
@@ -163,7 +193,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             computerUseKillSwitchChord ~ ". Keep reasoning minimal; only stop " ~
             "to plan when genuinely stuck (an unexpected dialog, a choice that " ~
             "needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up, e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\" (key_down/key_up hold it until the matching key_up)"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -204,12 +234,18 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         // Any key/button still held when the call ends is released here, so a
         // model that forgets `key_up` cannot leave an input stuck down.
         scope (exit) releaseHeldInputs();
+        const started = MonoTime.currTime;
+        computerUseWorkspace = workspace;
+        ComputerUseResult result;
         // A batch screenshots by default: the caller's next move depends on the
         // result, and asking for it in the same call saves a whole model turn.
         if (steps.length > 0)
-            return runWindowsSteps(steps,
+            result = runWindowsSteps(steps,
                 screenshotFlag < 0 ? true : screenshotFlag == 1);
-        return runWindowsAction(value, screenshotFlag == 1);
+        else
+            result = runWindowsAction(value, screenshotFlag == 1);
+        result.output = withElapsed(result.output, started);
+        return result;
     }
     else
         return failedResult("Error: computer use is only implemented on " ~
@@ -229,6 +265,14 @@ private ComputerUseResult succeededResult(string message)
     ComputerUseResult result;
     result.output = message;
     return result;
+}
+
+/// Append how long the desktop work took. Latency is dominated by the model
+/// turn around the call, so this isolates the part batching/macros shrink.
+private string withElapsed(string text, MonoTime started)
+{
+    const ms = (MonoTime.currTime - started).total!"msecs";
+    return text ~ " [" ~ to!string(cast(long) ms) ~ " ms]";
 }
 
 // ---------------------------------------------------------------------------
@@ -823,6 +867,21 @@ version (Windows)
             LPARAM lParam);
         uint GetCurrentThreadId();
         uint GetLastError();
+        void* InternetOpenW(const wchar* agent, uint accessType,
+            const wchar* proxy, const wchar* proxyBypass, uint flags);
+        void* InternetConnectW(void* session, const wchar* host, ushort port,
+            const wchar* user, const wchar* pass, uint service, uint flags,
+            size_t context);
+        void* HttpOpenRequestW(void* connect, const wchar* verb,
+            const wchar* object, const wchar* slot, const wchar* referrer,
+            const wchar** acceptTypes, uint flags, size_t context);
+        int HttpSendRequestW(void* request, const wchar* headers,
+            int headersLength, void* optional, uint optionalLength);
+        int InternetReadFile(void* handle, void* buffer, uint toRead,
+            uint* read);
+        int InternetCloseHandle(void* handle);
+        int HttpQueryInfoW(void* request, uint infoLevel, void* buffer,
+            uint* bufferLength, uint* index);
     }
 
     // -----------------------------------------------------------------------
@@ -1326,8 +1385,18 @@ version (Windows)
     // -----------------------------------------------------------------------
 
     private enum int SW_RESTORE = 9;
+    private enum uint INTERNET_OPEN_TYPE_PRECONFIG = 0;
+    private enum uint INTERNET_SERVICE_HTTP = 3;
+    private enum ushort INTERNET_DEFAULT_HTTPS_PORT = 443;
+    private enum uint INTERNET_FLAG_RELOAD = 0x80000000;
+    private enum uint INTERNET_FLAG_SECURE = 0x00800000;
+    private enum uint INTERNET_FLAG_NO_CACHE_WRITE = 0x04000000;
+    private enum uint HTTP_QUERY_STATUS_CODE = 19;
+    private enum uint HTTP_QUERY_FLAG_NUMBER = 0x20000000;
     private __gshared string findNeedle;
     private __gshared void* findResult;
+    private __gshared bool findExact;
+    private __gshared size_t findTitleLength;
 
     private string windowTitleOf(void* hwnd)
     {
@@ -1346,7 +1415,6 @@ version (Windows)
 
     private extern (Windows) int enumWindowsProc(void* hwnd, LPARAM)
     {
-        if (findResult !is null) return 0;
         try
         {
             if (IsWindowVisible(hwnd))
@@ -1355,8 +1423,18 @@ version (Windows)
                 if (title.length > 0 && findNeedle.length > 0 &&
                     indexOf(title, findNeedle) >= 0)
                 {
-                    findResult = hwnd;
-                    return 0; // stop enumeration
+                    // Prefer an exact title, then the shortest match: a browser
+                    // window ("<tab> and 43 more pages - Edge") can contain the
+                    // needle in a tab title, while the real target is short.
+                    const exact = title == findNeedle;
+                    if (findResult is null ||
+                        (exact && !findExact) ||
+                        (exact == findExact && title.length < findTitleLength))
+                    {
+                        findResult = hwnd;
+                        findExact = exact;
+                        findTitleLength = title.length;
+                    }
                 }
             }
         }
@@ -1370,6 +1448,8 @@ version (Windows)
     {
         findNeedle = strip(toLower(needle));
         findResult = null;
+        findExact = false;
+        findTitleLength = size_t.max;
         if (findNeedle.length == 0) return null;
         EnumWindows(cast(void*) &enumWindowsProc, 0);
         auto result = findResult;
@@ -1539,6 +1619,14 @@ version (Windows)
                             cast(int) jsonInt(*region, "w", 0),
                             cast(int) jsonInt(*region, "h", 0));
                 return screenshotResult("Captured the screen");
+            case "macro":
+                return withFinalScreenshot(runMacro(value, computerUseWorkspace),
+                    screenshot);
+            case "loop":
+                return withFinalScreenshot(runLoop(value, computerUseWorkspace),
+                    screenshot);
+            case "subagent":
+                return runSubAgent(value, computerUseWorkspace);
             case "focus":
             {
                 const title = jsonString(value, "title");
@@ -1623,6 +1711,967 @@ version (Windows)
         if (result.failed) return result;
         return withOptionalScreenshot(withActiveWindow(result.output),
             screenshot);
+    }
+
+    /// Attach one screenshot after a macro/loop, so the next decision sees the
+    /// result of the burst instead of acting blind.
+    private ComputerUseResult withFinalScreenshot(ComputerUseResult result,
+        bool screenshot)
+    {
+        if (!screenshot || result.failed) return result;
+        auto shot = screenshotResult("Screen after the action");
+        if (shot.failed)
+        {
+            result.output ~= " " ~ shot.output;
+            result.failed = true;
+            return result;
+        }
+        result.output ~= " " ~ shot.output;
+        result.images = shot.images;
+        return result;
+    }
+
+    /// Load a macro's step array from `<workspace>/computer-macros.json`.
+    /// Returns null and sets `error` when it cannot be read or found.
+    private JSONValue[] macroSteps(string name, string workspace,
+        out string error)
+    {
+        error = null;
+        const path = (workspace.length ? workspace ~ "/" : "") ~
+            "computer-macros.json";
+        string body;
+        try body = readText(path);
+        catch (Exception)
+        {
+            error = "Error: cannot read " ~ path ~
+                " (define macros as a JSON object of name -> [steps]).";
+            return null;
+        }
+        JSONValue root;
+        try root = parseJSON(body);
+        catch (Exception)
+        {
+            error = "Error: " ~ path ~ " is not valid JSON.";
+            return null;
+        }
+        if (root.type != JSONType.object)
+        {
+            error = "Error: " ~ path ~
+                " must be a JSON object of name -> [steps].";
+            return null;
+        }
+        auto entry = name in root.object;
+        if (entry is null)
+        {
+            string names;
+            foreach (key, _; root.object)
+                names ~= (names.length ? ", " : "") ~ key;
+            error = "Error: unknown macro \"" ~ name ~ "\". Defined: " ~
+                (names.length ? names : "(none)");
+            return null;
+        }
+        if (entry.type != JSONType.array)
+        {
+            error = "Error: macro \"" ~ name ~
+                "\" must be an array of steps.";
+            return null;
+        }
+        return entry.array;
+    }
+
+    /// Run a named sequence of steps from `<workspace>/computer-macros.json`.
+    /// A macro is one model turn that performs many actions - the fast path for a
+    /// learned sequence (a build order, a select+move, a hotkey pattern), so
+    /// routine play costs no reasoning per action.
+    /// `repeat` runs the whole sequence that many times and `delay_ms` pauses
+    /// between runs, so a learned routine can play as a loop without any model.
+    private ComputerUseResult runMacro(JSONValue value, string workspace)
+    {
+        const name = strip(jsonString(value, "name"));
+        if (name.length == 0)
+            return failedResult("Error: macro requires `name`.");
+        int repeat = cast(int) jsonInt(value, "repeat", 1);
+        if (repeat < 1) repeat = 1;
+        if (repeat > 64) repeat = 64;
+        const delayMs = jsonInt(value, "delay_ms", 0);
+        string error;
+        auto steps = macroSteps(name, workspace, error);
+        if (error !is null) return failedResult(error);
+        auto builder = appender!string();
+        foreach (iteration; 0 .. repeat)
+        {
+            if (computerUseAbortActive())
+            {
+                builder.put("stopped by the kill switch (" ~
+                    computerUseKillSwitchChord ~ ")\n");
+                return failedResult(builder.data);
+            }
+            auto result = runWindowsSteps(steps, false);
+            builder.put("Macro \"" ~ name ~ "\" run " ~
+                to!string(iteration + 1) ~ ": " ~ result.output);
+            if (builder.data.length > 0 && builder.data[$ - 1] != '\n')
+                builder.put("\n");
+            if (result.failed)
+            {
+                ComputerUseResult failure;
+                failure.output = builder.data;
+                failure.failed = true;
+                failure.images = result.images;
+                return failure;
+            }
+            if (iteration + 1 < repeat && delayMs > 0)
+                Thread.sleep(msecs(delayMs));
+        }
+        ComputerUseResult done;
+        done.output = builder.data;
+        return done;
+    }
+
+    /// Reflex executor: repeat a macro for a bounded time at a fixed cadence,
+    /// with no model turns - the fast layer. Stops early on the kill switch.
+    private ComputerUseResult runLoop(JSONValue value, string workspace)
+    {
+        const name = strip(jsonString(value, "name"));
+        if (name.length == 0)
+            return failedResult("Error: loop requires `name` (a macro).");
+        long seconds = jsonInt(value, "seconds", 10);
+        if (seconds < 1) seconds = 1;
+        if (seconds > 300) seconds = 300;
+        long intervalMs = jsonInt(value, "interval_ms", 500);
+        if (intervalMs < 100) intervalMs = 100;
+        if (intervalMs > 60000) intervalMs = 60000;
+        string error;
+        auto steps = macroSteps(name, workspace, error);
+        if (error !is null) return failedResult(error);
+        const started = MonoTime.currTime;
+        const deadline = started + msecs(seconds * 1000);
+        size_t runs;
+        while (MonoTime.currTime < deadline)
+        {
+            if (computerUseAbortActive())
+                return failedResult("Loop \"" ~ name ~ "\" stopped by the " ~
+                    "kill switch (" ~ computerUseKillSwitchChord ~ ") after " ~
+                    to!string(runs) ~ " run(s).");
+            auto result = runWindowsSteps(steps, false);
+            ++runs;
+            if (result.failed)
+            {
+                ComputerUseResult failure;
+                failure.output = "Loop \"" ~ name ~ "\" stopped after " ~
+                    to!string(runs) ~ " run(s): " ~ result.output;
+                failure.failed = true;
+                failure.images = result.images;
+                return failure;
+            }
+            if (MonoTime.currTime >= deadline) break;
+            Thread.sleep(msecs(intervalMs));
+        }
+        const elapsed = (MonoTime.currTime - started).total!"msecs";
+        ComputerUseResult done;
+        done.output = "Loop \"" ~ name ~ "\": " ~ to!string(runs) ~
+            " run(s) in " ~ to!string(cast(long) elapsed) ~ " ms.";
+        return done;
+    }
+
+    // -----------------------------------------------------------------------
+    // Subagent: a nested model loop. The main agent hands it a short task; it
+    // requests the loop model (with the `computer` tool and one screenshot),
+    // executes the tool calls it returns, feeds the results back, and repeats
+    // until the model answers without a tool call or the budget runs out.
+    // -----------------------------------------------------------------------
+
+    private struct UrlParts
+    {
+        bool secure;
+        ushort port;
+        string host;
+        string path;
+    }
+
+    private UrlParts parseUrl(string url)
+    {
+        UrlParts parts;
+        string rest = url;
+        if (rest.startsWith("https://"))
+        {
+            parts.secure = true;
+            parts.port = INTERNET_DEFAULT_HTTPS_PORT;
+            rest = rest[8 .. $];
+        }
+        else if (rest.startsWith("http://"))
+        {
+            parts.port = 80;
+            rest = rest[7 .. $];
+        }
+        const slash = indexOf(rest, "/");
+        if (slash < 0)
+        {
+            parts.host = rest;
+            parts.path = "/";
+        }
+        else
+        {
+            parts.host = rest[0 .. slash];
+            parts.path = rest[slash .. $];
+        }
+        return parts;
+    }
+
+    /// Quote a string as a JSON string literal.
+    private string jsonQuote(string text)
+    {
+        auto builder = appender!string();
+        builder.put('"');
+        foreach (dchar c; text)
+        {
+            if (c == '"') builder.put("\\\"");
+            else if (c == '\\') builder.put("\\\\");
+            else if (c == '\n') builder.put("\\n");
+            else if (c == '\r') builder.put("\\r");
+            else if (c == '\t') builder.put("\\t");
+            else if (cast(uint) c < 0x20)
+            {
+                enum hex = "0123456789abcdef";
+                builder.put("\\u00");
+                builder.put(hex[(cast(uint) c >> 4) & 0xF]);
+                builder.put(hex[cast(uint) c & 0xF]);
+            }
+            else builder.put(c);
+        }
+        builder.put('"');
+        return builder.data;
+    }
+
+    /// POST a JSON body over WinINet and return the response text.
+    /// Reused connection: opening a WinINet session + TLS handshake costs ~0.3-0.6 s,
+    /// which would be paid on every round of the loop.
+    private struct HttpConn
+    {
+        void* session;
+        void* connect;
+    }
+
+    private HttpConn openHttp(string url, out string error)
+    {
+        HttpConn conn;
+        error = null;
+        const parts = parseUrl(url);
+        conn.session = InternetOpenW(toUTF16z("Aurora OpenCode"),
+            INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
+        if (conn.session is null)
+        {
+            error = "could not open an HTTP session.";
+            return conn;
+        }
+        conn.connect = InternetConnectW(conn.session, toUTF16z(parts.host),
+            parts.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
+        if (conn.connect is null)
+        {
+            error = "could not connect to " ~ parts.host ~ ".";
+            InternetCloseHandle(conn.session);
+            conn.session = null;
+        }
+        return conn;
+    }
+
+    private void closeHttp(ref HttpConn conn)
+    {
+        if (conn.connect !is null) InternetCloseHandle(conn.connect);
+        if (conn.session !is null) InternetCloseHandle(conn.session);
+        conn.connect = null;
+        conn.session = null;
+    }
+
+    private string httpPostJson(HttpConn conn, string url, string apiKey,
+        string body,
+        out string error)
+    {
+        error = null;
+        const parts = parseUrl(url);
+        if (conn.connect is null)
+        {
+            error = "HTTP connection is not open.";
+            return null;
+        }
+        uint flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
+        if (parts.secure) flags |= INTERNET_FLAG_SECURE;
+        auto request = HttpOpenRequestW(conn.connect, toUTF16z("POST"),
+            toUTF16z(parts.path), null, null, null, flags, 0);
+        if (request is null)
+        {
+            error = "could not open the request.";
+            return null;
+        }
+        scope (exit) InternetCloseHandle(request);
+        const headers = "Content-Type: application/json\r\n" ~
+            "Authorization: Bearer " ~ apiKey ~ "\r\n" ~
+            "x-opencode-session: aurora-subagent\r\n";
+        if (!HttpSendRequestW(request, toUTF16z(headers), -1,
+            cast(void*) body.ptr, cast(uint) body.length))
+        {
+            error = "send failed (" ~ to!string(GetLastError()) ~ ").";
+            return null;
+        }
+        uint status;
+        uint statusLength = uint.sizeof;
+        uint statusIndex;
+        if (!HttpQueryInfoW(request, HTTP_QUERY_STATUS_CODE |
+            HTTP_QUERY_FLAG_NUMBER, &status, &statusLength, &statusIndex))
+            status = 0;
+        if (status != 200)
+        {
+            try
+            {
+                import std.file : write;
+                const dir = environment.get("TEMP", ".");
+                write(dir ~ "/aurora-subagent-request.json", body);
+            }
+            catch (Exception) {}
+            error = "HTTP " ~ to!string(status) ~ " (body " ~
+                to!string(body.length) ~ " bytes).";
+            return null;
+        }
+        auto builder = appender!string();
+        ubyte[8192] buffer;
+        while (true)
+        {
+            uint read;
+            if (!InternetReadFile(request, buffer.ptr,
+                cast(uint) buffer.length, &read))
+            {
+                error = "read failed.";
+                return null;
+            }
+            if (read == 0) break;
+            foreach (i; 0 .. read) builder.put(cast(char) buffer[i]);
+        }
+        return builder.data;
+    }
+
+    /// Nearest-neighbour half-size copy of an RGB frame. The subagent sends one
+    /// fresh frame per step; halving it keeps the image small (fewer image
+    /// tokens, faster prefill) while staying readable.
+    private ubyte[] halfRgb(int width, int height, in ubyte[] rgb,
+        out int outWidth, out int outHeight)
+    {
+        outWidth = (width + 1) / 2;
+        outHeight = (height + 1) / 2;
+        auto out_ = new ubyte[cast(size_t) outWidth * outHeight * 3];
+        foreach (y; 0 .. outHeight)
+        {
+            const sy = min(y * 2, height - 1);
+            foreach (x; 0 .. outWidth)
+            {
+                const sx = min(x * 2, width - 1);
+                const src = (cast(size_t) sy * width + sx) * 3;
+                const dst = (cast(size_t) y * outWidth + x) * 3;
+                out_[dst] = rgb[src];
+                out_[dst + 1] = rgb[src + 1];
+                out_[dst + 2] = rgb[src + 2];
+            }
+        }
+        return out_;
+    }
+
+    /// One user message holding a caption and its image.
+    private string imagePart(string caption, ubyte[] png)
+    {
+        return multiImagePart([caption], [png]);
+    }
+
+    /// One user message holding several caption/image pairs (the diff mode sends
+    /// only the tiles that changed, each at native scale).
+    private string multiImagePart(string[] captions, ubyte[][] pngs)
+    {
+        auto parts = appender!string();
+        parts.put(`,{"role":"user","content":[`);
+        foreach (i; 0 .. captions.length)
+        {
+            if (i > 0) parts.put(",");
+            parts.put(`{"type":"text","text":` ~ jsonQuote(captions[i]) ~ `},`);
+            parts.put(`{"type":"image_url","image_url":{"url":` ~
+                jsonQuote("data:image/png;base64," ~
+                Base64.encode(pngs[i]).idup) ~ `}}`);
+        }
+        parts.put(`]}`);
+        return parts.data;
+    }
+
+    private string textPart(string text)
+    {
+        return `,{"role":"user","content":` ~ jsonQuote(text) ~ `}`;
+    }
+
+    /// A user message carrying one image a nested tool call produced (screenshots
+    /// must reach the model as image parts; tool messages are text only).
+    private string attachmentPart(string caption, ChatImageAttachment image)
+    {
+        return `,{"role":"user","content":[{"type":"text","text":` ~
+            jsonQuote(caption) ~ `},{"type":"image_url","image_url":{"url":` ~
+            jsonQuote("data:" ~ image.mimeType ~ ";base64," ~ image.base64Data) ~
+            `}}]}`;
+    }
+
+    /// Extract a sub-rectangle of an RGB frame.
+    private ubyte[] cropRgb(int width, in ubyte[] rgb, int x, int y, int w,
+        int h)
+    {
+        auto out_ = new ubyte[cast(size_t) w * h * 3];
+        foreach (row; 0 .. h)
+            foreach (col; 0 .. w)
+            {
+                const src = (cast(size_t) (y + row) * width + (x + col)) * 3;
+                const dst = (cast(size_t) row * w + col) * 3;
+                out_[dst] = rgb[src];
+                out_[dst + 1] = rgb[src + 1];
+                out_[dst + 2] = rgb[src + 2];
+            }
+        return out_;
+    }
+
+    /// How many pixels in one tile differ noticeably between two frames.
+    private size_t tileChangeCount(int width, int tileX, int tileY, int tileW,
+        int tileH, in ubyte[] a, in ubyte[] b)
+    {
+        size_t changed;
+        foreach (row; 0 .. tileH)
+            foreach (col; 0 .. tileW)
+            {
+                const p = (cast(size_t) (tileY + row) * width +
+                    (tileX + col)) * 3;
+                const delta = absolute(cast(int) a[p] - b[p]) +
+                    absolute(cast(int) a[p + 1] - b[p + 1]) +
+                    absolute(cast(int) a[p + 2] - b[p + 2]);
+                if (delta > 24) ++changed;
+            }
+        return changed;
+    }
+
+    /// Scale a nested `computer` call's coordinates up from the per-step frame's
+    /// True when a nested computer call asks for a `region` crop (native-res
+    /// detail, unlike the cheap per-step frame - those must still run).
+    private bool computerArgsHaveRegion(string argsJson)
+    {
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return false;
+        if (parsed.type != JSONType.object) return false;
+        auto region = "region" in parsed.object;
+        return region !is null && region.type == JSONType.object;
+    }
+
+    /// The `action` of a nested computer call, for decisions the loop makes about
+    /// it (notably: refuse a redundant `screen` capture).
+    private string computerActionOf(string argsJson)
+    {
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return "";
+        if (parsed.type != JSONType.object) return "";
+        if (auto field = "action" in parsed.object)
+            if (field.type == JSONType.string) return strip(toLower(field.str));
+        return "";
+    }
+
+    /// Scale a nested `computer` call's coordinates up from the per-step frame's
+    /// pixel space to the tool's screenshot space. When the model reads a half or
+    /// quarter frame, its x/y are in that image; without this the click lands in
+    /// the wrong place.
+    private string scaleComputerArgs(string argsJson, int factor)
+    {
+        if (factor <= 1 || argsJson.length == 0) return argsJson;
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return argsJson;
+        if (parsed.type != JSONType.object) return argsJson;
+        void scaleOne(ref JSONValue node)
+        {
+            if (node.type != JSONType.object) return;
+            foreach (key; ["x", "y", "x2", "y2"])
+                if (auto field = key in node.object)
+                    if (field.type == JSONType.integer)
+                        (*field).integer = (*field).integer * factor;
+            if (auto batch = "steps" in node.object)
+                if (batch.type == JSONType.array)
+                    foreach (ref step; batch.array) scaleOne(step);
+        }
+        scaleOne(parsed);
+        try return toJSON(parsed);
+        catch (Exception) return argsJson;
+    }
+
+    /// Test hook: scale a nested call's coordinates exactly as the subagent
+    /// loop does before executing it (see scaleComputerArgs).
+    public string computerUseScaledArgsForTesting(string argsJson, int factor)
+    {
+        return scaleComputerArgs(argsJson, factor);
+    }
+
+    /// Test hook: whether two frames differ, using the same signature the
+    /// subagent loop uses to notice a missed action.
+    public bool computerUseFramesDifferForTesting(in ubyte[] a, in ubyte[] b)
+    {
+        return frameSignature(a) != frameSignature(b);
+    }
+
+    /// Test hook: whether every coordinate in a nested call lies inside a
+    /// `w` x `h` frame (see computerArgsWithinFrame).
+    public bool computerUseArgsWithinFrameForTesting(string argsJson, int w, int h)
+    {
+        return computerArgsWithinFrame(argsJson, w, h);
+    }
+
+    /// True when every x/y/x2/y2 in a nested `computer` call (including one
+    /// nested inside `steps`) lies inside a `w` x `h` frame. The loop uses this
+    /// to reject a call whose coordinates are outside the frame the model was
+    /// looking at - a misread would otherwise become an off-screen click.
+    private bool computerArgsWithinFrame(string argsJson, int w, int h)
+    {
+        if (w <= 0 || h <= 0) return true;
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return true;
+        if (parsed.type != JSONType.object) return true;
+        bool within = true;
+        void check(ref JSONValue node)
+        {
+            if (node.type != JSONType.object) return;
+            foreach (key; ["x", "y", "x2", "y2"])
+                if (auto field = key in node.object)
+                    if (field.type == JSONType.integer)
+                    {
+                        const isX = key == "x" || key == "x2";
+                        const max = isX ? w : h;
+                        if (field.integer < 0 || field.integer >= max)
+                            within = false;
+                    }
+            if (auto batch = "steps" in node.object)
+                if (batch.type == JSONType.array)
+                    foreach (ref step; batch.array) check(step);
+        }
+        check(parsed);
+        return within;
+    }
+
+    /// Normalize a `frame` argument to one of full/half/quarter/diff. Unknown or
+    /// missing values fall back to `quarter`. NOTE: `half` must be in the
+    /// allowed set - it used to be coerced to `quarter`, so a caller asking for
+    /// `half` silently got the tiny 240x135 frame (a real accuracy loss).
+    private string normalizeFrameScale(string frame)
+    {
+        auto s = strip(toLower(frame));
+        if (s != "full" && s != "half" && s != "quarter" && s != "diff")
+            s = "quarter";
+        return s;
+    }
+
+    /// How much a frame is downscaled from the 1:1 click space.
+    private int frameFactorOf(string frameScale)
+    {
+        if (frameScale == "quarter") return 4;
+        if (frameScale == "half") return 2;
+        return 1;
+    }
+
+    /// Test hook: the downscale factor the loop uses for a `frame` argument.
+    public int computerUseFrameFactorForTesting(string frame)
+    {
+        return frameFactorOf(normalizeFrameScale(frame));
+    }
+
+    private ComputerUseResult runSubAgent(JSONValue value, string workspace)
+    {
+        const task = jsonString(value, "task");
+        if (task.length == 0)
+            return failedResult("Error: subagent requires `task`.");
+        if (computerUseProviderApiKey.length == 0 ||
+            computerUseProviderBaseUrl.length == 0 ||
+            computerUseProviderModel.length == 0)
+            return failedResult("Error: subagent has no provider configured.");
+        int maxSteps = cast(int) jsonInt(value, "max_steps", 4);
+        if (maxSteps < 1) maxSteps = 1;
+        if (maxSteps > 16) maxSteps = 16;
+        // `frame` trades image detail for latency: full / half / quarter. A
+        // downscaled frame is not 1:1 with click coordinates, so the model's
+        // pixel readings are scaled back up before we execute (see frameFactor).
+        string frameScale = normalizeFrameScale(jsonString(value, "frame"));
+        const frameFactor = frameFactorOf(frameScale);
+        // `model` overrides the loop model for this call (e.g. the faster vision
+        // variant) without restarting the app.
+        string loopModel = jsonString(value, "model");
+        if (loopModel.length == 0) loopModel = computerUseProviderModel;
+        // `reasoning`: "default" (thought on) is slower but better at spatial
+        // judgements; "none" omits hidden thinking for the fastest reactions.
+        // Default is "none" for the ~6 s-per-reaction playtest target; pass
+        // "reasoning":"default" to trade speed back for spatial care.
+        string reasoningArg = strip(toLower(jsonString(value, "reasoning")));
+        if (reasoningArg.length == 0) reasoningArg = "none";
+        long seconds = jsonInt(value, "seconds", 60);
+        if (seconds < 5) seconds = 5;
+        if (seconds > 300) seconds = 300;
+        const deadline = MonoTime.currTime + msecs(seconds * 1000);
+        const endpoint = computerUseProviderBaseUrl ~ "/chat/completions";
+        // One connection for the whole run: a fresh session + TLS handshake per
+        // round would add ~0.3-0.6 s to every step.
+        string httpError;
+        auto http = openHttp(endpoint, httpError);
+        if (httpError !is null)
+            return failedResult("Error: subagent " ~ httpError);
+        scope (exit) closeHttp(http);
+        auto toolDefs = experimentalComputerUseTools();
+        if (toolDefs.length == 0)
+            return failedResult("Error: subagent needs the computer tool.");
+        const toolJson = `{"type":"function","function":{"name":` ~
+            jsonQuote(toolDefs[0].name) ~ `,"description":` ~
+            jsonQuote(toolDefs[0].description) ~ `,"parameters":` ~
+            toolDefs[0].parametersJson ~ `}}`;
+        string system = "You are a fast computer-use operator driving the local " ~
+            "desktop for a short burst. Each step, call the `computer` tool to " ~
+            "act. A screenshot of the current screen is attached to every " ~
+            "message; read positions off it directly (in that image's own pixel " ~
+            "space - the tool scales them) and do NOT spend a step calling " ~
+            "`screen` for the whole screen. Do call `screen` with a small " ~
+            "`region` when you must read fine detail (region crops come back at " ~
+            "full resolution). After each action, look at the newly attached frame before " ~
+            "deciding the next one, and never repeat the same click twice. " ~
+            "Always LOCATE the target visually in the current frame - never reuse " ~
+            "a coordinate from notes or memory, because the window may have moved " ~
+            "or changed size. If an action was meant to change the screen and the " ~
+            "next frame shows no change, that action missed: find the control " ~
+            "visually and click a different point, do not click the same spot " ~
+            "again. If the current frame ALREADY shows the goal state, stop and " ~
+            "answer immediately without clicking. If a menu is open because the " ~
+            "app lost focus (e.g. a game showing RESUME), click RESUME first. " ~
+            "Keep actions " ~
+            "small and reversible, and plan the WHOLE burst up front: put every " ~
+            "action you can foresee into ONE `steps` batch (e.g. press win, type " ~
+            "'notepad', press enter, wait, then type the text) - one round per " ~
+            "keystroke is far too slow. When " ~
+            "the goal is reached or you are stuck, reply with a short plain-text " ~
+            "summary and no tool call.";
+        // The loop has no memory of its own: carry the project's playbook into
+        // the prompt so it knows the game's menus and hotkeys. Bounded, and the
+        // live screen wins any conflict.
+        try
+        {
+            const notesPath = (workspace.length ? workspace ~ "/" : "") ~
+                "company-of-heroes-1.md";
+            const notes = readText(notesPath);
+            if (notes.length > 0)
+                system ~= "\n\nProject notes for this machine (may be stale; " ~
+                    "the live screen wins any conflict):\n" ~
+                    notes[0 .. (notes.length > 2500 ? 2500 : notes.length)];
+        }
+        catch (Exception) {}
+        auto messages = appender!string();
+        messages.put(`[{"role":"system","content":` ~ jsonQuote(system) ~ `}`);
+        messages.put(`,{"role":"user","content":` ~ jsonQuote(task) ~ `}`);
+        auto log_ = appender!string();
+        string answer;
+        size_t steps;
+        // `diff` mode needs the previous frame to compute what changed.
+        ubyte[] previousFrame;
+        int previousWidth;
+        ulong previousSignature;
+        bool havePreviousFrame;
+        bool previousRoundHadAction;
+        // Latency accounting for the "how many seconds per reaction" goal.
+        // Awareness = settle + capture + model round; response = running the
+        // actions the model returned. Measured, never guessed.
+        long captureTotalMs;
+        long modelTotalMs;
+        long actionTotalMs;
+        long roundTotalMs;
+        foreach (step; 0 .. maxSteps)
+        {
+            if (computerUseAbortActive())
+            {
+                log_.put("stopped by the kill switch\n");
+                break;
+            }
+            if (MonoTime.currTime >= deadline)
+            {
+                log_.put("time budget reached\n");
+                break;
+            }
+            const roundStarted = MonoTime.currTime;
+            string screenPart;
+            // Let the UI settle so this frame reflects the previous action
+            // rather than the state before it.
+            Thread.sleep(msecs(300));
+            auto shot = captureScreen();
+            captureTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
+            // Did the previous round's action change anything? A game UI that
+            // swallows a click leaves the frame byte-identical; tell the model,
+            // which otherwise re-clicks the same dead spot forever.
+            string correctionPart;
+            if (shot.ok)
+            {
+                const currentSignature = frameSignature(shot.rgb);
+                if (havePreviousFrame && previousWidth == shot.width &&
+                    currentSignature == previousSignature && previousRoundHadAction)
+                {
+                    correctionPart = textPart("Note: the screen did NOT change " ~
+                        "after your last action - it probably missed or the " ~
+                        "target was elsewhere. Re-locate the control in THIS " ~
+                        "frame and click a different point; do not repeat the " ~
+                        "same click.");
+                    log_.put("note: injected identical-frame correction\n");
+                }
+                previousSignature = currentSignature;
+                havePreviousFrame = true;
+            }
+            if (shot.ok)
+            {
+                if (frameScale == "diff")
+                {
+                    if (previousFrame.length != shot.rgb.length)
+                        screenPart = imagePart("Full screen (first look; " ~
+                            "coordinates are in this image's pixels):",
+                            computerUseEncodePng(shot.width, shot.height,
+                            shot.rgb));
+                    else
+                    {
+                        enum int tileW = 240;
+                        enum int tileH = 180;
+                        enum size_t tileMinChanged = 400;
+                        const cols = (shot.width + tileW - 1) / tileW;
+                        const rows = (shot.height + tileH - 1) / tileH;
+                        int[] tiles;
+                        size_t[] counts;
+                        foreach (ty; 0 .. rows)
+                            foreach (tx; 0 .. cols)
+                            {
+                                const x = tx * tileW;
+                                const y = ty * tileH;
+                                const w = min(tileW, shot.width - x);
+                                const h = min(tileH, shot.height - y);
+                                tiles ~= cast(int) (ty * cols + tx);
+                                counts ~= tileChangeCount(shot.width, x, y, w,
+                                    h, shot.rgb, previousFrame);
+                            }
+                        string[] captions;
+                        ubyte[][] pngs;
+                        foreach (_; 0 .. 6)
+                        {
+                            int best = -1;
+                            size_t bestCount;
+                            foreach (slot, index; tiles)
+                                if (counts[slot] >= tileMinChanged &&
+                                    (best < 0 || counts[slot] > bestCount))
+                                {
+                                    best = cast(int) slot;
+                                    bestCount = counts[slot];
+                                }
+                            if (best < 0) break;
+                            counts[best] = 0;
+                            const tx = tiles[best] % cols;
+                            const ty = tiles[best] / cols;
+                            const x = tx * tileW;
+                            const y = ty * tileH;
+                            const w = min(tileW, shot.width - x);
+                            const h = min(tileH, shot.height - y);
+                            captions ~= "Changed area: origin " ~ to!string(x) ~
+                                "," ~ to!string(y) ~ ", size " ~ to!string(w) ~
+                                "x" ~ to!string(h) ~ " (coordinates are in the " ~
+                                "full 960x540 space):";
+                            pngs ~= computerUseEncodePng(w, h,
+                                cropRgb(shot.width, shot.rgb, x, y, w, h));
+                        }
+                        screenPart = pngs.length > 0
+                            ? multiImagePart(captions, pngs)
+                            : textPart("No significant screen change since the " ~
+                              "last step. Continue if there is a next action.");
+                    }
+                }
+                else
+                {
+                int frameWidth = shot.width;
+                int frameHeight = shot.height;
+                auto frame = shot.rgb;
+                if (frameScale != "full")
+                    frame = halfRgb(frameWidth, frameHeight, frame,
+                        frameWidth, frameHeight);
+                if (frameScale == "quarter")
+                    frame = halfRgb(frameWidth, frameHeight, frame,
+                        frameWidth, frameHeight);
+                auto png = computerUseEncodePng(frameWidth, frameHeight, frame);
+                const caption = frameScale == "full"
+                    ? "Current screen (same pixel space as click coordinates):"
+                    : "Current screen: this image is " ~
+                      to!string(frameWidth) ~ "x" ~ to!string(frameHeight) ~
+                      " pixels (a 1/" ~ to!string(frameFactor) ~ " downscale of " ~
+                      "the 960x540 click space). Give click x,y in THIS image's " ~
+                      "pixels; the tool multiplies them by " ~
+                      to!string(frameFactor) ~ " for you:";
+                screenPart = `,{"role":"user","content":[{"type":"text","text":` ~
+                    jsonQuote(caption) ~
+                    `},{"type":"image_url","image_url":{"url":` ~
+                    jsonQuote("data:image/png;base64," ~
+                    Base64.encode(png).idup) ~ `}}]}`;
+                }
+                previousFrame = shot.rgb;
+                previousWidth = shot.width;
+            }
+            const body = `{"model":` ~ jsonQuote(loopModel) ~
+                `,"messages":` ~ messages.data ~ correctionPart ~ screenPart ~
+                `],"tools":[` ~
+                toolJson ~ `],"tool_choice":"auto",` ~
+                (reasoningArg == "none" ? `"reasoning_effort":"none",` : ``) ~
+                `"stream":false}`;
+            const modelStarted = MonoTime.currTime;
+            string error;
+            const response = httpPostJson(http, endpoint,
+                computerUseProviderApiKey, body, error);
+            if (error !is null)
+                return failedResult("Error: subagent " ~ error);
+            JSONValue parsed;
+            try parsed = parseJSON(response);
+            catch (Exception)
+                return failedResult("Error: subagent got invalid JSON back: " ~
+                    response[0 .. (response.length > 300 ? 300 :
+                    response.length)]);
+            if (parsed.type != JSONType.object)
+                return failedResult("Error: subagent response was not an " ~
+                    "object (len=" ~ to!string(response.length) ~ ", err=" ~
+                    to!string(GetLastError()) ~ "): " ~
+                    response[0 .. (response.length > 300 ? 300 :
+                    response.length)]);
+            auto choices = "choices" in parsed.object;
+            if (choices is null || choices.type != JSONType.array ||
+                choices.array.length == 0)
+                return failedResult("Error: subagent response had no choices.");
+            auto message = "message" in choices.array[0].object;
+            if (message is null || message.type != JSONType.object)
+                return failedResult("Error: subagent response had no message.");
+            string content;
+            if (auto c = "content" in message.object)
+                if (c.type == JSONType.string) content = c.str;
+            auto calls = "tool_calls" in message.object;
+            const hasCalls = calls !is null && calls.type == JSONType.array &&
+                calls.array.length > 0;
+            ++steps;
+            modelTotalMs += (MonoTime.currTime - modelStarted).total!"msecs";
+            if (!hasCalls)
+            {
+                answer = content;
+                roundTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
+                break;
+            }
+            const actionStarted = MonoTime.currTime;
+            bool roundHadAction;
+            auto toolCallsJson = appender!string();
+            auto toolResultsJson = appender!string();
+            ChatImageAttachment[] resultShots;
+            foreach (call; calls.array)
+            {
+                string id;
+                if (auto idField = "id" in call.object)
+                    if (idField.type == JSONType.string) id = idField.str;
+                string name;
+                string argsJson = "{}";
+                if (auto fn = "function" in call.object)
+                {
+                    if (fn.type == JSONType.object)
+                    {
+                        if (auto nm = "name" in fn.object)
+                            if (nm.type == JSONType.string) name = nm.str;
+                        if (auto ar = "arguments" in fn.object)
+                            if (ar.type == JSONType.string) argsJson = ar.str;
+                    }
+                }
+                if (toolCallsJson.data.length > 0) toolCallsJson.put(",");
+                toolCallsJson.put(`{"id":` ~ jsonQuote(id) ~
+                    `,"type":"function","function":{"name":` ~
+                    jsonQuote(name) ~ `,"arguments":` ~ jsonQuote(argsJson) ~
+                    `}}`);
+                ComputerUseResult result;
+                if (name == "computer")
+                {
+                    // A `screen` call is redundant (a fresh frame is attached to
+                    // every message) and its full-frame result would flood the
+                    // request with a huge image on every step.
+                    if (computerActionOf(argsJson) == "screen")
+                    {
+                        // A full-screen capture is redundant (a frame is attached
+                        // to every message), but a `region` crop is the way to get
+                        // native-resolution detail, so let those through.
+                        if (computerArgsHaveRegion(argsJson))
+                            result = experimentalComputerUseExecute(argsJson,
+                                workspace);
+                        else
+                            result = succeededResult("Skipped: a current " ~
+                                "screenshot is already attached to this " ~
+                                "conversation - read positions from it. Use " ~
+                                "`screen` with a small `region` if you need " ~
+                                "native-resolution detail.");
+                    }
+                    else
+                    {
+                        // The frame the model just read is `frameFactor` times
+                        // smaller than the click space. A coordinate outside that
+                        // frame is a misread; executing it would be an off-screen
+                        // click that silently does nothing (the observed drag to
+                        // 1040,960 in a 480x270 frame). Reject and tell it.
+                        const coordW = shot.ok ? shot.width / frameFactor : 0;
+                        const coordH = shot.ok ? shot.height / frameFactor : 0;
+                        if (!computerArgsWithinFrame(argsJson, coordW, coordH))
+                        {
+                            result = succeededResult("Rejected: this call's " ~
+                                "coordinates fall outside the " ~
+                                to!string(coordW) ~ "x" ~ to!string(coordH) ~
+                                " frame you were shown. Re-read the attached " ~
+                                "frame and give x in 0.." ~
+                                to!string(coordW - 1) ~ " and y in 0.." ~
+                                to!string(coordH - 1) ~ ".");
+                            log_.put("note: rejected an out-of-frame call\n");
+                        }
+                        else
+                        {
+                            result = experimentalComputerUseExecute(
+                                scaleComputerArgs(argsJson, frameFactor), workspace);
+                            roundHadAction = true;
+                        }
+                    }
+                }
+                else
+                    result = failedResult("Error: unknown tool '" ~ name ~
+                        "'.");
+                log_.put("step " ~ to!string(step + 1) ~ " " ~ name ~ ": " ~
+                    result.output ~ " [round " ~
+                    to!string((MonoTime.currTime - roundStarted).total!"msecs") ~
+                    " ms]\n");
+                foreach (image; result.images) resultShots ~= image;
+                if (toolResultsJson.data.length > 0) toolResultsJson.put(",");
+                toolResultsJson.put(`{"role":"tool","tool_call_id":` ~
+                    jsonQuote(id) ~ `,"content":` ~ jsonQuote(result.output) ~
+                    `}`);
+            }
+            messages.put(`,{"role":"assistant","content":null,"tool_calls":[` ~
+                toolCallsJson.data ~ `]}`);
+            messages.put(`,` ~ toolResultsJson.data);
+            // Do NOT forward the screenshots nested calls return: every step
+            // already carries a fresh frame, and forwarding these made full
+            // frames accumulate in the history, slowing each later round.
+            previousRoundHadAction = roundHadAction;
+            actionTotalMs += (MonoTime.currTime - actionStarted).total!"msecs";
+            roundTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
+        }
+        const rounds = steps > 0 ? cast(long) steps : 0;
+        const avgCapture = rounds > 0 ? captureTotalMs / rounds : 0;
+        const avgAwareness = rounds > 0 ?
+            (captureTotalMs + modelTotalMs) / rounds : 0;
+        const avgModel = rounds > 0 ? modelTotalMs / rounds : 0;
+        const avgAction = rounds > 0 ? actionTotalMs / rounds : 0;
+        const avgRound = rounds > 0 ? roundTotalMs / rounds : 0;
+        ComputerUseResult out_;
+        out_.output = "Subagent (" ~ to!string(steps) ~ " step(s), avg " ~
+            to!string(avgRound) ~ " ms/round = awareness " ~
+            to!string(avgAwareness) ~ " ms (capture " ~ to!string(avgCapture) ~
+            " + model " ~ to!string(avgModel) ~ ") + response " ~
+            to!string(avgAction) ~ " ms): " ~
+            (answer.length ? answer : "(no final answer)") ~ "\n" ~ log_.data;
+        return out_;
     }
 
     /// A batch of actions in one call, followed by a single screenshot: the

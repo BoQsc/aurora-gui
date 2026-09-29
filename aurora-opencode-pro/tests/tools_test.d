@@ -4,7 +4,9 @@ import auroraopencode.core : OpenCodeToolCall,
     setOpencodeStateDirectoryForTesting;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.attachments : attachmentImageKindForBytes;
-import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting;
+import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting,
+    computerUseScaledArgsForTesting, computerUseFramesDifferForTesting,
+    computerUseArgsWithinFrameForTesting, computerUseFrameFactorForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -983,6 +985,65 @@ int main()
             "computer PNG must start with the PNG signature");
         assert(attachmentImageKindForBytes(png) == "image/png",
             "computer PNG must be recognised as an image");
+    }
+    // A downscaled subagent frame is not 1:1 with click coordinates, so the
+    // loop scales the model's x/y back up by the frame factor before executing.
+    {
+        const quarter = computerUseScaledArgsForTesting(
+            `{"action":"click","x":120,"y":90}`, 4);
+        auto q = parseJSON(quarter);
+        assert(q["x"].integer == 480 && q["y"].integer == 360,
+            "quarter-frame click must scale x4: " ~ quarter);
+        const batch = computerUseScaledArgsForTesting(
+            `{"steps":[{"action":"click","x":10,"y":20},` ~
+            `{"action":"drag","x":5,"y":5,"x2":7,"y2":8}]}`, 2);
+        auto b = parseJSON(batch);
+        assert(b["steps"][0]["x"].integer == 20 &&
+            b["steps"][0]["y"].integer == 40 &&
+            b["steps"][1]["x2"].integer == 14 &&
+            b["steps"][1]["y2"].integer == 16,
+            "nested steps must scale every coordinate: " ~ batch);
+        assert(computerUseScaledArgsForTesting(`{"x":3}`, 1) == `{"x":3}`,
+            "factor 1 must pass the call through unchanged");
+    }
+    // The subagent loop treats a byte-identical frame after an action as a
+    // missed click and injects a corrective note.
+    {
+        ubyte[] frame = [10, 20, 30, 40, 50, 60];
+        assert(!computerUseFramesDifferForTesting(frame, frame),
+            "identical frames must compare equal");
+        ubyte[] moved = [10, 20, 30, 40, 50, 99];
+        assert(computerUseFramesDifferForTesting(frame, moved),
+            "a changed frame must compare different");
+    }
+    // A coordinate outside the frame the model was shown is a misread and must
+    // be rejected, not executed as an off-screen click (the 1040,960 drag in a
+    // 480x270 half frame).
+    {
+        assert(computerUseArgsWithinFrameForTesting(
+            `{"action":"click","x":120,"y":90}`, 240, 135),
+            "in-frame coordinates must pass");
+        assert(!computerUseArgsWithinFrameForTesting(
+            `{"action":"drag","x":10,"y":10,"x2":520,"y2":480}`, 480, 270),
+            "a coordinate beyond the frame must be rejected");
+        assert(!computerUseArgsWithinFrameForTesting(
+            `{"steps":[{"action":"click","x":5,"y":5},` ~
+            `{"action":"click","x":300,"y":5}]}`, 240, 135),
+            "a nested out-of-frame step must be rejected");
+        assert(computerUseArgsWithinFrameForTesting(`{"action":"focus"}`, 0, 0),
+            "unknown frame size must not reject");
+    }
+    // `frame=half` must actually be half (factor 2); it was once coerced to
+    // quarter (factor 4), handing the model a 240x135 frame and wrecking accuracy.
+    {
+        assert(computerUseFrameFactorForTesting("half") == 2,
+            "frame=half must use factor 2");
+        assert(computerUseFrameFactorForTesting("quarter") == 4,
+            "frame=quarter must use factor 4");
+        assert(computerUseFrameFactorForTesting("full") == 1,
+            "frame=full must use factor 1");
+        assert(computerUseFrameFactorForTesting("nonsense") == 4,
+            "an unknown frame must fall back to quarter");
     }
     writeln("experimental computer use is opt-in, validated and switchable");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,

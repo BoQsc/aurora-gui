@@ -29,8 +29,9 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
     setSystemPromptModules;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse :
-    experimentalImageHistoryLimit, setComputerUseSetting,
-    startComputerUseKillSwitch, stopComputerUseKillSwitch;
+    experimentalComputerUseEnabled, experimentalImageHistoryLimit,
+    setComputerUseProvider, setComputerUseSetting, startComputerUseKillSwitch,
+    stopComputerUseKillSwitch;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -49,13 +50,13 @@ import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
-import std.file : dirEntries, exists, getSize, isDir, isFile,
+import std.file : append, dirEntries, exists, getSize, isDir, isFile,
     fileRemove = remove, mkdirRecurse, readText, rename, rmdir, SpanMode,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
 import std.path : baseName, buildNormalizedPath, buildPath;
-import std.process : thisProcessID;
+import std.process : environment, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
 version (Windows)
@@ -3497,6 +3498,9 @@ private final class LiveToolRow : Widget
     private MonoTime _started;
     private long _fixedMs;      // > 0 freezes the value (tests / settled rows)
     private long _lastBucket = -1;
+    // Paces the "still working" dot. Advanced by onTick (not the wall clock)
+    // so the animation is driven by the frame loop and stays testable.
+    private double _pulseElapsed;
 
     void delegate() onSizeChanged;
 
@@ -3523,15 +3527,28 @@ private final class LiveToolRow : Widget
     /// Test-only: the elapsed time currently displayed.
     public long toolElapsedMsForTesting() const { return elapsedMs(); }
 
+    /// Animation phase (0..3) for the live "still working" dot: four steps a
+    /// second so a command that takes minutes reads as active work instead of a
+    /// lone number that only changes once a second.
+    private int pulseStep() const
+    {
+        return cast(int) (_pulseElapsed * 4) % 4;
+    }
+
+    /// Test-only: the current live "working" dot phase.
+    public int pulseStepForTesting() const { return pulseStep(); }
+
     protected override void onTick(double deltaSeconds)
     {
         if (_fixedMs > 0) return;
+        const beforePulse = pulseStep();
+        _pulseElapsed += deltaSeconds;
         const ms = elapsedMs();
         // Repaint only when the visible label can change (0.1s buckets under a
-        // second, whole seconds above) so a long command does not repaint every
-        // frame.
+        // second, whole seconds above) or the working dot advances, so a long
+        // command does not repaint every frame but still shows live motion.
         const bucket = ms < 1000 ? ms / 100 : ms / 1000;
-        if (bucket == _lastBucket) return;
+        if (bucket == _lastBucket && pulseStep() == beforePulse) return;
         _lastBucket = bucket;
         invalidate();
     }
@@ -3636,7 +3653,12 @@ private final class LiveToolRow : Widget
             8, diffCardBg, diffCardBorder, 1);
         canvas.fillRect(Rect(padH + 1, h - 1,
             maxInt(1, bounds().width - 2 * padH) - 2, 1), diffCardBorder);
-        const textX = padH + 8;
+        // A pulsing accent dot marks the row as actively working, so a command
+        // taking minutes reads as "running" rather than a frozen timestamp.
+        static immutable int[4] rowPulseAlphas = [70, 130, 210, 130];
+        canvas.fillCircle(Point(padH + 12, h / 2), 3,
+            opencodeAccent.withAlpha(rowPulseAlphas[pulseStep()]));
+        const textX = padH + 22;
         const innerWidth = maxInt(1, bounds().width - textX - padH - 8);
         int statsWidth;
         TextLayout addLayout, delLayout, elapsedLayout;
@@ -4834,17 +4856,28 @@ private final class ToolGroupBubble : Widget
     /// While the group is live its header shows a running total; repaint it when
     /// the displayed value changes so a long command's timer ticks even when no
     /// stream events arrive (the rows themselves are collapsed/hidden).
+    /// Animation phase (0..3) for the header's live "still working" dot, paced
+    /// by onTick so a long round shows motion, not just a ticking number.
+    private int pulseStep() const
+    {
+        return cast(int) (_pulseElapsed * 4) % 4;
+    }
+
     protected override void onTick(double deltaSeconds)
     {
         if (!_live) return;
+        const beforePulse = pulseStep();
+        _pulseElapsed += deltaSeconds;
         const ms = elapsedTotalMs();
         const bucket = ms < 1000 ? ms / 100 : ms / 1000;
-        if (bucket == _elapsedBucket) return;
+        if (bucket == _elapsedBucket && pulseStep() == beforePulse) return;
         _elapsedBucket = bucket;
         invalidate();
     }
 
     private long _elapsedBucket = -1;
+    // Paces the header's live "still working" dot (see pulseStep).
+    private double _pulseElapsed;
 
     protected override Size onMeasure(Size available)
     {
@@ -4915,19 +4948,28 @@ private final class ToolGroupBubble : Widget
         }
 
         const textWidth = maxInt(1, innerWidth - statsWidth -
-            (statsWidth > 0 ? 8 : 0));
+            (statsWidth > 0 ? 8 : 0) - (_live ? 14 : 0));
+        // A live group leads with a pulsing accent dot so a multi-minute round
+        // reads as active work rather than a frozen row.
+        const textX = padH + (_live ? 14 : 0);
+        if (_live)
+        {
+            static immutable int[4] groupPulseAlphas = [70, 130, 210, 130];
+            canvas.fillCircle(Point(padH + 4, padV + h / 2), 3,
+                opencodeAccent.withAlpha(groupPulseAlphas[pulseStep()]));
+        }
         auto layout = canvas.layoutText(toUTF32(headerText()), 1, FontRole.ui,
             cast(FontFace) theme().uiFont, textWidth, false);
-        auto labelCanvas = canvas.clipped(Rect(padH - 2, padV,
+        auto labelCanvas = canvas.clipped(Rect(textX - 2, padV,
             textWidth + 4, h));
-        labelCanvas.drawLayout(Point(padH, padV), layout,
+        labelCanvas.drawLayout(Point(textX, padV), layout,
             _hover ? opencodeText : opencodeMuted);
 
         if (statsWidth > 0)
         {
             // `TextLayout` is a class: an unassigned one is null, so test for
             // presence rather than `.width > 0`.
-            int x = padH + cast(int) layout.width + 8;
+            int x = textX + cast(int) layout.width + 8;
             // The label is drawn at `padV`, so put the counters/timer on its
             // baseline rather than their own box centre (which sat too high).
             const sy = cast(int)(padV + layout.lines[0].baseline -
@@ -7816,6 +7858,22 @@ public final class OpenCodeRoot : VBox
     // single unrefreshed plan produces a bounded number of nudges instead of
     // one on every tool round.
     private int[string] _planNudgedAt;
+    // Experimental computer use: a settled reply that requested no tools would
+    // leave the agent idle mid-task (it looks "stuck"). We resume it
+    // automatically, bounded per user turn, so a computer-use loop keeps acting
+    // instead of stopping until the user clicks Continue. Reset when the user
+    // sends a message.
+    private int[int] _autoContinueStreak;
+    private static immutable int autoContinueLimit = 4;
+    // A stall is sometimes only momentary: the turn settles while the client is
+    // still winding down, so `prepareContinue` refuses once and the agent goes
+    // idle. Defer and re-try a couple of times from the UI tick instead of
+    // giving up on the first refusal (see maybeAutoContinue/pumpAutoContinue).
+    private int _autoContinuePendingSession = -1;
+    private MonoTime _autoContinueRetryAt;
+    private int _autoContinueRetries;
+    private static immutable int autoContinueRetryLimit = 3;
+    private static immutable long autoContinueRetryDelayMs = 400;
     private static immutable int failureGuidanceThreshold = 3;
     // Successful context calls are not automatically useful progress. Count
     // exploration across the whole user request so a checkpoint can encourage
@@ -8168,6 +8226,9 @@ public final class OpenCodeRoot : VBox
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
+        // The subagent action needs the provider; hand it over with the switch.
+        setComputerUseProvider(_settings.baseUrl, _settings.apiKey,
+            _settings.model);
         if (_settings.experimentalComputerUse) startComputerUseKillSwitch();
         else stopComputerUseKillSwitch();
         _projectState = loadProjects();
@@ -11957,6 +12018,9 @@ public final class OpenCodeRoot : VBox
         markUnreadIfBackground(sessionIndex);
         publishThreadUpdated(*session);
         markDirty();
+        // experimental: computer use - the turn ended without requesting tools,
+        // so resume it instead of idling (see maybeAutoContinue).
+        maybeAutoContinue(sessionIndex);
         startNextQueuedFollowUp(sessionIndex);
     }
 
@@ -13297,6 +13361,11 @@ public final class OpenCodeRoot : VBox
     private void sendMessage()
     {
         const composerText = _input.textUtf8().strip();
+        // A real user instruction restarts the auto-continue budget.
+        if (_current >= 0 && _current < cast(int) _sessions.length)
+            _autoContinueStreak.remove(_current);
+        _autoContinuePendingSession = -1;
+        _autoContinueRetries = 0;
         if (startSideQuestion(composerText)) return;
         if (_stopPending)
         {
@@ -15441,6 +15510,123 @@ public final class OpenCodeRoot : VBox
     {
         if (!prepareContinue(sessionIndex, messageIndex)) return;
         startChatRequest(sessionIndex);
+    }
+
+    /// Experimental computer use: when a turn ends with no tool call, the agent
+    /// has gone idle mid-task - exactly the "it's doing nothing" stall seen while
+    /// driving the desktop. Resume it automatically, bounded per user turn so a
+    /// model that only emits prose cannot loop forever; a Stop or a new user
+    /// message ends the courtesy. No-op unless computer use is enabled, and
+    /// skipped when a queued follow-up or guidance already continues the turn.
+    /// Diagnostics for the auto-continue path. The stall bug was invisible
+    /// otherwise: this records why a resume did or did not happen.
+    private void logAutoContinue(string message)
+    {
+        try
+        {
+            const dir = environment.get("TEMP", ".");
+            append(dir ~ "/aurora-autocontinue.log",
+                currentTimestamp() ~ " " ~ message ~ "\n");
+        }
+        catch (Exception) {}
+    }
+
+    private void maybeAutoContinue(int sessionIndex)
+    {
+        if (!experimentalComputerUseEnabled())
+        {
+            logAutoContinue("skip: computer use off");
+            return;
+        }
+        // Resume the session that OWNS the finished turn, not only the one the
+        // user happens to be viewing: requiring `sessionIndex == _current` was
+        // what silently dropped the resume and produced the "stuck" stall
+        // (see the log line "skip: not the viewed session").
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+        {
+            logAutoContinue("skip: invalid session index " ~
+                to!string(sessionIndex));
+            return;
+        }
+        auto session = &_sessions[sessionIndex];
+        if (session.messages.length == 0) return;
+        if (session.queuedFollowUps.length > 0 ||
+            session.queuedGuidance.length > 0)
+        {
+            logAutoContinue("skip: a queued follow-up already continues");
+            return;
+        }
+        // Only rescue a turn that is genuinely mid-task. A completed answer is
+        // the user's turn to speak, not a stall, so it must never auto-continue.
+        const midTask = session.taskStatus == "active" ||
+            session.taskStatus == "blocked" ||
+            session.taskStatus == "reviewing" ||
+            session.taskStatus == "verifying" ||
+            session.verificationStatus == "required" ||
+            hasIncompleteTaskSteps(*session);
+        if (!midTask)
+        {
+            logAutoContinue("skip: turn looks finished (taskStatus=" ~
+                session.taskStatus ~ ")");
+            return;
+        }
+        const last = session.messages[$ - 1];
+        if (last.role != "assistant" || last.failed ||
+            last.toolCalls.length > 0)
+        {
+            logAutoContinue("skip: last message is not a plain reply");
+            return;
+        }
+        int streak = sessionIndex in _autoContinueStreak ?
+            _autoContinueStreak[sessionIndex] : 0;
+        if (streak >= autoContinueLimit)
+        {
+            logAutoContinue("skip: auto-continue budget exhausted (" ~
+                to!string(streak) ~ ")");
+            return;
+        }
+        if (!prepareContinue(sessionIndex,
+            cast(int) session.messages.length - 1))
+        {
+            // The client may still be busy finishing the previous turn, or a
+            // tool may still be draining. Retry from the UI tick a few times
+            // before giving up, so a momentary refusal does not leave the
+            // agent idle (the stall the user sees as a freeze).
+            if (_autoContinueRetries < autoContinueRetryLimit)
+            {
+                ++_autoContinueRetries;
+                _autoContinuePendingSession = sessionIndex;
+                _autoContinueRetryAt =
+                    MonoTime.currTime + msecs(autoContinueRetryDelayMs);
+                logAutoContinue("defer: prepareContinue refused (busy=" ~
+                    to!string(_client.busy()) ~ " timing=" ~
+                    to!string(_turnTiming) ~ "), retry " ~
+                    to!string(_autoContinueRetries) ~ "/" ~
+                    to!string(autoContinueRetryLimit));
+            }
+            else
+                logAutoContinue("skip: prepareContinue refused and retries " ~
+                    "exhausted (busy=" ~ to!string(_client.busy()) ~
+                    " timing=" ~ to!string(_turnTiming) ~ ")");
+            return;
+        }
+        _autoContinuePendingSession = -1;
+        _autoContinueRetries = 0;
+        _autoContinueStreak[sessionIndex] = streak + 1;
+        logAutoContinue("fired: resuming (streak " ~
+            to!string(streak + 1) ~ ")");
+        startChatRequest(sessionIndex);
+    }
+
+    /// Drive a deferred auto-continue retry from the UI tick. A no-op unless a
+    /// refusal scheduled one and its short delay has elapsed.
+    private void pumpAutoContinue()
+    {
+        if (_autoContinuePendingSession < 0) return;
+        if (MonoTime.currTime < _autoContinueRetryAt) return;
+        const pending = _autoContinuePendingSession;
+        _autoContinuePendingSession = -1;
+        maybeAutoContinue(pending);
     }
 
     private bool prepareContinue(int sessionIndex, int messageIndex)
@@ -20060,6 +20246,10 @@ public final class OpenCodeRoot : VBox
             }
         }
 
+        // experimental: computer use - retry a deferred auto-continue when the
+        // client was still busy as the turn settled (see maybeAutoContinue).
+        pumpAutoContinue();
+
         updateSendButton();
     }
 
@@ -21647,6 +21837,18 @@ public final class OpenCodeRoot : VBox
             }
         }
         return total;
+    }
+
+    /// Test-only: animation phase of the first live action group's "still
+    /// working" dot (-1 when no live group is present). Proves a long-running
+    /// round keeps visibly animating between stream events.
+    public int firstToolGroupPulseStepForTesting()
+    {
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                if (group._live)
+                    return group.pulseStep();
+        return -1;
     }
 
     /// Test-only: freeze the elapsed value shown by the in-flight tool rows so
