@@ -228,6 +228,88 @@ private string formatElapsedMs(long ms)
 // Chat message bubble
 // ---------------------------------------------------------------------------
 
+/// Cross-instance cache for rendered transcript text.
+///
+/// A transcript rebuild recreates every visible bubble and a fresh bubble
+/// starts with empty layout caches, so the whole visible page was re-composed
+/// and re-shaped on every rebuild - and rebuilds happen on every streamed tool
+/// result, every 512-byte bucket of streamed tool arguments and every
+/// conversation switch. That repeated shaping is what a reader feels as the
+/// frame hitching while typing or clicking through conversations. Assistant
+/// replies and user prompts are immutable once finished, so the work is keyed
+/// on the text itself and shared between instances. Text still streaming is
+/// deliberately excluded: it changes every frame and keeps using the
+/// per-instance incremental composer.
+private final class SharedTextLayoutCache
+{
+    private static immutable int maxEntries = 160;
+    // Very large texts are skipped: caching them would pin tens of megabytes
+    // of glyph layouts that a paging reader may never look at again.
+    static immutable int maxTextLength = 32 * 1024;
+
+    private static struct MarkdownEntry
+    {
+        dstring text;
+        int width;
+        MdComposition value;
+    }
+
+    private static struct LayoutEntry
+    {
+        dstring text;
+        int width;
+        TextLayout value;
+    }
+
+    private MarkdownEntry[] _markdown;
+    private LayoutEntry[] _layouts;
+
+    private static bool sameText(const(dchar)[] a, const(dchar)[] b)
+        @safe pure nothrow @nogc
+    {
+        if (a.length != b.length) return false;
+        foreach (i; 0 .. a.length)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    bool lookupMarkdown(const(dchar)[] text, int width, out MdComposition value)
+    {
+        foreach (entry; _markdown)
+            if (entry.width == width && sameText(entry.text, text))
+            {
+                value = entry.value;
+                return true;
+            }
+        return false;
+    }
+
+    void storeMarkdown(const(dchar)[] text, int width, MdComposition value)
+    {
+        if (text.length > maxTextLength) return;
+        if (_markdown.length >= maxEntries) _markdown = _markdown[1 .. $];
+        _markdown ~= MarkdownEntry(text.idup, width, value);
+    }
+
+    bool lookupLayout(const(dchar)[] text, int width, out TextLayout value)
+    {
+        foreach (entry; _layouts)
+            if (entry.width == width && sameText(entry.text, text))
+            {
+                value = entry.value;
+                return true;
+            }
+        return false;
+    }
+
+    void storeLayout(const(dchar)[] text, int width, TextLayout value)
+    {
+        if (text.length > maxTextLength) return;
+        if (_layouts.length >= maxEntries) _layouts = _layouts[1 .. $];
+        _layouts ~= LayoutEntry(text.idup, width, value);
+    }
+}
+
 private final class MessageBubble : Widget
 {
     private static immutable int padH = 10;
@@ -370,6 +452,16 @@ private final class MessageBubble : Widget
     // quadratic (measured ~19 ms/frame at 120k, with 60 ms+ spikes). The
     // ScrollView measures at two widths, so keep one composer per width.
     private MarkdownComposer[2] _mdComposers;
+
+    // Finished text is cached module-wide (see SharedTextLayoutCache) because a
+    // rebuild throws the instance caches away with the widget that held them.
+    private static SharedTextLayoutCache _sharedTextCache;
+
+    private static SharedTextLayoutCache sharedTextCache()
+    {
+        if (_sharedTextCache is null) _sharedTextCache = new SharedTextLayoutCache();
+        return _sharedTextCache;
+    }
 
     // Tool result bubbles (`tool` role) are a single element: the header shows
     // the command (⚙ name(args)) and the output below is collapsible. Clicking
@@ -1044,8 +1136,19 @@ private final class MessageBubble : Widget
                 return _contentLayouts[index];
         }
 
+        // The instance cache above dies with the widget; reuse a layout an
+        // earlier bubble already shaped for this exact text and width.
+        if (!_streaming)
+        {
+            TextLayout cachedValue;
+            if (sharedTextCache().lookupLayout(_content, width, cachedValue))
+                return cachedValue;
+        }
+
         dstring display = _content;
         auto layout = shape(display, width);
+        if (!_streaming && layout !is null)
+            sharedTextCache().storeLayout(_content, width, layout);
 
         if (_contentCacheCount == shapeCacheSize)
         {
@@ -1094,6 +1197,21 @@ private final class MessageBubble : Widget
                 return _mdCompositions[index];
         }
 
+        // Static replies are byte-identical across the rebuilds that streaming
+        // and conversation switching trigger, so reuse the composition an
+        // earlier bubble built for this text and width instead of re-parsing
+        // and re-shaping the whole reply again.
+        if (!_streaming)
+        {
+            MdComposition cachedComposition;
+            if (sharedTextCache().lookupMarkdown(_content, width,
+                cachedComposition))
+            {
+                rememberMarkdown(width, cachedComposition);
+                return cachedComposition;
+            }
+        }
+
         MdComposition composition;
 
         if (_mdCount == 2)
@@ -1109,11 +1227,30 @@ private final class MessageBubble : Widget
         composerFor(lineWidth).compose(composition, _content, lineWidth,
             _streaming);
 
+        if (!_streaming)
+            sharedTextCache().storeMarkdown(_content, width, composition);
         _mdWidths[_mdCount] = width;
         _mdCompositions[_mdCount] = composition;
         _mdGens[_mdCount] = _contentGen;
         ++_mdCount;
         return composition;
+    }
+
+    /// Remember a composition in the per-instance ring (two widths, matching
+    /// the ScrollView's with/without-scrollbar measures).
+    private void rememberMarkdown(int width, MdComposition composition)
+    {
+        if (_mdCount == 2)
+        {
+            _mdWidths[0] = _mdWidths[1];
+            _mdCompositions[0] = _mdCompositions[1];
+            _mdGens[0] = _mdGens[1];
+            --_mdCount;
+        }
+        _mdWidths[_mdCount] = width;
+        _mdCompositions[_mdCount] = composition;
+        _mdGens[_mdCount] = _contentGen;
+        ++_mdCount;
     }
 
     private TextLayout shape(const(dchar)[] text, int width)
